@@ -53,3 +53,8 @@ frontend/dist-ssr/
 
 # Docker
 pgdata/
+
+# Beads / Dolt files (added by bd init)
+.dolt/
+*.db
+.beads-credential-key
