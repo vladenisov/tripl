@@ -28,6 +28,37 @@ afterEach(() => {
   vi.restoreAllMocks()
 })
 
+describe('TopBar mobile nav', () => {
+  function renderWithMobileNav(onOpen?: () => void) {
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    })
+    return render(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter>
+          <TopBar title="Events" projectSlug="demo" onOpenMobileNav={onOpen} />
+        </MemoryRouter>
+      </QueryClientProvider>,
+    )
+  }
+
+  it('renders the mobile nav trigger only when an onOpenMobileNav prop is given', () => {
+    const { rerender } = renderWithMobileNav(undefined)
+    expect(screen.queryByLabelText('Open navigation')).toBeNull()
+
+    const onOpen = vi.fn()
+    rerender(
+      <QueryClientProvider client={new QueryClient()}>
+        <MemoryRouter>
+          <TopBar title="Events" projectSlug="demo" onOpenMobileNav={onOpen} />
+        </MemoryRouter>
+      </QueryClientProvider>,
+    )
+    fireEvent.click(screen.getByLabelText('Open navigation'))
+    expect(onOpen).toHaveBeenCalledTimes(1)
+  })
+})
+
 describe('TopBar notifications', () => {
   it('opens real project notifications from signals and alert deliveries', async () => {
     vi.spyOn(globalThis, 'fetch').mockImplementation(async input => {

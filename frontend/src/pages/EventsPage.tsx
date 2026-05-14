@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from 'react'
 import { useParams, useNavigate, useSearchParams, Link } from 'react-router-dom'
 import {
   useInfiniteQuery,
@@ -249,9 +249,21 @@ export default function EventsPage() {
     return { time_from: from.toISOString(), time_to: to.toISOString() }
   }, [])
 
-  const debouncedSearch = useDebouncedValue(search, 200)
-  const debouncedFieldFilters = useDebouncedValue(fieldFilters, 200)
-  const debouncedMetaFilters = useDebouncedValue(metaFilters, 200)
+  // Defer the URL-derived filter values so the input field stays responsive even
+  // when the table re-render is expensive — React keeps the urgent text update
+  // and schedules the heavy list refresh at a lower priority. The debounce
+  // chain on top of the deferred value still controls when we hit the API.
+  const deferredSearch = useDeferredValue(search)
+  const deferredFieldFilters = useDeferredValue(fieldFilters)
+  const deferredMetaFilters = useDeferredValue(metaFilters)
+  const debouncedSearch = useDebouncedValue(deferredSearch, 200)
+  const debouncedFieldFilters = useDebouncedValue(deferredFieldFilters, 200)
+  const debouncedMetaFilters = useDebouncedValue(deferredMetaFilters, 200)
+  // True while React is still settling on the deferred filter values — used to
+  // hint a pending state on the search input without freezing the URL update.
+  const isFilterPending = deferredSearch !== search
+    || deferredFieldFilters !== fieldFilters
+    || deferredMetaFilters !== metaFilters
 
   // Infinite-scroll the events list in 200-row pages instead of fetching the
   // whole 2000-row table up front. The accumulated items are rendered through
@@ -951,8 +963,16 @@ export default function EventsPage() {
                 placeholder="Search events…"
                 value={search}
                 onChange={e => setSearch(e.target.value)}
-                className="h-8 w-64 pl-8 text-xs"
+                className="h-8 w-full pl-8 text-xs sm:w-64"
               />
+              {isFilterPending && (
+                <span
+                  aria-hidden="true"
+                  className="pulse-dot pointer-events-none absolute right-2.5 top-1/2 h-1.5 w-1.5 -translate-y-1/2 rounded-full"
+                  style={{ background: 'var(--accent)' }}
+                  title="Updating results"
+                />
+              )}
             </div>
             <Select
               value={filterImplemented === undefined ? '__all__' : String(filterImplemented)}

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Outlet, useLocation, useParams } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 import { projectsApi } from '@/api/projects'
@@ -63,6 +63,22 @@ export default function Layout() {
   const { slug } = useParams()
   const [activityOpen, setActivityOpen] = useActivityOpen()
 
+  // Below `md`, the sidebar slides off-canvas; the hamburger in TopBar toggles
+  // it. Above `md`, this flag has no visual effect (the `md:*` utilities pin
+  // the sidebar to static flow regardless).
+  const [mobileNavOpen, setMobileNavOpen] = useState(false)
+  const closeMobileNav = useCallback(() => setMobileNavOpen(false), [])
+
+  // Close the drawer when the route changes. Using the React-documented
+  // "derived state from props" pattern (setState during render with a prior-
+  // value check) avoids both `react-hooks/set-state-in-effect` and
+  // `react-hooks/refs`.
+  const [lastPathname, setLastPathname] = useState(location.pathname)
+  if (lastPathname !== location.pathname) {
+    setLastPathname(location.pathname)
+    if (mobileNavOpen) setMobileNavOpen(false)
+  }
+
   const projectsQuery = useQuery({
     queryKey: ['projects'],
     queryFn: projectsApi.list,
@@ -86,7 +102,25 @@ export default function Layout() {
           className="flex h-screen overflow-hidden"
           style={{ background: 'var(--bg)', color: 'var(--fg)' }}
         >
-          <AppSidebar />
+          {/* Sidebar: in flex flow on md+, absolute drawer below md. */}
+          <div
+            className={
+              'fixed inset-y-0 left-0 z-40 transition-transform duration-200 ease-out md:static md:translate-x-0 ' +
+              (mobileNavOpen ? 'translate-x-0' : '-translate-x-full md:translate-x-0')
+            }
+          >
+            <AppSidebar />
+          </div>
+
+          {/* Backdrop for the mobile drawer. */}
+          {mobileNavOpen && (
+            <button
+              type="button"
+              aria-label="Close navigation"
+              onClick={closeMobileNav}
+              className="fixed inset-0 z-30 bg-black/40 backdrop-blur-[2px] md:hidden"
+            />
+          )}
 
           <main
             className="flex min-w-0 flex-1 flex-col"
@@ -98,11 +132,12 @@ export default function Layout() {
               projectSlug={slug}
               activityOpen={activityOpen}
               onToggleActivity={() => setActivityOpen((o) => !o)}
+              onOpenMobileNav={() => setMobileNavOpen(true)}
             />
 
             <div className="flex flex-1 overflow-hidden">
               <div className="relative min-w-0 flex-1 overflow-y-auto">
-                <div className="p-6 lg:p-8">
+                <div className="p-3 sm:p-5 lg:p-8">
                   {projectsQuery.isError && (
                     <div className="mb-6">
                       <ErrorState

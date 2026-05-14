@@ -3,10 +3,6 @@
 
 @custom-variant dark (&:is(.dark *));
 
-/* ── Typography ────────────────────────────────────────────────────────── */
-
-@import url("https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap");
-
 /* ── Design Tokens ─────────────────────────────────────────────────────── */
 
 :root {
@@ -388,28 +384,23 @@
   border-radius: 4px;
 }
 
-/* ── Legacy helpers kept for existing pages ────────────────────────────── */
+/* ── View transitions ──────────────────────────────────────────────────── */
 
-.move-btn {
-  @apply text-gray-400 hover:text-gray-700 disabled:opacity-20
-    disabled:cursor-not-allowed leading-none text-[10px] cursor-pointer;
+/* Soften route transitions where the browser supports the View Transitions
+   API. Keep them quick so they feel like a paint refinement, not a delay. */
+@view-transition {
+  navigation: auto;
+}
+::view-transition-old(root),
+::view-transition-new(root) {
+  animation-duration: 140ms;
+  animation-timing-function: cubic-bezier(0.4, 0, 0.2, 1);
 }
 
-.tags-wrap {
-  @apply flex flex-wrap gap-1.5;
-}
-
-.section-divider {
-  @apply border-t border-gray-200;
-}
-
-.search-input {
-  @apply w-64 border border-gray-300 rounded-lg px-3 py-2 text-sm bg-white
-    placeholder:text-gray-400
-    focus:ring-2 focus:ring-indigo-500/30 focus:border-indigo-500
-    outline-none transition-all duration-150;
-}
-
-.grid-header {
-  @apply text-xs text-gray-500 font-semibold py-1.5 px-1;
+/* Respect reduced-motion: skip the cross-fade entirely. */
+@media (prefers-reduced-motion: reduce) {
+  ::view-transition-old(root),
+  ::view-transition-new(root) {
+    animation: none;
+  }
 }

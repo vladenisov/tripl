@@ -2,9 +2,44 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <meta name="color-scheme" content="dark light" />
+    <meta name="theme-color" content="oklch(0.14 0.01 250)" media="(prefers-color-scheme: dark)" />
+    <meta name="theme-color" content="oklch(0.99 0.002 250)" media="(prefers-color-scheme: light)" />
+    <meta name="description" content="Tripl — analytics tracking-plan, monitoring, and alerting workspace." />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>frontend</title>
+
+    <!-- Preconnect to font origins before the stylesheet request goes out so the
+         TLS handshake overlaps with HTML parse, shaving a round-trip off LCP. -->
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      rel="stylesheet"
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap"
+    />
+
+    <!-- Resolve the theme before React boots so the first paint matches the
+         saved or system preference instead of flashing the opposite background.
+         Mirrors the resolution logic in `theme-provider.tsx` (defaults to dark). -->
+    <script>
+      (function () {
+        try {
+          var stored = localStorage.getItem('tripl-ui-theme')
+          var prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches
+          var theme =
+            stored === 'light' ? 'light' :
+            stored === 'dark' ? 'dark' :
+            stored === 'system' ? (prefersDark ? 'dark' : 'light') :
+            'dark'
+          document.documentElement.classList.toggle('dark', theme === 'dark')
+          document.documentElement.style.background = theme === 'dark'
+            ? 'oklch(0.14 0.01 250)'
+            : 'oklch(0.99 0.002 250)'
+        } catch (e) { /* ignore — default styles take over */ }
+      })()
+    </script>
+
+    <title>tripl</title>
   </head>
   <body>
     <div id="root"></div>

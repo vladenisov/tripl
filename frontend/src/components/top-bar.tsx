@@ -8,6 +8,7 @@ import {
   ChevronRight,
   Command,
   Loader2,
+  Menu,
   Send,
   XCircle,
 } from 'lucide-react'
@@ -25,6 +26,7 @@ type TopBarProps = {
   projectSlug?: string
   activityOpen?: boolean
   onToggleActivity?: () => void
+  onOpenMobileNav?: () => void
   right?: ReactNode
 }
 
@@ -34,22 +36,34 @@ export function TopBar({
   projectSlug,
   activityOpen,
   onToggleActivity,
+  onOpenMobileNav,
   right,
 }: TopBarProps) {
   const palette = useCommandPalette()
   return (
     <div
-      className="flex h-11 flex-shrink-0 items-center gap-3 border-b px-4"
+      className="flex h-11 flex-shrink-0 items-center gap-3 border-b px-3 sm:px-4"
       style={{ background: 'var(--bg)', borderColor: 'var(--border)' }}
     >
-      <div className="flex items-center gap-1.5 text-[12.5px]">
+      {onOpenMobileNav && (
+        <button
+          type="button"
+          aria-label="Open navigation"
+          onClick={onOpenMobileNav}
+          className="-ml-1 flex h-8 w-8 shrink-0 items-center justify-center rounded-md transition-colors hover:bg-[var(--surface-hover)] md:hidden"
+          style={{ color: 'var(--fg-muted)' }}
+        >
+          <Menu className="h-4 w-4" />
+        </button>
+      )}
+      <div className="flex min-w-0 items-center gap-1.5 text-[12.5px]">
         {crumbs.map((c, i) => (
-          <div key={`${c}-${i}`} className="flex items-center gap-1.5">
+          <div key={`${c}-${i}`} className="hidden items-center gap-1.5 sm:flex">
             <span style={{ color: 'var(--fg-muted)' }}>{c}</span>
             <ChevronRight className="h-3 w-3" style={{ color: 'var(--fg-faint)' }} />
           </div>
         ))}
-        <span className="font-semibold" style={{ color: 'var(--fg)' }}>
+        <span className="truncate font-semibold" style={{ color: 'var(--fg)' }}>
           {title}
         </span>
       </div>
@@ -65,7 +79,9 @@ export function TopBar({
           style={{ color: 'var(--fg-muted)' }}
         >
           <Command className="h-[13px] w-[13px]" />
-          <Kbd>⌘K</Kbd>
+          <span className="hidden sm:inline-flex">
+            <Kbd>⌘K</Kbd>
+          </span>
         </button>
         {onToggleActivity && (
           <>
