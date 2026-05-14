@@ -39,6 +39,6 @@ celery_app.conf.beat_schedule = {
 }
 
 # Import tasks so they are registered with the celery app
-import tripl.worker.tasks.metrics  # noqa: F401, E402
 import tripl.worker.tasks.alerts  # noqa: F401, E402
+import tripl.worker.tasks.metrics  # noqa: F401, E402
 import tripl.worker.tasks.scan  # noqa: F401, E402

@@ -44,6 +44,7 @@ testpaths = ["src/tripl/tests"]
 target-version = "py313"
 line-length = 100
 src = ["src"]
+extend-exclude = ["alembic/versions"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM"]

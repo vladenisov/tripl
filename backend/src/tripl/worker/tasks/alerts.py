@@ -8,7 +8,6 @@ import urllib.request
 import uuid
 from datetime import UTC, datetime
 
-from cryptography.fernet import Fernet
 from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
 
@@ -28,7 +27,7 @@ from tripl.alerting_validation import (
     validate_telegram_bot_token,
     validate_telegram_chat_id,
 )
-from tripl.config import settings
+from tripl.crypto import decrypt_value
 from tripl.models.alert_delivery import AlertDelivery, AlertDeliveryStatus
 from tripl.models.alert_delivery_item import AlertDeliveryItem
 from tripl.models.alert_destination import AlertDestination, AlertDestinationType
@@ -48,12 +47,7 @@ def _get_sync_session() -> Session:
 
 
 def _decrypt_secret(encrypted: str | None) -> str:
-    if not encrypted:
-        return ""
-    if not settings.encryption_key:
-        return encrypted
-    f = Fernet(settings.encryption_key.encode())
-    return f.decrypt(encrypted.encode()).decode()
+    return decrypt_value(encrypted or "")
 
 
 def _build_item_template_context(

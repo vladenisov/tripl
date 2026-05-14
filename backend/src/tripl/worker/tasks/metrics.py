@@ -85,21 +85,11 @@ def _get_sync_session() -> Session:
     return SyncSessionLocal()
 
 
-def _decrypt_password(encrypted: str) -> str:
-    if not encrypted:
-        return ""
-    if not settings.encryption_key:
-        return encrypted
-    from cryptography.fernet import Fernet
-
-    f = Fernet(settings.encryption_key.encode())
-    return f.decrypt(encrypted.encode()).decode()
-
-
 def _build_adapter(ds: DataSource) -> BaseAdapter:
+    from tripl.crypto import decrypt_value
     from tripl.worker.adapters.clickhouse import ClickHouseAdapter
 
-    password = _decrypt_password(ds.password_encrypted)
+    password = decrypt_value(ds.password_encrypted)
     if ds.db_type == "clickhouse":
         return ClickHouseAdapter(
             host=ds.host,
@@ -956,10 +946,7 @@ def _rule_matches_anomaly(
     if percent_delta < rule.min_percent_delta:
         return False
 
-    for filter_row in rule.filters:
-        if not _filter_matches_anomaly(filter_row, anomaly):
-            return False
-    return True
+    return all(_filter_matches_anomaly(filter_row, anomaly) for filter_row in rule.filters)
 
 
 def _filter_matches_anomaly(

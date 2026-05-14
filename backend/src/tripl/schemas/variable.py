@@ -1,10 +1,10 @@
 import uuid
-from enum import Enum
+from enum import StrEnum
 
 from pydantic import BaseModel, Field
 
 
-class VariableType(str, Enum):
+class VariableType(StrEnum):
     string = "string"
     number = "number"
     boolean = "boolean"

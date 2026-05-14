@@ -22,8 +22,8 @@ import logging
 from typing import Any
 
 try:
-    import redis.asyncio as redis_asyncio
     import redis as redis_sync
+    import redis.asyncio as redis_asyncio
 except ImportError:  # pragma: no cover
     redis_asyncio = None  # type: ignore[assignment]
     redis_sync = None  # type: ignore[assignment]
@@ -32,11 +32,11 @@ from tripl.config import settings
 
 logger = logging.getLogger(__name__)
 
-_client: "redis_asyncio.Redis | None" = None
+_client: redis_asyncio.Redis | None = None
 _client_failed: bool = False
 
 
-def _get_client() -> "redis_asyncio.Redis | None":
+def _get_client() -> redis_asyncio.Redis | None:
     global _client, _client_failed
     if _client_failed or not settings.redis_url or redis_asyncio is None:
         return None
@@ -118,11 +118,11 @@ async def delete_prefix(prefix: str) -> None:
 
 # ── Sync helpers (for Celery workers — don't bridge back to asyncio) ────
 
-_sync_client: "redis_sync.Redis | None" = None
+_sync_client: redis_sync.Redis | None = None
 _sync_client_failed: bool = False
 
 
-def _get_sync_client() -> "redis_sync.Redis | None":
+def _get_sync_client() -> redis_sync.Redis | None:
     global _sync_client, _sync_client_failed
     if _sync_client_failed or not settings.redis_url or redis_sync is None:
         return None

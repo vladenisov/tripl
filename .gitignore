@@ -58,3 +58,4 @@ pgdata/
 .dolt/
 *.db
 .beads-credential-key
+.omc/

@@ -1,7 +1,8 @@
-from fastapi import APIRouter, Request, Response, status
+from fastapi import APIRouter, Depends, Request, Response, status
 
 from tripl.api.deps import CurrentUserDep, SessionDep
 from tripl.config import settings
+from tripl.middleware.rate_limit import enforce, login_rate_limiter, register_rate_limiter
 from tripl.schemas.auth import AuthUserResponse, LoginRequest, RegisterRequest
 from tripl.services import auth_service
 
@@ -30,7 +31,12 @@ def _clear_session_cookie(response: Response) -> None:
     )
 
 
-@router.post("/register", response_model=AuthUserResponse, status_code=status.HTTP_201_CREATED)
+@router.post(
+    "/register",
+    response_model=AuthUserResponse,
+    status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(enforce(register_rate_limiter))],
+)
 async def register(
     response: Response, session: SessionDep, data: RegisterRequest
 ) -> AuthUserResponse:
@@ -39,7 +45,11 @@ async def register(
     return AuthUserResponse.model_validate(user)
 
 
-@router.post("/login", response_model=AuthUserResponse)
+@router.post(
+    "/login",
+    response_model=AuthUserResponse,
+    dependencies=[Depends(enforce(login_rate_limiter))],
+)
 async def login(
     response: Response, session: SessionDep, data: LoginRequest
 ) -> AuthUserResponse:

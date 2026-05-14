@@ -83,21 +83,30 @@ Important runtime facts:
 
 ## Environment Variables
 
-Primary backend settings are in [backend/src/tripl/config.py](backend/src/tripl/config.py):
-- `DATABASE_URL`
-- `SYNC_DATABASE_URL`
-- `RABBITMQ_URL`
-- `ENCRYPTION_KEY`
-- `APP_BASE_URL`
-- `DEBUG`
+Primary backend settings are in [backend/src/tripl/config.py](backend/src/tripl/config.py).
+
+Connectivity:
+- `DATABASE_URL`, `SYNC_DATABASE_URL`, `RABBITMQ_URL`, `REDIS_URL`
+
+Identity and secrets:
+- `ENCRYPTION_KEY` — Fernet key for at-rest secrets. **Required** in non-debug mode.
+- `SESSION_COOKIE_NAME`, `SESSION_TTL_HOURS`, `SESSION_COOKIE_SECURE`.
+- `APP_BASE_URL` — used for alert links and as the default CORS origin.
+
+Edge / hardening:
+- `CORS_ALLOW_ORIGINS` — comma-separated origins. Empty + DEBUG=true → `*`; empty + DEBUG=false derives from `APP_BASE_URL`, else denies all.
+- `SECURITY_HEADERS_ENABLED`, `HSTS_ENABLED`, `HSTS_MAX_AGE_SECONDS`, `CONTENT_SECURITY_POLICY`.
+- `RATE_LIMIT_ENABLED`, `RATE_LIMIT_LOGIN_PER_MINUTE`, `RATE_LIMIT_REGISTER_PER_HOUR`.
+
+Observability:
+- `LOG_LEVEL`, `LOG_JSON`, `REQUEST_ID_HEADER`.
 
 Frontend:
 - `VITE_API_URL`
 
 Practical notes:
 - `SYNC_DATABASE_URL` is used by Celery tasks and other sync SQLAlchemy code paths.
-- `ENCRYPTION_KEY` encrypts data-source secrets; with an empty key, dev/test paths can treat stored values as plaintext.
-- `APP_BASE_URL` is relevant for alert links.
+- The app refuses to start in non-debug mode with an empty/invalid `ENCRYPTION_KEY`, no resolvable CORS origin, or `SESSION_COOKIE_SECURE=false`. See `Settings.assert_production_ready()`.
 - Keep `.env.example`, Compose env, and app settings synchronized.
 
 ## Repo Layout
@@ -110,7 +119,7 @@ Top level:
 - [frontend](frontend): React app.
 
 Backend entrypoints:
-- [backend/src/tripl/main.py](backend/src/tripl/main.py): FastAPI app and `/health`.
+- [backend/src/tripl/main.py](backend/src/tripl/main.py): FastAPI app, middleware stack, lifespan, and `/health`.
 - [backend/src/tripl/api/v1/router.py](backend/src/tripl/api/v1/router.py): all API router registration.
 - [backend/src/tripl/worker/celery_app.py](backend/src/tripl/worker/celery_app.py): Celery app and beat schedule.
 
@@ -119,6 +128,9 @@ Backend layers:
 - `backend/src/tripl/schemas`: Pydantic request/response models.
 - `backend/src/tripl/services`: business logic used by routers.
 - `backend/src/tripl/api/v1`: thin HTTP layer.
+- `backend/src/tripl/middleware`: request-id, security headers, rate limiting.
+- `backend/src/tripl/crypto.py`: Fernet-based at-rest encryption (one source of truth for all callers).
+- `backend/src/tripl/logging_config.py`: log handler/formatter wiring.
 - `backend/src/tripl/worker/tasks`: async task entrypoints.
 - `backend/src/tripl/worker/analyzers`: scan/anomaly analysis logic.
 - `backend/src/tripl/worker/adapters`: analytics DB adapters.

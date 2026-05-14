@@ -6,11 +6,10 @@ import logging
 import uuid
 from datetime import UTC, datetime
 
-from cryptography.fernet import Fernet
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from tripl.config import settings
+from tripl.crypto import decrypt_value
 from tripl.json_paths import group_json_value_paths
 from tripl.models.data_source import DataSource
 from tripl.models.event_type import EventType
@@ -30,18 +29,8 @@ def _get_sync_session() -> Session:
     return SyncSessionLocal()
 
 
-def _decrypt_password(encrypted: str) -> str:
-    if not encrypted:
-        return ""
-    if not settings.encryption_key:
-        # No encryption key configured — password stored as plaintext (dev/test mode)
-        return encrypted
-    f = Fernet(settings.encryption_key.encode())
-    return f.decrypt(encrypted.encode()).decode()
-
-
 def _build_adapter(ds: DataSource) -> BaseAdapter:
-    password = _decrypt_password(ds.password_encrypted)
+    password = decrypt_value(ds.password_encrypted)
 
     if ds.db_type == "clickhouse":
         return ClickHouseAdapter(

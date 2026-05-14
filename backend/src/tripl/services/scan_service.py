@@ -2,12 +2,11 @@ import uuid
 from datetime import datetime
 from math import inf
 
-from cryptography.fernet import Fernet
 from fastapi import HTTPException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from tripl.config import settings
+from tripl.crypto import decrypt_value
 from tripl.json_paths import (
     decode_json_path_value,
     flatten_json_paths,
@@ -48,17 +47,8 @@ async def _verify_data_source(session: AsyncSession, ds_id: uuid.UUID) -> DataSo
     return ds
 
 
-def _decrypt_password(encrypted: str) -> str:
-    if not encrypted:
-        return ""
-    if not settings.encryption_key:
-        return encrypted
-    f = Fernet(settings.encryption_key.encode())
-    return f.decrypt(encrypted.encode()).decode()
-
-
 def _build_adapter(ds: DataSource) -> BaseAdapter:
-    password = _decrypt_password(ds.password_encrypted)
+    password = decrypt_value(ds.password_encrypted)
     if ds.db_type != "clickhouse":
         raise HTTPException(status_code=400, detail=f"Unsupported data source type: {ds.db_type}")
     return ClickHouseAdapter(

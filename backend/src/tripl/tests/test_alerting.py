@@ -102,8 +102,18 @@ async def test_alerting_destination_rule_crud_and_secret_masking(client: AsyncCl
     assert rule["message_template"] == "*Matched:* ${matched_count}\n${items_text}"
     assert rule["items_template"] == "*${scope_name}* ${actual_count}/${expected_count}"
     assert rule["filters"] == [
-        {"field": "event_type", "operator": "not_in", "values": [event_type_id], "id": rule["filters"][0]["id"]},
-        {"field": "event", "operator": "not_in", "values": [event_id], "id": rule["filters"][1]["id"]},
+        {
+            "field": "event_type",
+            "operator": "not_in",
+            "values": [event_type_id],
+            "id": rule["filters"][0]["id"],
+        },
+        {
+            "field": "event",
+            "operator": "not_in",
+            "values": [event_id],
+            "id": rule["filters"][1]["id"],
+        },
     ]
 
     list_resp = await client.get("/api/v1/projects/alerting-project/alert-destinations")

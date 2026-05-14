@@ -1,7 +1,6 @@
 import uuid
 from datetime import datetime
 
-from cryptography.fernet import Fernet
 from fastapi import HTTPException
 from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -14,7 +13,7 @@ from tripl.alerting_validation import (
     validate_telegram_bot_token,
     validate_telegram_chat_id,
 )
-from tripl.config import settings
+from tripl.crypto import encrypt_value
 from tripl.models.alert_delivery import AlertDelivery
 from tripl.models.alert_delivery_item import AlertDeliveryItem
 from tripl.models.alert_destination import AlertDestination, AlertDestinationType
@@ -43,12 +42,7 @@ from tripl.schemas.alerting import (
 def _encrypt_secret(value: str | None) -> str | None:
     if value is None:
         return None
-    if not value:
-        return ""
-    if not settings.encryption_key:
-        return value
-    f = Fernet(settings.encryption_key.encode())
-    return f.encrypt(value.encode()).decode()
+    return encrypt_value(value)
 
 
 async def _get_project(session: AsyncSession, slug: str) -> Project:

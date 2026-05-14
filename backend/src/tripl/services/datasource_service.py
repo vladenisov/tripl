@@ -1,14 +1,14 @@
 import asyncio
+import contextlib
 import uuid
 from datetime import UTC, datetime
 
-from cryptography.fernet import Fernet
 from fastapi import HTTPException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from tripl import cache
-from tripl.config import settings
+from tripl.crypto import decrypt_value, encrypt_value
 from tripl.models.data_source import DataSource, TestStatus
 from tripl.schemas.data_source import (
     DataSourceCreate,
@@ -16,25 +16,6 @@ from tripl.schemas.data_source import (
     DataSourceTestResponse,
     DataSourceUpdate,
 )
-
-
-def _encrypt_password(password: str) -> str:
-    if not password:
-        return ""
-    if not settings.encryption_key:
-        # No encryption key configured — store as-is (dev/test mode)
-        return password
-    f = Fernet(settings.encryption_key.encode())
-    return f.encrypt(password.encode()).decode()
-
-
-def _decrypt_password(encrypted: str) -> str:
-    if not encrypted:
-        return ""
-    if not settings.encryption_key:
-        return encrypted
-    f = Fernet(settings.encryption_key.encode())
-    return f.decrypt(encrypted.encode()).decode()
 
 
 async def list_data_sources(session: AsyncSession) -> list[DataSourceResponse]:
@@ -77,7 +58,7 @@ async def create_data_source(
         port=data.port,
         database_name=data.database_name,
         username=data.username,
-        password_encrypted=_encrypt_password(data.password),
+        password_encrypted=encrypt_value(data.password),
         extra_params=data.extra_params,
     )
     session.add(ds)
@@ -97,7 +78,7 @@ async def update_data_source(
     if "password" in update_dict:
         password = update_dict.pop("password")
         if password is not None:
-            ds.password_encrypted = _encrypt_password(password)
+            ds.password_encrypted = encrypt_value(password)
 
     for key, value in update_dict.items():
         setattr(ds, key, value)
@@ -157,7 +138,7 @@ def _run_adapter_test(ds: DataSource) -> tuple[bool, str]:
             port=ds.port,
             database=ds.database_name,
             username=ds.username,
-            password=_decrypt_password(ds.password_encrypted),
+            password=decrypt_value(ds.password_encrypted),
         )
     except Exception as exc:  # noqa: BLE001
         return False, str(exc)
@@ -167,10 +148,8 @@ def _run_adapter_test(ds: DataSource) -> tuple[bool, str]:
     except Exception as exc:  # noqa: BLE001
         return False, str(exc)
     finally:
-        try:
+        with contextlib.suppress(Exception):
             adapter.close()
-        except Exception:  # noqa: BLE001
-            pass
 
     return (ok, "Connection successful" if ok else "Connection probe returned no rows")
 
