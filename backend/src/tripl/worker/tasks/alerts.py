@@ -27,6 +27,7 @@ from tripl.alerting_validation import (
     validate_telegram_bot_token,
     validate_telegram_chat_id,
 )
+from tripl.anomaly_context import build_alert_item_context
 from tripl.crypto import decrypt_value
 from tripl.models.alert_delivery import AlertDelivery, AlertDeliveryStatus
 from tripl.models.alert_delivery_item import AlertDeliveryItem
@@ -54,6 +55,8 @@ def _build_item_template_context(
     item: AlertDeliveryItem,
     *,
     message_format: str,
+    session: Session | None = None,
+    scan_config_id: uuid.UUID | None = None,
 ) -> AlertTemplateContext:
     scope_label = {
         "project_total": "Project total",
@@ -62,6 +65,25 @@ def _build_item_template_context(
     }.get(item.scope_type, item.scope_type)
     details_line = f"\n  details: {item.details_path}" if item.details_path else ""
     monitoring_line = f"\n  monitoring: {item.monitoring_path}" if item.monitoring_path else ""
+
+    # Explainability context — sparkline + top movers. Lazy: only query when
+    # we have both a session and a scan_config_id (i.e., the live send path).
+    sparkline = ""
+    top_movers = ""
+    if session is not None and scan_config_id is not None:
+        try:
+            sparkline, top_movers = build_alert_item_context(
+                session,
+                scan_config_id=scan_config_id,
+                scope_type=item.scope_type,
+                scope_ref=item.scope_ref,
+                bucket=item.bucket,
+            )
+        except Exception:  # noqa: BLE001
+            logger.warning("Failed to build alert item context", exc_info=True)
+    sparkline_line = f"\n  trend: {sparkline}" if sparkline else ""
+    top_movers_line = f"\n  movers: {top_movers}" if top_movers else ""
+
     variables = {
         "scope_name": escape_alert_value(item.scope_name, message_format),
         "scope_type": escape_alert_value(item.scope_type, message_format),
@@ -80,6 +102,10 @@ def _build_item_template_context(
         "monitoring_url": escape_alert_value(item.monitoring_path or "", message_format),
         "details_line": escape_alert_value(details_line, message_format),
         "monitoring_line": escape_alert_value(monitoring_line, message_format),
+        "sparkline": escape_alert_value(sparkline, message_format),
+        "top_movers": escape_alert_value(top_movers, message_format),
+        "sparkline_line": escape_alert_value(sparkline_line, message_format),
+        "top_movers_line": escape_alert_value(top_movers_line, message_format),
     }
     return AlertTemplateContext(variables=variables, message_format=message_format)
 
@@ -89,12 +115,19 @@ def _build_items_text(
     *,
     message_format: str,
     items_template: str,
+    session: Session | None = None,
+    scan_config_id: uuid.UUID | None = None,
 ) -> str:
     lines: list[str] = []
     for item in items:
         rendered_item = render_alert_template(
             items_template,
-            _build_item_template_context(item, message_format=message_format),
+            _build_item_template_context(
+                item,
+                message_format=message_format,
+                session=session,
+                scan_config_id=scan_config_id,
+            ),
         ).rstrip()
         if rendered_item:
             lines.append(rendered_item)
@@ -109,6 +142,7 @@ def _build_template_context(
     scan_name: str,
     project: Project | None,
     message_format_override: str | None = None,
+    session: Session | None = None,
 ) -> AlertTemplateContext:
     message_format = message_format_override or rule.message_format or ALERT_MESSAGE_FORMAT_PLAIN
     items_template = normalize_message_template(rule.items_template)
@@ -128,6 +162,8 @@ def _build_template_context(
             delivery.items,
             message_format=message_format,
             items_template=items_template,
+            session=session,
+            scan_config_id=delivery.scan_config_id,
         ),
     }
     return AlertTemplateContext(variables=variables, message_format=message_format)
@@ -141,6 +177,7 @@ def _render_delivery_message(
     scan_name: str,
     project: Project | None,
     message_format_override: str | None = None,
+    session: Session | None = None,
 ) -> tuple[str, str]:
     template = normalize_message_template(rule.message_template)
     context = _build_template_context(
@@ -150,6 +187,7 @@ def _render_delivery_message(
         scan_name=scan_name,
         project=project,
         message_format_override=message_format_override,
+        session=session,
     )
     if template is None:
         template = get_default_message_template(context.message_format)
@@ -253,6 +291,7 @@ def send_alert_delivery(self: object, delivery_id: str) -> dict[str, object]:
             rule=rule,
             scan_name=scan_config.name,
             project=project,
+            session=session,
         )
         rendered_message = text
         payload_snapshot = (
@@ -302,6 +341,7 @@ def send_alert_delivery(self: object, delivery_id: str) -> dict[str, object]:
                         scan_name=scan_config.name,
                         project=project,
                         message_format_override=ALERT_MESSAGE_FORMAT_PLAIN,
+                        session=session,
                     )
                     _send_telegram_message(
                         bot_token,

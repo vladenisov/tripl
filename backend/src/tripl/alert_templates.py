@@ -60,25 +60,25 @@ DEFAULT_ALERT_ITEMS_TEMPLATES: dict[str, str] = {
         "- ${scope_label} ${scope_name}: ${direction_label}, "
         "actual=${actual_count}, expected=${expected_count}, "
         "delta=${absolute_delta} (${percent_delta}%)"
-        "${details_line}${monitoring_line}"
+        "${details_line}${monitoring_line}${top_movers_line}${sparkline_line}"
     ),
     ALERT_MESSAGE_FORMAT_SLACK_MRKDWN: (
         "- ${scope_label} ${scope_name}: ${direction_label}, "
         "actual=${actual_count}, expected=${expected_count}, "
         "delta=${absolute_delta} (${percent_delta}%)"
-        "${details_line}${monitoring_line}"
+        "${details_line}${monitoring_line}${top_movers_line}${sparkline_line}"
     ),
     ALERT_MESSAGE_FORMAT_TELEGRAM_HTML: (
         "- ${scope_label} ${scope_name}: ${direction_label}, "
         "actual=${actual_count}, expected=${expected_count}, "
         "delta=${absolute_delta} (${percent_delta}%)"
-        "${details_line}${monitoring_line}"
+        "${details_line}${monitoring_line}${top_movers_line}${sparkline_line}"
     ),
     ALERT_MESSAGE_FORMAT_TELEGRAM_MARKDOWNV2: (
         "\\- ${scope_label} ${scope_name}: ${direction_label}, "
         "actual=${actual_count}, expected=${expected_count}, "
         "delta=${absolute_delta} \\(${percent_delta}%\\)"
-        "${details_line}${monitoring_line}"
+        "${details_line}${monitoring_line}${top_movers_line}${sparkline_line}"
     ),
 }
 
@@ -109,6 +109,10 @@ ALERT_ITEM_TEMPLATE_VARIABLES: dict[str, str] = {
     "monitoring_url": "Monitoring URL",
     "details_line": "Rendered details line with leading newline when URL exists",
     "monitoring_line": "Rendered monitoring line with leading newline when URL exists",
+    "sparkline": "ASCII sparkline of recent bucket counts (empty if no history)",
+    "top_movers": "Inline summary of top-3 breakdown movers (empty if none)",
+    "sparkline_line": "Rendered trend line with leading newline when sparkline exists",
+    "top_movers_line": "Rendered movers line with leading newline when movers exist",
 }
 
 _ALERT_TEMPLATE_VAR_RE = re.compile(r"\$\{([a-zA-Z_][a-zA-Z0-9_]*)\}")

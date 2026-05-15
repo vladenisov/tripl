@@ -1,5 +1,6 @@
 import uuid
 from datetime import UTC, datetime
+from pathlib import Path
 
 import pytest
 from httpx import AsyncClient
@@ -1067,3 +1068,217 @@ async def test_alert_rule_simulate_endpoint(client: AsyncClient) -> None:
     assert len(payload["firings"]) == 2
     assert payload["noisy"] is False
     assert payload["rule_id"] == rule_id
+
+
+def test_build_sparkline_handles_empty_flat_and_varied_inputs() -> None:
+    from tripl.anomaly_context import build_sparkline
+
+    assert build_sparkline([]) == ""
+
+    # All-identical → mid block, length preserved.
+    flat = build_sparkline([5, 5, 5, 5])
+    assert len(flat) == 4
+    assert flat == flat[0] * 4
+
+    # Ascending series → strictly non-decreasing block heights.
+    ascending = build_sparkline([1, 2, 3, 4, 5, 6, 7, 8])
+    blocks = "▁▂▃▄▅▆▇█"
+    assert ascending[0] == blocks[0]
+    assert ascending[-1] == blocks[-1]
+    levels = [blocks.index(ch) for ch in ascending]
+    assert levels == sorted(levels)
+
+    # Width cap: trim to last N when input longer.
+    long_series = list(range(40))
+    capped = build_sparkline(long_series, width=10)
+    assert len(capped) == 10
+
+
+def test_format_top_movers_renders_signed_percent_and_truncates_value() -> None:
+    from types import SimpleNamespace
+
+    from tripl.anomaly_context import format_top_movers
+
+    movers = [
+        SimpleNamespace(
+            breakdown_column="country",
+            breakdown_value="RU",
+            actual_count=42,
+            expected_count=10.0,
+        ),
+        SimpleNamespace(
+            breakdown_column="device",
+            breakdown_value="extremely-long-device-identifier-string",
+            actual_count=2,
+            expected_count=10.0,
+        ),
+        # Zero baseline → "+inf%" label so we never divide by zero.
+        SimpleNamespace(
+            breakdown_column="referrer",
+            breakdown_value="new_one",
+            actual_count=5,
+            expected_count=0.0,
+        ),
+    ]
+    rendered = format_top_movers(movers)  # type: ignore[arg-type]
+    # Country: (42-10)/10*100 = +320%
+    assert "country=RU +320%" in rendered
+    # Device value truncated with ellipsis at MAX_MOVER_VALUE_LEN-1 chars.
+    assert "device=extremely-long-device-i…" in rendered
+    # Zero baseline labeled +inf%.
+    assert "referrer=new_one +inf%" in rendered
+    # Separator: middle dot with spaces.
+    assert rendered.count(" · ") == 2
+
+
+@pytest.mark.asyncio
+async def test_send_alert_delivery_attaches_top_movers_and_sparkline(
+    client: AsyncClient,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """End-to-end: a real EventMetric + MetricBreakdownAnomaly history
+    surface as ``trend:`` / ``movers:`` lines in the rendered Slack message.
+    """
+    from datetime import timedelta
+
+    from tripl.models.event_metric import EventMetric
+    from tripl.models.metric_breakdown_anomaly import MetricBreakdownAnomaly
+    from tripl.worker.tasks import metrics
+
+    engine = create_engine(f"sqlite:///{tmp_path / 'explain.db'}")
+    Base.metadata.create_all(engine)
+    sync_session_factory = sessionmaker(engine, expire_on_commit=False)
+
+    bucket = datetime(2026, 4, 11, 12, tzinfo=UTC)
+
+    with sync_session_factory() as session:
+        project = Project(id=uuid.uuid4(), name="Explain", slug="explain", description="")
+        ds = DataSource(
+            id=uuid.uuid4(),
+            name="ds",
+            db_type="clickhouse",
+            host="h",
+            port=8123,
+            database_name="d",
+            username="u",
+            password_encrypted="",
+        )
+        scan = ScanConfig(
+            id=uuid.uuid4(),
+            data_source_id=ds.id,
+            project_id=project.id,
+            name="sc",
+            base_query="SELECT 1",
+            time_column="t",
+            cardinality_threshold=100,
+            interval="1h",
+        )
+        event_id = uuid.uuid4()
+        destination = AlertDestination(
+            id=uuid.uuid4(),
+            project_id=project.id,
+            type="slack",
+            name="dst",
+            enabled=True,
+            webhook_url_encrypted="https://hooks.slack.com/services/T/B/sim",
+            chat_id=None,
+        )
+        rule = AlertRule(
+            id=uuid.uuid4(),
+            destination_id=destination.id,
+            name="rule",
+            enabled=True,
+            message_format="plain",
+        )
+        delivery = AlertDelivery(
+            id=uuid.uuid4(),
+            project_id=project.id,
+            scan_config_id=scan.id,
+            destination_id=destination.id,
+            rule_id=rule.id,
+            channel="slack",
+            status="pending",
+            matched_count=1,
+            payload_snapshot={},
+        )
+        item = AlertDeliveryItem(
+            id=uuid.uuid4(),
+            delivery_id=delivery.id,
+            scope_type="event",
+            scope_ref=str(event_id),
+            scope_name="purchase",
+            event_id=event_id,
+            event_type_id=None,
+            bucket=bucket,
+            direction="drop",
+            actual_count=10,
+            expected_count=100,
+            absolute_delta=90,
+            percent_delta=90.0,
+            details_path=None,
+            monitoring_path=None,
+        )
+        # 6 historical buckets with rising counts → non-flat sparkline.
+        for i, count in enumerate([10, 12, 15, 50, 80, 10]):
+            session.add(
+                EventMetric(
+                    id=uuid.uuid4(),
+                    scan_config_id=scan.id,
+                    event_id=event_id,
+                    event_type_id=None,
+                    bucket=bucket - timedelta(hours=5 - i),
+                    count=count,
+                )
+            )
+        # One outsized breakdown anomaly at the same bucket → top mover.
+        session.add(
+            MetricBreakdownAnomaly(
+                id=uuid.uuid4(),
+                scan_config_id=scan.id,
+                scope_type="event",
+                scope_ref=str(event_id),
+                event_id=event_id,
+                event_type_id=None,
+                bucket=bucket,
+                breakdown_column="country",
+                breakdown_value="RU",
+                is_other=False,
+                actual_count=1,
+                expected_count=50.0,
+                stddev=1.0,
+                z_score=-12.0,
+                direction="drop",
+            )
+        )
+        session.add_all([project, ds, scan, destination, rule, delivery, item])
+        session.commit()
+        delivery_id = str(delivery.id)
+
+    sent_bodies: list[dict[str, object]] = []
+
+    def capture_post_json(url: str, body: dict[str, object]) -> None:
+        sent_bodies.append(body)
+
+    monkeypatch.setitem(
+        metrics.send_alert_delivery.run.__globals__,
+        "_get_sync_session",
+        sync_session_factory,
+    )
+    monkeypatch.setitem(
+        metrics.send_alert_delivery.run.__globals__,
+        "_post_json",
+        capture_post_json,
+    )
+
+    result = metrics.send_alert_delivery.run(delivery_id)
+    assert result["status"] == "sent"
+    assert len(sent_bodies) == 1
+
+    text = sent_bodies[0]["text"]
+    assert isinstance(text, str)
+    assert "movers: country=RU" in text
+    assert "trend: " in text  # Sparkline rendered after `trend: ` label.
+
+    Base.metadata.drop_all(engine)
+    engine.dispose()
