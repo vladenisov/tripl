@@ -55,6 +55,7 @@ class AlertRuleBase(BaseModel):
     include_project_total: bool | None = None
     include_event_types: bool | None = None
     include_events: bool | None = None
+    include_schema_drifts: bool | None = None
     notify_on_spike: bool | None = None
     notify_on_drop: bool | None = None
     min_percent_delta: float | None = Field(None, ge=0)
@@ -81,6 +82,7 @@ class AlertRuleCreate(AlertRuleBase):
     include_project_total: bool = True
     include_event_types: bool = True
     include_events: bool = True
+    include_schema_drifts: bool = False
     notify_on_spike: bool = True
     notify_on_drop: bool = True
     min_percent_delta: float = Field(0, ge=0)
@@ -105,6 +107,7 @@ class AlertRuleResponse(BaseModel):
     include_project_total: bool
     include_event_types: bool
     include_events: bool
+    include_schema_drifts: bool
     notify_on_spike: bool
     notify_on_drop: bool
     min_percent_delta: float
@@ -229,6 +232,9 @@ class AlertDeliveryItemResponse(BaseModel):
     percent_delta: float
     details_path: str | None
     monitoring_path: str | None
+    drift_field: str | None
+    drift_type: str | None
+    sample_value: str | None
 
     model_config = {"from_attributes": True}
 
@@ -271,6 +277,9 @@ class SimulatedRuleFiring(BaseModel):
     scope_name: str
     event_type_id: uuid.UUID | None
     event_id: uuid.UUID | None
+    drift_field: str | None = None
+    drift_type: str | None = None
+    sample_value: str | None = None
     bucket: datetime
     direction: str
     actual_count: int

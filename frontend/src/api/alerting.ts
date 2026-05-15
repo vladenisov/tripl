@@ -48,6 +48,7 @@ export const alertingApi = {
       include_project_total?: boolean
       include_event_types?: boolean
       include_events?: boolean
+      include_schema_drifts?: boolean
       notify_on_spike?: boolean
       notify_on_drop?: boolean
       min_percent_delta?: number
@@ -71,6 +72,7 @@ export const alertingApi = {
       include_project_total?: boolean
       include_event_types?: boolean
       include_events?: boolean
+      include_schema_drifts?: boolean
       notify_on_spike?: boolean
       notify_on_drop?: boolean
       min_percent_delta?: number

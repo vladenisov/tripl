@@ -39,5 +39,8 @@ class AlertDeliveryItem(UUIDMixin, Base):
     percent_delta: Mapped[float] = mapped_column()
     details_path: Mapped[str | None] = mapped_column(String(500), nullable=True)
     monitoring_path: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    drift_field: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    drift_type: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    sample_value: Mapped[str | None] = mapped_column(String(500), nullable=True)
 
     delivery: Mapped[AlertDelivery] = relationship(back_populates="items")

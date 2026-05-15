@@ -261,7 +261,7 @@ export function DestinationCard({
                 </div>
               </div>
 
-              <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+              <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
                 <label className="flex items-center gap-2 text-sm">
                   <Checkbox
                     checked={ruleForm.include_project_total}
@@ -282,6 +282,13 @@ export function DestinationCard({
                     onCheckedChange={checked => setRuleForm(current => ({ ...current, include_events: !!checked }))}
                   />
                   Events
+                </label>
+                <label className="flex items-center gap-2 text-sm">
+                  <Checkbox
+                    checked={ruleForm.include_schema_drifts}
+                    onCheckedChange={checked => setRuleForm(current => ({ ...current, include_schema_drifts: !!checked }))}
+                  />
+                  Schema drift
                 </label>
               </div>
 
@@ -379,7 +386,7 @@ export function DestinationCard({
                 onMessageFormatChange={() => {}}
                 title="Items Template"
                 variableOptions={ITEM_TEMPLATE_VARIABLE_OPTIONS}
-                helperText="This template is rendered for each matched alert item and then joined into ${items_text}. Use ${details_line} and ${monitoring_line} for optional link lines."
+                helperText="This template is rendered for each matched alert item and then joined into ${items_text}. Use ${details_line}, ${monitoring_line}, and ${drift_line} for optional context lines."
                 showFormatSelector={false}
                 placeholder={getDefaultItemsTemplate(ruleForm.message_format)}
                 value={ruleForm.items_template}

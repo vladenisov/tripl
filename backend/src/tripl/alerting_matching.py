@@ -9,14 +9,44 @@ These functions never touch the session and never mutate state.
 
 from __future__ import annotations
 
+import uuid
+from dataclasses import dataclass
 from datetime import datetime, timedelta
+from typing import Protocol
 
 from tripl.models.alert_rule import AlertRule
 from tripl.models.alert_rule_filter import AlertRuleFilter
-from tripl.models.metric_anomaly import MetricAnomaly
 
 
-def filter_matches_anomaly(filter_row: AlertRuleFilter, anomaly: MetricAnomaly) -> bool:
+class AlertMatchCandidate(Protocol):
+    id: uuid.UUID
+    scope_type: str
+    scope_ref: str
+    event_id: uuid.UUID | None
+    event_type_id: uuid.UUID | None
+    bucket: datetime
+    direction: str
+    actual_count: int
+    expected_count: float
+
+
+@dataclass
+class SchemaDriftAlertCandidate:
+    id: uuid.UUID
+    scope_type: str
+    scope_ref: str
+    event_id: uuid.UUID | None
+    event_type_id: uuid.UUID | None
+    bucket: datetime
+    direction: str
+    actual_count: int
+    expected_count: float
+    drift_field: str | None
+    drift_type: str | None
+    sample_value: str | None
+
+
+def filter_matches_anomaly(filter_row: AlertRuleFilter, anomaly: AlertMatchCandidate) -> bool:
     if filter_row.field == "event_type":
         actual = str(anomaly.event_type_id) if anomaly.event_type_id is not None else None
     elif filter_row.field == "event":
@@ -37,7 +67,7 @@ def filter_matches_anomaly(filter_row: AlertRuleFilter, anomaly: MetricAnomaly) 
     return True
 
 
-def rule_matches_anomaly(rule: AlertRule, anomaly: MetricAnomaly) -> bool:
+def rule_matches_anomaly(rule: AlertRule, anomaly: AlertMatchCandidate) -> bool:
     # Scope gates.
     if anomaly.scope_type == "project_total" and not rule.include_project_total:
         return False
@@ -45,12 +75,17 @@ def rule_matches_anomaly(rule: AlertRule, anomaly: MetricAnomaly) -> bool:
         return False
     if anomaly.scope_type == "event" and not rule.include_events:
         return False
+    if anomaly.scope_type == "schema" and not rule.include_schema_drifts:
+        return False
 
     # Direction gates.
     if anomaly.direction == "spike" and not rule.notify_on_spike:
         return False
     if anomaly.direction == "drop" and not rule.notify_on_drop:
         return False
+
+    if anomaly.scope_type == "schema":
+        return all(filter_matches_anomaly(filter_row, anomaly) for filter_row in rule.filters)
 
     # Numeric thresholds.
     if anomaly.expected_count < rule.min_expected_count:
@@ -70,8 +105,8 @@ def rule_matches_anomaly(rule: AlertRule, anomaly: MetricAnomaly) -> bool:
 
 def simulate_rule_firings(
     rule: AlertRule,
-    anomalies: list[MetricAnomaly],
-) -> list[MetricAnomaly]:
+    anomalies: list[AlertMatchCandidate],
+) -> list[AlertMatchCandidate]:
     """Replay anomalies through a rule with in-memory cooldown gating.
 
     Returns the subset that would have triggered a delivery, in bucket order.
@@ -83,7 +118,7 @@ def simulate_rule_firings(
     else:
         cooldown = timedelta(minutes=rule.cooldown_minutes)
 
-    fired: list[MetricAnomaly] = []
+    fired: list[AlertMatchCandidate] = []
     last_fired_at: dict[tuple[str, str], datetime] = {}
 
     for anomaly in sorted(anomalies, key=lambda a: a.bucket):

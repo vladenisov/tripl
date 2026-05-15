@@ -161,6 +161,11 @@ export function RuleReplayDialog({
                           <td className="px-3 py-1.5 truncate" title={firing.scope_name}>
                             <span className="text-muted-foreground">{firing.scope_type}</span>{' '}
                             {firing.scope_name}
+                            {firing.drift_field && (
+                              <div className="truncate text-[11px] text-muted-foreground">
+                                {firing.drift_type}: {firing.drift_field}
+                              </div>
+                            )}
                           </td>
                           <td className="px-3 py-1.5">
                             <Badge

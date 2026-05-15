@@ -20,7 +20,11 @@ from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.orm import Session
 
 from tripl import cache
-from tripl.alerting_matching import rule_matches_anomaly
+from tripl.alerting_matching import (
+    AlertMatchCandidate,
+    SchemaDriftAlertCandidate,
+    rule_matches_anomaly,
+)
 from tripl.config import settings
 from tripl.json_paths import (
     build_json_value,
@@ -80,6 +84,7 @@ ACTIVE_SCAN_JOB_STATUSES = (
 STALE_ACTIVE_SCAN_JOB_TIMEOUT = timedelta(minutes=30)
 RECENT_SIGNAL_WINDOW = timedelta(hours=24)
 MAX_BREAKDOWN_VALUE_LENGTH = 500
+SCOPE_SCHEMA_DRIFT = "schema"
 
 
 def _get_sync_session() -> Session:
@@ -963,6 +968,8 @@ def _build_monitoring_url(
         return f"{base}/p/{project_slug}/monitoring/project-total/{scope_ref}"
     if scope_type == SCOPE_EVENT_TYPE:
         return f"{base}/p/{project_slug}/monitoring/event-type/{scope_ref}"
+    if scope_type == SCOPE_SCHEMA_DRIFT:
+        return None
     return f"{base}/p/{project_slug}/monitoring/event/{scope_ref}"
 
 
@@ -1008,9 +1015,50 @@ def _get_latest_active_anomalies(
     }
 
 
+def _trim_alert_text(value: str | None, *, max_length: int = 500) -> str | None:
+    if value is None or len(value) <= max_length:
+        return value
+    return value[: max_length - 3] + "..."
+
+
+def _get_active_schema_drift_candidates(
+    session: Session,
+    config: ScanConfig,
+) -> dict[tuple[str, str], SchemaDriftAlertCandidate]:
+    retention_cutoff = datetime.now(UTC) - timedelta(days=30)
+    candidates: dict[tuple[str, str], SchemaDriftAlertCandidate] = {}
+    for drift in session.execute(
+        select(SchemaDrift)
+        .join(EventType, EventType.id == SchemaDrift.event_type_id)
+        .where(
+            EventType.project_id == config.project_id,
+            SchemaDrift.scan_config_id == config.id,
+            SchemaDrift.detected_at >= retention_cutoff,
+        )
+        .order_by(SchemaDrift.detected_at.desc())
+    ).scalars():
+        scope_ref = str(drift.id)
+        candidate = SchemaDriftAlertCandidate(
+            id=drift.id,
+            scope_type=SCOPE_SCHEMA_DRIFT,
+            scope_ref=scope_ref,
+            event_id=None,
+            event_type_id=drift.event_type_id,
+            bucket=drift.detected_at,
+            direction="spike",
+            actual_count=1,
+            expected_count=0.0,
+            drift_field=drift.field_name,
+            drift_type=drift.drift_type,
+            sample_value=_trim_alert_text(drift.sample_value),
+        )
+        candidates[(candidate.scope_type, candidate.scope_ref)] = candidate
+    return candidates
+
+
 def _build_alert_scope_names(
     session: Session,
-    anomalies: list[MetricAnomaly],
+    anomalies: list[AlertMatchCandidate],
 ) -> dict[tuple[str, str], str]:
     scope_names: dict[tuple[str, str], str] = {
         (SCOPE_PROJECT_TOTAL, anomaly.scope_ref): "All events"
@@ -1022,12 +1070,23 @@ def _build_alert_scope_names(
         anomaly.event_type_id for anomaly in anomalies if anomaly.event_type_id is not None
     }
     if event_type_ids:
+        event_type_names: dict[uuid.UUID, str] = {}
         for event_type_id, display_name, name in session.execute(
             select(EventType.id, EventType.display_name, EventType.name).where(
                 EventType.id.in_(event_type_ids)
             )
         ).all():
-            scope_names[(SCOPE_EVENT_TYPE, str(event_type_id))] = display_name or name
+            event_type_name = display_name or name
+            event_type_names[event_type_id] = event_type_name
+            scope_names[(SCOPE_EVENT_TYPE, str(event_type_id))] = event_type_name
+        for anomaly in anomalies:
+            if anomaly.scope_type != SCOPE_SCHEMA_DRIFT or anomaly.event_type_id is None:
+                continue
+            event_type_name = event_type_names.get(anomaly.event_type_id, "Schema")
+            drift_field = getattr(anomaly, "drift_field", None) or anomaly.scope_ref
+            scope_names[(SCOPE_SCHEMA_DRIFT, anomaly.scope_ref)] = (
+                f"{event_type_name}.{drift_field}"
+            )
 
     event_ids = {anomaly.event_id for anomaly in anomalies if anomaly.event_id is not None}
     if event_ids:
@@ -1074,7 +1133,7 @@ def _build_delivery_snapshot(
     project_slug: str,
     rule: AlertRule,
     destination: AlertDestination,
-    anomalies: list[MetricAnomaly],
+    anomalies: list[AlertMatchCandidate],
     scope_names: dict[tuple[str, str], str],
 ) -> dict[str, object]:
     return {
@@ -1106,6 +1165,9 @@ def _build_delivery_snapshot(
                     scope_type=anomaly.scope_type,
                     scope_ref=anomaly.scope_ref,
                 ),
+                "drift_field": getattr(anomaly, "drift_field", None),
+                "drift_type": getattr(anomaly, "drift_type", None),
+                "sample_value": getattr(anomaly, "sample_value", None),
             }
             for anomaly in anomalies
         ],
@@ -1118,14 +1180,16 @@ def _prepare_alert_deliveries(
     *,
     scan_job_id: uuid.UUID | None,
 ) -> list[uuid.UUID]:
-    active_anomalies = _get_latest_active_anomalies(session, config)
+    active_candidates: dict[tuple[str, str], AlertMatchCandidate] = {}
+    active_candidates.update(_get_latest_active_anomalies(session, config))
+    active_candidates.update(_get_active_schema_drift_candidates(session, config))
     destinations = _load_enabled_alert_destinations(session, config.project_id)
     if not destinations:
         return []
 
     now = datetime.now(UTC)
     project_slug = _get_project_slug(session, config.project_id)
-    scope_names = _build_alert_scope_names(session, list(active_anomalies.values()))
+    scope_names = _build_alert_scope_names(session, list(active_candidates.values()))
     delivery_ids: list[uuid.UUID] = []
 
     for destination in destinations:
@@ -1145,9 +1209,9 @@ def _prepare_alert_deliveries(
             }
 
             matched_anomalies = [
-                anomaly
-                for key, anomaly in active_anomalies.items()
-                if _rule_matches_anomaly(rule, anomaly)
+                candidate
+                for candidate in active_candidates.values()
+                if _rule_matches_anomaly(rule, candidate)
             ]
             matched_keys = {
                 (anomaly.scope_type, anomaly.scope_ref) for anomaly in matched_anomalies
@@ -1158,7 +1222,7 @@ def _prepare_alert_deliveries(
                     existing_state.is_active = False
                     existing_state.closed_at = now
 
-            anomalies_to_send: list[MetricAnomaly] = []
+            anomalies_to_send: list[AlertMatchCandidate] = []
             for anomaly in matched_anomalies:
                 key = (anomaly.scope_type, anomaly.scope_ref)
                 current_state = existing_states.get(key)
@@ -1255,6 +1319,9 @@ def _prepare_alert_deliveries(
                             scope_type=anomaly.scope_type,
                             scope_ref=anomaly.scope_ref,
                         ),
+                        drift_field=getattr(anomaly, "drift_field", None),
+                        drift_type=getattr(anomaly, "drift_type", None),
+                        sample_value=getattr(anomaly, "sample_value", None),
                     )
                 )
             delivery_ids.append(delivery.id)

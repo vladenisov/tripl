@@ -400,6 +400,7 @@ export interface AlertRule {
   include_project_total: boolean
   include_event_types: boolean
   include_events: boolean
+  include_schema_drifts: boolean
   notify_on_spike: boolean
   notify_on_drop: boolean
   min_percent_delta: number
@@ -446,11 +447,14 @@ export interface AlertDestination {
 
 export interface SimulatedRuleFiring {
   anomaly_id: string
-  scope_type: 'project_total' | 'event_type' | 'event'
+  scope_type: 'project_total' | 'event_type' | 'event' | 'schema'
   scope_ref: string
   scope_name: string
   event_type_id: string | null
   event_id: string | null
+  drift_field: string | null
+  drift_type: string | null
+  sample_value: string | null
   bucket: string
   direction: 'spike' | 'drop'
   actual_count: number
@@ -474,7 +478,7 @@ export interface AlertRuleSimulateResponse {
 export interface AlertDeliveryItem {
   id: string
   delivery_id: string
-  scope_type: 'project_total' | 'event_type' | 'event'
+  scope_type: 'project_total' | 'event_type' | 'event' | 'schema'
   scope_ref: string
   scope_name: string
   event_type_id: string | null
@@ -487,6 +491,9 @@ export interface AlertDeliveryItem {
   percent_delta: number
   details_path: string | null
   monitoring_path: string | null
+  drift_field: string | null
+  drift_type: string | null
+  sample_value: string | null
 }
 
 export interface AlertDelivery {

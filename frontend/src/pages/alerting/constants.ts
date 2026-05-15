@@ -28,6 +28,7 @@ export type RuleFormState = {
   include_project_total: boolean
   include_event_types: boolean
   include_events: boolean
+  include_schema_drifts: boolean
   notify_on_spike: boolean
   notify_on_drop: boolean
   min_percent_delta: number
@@ -93,6 +94,10 @@ export const ITEM_TEMPLATE_VARIABLE_OPTIONS = [
   { name: 'monitoring_url', description: 'Monitoring URL' },
   { name: 'details_line', description: 'Rendered details line with leading newline when URL exists' },
   { name: 'monitoring_line', description: 'Rendered monitoring line with leading newline when URL exists' },
+  { name: 'drift_field', description: 'Schema drift field name' },
+  { name: 'drift_type', description: 'Schema drift type' },
+  { name: 'sample_value', description: 'Schema drift sample value' },
+  { name: 'drift_line', description: 'Rendered schema drift line with leading newline when drift context exists' },
 ] as const
 
 export const DEFAULT_MESSAGE_TEMPLATES: Record<AlertMessageFormat, string> = {
@@ -131,10 +136,10 @@ export const DEFAULT_MESSAGE_TEMPLATES: Record<AlertMessageFormat, string> = {
 }
 
 export const DEFAULT_ITEMS_TEMPLATES: Record<AlertMessageFormat, string> = {
-  plain: '- ${scope_label} ${scope_name}: ${direction_label}, actual=${actual_count}, expected=${expected_count}, delta=${absolute_delta} (${percent_delta}%)${details_line}${monitoring_line}',
-  slack_mrkdwn: '- ${scope_label} ${scope_name}: ${direction_label}, actual=${actual_count}, expected=${expected_count}, delta=${absolute_delta} (${percent_delta}%)${details_line}${monitoring_line}',
-  telegram_html: '- ${scope_label} ${scope_name}: ${direction_label}, actual=${actual_count}, expected=${expected_count}, delta=${absolute_delta} (${percent_delta}%)${details_line}${monitoring_line}',
-  telegram_markdownv2: '\\- ${scope_label} ${scope_name}: ${direction_label}, actual=${actual_count}, expected=${expected_count}, delta=${absolute_delta} \\(${percent_delta}%\\)${details_line}${monitoring_line}',
+  plain: '- ${scope_label} ${scope_name}: ${direction_label}, actual=${actual_count}, expected=${expected_count}, delta=${absolute_delta} (${percent_delta}%)${drift_line}${details_line}${monitoring_line}',
+  slack_mrkdwn: '- ${scope_label} ${scope_name}: ${direction_label}, actual=${actual_count}, expected=${expected_count}, delta=${absolute_delta} (${percent_delta}%)${drift_line}${details_line}${monitoring_line}',
+  telegram_html: '- ${scope_label} ${scope_name}: ${direction_label}, actual=${actual_count}, expected=${expected_count}, delta=${absolute_delta} (${percent_delta}%)${drift_line}${details_line}${monitoring_line}',
+  telegram_markdownv2: '\\- ${scope_label} ${scope_name}: ${direction_label}, actual=${actual_count}, expected=${expected_count}, delta=${absolute_delta} \\(${percent_delta}%\\)${drift_line}${details_line}${monitoring_line}',
 }
 
 export const MESSAGE_FORMAT_OPTIONS: Record<'slack' | 'telegram', { value: AlertMessageFormat; label: string }[]> = {
@@ -220,6 +225,7 @@ export function defaultRuleForm(): RuleFormState {
     include_project_total: true,
     include_event_types: true,
     include_events: true,
+    include_schema_drifts: false,
     notify_on_spike: true,
     notify_on_drop: true,
     min_percent_delta: 0,
@@ -240,6 +246,7 @@ export function ruleToForm(rule: AlertRule): RuleFormState {
     include_project_total: rule.include_project_total,
     include_event_types: rule.include_event_types,
     include_events: rule.include_events,
+    include_schema_drifts: rule.include_schema_drifts,
     notify_on_spike: rule.notify_on_spike,
     notify_on_drop: rule.notify_on_drop,
     min_percent_delta: rule.min_percent_delta,
@@ -297,6 +304,7 @@ export function scopeSummary(rule: AlertRule) {
     rule.include_project_total ? 'total' : null,
     rule.include_event_types ? 'groups' : null,
     rule.include_events ? 'events' : null,
+    rule.include_schema_drifts ? 'schema' : null,
   ].filter(Boolean).join(', ')
 }
 

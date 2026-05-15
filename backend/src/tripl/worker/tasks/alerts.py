@@ -62,9 +62,17 @@ def _build_item_template_context(
         "project_total": "Project total",
         "event_type": "Event type",
         "event": "Event",
+        "schema": "Schema drift",
     }.get(item.scope_type, item.scope_type)
     details_line = f"\n  details: {item.details_path}" if item.details_path else ""
     monitoring_line = f"\n  monitoring: {item.monitoring_path}" if item.monitoring_path else ""
+    drift_parts = [
+        item.drift_type or "",
+        item.drift_field or "",
+        f"sample={item.sample_value}" if item.sample_value else "",
+    ]
+    drift_text = " ".join(part for part in drift_parts if part)
+    drift_line = f"\n  drift: {drift_text}" if drift_text else ""
 
     # Explainability context — sparkline + top movers. Lazy: only query when
     # we have both a session and a scan_config_id (i.e., the live send path).
@@ -102,6 +110,10 @@ def _build_item_template_context(
         "monitoring_url": escape_alert_value(item.monitoring_path or "", message_format),
         "details_line": escape_alert_value(details_line, message_format),
         "monitoring_line": escape_alert_value(monitoring_line, message_format),
+        "drift_field": escape_alert_value(item.drift_field or "", message_format),
+        "drift_type": escape_alert_value(item.drift_type or "", message_format),
+        "sample_value": escape_alert_value(item.sample_value or "", message_format),
+        "drift_line": escape_alert_value(drift_line, message_format),
         "sparkline": escape_alert_value(sparkline, message_format),
         "top_movers": escape_alert_value(top_movers, message_format),
         "sparkline_line": escape_alert_value(sparkline_line, message_format),

@@ -24,6 +24,7 @@ from tripl.models.project import Project
 from tripl.models.project_anomaly_settings import ProjectAnomalySettings
 from tripl.models.scan_config import ScanConfig
 from tripl.models.scan_job import ScanJob, ScanJobStatus
+from tripl.models.schema_drift import SchemaDrift
 from tripl.worker.adapters.base import ColumnInfo
 from tripl.worker.analyzers.event_generator import GenerationResult
 from tripl.worker.tasks import metrics
@@ -1042,6 +1043,63 @@ def test_breakdown_anomalies_do_not_queue_alert_deliveries(
 
         assert delivery_ids == []
         assert session.execute(select(AlertDelivery)).scalars().all() == []
+
+
+def test_schema_drifts_queue_alert_deliveries(
+    sync_session_factory: sessionmaker[Session],
+) -> None:
+    with sync_session_factory() as session:
+        config, event_type, _event = _seed_anomaly_scan_state(session)
+        destination = AlertDestination(
+            id=uuid.uuid4(),
+            project_id=config.project_id,
+            type="slack",
+            name="Main Slack",
+            enabled=True,
+            webhook_url_encrypted="secret",
+        )
+        rule = AlertRule(
+            id=uuid.uuid4(),
+            destination_id=destination.id,
+            name="Schema Rule",
+            enabled=True,
+            include_project_total=False,
+            include_event_types=False,
+            include_events=False,
+            include_schema_drifts=True,
+            notify_on_spike=True,
+            notify_on_drop=False,
+            min_percent_delta=999,
+            min_absolute_delta=999,
+            min_expected_count=999,
+            cooldown_minutes=1440,
+        )
+        drift = SchemaDrift(
+            id=uuid.uuid4(),
+            event_type_id=event_type.id,
+            scan_config_id=config.id,
+            field_name="payload.extra",
+            drift_type="new_field",
+            observed_type="String",
+            declared_type=None,
+            sample_value="TASK-123",
+            detected_at=datetime.now(UTC),
+        )
+        session.add_all([destination, rule, drift])
+        session.commit()
+
+        delivery_ids = metrics._prepare_alert_deliveries(session, config, scan_job_id=None)
+
+        assert len(delivery_ids) == 1
+        delivery = session.execute(select(AlertDelivery)).scalar_one()
+        item = session.execute(select(AlertDeliveryItem)).scalar_one()
+        assert delivery.matched_count == 1
+        assert item.scope_type == "schema"
+        assert item.scope_ref == str(drift.id)
+        assert item.scope_name == f"{event_type.display_name}.payload.extra"
+        assert item.drift_field == "payload.extra"
+        assert item.drift_type == "new_field"
+        assert item.sample_value == "TASK-123"
 
 
 def test_bump_event_last_seen_is_monotonic_and_ignores_zero(

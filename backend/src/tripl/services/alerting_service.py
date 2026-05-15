@@ -8,7 +8,12 @@ from sqlalchemy.orm import selectinload
 from sqlalchemy.sql import Select
 
 from tripl.alert_templates import validate_template_configuration
-from tripl.alerting_matching import rule_matches_anomaly, simulate_rule_firings
+from tripl.alerting_matching import (
+    AlertMatchCandidate,
+    SchemaDriftAlertCandidate,
+    rule_matches_anomaly,
+    simulate_rule_firings,
+)
 from tripl.alerting_validation import (
     validate_slack_webhook_url,
     validate_telegram_bot_token,
@@ -26,6 +31,7 @@ from tripl.models.event_type import EventType
 from tripl.models.metric_anomaly import MetricAnomaly
 from tripl.models.project import Project
 from tripl.models.scan_config import ScanConfig
+from tripl.models.schema_drift import SchemaDrift
 from tripl.schemas.alerting import (
     AlertDeliveryDetailResponse,
     AlertDeliveryListResponse,
@@ -44,6 +50,7 @@ from tripl.schemas.alerting import (
 
 SIMULATE_NOISY_THRESHOLD = 50
 SIMULATE_MAX_DAYS = 90
+SCOPE_SCHEMA_DRIFT = "schema"
 
 
 def _encrypt_secret(value: str | None) -> str | None:
@@ -164,6 +171,7 @@ def _rule_to_response(rule: AlertRule) -> AlertRuleResponse:
         include_project_total=rule.include_project_total,
         include_event_types=rule.include_event_types,
         include_events=rule.include_events,
+        include_schema_drifts=rule.include_schema_drifts,
         notify_on_spike=rule.notify_on_spike,
         notify_on_drop=rule.notify_on_drop,
         min_percent_delta=rule.min_percent_delta,
@@ -372,6 +380,7 @@ async def create_rule(
         include_project_total=data.include_project_total,
         include_event_types=data.include_event_types,
         include_events=data.include_events,
+        include_schema_drifts=data.include_schema_drifts,
         notify_on_spike=data.notify_on_spike,
         notify_on_drop=data.notify_on_drop,
         min_percent_delta=data.min_percent_delta,
@@ -620,9 +629,15 @@ async def get_delivery(
     )
 
 
+def _trim_alert_text(value: str | None, *, max_length: int = 500) -> str | None:
+    if value is None or len(value) <= max_length:
+        return value
+    return value[: max_length - 3] + "..."
+
+
 async def _build_scope_name_map(
     session: AsyncSession,
-    anomalies: list[MetricAnomaly],
+    anomalies: list[AlertMatchCandidate],
 ) -> dict[tuple[str, str], str]:
     event_ids = {anomaly.event_id for anomaly in anomalies if anomaly.event_id is not None}
     event_type_ids = {
@@ -630,6 +645,7 @@ async def _build_scope_name_map(
     }
 
     names: dict[tuple[str, str], str] = {}
+    event_type_names: dict[uuid.UUID, str] = {}
     if event_ids:
         rows = await session.execute(
             select(Event.id, Event.name).where(Event.id.in_(event_ids))
@@ -641,8 +657,57 @@ async def _build_scope_name_map(
             select(EventType.id, EventType.display_name).where(EventType.id.in_(event_type_ids))
         )
         for event_type_id, display_name in rows.all():
+            event_type_names[event_type_id] = display_name
             names[("event_type", str(event_type_id))] = display_name
+    for anomaly in anomalies:
+        if anomaly.scope_type != SCOPE_SCHEMA_DRIFT or anomaly.event_type_id is None:
+            continue
+        event_type_name = event_type_names.get(anomaly.event_type_id, "Schema")
+        drift_field = getattr(anomaly, "drift_field", None) or anomaly.scope_ref
+        names[(SCOPE_SCHEMA_DRIFT, anomaly.scope_ref)] = f"{event_type_name}.{drift_field}"
     return names
+
+
+async def _load_schema_drift_candidates(
+    session: AsyncSession,
+    *,
+    project_id: uuid.UUID,
+    window_from: datetime,
+    window_to: datetime,
+) -> list[SchemaDriftAlertCandidate]:
+    rows = (
+        (
+            await session.execute(
+                select(SchemaDrift)
+                .join(EventType, EventType.id == SchemaDrift.event_type_id)
+                .where(
+                    EventType.project_id == project_id,
+                    SchemaDrift.detected_at >= window_from,
+                    SchemaDrift.detected_at < window_to,
+                )
+                .order_by(SchemaDrift.detected_at)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    return [
+        SchemaDriftAlertCandidate(
+            id=drift.id,
+            scope_type=SCOPE_SCHEMA_DRIFT,
+            scope_ref=str(drift.id),
+            event_id=None,
+            event_type_id=drift.event_type_id,
+            bucket=drift.detected_at,
+            direction="spike",
+            actual_count=1,
+            expected_count=0.0,
+            drift_field=drift.field_name,
+            drift_type=drift.drift_type,
+            sample_value=_trim_alert_text(drift.sample_value),
+        )
+        for drift in rows
+    ]
 
 
 async def simulate_rule(
@@ -669,7 +734,7 @@ async def simulate_rule(
     window_to = datetime.now(UTC)
     window_from = window_to - timedelta(days=days)
 
-    anomalies = list(
+    metric_anomalies = list(
         (
             await session.execute(
                 select(MetricAnomaly)
@@ -685,6 +750,13 @@ async def simulate_rule(
         .scalars()
         .all()
     )
+    schema_candidates = await _load_schema_drift_candidates(
+        session,
+        project_id=project.id,
+        window_from=window_from,
+        window_to=window_to,
+    )
+    anomalies: list[AlertMatchCandidate] = [*metric_anomalies, *schema_candidates]
 
     matched_before_cooldown = sum(
         1 for anomaly in anomalies if rule_matches_anomaly(rule, anomaly)
@@ -713,6 +785,9 @@ async def simulate_rule(
                 scope_name=scope_name,
                 event_type_id=anomaly.event_type_id,
                 event_id=anomaly.event_id,
+                drift_field=getattr(anomaly, "drift_field", None),
+                drift_type=getattr(anomaly, "drift_type", None),
+                sample_value=getattr(anomaly, "sample_value", None),
                 bucket=anomaly.bucket,
                 direction=anomaly.direction,
                 actual_count=anomaly.actual_count,
