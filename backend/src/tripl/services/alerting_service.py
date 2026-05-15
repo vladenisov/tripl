@@ -1,5 +1,5 @@
 import uuid
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
 
 from fastapi import HTTPException
 from sqlalchemy import delete, func, select
@@ -8,6 +8,7 @@ from sqlalchemy.orm import selectinload
 from sqlalchemy.sql import Select
 
 from tripl.alert_templates import validate_template_configuration
+from tripl.alerting_matching import rule_matches_anomaly, simulate_rule_firings
 from tripl.alerting_validation import (
     validate_slack_webhook_url,
     validate_telegram_bot_token,
@@ -22,6 +23,7 @@ from tripl.models.alert_rule_filter import AlertRuleFilter
 from tripl.models.alert_rule_state import AlertRuleState
 from tripl.models.event import Event
 from tripl.models.event_type import EventType
+from tripl.models.metric_anomaly import MetricAnomaly
 from tripl.models.project import Project
 from tripl.models.scan_config import ScanConfig
 from tripl.schemas.alerting import (
@@ -35,8 +37,13 @@ from tripl.schemas.alerting import (
     AlertRuleFilterPayload,
     AlertRuleFilterResponse,
     AlertRuleResponse,
+    AlertRuleSimulateResponse,
     AlertRuleUpdate,
+    SimulatedRuleFiring,
 )
+
+SIMULATE_NOISY_THRESHOLD = 50
+SIMULATE_MAX_DAYS = 90
 
 
 def _encrypt_secret(value: str | None) -> str | None:
@@ -610,4 +617,119 @@ async def get_delivery(
             scan_name=scan_name,
         ).model_dump(),
         items=items,
+    )
+
+
+async def _build_scope_name_map(
+    session: AsyncSession,
+    anomalies: list[MetricAnomaly],
+) -> dict[tuple[str, str], str]:
+    event_ids = {anomaly.event_id for anomaly in anomalies if anomaly.event_id is not None}
+    event_type_ids = {
+        anomaly.event_type_id for anomaly in anomalies if anomaly.event_type_id is not None
+    }
+
+    names: dict[tuple[str, str], str] = {}
+    if event_ids:
+        rows = await session.execute(
+            select(Event.id, Event.name).where(Event.id.in_(event_ids))
+        )
+        for event_id, name in rows.all():
+            names[("event", str(event_id))] = name
+    if event_type_ids:
+        rows = await session.execute(
+            select(EventType.id, EventType.display_name).where(EventType.id.in_(event_type_ids))
+        )
+        for event_type_id, display_name in rows.all():
+            names[("event_type", str(event_type_id))] = display_name
+    return names
+
+
+async def simulate_rule(
+    session: AsyncSession,
+    slug: str,
+    destination_id: uuid.UUID,
+    rule_id: uuid.UUID,
+    days: int,
+) -> AlertRuleSimulateResponse:
+    if days <= 0 or days > SIMULATE_MAX_DAYS:
+        raise HTTPException(
+            status_code=422,
+            detail=f"days must be between 1 and {SIMULATE_MAX_DAYS}",
+        )
+
+    project = await _get_project(session, slug)
+    _destination, rule = await _get_rule(
+        session,
+        project_id=project.id,
+        destination_id=destination_id,
+        rule_id=rule_id,
+    )
+
+    window_to = datetime.now(UTC)
+    window_from = window_to - timedelta(days=days)
+
+    anomalies = list(
+        (
+            await session.execute(
+                select(MetricAnomaly)
+                .join(ScanConfig, ScanConfig.id == MetricAnomaly.scan_config_id)
+                .where(
+                    ScanConfig.project_id == project.id,
+                    MetricAnomaly.bucket >= window_from,
+                    MetricAnomaly.bucket < window_to,
+                )
+                .order_by(MetricAnomaly.bucket)
+            )
+        )
+        .scalars()
+        .all()
+    )
+
+    matched_before_cooldown = sum(
+        1 for anomaly in anomalies if rule_matches_anomaly(rule, anomaly)
+    )
+    fired = simulate_rule_firings(rule, anomalies)
+
+    scope_names = await _build_scope_name_map(session, fired)
+
+    firings: list[SimulatedRuleFiring] = []
+    for anomaly in fired:
+        absolute_delta = abs(anomaly.actual_count - anomaly.expected_count)
+        percent_delta = (
+            absolute_delta / anomaly.expected_count * 100
+            if anomaly.expected_count > 0
+            else 0.0
+        )
+        scope_name = scope_names.get(
+            (anomaly.scope_type, anomaly.scope_ref),
+            anomaly.scope_ref,
+        )
+        firings.append(
+            SimulatedRuleFiring(
+                anomaly_id=anomaly.id,
+                scope_type=anomaly.scope_type,
+                scope_ref=anomaly.scope_ref,
+                scope_name=scope_name,
+                event_type_id=anomaly.event_type_id,
+                event_id=anomaly.event_id,
+                bucket=anomaly.bucket,
+                direction=anomaly.direction,
+                actual_count=anomaly.actual_count,
+                expected_count=anomaly.expected_count,
+                absolute_delta=absolute_delta,
+                percent_delta=percent_delta,
+            )
+        )
+
+    return AlertRuleSimulateResponse(
+        rule_id=rule.id,
+        rule_name=rule.name,
+        days=days,
+        window_from=window_from,
+        window_to=window_to,
+        anomalies_considered=len(anomalies),
+        matched_before_cooldown=matched_before_cooldown,
+        firings=firings,
+        noisy=len(firings) > SIMULATE_NOISY_THRESHOLD,
     )

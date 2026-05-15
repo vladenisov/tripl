@@ -21,6 +21,7 @@ from tripl.schemas.event import (
     EventUpdate,
 )
 from tripl.services.project_service import get_project_id_by_slug
+from tripl.services.schema_drift_service import get_drift_counts_by_event_type
 
 
 async def _validate_field_values(
@@ -100,7 +101,16 @@ async def list_events(
         .offset(offset)
         .limit(limit)
     )
-    return list(result.scalars().all()), total
+    events = list(result.scalars().all())
+
+    # Project SchemaDrift counts (per event_type) onto each event so the API
+    # ships drift signal alongside the catalog row without an extra round-trip.
+    event_type_ids = list({event.event_type_id for event in events})
+    drift_counts = await get_drift_counts_by_event_type(session, project_id, event_type_ids)
+    for event in events:
+        event.drift_count = drift_counts.get(event.event_type_id, 0)  # type: ignore[attr-defined]
+
+    return events, total
 
 
 async def _get_next_event_order(session: AsyncSession, project_id: uuid.UUID) -> int:

@@ -5,6 +5,7 @@ import type {
   AlertDestination,
   AlertRule,
   AlertRuleFilterPayload,
+  AlertRuleSimulateResponse,
 } from '../types'
 
 export const alertingApi = {
@@ -85,6 +86,12 @@ export const alertingApi = {
 
   deleteRule: (slug: string, destinationId: string, ruleId: string) =>
     api.del(`/projects/${slug}/alert-destinations/${destinationId}/rules/${ruleId}`),
+
+  simulateRule: (slug: string, destinationId: string, ruleId: string, days: number) =>
+    api.post<AlertRuleSimulateResponse>(
+      `/projects/${slug}/alert-destinations/${destinationId}/rules/${ruleId}/simulate?days=${days}`,
+      undefined,
+    ),
 
   listDeliveries: (
     slug: string,

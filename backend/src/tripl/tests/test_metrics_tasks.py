@@ -1088,3 +1088,113 @@ def test_bump_event_last_seen_is_monotonic_and_ignores_zero(
         )
         session.commit()
         assert _current_last_seen() == later
+
+
+def _make_event_type_with_fields(
+    session: Session,
+    config: ScanConfig,
+    *,
+    fields: list[tuple[str, str]],
+) -> EventType:
+    from tripl.models.field_definition import FieldDefinition
+
+    et = EventType(
+        id=uuid.uuid4(),
+        project_id=config.project_id,
+        name="drift_subject",
+        display_name="Drift Subject",
+        description="",
+    )
+    session.add(et)
+    session.flush()
+    for name, field_type in fields:
+        session.add(
+            FieldDefinition(
+                id=uuid.uuid4(),
+                event_type_id=et.id,
+                name=name,
+                display_name=name,
+                field_type=field_type,
+                is_required=False,
+                description="",
+            )
+        )
+    session.flush()
+    session.refresh(et)
+    return et
+
+
+def test_diff_event_type_schema_detects_three_drift_kinds(
+    sync_session_factory: sessionmaker[Session],
+) -> None:
+    with sync_session_factory() as session:
+        config = _create_scan_config(session)
+        et = _make_event_type_with_fields(
+            session,
+            config,
+            fields=[
+                # Both auto-create types — type_changed only fires within {string,json}.
+                ("payload", "string"),
+                ("user_id", "string"),
+                # User-curated type: must NOT trip type_changed even if observed mismatches.
+                ("amount", "number"),
+                # Declared but no longer observed → missing_field.
+                ("legacy", "string"),
+            ],
+        )
+        columns = [
+            # Same column, but now CH reports JSON → type_changed (string → json).
+            ColumnInfo(name="payload", type_name="JSON"),
+            # Unchanged.
+            ColumnInfo(name="user_id", type_name="String"),
+            # User-curated amount: CH still says String — must NOT drift.
+            ColumnInfo(name="amount", type_name="String"),
+            # Not declared yet → new_field.
+            ColumnInfo(name="device_id", type_name="String"),
+            # In skip set — ignored entirely.
+            ColumnInfo(name="time", type_name="DateTime"),
+        ]
+
+        drift_items = metrics._diff_event_type_schema(
+            et,
+            columns,
+            skip_columns={"time"},
+        )
+
+        triples = sorted(
+            (item["field_name"], item["drift_type"]) for item in drift_items
+        )
+        assert triples == [
+            ("device_id", "new_field"),
+            ("legacy", "missing_field"),
+            ("payload", "type_changed"),
+        ]
+
+        metrics._upsert_schema_drifts(
+            session,
+            event_type_id=et.id,
+            scan_config_id=config.id,
+            drift_items=drift_items,
+        )
+        session.commit()
+
+        from tripl.models.schema_drift import SchemaDrift
+
+        rows = session.execute(
+            select(SchemaDrift).where(SchemaDrift.event_type_id == et.id)
+        ).scalars().all()
+        assert len(rows) == 3
+
+        # Re-running the diff/upsert must be idempotent (unique constraint
+        # collapses duplicates onto detected_at refresh).
+        metrics._upsert_schema_drifts(
+            session,
+            event_type_id=et.id,
+            scan_config_id=config.id,
+            drift_items=drift_items,
+        )
+        session.commit()
+        rows = session.execute(
+            select(SchemaDrift).where(SchemaDrift.event_type_id == et.id)
+        ).scalars().all()
+        assert len(rows) == 3

@@ -20,6 +20,7 @@ from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.orm import Session
 
 from tripl import cache
+from tripl.alerting_matching import rule_matches_anomaly
 from tripl.config import settings
 from tripl.json_paths import (
     build_json_value,
@@ -31,7 +32,6 @@ from tripl.models.alert_delivery import AlertDelivery, AlertDeliveryStatus
 from tripl.models.alert_delivery_item import AlertDeliveryItem
 from tripl.models.alert_destination import AlertDestination
 from tripl.models.alert_rule import AlertRule
-from tripl.models.alert_rule_filter import AlertRuleFilter
 from tripl.models.alert_rule_state import AlertRuleState
 from tripl.models.data_source import DataSource
 from tripl.models.event import Event
@@ -45,6 +45,7 @@ from tripl.models.project import Project
 from tripl.models.project_anomaly_settings import ProjectAnomalySettings
 from tripl.models.scan_config import ScanConfig
 from tripl.models.scan_job import ScanJob, ScanJobStatus
+from tripl.models.schema_drift import SchemaDrift
 from tripl.worker.adapters.base import BaseAdapter, ColumnInfo
 from tripl.worker.analyzers.anomaly_detector import (
     SCOPE_EVENT,
@@ -216,6 +217,147 @@ def _fail_stale_active_scan_job(
     )
     session.commit()
     return True
+
+
+# Logical FieldDefinition.field_type values that `_ensure_event_type_with_fields`
+# can create automatically. type_changed drift only fires when the previously
+# auto-created type disagrees with what we'd auto-create now — user-curated
+# field_types ("enum", "number", "boolean", "url") are left alone, since
+# choosing them is an intentional schema decision, not drift.
+_AUTO_FIELD_TYPES = {"string", "json"}
+
+
+def _infer_logical_field_type(col: ColumnInfo) -> str:
+    return "json" if _is_json_type(col.type_name) else "string"
+
+
+def _diff_event_type_schema(
+    event_type: EventType,
+    columns: list[ColumnInfo],
+    skip_columns: set[str],
+) -> list[dict[str, object]]:
+    """Return drift items comparing observed columns vs declared FieldDefinitions.
+
+    drift_type ∈ {new_field, missing_field, type_changed}. Skip columns
+    (event_type_column, time_column) are excluded from comparison.
+    """
+    observed = {col.name: col for col in columns if col.name not in skip_columns}
+    declared = {fd.name: fd for fd in event_type.field_definitions}
+
+    drift_items: list[dict[str, object]] = []
+    for name, col in observed.items():
+        if name in declared:
+            continue
+        drift_items.append(
+            {
+                "field_name": name,
+                "drift_type": "new_field",
+                "observed_type": col.type_name,
+                "declared_type": None,
+            }
+        )
+
+    for name, fd in declared.items():
+        if name in observed:
+            continue
+        drift_items.append(
+            {
+                "field_name": name,
+                "drift_type": "missing_field",
+                "observed_type": None,
+                "declared_type": fd.field_type,
+            }
+        )
+
+    for name, col in observed.items():
+        definition = declared.get(name)
+        if definition is None or definition.field_type not in _AUTO_FIELD_TYPES:
+            continue
+        inferred = _infer_logical_field_type(col)
+        if inferred != definition.field_type:
+            drift_items.append(
+                {
+                    "field_name": name,
+                    "drift_type": "type_changed",
+                    "observed_type": col.type_name,
+                    "declared_type": definition.field_type,
+                }
+            )
+
+    return drift_items
+
+
+def _upsert_schema_drifts(
+    session: Session,
+    *,
+    event_type_id: uuid.UUID,
+    scan_config_id: uuid.UUID | None,
+    drift_items: list[dict[str, object]],
+) -> None:
+    if not drift_items:
+        return
+
+    now = datetime.now(UTC)
+    rows = [
+        {
+            "id": uuid.uuid4(),
+            "event_type_id": event_type_id,
+            "scan_config_id": scan_config_id,
+            "field_name": item["field_name"],
+            "drift_type": item["drift_type"],
+            "observed_type": item["observed_type"],
+            "declared_type": item["declared_type"],
+            "sample_value": None,
+            "detected_at": now,
+        }
+        for item in drift_items
+    ]
+
+    if session.bind is not None and session.bind.dialect.name == "sqlite":
+        sqlite_stmt = sqlite_insert(SchemaDrift).values(rows)
+        sqlite_stmt = sqlite_stmt.on_conflict_do_update(
+            index_elements=["event_type_id", "field_name", "drift_type"],
+            set_={
+                "scan_config_id": sqlite_stmt.excluded.scan_config_id,
+                "observed_type": sqlite_stmt.excluded.observed_type,
+                "declared_type": sqlite_stmt.excluded.declared_type,
+                "detected_at": sqlite_stmt.excluded.detected_at,
+            },
+        )
+        session.execute(sqlite_stmt)
+        return
+
+    pg_stmt = pg_insert(SchemaDrift).values(rows)
+    pg_stmt = pg_stmt.on_conflict_do_update(
+        constraint="uq_schema_drift_event_type_field_kind",
+        set_={
+            "scan_config_id": pg_stmt.excluded.scan_config_id,
+            "observed_type": pg_stmt.excluded.observed_type,
+            "declared_type": pg_stmt.excluded.declared_type,
+            "detected_at": pg_stmt.excluded.detected_at,
+        },
+    )
+    session.execute(pg_stmt)
+
+
+def _detect_event_type_drift(
+    session: Session,
+    *,
+    existing_event_type: EventType | None,
+    columns: list[ColumnInfo],
+    skip_columns: set[str],
+    scan_config_id: uuid.UUID,
+) -> None:
+    """Diff existing event_type schema against observed columns, write drifts."""
+    if existing_event_type is None:
+        return
+    drift_items = _diff_event_type_schema(existing_event_type, columns, skip_columns)
+    _upsert_schema_drifts(
+        session,
+        event_type_id=existing_event_type.id,
+        scan_config_id=scan_config_id,
+        drift_items=drift_items,
+    )
 
 
 def _ensure_event_type_with_fields(
@@ -919,58 +1061,11 @@ def _load_enabled_alert_destinations(
     )
 
 
-def _rule_matches_anomaly(
-    rule: AlertRule,
-    anomaly: MetricAnomaly,
-) -> bool:
-    if anomaly.scope_type == SCOPE_PROJECT_TOTAL and not rule.include_project_total:
-        return False
-    if anomaly.scope_type == SCOPE_EVENT_TYPE and not rule.include_event_types:
-        return False
-    if anomaly.scope_type == SCOPE_EVENT and not rule.include_events:
-        return False
-    if anomaly.direction == "spike" and not rule.notify_on_spike:
-        return False
-    if anomaly.direction == "drop" and not rule.notify_on_drop:
-        return False
-    if anomaly.expected_count < rule.min_expected_count:
-        return False
-
-    absolute_delta = abs(anomaly.actual_count - anomaly.expected_count)
-    if absolute_delta < rule.min_absolute_delta:
-        return False
-
-    percent_delta = 0.0
-    if anomaly.expected_count > 0:
-        percent_delta = (absolute_delta / anomaly.expected_count) * 100
-    if percent_delta < rule.min_percent_delta:
-        return False
-
-    return all(_filter_matches_anomaly(filter_row, anomaly) for filter_row in rule.filters)
-
-
-def _filter_matches_anomaly(
-    filter_row: AlertRuleFilter,
-    anomaly: MetricAnomaly,
-) -> bool:
-    if filter_row.field == "event_type":
-        actual = str(anomaly.event_type_id) if anomaly.event_type_id is not None else None
-    elif filter_row.field == "event":
-        actual = str(anomaly.event_id) if anomaly.event_id is not None else None
-    elif filter_row.field == "direction":
-        actual = "up" if anomaly.direction == "spike" else "down"
-    else:
-        return True
-
-    if actual is None:
-        return True
-
-    values = set(filter_row.values or [])
-    if filter_row.operator in ("eq", "in"):
-        return actual in values
-    if filter_row.operator in ("ne", "not_in"):
-        return actual not in values
-    return True
+# Pure rule/anomaly matchers live in tripl.alerting_matching so the in-UI
+# simulator and the live pipeline use a single source of truth. Kept as an
+# alias here because the rest of this module references it via the private
+# name.
+_rule_matches_anomaly = rule_matches_anomaly
 
 
 def _build_delivery_snapshot(
@@ -1897,6 +1992,19 @@ def collect_metrics(
             )
 
             for et_name in group_values:
+                existing_et = session.execute(
+                    select(EventType).where(
+                        EventType.project_id == config.project_id,
+                        EventType.name == et_name,
+                    )
+                ).scalar_one_or_none()
+                _detect_event_type_drift(
+                    session,
+                    existing_event_type=existing_et,
+                    columns=columns,
+                    skip_columns=skip_cols,
+                    scan_config_id=config.id,
+                )
                 et = _ensure_event_type_with_fields(
                     session,
                     config.project_id,
@@ -1937,6 +2045,13 @@ def collect_metrics(
                 msg = f"EventType {config.event_type_id} not found"
                 raise ValueError(msg)
 
+            _detect_event_type_drift(
+                session,
+                existing_event_type=event_type,
+                columns=columns,
+                skip_columns=skip_cols,
+                scan_config_id=config.id,
+            )
             field_defs = {fd.name: fd for fd in event_type.field_definitions}
             single_result = generate_events(
                 session,

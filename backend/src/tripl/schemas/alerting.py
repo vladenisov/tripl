@@ -260,3 +260,32 @@ class AlertDeliveryDetailResponse(AlertDeliveryResponse):
 class AlertDeliveryListResponse(BaseModel):
     items: list[AlertDeliveryResponse]
     total: int
+
+
+class SimulatedRuleFiring(BaseModel):
+    """One virtual delivery the rule would have triggered during the window."""
+
+    anomaly_id: uuid.UUID
+    scope_type: str
+    scope_ref: str
+    scope_name: str
+    event_type_id: uuid.UUID | None
+    event_id: uuid.UUID | None
+    bucket: datetime
+    direction: str
+    actual_count: int
+    expected_count: float
+    absolute_delta: float
+    percent_delta: float
+
+
+class AlertRuleSimulateResponse(BaseModel):
+    rule_id: uuid.UUID
+    rule_name: str
+    days: int
+    window_from: datetime
+    window_to: datetime
+    anomalies_considered: int
+    matched_before_cooldown: int
+    firings: list[SimulatedRuleFiring]
+    noisy: bool

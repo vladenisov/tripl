@@ -180,11 +180,31 @@ export interface Event {
   reviewed: boolean
   archived: boolean
   last_seen_at: string | null
+  drift_count: number
   tags: EventTag[]
   field_values: EventFieldValue[]
   meta_values: EventMetaValue[]
   created_at: string
   updated_at: string
+}
+
+export type SchemaDriftType = 'new_field' | 'missing_field' | 'type_changed'
+
+export interface SchemaDrift {
+  id: string
+  event_type_id: string
+  scan_config_id: string | null
+  field_name: string
+  drift_type: SchemaDriftType
+  observed_type: string | null
+  declared_type: string | null
+  sample_value: string | null
+  detected_at: string
+}
+
+export interface SchemaDriftList {
+  items: SchemaDrift[]
+  total: number
 }
 
 // Slim shape returned by GET /events: drops nested event_type since the
@@ -422,6 +442,33 @@ export interface AlertDestination {
   rules: AlertRule[]
   created_at: string
   updated_at: string
+}
+
+export interface SimulatedRuleFiring {
+  anomaly_id: string
+  scope_type: 'project_total' | 'event_type' | 'event'
+  scope_ref: string
+  scope_name: string
+  event_type_id: string | null
+  event_id: string | null
+  bucket: string
+  direction: 'spike' | 'drop'
+  actual_count: number
+  expected_count: number
+  absolute_delta: number
+  percent_delta: number
+}
+
+export interface AlertRuleSimulateResponse {
+  rule_id: string
+  rule_name: string
+  days: number
+  window_from: string
+  window_to: string
+  anomalies_considered: number
+  matched_before_cooldown: number
+  firings: SimulatedRuleFiring[]
+  noisy: boolean
 }
 
 export interface AlertDeliveryItem {

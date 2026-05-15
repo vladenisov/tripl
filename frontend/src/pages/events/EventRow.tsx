@@ -16,6 +16,7 @@ import { TableCell, TableRow } from '@/components/ui/table'
 import { Chip } from '@/components/primitives/chip'
 import { Dot } from '@/components/primitives/dot'
 import { resolveMetaFieldHref } from '@/lib/metaFields'
+import { EventDriftBadge } from './EventDriftBadge'
 import { EventRowActions } from './EventRowActions'
 import { EventWindowMetricsCell } from './EventWindowMetricsCell'
 import { SignalLink } from './SignalLink'
@@ -135,6 +136,9 @@ export const EventRow = memo(function EventRow({
           >
             {ev.name}
           </button>
+          {ev.drift_count > 0 && (
+            <EventDriftBadge slug={slug} eventTypeId={ev.event_type_id} count={ev.drift_count} />
+          )}
         </div>
       </TableCell>
       {!hideType && (

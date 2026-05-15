@@ -872,3 +872,198 @@ def test_send_alert_delivery_falls_back_from_telegram_markdownv2_to_plain(
 
     Base.metadata.drop_all(engine)
     engine.dispose()
+
+
+def _build_rule(**overrides: object) -> AlertRule:
+    defaults: dict[str, object] = {
+        "id": uuid.uuid4(),
+        "destination_id": uuid.uuid4(),
+        "name": "Test rule",
+        "enabled": True,
+        "include_project_total": True,
+        "include_event_types": True,
+        "include_events": True,
+        "notify_on_spike": True,
+        "notify_on_drop": True,
+        "min_percent_delta": 0.0,
+        "min_absolute_delta": 0,
+        "min_expected_count": 0,
+        "cooldown_minutes": 60,
+        "message_template": None,
+        "items_template": None,
+        "message_format": "plain",
+    }
+    defaults.update(overrides)
+    rule = AlertRule(**defaults)
+    rule.filters = []
+    return rule
+
+
+def _build_anomaly(
+    bucket: datetime,
+    *,
+    scope_type: str = "event",
+    scope_ref: str | None = None,
+    direction: str = "spike",
+    actual_count: int = 100,
+    expected_count: float = 10.0,
+) -> object:
+    from tripl.models.metric_anomaly import MetricAnomaly
+
+    return MetricAnomaly(
+        id=uuid.uuid4(),
+        scan_config_id=uuid.uuid4(),
+        scope_type=scope_type,
+        scope_ref=scope_ref or str(uuid.uuid4()),
+        event_id=None,
+        event_type_id=None,
+        bucket=bucket,
+        actual_count=actual_count,
+        expected_count=expected_count,
+        stddev=1.0,
+        z_score=5.0,
+        direction=direction,
+    )
+
+
+def test_simulate_rule_firings_applies_cooldown_per_scope() -> None:
+    from tripl.alerting_matching import simulate_rule_firings
+
+    rule = _build_rule(cooldown_minutes=60)
+    scope_a = str(uuid.uuid4())
+    scope_b = str(uuid.uuid4())
+    base = datetime(2026, 5, 1, 12, tzinfo=UTC)
+
+    anomalies = [
+        # Scope A: 3 anomalies at 0, 30min, 90min → cooldown=60min admits 1st and 3rd.
+        _build_anomaly(base, scope_ref=scope_a),
+        _build_anomaly(base.replace(hour=12, minute=30), scope_ref=scope_a),
+        _build_anomaly(base.replace(hour=14), scope_ref=scope_a),
+        # Scope B: independent cooldown — 1 anomaly admitted.
+        _build_anomaly(base.replace(hour=12, minute=15), scope_ref=scope_b),
+    ]
+
+    fired = simulate_rule_firings(rule, anomalies)
+    fired_keys = [(a.scope_ref, a.bucket) for a in fired]
+    assert fired_keys == [
+        (scope_a, base),
+        (scope_b, base.replace(hour=12, minute=15)),
+        (scope_a, base.replace(hour=14)),
+    ]
+
+
+def test_simulate_rule_firings_skips_scope_disabled_by_rule() -> None:
+    from tripl.alerting_matching import simulate_rule_firings
+
+    rule = _build_rule(include_events=False, cooldown_minutes=0)
+    base = datetime(2026, 5, 1, 12, tzinfo=UTC)
+
+    anomalies = [
+        _build_anomaly(base, scope_type="event"),
+        _build_anomaly(base, scope_type="event_type"),
+    ]
+    fired = simulate_rule_firings(rule, anomalies)
+    assert [a.scope_type for a in fired] == ["event_type"]
+
+
+@pytest.mark.asyncio
+async def test_alert_rule_simulate_endpoint(client: AsyncClient) -> None:
+    from datetime import timedelta
+
+    from tripl.models.metric_anomaly import MetricAnomaly
+
+    project_resp = await client.post(
+        "/api/v1/projects",
+        json={"name": "Sim", "slug": "alert-sim"},
+    )
+    assert project_resp.status_code == 201
+    project_id = uuid.UUID(project_resp.json()["id"])
+
+    destination_resp = await client.post(
+        "/api/v1/projects/alert-sim/alert-destinations",
+        json={
+            "type": "slack",
+            "name": "Sim Slack",
+            "enabled": True,
+            "webhook_url": "https://hooks.slack.com/services/T1/B1/sim",
+        },
+    )
+    assert destination_resp.status_code == 201
+    destination_id = destination_resp.json()["id"]
+
+    rule_resp = await client.post(
+        f"/api/v1/projects/alert-sim/alert-destinations/{destination_id}/rules",
+        json={
+            "name": "Sim Rule",
+            "enabled": True,
+            "include_project_total": True,
+            "include_event_types": True,
+            "include_events": True,
+            "notify_on_spike": True,
+            "notify_on_drop": True,
+            "min_percent_delta": 0,
+            "min_absolute_delta": 0,
+            "min_expected_count": 0,
+            "cooldown_minutes": 60,
+            "filters": [],
+        },
+    )
+    assert rule_resp.status_code == 201
+    rule_id = rule_resp.json()["id"]
+
+    now = datetime.now(UTC)
+    scope_ref = str(uuid.uuid4())
+    async with TestSessionLocal() as session, session.begin():
+        data_source = DataSource(
+            id=uuid.uuid4(),
+            name="ds",
+            db_type="clickhouse",
+            host="h",
+            port=8123,
+            database_name="d",
+            username="u",
+            password_encrypted="",
+        )
+        session.add(data_source)
+        await session.flush()
+        scan = ScanConfig(
+            id=uuid.uuid4(),
+            data_source_id=data_source.id,
+            project_id=project_id,
+            name="sc",
+            base_query="SELECT 1",
+            cardinality_threshold=100,
+            interval="1h",
+        )
+        session.add(scan)
+        await session.flush()
+        # 4 anomalies, 0/15/30/60 min apart. Cooldown=60min admits #0 and #3.
+        for offset_min in (0, 15, 30, 60):
+            session.add(
+                MetricAnomaly(
+                    id=uuid.uuid4(),
+                    scan_config_id=scan.id,
+                    scope_type="event",
+                    scope_ref=scope_ref,
+                    event_id=None,
+                    event_type_id=None,
+                    bucket=now - timedelta(days=1) + timedelta(minutes=offset_min),
+                    actual_count=200,
+                    expected_count=20.0,
+                    stddev=1.0,
+                    z_score=10.0,
+                    direction="spike",
+                )
+            )
+
+    resp = await client.post(
+        f"/api/v1/projects/alert-sim/alert-destinations/"
+        f"{destination_id}/rules/{rule_id}/simulate?days=7"
+    )
+    assert resp.status_code == 200
+    payload = resp.json()
+    assert payload["anomalies_considered"] == 4
+    assert payload["matched_before_cooldown"] == 4
+    assert len(payload["firings"]) == 2
+    assert payload["noisy"] is False
+    assert payload["rule_id"] == rule_id

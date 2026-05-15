@@ -1,6 +1,6 @@
 import { useState } from "react"
 import { useMutation, useQueryClient } from "@tanstack/react-query"
-import { Pencil, Plus, Trash2 } from "lucide-react"
+import { History, Pencil, Plus, Trash2 } from "lucide-react"
 import type {
   AlertDestination,
   AlertRule,
@@ -18,6 +18,7 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Switch } from "@/components/ui/switch"
 import { FilterEditor } from "./FilterEditor"
+import { RuleReplayDialog } from "./RuleReplayDialog"
 import { TemplateEditor } from "./TemplateEditor"
 import {
   ITEM_TEMPLATE_VARIABLE_OPTIONS,
@@ -53,6 +54,7 @@ export function DestinationCard({
   const { confirm, dialog } = useConfirm()
   const [ruleDialogOpen, setRuleDialogOpen] = useState(false)
   const [editingRule, setEditingRule] = useState<AlertRule | null>(null)
+  const [replayingRule, setReplayingRule] = useState<AlertRule | null>(null)
   const [ruleForm, setRuleForm] = useState<RuleFormState>(defaultRuleForm())
 
   const updateDestinationMut = useMutation({
@@ -201,6 +203,16 @@ export function DestinationCard({
                         onCheckedChange={checked => alertingApi.updateRule(slug, destination.id, rule.id, { enabled: checked }).then(() => qc.invalidateQueries({ queryKey: ['alertDestinations', slug] }))}
                         aria-label={`Toggle ${rule.name}`}
                       />
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className="h-8 w-8"
+                        onClick={() => setReplayingRule(rule)}
+                        title="Replay last N days"
+                        aria-label={`Replay ${rule.name}`}
+                      >
+                        <History className="h-4 w-4" />
+                      </Button>
                       <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => openEditRule(rule)}>
                         <Pencil className="h-4 w-4" />
                       </Button>
@@ -394,6 +406,16 @@ export function DestinationCard({
           </form>
         </DialogContent>
       </Dialog>
+
+      {replayingRule && (
+        <RuleReplayDialog
+          open={!!replayingRule}
+          onOpenChange={(value) => { if (!value) setReplayingRule(null) }}
+          slug={slug}
+          destinationId={destination.id}
+          rule={replayingRule}
+        />
+      )}
     </>
   )
 }

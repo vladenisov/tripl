@@ -12,6 +12,7 @@ from tripl.schemas.alerting import (
     AlertDestinationUpdate,
     AlertRuleCreate,
     AlertRuleResponse,
+    AlertRuleSimulateResponse,
     AlertRuleUpdate,
 )
 from tripl.services import alerting_service
@@ -93,6 +94,20 @@ async def delete_alert_rule(
     rule_id: uuid.UUID,
 ) -> None:
     await alerting_service.delete_rule(session, slug, destination_id, rule_id)
+
+
+@router.post(
+    "/alert-destinations/{destination_id}/rules/{rule_id}/simulate",
+    response_model=AlertRuleSimulateResponse,
+)
+async def simulate_alert_rule(
+    session: SessionDep,
+    slug: str,
+    destination_id: uuid.UUID,
+    rule_id: uuid.UUID,
+    days: int = Query(7, ge=1, le=90),
+) -> AlertRuleSimulateResponse:
+    return await alerting_service.simulate_rule(session, slug, destination_id, rule_id, days)
 
 
 @router.get("/alert-deliveries", response_model=AlertDeliveryListResponse)

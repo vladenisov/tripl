@@ -88,6 +88,7 @@ class EventResponse(BaseModel):
     reviewed: bool
     archived: bool
     last_seen_at: datetime | None = None
+    drift_count: int = 0
     tags: list[EventTagResponse] = []
     field_values: list[EventFieldValueResponse] = []
     meta_values: list[EventMetaValueResponse] = []
@@ -115,6 +116,7 @@ class EventListItemResponse(BaseModel):
     reviewed: bool
     archived: bool
     last_seen_at: datetime | None = None
+    drift_count: int = 0
     tags: list[EventTagResponse] = []
     field_values: list[EventFieldValueResponse] = []
     meta_values: list[EventMetaValueResponse] = []
