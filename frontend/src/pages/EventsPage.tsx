@@ -73,6 +73,7 @@ import { ColumnFilter, FilterableHead, type ColumnFilterType } from './events/Co
 import { ColumnsMenu } from './events/ColumnsMenu'
 import { EventForm } from './events/EventForm'
 import { EventRow, type RowAction } from './events/EventRow'
+import { SavedViewsMenu } from './events/SavedViewsMenu'
 import {
   EMPTY_EVENT_TYPES,
   EMPTY_EVENT_WINDOW_METRICS,
@@ -92,6 +93,12 @@ import {
   mapLatestSignals,
   pickLatestSignal,
 } from './events/utils'
+import {
+  deleteEventsSavedView,
+  loadEventsSavedViews,
+  saveEventsSavedView,
+  type EventsSavedView,
+} from './events/savedViews'
 
 export default function EventsPage() {
   const { slug, tab: urlTab, eventId: urlEventId } = useParams<{ slug: string; tab?: string; eventId?: string }>()
@@ -228,6 +235,42 @@ export default function EventsPage() {
       return next
     })
   }, [])
+  const [savedViews, setSavedViews] = useState<EventsSavedView[]>([])
+  const [savedViewName, setSavedViewName] = useState('')
+  useEffect(() => {
+    if (!slug) {
+      setSavedViews([])
+      return
+    }
+    setSavedViews(loadEventsSavedViews(slug))
+  }, [slug])
+
+  const currentSavedViewParams = searchParams.toString()
+  const activeSavedViewName = useMemo(
+    () => savedViews.find(view => (
+      view.tab === activeTab && view.params === currentSavedViewParams
+    ))?.name ?? null,
+    [activeTab, currentSavedViewParams, savedViews],
+  )
+  const saveCurrentView = useCallback(() => {
+    if (!slug) return
+    const nextViews = saveEventsSavedView(slug, {
+      name: savedViewName,
+      tab: activeTab,
+      params: currentSavedViewParams,
+    })
+    setSavedViews(nextViews)
+    setSavedViewName('')
+  }, [activeTab, currentSavedViewParams, savedViewName, slug])
+  const applySavedView = useCallback((view: EventsSavedView) => {
+    if (!slug) return
+    const path = view.tab === 'all' ? `/p/${slug}/events` : `/p/${slug}/events/${view.tab}`
+    navigate(path + (view.params ? `?${view.params}` : ''), { replace: true })
+  }, [navigate, slug])
+  const deleteSavedView = useCallback((name: string) => {
+    if (!slug) return
+    setSavedViews(deleteEventsSavedView(slug, name))
+  }, [slug])
   const { confirm, dialog } = useConfirm()
 
   // Open event from URL param
@@ -1108,7 +1151,16 @@ export default function EventsPage() {
                 Clear filters
               </Button>
             )}
-            <div className="ml-auto">
+            <div className="ml-auto flex items-center gap-2">
+              <SavedViewsMenu
+                views={savedViews}
+                activeViewName={activeSavedViewName}
+                draftName={savedViewName}
+                onDraftNameChange={setSavedViewName}
+                onSave={saveCurrentView}
+                onApply={applySavedView}
+                onDelete={deleteSavedView}
+              />
               <ColumnsMenu
                 open={colMenuOpen}
                 onOpenChange={setColMenuOpen}

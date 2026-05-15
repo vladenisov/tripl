@@ -455,6 +455,7 @@ describe('ProjectSettingsPage', () => {
             include_project_total: true,
             include_event_types: true,
             include_events: true,
+            include_schema_drifts: false,
             notify_on_spike: true,
             notify_on_drop: false,
             min_percent_delta: 15,
