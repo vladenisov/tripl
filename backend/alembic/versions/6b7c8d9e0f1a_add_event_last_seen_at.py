@@ -1,7 +1,7 @@
 """add event last_seen_at
 
-Revision ID: a1b2c3d4e5f6
-Revises: f9a0b1c2d3e4
+Revision ID: 6b7c8d9e0f1a
+Revises: 5a6b7c8d9e0f
 Create Date: 2026-05-15
 """
 
@@ -10,8 +10,8 @@ from __future__ import annotations
 import sqlalchemy as sa
 from alembic import op
 
-revision = "a1b2c3d4e5f6"
-down_revision = "f9a0b1c2d3e4"
+revision = "6b7c8d9e0f1a"
+down_revision = "5a6b7c8d9e0f"
 branch_labels = None
 depends_on = None
 
