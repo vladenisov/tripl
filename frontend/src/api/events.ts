@@ -2,7 +2,7 @@ import { api } from './client'
 import type { Event, EventListResponse } from '../types'
 
 export const eventsApi = {
-  list: (slug: string, params?: { event_type_id?: string; search?: string; implemented?: boolean; reviewed?: boolean; archived?: boolean; tag?: string; offset?: number; limit?: number }) => {
+  list: (slug: string, params?: { event_type_id?: string; search?: string; implemented?: boolean; reviewed?: boolean; archived?: boolean; tag?: string; silent_since_days?: number; offset?: number; limit?: number }) => {
     const sp = new URLSearchParams()
     if (params?.event_type_id) sp.set('event_type_id', params.event_type_id)
     if (params?.search) sp.set('search', params.search)
@@ -10,6 +10,7 @@ export const eventsApi = {
     if (params?.reviewed !== undefined) sp.set('reviewed', String(params.reviewed))
     if (params?.archived !== undefined) sp.set('archived', String(params.archived))
     if (params?.tag) sp.set('tag', params.tag)
+    if (params?.silent_since_days !== undefined) sp.set('silent_since_days', String(params.silent_since_days))
     if (params?.offset !== undefined) sp.set('offset', String(params.offset))
     if (params?.limit !== undefined) sp.set('limit', String(params.limit))
     const qs = sp.toString()

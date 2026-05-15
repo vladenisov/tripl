@@ -1042,3 +1042,49 @@ def test_breakdown_anomalies_do_not_queue_alert_deliveries(
 
         assert delivery_ids == []
         assert session.execute(select(AlertDelivery)).scalars().all() == []
+
+
+def test_bump_event_last_seen_is_monotonic_and_ignores_zero(
+    sync_session_factory: sessionmaker[Session],
+) -> None:
+    with sync_session_factory() as session:
+        config, _event_type, event = _seed_anomaly_scan_state(session)
+        event_id = event.id
+
+        earlier = datetime(2026, 5, 1, 10, tzinfo=UTC)
+        later = datetime(2026, 5, 1, 12, tzinfo=UTC)
+
+        def _current_last_seen() -> datetime | None:
+            session.expire_all()
+            row = session.get(Event, event_id)
+            assert row is not None
+            value = row.last_seen_at
+            # SQLite (test backend) drops tzinfo on read; normalize for compare.
+            if value is not None and value.tzinfo is None:
+                return value.replace(tzinfo=UTC)
+            return value
+
+        # First bump moves NULL → later.
+        metrics._bump_event_last_seen(
+            session,
+            event_agg={(config.id, event_id, later): 5},
+        )
+        session.commit()
+        assert _current_last_seen() == later
+
+        # A second bump with an EARLIER bucket must NOT rewind the column.
+        metrics._bump_event_last_seen(
+            session,
+            event_agg={(config.id, event_id, earlier): 5},
+        )
+        session.commit()
+        assert _current_last_seen() == later
+
+        # Zero-count buckets are ignored even if the bucket is newer.
+        even_later = datetime(2026, 5, 2, 0, tzinfo=UTC)
+        metrics._bump_event_last_seen(
+            session,
+            event_agg={(config.id, event_id, even_later): 0},
+        )
+        session.commit()
+        assert _current_last_seen() == later

@@ -1,5 +1,11 @@
+import uuid
+from datetime import UTC, datetime, timedelta
+
 import pytest
 from httpx import AsyncClient
+
+from tripl.models.event import Event
+from tripl.tests.conftest import TestSessionLocal
 
 
 async def _setup_events(client: AsyncClient, slug: str = "ev-proj"):
@@ -363,6 +369,74 @@ async def test_reorder_events_assigns_new_sequence(client: AsyncClient):
         "Event A",
         "Event B",
     ]
+
+
+@pytest.mark.asyncio
+async def test_event_response_carries_null_last_seen_initially(client: AsyncClient):
+    et_id, field_id, _ = await _setup_events(client, "ev-lastseen")
+    create = await client.post(
+        "/api/v1/projects/ev-lastseen/events",
+        json={
+            "event_type_id": et_id,
+            "name": "Hello",
+            "field_values": [{"field_definition_id": field_id, "value": "home"}],
+        },
+    )
+    assert create.status_code == 201
+    assert create.json()["last_seen_at"] is None
+
+    listed = await client.get("/api/v1/projects/ev-lastseen/events")
+    assert listed.status_code == 200
+    assert all(item["last_seen_at"] is None for item in listed.json()["items"])
+
+
+@pytest.mark.asyncio
+async def test_filter_silent_since_days(client: AsyncClient):
+    et_id, field_id, _ = await _setup_events(client, "ev-silent")
+    fresh = await client.post(
+        "/api/v1/projects/ev-silent/events",
+        json={
+            "event_type_id": et_id,
+            "name": "Fresh",
+            "field_values": [{"field_definition_id": field_id, "value": "s1"}],
+        },
+    )
+    stale = await client.post(
+        "/api/v1/projects/ev-silent/events",
+        json={
+            "event_type_id": et_id,
+            "name": "Stale",
+            "field_values": [{"field_definition_id": field_id, "value": "s2"}],
+        },
+    )
+    await client.post(
+        "/api/v1/projects/ev-silent/events",
+        json={
+            "event_type_id": et_id,
+            "name": "Silent",
+            "field_values": [{"field_definition_id": field_id, "value": "s3"}],
+        },
+    )
+    fresh_id = fresh.json()["id"]
+    stale_id = stale.json()["id"]
+
+    # Backfill last_seen_at out-of-band — the column is normally written by the
+    # metrics pipeline, but the API filter has its own surface that we want to
+    # cover here.
+    now = datetime.now(UTC)
+    async with TestSessionLocal() as session, session.begin():
+        fresh_row = await session.get(Event, uuid.UUID(fresh_id))
+        stale_row = await session.get(Event, uuid.UUID(stale_id))
+        assert fresh_row is not None
+        assert stale_row is not None
+        fresh_row.last_seen_at = now - timedelta(hours=1)
+        stale_row.last_seen_at = now - timedelta(days=10)
+
+    resp = await client.get("/api/v1/projects/ev-silent/events?silent_since_days=7")
+    assert resp.status_code == 200
+    names = {item["name"] for item in resp.json()["items"]}
+    # Stale (10 days ago) and Silent (never) match silent > 7d. Fresh (1h) does not.
+    assert names == {"Stale", "Silent"}
 
 
 @pytest.mark.asyncio

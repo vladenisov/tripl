@@ -1,7 +1,8 @@
 import uuid
+from datetime import UTC, datetime, timedelta
 
 from fastapi import HTTPException
-from sqlalchemy import delete, func, select
+from sqlalchemy import delete, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import noload
 
@@ -52,6 +53,7 @@ async def list_events(
     archived: bool | None = None,
     offset: int = 0,
     limit: int = 200,
+    silent_since_days: int | None = None,
 ) -> tuple[list[Event], int]:
     project_id = await get_project_id_by_slug(session, slug)
     # Skip the selectin load for Event.event_type — the list response schema
@@ -82,6 +84,11 @@ async def list_events(
         tag_filter = select(EventTag.event_id).where(EventTag.name == tag).correlate(None)
         query = query.where(Event.id.in_(tag_filter))
         count_query = count_query.where(Event.id.in_(tag_filter))
+    if silent_since_days is not None and silent_since_days >= 0:
+        cutoff = datetime.now(UTC) - timedelta(days=silent_since_days)
+        silent_clause = or_(Event.last_seen_at.is_(None), Event.last_seen_at < cutoff)
+        query = query.where(silent_clause)
+        count_query = count_query.where(silent_clause)
 
     total = (await session.execute(count_query)).scalar() or 0
     result = await session.execute(

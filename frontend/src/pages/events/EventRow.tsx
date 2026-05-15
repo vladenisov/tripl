@@ -19,6 +19,7 @@ import { resolveMetaFieldHref } from '@/lib/metaFields'
 import { EventRowActions } from './EventRowActions'
 import { EventWindowMetricsCell } from './EventWindowMetricsCell'
 import { SignalLink } from './SignalLink'
+import { formatRelativeTime } from './utils'
 
 export type RowAction =
   | 'edit'
@@ -36,6 +37,7 @@ export type EventRowProps = {
   selected: boolean
   hideType: boolean
   hideTags: boolean
+  hideLastSeen: boolean
   fieldColumns: FieldDefinition[]
   metaFields: MetaFieldDefinition[]
   slug: string
@@ -58,6 +60,7 @@ export const EventRow = memo(function EventRow({
   selected,
   hideType,
   hideTags,
+  hideLastSeen,
   fieldColumns,
   metaFields,
   slug,
@@ -168,6 +171,15 @@ export const EventRow = memo(function EventRow({
               <span className="text-[11px]" style={{ color: 'var(--fg-faint)' }}>—</span>
             )}
           </div>
+        </TableCell>
+      )}
+      {!hideLastSeen && (
+        <TableCell
+          className="text-[11px] tnum"
+          style={{ color: ev.last_seen_at ? 'var(--fg-subtle)' : 'var(--fg-faint)' }}
+          title={ev.last_seen_at ?? 'Never observed in collected metrics'}
+        >
+          {formatRelativeTime(ev.last_seen_at)}
         </TableCell>
       )}
       {fieldColumns.map((f) => {

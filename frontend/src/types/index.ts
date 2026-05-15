@@ -179,6 +179,7 @@ export interface Event {
   implemented: boolean
   reviewed: boolean
   archived: boolean
+  last_seen_at: string | null
   tags: EventTag[]
   field_values: EventFieldValue[]
   meta_values: EventMetaValue[]

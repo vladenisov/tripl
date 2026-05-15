@@ -2,12 +2,13 @@ import { Check, LayoutGrid } from 'lucide-react'
 import type { FieldDefinition, MetaFieldDefinition } from '@/types'
 import { Button } from '@/components/ui/button'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
-import { ROW_METRICS_LABEL } from './utils'
+import { LAST_SEEN_COL_KEY, ROW_METRICS_LABEL } from './utils'
 
 export function ColumnsMenu({
   open,
   onOpenChange,
   tagsHidden,
+  lastSeenHidden,
   fieldColumns,
   metaFields,
   hiddenColumns,
@@ -16,6 +17,7 @@ export function ColumnsMenu({
   open: boolean
   onOpenChange: (v: boolean) => void
   tagsHidden: boolean
+  lastSeenHidden: boolean
   fieldColumns: FieldDefinition[]
   metaFields: MetaFieldDefinition[]
   hiddenColumns: Set<string>
@@ -23,6 +25,7 @@ export function ColumnsMenu({
 }) {
   const totalHidden =
     (tagsHidden ? 1 : 0) +
+    (lastSeenHidden ? 1 : 0) +
     fieldColumns.filter((f) => hiddenColumns.has(`f:${f.id}`)).length +
     metaFields.filter((mf) => hiddenColumns.has(`m:${mf.id}`)).length
   return (
@@ -53,6 +56,12 @@ export function ColumnsMenu({
           pinned={false}
           checked={!tagsHidden}
           onChange={() => onToggle('tags')}
+        />
+        <ColumnToggle
+          label="Last seen"
+          pinned={false}
+          checked={!lastSeenHidden}
+          onChange={() => onToggle(LAST_SEEN_COL_KEY)}
         />
         {fieldColumns.length > 0 && (
           <>

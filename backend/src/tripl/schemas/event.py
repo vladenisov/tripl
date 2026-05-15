@@ -87,6 +87,7 @@ class EventResponse(BaseModel):
     implemented: bool
     reviewed: bool
     archived: bool
+    last_seen_at: datetime | None = None
     tags: list[EventTagResponse] = []
     field_values: list[EventFieldValueResponse] = []
     meta_values: list[EventMetaValueResponse] = []
@@ -113,6 +114,7 @@ class EventListItemResponse(BaseModel):
     implemented: bool
     reviewed: bool
     archived: bool
+    last_seen_at: datetime | None = None
     tags: list[EventTagResponse] = []
     field_values: list[EventFieldValueResponse] = []
     meta_values: list[EventMetaValueResponse] = []

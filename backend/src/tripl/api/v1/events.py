@@ -28,11 +28,22 @@ async def list_events(
     tag: str | None = None,
     reviewed: bool | None = None,
     archived: bool | None = None,
+    silent_since_days: int | None = Query(None, ge=0, le=3650),
     offset: int = Query(0, ge=0),
     limit: int = Query(200, ge=1, le=10000),
 ) -> EventListResponse:
     items, total = await event_service.list_events(
-        session, slug, event_type_id, search, implemented, tag, reviewed, archived, offset, limit
+        session,
+        slug,
+        event_type_id,
+        search,
+        implemented,
+        tag,
+        reviewed,
+        archived,
+        offset,
+        limit,
+        silent_since_days=silent_since_days,
     )
     return EventListResponse(items=items, total=total)
 

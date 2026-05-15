@@ -144,6 +144,22 @@ export default function EventsPage() {
 
   const filterReviewed = searchParams.has('reviewed') ? searchParams.get('reviewed') === 'true' : undefined
 
+  const filterSilentDaysRaw = searchParams.get('silent_days')
+  const filterSilentDays = filterSilentDaysRaw !== null && /^\d+$/.test(filterSilentDaysRaw)
+    ? Number(filterSilentDaysRaw)
+    : undefined
+  const setFilterSilentDays = useCallback((v: number | undefined) => {
+    setSearchParams(prev => {
+      const next = new URLSearchParams(prev)
+      if (v !== undefined) {
+        next.set('silent_days', String(v))
+      } else {
+        next.delete('silent_days')
+      }
+      return next
+    }, { replace: true })
+  }, [setSearchParams])
+
   // Derive field/meta filters from URL (prefixed f. and m.) — keyed by name
   const fieldFilters = useMemo(() => {
     const out: Record<string, string> = {}
@@ -191,8 +207,16 @@ export default function EventsPage() {
   const [hiddenColumns, setHiddenColumns] = useState<Set<string>>(() => {
     try {
       const raw = localStorage.getItem('tripl.eventsHiddenCols')
-      if (!raw) return new Set()
-      return new Set(JSON.parse(raw) as string[])
+      const initial = new Set<string>(raw ? (JSON.parse(raw) as string[]) : [])
+      // One-time bootstrap: hide `last_seen` by default for existing and new
+      // users alike. Subsequent toggles persist via the hiddenCols key as usual.
+      const bootstrapKey = 'tripl.eventsHiddenColsBootstrap'
+      if (localStorage.getItem(bootstrapKey) !== '1') {
+        initial.add('last_seen')
+        localStorage.setItem(bootstrapKey, '1')
+        localStorage.setItem('tripl.eventsHiddenCols', JSON.stringify([...initial]))
+      }
+      return initial
     } catch { return new Set() }
   })
   const [colMenuOpen, setColMenuOpen] = useState(false)
@@ -271,7 +295,7 @@ export default function EventsPage() {
   // fetchNextPage().
   const EVENTS_PAGE_SIZE = 200
   const eventsQuery = useInfiniteQuery({
-    queryKey: ['events', slug, filterEtId, debouncedSearch, filterImplemented, filterTag, filterReviewedForQuery, filterArchivedForQuery],
+    queryKey: ['events', slug, filterEtId, debouncedSearch, filterImplemented, filterTag, filterReviewedForQuery, filterArchivedForQuery, filterSilentDays],
     queryFn: ({ pageParam }) => eventsApi.list(slug!, {
       event_type_id: filterEtId,
       search: debouncedSearch || undefined,
@@ -279,6 +303,7 @@ export default function EventsPage() {
       reviewed: filterReviewedForQuery,
       archived: filterArchivedForQuery,
       tag: filterTag || undefined,
+      silent_since_days: filterSilentDays,
       offset: pageParam,
       limit: EVENTS_PAGE_SIZE,
     }),
@@ -693,6 +718,7 @@ export default function EventsPage() {
     [metaFields, hiddenColumns],
   )
   const hideTags = hiddenColumns.has('tags')
+  const hideLastSeen = hiddenColumns.has('last_seen')
 
   // Row virtualization — kicks in past VIRTUAL_THRESHOLD events, leaving small lists
   // and tests (jsdom can't measure layout) on the plain full-render path.
@@ -748,6 +774,7 @@ export default function EventsPage() {
     (activeEt ? 0 : 1) /* type */ +
     1 /* 48h */ +
     (hideTags ? 0 : 1) /* tags */ +
+    (hideLastSeen ? 0 : 1) /* last seen */ +
     visibleFieldColumns.length +
     visibleMetaFields.length +
     1 /* actions */
@@ -887,7 +914,7 @@ export default function EventsPage() {
     if (ok) bulkDeleteMut.mutate(selectedVisibleEventIds)
   }, [bulkDeleteMut, confirm, selectedVisibleEventIds])
 
-  const hasActiveFilters = filterImplemented !== undefined || filterTag !== '' || filterReviewed !== undefined ||
+  const hasActiveFilters = filterImplemented !== undefined || filterTag !== '' || filterReviewed !== undefined || filterSilentDays !== undefined ||
     Object.values(fieldFilters).some(v => v !== '') ||
     Object.values(metaFilters).some(v => v !== '')
 
@@ -948,6 +975,7 @@ export default function EventsPage() {
       next.delete('implemented')
       next.delete('reviewed')
       next.delete('tag')
+      next.delete('silent_days')
       Array.from(next.keys()).filter(k => k.startsWith('f.') || k.startsWith('m.')).forEach(k => next.delete(k))
       return next
     }, { replace: true })
@@ -1060,6 +1088,20 @@ export default function EventsPage() {
                 <SelectItem value="false">Not implemented</SelectItem>
               </SelectContent>
             </Select>
+            <Select
+              value={filterSilentDays === undefined ? '__all__' : String(filterSilentDays)}
+              onValueChange={v => setFilterSilentDays(v === '__all__' ? undefined : Number(v))}
+            >
+              <SelectTrigger className="h-8 w-32 text-xs">
+                <SelectValue placeholder="Activity" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="__all__">Any activity</SelectItem>
+                <SelectItem value="1">Silent &gt; 1d</SelectItem>
+                <SelectItem value="7">Silent &gt; 7d</SelectItem>
+                <SelectItem value="30">Silent &gt; 30d</SelectItem>
+              </SelectContent>
+            </Select>
             {hasActiveFilters && (
               <Button variant="ghost" size="sm" onClick={clearAllFilters} className="h-8 text-xs text-muted-foreground">
                 <X className="mr-1 h-3 w-3" />
@@ -1071,6 +1113,7 @@ export default function EventsPage() {
                 open={colMenuOpen}
                 onOpenChange={setColMenuOpen}
                 tagsHidden={hiddenColumns.has('tags')}
+                lastSeenHidden={hideLastSeen}
                 fieldColumns={fieldColumns}
                 metaFields={metaFields}
                 hiddenColumns={hiddenColumns}
@@ -1244,6 +1287,9 @@ export default function EventsPage() {
                   }
                 />
               )}
+              {!hideLastSeen && (
+                <TableHead className="w-24 text-[11px]">Last seen</TableHead>
+              )}
               {visibleFieldColumns.map(f => {
                 const enumOpts = fieldEnumOptions[f.id]
                 const filterType: ColumnFilterType | null =
@@ -1324,6 +1370,7 @@ export default function EventsPage() {
                   selected={selectedSet.has(ev.id)}
                   hideType={!!activeEt}
                   hideTags={hideTags}
+                  hideLastSeen={hideLastSeen}
                   fieldColumns={visibleFieldColumns}
                   metaFields={visibleMetaFields}
                   slug={slug!}
