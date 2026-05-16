@@ -91,6 +91,15 @@ export function EventDriftBadge({
                           ? ` · declared ${drift.declared_type}`
                           : ''}
                   </div>
+                  {drift.sample_value && (
+                    <div
+                      className="truncate font-mono text-[10px]"
+                      style={{ color: 'var(--fg-faint)' }}
+                      title={drift.sample_value}
+                    >
+                      e.g. {drift.sample_value}
+                    </div>
+                  )}
                 </div>
                 <span
                   className="shrink-0 text-[10px] tnum"

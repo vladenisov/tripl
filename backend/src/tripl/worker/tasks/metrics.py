@@ -61,6 +61,7 @@ from tripl.worker.analyzers.anomaly_detector import (
     detect_anomalies,
 )
 from tripl.worker.analyzers.cardinality import (
+    CardinalityResult,
     _is_json_type,
     analyze_cardinality,
     analyze_cardinality_grouped,
@@ -236,18 +237,43 @@ def _infer_logical_field_type(col: ColumnInfo) -> str:
     return "json" if _is_json_type(col.type_name) else "string"
 
 
+_SAMPLE_VALUE_MAX_LEN = 255
+
+
+def _pick_sample_value(result: CardinalityResult | None) -> str | None:
+    """First non-empty observed value for a column, truncated for storage."""
+    if result is None:
+        return None
+    for raw in result.sample_values or []:
+        if raw is None:
+            continue
+        text = str(raw)
+        if not text:
+            continue
+        if len(text) > _SAMPLE_VALUE_MAX_LEN:
+            return text[: _SAMPLE_VALUE_MAX_LEN - 1] + "…"
+        return text
+    return None
+
+
 def _diff_event_type_schema(
     event_type: EventType,
     columns: list[ColumnInfo],
     skip_columns: set[str],
+    cardinality_results: dict[str, CardinalityResult] | None = None,
 ) -> list[dict[str, object]]:
     """Return drift items comparing observed columns vs declared FieldDefinitions.
 
     drift_type ∈ {new_field, missing_field, type_changed}. Skip columns
     (event_type_column, time_column) are excluded from comparison.
+
+    When ``cardinality_results`` is supplied, new_field / type_changed
+    entries get a ``sample_value`` for the catalog UI; missing_field stays
+    null (we have no observed data for a vanished column).
     """
     observed = {col.name: col for col in columns if col.name not in skip_columns}
     declared = {fd.name: fd for fd in event_type.field_definitions}
+    results = cardinality_results or {}
 
     drift_items: list[dict[str, object]] = []
     for name, col in observed.items():
@@ -259,6 +285,7 @@ def _diff_event_type_schema(
                 "drift_type": "new_field",
                 "observed_type": col.type_name,
                 "declared_type": None,
+                "sample_value": _pick_sample_value(results.get(name)),
             }
         )
 
@@ -271,6 +298,7 @@ def _diff_event_type_schema(
                 "drift_type": "missing_field",
                 "observed_type": None,
                 "declared_type": fd.field_type,
+                "sample_value": None,
             }
         )
 
@@ -286,6 +314,7 @@ def _diff_event_type_schema(
                     "drift_type": "type_changed",
                     "observed_type": col.type_name,
                     "declared_type": definition.field_type,
+                    "sample_value": _pick_sample_value(results.get(name)),
                 }
             )
 
@@ -312,7 +341,7 @@ def _upsert_schema_drifts(
             "drift_type": item["drift_type"],
             "observed_type": item["observed_type"],
             "declared_type": item["declared_type"],
-            "sample_value": None,
+            "sample_value": item.get("sample_value"),
             "detected_at": now,
         }
         for item in drift_items
@@ -326,6 +355,7 @@ def _upsert_schema_drifts(
                 "scan_config_id": sqlite_stmt.excluded.scan_config_id,
                 "observed_type": sqlite_stmt.excluded.observed_type,
                 "declared_type": sqlite_stmt.excluded.declared_type,
+                "sample_value": sqlite_stmt.excluded.sample_value,
                 "detected_at": sqlite_stmt.excluded.detected_at,
             },
         )
@@ -339,6 +369,7 @@ def _upsert_schema_drifts(
             "scan_config_id": pg_stmt.excluded.scan_config_id,
             "observed_type": pg_stmt.excluded.observed_type,
             "declared_type": pg_stmt.excluded.declared_type,
+            "sample_value": pg_stmt.excluded.sample_value,
             "detected_at": pg_stmt.excluded.detected_at,
         },
     )
@@ -352,11 +383,17 @@ def _detect_event_type_drift(
     columns: list[ColumnInfo],
     skip_columns: set[str],
     scan_config_id: uuid.UUID,
+    cardinality_results: dict[str, CardinalityResult] | None = None,
 ) -> None:
     """Diff existing event_type schema against observed columns, write drifts."""
     if existing_event_type is None:
         return
-    drift_items = _diff_event_type_schema(existing_event_type, columns, skip_columns)
+    drift_items = _diff_event_type_schema(
+        existing_event_type,
+        columns,
+        skip_columns,
+        cardinality_results=cardinality_results,
+    )
     _upsert_schema_drifts(
         session,
         event_type_id=existing_event_type.id,
@@ -2071,6 +2108,9 @@ def collect_metrics(
                     columns=columns,
                     skip_columns=skip_cols,
                     scan_config_id=config.id,
+                    cardinality_results=getattr(
+                        grouped_analyses[et_name], "results", None
+                    ),
                 )
                 et = _ensure_event_type_with_fields(
                     session,
@@ -2118,6 +2158,7 @@ def collect_metrics(
                 columns=columns,
                 skip_columns=skip_cols,
                 scan_config_id=config.id,
+                cardinality_results=getattr(analysis, "results", None),
             )
             field_defs = {fd.name: fd for fd in event_type.field_definitions}
             single_result = generate_events(

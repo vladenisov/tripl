@@ -36,9 +36,16 @@ celery_app.conf.beat_schedule = {
         # itself becomes slow against a growing scan_configs table.
         "schedule": 300.0,
     },
+    "cleanup-schema-drifts": {
+        "task": "tripl.worker.tasks.maintenance.cleanup_schema_drifts",
+        # Daily prune is plenty — drift rows past retention are filtered
+        # out at read time anyway, the cleanup only reclaims storage.
+        "schedule": 24 * 60 * 60.0,
+    },
 }
 
 # Import tasks so they are registered with the celery app
 import tripl.worker.tasks.alerts  # noqa: F401, E402
+import tripl.worker.tasks.maintenance  # noqa: F401, E402
 import tripl.worker.tasks.metrics  # noqa: F401, E402
 import tripl.worker.tasks.scan  # noqa: F401, E402

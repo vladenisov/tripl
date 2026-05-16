@@ -1256,3 +1256,110 @@ def test_diff_event_type_schema_detects_three_drift_kinds(
             select(SchemaDrift).where(SchemaDrift.event_type_id == et.id)
         ).scalars().all()
         assert len(rows) == 3
+
+
+def test_diff_event_type_schema_attaches_sample_value(
+    sync_session_factory: sessionmaker[Session],
+) -> None:
+    from tripl.worker.analyzers.cardinality import CardinalityResult
+
+    with sync_session_factory() as session:
+        config = _create_scan_config(session)
+        et = _make_event_type_with_fields(
+            session,
+            config,
+            fields=[("payload", "string")],  # declared as string, observed as JSON
+        )
+        columns = [
+            ColumnInfo(name="payload", type_name="JSON"),
+            ColumnInfo(name="device_id", type_name="String"),
+        ]
+        results = {
+            "payload": CardinalityResult(
+                column=columns[0],
+                is_low=True,
+                count=1,
+                sample_values=['{"k": 1}', '{"k": 2}'],
+            ),
+            "device_id": CardinalityResult(
+                column=columns[1],
+                is_low=False,
+                count=100,
+                sample_values=["", "ios-42", "android-7"],
+            ),
+        }
+
+        drift_items = metrics._diff_event_type_schema(
+            et,
+            columns,
+            skip_columns=set(),
+            cardinality_results=results,
+        )
+        by_kind = {(item["field_name"], item["drift_type"]): item for item in drift_items}
+
+        # new_field with a sample — the first empty string in sample_values is skipped.
+        assert by_kind[("device_id", "new_field")]["sample_value"] == "ios-42"
+        # type_changed pulls the first non-empty sample for the same column.
+        assert by_kind[("payload", "type_changed")]["sample_value"] == '{"k": 1}'
+
+        metrics._upsert_schema_drifts(
+            session,
+            event_type_id=et.id,
+            scan_config_id=config.id,
+            drift_items=drift_items,
+        )
+        session.commit()
+
+        persisted = session.execute(
+            select(SchemaDrift).where(SchemaDrift.event_type_id == et.id)
+        ).scalars().all()
+        by_persisted_kind = {(d.field_name, d.drift_type): d for d in persisted}
+        assert by_persisted_kind[("device_id", "new_field")].sample_value == "ios-42"
+        assert by_persisted_kind[("payload", "type_changed")].sample_value == '{"k": 1}'
+
+
+def test_cleanup_schema_drifts_prunes_only_expired_rows(
+    sync_session_factory: sessionmaker[Session],
+    monkeypatch: MonkeyPatch,
+) -> None:
+    from tripl.services.schema_drift_service import DRIFT_RETENTION_DAYS
+    from tripl.worker.tasks import maintenance
+
+    with sync_session_factory() as session:
+        config = _create_scan_config(session)
+        et = _make_event_type_with_fields(session, config, fields=[("x", "string")])
+
+        now = datetime.now(UTC)
+        fresh = SchemaDrift(
+            id=uuid.uuid4(),
+            event_type_id=et.id,
+            scan_config_id=config.id,
+            field_name="fresh",
+            drift_type="new_field",
+            observed_type="String",
+            declared_type=None,
+            sample_value="hi",
+            detected_at=now - timedelta(days=1),
+        )
+        stale = SchemaDrift(
+            id=uuid.uuid4(),
+            event_type_id=et.id,
+            scan_config_id=config.id,
+            field_name="stale",
+            drift_type="new_field",
+            observed_type="String",
+            declared_type=None,
+            sample_value="bye",
+            detected_at=now - timedelta(days=DRIFT_RETENTION_DAYS + 5),
+        )
+        session.add_all([fresh, stale])
+        session.commit()
+
+    monkeypatch.setattr(maintenance, "_get_sync_session", sync_session_factory)
+
+    result = maintenance.cleanup_schema_drifts.run()
+    assert result["deleted"] == 1
+
+    with sync_session_factory() as session:
+        rows = session.execute(select(SchemaDrift)).scalars().all()
+        assert [r.field_name for r in rows] == ["fresh"]
