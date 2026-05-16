@@ -89,11 +89,22 @@ export const alertingApi = {
   deleteRule: (slug: string, destinationId: string, ruleId: string) =>
     api.del(`/projects/${slug}/alert-destinations/${destinationId}/rules/${ruleId}`),
 
-  simulateRule: (slug: string, destinationId: string, ruleId: string, days: number) =>
-    api.post<AlertRuleSimulateResponse>(
-      `/projects/${slug}/alert-destinations/${destinationId}/rules/${ruleId}/simulate?days=${days}`,
+  simulateRule: (
+    slug: string,
+    destinationId: string,
+    ruleId: string,
+    days: number,
+    cooldownMinutesOverride?: number,
+  ) => {
+    const params = new URLSearchParams({ days: String(days) })
+    if (cooldownMinutesOverride !== undefined) {
+      params.set('cooldown_minutes_override', String(cooldownMinutesOverride))
+    }
+    return api.post<AlertRuleSimulateResponse>(
+      `/projects/${slug}/alert-destinations/${destinationId}/rules/${ruleId}/simulate?${params}`,
       undefined,
-    ),
+    )
+  },
 
   listDeliveries: (
     slug: string,

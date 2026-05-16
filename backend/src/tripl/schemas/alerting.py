@@ -286,6 +286,7 @@ class SimulatedRuleFiring(BaseModel):
     expected_count: float
     absolute_delta: float
     percent_delta: float
+    rendered_item: str | None = None
 
 
 class AlertRuleSimulateResponse(BaseModel):
@@ -298,3 +299,10 @@ class AlertRuleSimulateResponse(BaseModel):
     matched_before_cooldown: int
     firings: list[SimulatedRuleFiring]
     noisy: bool
+    # Effective cooldown used by this run — equals rule.cooldown_minutes when
+    # no override was passed; mirrors the override otherwise.
+    cooldown_minutes_used: int
+    # Saved value on the rule (so the UI can show "current vs override" without
+    # an extra round-trip).
+    cooldown_minutes_saved: int
+    rendered_message: str | None = None

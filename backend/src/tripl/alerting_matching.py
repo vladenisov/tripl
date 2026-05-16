@@ -106,17 +106,25 @@ def rule_matches_anomaly(rule: AlertRule, anomaly: AlertMatchCandidate) -> bool:
 def simulate_rule_firings(
     rule: AlertRule,
     anomalies: list[AlertMatchCandidate],
+    *,
+    cooldown_minutes_override: int | None = None,
 ) -> list[AlertMatchCandidate]:
     """Replay anomalies through a rule with in-memory cooldown gating.
 
     Returns the subset that would have triggered a delivery, in bucket order.
     Cooldown is applied per (scope_type, scope_ref) — the same partition the
-    live pipeline uses for AlertRuleState.
+    live pipeline uses for AlertRuleState. When ``cooldown_minutes_override``
+    is set, that value is used in place of ``rule.cooldown_minutes`` so the
+    simulator can A/B different cooldowns without writing back to the rule.
     """
-    if rule.cooldown_minutes < 0:
-        cooldown = timedelta(0)
-    else:
-        cooldown = timedelta(minutes=rule.cooldown_minutes)
+    effective_cooldown = (
+        cooldown_minutes_override
+        if cooldown_minutes_override is not None
+        else rule.cooldown_minutes
+    )
+    cooldown = (
+        timedelta(0) if effective_cooldown < 0 else timedelta(minutes=effective_cooldown)
+    )
 
     fired: list[AlertMatchCandidate] = []
     last_fired_at: dict[tuple[str, str], datetime] = {}

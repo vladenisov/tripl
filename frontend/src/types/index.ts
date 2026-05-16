@@ -461,6 +461,7 @@ export interface SimulatedRuleFiring {
   expected_count: number
   absolute_delta: number
   percent_delta: number
+  rendered_item: string | null
 }
 
 export interface AlertRuleSimulateResponse {
@@ -473,6 +474,9 @@ export interface AlertRuleSimulateResponse {
   matched_before_cooldown: number
   firings: SimulatedRuleFiring[]
   noisy: boolean
+  cooldown_minutes_used: number
+  cooldown_minutes_saved: number
+  rendered_message: string | null
 }
 
 export interface AlertDeliveryItem {

@@ -106,8 +106,16 @@ async def simulate_alert_rule(
     destination_id: uuid.UUID,
     rule_id: uuid.UUID,
     days: int = Query(7, ge=1, le=90),
+    cooldown_minutes_override: int | None = Query(None, ge=0, le=10080),
 ) -> AlertRuleSimulateResponse:
-    return await alerting_service.simulate_rule(session, slug, destination_id, rule_id, days)
+    return await alerting_service.simulate_rule(
+        session,
+        slug,
+        destination_id,
+        rule_id,
+        days,
+        cooldown_minutes_override=cooldown_minutes_override,
+    )
 
 
 @router.get("/alert-deliveries", response_model=AlertDeliveryListResponse)

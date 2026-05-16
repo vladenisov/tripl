@@ -1099,6 +1099,67 @@ async def test_alert_rule_simulate_endpoint(client: AsyncClient) -> None:
     assert len(payload["firings"]) == 2
     assert payload["noisy"] is False
     assert payload["rule_id"] == rule_id
+    # Preview attached: rendered_message exists and per-firing rendered_item too.
+    assert payload["cooldown_minutes_used"] == 60
+    assert payload["cooldown_minutes_saved"] == 60
+    assert isinstance(payload["rendered_message"], str)
+    assert payload["rendered_message"]
+    assert all(isinstance(f["rendered_item"], str) and f["rendered_item"] for f in payload["firings"])
+
+    # Cooldown override = 0 disables grouping, so every anomaly fires.
+    resp_zero = await client.post(
+        f"/api/v1/projects/alert-sim/alert-destinations/"
+        f"{destination_id}/rules/{rule_id}/simulate"
+        f"?days=7&cooldown_minutes_override=0"
+    )
+    assert resp_zero.status_code == 200
+    payload_zero = resp_zero.json()
+    assert payload_zero["cooldown_minutes_used"] == 0
+    assert payload_zero["cooldown_minutes_saved"] == 60
+    assert len(payload_zero["firings"]) == 4
+
+    # Cooldown override well above the spacing collapses everything to one firing.
+    resp_long = await client.post(
+        f"/api/v1/projects/alert-sim/alert-destinations/"
+        f"{destination_id}/rules/{rule_id}/simulate"
+        f"?days=7&cooldown_minutes_override=600"
+    )
+    assert resp_long.status_code == 200
+    payload_long = resp_long.json()
+    assert payload_long["cooldown_minutes_used"] == 600
+    assert len(payload_long["firings"]) == 1
+
+
+def test_simulate_rule_firings_respects_cooldown_override() -> None:
+    from tripl.alerting_matching import simulate_rule_firings
+
+    rule = _build_rule(cooldown_minutes=60)
+    scope = str(uuid.uuid4())
+    base = datetime(2026, 5, 1, 12, tzinfo=UTC)
+    anomalies = [
+        _build_anomaly(base, scope_ref=scope),
+        _build_anomaly(base.replace(hour=12, minute=15), scope_ref=scope),
+        _build_anomaly(base.replace(hour=12, minute=30), scope_ref=scope),
+    ]
+
+    # Without override: saved cooldown=60 → only the first fires.
+    assert len(simulate_rule_firings(rule, anomalies)) == 1
+
+    # Override to 0: every anomaly fires.
+    assert (
+        len(simulate_rule_firings(rule, anomalies, cooldown_minutes_override=0))
+        == 3
+    )
+
+    # Override to 10: 15-min and 30-min anomalies each clear the gate.
+    assert (
+        len(simulate_rule_firings(rule, anomalies, cooldown_minutes_override=10))
+        == 3
+    )
+
+    # Override to 20: only first and third clear (second is 15 min after first).
+    fired_20 = simulate_rule_firings(rule, anomalies, cooldown_minutes_override=20)
+    assert [a.bucket for a in fired_20] == [anomalies[0].bucket, anomalies[2].bucket]
 
 
 def test_build_sparkline_handles_empty_flat_and_varied_inputs() -> None:

@@ -7,7 +7,16 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 from sqlalchemy.sql import Select
 
-from tripl.alert_templates import validate_template_configuration
+from tripl.alert_templates import (
+    ALERT_MESSAGE_FORMAT_PLAIN,
+    AlertTemplateContext,
+    escape_alert_value,
+    get_default_items_template,
+    get_default_message_template,
+    normalize_message_template,
+    render_alert_template,
+    validate_template_configuration,
+)
 from tripl.alerting_matching import (
     AlertMatchCandidate,
     SchemaDriftAlertCandidate,
@@ -51,6 +60,106 @@ from tripl.schemas.alerting import (
 SIMULATE_NOISY_THRESHOLD = 50
 SIMULATE_MAX_DAYS = 90
 SCOPE_SCHEMA_DRIFT = "schema"
+
+_SCOPE_LABELS = {
+    "project_total": "Project total",
+    "event_type": "Event type",
+    "event": "Event",
+    "schema": "Schema drift",
+}
+
+
+def _render_firing_item(
+    firing: SimulatedRuleFiring,
+    *,
+    message_format: str,
+    items_template: str,
+) -> str:
+    """Render a single simulated firing through the rule's items_template.
+
+    Mirrors the worker's _build_item_template_context — sparkline/top_movers
+    are left empty because preview is sync-friendly and shouldn't burn extra
+    queries per firing.
+    """
+    scope_label = _SCOPE_LABELS.get(firing.scope_type, firing.scope_type)
+    drift_line = ""
+    if firing.drift_field and firing.drift_type:
+        drift_summary = f"{firing.drift_type}: {firing.drift_field}"
+        if firing.sample_value:
+            drift_summary += f" — e.g. {firing.sample_value}"
+        drift_line = f"\n  drift: {drift_summary}"
+
+    variables = {
+        "scope_name": escape_alert_value(firing.scope_name, message_format),
+        "scope_type": escape_alert_value(firing.scope_type, message_format),
+        "scope_label": escape_alert_value(scope_label, message_format),
+        "direction": escape_alert_value(firing.direction, message_format),
+        "direction_label": escape_alert_value(
+            "up" if firing.direction == "spike" else "down",
+            message_format,
+        ),
+        "actual_count": escape_alert_value(firing.actual_count, message_format),
+        "expected_count": escape_alert_value(int(round(firing.expected_count)), message_format),
+        "absolute_delta": escape_alert_value(int(round(firing.absolute_delta)), message_format),
+        "percent_delta": escape_alert_value(f"{firing.percent_delta:.1f}", message_format),
+        "bucket": escape_alert_value(firing.bucket, message_format),
+        "details_url": "",
+        "monitoring_url": "",
+        "details_line": "",
+        "monitoring_line": "",
+        "drift_field": escape_alert_value(firing.drift_field or "", message_format),
+        "drift_type": escape_alert_value(firing.drift_type or "", message_format),
+        "sample_value": escape_alert_value(firing.sample_value or "", message_format),
+        "drift_line": escape_alert_value(drift_line, message_format),
+        "sparkline": "",
+        "top_movers": "",
+        "sparkline_line": "",
+        "top_movers_line": "",
+    }
+    return render_alert_template(
+        items_template,
+        AlertTemplateContext(variables=variables, message_format=message_format),
+    ).rstrip()
+
+
+def _render_firings_message(
+    rule: AlertRule,
+    firings: list[SimulatedRuleFiring],
+    *,
+    destination: AlertDestination,
+    project: Project,
+) -> tuple[list[str], str]:
+    """Render per-firing items + the overall message text for the preview."""
+    message_format = rule.message_format or ALERT_MESSAGE_FORMAT_PLAIN
+    items_template = normalize_message_template(rule.items_template) or get_default_items_template(
+        message_format
+    )
+    rendered_items = [
+        _render_firing_item(firing, message_format=message_format, items_template=items_template)
+        for firing in firings
+    ]
+    items_text = "\n".join(item for item in rendered_items if item)
+
+    message_template = (
+        normalize_message_template(rule.message_template)
+        or get_default_message_template(message_format)
+    )
+    overall_variables = {
+        "project_name": escape_alert_value(project.name, message_format),
+        "project_slug": escape_alert_value(project.slug, message_format),
+        "channel": escape_alert_value(destination.type, message_format),
+        "destination_name": escape_alert_value(destination.name, message_format),
+        "rule_name": escape_alert_value(rule.name, message_format),
+        "scan_name": escape_alert_value("(replay)", message_format),
+        "matched_count": escape_alert_value(len(firings), message_format),
+        "items_count": escape_alert_value(len(firings), message_format),
+        "items_text": items_text,
+    }
+    rendered_message = render_alert_template(
+        message_template,
+        AlertTemplateContext(variables=overall_variables, message_format=message_format),
+    ).rstrip()
+    return rendered_items, rendered_message
 
 
 def _encrypt_secret(value: str | None) -> str | None:
@@ -716,15 +825,21 @@ async def simulate_rule(
     destination_id: uuid.UUID,
     rule_id: uuid.UUID,
     days: int,
+    cooldown_minutes_override: int | None = None,
 ) -> AlertRuleSimulateResponse:
     if days <= 0 or days > SIMULATE_MAX_DAYS:
         raise HTTPException(
             status_code=422,
             detail=f"days must be between 1 and {SIMULATE_MAX_DAYS}",
         )
+    if cooldown_minutes_override is not None and cooldown_minutes_override < 0:
+        raise HTTPException(
+            status_code=422,
+            detail="cooldown_minutes_override must be >= 0",
+        )
 
     project = await _get_project(session, slug)
-    _destination, rule = await _get_rule(
+    destination, rule = await _get_rule(
         session,
         project_id=project.id,
         destination_id=destination_id,
@@ -761,7 +876,11 @@ async def simulate_rule(
     matched_before_cooldown = sum(
         1 for anomaly in anomalies if rule_matches_anomaly(rule, anomaly)
     )
-    fired = simulate_rule_firings(rule, anomalies)
+    fired = simulate_rule_firings(
+        rule,
+        anomalies,
+        cooldown_minutes_override=cooldown_minutes_override,
+    )
 
     scope_names = await _build_scope_name_map(session, fired)
 
@@ -797,6 +916,21 @@ async def simulate_rule(
             )
         )
 
+    rendered_items, rendered_message = _render_firings_message(
+        rule,
+        firings,
+        destination=destination,
+        project=project,
+    )
+    for firing, rendered_item in zip(firings, rendered_items, strict=True):
+        firing.rendered_item = rendered_item or None
+
+    effective_cooldown = (
+        cooldown_minutes_override
+        if cooldown_minutes_override is not None
+        else rule.cooldown_minutes
+    )
+
     return AlertRuleSimulateResponse(
         rule_id=rule.id,
         rule_name=rule.name,
@@ -807,4 +941,7 @@ async def simulate_rule(
         matched_before_cooldown=matched_before_cooldown,
         firings=firings,
         noisy=len(firings) > SIMULATE_NOISY_THRESHOLD,
+        cooldown_minutes_used=effective_cooldown,
+        cooldown_minutes_saved=rule.cooldown_minutes,
+        rendered_message=rendered_message or None,
     )
