@@ -45,7 +45,6 @@ import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
 import { MetricsChart } from '@/components/ui/chart-lazy'
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible'
-import { Input } from '@/components/ui/input'
 import { Checkbox } from '@/components/ui/checkbox'
 import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
@@ -64,16 +63,13 @@ import {
   Calendar,
   ChevronDown,
   Plus,
-  Search,
   Trash2,
-  X,
 } from 'lucide-react'
 
 import { ColumnFilter, FilterableHead, type ColumnFilterType } from './events/ColumnFilter'
-import { ColumnsMenu } from './events/ColumnsMenu'
 import { EventForm } from './events/EventForm'
 import { EventRow, type RowAction } from './events/EventRow'
-import { SavedViewsMenu } from './events/SavedViewsMenu'
+import { EventsToolbar } from './events/EventsToolbar'
 import {
   EMPTY_EVENT_TYPES,
   EMPTY_EVENT_WINDOW_METRICS,
@@ -1098,81 +1094,31 @@ export default function EventsPage() {
 
       {!blockingError && (
         <>
-          {/* Toolbar — global filters live here; per-column filters live in
-              the table header next to each column label. */}
-          <div className="mb-3 flex flex-wrap items-center gap-2">
-            <div className="relative">
-              <Search className="absolute left-2.5 top-2 h-3.5 w-3.5 text-muted-foreground" />
-              <Input
-                placeholder="Search events…"
-                value={search}
-                onChange={e => setSearch(e.target.value)}
-                className="h-8 w-full pl-8 text-xs sm:w-64"
-              />
-              {isFilterPending && (
-                <span
-                  aria-hidden="true"
-                  className="pulse-dot pointer-events-none absolute right-2.5 top-1/2 h-1.5 w-1.5 -translate-y-1/2 rounded-full"
-                  style={{ background: 'var(--accent)' }}
-                  title="Updating results"
-                />
-              )}
-            </div>
-            <Select
-              value={filterImplemented === undefined ? '__all__' : String(filterImplemented)}
-              onValueChange={v => setFilterImplemented(v === '__all__' ? undefined : v === 'true')}
-            >
-              <SelectTrigger className="h-8 w-36 text-xs">
-                <SelectValue placeholder="All statuses" />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="__all__">All statuses</SelectItem>
-                <SelectItem value="true">Implemented</SelectItem>
-                <SelectItem value="false">Not implemented</SelectItem>
-              </SelectContent>
-            </Select>
-            <Select
-              value={filterSilentDays === undefined ? '__all__' : String(filterSilentDays)}
-              onValueChange={v => setFilterSilentDays(v === '__all__' ? undefined : Number(v))}
-            >
-              <SelectTrigger className="h-8 w-32 text-xs">
-                <SelectValue placeholder="Activity" />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="__all__">Any activity</SelectItem>
-                <SelectItem value="1">Silent &gt; 1d</SelectItem>
-                <SelectItem value="7">Silent &gt; 7d</SelectItem>
-                <SelectItem value="30">Silent &gt; 30d</SelectItem>
-              </SelectContent>
-            </Select>
-            {hasActiveFilters && (
-              <Button variant="ghost" size="sm" onClick={clearAllFilters} className="h-8 text-xs text-muted-foreground">
-                <X className="mr-1 h-3 w-3" />
-                Clear filters
-              </Button>
-            )}
-            <div className="ml-auto flex items-center gap-2">
-              <SavedViewsMenu
-                views={savedViews}
-                activeViewName={activeSavedViewName}
-                draftName={savedViewName}
-                onDraftNameChange={setSavedViewName}
-                onSave={saveCurrentView}
-                onApply={applySavedView}
-                onDelete={deleteSavedView}
-              />
-              <ColumnsMenu
-                open={colMenuOpen}
-                onOpenChange={setColMenuOpen}
-                tagsHidden={hiddenColumns.has('tags')}
-                lastSeenHidden={hideLastSeen}
-                fieldColumns={fieldColumns}
-                metaFields={metaFields}
-                hiddenColumns={hiddenColumns}
-                onToggle={toggleColumn}
-              />
-            </div>
-          </div>
+          <EventsToolbar
+            search={search}
+            onSearchChange={setSearch}
+            isFilterPending={isFilterPending}
+            filterImplemented={filterImplemented}
+            onFilterImplementedChange={setFilterImplemented}
+            filterSilentDays={filterSilentDays}
+            onFilterSilentDaysChange={setFilterSilentDays}
+            hasActiveFilters={hasActiveFilters}
+            onClearFilters={clearAllFilters}
+            savedViews={savedViews}
+            activeSavedViewName={activeSavedViewName}
+            savedViewName={savedViewName}
+            onSavedViewNameChange={setSavedViewName}
+            onSaveCurrentView={saveCurrentView}
+            onApplySavedView={applySavedView}
+            onDeleteSavedView={deleteSavedView}
+            columnsMenuOpen={colMenuOpen}
+            onColumnsMenuOpenChange={setColMenuOpen}
+            hiddenColumns={hiddenColumns}
+            hideLastSeen={hideLastSeen}
+            fieldColumns={fieldColumns}
+            metaFields={metaFields}
+            onToggleColumn={toggleColumn}
+          />
 
       {selectedVisibleEventIds.length > 0 && (
         <div className="mb-4 flex items-center gap-2 rounded-lg border bg-muted/30 px-3 py-2">
