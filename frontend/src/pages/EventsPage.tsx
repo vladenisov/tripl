@@ -1,7 +1,6 @@
-import { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useParams, useNavigate, useSearchParams, Link } from 'react-router-dom'
 import {
-  useInfiniteQuery,
   useMutation,
   useQuery,
   useQueryClient,
@@ -29,7 +28,6 @@ import { eventTypesApi } from '@/api/eventTypes'
 import { metaFieldsApi } from '@/api/metaFields'
 import { variablesApi } from '@/api/variables'
 import { useConfirm } from '@/hooks/useConfirm'
-import { useDebouncedValue } from '@/hooks/useDebouncedValue'
 import { useVirtualizer } from '@tanstack/react-virtual'
 import type {
   Event as TEvent,
@@ -70,6 +68,7 @@ import { ColumnFilter, FilterableHead, type ColumnFilterType } from './events/Co
 import { EventForm } from './events/EventForm'
 import { EventRow, type RowAction } from './events/EventRow'
 import { EventsToolbar } from './events/EventsToolbar'
+import { useEventsQuery } from './events/useEventsQuery'
 import {
   EMPTY_EVENT_TYPES,
   EMPTY_EVENT_WINDOW_METRICS,
@@ -104,101 +103,6 @@ export default function EventsPage() {
 
   // Derive active tab from URL (default 'all')
   const activeTab = urlTab || 'all'
-
-  // Derive filters from URL search params
-  const search = searchParams.get('q') || ''
-  const setSearch = useCallback((v: string) => {
-    setSearchParams(prev => {
-      const next = new URLSearchParams(prev)
-      if (v) {
-        next.set('q', v)
-      } else {
-        next.delete('q')
-      }
-      return next
-    }, { replace: true })
-  }, [setSearchParams])
-
-  const filterImplemented = searchParams.has('implemented') ? searchParams.get('implemented') === 'true' : undefined
-  const setFilterImplemented = useCallback((v: boolean | undefined) => {
-    setSearchParams(prev => {
-      const next = new URLSearchParams(prev)
-      if (v !== undefined) {
-        next.set('implemented', String(v))
-      } else {
-        next.delete('implemented')
-      }
-      return next
-    }, { replace: true })
-  }, [setSearchParams])
-
-  const filterTag = searchParams.get('tag') || ''
-  const setFilterTag = useCallback((v: string) => {
-    setSearchParams(prev => {
-      const next = new URLSearchParams(prev)
-      if (v) {
-        next.set('tag', v)
-      } else {
-        next.delete('tag')
-      }
-      return next
-    }, { replace: true })
-  }, [setSearchParams])
-
-  const filterReviewed = searchParams.has('reviewed') ? searchParams.get('reviewed') === 'true' : undefined
-
-  const filterSilentDaysRaw = searchParams.get('silent_days')
-  const filterSilentDays = filterSilentDaysRaw !== null && /^\d+$/.test(filterSilentDaysRaw)
-    ? Number(filterSilentDaysRaw)
-    : undefined
-  const setFilterSilentDays = useCallback((v: number | undefined) => {
-    setSearchParams(prev => {
-      const next = new URLSearchParams(prev)
-      if (v !== undefined) {
-        next.set('silent_days', String(v))
-      } else {
-        next.delete('silent_days')
-      }
-      return next
-    }, { replace: true })
-  }, [setSearchParams])
-
-  // Derive field/meta filters from URL (prefixed f. and m.) — keyed by name
-  const fieldFilters = useMemo(() => {
-    const out: Record<string, string> = {}
-    searchParams.forEach((v, k) => { if (k.startsWith('f.')) out[k.slice(2)] = v })
-    return out
-  }, [searchParams])
-
-  const updateFieldFilter = useCallback((name: string, value: string) => {
-    setSearchParams(prev => {
-      const next = new URLSearchParams(prev)
-      if (value) {
-        next.set(`f.${name}`, value)
-      } else {
-        next.delete(`f.${name}`)
-      }
-      return next
-    }, { replace: true })
-  }, [setSearchParams])
-
-  const metaFilters = useMemo(() => {
-    const out: Record<string, string> = {}
-    searchParams.forEach((v, k) => { if (k.startsWith('m.')) out[k.slice(2)] = v })
-    return out
-  }, [searchParams])
-
-  const updateMetaFilter = useCallback((name: string, value: string) => {
-    setSearchParams(prev => {
-      const next = new URLSearchParams(prev)
-      if (value) {
-        next.set(`m.${name}`, value)
-      } else {
-        next.delete(`m.${name}`)
-      }
-      return next
-    }, { replace: true })
-  }, [setSearchParams])
 
   const [showForm, setShowForm] = useState(false)
   const [editingEvent, setEditingEvent] = useState<TEvent | null>(null)
@@ -297,10 +201,32 @@ export default function EventsPage() {
   })
   const allTags = allTagsQuery.data ?? EMPTY_TAGS
 
-  const specialTabs = ['all', 'review', 'archived']
-  const filterEtId = specialTabs.includes(activeTab) ? undefined : eventTypes.find((e: EventType) => e.name === activeTab)?.id
-  const filterReviewedForQuery = activeTab === 'review' ? false : filterReviewed
-  const filterArchivedForQuery = activeTab === 'archived' ? true : false
+  const {
+    search,
+    setSearch,
+    filterImplemented,
+    setFilterImplemented,
+    filterTag,
+    setFilterTag,
+    filterReviewed,
+    filterReviewedForQuery,
+    filterArchivedForQuery,
+    filterSilentDays,
+    setFilterSilentDays,
+    fieldFilters,
+    updateFieldFilter,
+    metaFilters,
+    updateMetaFilter,
+    debouncedSearch,
+    debouncedFieldFilters,
+    debouncedMetaFilters,
+    isFilterPending,
+    filterEtId,
+    eventsQuery,
+    rawEvents,
+    total,
+  } = useEventsQuery({ slug, activeTab, eventTypes })
+
   const tabMetricsRange = useMemo(() => {
     const to = new Date()
     const from = new Date(to.getTime() - tabMetricsRangeDays * 24 * 60 * 60 * 1000)
@@ -311,57 +237,6 @@ export default function EventsPage() {
     const from = new Date(to.getTime() - ROW_METRICS_RANGE_HOURS * 60 * 60 * 1000)
     return { time_from: from.toISOString(), time_to: to.toISOString() }
   }, [])
-
-  // Defer the URL-derived filter values so the input field stays responsive even
-  // when the table re-render is expensive — React keeps the urgent text update
-  // and schedules the heavy list refresh at a lower priority. The debounce
-  // chain on top of the deferred value still controls when we hit the API.
-  const deferredSearch = useDeferredValue(search)
-  const deferredFieldFilters = useDeferredValue(fieldFilters)
-  const deferredMetaFilters = useDeferredValue(metaFilters)
-  const debouncedSearch = useDebouncedValue(deferredSearch, 200)
-  const debouncedFieldFilters = useDebouncedValue(deferredFieldFilters, 200)
-  const debouncedMetaFilters = useDebouncedValue(deferredMetaFilters, 200)
-  // True while React is still settling on the deferred filter values — used to
-  // hint a pending state on the search input without freezing the URL update.
-  const isFilterPending = deferredSearch !== search
-    || deferredFieldFilters !== fieldFilters
-    || deferredMetaFilters !== metaFilters
-
-  // Infinite-scroll the events list in 200-row pages instead of fetching the
-  // whole 2000-row table up front. The accumulated items are rendered through
-  // the existing virtualizer, and a sentinel near the bottom triggers
-  // fetchNextPage().
-  const EVENTS_PAGE_SIZE = 200
-  const eventsQuery = useInfiniteQuery({
-    queryKey: ['events', slug, filterEtId, debouncedSearch, filterImplemented, filterTag, filterReviewedForQuery, filterArchivedForQuery, filterSilentDays],
-    queryFn: ({ pageParam }) => eventsApi.list(slug!, {
-      event_type_id: filterEtId,
-      search: debouncedSearch || undefined,
-      implemented: filterImplemented,
-      reviewed: filterReviewedForQuery,
-      archived: filterArchivedForQuery,
-      tag: filterTag || undefined,
-      silent_since_days: filterSilentDays,
-      offset: pageParam,
-      limit: EVENTS_PAGE_SIZE,
-    }),
-    initialPageParam: 0,
-    getNextPageParam: (lastPage, allPages) => {
-      const loaded = allPages.reduce((sum, page) => sum + page.items.length, 0)
-      return loaded < lastPage.total ? loaded : undefined
-    },
-    enabled: !!slug,
-    placeholderData: (prev) => prev,
-  })
-  const eventsData = useMemo(() => {
-    const pages = eventsQuery.data?.pages
-    if (!pages || pages.length === 0) return undefined
-    return {
-      items: pages.flatMap(page => page.items),
-      total: pages[0].total,
-    }
-  }, [eventsQuery.data])
 
   const { data: tabMetrics, isLoading: tabMetricsLoading } = useQuery({
     queryKey: ['eventsMetrics', slug, filterEtId, debouncedSearch, filterImplemented, filterTag, filterReviewedForQuery, filterArchivedForQuery, tabMetricsRange.from, tabMetricsRange.to],
@@ -381,8 +256,8 @@ export default function EventsPage() {
   })
 
   const eventIdsForSignals = useMemo(
-    () => (eventsData?.items ?? []).map(event => event.id),
-    [eventsData?.items],
+    () => rawEvents.map(event => event.id),
+    [rawEvents],
   )
   // queryKey wants a stable scalar — a fresh array reference on every refetch
   // would mint a new cache entry per refetch and refetch in a loop.
@@ -592,9 +467,6 @@ export default function EventsPage() {
     useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }),
   )
 
-  const rawEvents = useMemo(() => eventsData?.items ?? [], [eventsData?.items])
-  const total = eventsData?.total ?? 0
-
   const activeEt = eventTypes.find((e: EventType) => e.name === activeTab) ?? null
   const openedEvent = openEventId ? (urlEvent ?? null) : editingEvent
   const isTabChartOpen = openCharts[activeTab] ?? false
@@ -794,7 +666,7 @@ export default function EventsPage() {
     const lastVisible = virtualItems[virtualItems.length - 1]
     if (lastVisible && lastVisible.index >= events.length - 50) {
       void fetchNextPage()
-    } else if (!virtualize && events.length > 0 && events.length < (eventsData?.total ?? 0)) {
+    } else if (!virtualize && events.length > 0 && events.length < total) {
       void fetchNextPage()
     }
   }, [
@@ -804,7 +676,7 @@ export default function EventsPage() {
     eventsQuery.isFetchingNextPage,
     fetchNextPage,
     virtualize,
-    eventsData?.total,
+    total,
   ])
   const colCount =
     1 /* drag handle */ +
