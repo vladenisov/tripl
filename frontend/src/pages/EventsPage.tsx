@@ -8,19 +8,15 @@ import {
   type QueryKey,
 } from '@tanstack/react-query'
 import {
-  DndContext,
   PointerSensor,
   KeyboardSensor,
-  closestCenter,
   useSensor,
   useSensors,
   type DragEndEvent,
 } from '@dnd-kit/core'
 import {
-  SortableContext,
   arrayMove,
   sortableKeyboardCoordinates,
-  verticalListSortingStrategy,
 } from '@dnd-kit/sortable'
 import { eventsApi } from '@/api/events'
 import { metricsApi } from '@/api/metrics'
@@ -36,37 +32,29 @@ import type {
   EventType,
   EventTypeBrief,
   FieldDefinition,
-  MetaFieldDefinition,
   MonitoringSignal,
 } from '@/types'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
 import { MetricsChart } from '@/components/ui/chart-lazy'
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible'
-import { Checkbox } from '@/components/ui/checkbox'
-import {
-  Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
-} from '@/components/ui/table'
 import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from '@/components/ui/select'
-import { TooltipProvider } from '@/components/ui/tooltip'
-import { EmptyState } from '@/components/empty-state'
 import { ErrorState } from '@/components/error-state'
 import { MiniStat, MiniStatDivider } from '@/components/primitives/mini-stat'
 import { aggregateMetricPoints, type MetricsGranularity } from '@/lib/metrics'
 import { cn } from '@/lib/utils'
 import {
   AlertTriangle,
-  Calendar,
   ChevronDown,
   Plus,
   Trash2,
 } from 'lucide-react'
 
-import { ColumnFilter, FilterableHead, type ColumnFilterType } from './events/ColumnFilter'
 import { EventForm } from './events/EventForm'
-import { EventRow, type RowAction } from './events/EventRow'
+import { type RowAction } from './events/EventRow'
+import { EventsTable } from './events/EventsTable'
 import { EventsToolbar } from './events/EventsToolbar'
 import { useEventsQuery } from './events/useEventsQuery'
 import {
@@ -76,8 +64,6 @@ import {
   EMPTY_SIGNALS,
   EMPTY_TAGS,
   EMPTY_VARIABLES,
-  EMPTY_WINDOW_POINTS,
-  ROW_METRICS_LABEL,
   ROW_METRICS_RANGE_HOURS,
   TAB_METRICS_GRANULARITY_OPTIONS,
   TAB_METRICS_RANGE_DAYS_DEFAULT,
@@ -1114,169 +1100,46 @@ export default function EventsPage() {
       </Collapsible>
 
       {/* Events Table */}
-      <TooltipProvider delayDuration={0}>
-      <DndContext sensors={dndSensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
-      <SortableContext items={visibleEventIds} strategy={verticalListSortingStrategy}>
-      <div
-        ref={tableScrollRef}
-        className="tripl-table-wrap"
-        style={{
-          maxHeight: isTabChartOpen
-            ? 'max(320px, calc(100vh - 455px))'
-            : 'max(420px, calc(100vh - 285px))',
-          overflowY: 'auto',
-        }}
-      >
-        <Table className="tripl-table">
-          <TableHeader>
-            <TableRow>
-              <TableHead className="w-8 px-1" aria-label="Reorder" />
-              <TableHead className="tripl-pin-l w-10 pl-5">
-                <Checkbox
-                  checked={allVisibleSelected ? true : someVisibleSelected ? 'indeterminate' : false}
-                  onCheckedChange={checked => toggleAllVisibleSelected(checked === true)}
-                  aria-label="Select all visible events"
-                />
-              </TableHead>
-              <TableHead>Event</TableHead>
-              {!activeEt && <TableHead>Type</TableHead>}
-              <TableHead className="w-32 text-right">{ROW_METRICS_LABEL}</TableHead>
-              {!hideTags && (
-                <FilterableHead
-                  label="Tags"
-                  filter={
-                    allTags.length > 0 ? (
-                      <ColumnFilter
-                        label="Tag"
-                        type="enum"
-                        value={filterTag}
-                        options={allTags}
-                        onChange={setFilterTag}
-                      />
-                    ) : null
-                  }
-                />
-              )}
-              {!hideLastSeen && (
-                <TableHead className="w-24 text-[11px]">Last seen</TableHead>
-              )}
-              {visibleFieldColumns.map(f => {
-                const enumOpts = fieldEnumOptions[f.id]
-                const filterType: ColumnFilterType | null =
-                  f.field_type === 'enum' && enumOpts ? 'enum'
-                    : f.field_type === 'boolean' ? 'boolean'
-                    : f.field_type === 'json' ? null
-                    : 'text'
-                return (
-                  <FilterableHead
-                    key={f.id}
-                    label={f.display_name}
-                    filter={
-                      filterType ? (
-                        <ColumnFilter
-                          label={f.display_name}
-                          type={filterType}
-                          value={fieldFilters[f.name] ?? ''}
-                          options={
-                            filterType === 'enum'
-                              ? Array.from(enumOpts ?? [])
-                              : undefined
-                          }
-                          onChange={v => updateFieldFilter(f.name, v)}
-                        />
-                      ) : null
-                    }
-                  />
-                )
-              })}
-              {visibleMetaFields.map((mf: MetaFieldDefinition) => {
-                const filterType: ColumnFilterType =
-                  mf.field_type === 'enum' && mf.enum_options ? 'enum'
-                    : mf.field_type === 'boolean' ? 'boolean'
-                    : 'text'
-                return (
-                  <FilterableHead
-                    key={mf.id}
-                    label={mf.display_name}
-                    className="text-muted-foreground"
-                    filter={
-                      <ColumnFilter
-                        label={mf.display_name}
-                        type={filterType}
-                        value={metaFilters[mf.name] ?? ''}
-                        options={
-                          filterType === 'enum'
-                            ? mf.enum_options ?? undefined
-                            : undefined
-                        }
-                        onChange={v => updateMetaFilter(mf.name, v)}
-                      />
-                    }
-                  />
-                )
-              })}
-              <TableHead className="sticky right-0 z-20 w-[7.5rem] border-l bg-background text-right">
-                Actions
-              </TableHead>
-            </TableRow>
-          </TableHeader>
-          <TableBody>
-            {virtualize && virtualItems.length > 0 && virtualItems[0].start > 0 && (
-              <tr aria-hidden style={{ height: virtualItems[0].start }}>
-                <td colSpan={colCount} />
-              </tr>
-            )}
-            {(virtualize ? virtualItems.map(vi => events[vi.index]) : events).map((ev: EventListItem) => {
-              const idx = visibleIndexById.get(ev.id) ?? -1
-              const expandedFieldId =
-                expandedCell && expandedCell.startsWith(ev.id + '-')
-                  ? expandedCell.slice(ev.id.length + 1)
-                  : null
-              const windowMetric = eventWindowMetricsByEvent.get(ev.id)
-              return (
-                <EventRow
-                  key={ev.id}
-                  ev={ev}
-                  selected={selectedSet.has(ev.id)}
-                  hideType={!!activeEt}
-                  hideTags={hideTags}
-                  hideLastSeen={hideLastSeen}
-                  fieldColumns={visibleFieldColumns}
-                  metaFields={visibleMetaFields}
-                  slug={slug!}
-                  canMoveUp={idx > 0}
-                  canMoveDown={idx >= 0 && idx < visibleEventIds.length - 1}
-                  expandedFieldId={expandedFieldId}
-                  rowSignal={eventRowSignals.get(ev.id)}
-                  windowTotal={windowMetric?.total_count}
-                  windowData={windowMetric?.data ?? EMPTY_WINDOW_POINTS}
-                  metaValueMap={metaValuesByEvent.get(ev.id)}
-                  eventType={eventTypesById.get(ev.event_type_id)}
-                  getFieldValue={getFieldValue}
-                  onToggleSelected={toggleEventSelected}
-                  onToggleExpanded={onToggleExpandedCell}
-                  onRowAction={onRowAction}
-                />
-              )
-            })}
-            {virtualize && virtualItems.length > 0 && totalVirtualSize > virtualItems[virtualItems.length - 1].end && (
-              <tr aria-hidden style={{ height: totalVirtualSize - virtualItems[virtualItems.length - 1].end }}>
-                <td colSpan={colCount} />
-              </tr>
-            )}
-            {events.length === 0 && (
-              <TableRow>
-                <TableCell colSpan={99}>
-                  <EmptyState icon={Calendar} title="No events yet" description="Create your first event to get started." />
-                </TableCell>
-              </TableRow>
-            )}
-          </TableBody>
-        </Table>
-      </div>
-      </SortableContext>
-      </DndContext>
-      </TooltipProvider>
+      <EventsTable
+        tableScrollRef={tableScrollRef}
+        isTabChartOpen={isTabChartOpen}
+        dndSensors={dndSensors}
+        handleDragEnd={handleDragEnd}
+        visibleEventIds={visibleEventIds}
+        allVisibleSelected={allVisibleSelected}
+        someVisibleSelected={someVisibleSelected}
+        toggleAllVisibleSelected={toggleAllVisibleSelected}
+        activeEt={activeEt}
+        hideTags={hideTags}
+        hideLastSeen={hideLastSeen}
+        allTags={allTags}
+        filterTag={filterTag}
+        setFilterTag={setFilterTag}
+        visibleFieldColumns={visibleFieldColumns}
+        fieldFilters={fieldFilters}
+        updateFieldFilter={updateFieldFilter}
+        fieldEnumOptions={fieldEnumOptions}
+        visibleMetaFields={visibleMetaFields}
+        metaFilters={metaFilters}
+        updateMetaFilter={updateMetaFilter}
+        events={events}
+        virtualize={virtualize}
+        virtualItems={virtualItems}
+        totalVirtualSize={totalVirtualSize}
+        colCount={colCount}
+        expandedCell={expandedCell}
+        eventWindowMetricsByEvent={eventWindowMetricsByEvent}
+        eventRowSignals={eventRowSignals}
+        metaValuesByEvent={metaValuesByEvent}
+        eventTypesById={eventTypesById}
+        slug={slug!}
+        selectedSet={selectedSet}
+        visibleIndexById={visibleIndexById}
+        getFieldValue={getFieldValue}
+        toggleEventSelected={toggleEventSelected}
+        onToggleExpandedCell={onToggleExpandedCell}
+        onRowAction={onRowAction}
+      />
         </>
       )}
     </div>
