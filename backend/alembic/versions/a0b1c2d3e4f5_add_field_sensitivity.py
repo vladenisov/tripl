@@ -1,6 +1,6 @@
 """add sensitivity classification to field_definitions and meta_field_definitions
 
-Revision ID: 0a1b2c3d4e5f
+Revision ID: a0b1c2d3e4f5
 Revises: 9e0f1a2b3c4d
 Create Date: 2026-05-17 11:30:00.000000
 
@@ -11,7 +11,7 @@ from __future__ import annotations
 import sqlalchemy as sa
 from alembic import op
 
-revision = "0a1b2c3d4e5f"
+revision = "a0b1c2d3e4f5"
 down_revision = "9e0f1a2b3c4d"
 branch_labels = None
 depends_on = None
