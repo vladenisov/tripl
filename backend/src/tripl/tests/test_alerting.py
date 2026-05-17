@@ -1104,7 +1104,10 @@ async def test_alert_rule_simulate_endpoint(client: AsyncClient) -> None:
     assert payload["cooldown_minutes_saved"] == 60
     assert isinstance(payload["rendered_message"], str)
     assert payload["rendered_message"]
-    assert all(isinstance(f["rendered_item"], str) and f["rendered_item"] for f in payload["firings"])
+    assert all(
+        isinstance(f["rendered_item"], str) and f["rendered_item"]
+        for f in payload["firings"]
+    )
 
     # Cooldown override = 0 disables grouping, so every anomaly fires.
     resp_zero = await client.post(

@@ -6,7 +6,6 @@ from fastapi import HTTPException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from tripl.crypto import decrypt_value
 from tripl.json_paths import (
     decode_json_path_value,
     flatten_json_paths,
@@ -27,7 +26,7 @@ from tripl.schemas.scan_config import (
     ScanPreviewJsonPathResponse,
 )
 from tripl.worker.adapters.base import BaseAdapter, ColumnInfo
-from tripl.worker.adapters.clickhouse import ClickHouseAdapter
+from tripl.worker.adapters.registry import build_adapter
 from tripl.worker.analyzers.cardinality import _is_json_type
 
 
@@ -48,16 +47,10 @@ async def _verify_data_source(session: AsyncSession, ds_id: uuid.UUID) -> DataSo
 
 
 def _build_adapter(ds: DataSource) -> BaseAdapter:
-    password = decrypt_value(ds.password_encrypted)
-    if ds.db_type != "clickhouse":
-        raise HTTPException(status_code=400, detail=f"Unsupported data source type: {ds.db_type}")
-    return ClickHouseAdapter(
-        host=ds.host,
-        port=ds.port,
-        database=ds.database_name,
-        username=ds.username,
-        password=password,
-    )
+    try:
+        return build_adapter(ds)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 def _validate_metric_breakdown_selection(

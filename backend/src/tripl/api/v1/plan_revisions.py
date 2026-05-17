@@ -1,4 +1,5 @@
 import uuid
+from typing import Annotated
 
 from fastapi import APIRouter, Query
 
@@ -48,7 +49,7 @@ async def diff_revision(
     session: SessionDep,
     slug: str,
     revision_id: uuid.UUID,
-    compare_to: uuid.UUID = Query(...),
+    compare_to: Annotated[uuid.UUID, Query()],
 ) -> PlanDiff:
     return await plan_revision_service.diff_revisions(
         session, slug, revision_id, compare_to

@@ -9,14 +9,13 @@ from datetime import UTC, datetime
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from tripl.crypto import decrypt_value
 from tripl.json_paths import group_json_value_paths
 from tripl.models.data_source import DataSource
 from tripl.models.event_type import EventType
 from tripl.models.scan_config import ScanConfig
 from tripl.models.scan_job import ScanJob, ScanJobStatus
 from tripl.worker.adapters.base import BaseAdapter, ColumnInfo
-from tripl.worker.adapters.clickhouse import ClickHouseAdapter
+from tripl.worker.adapters.registry import build_adapter
 from tripl.worker.analyzers.cardinality import analyze_cardinality, analyze_cardinality_grouped
 from tripl.worker.analyzers.event_generator import GenerationResult, generate_events
 from tripl.worker.celery_app import celery_app
@@ -30,19 +29,7 @@ def _get_sync_session() -> Session:
 
 
 def _build_adapter(ds: DataSource) -> BaseAdapter:
-    password = decrypt_value(ds.password_encrypted)
-
-    if ds.db_type == "clickhouse":
-        return ClickHouseAdapter(
-            host=ds.host,
-            port=ds.port,
-            database=ds.database_name,
-            username=ds.username,
-            password=password,
-        )
-
-    msg = f"Unsupported db_type: {ds.db_type}"
-    raise ValueError(msg)
+    return build_adapter(ds)
 
 
 @celery_app.task(  # type: ignore[untyped-decorator]

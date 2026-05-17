@@ -59,7 +59,7 @@ export function HistoryTab({ slug }: { slug: string }) {
     queryFn: () => planRevisionsApi.list(slug, { limit: 50 }),
     enabled: !!slug,
   })
-  const revisions = listQuery.data?.items ?? []
+  const revisions = useMemo(() => listQuery.data?.items ?? [], [listQuery.data])
 
   // Default the diff selection to the latest revision once data lands.
   const effectiveSelected =

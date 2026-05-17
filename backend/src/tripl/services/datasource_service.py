@@ -8,7 +8,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from tripl import cache
-from tripl.crypto import decrypt_value, encrypt_value
+from tripl.crypto import encrypt_value
 from tripl.models.data_source import DataSource, TestStatus
 from tripl.schemas.data_source import (
     DataSourceCreate,
@@ -127,19 +127,10 @@ def _to_response(ds: DataSource) -> DataSourceResponse:
 
 def _run_adapter_test(ds: DataSource) -> tuple[bool, str]:
     """Open a sync adapter, run a probe, return (ok, message). Always closes."""
-    if ds.db_type != "clickhouse":
-        return False, f"Unsupported db_type: {ds.db_type}"
-
-    from tripl.worker.adapters.clickhouse import ClickHouseAdapter
+    from tripl.worker.adapters.registry import build_adapter
 
     try:
-        adapter = ClickHouseAdapter(
-            host=ds.host,
-            port=ds.port,
-            database=ds.database_name,
-            username=ds.username,
-            password=decrypt_value(ds.password_encrypted),
-        )
+        adapter = build_adapter(ds)
     except Exception as exc:  # noqa: BLE001
         return False, str(exc)
 

@@ -93,20 +93,9 @@ def _get_sync_session() -> Session:
 
 
 def _build_adapter(ds: DataSource) -> BaseAdapter:
-    from tripl.crypto import decrypt_value
-    from tripl.worker.adapters.clickhouse import ClickHouseAdapter
+    from tripl.worker.adapters.registry import build_adapter
 
-    password = decrypt_value(ds.password_encrypted)
-    if ds.db_type == "clickhouse":
-        return ClickHouseAdapter(
-            host=ds.host,
-            port=ds.port,
-            database=ds.database_name,
-            username=ds.username,
-            password=password,
-        )
-    msg = f"Unsupported db_type: {ds.db_type}"
-    raise ValueError(msg)
+    return build_adapter(ds)
 
 
 def _floor_to_interval(dt: datetime, delta: timedelta) -> datetime:

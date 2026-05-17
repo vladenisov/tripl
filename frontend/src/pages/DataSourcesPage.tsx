@@ -4,6 +4,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { dataSourcesApi } from '@/api/dataSources'
 import { useConfirm } from '@/hooks/useConfirm'
 import type { DataSource, DbType } from '@/types'
+import { DB_TYPE_OPTIONS } from '@/types'
 import { Button } from '@/components/ui/button'
 import {
   Dialog,
@@ -46,9 +47,20 @@ function ConnectionsTab({ openDsId }: { openDsId?: string }) {
   const { confirm, dialog } = useConfirm()
 
   const [name, setName] = useState('')
-  const [dbType] = useState<DbType>('clickhouse')
+  const [dbType, setDbType] = useState<DbType>('clickhouse')
   const [host, setHost] = useState('')
   const [port, setPort] = useState(8123)
+
+  const handleDbTypeChange = (value: DbType) => {
+    const previousDefault = DB_TYPE_OPTIONS.find((o) => o.value === dbType)?.defaultPort
+    const nextDefault = DB_TYPE_OPTIONS.find((o) => o.value === value)?.defaultPort
+    setDbType(value)
+    // Only auto-update port if the user hasn't customized it away from the
+    // previous adapter's default.
+    if (nextDefault && port === previousDefault) {
+      setPort(nextDefault)
+    }
+  }
   const [databaseName, setDatabaseName] = useState('')
   const [username, setUsername] = useState('')
   const [password, setPassword] = useState('')
@@ -176,6 +188,7 @@ function ConnectionsTab({ openDsId }: { openDsId?: string }) {
   const resetForm = () => {
     setShowForm(false)
     setName('')
+    setDbType('clickhouse')
     setHost('')
     setPort(8123)
     setDatabaseName('')
@@ -235,8 +248,19 @@ function ConnectionsTab({ openDsId }: { openDsId?: string }) {
                   <Input value={name} onChange={(e) => setName(e.target.value)} required placeholder="Production ClickHouse" />
                 </div>
                 <div className="grid gap-2">
-                  <Label>Type</Label>
-                  <Input value={dbType} disabled className="bg-muted" />
+                  <Label htmlFor="ds-type">Type</Label>
+                  <select
+                    id="ds-type"
+                    value={dbType}
+                    onChange={(e) => handleDbTypeChange(e.target.value as DbType)}
+                    className="flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                  >
+                    {DB_TYPE_OPTIONS.map((opt) => (
+                      <option key={opt.value} value={opt.value}>
+                        {opt.label}
+                      </option>
+                    ))}
+                  </select>
                 </div>
               </div>
               <div className="grid grid-cols-5 gap-3">
