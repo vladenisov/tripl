@@ -87,6 +87,50 @@ async def test_delete_field(client: AsyncClient):
 
 
 @pytest.mark.asyncio
+async def test_field_sensitivity_round_trip(client: AsyncClient):
+    et_id = await _setup(client, "f-sens")
+    create = await client.post(
+        f"/api/v1/projects/f-sens/event-types/{et_id}/fields",
+        json={
+            "name": "email",
+            "display_name": "Email",
+            "field_type": "string",
+            "sensitivity": "pii",
+        },
+    )
+    assert create.status_code == 201
+    field_id = create.json()["id"]
+    assert create.json()["sensitivity"] == "pii"
+
+    # Default is "none" when sensitivity is omitted.
+    other = await client.post(
+        f"/api/v1/projects/f-sens/event-types/{et_id}/fields",
+        json={"name": "screen", "display_name": "Screen", "field_type": "string"},
+    )
+    assert other.json()["sensitivity"] == "none"
+
+    # Invalid value is rejected.
+    bad = await client.post(
+        f"/api/v1/projects/f-sens/event-types/{et_id}/fields",
+        json={
+            "name": "bogus",
+            "display_name": "Bogus",
+            "field_type": "string",
+            "sensitivity": "top-secret",
+        },
+    )
+    assert bad.status_code == 422
+
+    # PATCH updates sensitivity in place.
+    upd = await client.patch(
+        f"/api/v1/projects/f-sens/event-types/{et_id}/fields/{field_id}",
+        json={"sensitivity": "secret"},
+    )
+    assert upd.status_code == 200
+    assert upd.json()["sensitivity"] == "secret"
+
+
+@pytest.mark.asyncio
 async def test_reorder_fields(client: AsyncClient):
     et_id = await _setup(client, "f-reorder")
     r1 = await client.post(

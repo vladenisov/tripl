@@ -29,5 +29,6 @@ class FieldDefinition(UUIDMixin, Base):
     enum_options: Mapped[list[str] | None] = mapped_column(sa.JSON, nullable=True)
     description: Mapped[str] = mapped_column(Text, default="")
     order: Mapped[int] = mapped_column(Integer, default=0)
+    sensitivity: Mapped[str] = mapped_column(String(20), default="none", server_default="none")
 
     event_type: Mapped[EventType] = relationship(back_populates="field_definitions")

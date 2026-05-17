@@ -28,5 +28,6 @@ class MetaFieldDefinition(UUIDMixin, Base):
     default_value: Mapped[str | None] = mapped_column(Text, nullable=True)
     link_template: Mapped[str | None] = mapped_column(Text, nullable=True)
     order: Mapped[int] = mapped_column(Integer, default=0)
+    sensitivity: Mapped[str] = mapped_column(String(20), default="none", server_default="none")
 
     project: Mapped[Project] = relationship(back_populates="meta_field_definitions")

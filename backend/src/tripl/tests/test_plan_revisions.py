@@ -92,10 +92,11 @@ async def test_diff_reports_added_removed_and_changed_entities(
         },
     )
     assert new_field.status_code == 201
-    # Flip required → False on the existing field to drive a "changed" entry.
+    # Flip required → False AND tag the field as PII to drive a "changed"
+    # entry covering both kinds of field-level edits.
     patch = await client.patch(
         f"/api/v1/projects/rev-diff/event-types/{et_id}/fields/{field_id}",
-        json={"is_required": False},
+        json={"is_required": False, "sensitivity": "pii"},
     )
     assert patch.status_code == 200
     # Toggle implemented on the event to drive an event-level change.
@@ -123,6 +124,10 @@ async def test_diff_reports_added_removed_and_changed_entities(
     assert kinds_by_name[("field_definition", "screen")]["kind"] == "changed"
     assert any(
         "is_required" in change
+        for change in kinds_by_name[("field_definition", "screen")]["changes"]
+    )
+    assert any(
+        "sensitivity" in change
         for change in kinds_by_name[("field_definition", "screen")]["changes"]
     )
     assert kinds_by_name[("event", "Home View")]["kind"] == "changed"

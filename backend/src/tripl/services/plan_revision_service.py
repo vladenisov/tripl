@@ -43,6 +43,7 @@ _FIELD_DEFINITION_CHANGE_KEYS = (
     "is_required",
     "enum_options",
     "description",
+    "sensitivity",
 )
 _EVENT_TYPE_CHANGE_KEYS = ("display_name", "description", "color")
 _EVENT_CHANGE_KEYS = (
@@ -59,7 +60,7 @@ _META_FIELD_CHANGE_KEYS = (
     "enum_options",
     "default_value",
     "link_template",
-    "description",
+    "sensitivity",
 )
 _RELATION_CHANGE_KEYS = ("relation_type", "description")
 
@@ -107,6 +108,7 @@ async def build_plan_snapshot(
                         "enum_options": list(fd.enum_options) if fd.enum_options else None,
                         "description": fd.description,
                         "order": fd.order,
+                        "sensitivity": fd.sensitivity,
                     }
                     for fd in fds
                 ],
@@ -171,6 +173,7 @@ async def build_plan_snapshot(
             "default_value": mf.default_value,
             "link_template": mf.link_template,
             "order": mf.order,
+            "sensitivity": mf.sensitivity,
         }
         for mf in meta_fields_rows
     ]

@@ -1,7 +1,9 @@
 import uuid
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
+
+Sensitivity = Literal["none", "pii", "phi", "financial", "secret"]
 
 
 class FieldDefinitionCreate(BaseModel):
@@ -12,6 +14,7 @@ class FieldDefinitionCreate(BaseModel):
     enum_options: list[str] | None = None
     description: str = ""
     order: int = 0
+    sensitivity: Sensitivity = "none"
 
 
 class FieldDefinitionUpdate(BaseModel):
@@ -21,6 +24,7 @@ class FieldDefinitionUpdate(BaseModel):
     enum_options: list[str] | None = None
     description: str | None = None
     order: int | None = None
+    sensitivity: Sensitivity | None = None
 
 
 class FieldDefinitionResponse(BaseModel):
@@ -33,6 +37,7 @@ class FieldDefinitionResponse(BaseModel):
     enum_options: list[Any] | None
     description: str
     order: int
+    sensitivity: Sensitivity
 
     model_config = {"from_attributes": True}
 

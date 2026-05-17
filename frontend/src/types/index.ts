@@ -125,7 +125,22 @@ export interface FieldDefinition {
   enum_options: string[] | null
   description: string
   order: number
+  sensitivity: Sensitivity
 }
+
+export type Sensitivity = 'none' | 'pii' | 'phi' | 'financial' | 'secret'
+
+export const SENSITIVITY_OPTIONS: {
+  value: Sensitivity
+  label: string
+  chip: string
+}[] = [
+  { value: 'none', label: 'None', chip: 'bg-muted text-muted-foreground' },
+  { value: 'pii', label: 'PII', chip: 'bg-rose-500/15 text-rose-700' },
+  { value: 'phi', label: 'PHI', chip: 'bg-purple-500/15 text-purple-700' },
+  { value: 'financial', label: 'Financial', chip: 'bg-amber-500/15 text-amber-700' },
+  { value: 'secret', label: 'Secret', chip: 'bg-slate-800/80 text-slate-100' },
+]
 
 export interface EventTypeRelation {
   id: string
@@ -149,6 +164,7 @@ export interface MetaFieldDefinition {
   default_value: string | null
   link_template: string | null
   order: number
+  sensitivity: Sensitivity
 }
 
 export interface EventFieldValue {

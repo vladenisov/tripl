@@ -2,7 +2,9 @@ import { useState } from "react"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { List, Pencil, Plus, Trash2 } from "lucide-react"
 import { metaFieldsApi } from "@/api/metaFields"
-import type { MetaFieldDefinition } from "@/types"
+import type { MetaFieldDefinition, Sensitivity } from "@/types"
+import { SENSITIVITY_OPTIONS } from "@/types"
+import { SensitivityChip } from "@/components/primitives/sensitivity-chip"
 import { useConfirm } from "@/hooks/useConfirm"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
@@ -26,6 +28,7 @@ export function MetaFieldsTab({ slug }: { slug: string }) {
   const [defaultValue, setDefaultValue] = useState('')
   const [displayAsLink, setDisplayAsLink] = useState(false)
   const [linkTemplate, setLinkTemplate] = useState('')
+  const [sensitivity, setSensitivity] = useState<Sensitivity>('none')
   const [editingMf, setEditingMf] = useState<MetaFieldDefinition | null>(null)
   const [editDisplayName, setEditDisplayName] = useState('')
   const [editFieldType, setEditFieldType] = useState('')
@@ -35,6 +38,7 @@ export function MetaFieldsTab({ slug }: { slug: string }) {
   const [editDefaultValue, setEditDefaultValue] = useState('')
   const [editDisplayAsLink, setEditDisplayAsLink] = useState(false)
   const [editLinkTemplate, setEditLinkTemplate] = useState('')
+  const [editSensitivity, setEditSensitivity] = useState<Sensitivity>('none')
   const { confirm, dialog } = useConfirm()
 
   const metaFieldTypes = ['string', 'url', 'boolean', 'enum', 'date']
@@ -50,12 +54,13 @@ export function MetaFieldsTab({ slug }: { slug: string }) {
       ...(fieldType === 'enum' && enumOptions.length > 0 ? { enum_options: enumOptions } : {}),
       ...(defaultValue ? { default_value: defaultValue } : {}),
       ...(displayAsLink ? { link_template: linkTemplate.trim() || null } : {}),
+      sensitivity,
     }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['metaFields', slug] })
       setShowForm(false); setName(''); setDisplayName(''); setFieldType('string')
       setIsRequired(false); setEnumOptions([]); setEnumInput(''); setDefaultValue('')
-      setDisplayAsLink(false); setLinkTemplate('')
+      setDisplayAsLink(false); setLinkTemplate(''); setSensitivity('none')
     },
   })
 
@@ -65,6 +70,7 @@ export function MetaFieldsTab({ slug }: { slug: string }) {
       ...(editFieldType === 'enum' ? { enum_options: editEnumOptions } : { enum_options: null }),
       default_value: editDefaultValue || null,
       link_template: editDisplayAsLink ? (editLinkTemplate.trim() || null) : null,
+      sensitivity: editSensitivity,
     }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['metaFields', slug] })
@@ -97,6 +103,7 @@ export function MetaFieldsTab({ slug }: { slug: string }) {
     setEditDefaultValue(mf.default_value ?? '')
     setEditDisplayAsLink(Boolean(mf.link_template))
     setEditLinkTemplate(mf.link_template ?? '')
+    setEditSensitivity(mf.sensitivity)
   }
 
   const addMetaEnumOption = (option: string, target: 'create' | 'edit') => {
@@ -129,11 +136,17 @@ export function MetaFieldsTab({ slug }: { slug: string }) {
                 <div className="grid gap-2"><Label>Name (e.g. jira_link)</Label><Input value={name} onChange={e => setName(e.target.value)} required /></div>
                 <div className="grid gap-2"><Label>Display Name</Label><Input value={displayName} onChange={e => setDisplayName(e.target.value)} required /></div>
               </div>
-              <div className="grid grid-cols-2 gap-3">
+              <div className="grid grid-cols-3 gap-3">
                 <div className="grid gap-2">
                   <Label>Type</Label>
                   <select value={fieldType} onChange={e => setFieldType(e.target.value)} className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm">
                     {metaFieldTypes.map(t => <option key={t}>{t}</option>)}
+                  </select>
+                </div>
+                <div className="grid gap-2">
+                  <Label>Sensitivity</Label>
+                  <select value={sensitivity} onChange={e => setSensitivity(e.target.value as Sensitivity)} className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm">
+                    {SENSITIVITY_OPTIONS.map(opt => <option key={opt.value} value={opt.value}>{opt.label}</option>)}
                   </select>
                 </div>
                 <div className="flex items-end pb-2">
@@ -207,8 +220,14 @@ export function MetaFieldsTab({ slug }: { slug: string }) {
                   </select>
                 </div>
               </div>
-              <div className="grid grid-cols-2 gap-3">
+              <div className="grid grid-cols-3 gap-3">
                 <div className="grid gap-2"><Label>Default Value</Label><Input value={editDefaultValue} onChange={e => setEditDefaultValue(e.target.value)} placeholder="Optional" /></div>
+                <div className="grid gap-2">
+                  <Label>Sensitivity</Label>
+                  <select value={editSensitivity} onChange={e => setEditSensitivity(e.target.value as Sensitivity)} className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm">
+                    {SENSITIVITY_OPTIONS.map(opt => <option key={opt.value} value={opt.value}>{opt.label}</option>)}
+                  </select>
+                </div>
                 <div className="flex items-end pb-2">
                   <div className="flex items-center gap-2">
                     <Checkbox id="edit-meta-req" checked={editIsRequired} onCheckedChange={c => setEditIsRequired(!!c)} />
@@ -272,6 +291,7 @@ export function MetaFieldsTab({ slug }: { slug: string }) {
                   <TableHead>Name</TableHead>
                   <TableHead>Display</TableHead>
                 <TableHead className="w-20">Type</TableHead>
+                <TableHead className="w-24">PII</TableHead>
                 <TableHead className="w-16">Req</TableHead>
                 <TableHead>Default</TableHead>
                 <TableHead className="w-24"></TableHead>
@@ -294,6 +314,9 @@ export function MetaFieldsTab({ slug }: { slug: string }) {
                   <TableCell>
                     <Badge variant="outline" className="text-[10px]">{mf.field_type}</Badge>
                     {mf.field_type === 'enum' && mf.enum_options && <span className="text-muted-foreground text-[10px] ml-1">({mf.enum_options.length})</span>}
+                  </TableCell>
+                  <TableCell>
+                    <SensitivityChip value={mf.sensitivity} />
                   </TableCell>
                   <TableCell>{mf.is_required ? <span className="text-green-600 font-medium text-xs">✓</span> : <span className="text-muted-foreground">—</span>}</TableCell>
                   <TableCell className="text-xs text-muted-foreground">{mf.default_value ?? '—'}</TableCell>

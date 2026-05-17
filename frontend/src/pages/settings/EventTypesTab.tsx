@@ -3,7 +3,8 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { ArrowDown, ArrowUp, ChevronDown, Layers, Pencil, Plus, Trash2 } from 'lucide-react'
 import { eventTypesApi } from '@/api/eventTypes'
 import { fieldsApi } from '@/api/fields'
-import type { EventType, FieldDefinition } from '@/types'
+import type { EventType, FieldDefinition, Sensitivity } from '@/types'
+import { SENSITIVITY_OPTIONS } from '@/types'
 import { useConfirm } from '@/hooks/useConfirm'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -15,6 +16,7 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { EmptyState } from '@/components/empty-state'
+import { SensitivityChip } from '@/components/primitives/sensitivity-chip'
 
 export function EventTypesTab({ slug }: { slug: string }) {
   const qc = useQueryClient()
@@ -188,6 +190,7 @@ function FieldsEditor({ slug, eventType }: { slug: string; eventType: EventType 
   const [isRequired, setIsRequired] = useState(false)
   const [enumOptions, setEnumOptions] = useState<string[]>([])
   const [enumInput, setEnumInput] = useState('')
+  const [sensitivity, setSensitivity] = useState<Sensitivity>('none')
   const [editingField, setEditingField] = useState<FieldDefinition | null>(null)
   const [editDisplayName, setEditDisplayName] = useState('')
   const [editFieldType, setEditFieldType] = useState('')
@@ -195,6 +198,7 @@ function FieldsEditor({ slug, eventType }: { slug: string; eventType: EventType 
   const [editDescription, setEditDescription] = useState('')
   const [editEnumOptions, setEditEnumOptions] = useState<string[]>([])
   const [editEnumInput, setEditEnumInput] = useState('')
+  const [editSensitivity, setEditSensitivity] = useState<Sensitivity>('none')
   const { confirm, dialog } = useConfirm()
 
   const sortedFields = [...eventType.field_definitions].sort((a, b) => a.order - b.order)
@@ -204,11 +208,12 @@ function FieldsEditor({ slug, eventType }: { slug: string; eventType: EventType 
       name, display_name: displayName, field_type: fieldType, is_required: isRequired,
       ...(fieldType === 'enum' && enumOptions.length > 0 ? { enum_options: enumOptions } : {}),
       order: sortedFields.length,
+      sensitivity,
     }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['eventTypes', slug] })
       setShowForm(false); setName(''); setDisplayName(''); setFieldType('string'); setIsRequired(false)
-      setEnumOptions([]); setEnumInput('')
+      setEnumOptions([]); setEnumInput(''); setSensitivity('none')
     },
   })
 
@@ -248,6 +253,7 @@ function FieldsEditor({ slug, eventType }: { slug: string; eventType: EventType 
     setEditDescription(f.description)
     setEditEnumOptions(f.enum_options ?? [])
     setEditEnumInput('')
+    setEditSensitivity(f.sensitivity)
   }
 
   const addEnumOption = (option: string, target: 'create' | 'edit') => {
@@ -267,6 +273,7 @@ function FieldsEditor({ slug, eventType }: { slug: string; eventType: EventType 
       display_name: editDisplayName, field_type: editFieldType as FieldDefinition['field_type'],
       is_required: editIsRequired, description: editDescription,
       ...(editFieldType === 'enum' ? { enum_options: editEnumOptions } : { enum_options: null }),
+      sensitivity: editSensitivity,
     } })
   }
 
@@ -302,11 +309,17 @@ function FieldsEditor({ slug, eventType }: { slug: string; eventType: EventType 
                 <div className="grid gap-2"><Label>Name</Label><Input value={name} onChange={e => setName(e.target.value)} required /></div>
                 <div className="grid gap-2"><Label>Display Name</Label><Input value={displayName} onChange={e => setDisplayName(e.target.value)} required /></div>
               </div>
-              <div className="grid grid-cols-2 gap-3">
+              <div className="grid grid-cols-3 gap-3">
                 <div className="grid gap-2">
                   <Label>Type</Label>
                   <select value={fieldType} onChange={e => setFieldType(e.target.value)} className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm">
                     {fieldTypes.map(t => <option key={t}>{t}</option>)}
+                  </select>
+                </div>
+                <div className="grid gap-2">
+                  <Label>Sensitivity</Label>
+                  <select value={sensitivity} onChange={e => setSensitivity(e.target.value as Sensitivity)} className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm">
+                    {SENSITIVITY_OPTIONS.map(opt => <option key={opt.value} value={opt.value}>{opt.label}</option>)}
                   </select>
                 </div>
                 <div className="flex items-end pb-2">
@@ -365,8 +378,14 @@ function FieldsEditor({ slug, eventType }: { slug: string; eventType: EventType 
                   </select>
                 </div>
               </div>
-              <div className="grid grid-cols-2 gap-3">
+              <div className="grid grid-cols-3 gap-3">
                 <div className="grid gap-2"><Label>Description</Label><Input value={editDescription} onChange={e => setEditDescription(e.target.value)} placeholder="Optional" /></div>
+                <div className="grid gap-2">
+                  <Label>Sensitivity</Label>
+                  <select value={editSensitivity} onChange={e => setEditSensitivity(e.target.value as Sensitivity)} className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm">
+                    {SENSITIVITY_OPTIONS.map(opt => <option key={opt.value} value={opt.value}>{opt.label}</option>)}
+                  </select>
+                </div>
                 <div className="flex items-end pb-2">
                   <div className="flex items-center gap-2">
                     <Checkbox id="edit-field-req" checked={editIsRequired} onCheckedChange={c => setEditIsRequired(!!c)} />
@@ -417,6 +436,7 @@ function FieldsEditor({ slug, eventType }: { slug: string; eventType: EventType 
                 <TableHead>Name</TableHead>
                 <TableHead>Display</TableHead>
                 <TableHead className="w-20">Type</TableHead>
+                <TableHead className="w-24">PII</TableHead>
                 <TableHead className="w-16">Req</TableHead>
                 <TableHead className="w-24"></TableHead>
               </TableRow>
@@ -439,6 +459,9 @@ function FieldsEditor({ slug, eventType }: { slug: string; eventType: EventType 
                   <TableCell>
                     <Badge variant="outline" className="text-[10px]">{f.field_type}</Badge>
                     {f.field_type === 'enum' && f.enum_options && <span className="text-muted-foreground text-[10px] ml-1">({f.enum_options.length})</span>}
+                  </TableCell>
+                  <TableCell>
+                    <SensitivityChip value={f.sensitivity} />
                   </TableCell>
                   <TableCell>{f.is_required ? <span className="text-green-600 font-medium text-xs">✓</span> : <span className="text-muted-foreground">—</span>}</TableCell>
                   <TableCell>

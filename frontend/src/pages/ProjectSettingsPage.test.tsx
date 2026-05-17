@@ -665,6 +665,7 @@ describe('ProjectSettingsPage', () => {
         field_type: 'string',
         is_required: false,
         link_template: 'https://tracker.example.com/issues/${value}',
+        sensitivity: 'none',
       })
     })
 
