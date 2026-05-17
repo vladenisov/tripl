@@ -528,3 +528,55 @@ export interface AlertDeliveryListResponse {
   items: AlertDelivery[]
   total: number
 }
+
+export interface PlanRevisionEntityCounts {
+  event_types: number
+  fields: number
+  events: number
+  variables: number
+  meta_fields: number
+  relations: number
+}
+
+export interface PlanRevisionSummary {
+  id: string
+  project_id: string
+  summary: string
+  created_at: string
+  created_by: string | null
+  entity_counts: PlanRevisionEntityCounts
+}
+
+export interface PlanRevisionDetail extends PlanRevisionSummary {
+  payload: Record<string, unknown>
+}
+
+export interface PlanRevisionList {
+  items: PlanRevisionSummary[]
+  total: number
+}
+
+export type PlanDiffEntityType =
+  | 'event_type'
+  | 'field_definition'
+  | 'event'
+  | 'variable'
+  | 'meta_field'
+  | 'relation'
+
+export type PlanDiffKind = 'added' | 'removed' | 'changed'
+
+export interface PlanDiffEntry {
+  entity_type: PlanDiffEntityType
+  kind: PlanDiffKind
+  name: string
+  parent: string | null
+  changes: string[]
+}
+
+export interface PlanDiff {
+  revision_id: string
+  compare_to: string
+  entries: PlanDiffEntry[]
+  summary: { added: number; removed: number; changed: number }
+}

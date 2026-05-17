@@ -3,19 +3,39 @@ import { useNavigate, useParams } from 'react-router-dom'
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { GeneralTab } from './settings/GeneralTab'
 import { EventTypesTab } from './settings/EventTypesTab'
+import { HistoryTab } from './settings/HistoryTab'
 import { MetaFieldsTab } from './settings/MetaFieldsTab'
 import { RelationsTab } from './settings/RelationsTab'
 import { VariablesTab } from './settings/VariablesTab'
 import { MonitoringTab } from './settings/MonitoringTab'
 import { ScansTab } from './settings/ScansTab'
 
-type SettingsTab = 'general' | 'event-types' | 'meta-fields' | 'relations' | 'variables' | 'monitoring' | 'alerting' | 'scans'
+type SettingsTab =
+  | 'general'
+  | 'event-types'
+  | 'meta-fields'
+  | 'relations'
+  | 'variables'
+  | 'monitoring'
+  | 'alerting'
+  | 'scans'
+  | 'history'
 const ProjectAlertingTab = lazy(() => import('@/pages/ProjectAlertingTab'))
 
 export default function ProjectSettingsPage() {
   const { slug, tab: urlTab } = useParams<{ slug: string; tab?: string }>()
   const navigate = useNavigate()
-  const validTabs: SettingsTab[] = ['general', 'event-types', 'meta-fields', 'relations', 'variables', 'monitoring', 'alerting', 'scans']
+  const validTabs: SettingsTab[] = [
+    'general',
+    'event-types',
+    'meta-fields',
+    'relations',
+    'variables',
+    'monitoring',
+    'alerting',
+    'scans',
+    'history',
+  ]
   const tab: SettingsTab = validTabs.includes(urlTab as SettingsTab) ? (urlTab as SettingsTab) : 'general'
 
   const changeTab = (t: string) => {
@@ -39,6 +59,7 @@ export default function ProjectSettingsPage() {
           <TabsTrigger value="monitoring">Monitoring</TabsTrigger>
           <TabsTrigger value="alerting">Alerting</TabsTrigger>
           <TabsTrigger value="scans">Scans</TabsTrigger>
+          <TabsTrigger value="history">History</TabsTrigger>
         </TabsList>
       </Tabs>
 
@@ -54,6 +75,7 @@ export default function ProjectSettingsPage() {
         </Suspense>
       )}
       {tab === 'scans' && slug && <ScansTab slug={slug} />}
+      {tab === 'history' && slug && <HistoryTab slug={slug} />}
     </div>
   )
 }

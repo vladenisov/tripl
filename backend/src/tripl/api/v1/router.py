@@ -10,6 +10,7 @@ from tripl.api.v1.events import router as events_router
 from tripl.api.v1.fields import router as fields_router
 from tripl.api.v1.meta_fields import router as meta_fields_router
 from tripl.api.v1.metrics import router as metrics_router
+from tripl.api.v1.plan_revisions import router as plan_revisions_router
 from tripl.api.v1.project_anomaly_settings import router as project_anomaly_settings_router
 from tripl.api.v1.projects import router as projects_router
 from tripl.api.v1.relations import router as relations_router
@@ -33,3 +34,4 @@ router.include_router(variables_router, dependencies=protected_dependencies)
 router.include_router(data_sources_router, dependencies=protected_dependencies)
 router.include_router(scans_router, dependencies=protected_dependencies)
 router.include_router(metrics_router, dependencies=protected_dependencies)
+router.include_router(plan_revisions_router, dependencies=protected_dependencies)
