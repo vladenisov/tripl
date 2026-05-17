@@ -227,11 +227,12 @@ export interface Variable {
   description: string
 }
 
-export type DbType = 'clickhouse' | 'postgres'
+export type DbType = 'clickhouse' | 'postgres' | 'bigquery'
 
 export const DB_TYPE_OPTIONS: { value: DbType; label: string; defaultPort: number }[] = [
   { value: 'clickhouse', label: 'ClickHouse', defaultPort: 8123 },
   { value: 'postgres', label: 'PostgreSQL', defaultPort: 5432 },
+  { value: 'bigquery', label: 'BigQuery', defaultPort: 0 },
 ]
 
 export type DataSourceTestStatus = 'success' | 'failed'

@@ -263,30 +263,58 @@ function ConnectionsTab({ openDsId }: { openDsId?: string }) {
                   </select>
                 </div>
               </div>
-              <div className="grid grid-cols-5 gap-3">
-                <div className="col-span-2 grid gap-2">
-                  <Label>Host</Label>
-                  <Input value={host} onChange={(e) => setHost(e.target.value)} required placeholder="localhost" />
-                </div>
-                <div className="grid gap-2">
-                  <Label>Port</Label>
-                  <Input type="number" value={port} onChange={(e) => setPort(Number(e.target.value))} required />
-                </div>
-                <div className="col-span-2 grid gap-2">
-                  <Label>Database</Label>
-                  <Input value={databaseName} onChange={(e) => setDatabaseName(e.target.value)} required placeholder="default" />
-                </div>
-              </div>
-              <div className="grid grid-cols-2 gap-3">
-                <div className="grid gap-2">
-                  <Label>Username</Label>
-                  <Input value={username} onChange={(e) => setUsername(e.target.value)} placeholder="default" />
-                </div>
-                <div className="grid gap-2">
-                  <Label>Password</Label>
-                  <Input type="password" value={password} onChange={(e) => setPassword(e.target.value)} placeholder="••••••••" />
-                </div>
-              </div>
+              {dbType === 'bigquery' ? (
+                <>
+                  <div className="grid grid-cols-2 gap-3">
+                    <div className="grid gap-2">
+                      <Label>Project ID</Label>
+                      <Input value={host} onChange={(e) => setHost(e.target.value)} required placeholder="my-gcp-project" />
+                    </div>
+                    <div className="grid gap-2">
+                      <Label>Default dataset</Label>
+                      <Input value={databaseName} onChange={(e) => setDatabaseName(e.target.value)} required placeholder="analytics" />
+                    </div>
+                  </div>
+                  <div className="grid gap-2">
+                    <Label>Service account JSON</Label>
+                    <textarea
+                      value={password}
+                      onChange={(e) => setPassword(e.target.value)}
+                      required
+                      rows={6}
+                      placeholder='{"type":"service_account", ...}'
+                      className="flex w-full rounded-md border border-input bg-background px-3 py-2 font-mono text-xs shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                    />
+                  </div>
+                </>
+              ) : (
+                <>
+                  <div className="grid grid-cols-5 gap-3">
+                    <div className="col-span-2 grid gap-2">
+                      <Label>Host</Label>
+                      <Input value={host} onChange={(e) => setHost(e.target.value)} required placeholder="localhost" />
+                    </div>
+                    <div className="grid gap-2">
+                      <Label>Port</Label>
+                      <Input type="number" value={port} onChange={(e) => setPort(Number(e.target.value))} required />
+                    </div>
+                    <div className="col-span-2 grid gap-2">
+                      <Label>Database</Label>
+                      <Input value={databaseName} onChange={(e) => setDatabaseName(e.target.value)} required placeholder="default" />
+                    </div>
+                  </div>
+                  <div className="grid grid-cols-2 gap-3">
+                    <div className="grid gap-2">
+                      <Label>Username</Label>
+                      <Input value={username} onChange={(e) => setUsername(e.target.value)} placeholder="default" />
+                    </div>
+                    <div className="grid gap-2">
+                      <Label>Password</Label>
+                      <Input type="password" value={password} onChange={(e) => setPassword(e.target.value)} placeholder="••••••••" />
+                    </div>
+                  </div>
+                </>
+              )}
               {createMut.isError && (
                 <p className="text-sm text-destructive">{(createMut.error as Error).message}</p>
               )}

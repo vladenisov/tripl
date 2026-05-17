@@ -17,6 +17,7 @@ if TYPE_CHECKING:
 class DBType(enum.StrEnum):
     clickhouse = "clickhouse"
     postgres = "postgres"
+    bigquery = "bigquery"
 
 
 class TestStatus(enum.StrEnum):

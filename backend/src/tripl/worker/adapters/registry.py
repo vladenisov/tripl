@@ -52,5 +52,24 @@ def _build_postgres(ds: DataSource, password: str) -> BaseAdapter:
     )
 
 
+def _build_bigquery(ds: DataSource, password: str) -> BaseAdapter:
+    from tripl.worker.adapters.bigquery import BigQueryAdapter
+
+    location: str | None = None
+    if isinstance(ds.extra_params, dict):
+        loc = ds.extra_params.get("location")
+        if isinstance(loc, str):
+            location = loc
+    return BigQueryAdapter(
+        host=ds.host,
+        port=ds.port,
+        database=ds.database_name,
+        username=ds.username,
+        password=password,
+        location=location,
+    )
+
+
 register_adapter("clickhouse", _build_clickhouse)
 register_adapter("postgres", _build_postgres)
+register_adapter("bigquery", _build_bigquery)
