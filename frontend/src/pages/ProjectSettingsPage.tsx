@@ -1,6 +1,7 @@
 import { lazy, Suspense } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs'
+import { AuditTab } from './settings/AuditTab'
 import { GeneralTab } from './settings/GeneralTab'
 import { EventTypesTab } from './settings/EventTypesTab'
 import { HistoryTab } from './settings/HistoryTab'
@@ -20,6 +21,7 @@ type SettingsTab =
   | 'alerting'
   | 'scans'
   | 'history'
+  | 'audit'
 const ProjectAlertingTab = lazy(() => import('@/pages/ProjectAlertingTab'))
 
 export default function ProjectSettingsPage() {
@@ -35,6 +37,7 @@ export default function ProjectSettingsPage() {
     'alerting',
     'scans',
     'history',
+    'audit',
   ]
   const tab: SettingsTab = validTabs.includes(urlTab as SettingsTab) ? (urlTab as SettingsTab) : 'general'
 
@@ -60,6 +63,7 @@ export default function ProjectSettingsPage() {
           <TabsTrigger value="alerting">Alerting</TabsTrigger>
           <TabsTrigger value="scans">Scans</TabsTrigger>
           <TabsTrigger value="history">History</TabsTrigger>
+          <TabsTrigger value="audit">Audit</TabsTrigger>
         </TabsList>
       </Tabs>
 
@@ -76,6 +80,7 @@ export default function ProjectSettingsPage() {
       )}
       {tab === 'scans' && slug && <ScansTab slug={slug} />}
       {tab === 'history' && slug && <HistoryTab slug={slug} />}
+      {tab === 'audit' && slug && <AuditTab slug={slug} />}
     </div>
   )
 }
