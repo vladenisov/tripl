@@ -1,9 +1,11 @@
 import uuid
 from datetime import datetime
 
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, HTTPException, Query
+from sqlalchemy import select
 
-from tripl.api.deps import SessionDep
+from tripl.api.deps import CurrentUserDep, SessionDep
+from tripl.models.alert_rule import AlertRule
 from tripl.schemas.alerting import (
     AlertDeliveryDetailResponse,
     AlertDeliveryListResponse,
@@ -15,7 +17,7 @@ from tripl.schemas.alerting import (
     AlertRuleSimulateResponse,
     AlertRuleUpdate,
 )
-from tripl.services import alerting_service
+from tripl.services import alerting_service, audit_service
 
 router = APIRouter(prefix="/projects/{slug}", tags=["alerting"])
 
@@ -30,8 +32,20 @@ async def create_alert_destination(
     session: SessionDep,
     slug: str,
     data: AlertDestinationCreate,
+    current_user: CurrentUserDep,
 ) -> AlertDestinationResponse:
-    return await alerting_service.create_destination(session, slug, data)
+    dest = await alerting_service.create_destination(session, slug, data)
+    await audit_service.record(
+        session,
+        user=current_user,
+        action="alert_destination.create",
+        target_type="alert_destination",
+        target_id=dest.id,
+        target_name=dest.name,
+        project_slug=slug,
+        payload=data.model_dump(),
+    )
+    return dest
 
 
 @router.get("/alert-destinations/{destination_id}", response_model=AlertDestinationResponse)
@@ -47,15 +61,41 @@ async def update_alert_destination(
     slug: str,
     destination_id: uuid.UUID,
     data: AlertDestinationUpdate,
+    current_user: CurrentUserDep,
 ) -> AlertDestinationResponse:
-    return await alerting_service.update_destination(session, slug, destination_id, data)
+    dest = await alerting_service.update_destination(session, slug, destination_id, data)
+    await audit_service.record(
+        session,
+        user=current_user,
+        action="alert_destination.update",
+        target_type="alert_destination",
+        target_id=dest.id,
+        target_name=dest.name,
+        project_slug=slug,
+        payload=data.model_dump(exclude_unset=True),
+    )
+    return dest
 
 
 @router.delete("/alert-destinations/{destination_id}", status_code=204)
 async def delete_alert_destination(
-    session: SessionDep, slug: str, destination_id: uuid.UUID
+    session: SessionDep,
+    slug: str,
+    destination_id: uuid.UUID,
+    current_user: CurrentUserDep,
 ) -> None:
+    existing = await alerting_service.get_destination(session, slug, destination_id)
+    name = existing.name
     await alerting_service.delete_destination(session, slug, destination_id)
+    await audit_service.record(
+        session,
+        user=current_user,
+        action="alert_destination.delete",
+        target_type="alert_destination",
+        target_id=destination_id,
+        target_name=name,
+        project_slug=slug,
+    )
 
 
 @router.post(
@@ -68,8 +108,20 @@ async def create_alert_rule(
     slug: str,
     destination_id: uuid.UUID,
     data: AlertRuleCreate,
+    current_user: CurrentUserDep,
 ) -> AlertRuleResponse:
-    return await alerting_service.create_rule(session, slug, destination_id, data)
+    rule = await alerting_service.create_rule(session, slug, destination_id, data)
+    await audit_service.record(
+        session,
+        user=current_user,
+        action="alert_rule.create",
+        target_type="alert_rule",
+        target_id=rule.id,
+        target_name=rule.name,
+        project_slug=slug,
+        payload=data.model_dump(),
+    )
+    return rule
 
 
 @router.patch(
@@ -82,8 +134,20 @@ async def update_alert_rule(
     destination_id: uuid.UUID,
     rule_id: uuid.UUID,
     data: AlertRuleUpdate,
+    current_user: CurrentUserDep,
 ) -> AlertRuleResponse:
-    return await alerting_service.update_rule(session, slug, destination_id, rule_id, data)
+    rule = await alerting_service.update_rule(session, slug, destination_id, rule_id, data)
+    await audit_service.record(
+        session,
+        user=current_user,
+        action="alert_rule.update",
+        target_type="alert_rule",
+        target_id=rule.id,
+        target_name=rule.name,
+        project_slug=slug,
+        payload=data.model_dump(exclude_unset=True),
+    )
+    return rule
 
 
 @router.delete("/alert-destinations/{destination_id}/rules/{rule_id}", status_code=204)
@@ -92,8 +156,26 @@ async def delete_alert_rule(
     slug: str,
     destination_id: uuid.UUID,
     rule_id: uuid.UUID,
+    current_user: CurrentUserDep,
 ) -> None:
+    rule = await session.scalar(
+        select(AlertRule).where(
+            AlertRule.id == rule_id, AlertRule.destination_id == destination_id
+        )
+    )
+    if rule is None:
+        raise HTTPException(status_code=404, detail="Alert rule not found")
+    name = rule.name
     await alerting_service.delete_rule(session, slug, destination_id, rule_id)
+    await audit_service.record(
+        session,
+        user=current_user,
+        action="alert_rule.delete",
+        target_type="alert_rule",
+        target_id=rule_id,
+        target_name=name,
+        project_slug=slug,
+    )
 
 
 @router.post(
