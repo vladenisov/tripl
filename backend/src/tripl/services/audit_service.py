@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import uuid
 from datetime import datetime
 from typing import Any
@@ -17,6 +18,11 @@ from tripl.schemas.audit import AuditEntryResponse, AuditListResponse
 _REDACTED_KEYS = frozenset(
     {"password", "password_encrypted", "password_hash", "secret", "token", "credentials"}
 )
+
+
+def _jsonable(payload: dict[str, Any]) -> dict[str, Any]:
+    """Round-trip through JSON to coerce UUIDs, datetimes, enums to primitives."""
+    return json.loads(json.dumps(payload, default=str))
 
 
 def _redact(payload: dict[str, Any]) -> dict[str, Any]:
@@ -63,7 +69,7 @@ async def record(
         target_type=target_type,
         target_id=target_id,
         target_name=target_name or "",
-        payload=_redact(payload or {}),
+        payload=_redact(_jsonable(payload or {})),
     )
     session.add(entry)
     await session.commit()

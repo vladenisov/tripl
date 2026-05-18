@@ -2,7 +2,7 @@ import uuid
 
 from fastapi import APIRouter
 
-from tripl.api.deps import SessionDep
+from tripl.api.deps import CurrentUserDep, SessionDep
 from tripl.schemas.scan_config import (
     ScanConfigCreate,
     ScanConfigPreviewRequest,
@@ -12,7 +12,7 @@ from tripl.schemas.scan_config import (
     ScanMetricsReplayRequest,
 )
 from tripl.schemas.scan_job import ScanJobResponse
-from tripl.services import scan_service
+from tripl.services import audit_service, scan_service
 
 router = APIRouter(
     prefix="/projects/{slug}/scans",
@@ -26,8 +26,24 @@ async def list_scan_configs(session: SessionDep, slug: str) -> object:
 
 
 @router.post("", response_model=ScanConfigResponse, status_code=201)
-async def create_scan_config(session: SessionDep, slug: str, data: ScanConfigCreate) -> object:
-    return await scan_service.create_scan_config(session, slug, data)
+async def create_scan_config(
+    session: SessionDep,
+    slug: str,
+    data: ScanConfigCreate,
+    current_user: CurrentUserDep,
+) -> object:
+    cfg = await scan_service.create_scan_config(session, slug, data)
+    await audit_service.record(
+        session,
+        user=current_user,
+        action="scan_config.create",
+        target_type="scan_config",
+        target_id=cfg.id,
+        target_name=cfg.name,
+        project_slug=slug,
+        payload=data.model_dump(),
+    )
+    return cfg
 
 
 @router.post("/preview", response_model=ScanConfigPreviewResponse)
@@ -50,13 +66,41 @@ async def update_scan_config(
     slug: str,
     scan_id: uuid.UUID,
     data: ScanConfigUpdate,
+    current_user: CurrentUserDep,
 ) -> object:
-    return await scan_service.update_scan_config(session, slug, scan_id, data)
+    cfg = await scan_service.update_scan_config(session, slug, scan_id, data)
+    await audit_service.record(
+        session,
+        user=current_user,
+        action="scan_config.update",
+        target_type="scan_config",
+        target_id=cfg.id,
+        target_name=cfg.name,
+        project_slug=slug,
+        payload=data.model_dump(exclude_unset=True),
+    )
+    return cfg
 
 
 @router.delete("/{scan_id}", status_code=204)
-async def delete_scan_config(session: SessionDep, slug: str, scan_id: uuid.UUID) -> None:
+async def delete_scan_config(
+    session: SessionDep,
+    slug: str,
+    scan_id: uuid.UUID,
+    current_user: CurrentUserDep,
+) -> None:
+    existing = await scan_service.get_scan_config(session, slug, scan_id)
+    name = getattr(existing, "name", "")
     await scan_service.delete_scan_config(session, slug, scan_id)
+    await audit_service.record(
+        session,
+        user=current_user,
+        action="scan_config.delete",
+        target_type="scan_config",
+        target_id=scan_id,
+        target_name=name,
+        project_slug=slug,
+    )
 
 
 @router.post("/{scan_id}/run", response_model=ScanJobResponse, status_code=201)

@@ -10,7 +10,7 @@ from tripl.schemas.plan_revision import (
     PlanRevisionDetail,
     PlanRevisionList,
 )
-from tripl.services import plan_revision_service
+from tripl.services import audit_service, plan_revision_service
 
 router = APIRouter(prefix="/projects/{slug}/revisions", tags=["plan-revisions"])
 
@@ -22,9 +22,20 @@ async def create_revision(
     slug: str,
     data: PlanRevisionCreate,
 ) -> PlanRevisionDetail:
-    return await plan_revision_service.create_revision(
+    rev = await plan_revision_service.create_revision(
         session, slug, data, user_id=current_user.id
     )
+    await audit_service.record(
+        session,
+        user=current_user,
+        action="plan_revision.create",
+        target_type="plan_revision",
+        target_id=rev.id,
+        target_name=rev.summary or "",
+        project_slug=slug,
+        payload={"summary": data.summary},
+    )
+    return rev
 
 
 @router.get("", response_model=PlanRevisionList)

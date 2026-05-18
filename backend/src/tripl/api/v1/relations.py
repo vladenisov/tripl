@@ -2,10 +2,10 @@ import uuid
 
 from fastapi import APIRouter
 
-from tripl.api.deps import SessionDep
+from tripl.api.deps import CurrentUserDep, SessionDep
 from tripl.models.event_type_relation import EventTypeRelation
 from tripl.schemas.relation import RelationCreate, RelationResponse
-from tripl.services import relation_service
+from tripl.services import audit_service, relation_service
 
 router = APIRouter(prefix="/projects/{slug}/relations", tags=["relations"])
 
@@ -17,11 +17,38 @@ async def list_relations(session: SessionDep, slug: str) -> list[EventTypeRelati
 
 @router.post("", response_model=RelationResponse, status_code=201)
 async def create_relation(
-    session: SessionDep, slug: str, data: RelationCreate
+    session: SessionDep,
+    slug: str,
+    data: RelationCreate,
+    current_user: CurrentUserDep,
 ) -> EventTypeRelation:
-    return await relation_service.create_relation(session, slug, data)
+    rel = await relation_service.create_relation(session, slug, data)
+    await audit_service.record(
+        session,
+        user=current_user,
+        action="relation.create",
+        target_type="relation",
+        target_id=rel.id,
+        # Relations don't have a standalone name — fk ids land in the payload.
+        project_slug=slug,
+        payload=data.model_dump(),
+    )
+    return rel
 
 
 @router.delete("/{relation_id}", status_code=204)
-async def delete_relation(session: SessionDep, slug: str, relation_id: uuid.UUID) -> None:
+async def delete_relation(
+    session: SessionDep,
+    slug: str,
+    relation_id: uuid.UUID,
+    current_user: CurrentUserDep,
+) -> None:
     await relation_service.delete_relation(session, slug, relation_id)
+    await audit_service.record(
+        session,
+        user=current_user,
+        action="relation.delete",
+        target_type="relation",
+        target_id=relation_id,
+        project_slug=slug,
+    )

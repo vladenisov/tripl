@@ -84,3 +84,46 @@ async def test_audit_filters_by_action_and_project(client: AsyncClient) -> None:
     assert by_project.status_code == 200
     slugs = {entry["project_slug"] for entry in by_project.json()["items"]}
     assert slugs == {"audit-a"}
+
+
+@pytest.mark.asyncio
+async def test_audit_covers_meta_field_variable_revision(client: AsyncClient) -> None:
+    """Wire-in sanity: meta_field / variable / plan_revision all emit audit
+    entries with the right action namespace."""
+    await _setup_project(client, "audit-wide")
+
+    mf = await client.post(
+        "/api/v1/projects/audit-wide/meta-fields",
+        json={"name": "jira_key", "display_name": "Jira", "field_type": "string"},
+    )
+    assert mf.status_code == 201
+    mf_id = mf.json()["id"]
+    patch = await client.patch(
+        f"/api/v1/projects/audit-wide/meta-fields/{mf_id}",
+        json={"is_required": True},
+    )
+    assert patch.status_code == 200
+    delete = await client.delete(f"/api/v1/projects/audit-wide/meta-fields/{mf_id}")
+    assert delete.status_code == 204
+
+    var = await client.post(
+        "/api/v1/projects/audit-wide/variables",
+        json={"name": "user_id", "variable_type": "string"},
+    )
+    assert var.status_code == 201
+
+    rev = await client.post(
+        "/api/v1/projects/audit-wide/revisions",
+        json={"summary": "first snapshot"},
+    )
+    assert rev.status_code == 201
+
+    audit = await client.get("/api/v1/audit?project_slug=audit-wide")
+    actions = {entry["action"] for entry in audit.json()["items"]}
+    assert {
+        "meta_field.create",
+        "meta_field.update",
+        "meta_field.delete",
+        "variable.create",
+        "plan_revision.create",
+    } <= actions
