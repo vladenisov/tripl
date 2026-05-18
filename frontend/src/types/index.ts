@@ -602,3 +602,22 @@ export interface PlanDiff {
   entries: PlanDiffEntry[]
   summary: { added: number; removed: number; changed: number }
 }
+
+export interface AuditEntry {
+  id: string
+  created_at: string
+  user_id: string | null
+  user_email: string
+  project_id: string | null
+  project_slug: string
+  action: string
+  target_type: string
+  target_id: string | null
+  target_name: string
+  payload: Record<string, unknown>
+}
+
+export interface AuditListResponse {
+  items: AuditEntry[]
+  total: number
+}
