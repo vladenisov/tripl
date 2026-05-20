@@ -235,6 +235,9 @@ class AlertDeliveryItemResponse(BaseModel):
     drift_field: str | None
     drift_type: str | None
     sample_value: str | None
+    # Items that co-fired in the same bucket+direction inside one delivery
+    # share this id. NULL means the row is a singleton (no peers).
+    correlation_group_id: uuid.UUID | None = None
 
     model_config = {"from_attributes": True}
 

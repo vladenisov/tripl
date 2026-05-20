@@ -987,6 +987,11 @@ def test_collect_metrics_queues_alert_deliveries(
         assert len(deliveries) == 1
         assert deliveries[0].matched_count == 3
         assert len(items) == 3
+        # All three items co-fire on the same bucket+direction, so they must
+        # share a non-null correlation_group_id.
+        group_ids = {item.correlation_group_id for item in items}
+        assert len(group_ids) == 1
+        assert next(iter(group_ids)) is not None
 
 
 def test_breakdown_anomalies_do_not_queue_alert_deliveries(

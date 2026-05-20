@@ -563,6 +563,7 @@ export interface AlertDeliveryItem {
   drift_field: string | null
   drift_type: string | null
   sample_value: string | null
+  correlation_group_id: string | null
 }
 
 export interface AlertDelivery {
