@@ -10,6 +10,7 @@ import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { Card, CardContent } from '@/components/ui/card'
 import { ErrorState } from '@/components/error-state'
+import EventPhotosSection from '@/components/event-photos-section'
 import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from '@/components/ui/select'
@@ -175,6 +176,8 @@ export default function EventDetailPage() {
       </div>
 
       <Separator />
+
+      <EventPhotosSection slug={slug!} eventId={eventId!} />
 
       {/* Metrics Chart — Event Level */}
       <Card>

@@ -12,6 +12,7 @@ from tripl.models.event_field_value import EventFieldValue
 from tripl.models.event_meta_value import EventMetaValue
 from tripl.models.event_metric import EventMetric
 from tripl.models.event_metric_breakdown import EventMetricBreakdown
+from tripl.models.event_photo import EventPhoto
 from tripl.models.event_tag import EventTag
 from tripl.models.event_type import EventType
 from tripl.models.event_type_relation import EventTypeRelation
@@ -49,6 +50,7 @@ __all__ = [
     "EventTag",
     "EventMetric",
     "EventMetricBreakdown",
+    "EventPhoto",
     "MetricAnomaly",
     "MetricBreakdownAnomaly",
     "PlanRevision",
