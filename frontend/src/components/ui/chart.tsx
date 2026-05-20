@@ -116,7 +116,7 @@ function CustomTooltip({
   return (
     <div className="rounded-lg border bg-background px-3 py-2 shadow-md">
       <p className="text-xs text-muted-foreground">{formatTooltipLabel(String(label ?? ''), granularity)}</p>
-      <p className="text-sm font-semibold">{payload[0].value.toLocaleString()} {seriesLabel}</p>
+      <p className="text-sm font-semibold">{point.count.toLocaleString()} {seriesLabel}</p>
       {expectedCount !== null && (
         <p className="text-xs text-muted-foreground">
           Expected: {Math.round(expectedCount).toLocaleString()}
