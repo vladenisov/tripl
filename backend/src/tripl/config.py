@@ -38,6 +38,21 @@ class Settings(BaseSettings):
     rate_limit_login_per_minute: int = 5
     rate_limit_register_per_hour: int = 3
 
+    # Event photo uploads. Backend can be "local" (filesystem) or "gcs"
+    # (Google Cloud Storage). Local files are served through an authenticated
+    # API endpoint; GCS uses time-limited signed URLs unless gcs_photo_public
+    # is true.
+    photo_storage_backend: str = "local"
+    photo_local_dir: str = "./var/photos"
+    photo_max_size_mb: int = 10
+    photo_allowed_mime: str = "image/jpeg,image/png,image/gif,image/webp"
+    gcs_photo_bucket: str = ""
+    # Path to a service-account JSON. Empty falls back to Application Default
+    # Credentials (e.g. GOOGLE_APPLICATION_CREDENTIALS or workload identity).
+    gcs_photo_credentials_path: str = ""
+    gcs_photo_public: bool = False
+    gcs_photo_signed_url_ttl_seconds: int = 3600
+
     # Request ID and structured logging.
     request_id_header: str = "X-Request-ID"
     log_level: str = "INFO"

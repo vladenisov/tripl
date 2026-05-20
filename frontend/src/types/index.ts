@@ -249,6 +249,20 @@ export interface EventListResponse {
   total: number
 }
 
+export interface EventPhoto {
+  id: string
+  event_id: string
+  project_id: string
+  original_filename: string
+  content_type: string
+  size_bytes: number
+  storage_backend: 'local' | 'gcs'
+  sort_order: number
+  url: string
+  uploaded_by_user_id: string | null
+  created_at: string
+}
+
 export type VariableType = 'string' | 'number' | 'boolean' | 'date' | 'datetime' | 'json' | 'string_array' | 'number_array'
 
 export interface Variable {
