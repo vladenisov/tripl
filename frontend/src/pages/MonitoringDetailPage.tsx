@@ -9,6 +9,7 @@ import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
 import { ErrorState } from '@/components/error-state'
+import EventPhotosSection from '@/components/event-photos-section'
 import { MetricsChart } from '@/components/ui/chart'
 import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
@@ -207,6 +208,10 @@ export default function MonitoringDetailPage() {
       </div>
 
       <Separator />
+
+      {scope === 'event' && scopeId && (
+        <EventPhotosSection slug={slug!} eventId={scopeId} />
+      )}
 
       {latestSignal && (
         <Card>
