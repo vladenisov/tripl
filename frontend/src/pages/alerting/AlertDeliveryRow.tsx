@@ -1,11 +1,27 @@
-import { useState } from "react"
+import { useMemo, useState } from "react"
 import { useQuery } from "@tanstack/react-query"
 import { ChevronDown } from "lucide-react"
-import type { AlertDelivery } from "@/types"
+import type { AlertDelivery, AlertDeliveryItem } from "@/types"
 import { alertingApi } from "@/api/alerting"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
+
+// Maps correlation_group_id -> a stable short label ("A", "B", ...). The
+// concrete ids are UUIDs and aren't worth showing; the per-delivery letter is
+// enough for the eye to spot rows that co-fired.
+function buildCorrelationLabels(items: AlertDeliveryItem[]): Map<string, string> {
+  const labels = new Map<string, string>()
+  let cursor = 0
+  for (const item of items) {
+    const id = item.correlation_group_id
+    if (id && !labels.has(id)) {
+      labels.set(id, String.fromCharCode(65 + cursor))
+      cursor += 1
+    }
+  }
+  return labels
+}
 
 export function AlertDeliveryRow({ slug, delivery }: { slug: string; delivery: AlertDelivery }) {
   const [open, setOpen] = useState(false)
@@ -20,6 +36,10 @@ export function AlertDeliveryRow({ slug, delivery }: { slug: string; delivery: A
   const payloadItems = Array.isArray(detail?.payload_snapshot?.items)
     ? detail.payload_snapshot.items
     : null
+  const correlationLabels = useMemo(
+    () => detail ? buildCorrelationLabels(detail.items) : new Map<string, string>(),
+    [detail],
+  )
 
   return (
     <>
@@ -52,6 +72,11 @@ export function AlertDeliveryRow({ slug, delivery }: { slug: string; delivery: A
                     {payloadItems.length} items
                   </Badge>
                 )}
+                {correlationLabels.size > 0 && (
+                  <Badge variant="outline" className="border-amber-500/60 bg-amber-400/15 text-amber-800 text-[10px]">
+                    {correlationLabels.size} correlated group{correlationLabels.size > 1 ? 's' : ''}
+                  </Badge>
+                )}
                 {detail.sent_at && (
                   <Badge variant="outline" className="text-[10px]">
                     sent {new Date(detail.sent_at).toLocaleString()}
@@ -62,6 +87,7 @@ export function AlertDeliveryRow({ slug, delivery }: { slug: string; delivery: A
                 <Table>
                   <TableHeader>
                     <TableRow>
+                      <TableHead className="w-12">Grp</TableHead>
                       <TableHead>Scope</TableHead>
                       <TableHead>Direction</TableHead>
                       <TableHead>Actual</TableHead>
@@ -72,34 +98,50 @@ export function AlertDeliveryRow({ slug, delivery }: { slug: string; delivery: A
                     </TableRow>
                   </TableHeader>
                   <TableBody>
-                    {detail.items.map(item => (
-                      <TableRow key={item.id}>
-                        <TableCell className="text-xs">
-                          <div className="font-medium">{item.scope_name}</div>
-                          <div className="text-muted-foreground">{item.scope_type}</div>
-                        </TableCell>
-                        <TableCell className="text-xs">{item.direction}</TableCell>
-                        <TableCell className="text-xs">{item.actual_count}</TableCell>
-                        <TableCell className="text-xs">{item.expected_count}</TableCell>
-                        <TableCell className="text-xs">{item.absolute_delta}</TableCell>
-                        <TableCell className="text-xs">{item.percent_delta.toFixed(1)}%</TableCell>
-                        <TableCell className="text-xs">
-                          <div className="flex gap-3">
-                            {item.details_path && (
-                              <a href={item.details_path} className="text-primary underline" target="_blank" rel="noreferrer">
-                                details
-                              </a>
+                    {detail.items.map(item => {
+                      const groupLabel = item.correlation_group_id
+                        ? correlationLabels.get(item.correlation_group_id)
+                        : null
+                      return (
+                        <TableRow key={item.id}>
+                          <TableCell className="text-xs">
+                            {groupLabel && (
+                              <Badge
+                                variant="outline"
+                                className="border-amber-500/60 bg-amber-400/15 text-amber-800 text-[10px]"
+                                title="Co-fired with other rows in this group"
+                              >
+                                {groupLabel}
+                              </Badge>
                             )}
-                            {item.monitoring_path && (
-                              <a href={item.monitoring_path} className="text-primary underline" target="_blank" rel="noreferrer">
-                                monitoring
-                              </a>
-                            )}
-                            {!item.details_path && !item.monitoring_path && '—'}
-                          </div>
-                        </TableCell>
-                      </TableRow>
-                    ))}
+                          </TableCell>
+                          <TableCell className="text-xs">
+                            <div className="font-medium">{item.scope_name}</div>
+                            <div className="text-muted-foreground">{item.scope_type}</div>
+                          </TableCell>
+                          <TableCell className="text-xs">{item.direction}</TableCell>
+                          <TableCell className="text-xs">{item.actual_count}</TableCell>
+                          <TableCell className="text-xs">{item.expected_count}</TableCell>
+                          <TableCell className="text-xs">{item.absolute_delta}</TableCell>
+                          <TableCell className="text-xs">{item.percent_delta.toFixed(1)}%</TableCell>
+                          <TableCell className="text-xs">
+                            <div className="flex gap-3">
+                              {item.details_path && (
+                                <a href={item.details_path} className="text-primary underline" target="_blank" rel="noreferrer">
+                                  details
+                                </a>
+                              )}
+                              {item.monitoring_path && (
+                                <a href={item.monitoring_path} className="text-primary underline" target="_blank" rel="noreferrer">
+                                  monitoring
+                                </a>
+                              )}
+                              {!item.details_path && !item.monitoring_path && '—'}
+                            </div>
+                          </TableCell>
+                        </TableRow>
+                      )
+                    })}
                   </TableBody>
                 </Table>
               </div>

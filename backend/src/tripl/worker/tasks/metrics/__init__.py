@@ -925,6 +925,22 @@ def _prepare_alert_deliveries(
             if not anomalies_to_send:
                 continue
 
+            # Correlate anomalies that co-fired in the same bucket+direction
+            # within this delivery. Anything with at least one peer gets a
+            # shared correlation_group_id so the UI can chip + group rows.
+            correlation_groups: dict[tuple[datetime, str], list[AlertMatchCandidate]] = {}
+            for anomaly in anomalies_to_send:
+                correlation_groups.setdefault(
+                    (anomaly.bucket, anomaly.direction), []
+                ).append(anomaly)
+            correlation_by_anomaly: dict[int, uuid.UUID] = {}
+            for peers in correlation_groups.values():
+                if len(peers) < 2:
+                    continue
+                group_id = uuid.uuid4()
+                for peer in peers:
+                    correlation_by_anomaly[id(peer)] = group_id
+
             payload_snapshot = _build_delivery_snapshot(
                 config,
                 project_slug=project_slug,
@@ -980,6 +996,7 @@ def _prepare_alert_deliveries(
                         drift_field=getattr(anomaly, "drift_field", None),
                         drift_type=getattr(anomaly, "drift_type", None),
                         sample_value=getattr(anomaly, "sample_value", None),
+                        correlation_group_id=correlation_by_anomaly.get(id(anomaly)),
                     )
                 )
             delivery_ids.append(delivery.id)

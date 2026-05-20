@@ -4,7 +4,7 @@ import uuid
 from datetime import datetime
 from typing import TYPE_CHECKING
 
-from sqlalchemy import DateTime, ForeignKey, Index, Integer, String
+from sqlalchemy import DateTime, ForeignKey, Index, Integer, String, Uuid
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from tripl.models.base import Base, UUIDMixin
@@ -42,5 +42,9 @@ class AlertDeliveryItem(UUIDMixin, Base):
     drift_field: Mapped[str | None] = mapped_column(String(255), nullable=True)
     drift_type: Mapped[str | None] = mapped_column(String(32), nullable=True)
     sample_value: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    # Items that fired in the same bucket+direction inside one delivery share
+    # this id. NULL when the item is a singleton (no co-firing peers). The UI
+    # uses it to render a "correlated" chip and group the rows visually.
+    correlation_group_id: Mapped[uuid.UUID | None] = mapped_column(Uuid, nullable=True)
 
     delivery: Mapped[AlertDelivery] = relationship(back_populates="items")
