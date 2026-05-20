@@ -10,6 +10,7 @@ import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
 import { ErrorState } from '@/components/error-state'
 import EventPhotosSection from '@/components/event-photos-section'
+import { TopMoversPanel } from '@/components/monitoring/top-movers-panel'
 import { MetricsChart } from '@/components/ui/chart'
 import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
@@ -234,6 +235,16 @@ export default function MonitoringDetailPage() {
             </div>
           </CardContent>
         </Card>
+      )}
+
+      {latestSignal && slug && (
+        <TopMoversPanel
+          slug={slug}
+          scanConfigId={latestSignal.scan_config_id}
+          scopeType={latestSignal.scope_type}
+          scopeRef={latestSignal.scope_ref}
+          bucket={latestSignal.bucket}
+        />
       )}
 
       <Card>

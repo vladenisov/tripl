@@ -95,6 +95,29 @@ function formatCount(value: number) {
   return String(value)
 }
 
+// Width of the confidence band drawn around expected_count: ±2σ ≈ 95%
+// coverage on a normal-ish baseline. Matches what the anomaly detector
+// effectively flags (default sigma_threshold ~2.5–3) without making the
+// band so wide it always swallows the actual series.
+const CONFIDENCE_BAND_K = 2
+
+interface ChartDataPoint extends EventMetricPoint {
+  band?: [number, number]
+}
+
+function buildChartData(data: EventMetricPoint[]): ChartDataPoint[] {
+  return data.map(point => {
+    if (point.expected_count == null || point.stddev == null) {
+      return point
+    }
+    const offset = CONFIDENCE_BAND_K * point.stddev
+    return {
+      ...point,
+      band: [point.expected_count - offset, point.expected_count + offset],
+    }
+  })
+}
+
 function CustomTooltip({
   active,
   payload,
@@ -103,7 +126,7 @@ function CustomTooltip({
   seriesLabel,
 }: {
   active?: boolean
-  payload?: Array<{ value: number; dataKey?: string; payload: EventMetricPoint }>
+  payload?: Array<{ value: number; dataKey?: string; payload: ChartDataPoint }>
   label?: string | number
   granularity: MetricsGranularity
   seriesLabel: string
@@ -120,6 +143,11 @@ function CustomTooltip({
       {expectedCount !== null && (
         <p className="text-xs text-muted-foreground">
           Expected: {Math.round(expectedCount).toLocaleString()}
+        </p>
+      )}
+      {point.band && (
+        <p className="text-xs text-muted-foreground">
+          ±{CONFIDENCE_BAND_K}σ band: {Math.round(point.band[0]).toLocaleString()}–{Math.round(point.band[1]).toLocaleString()}
         </p>
       )}
       {deviation !== null && (
@@ -177,6 +205,7 @@ export function MetricsChart({
   const { chartStyle } = useTheme()
   const chartColor = color || 'var(--chart-1)'
   const gradientId = useId().replace(/:/g, '')
+  const chartData = useMemo(() => buildChartData(data), [data])
 
   if (!data.length) {
     return (
@@ -196,7 +225,7 @@ export function MetricsChart({
         ))}
       </div>
       <ResponsiveContainer width="100%" height="100%">
-        <ComposedChart data={data} margin={{ top: 8, right: 8, bottom: 0, left: 0 }}>
+        <ComposedChart data={chartData} margin={{ top: 8, right: 8, bottom: 0, left: 0 }}>
           <defs>
             <linearGradient id={gradientId} x1="0" y1="0" x2="0" y2="1">
               <stop offset="5%" stopColor={chartColor} stopOpacity={0.3} />
@@ -221,6 +250,18 @@ export function MetricsChart({
             width={48}
           />
           <Tooltip content={<CustomTooltip granularity={granularity} seriesLabel={seriesLabel} />} />
+          {/* Confidence band — recharts renders a 2-tuple dataKey as a vertical range area. */}
+          <Area
+            type="monotone"
+            dataKey="band"
+            stroke="none"
+            fill="var(--muted-foreground)"
+            fillOpacity={0.12}
+            isAnimationActive={false}
+            connectNulls={false}
+            activeDot={false}
+            legendType="none"
+          />
           <Line
             type="monotone"
             dataKey="expected_count"

@@ -25,6 +25,7 @@ def _plain_point(bucket: str, count: int) -> dict[str, object]:
         "bucket": bucket,
         "count": count,
         "expected_count": None,
+        "stddev": None,
         "is_anomaly": False,
         "anomaly_direction": None,
         "z_score": None,
@@ -583,6 +584,7 @@ async def test_get_event_metrics_returns_enriched_monitoring_series(client: Asyn
             "bucket": "2026-01-01T10:00:00",
             "count": 10,
             "expected_count": None,
+            "stddev": None,
             "is_anomaly": False,
             "anomaly_direction": None,
             "z_score": None,
@@ -591,6 +593,7 @@ async def test_get_event_metrics_returns_enriched_monitoring_series(client: Asyn
             "bucket": "2026-01-01T11:00:00",
             "count": 0,
             "expected_count": 10.0,
+            "stddev": 0.0,
             "is_anomaly": True,
             "anomaly_direction": "drop",
             "z_score": -10.0,
@@ -797,3 +800,111 @@ async def test_get_recent_signals_when_anomaly_is_within_last_24_hours(client: A
         ("event_type", "recent"),
         ("event", "recent"),
     }
+
+
+@pytest.mark.asyncio
+async def test_get_top_movers_ranks_breakdown_anomalies_by_abs_z(
+    client: AsyncClient,
+) -> None:
+    setup = await _setup_metrics_project(client, "top-movers")
+
+    event_resp = await client.post(
+        "/api/v1/projects/top-movers/events",
+        json={
+            "event_type_id": setup["page_type_id"],
+            "name": "event_name=Login",
+            "implemented": True,
+            "reviewed": True,
+            "field_values": [{"field_definition_id": setup["page_field_id"], "value": "home"}],
+        },
+    )
+    event_id = event_resp.json()["id"]
+    bucket = datetime(2026, 1, 1, 10, tzinfo=UTC)
+
+    async with TestSessionLocal() as session:
+        data_source = DataSource(
+            id=uuid.uuid4(),
+            name=f"TopMover DS {uuid.uuid4().hex[:8]}",
+            db_type="clickhouse",
+            host="localhost",
+            port=8123,
+            database_name="default",
+            username="default",
+            password_encrypted="",
+        )
+        scan_config = ScanConfig(
+            id=uuid.uuid4(),
+            data_source_id=data_source.id,
+            project_id=uuid.UUID(setup["project_id"]),
+            event_type_id=uuid.UUID(setup["page_type_id"]),
+            name="Top-mover Config",
+            base_query="SELECT time, event_name, country FROM events",
+            time_column="time",
+            metric_breakdown_columns=["country"],
+            cardinality_threshold=100,
+            interval="1h",
+        )
+        session.add_all([data_source, scan_config])
+        # Two anomalies on the same bucket; one with a much bigger |z|. A third
+        # row on a different bucket is added as noise that must NOT be returned.
+        for value, z, count, expected in [
+            ("US", -2.0, 90, 100),
+            ("DE", -8.0, 10, 60),
+        ]:
+            session.add(
+                MetricBreakdownAnomaly(
+                    id=uuid.uuid4(),
+                    scan_config_id=scan_config.id,
+                    scope_type="event",
+                    scope_ref=event_id,
+                    event_id=uuid.UUID(event_id),
+                    event_type_id=None,
+                    bucket=bucket,
+                    breakdown_column="country",
+                    breakdown_value=value,
+                    is_other=False,
+                    actual_count=count,
+                    expected_count=expected,
+                    stddev=5,
+                    z_score=z,
+                    direction="drop",
+                )
+            )
+        session.add(
+            MetricBreakdownAnomaly(
+                id=uuid.uuid4(),
+                scan_config_id=scan_config.id,
+                scope_type="event",
+                scope_ref=event_id,
+                event_id=uuid.UUID(event_id),
+                event_type_id=None,
+                bucket=datetime(2026, 1, 1, 11, tzinfo=UTC),
+                breakdown_column="country",
+                breakdown_value="US",
+                is_other=False,
+                actual_count=80,
+                expected_count=100,
+                stddev=5,
+                z_score=-4.0,
+                direction="drop",
+            )
+        )
+        await session.commit()
+        scan_config_id = str(scan_config.id)
+
+    resp = await client.get(
+        f"/api/v1/projects/top-movers/scans/{scan_config_id}/top-movers",
+        params={
+            "scope_type": "event",
+            "scope_ref": event_id,
+            "bucket": bucket.isoformat(),
+            "limit": 10,
+        },
+    )
+
+    assert resp.status_code == 200
+    items = resp.json()
+    assert [(row["breakdown_value"], row["z_score"]) for row in items] == [
+        ("DE", -8.0),
+        ("US", -2.0),
+    ]

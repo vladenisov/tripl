@@ -383,6 +383,7 @@ export interface EventMetricPoint {
   bucket: string
   count: number
   expected_count: number | null
+  stddev: number | null
   is_anomaly: boolean
   anomaly_direction: 'spike' | 'drop' | null
   z_score: number | null
@@ -396,6 +397,17 @@ export interface MonitoringSignal {
   event_id: string | null
   event_type_id: string | null
   bucket: string
+  actual_count: number
+  expected_count: number
+  stddev: number
+  z_score: number
+  direction: 'spike' | 'drop'
+}
+
+export interface TopMoverItem {
+  breakdown_column: string
+  breakdown_value: string
+  is_other: boolean
   actual_count: number
   expected_count: number
   stddev: number
