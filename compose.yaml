@@ -8,7 +8,7 @@ x-backend-environment: &backend-environment
   RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672//
   REDIS_URL: redis://redis:6379/0
   ENCRYPTION_KEY: ${ENCRYPTION_KEY:-}
-  APP_BASE_URL: ${APP_BASE_URL:-http://localhost:5173}
+  APP_BASE_URL: ${APP_BASE_URL:-http://127.0.0.1:5173}
   SESSION_COOKIE_SECURE: ${SESSION_COOKIE_SECURE:-false}
   CORS_ALLOW_ORIGINS: ${CORS_ALLOW_ORIGINS:-}
   SECURITY_HEADERS_ENABLED: ${SECURITY_HEADERS_ENABLED:-true}
