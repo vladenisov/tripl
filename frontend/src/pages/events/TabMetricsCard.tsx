@@ -1,0 +1,196 @@
+import { useMemo, useState } from 'react'
+import { Link } from 'react-router-dom'
+import { useQuery } from '@tanstack/react-query'
+import { AlertTriangle, ChevronDown } from 'lucide-react'
+
+import { metricsApi } from '@/api/metrics'
+import { Button } from '@/components/ui/button'
+import { Card, CardContent } from '@/components/ui/card'
+import { MetricsChart } from '@/components/ui/chart-lazy'
+import {
+  Collapsible,
+  CollapsibleContent,
+  CollapsibleTrigger,
+} from '@/components/ui/collapsible'
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select'
+import { aggregateMetricPoints, type MetricsGranularity } from '@/lib/metrics'
+import { cn } from '@/lib/utils'
+import type { EventType, MonitoringSignal } from '@/types'
+
+import {
+  TAB_METRICS_GRANULARITY_OPTIONS,
+  TAB_METRICS_RANGE_DAYS_DEFAULT,
+  TAB_METRICS_RANGE_OPTIONS,
+  getMonitoringPath,
+  getSignalTone,
+} from './utils'
+
+type TabMetricsFilters = {
+  filterEtId: string | undefined
+  debouncedSearch: string
+  filterImplemented: boolean | undefined
+  filterTag: string
+  filterReviewedForQuery: boolean | undefined
+  filterArchivedForQuery: boolean
+}
+
+/**
+ * "<TabLabel> Dynamics" card sitting above the events table. Owns its own
+ * range/granularity state plus the eventsMetrics query — only the filters
+ * that scope the query and the active-tab signal need to flow in from the
+ * page.
+ */
+export function TabMetricsCard({
+  slug,
+  activeEt,
+  activeTabLabel,
+  activeTabSignal,
+  isOpen,
+  onOpenChange,
+  filters,
+}: {
+  slug: string
+  activeEt: EventType | null
+  activeTabLabel: string
+  activeTabSignal: MonitoringSignal | null
+  isOpen: boolean
+  onOpenChange: (open: boolean) => void
+  filters: TabMetricsFilters
+}) {
+  const [rangeDays, setRangeDays] = useState(TAB_METRICS_RANGE_DAYS_DEFAULT)
+  const [granularity, setGranularity] = useState<MetricsGranularity>('hour')
+
+  const range = useMemo(() => {
+    const to = new Date()
+    const from = new Date(to.getTime() - rangeDays * 24 * 60 * 60 * 1000)
+    return { from: from.toISOString(), to: to.toISOString() }
+  }, [rangeDays])
+
+  const { data: tabMetrics, isLoading } = useQuery({
+    queryKey: [
+      'eventsMetrics',
+      slug,
+      filters.filterEtId,
+      filters.debouncedSearch,
+      filters.filterImplemented,
+      filters.filterTag,
+      filters.filterReviewedForQuery,
+      filters.filterArchivedForQuery,
+      range.from,
+      range.to,
+    ],
+    queryFn: () =>
+      metricsApi.getEventsMetrics(slug, {
+        event_type_id: filters.filterEtId,
+        search: filters.debouncedSearch || undefined,
+        implemented: filters.filterImplemented,
+        reviewed: filters.filterReviewedForQuery,
+        archived: filters.filterArchivedForQuery,
+        tag: filters.filterTag || undefined,
+        from: range.from,
+        to: range.to,
+      }),
+    enabled: !!slug,
+    refetchInterval: 60000,
+    placeholderData: (prev) => prev,
+  })
+
+  const tabMetricsData = useMemo(
+    () => aggregateMetricPoints(tabMetrics?.data ?? [], granularity),
+    [tabMetrics?.data, granularity],
+  )
+
+  return (
+    <Collapsible open={isOpen} onOpenChange={onOpenChange}>
+      <Card className="mb-3 gap-0 rounded-lg py-0">
+        <div className="flex flex-wrap items-center justify-between gap-3 px-4 py-2.5">
+          <div className="min-w-0">
+            <h2 className="text-[13px] font-semibold leading-tight">{activeTabLabel} Dynamics</h2>
+            <p className="text-[11px] leading-tight text-muted-foreground">
+              Last {rangeDays} days, grouped by {granularity}.
+            </p>
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            <div className="flex items-center gap-1 rounded-lg border bg-background p-1">
+              {TAB_METRICS_RANGE_OPTIONS.map(option => (
+                <Button
+                  key={option.days}
+                  type="button"
+                  variant={rangeDays === option.days ? 'default' : 'ghost'}
+                  size="sm"
+                  className="h-6 px-2 text-[11px]"
+                  onClick={() => setRangeDays(option.days)}
+                >
+                  {option.label}
+                </Button>
+              ))}
+            </div>
+            <Select
+              value={granularity}
+              onValueChange={value => setGranularity(value as MetricsGranularity)}
+            >
+              <SelectTrigger className="h-7 w-28 text-xs">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {TAB_METRICS_GRANULARITY_OPTIONS.map(option => (
+                  <SelectItem key={option.value} value={option.value}>
+                    {option.label}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            {activeTabSignal && (
+              <Button
+                variant={getSignalTone(activeTabSignal).button}
+                size="sm"
+                className={cn('h-7 px-2 text-xs', getSignalTone(activeTabSignal).buttonClassName)}
+                asChild
+              >
+                <Link to={getMonitoringPath(slug, activeTabSignal)}>
+                  <AlertTriangle className="mr-1 h-3.5 w-3.5" />
+                  View signal
+                </Link>
+              </Button>
+            )}
+            <CollapsibleTrigger asChild>
+              <Button variant="ghost" size="sm" className="h-7 px-2 text-xs">
+                {isOpen ? 'Hide chart' : 'Show chart'}
+                <ChevronDown className={`h-4 w-4 transition-transform ${isOpen ? 'rotate-180' : ''}`} />
+              </Button>
+            </CollapsibleTrigger>
+          </div>
+        </div>
+        <CollapsibleContent>
+          <CardContent className="border-t px-4 py-3">
+            {isLoading ? (
+              <div className="flex h-[160px] items-center justify-center text-sm text-muted-foreground">
+                Loading metrics…
+              </div>
+            ) : (
+              <>
+                <MetricsChart
+                  data={tabMetricsData}
+                  height={160}
+                  color={activeEt?.color || 'var(--chart-3)'}
+                  granularity={granularity}
+                />
+                {tabMetrics?.interval && (
+                  <p className="mt-2 text-xs text-muted-foreground">
+                    Collection interval: {tabMetrics.interval}
+                  </p>
+                )}
+              </>
+            )}
+          </CardContent>
+        </CollapsibleContent>
+      </Card>
+    </Collapsible>
+  )
+}
