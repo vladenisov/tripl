@@ -60,6 +60,11 @@ class Settings(BaseSettings):
     # interactive dev; compose / k8s manifests should enable this.
     log_json: bool = False
 
+    # Prometheus `/metrics` endpoint + Celery task instrumentation. Off by
+    # default so dev runs stay quiet; production / staging should turn it on
+    # behind an internal-only ingress path.
+    prometheus_metrics_enabled: bool = False
+
     model_config = {"env_file": ".env", "extra": "ignore"}
 
     @field_validator("log_level")

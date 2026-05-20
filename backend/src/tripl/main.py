@@ -8,7 +8,7 @@ from contextlib import asynccontextmanager
 from brotli_asgi import BrotliMiddleware
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 from sqlalchemy import text
 
 from tripl.api.v1.router import router as v1_router
@@ -16,6 +16,7 @@ from tripl.config import settings
 from tripl.database import engine
 from tripl.logging_config import configure_logging
 from tripl.middleware import RequestIDMiddleware, SecurityHeadersMiddleware
+from tripl.observability.metrics import render_metrics
 
 logger = logging.getLogger(__name__)
 
@@ -88,3 +89,10 @@ async def health() -> JSONResponse:
             content={"status": "error", "component": "database", "detail": str(exc)},
         )
     return JSONResponse(content={"status": "ok"})
+
+
+if settings.prometheus_metrics_enabled:
+    @app.get("/metrics", include_in_schema=False)
+    async def metrics_endpoint() -> Response:
+        body, content_type = render_metrics()
+        return Response(content=body, media_type=content_type)

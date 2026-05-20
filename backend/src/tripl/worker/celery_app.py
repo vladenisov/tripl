@@ -2,6 +2,11 @@ from celery import Celery
 
 from tripl.config import settings
 
+if settings.prometheus_metrics_enabled:
+    from tripl.observability.metrics import install_celery_instrumentation
+
+    install_celery_instrumentation()
+
 celery_app = Celery("tripl")
 celery_app.conf.broker_url = settings.rabbitmq_url
 celery_app.conf.result_backend = None
