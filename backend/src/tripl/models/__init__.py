@@ -7,6 +7,7 @@ from tripl.models.alert_rule_state import AlertRuleState
 from tripl.models.audit_log import AuditLog
 from tripl.models.base import Base
 from tripl.models.data_source import DataSource
+from tripl.models.distribution_drift import DistributionDrift
 from tripl.models.event import Event
 from tripl.models.event_field_value import EventFieldValue
 from tripl.models.event_meta_value import EventMetaValue
@@ -57,6 +58,7 @@ __all__ = [
     "ProjectAnomalySettings",
     "Variable",
     "DataSource",
+    "DistributionDrift",
     "ScanConfig",
     "ScanJob",
     "SchemaDrift",
