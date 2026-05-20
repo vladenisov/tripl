@@ -3,7 +3,7 @@ from typing import Annotated
 
 from fastapi import APIRouter, Query
 
-from tripl.api.deps import CurrentUserDep, SessionDep
+from tripl.api.deps import CurrentUserDep, EditorUserDep, SessionDep
 from tripl.schemas.plan_revision import (
     PlanDiff,
     PlanRevisionCreate,
@@ -18,7 +18,7 @@ router = APIRouter(prefix="/projects/{slug}/revisions", tags=["plan-revisions"])
 @router.post("", response_model=PlanRevisionDetail, status_code=201)
 async def create_revision(
     session: SessionDep,
-    current_user: CurrentUserDep,
+    current_user: EditorUserDep,
     slug: str,
     data: PlanRevisionCreate,
 ) -> PlanRevisionDetail:

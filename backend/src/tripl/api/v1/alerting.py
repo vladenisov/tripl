@@ -4,7 +4,7 @@ from datetime import datetime
 from fastapi import APIRouter, HTTPException, Query
 from sqlalchemy import select
 
-from tripl.api.deps import CurrentUserDep, SessionDep
+from tripl.api.deps import EditorUserDep, SessionDep
 from tripl.models.alert_rule import AlertRule
 from tripl.schemas.alerting import (
     AlertDeliveryDetailResponse,
@@ -32,7 +32,7 @@ async def create_alert_destination(
     session: SessionDep,
     slug: str,
     data: AlertDestinationCreate,
-    current_user: CurrentUserDep,
+    current_user: EditorUserDep,
 ) -> AlertDestinationResponse:
     dest = await alerting_service.create_destination(session, slug, data)
     await audit_service.record(
@@ -61,7 +61,7 @@ async def update_alert_destination(
     slug: str,
     destination_id: uuid.UUID,
     data: AlertDestinationUpdate,
-    current_user: CurrentUserDep,
+    current_user: EditorUserDep,
 ) -> AlertDestinationResponse:
     dest = await alerting_service.update_destination(session, slug, destination_id, data)
     await audit_service.record(
@@ -82,7 +82,7 @@ async def delete_alert_destination(
     session: SessionDep,
     slug: str,
     destination_id: uuid.UUID,
-    current_user: CurrentUserDep,
+    current_user: EditorUserDep,
 ) -> None:
     existing = await alerting_service.get_destination(session, slug, destination_id)
     name = existing.name
@@ -108,7 +108,7 @@ async def create_alert_rule(
     slug: str,
     destination_id: uuid.UUID,
     data: AlertRuleCreate,
-    current_user: CurrentUserDep,
+    current_user: EditorUserDep,
 ) -> AlertRuleResponse:
     rule = await alerting_service.create_rule(session, slug, destination_id, data)
     await audit_service.record(
@@ -134,7 +134,7 @@ async def update_alert_rule(
     destination_id: uuid.UUID,
     rule_id: uuid.UUID,
     data: AlertRuleUpdate,
-    current_user: CurrentUserDep,
+    current_user: EditorUserDep,
 ) -> AlertRuleResponse:
     rule = await alerting_service.update_rule(session, slug, destination_id, rule_id, data)
     await audit_service.record(
@@ -156,7 +156,7 @@ async def delete_alert_rule(
     slug: str,
     destination_id: uuid.UUID,
     rule_id: uuid.UUID,
-    current_user: CurrentUserDep,
+    current_user: EditorUserDep,
 ) -> None:
     rule = await session.scalar(
         select(AlertRule).where(

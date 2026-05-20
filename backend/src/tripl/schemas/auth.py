@@ -1,7 +1,10 @@
 import uuid
 from datetime import datetime
+from typing import Literal
 
 from pydantic import BaseModel, Field
+
+Role = Literal["owner", "editor", "viewer"]
 
 
 class RegisterRequest(BaseModel):
@@ -19,7 +22,22 @@ class AuthUserResponse(BaseModel):
     id: uuid.UUID
     email: str
     name: str | None
+    role: Role
     created_at: datetime
     updated_at: datetime
 
     model_config = {"from_attributes": True}
+
+
+class UserListItem(BaseModel):
+    id: uuid.UUID
+    email: str
+    name: str | None
+    role: Role
+    created_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+class UserRoleUpdate(BaseModel):
+    role: Role

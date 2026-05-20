@@ -2,7 +2,7 @@ import uuid
 
 from fastapi import APIRouter
 
-from tripl.api.deps import CurrentUserDep, SessionDep
+from tripl.api.deps import EditorUserDep, SessionDep
 from tripl.models.event_type_relation import EventTypeRelation
 from tripl.schemas.relation import RelationCreate, RelationResponse
 from tripl.services import audit_service, relation_service
@@ -20,7 +20,7 @@ async def create_relation(
     session: SessionDep,
     slug: str,
     data: RelationCreate,
-    current_user: CurrentUserDep,
+    current_user: EditorUserDep,
 ) -> EventTypeRelation:
     rel = await relation_service.create_relation(session, slug, data)
     await audit_service.record(
@@ -41,7 +41,7 @@ async def delete_relation(
     session: SessionDep,
     slug: str,
     relation_id: uuid.UUID,
-    current_user: CurrentUserDep,
+    current_user: EditorUserDep,
 ) -> None:
     await relation_service.delete_relation(session, slug, relation_id)
     await audit_service.record(

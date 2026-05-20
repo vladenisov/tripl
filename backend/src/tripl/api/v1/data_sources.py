@@ -2,7 +2,7 @@ import uuid
 
 from fastapi import APIRouter
 
-from tripl.api.deps import CurrentUserDep, SessionDep
+from tripl.api.deps import EditorUserDep, SessionDep
 from tripl.schemas.data_source import (
     DataSourceCreate,
     DataSourceResponse,
@@ -26,7 +26,7 @@ async def list_data_sources(session: SessionDep) -> list[DataSourceResponse]:
 async def create_data_source(
     session: SessionDep,
     data: DataSourceCreate,
-    current_user: CurrentUserDep,
+    current_user: EditorUserDep,
 ) -> DataSourceResponse:
     ds = await datasource_service.create_data_source(session, data)
     await audit_service.record(
@@ -51,7 +51,7 @@ async def update_data_source(
     session: SessionDep,
     ds_id: uuid.UUID,
     data: DataSourceUpdate,
-    current_user: CurrentUserDep,
+    current_user: EditorUserDep,
 ) -> DataSourceResponse:
     ds = await datasource_service.update_data_source(session, ds_id, data)
     await audit_service.record(
@@ -70,7 +70,7 @@ async def update_data_source(
 async def delete_data_source(
     session: SessionDep,
     ds_id: uuid.UUID,
-    current_user: CurrentUserDep,
+    current_user: EditorUserDep,
 ) -> None:
     existing = await datasource_service.get_data_source(session, ds_id)
     name = existing.name

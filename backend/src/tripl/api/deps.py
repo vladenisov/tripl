@@ -30,3 +30,35 @@ async def get_current_user(request: Request, session: SessionDep) -> User:
 
 
 CurrentUserDep = Annotated[User, Depends(get_current_user)]
+
+
+def require_editor(user: User) -> None:
+    """Reject viewers — mutations need editor role or above."""
+    if user.role == "viewer":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Editor role required",
+        )
+
+
+def require_owner(user: User) -> None:
+    """Reject anyone below owner — user management is owner-only."""
+    if user.role != "owner":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Owner role required",
+        )
+
+
+async def get_editor_user(user: CurrentUserDep) -> User:
+    require_editor(user)
+    return user
+
+
+async def get_owner_user(user: CurrentUserDep) -> User:
+    require_owner(user)
+    return user
+
+
+EditorUserDep = Annotated[User, Depends(get_editor_user)]
+OwnerUserDep = Annotated[User, Depends(get_owner_user)]

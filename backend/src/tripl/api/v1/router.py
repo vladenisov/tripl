@@ -16,6 +16,7 @@ from tripl.api.v1.project_anomaly_settings import router as project_anomaly_sett
 from tripl.api.v1.projects import router as projects_router
 from tripl.api.v1.relations import router as relations_router
 from tripl.api.v1.scans import router as scans_router
+from tripl.api.v1.users import router as users_router
 from tripl.api.v1.variables import router as variables_router
 
 router = APIRouter(prefix="/api/v1")
@@ -37,3 +38,4 @@ router.include_router(scans_router, dependencies=protected_dependencies)
 router.include_router(metrics_router, dependencies=protected_dependencies)
 router.include_router(plan_revisions_router, dependencies=protected_dependencies)
 router.include_router(audit_router, dependencies=protected_dependencies)
+router.include_router(users_router, dependencies=protected_dependencies)

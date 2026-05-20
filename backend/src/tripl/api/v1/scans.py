@@ -2,7 +2,7 @@ import uuid
 
 from fastapi import APIRouter
 
-from tripl.api.deps import CurrentUserDep, SessionDep
+from tripl.api.deps import EditorUserDep, SessionDep
 from tripl.schemas.scan_config import (
     ScanConfigCreate,
     ScanConfigPreviewRequest,
@@ -30,7 +30,7 @@ async def create_scan_config(
     session: SessionDep,
     slug: str,
     data: ScanConfigCreate,
-    current_user: CurrentUserDep,
+    current_user: EditorUserDep,
 ) -> object:
     cfg = await scan_service.create_scan_config(session, slug, data)
     await audit_service.record(
@@ -66,7 +66,7 @@ async def update_scan_config(
     slug: str,
     scan_id: uuid.UUID,
     data: ScanConfigUpdate,
-    current_user: CurrentUserDep,
+    current_user: EditorUserDep,
 ) -> object:
     cfg = await scan_service.update_scan_config(session, slug, scan_id, data)
     await audit_service.record(
@@ -87,7 +87,7 @@ async def delete_scan_config(
     session: SessionDep,
     slug: str,
     scan_id: uuid.UUID,
-    current_user: CurrentUserDep,
+    current_user: EditorUserDep,
 ) -> None:
     existing = await scan_service.get_scan_config(session, slug, scan_id)
     name = getattr(existing, "name", "")
