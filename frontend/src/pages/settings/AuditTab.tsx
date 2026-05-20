@@ -1,16 +1,72 @@
-import { useState } from 'react'
-import { useQuery } from '@tanstack/react-query'
-import { ChevronDown, ChevronRight, ScrollText } from 'lucide-react'
+import { useMemo, useState } from 'react'
+import { keepPreviousData, useQuery } from '@tanstack/react-query'
+import { ChevronDown, ChevronRight, ScrollText, X } from 'lucide-react'
 
 import { auditApi } from '@/api/audit'
 import { Badge } from '@/components/ui/badge'
+import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
+import { Input } from '@/components/ui/input'
+import { Label } from '@/components/ui/label'
 
 const ACTION_TONE: Record<string, string> = {
   create: 'bg-emerald-500/15 text-emerald-700',
   update: 'bg-amber-500/15 text-amber-700',
   delete: 'bg-rose-500/15 text-rose-700',
 }
+
+// Grouped action vocabulary — kept in sync with the backend wire-in.
+const ACTION_GROUPS: { label: string; actions: string[] }[] = [
+  {
+    label: 'Schema',
+    actions: [
+      'event_type.create',
+      'event_type.update',
+      'event_type.delete',
+      'field.create',
+      'field.update',
+      'field.delete',
+      'meta_field.create',
+      'meta_field.update',
+      'meta_field.delete',
+      'relation.create',
+      'relation.delete',
+      'variable.create',
+      'variable.update',
+      'variable.delete',
+    ],
+  },
+  {
+    label: 'Versioning',
+    actions: ['plan_revision.create'],
+  },
+  {
+    label: 'Data sources & scans',
+    actions: [
+      'data_source.create',
+      'data_source.update',
+      'data_source.delete',
+      'scan_config.create',
+      'scan_config.update',
+      'scan_config.delete',
+    ],
+  },
+  {
+    label: 'Alerting',
+    actions: [
+      'alert_destination.create',
+      'alert_destination.update',
+      'alert_destination.delete',
+      'alert_rule.create',
+      'alert_rule.update',
+      'alert_rule.delete',
+    ],
+  },
+]
+
+// Backend caps page size at 200; tighten the filter to narrow results when
+// you hit this ceiling.
+const PAGE_SIZE = 200
 
 function actionTone(action: string) {
   const verb = action.split('.').pop() ?? ''
@@ -30,14 +86,44 @@ function formatTimestamp(iso: string) {
   })
 }
 
+function toIsoOrUndef(localDateTime: string, endOfDay = false): string | undefined {
+  if (!localDateTime) return undefined
+  // <input type="date"> gives YYYY-MM-DD without time; pin to start/end of day.
+  const iso = `${localDateTime}T${endOfDay ? '23:59:59.999' : '00:00:00.000'}`
+  const d = new Date(iso)
+  return Number.isNaN(d.getTime()) ? undefined : d.toISOString()
+}
+
 export function AuditTab({ slug }: { slug: string }) {
   const [expanded, setExpanded] = useState<Set<string>>(new Set())
+  const [action, setAction] = useState('')
+  const [emailInput, setEmailInput] = useState('')
+  const [emailApplied, setEmailApplied] = useState('')
+  const [sinceDate, setSinceDate] = useState('')
+  const [untilDate, setUntilDate] = useState('')
+
+  const queryParams = useMemo(
+    () => ({
+      projectSlug: slug,
+      action: action || undefined,
+      userEmail: emailApplied || undefined,
+      since: toIsoOrUndef(sinceDate, false),
+      until: toIsoOrUndef(untilDate, true),
+      limit: PAGE_SIZE,
+    }),
+    [slug, action, emailApplied, sinceDate, untilDate],
+  )
 
   const listQuery = useQuery({
-    queryKey: ['audit', slug],
-    queryFn: () => auditApi.list({ projectSlug: slug, limit: 100 }),
+    queryKey: ['audit', queryParams],
+    queryFn: () => auditApi.list(queryParams),
     enabled: !!slug,
+    placeholderData: keepPreviousData,
   })
+
+  const items = listQuery.data?.items ?? []
+  const total = listQuery.data?.total ?? 0
+  const truncated = total > items.length
 
   const toggle = (id: string) => {
     setExpanded((prev) => {
@@ -48,8 +134,18 @@ export function AuditTab({ slug }: { slug: string }) {
     })
   }
 
-  const items = listQuery.data?.items ?? []
-  const total = listQuery.data?.total ?? 0
+  const filtersActive = !!(action || emailApplied || sinceDate || untilDate)
+  const clearFilters = () => {
+    setAction('')
+    setEmailInput('')
+    setEmailApplied('')
+    setSinceDate('')
+    setUntilDate('')
+  }
+
+  const applyEmail = () => {
+    setEmailApplied(emailInput.trim())
+  }
 
   return (
     <div className="space-y-4">
@@ -65,13 +161,86 @@ export function AuditTab({ slug }: { slug: string }) {
       </div>
 
       <Card>
+        <CardContent className="p-3 space-y-3">
+          <div className="grid grid-cols-12 gap-2 items-end">
+            <div className="col-span-12 sm:col-span-4 grid gap-1">
+              <Label htmlFor="audit-action" className="text-[11px] text-muted-foreground">Action</Label>
+              <select
+                id="audit-action"
+                value={action}
+                onChange={(e) => setAction(e.target.value)}
+                className="flex h-8 w-full rounded-md border border-input bg-background px-2 py-1 text-xs"
+              >
+                <option value="">All actions</option>
+                {ACTION_GROUPS.map((group) => (
+                  <optgroup key={group.label} label={group.label}>
+                    {group.actions.map((a) => (
+                      <option key={a} value={a}>{a}</option>
+                    ))}
+                  </optgroup>
+                ))}
+              </select>
+            </div>
+            <div className="col-span-12 sm:col-span-4 grid gap-1">
+              <Label htmlFor="audit-email" className="text-[11px] text-muted-foreground">User email contains</Label>
+              <div className="flex gap-1">
+                <Input
+                  id="audit-email"
+                  value={emailInput}
+                  onChange={(e) => setEmailInput(e.target.value)}
+                  onKeyDown={(e) => { if (e.key === 'Enter') applyEmail() }}
+                  placeholder="alice@example.com"
+                  className="h-8 text-xs"
+                />
+                <Button type="button" size="sm" variant="outline" className="h-8 px-2" onClick={applyEmail}>
+                  Apply
+                </Button>
+              </div>
+            </div>
+            <div className="col-span-6 sm:col-span-2 grid gap-1">
+              <Label htmlFor="audit-since" className="text-[11px] text-muted-foreground">From</Label>
+              <Input
+                id="audit-since"
+                type="date"
+                value={sinceDate}
+                onChange={(e) => setSinceDate(e.target.value)}
+                className="h-8 text-xs"
+              />
+            </div>
+            <div className="col-span-6 sm:col-span-2 grid gap-1">
+              <Label htmlFor="audit-until" className="text-[11px] text-muted-foreground">To</Label>
+              <Input
+                id="audit-until"
+                type="date"
+                value={untilDate}
+                onChange={(e) => setUntilDate(e.target.value)}
+                className="h-8 text-xs"
+              />
+            </div>
+          </div>
+          {filtersActive && (
+            <div className="flex items-center justify-between text-xs text-muted-foreground">
+              <span>
+                {total} {total === 1 ? 'entry' : 'entries'} match the filter.
+              </span>
+              <Button type="button" variant="ghost" size="sm" className="h-7 px-2 text-xs" onClick={clearFilters}>
+                <X className="mr-1 h-3 w-3" />
+                Clear
+              </Button>
+            </div>
+          )}
+        </CardContent>
+      </Card>
+
+      <Card>
         <CardContent className="p-0">
           {listQuery.isLoading ? (
             <div className="p-4 text-sm text-muted-foreground">Loading…</div>
           ) : items.length === 0 ? (
             <div className="p-4 text-sm text-muted-foreground">
-              No audit entries yet. Future schema or data-source changes will
-              show up here.
+              {filtersActive
+                ? 'No entries match the current filter.'
+                : 'No audit entries yet. Future schema or data-source changes will show up here.'}
             </div>
           ) : (
             <ul className="divide-y">
@@ -115,9 +284,10 @@ export function AuditTab({ slug }: { slug: string }) {
         </CardContent>
       </Card>
 
-      {total > items.length && (
+      {items.length > 0 && truncated && (
         <p className="text-xs text-muted-foreground">
-          Showing {items.length} of {total} entries.
+          Showing the most recent {items.length} of {total} entries — narrow
+          the filter to drill into older actions.
         </p>
       )}
     </div>
