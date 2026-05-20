@@ -50,6 +50,11 @@ class ScanConfig(UUIDMixin, TimestampMixin, Base):
         server_default="[]",
     )
     metric_breakdown_values_limit: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    distribution_drift_fields: Mapped[list[str]] = mapped_column(
+        JSON,
+        default=list,
+        server_default="[]",
+    )
     cardinality_threshold: Mapped[int] = mapped_column(Integer, default=100)
     interval: Mapped[str | None] = mapped_column(String(10), nullable=True)
     anomaly_detection_enabled: Mapped[bool] = mapped_column(Boolean, default=False)

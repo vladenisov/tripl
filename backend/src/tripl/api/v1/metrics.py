@@ -7,6 +7,7 @@ from fastapi import APIRouter, Query
 from tripl.api.deps import SessionDep
 from tripl.schemas.event_metric import (
     ActiveSignalsQuery,
+    DistributionDriftsResponse,
     EventMetricBreakdownsResponse,
     EventMetricsResponse,
     EventWindowMetricsRequest,
@@ -167,9 +168,7 @@ async def query_active_signals(
     slug: str,
     data: ActiveSignalsQuery,
 ) -> list[MetricSignalResponse]:
-    return await metrics_service.get_active_signals(
-        session, slug, event_ids=data.event_ids or None
-    )
+    return await metrics_service.get_active_signals(session, slug, event_ids=data.event_ids or None)
 
 
 @router.get(
@@ -194,4 +193,28 @@ async def get_top_movers(
         scope_ref=scope_ref,
         bucket=bucket,
         limit=limit,
+    )
+
+
+@router.get(
+    "/projects/{slug}/distribution-drifts",
+    response_model=DistributionDriftsResponse,
+)
+async def get_distribution_drifts(
+    session: SessionDep,
+    slug: str,
+    scope_type: str,
+    scope_ref: str,
+    scan_config_id: uuid.UUID | None = None,
+    time_from: TimeFrom = None,
+    time_to: TimeTo = None,
+) -> DistributionDriftsResponse:
+    return await metrics_service.get_distribution_drifts(
+        session,
+        slug,
+        scope_type=scope_type,
+        scope_ref=scope_ref,
+        scan_config_id=scan_config_id,
+        time_from=time_from,
+        time_to=time_to,
     )

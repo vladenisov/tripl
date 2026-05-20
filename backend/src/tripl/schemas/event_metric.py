@@ -71,6 +71,34 @@ class TopMoverItem(BaseModel):
     direction: str
 
 
+class DistributionDriftTopMover(BaseModel):
+    value: str
+    baseline_share: float
+    current_share: float
+    contribution: float
+
+
+class DistributionDriftPoint(BaseModel):
+    id: uuid.UUID
+    scan_config_id: uuid.UUID
+    event_type_id: uuid.UUID | None = None
+    field_name: str
+    bucket: datetime
+    psi: float
+    band: str
+    baseline_total: int
+    current_total: int
+    top_movers: list[DistributionDriftTopMover]
+
+
+class DistributionDriftsResponse(BaseModel):
+    scope: str
+    scan_config_id: uuid.UUID | None = None
+    event_type_id: uuid.UUID | None = None
+    fields: list[str]
+    data: list[DistributionDriftPoint]
+
+
 class EventWindowMetricsRequest(BaseModel):
     event_ids: list[uuid.UUID]
     time_from: datetime | None = None

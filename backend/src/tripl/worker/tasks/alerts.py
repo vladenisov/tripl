@@ -63,6 +63,7 @@ def _build_item_template_context(
         "event_type": "Event type",
         "event": "Event",
         "schema": "Schema drift",
+        "distribution": "Distribution drift",
     }.get(item.scope_type, item.scope_type)
     details_line = f"\n  details: {item.details_path}" if item.details_path else ""
     monitoring_line = f"\n  monitoring: {item.monitoring_path}" if item.monitoring_path else ""

@@ -12,7 +12,7 @@ import uuid
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from tripl.alerting_matching import AlertMatchCandidate
+from tripl.alerting_matching import SCOPE_DISTRIBUTION_DRIFT, AlertMatchCandidate
 from tripl.models.alert_destination import AlertDestination
 from tripl.models.alert_rule import AlertRule
 from tripl.models.event import Event
@@ -52,13 +52,24 @@ def _build_alert_scope_names(
             event_type_names[event_type_id] = event_type_name
             scope_names[(SCOPE_EVENT_TYPE, str(event_type_id))] = event_type_name
         for anomaly in anomalies:
-            if anomaly.scope_type != SCOPE_SCHEMA_DRIFT or anomaly.event_type_id is None:
+            if anomaly.event_type_id is None:
                 continue
-            event_type_name = event_type_names.get(anomaly.event_type_id, "Schema")
+            event_type_name = event_type_names.get(anomaly.event_type_id, "Event type")
             drift_field = getattr(anomaly, "drift_field", None) or anomaly.scope_ref
-            scope_names[(SCOPE_SCHEMA_DRIFT, anomaly.scope_ref)] = (
-                f"{event_type_name}.{drift_field}"
-            )
+            if anomaly.scope_type == SCOPE_SCHEMA_DRIFT:
+                scope_names[(SCOPE_SCHEMA_DRIFT, anomaly.scope_ref)] = (
+                    f"{event_type_name}.{drift_field}"
+                )
+            elif anomaly.scope_type == SCOPE_DISTRIBUTION_DRIFT:
+                scope_names[(SCOPE_DISTRIBUTION_DRIFT, anomaly.scope_ref)] = (
+                    f"{event_type_name}.{drift_field}"
+                )
+
+    for anomaly in anomalies:
+        if anomaly.scope_type != SCOPE_DISTRIBUTION_DRIFT or anomaly.event_type_id is not None:
+            continue
+        drift_field = getattr(anomaly, "drift_field", None) or anomaly.scope_ref
+        scope_names[(SCOPE_DISTRIBUTION_DRIFT, anomaly.scope_ref)] = f"All events.{drift_field}"
 
     event_ids = {anomaly.event_id for anomaly in anomalies if anomaly.event_id is not None}
     if event_ids:

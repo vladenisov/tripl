@@ -15,7 +15,13 @@ from sqlalchemy import func as sa_func
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from tripl.alerting_matching import SchemaDriftAlertCandidate
+from tripl.alerting_matching import (
+    SCOPE_DISTRIBUTION_DRIFT,
+    DistributionDriftAlertCandidate,
+    SchemaDriftAlertCandidate,
+    distribution_drift_scope_ref,
+)
+from tripl.models.distribution_drift import DistributionDrift
 from tripl.models.event_metric import EventMetric
 from tripl.models.event_type import EventType
 from tripl.models.metric_anomaly import MetricAnomaly
@@ -29,6 +35,26 @@ from tripl.worker.analyzers.anomaly_detector import (
 
 from ._helpers import RECENT_SIGNAL_WINDOW, SCOPE_SCHEMA_DRIFT
 from .urls import _trim_alert_text
+
+
+def _format_distribution_drift_sample(drift: DistributionDrift) -> str:
+    parts = [f"psi={drift.psi:.3f}"]
+    top_movers = drift.top_movers or []
+    mover_parts: list[str] = []
+    for mover in top_movers[:3]:
+        value = str(mover.get("value", ""))
+        baseline_share = _mover_float(mover.get("baseline_share")) * 100
+        current_share = _mover_float(mover.get("current_share")) * 100
+        mover_parts.append(f"{value} {baseline_share:.1f}%->{current_share:.1f}%")
+    if mover_parts:
+        parts.append(", ".join(mover_parts))
+    return _trim_alert_text("; ".join(parts)) or ""
+
+
+def _mover_float(value: object) -> float:
+    if isinstance(value, (int, float, str)):
+        return float(value)
+    return 0.0
 
 
 def _classify_signal_state(
@@ -170,6 +196,48 @@ def _get_active_schema_drift_candidates(
             drift_field=drift.field_name,
             drift_type=drift.drift_type,
             sample_value=_trim_alert_text(drift.sample_value),
+        )
+        candidates[(candidate.scope_type, candidate.scope_ref)] = candidate
+    return candidates
+
+
+def _get_active_distribution_drift_candidates(
+    session: Session,
+    config: ScanConfig,
+) -> dict[tuple[str, str], DistributionDriftAlertCandidate]:
+    latest_bucket = session.execute(
+        select(sa_func.max(DistributionDrift.bucket)).where(
+            DistributionDrift.scan_config_id == config.id,
+        )
+    ).scalar_one_or_none()
+    if latest_bucket is None:
+        return {}
+
+    candidates: dict[tuple[str, str], DistributionDriftAlertCandidate] = {}
+    for drift in session.execute(
+        select(DistributionDrift)
+        .where(
+            DistributionDrift.scan_config_id == config.id,
+            DistributionDrift.bucket == latest_bucket,
+            DistributionDrift.band == "significant",
+        )
+        .order_by(DistributionDrift.field_name)
+    ).scalars():
+        owner_id = drift.event_type_id or drift.scan_config_id
+        scope_ref = distribution_drift_scope_ref(owner_id, drift.field_name)
+        candidate = DistributionDriftAlertCandidate(
+            id=drift.id,
+            scope_type=SCOPE_DISTRIBUTION_DRIFT,
+            scope_ref=scope_ref,
+            event_id=None,
+            event_type_id=drift.event_type_id,
+            bucket=drift.bucket,
+            direction="spike",
+            actual_count=drift.current_total,
+            expected_count=float(drift.baseline_total),
+            drift_field=drift.field_name,
+            drift_type="distribution_shift",
+            sample_value=_format_distribution_drift_sample(drift),
         )
         candidates[(candidate.scope_type, candidate.scope_ref)] = candidate
     return candidates

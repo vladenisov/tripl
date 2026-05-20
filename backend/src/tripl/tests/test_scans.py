@@ -57,6 +57,7 @@ class TestScanConfigsCRUD:
                 "event_type_id": event_type["id"],
                 "metric_breakdown_columns": ["country", "platform"],
                 "metric_breakdown_values_limit": 20,
+                "distribution_drift_fields": ["platform"],
                 "cardinality_threshold": 50,
             },
         )
@@ -71,6 +72,7 @@ class TestScanConfigsCRUD:
         assert data["json_value_paths"] == []
         assert data["metric_breakdown_columns"] == ["country", "platform"]
         assert data["metric_breakdown_values_limit"] == 20
+        assert data["distribution_drift_fields"] == ["platform"]
         assert "anomaly_detection_enabled" not in data
 
     async def test_list_scan_configs(self, client: AsyncClient, project: dict, data_source: dict):
@@ -100,6 +102,7 @@ class TestScanConfigsCRUD:
                 "cardinality_threshold": 200,
                 "metric_breakdown_columns": ["country"],
                 "metric_breakdown_values_limit": None,
+                "distribution_drift_fields": ["country"],
             },
         )
         assert resp.status_code == 200
@@ -107,6 +110,7 @@ class TestScanConfigsCRUD:
         assert resp.json()["cardinality_threshold"] == 200
         assert resp.json()["metric_breakdown_columns"] == ["country"]
         assert resp.json()["metric_breakdown_values_limit"] is None
+        assert resp.json()["distribution_drift_fields"] == ["country"]
 
     async def test_delete_scan_config(self, client: AsyncClient, project: dict, data_source: dict):
         create_resp = await client.post(

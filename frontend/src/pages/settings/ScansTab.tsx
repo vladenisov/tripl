@@ -194,6 +194,59 @@ function MetricBreakdownPicker({
   )
 }
 
+function DistributionDriftPicker({
+  columns,
+  selectedFields,
+  eventTypeColumn,
+  timeColumn,
+  onToggleField,
+}: {
+  columns: ScanConfigPreview['columns']
+  selectedFields: string[]
+  eventTypeColumn: string
+  timeColumn: string
+  onToggleField: (field: string) => void
+}) {
+  const availableColumns = columns.filter(column => !isJsonPreviewType(column.type_name))
+  const reservedColumns = new Set([eventTypeColumn, timeColumn].filter(Boolean))
+
+  return (
+    <div className="space-y-3 rounded-lg border bg-muted/20 p-4">
+      <div>
+        <div className="text-sm font-medium">Distribution drift</div>
+        <p className="text-xs text-muted-foreground">
+          Selected scalar fields are compared against their rolling baseline with PSI.
+        </p>
+      </div>
+      <div className="grid gap-2 sm:grid-cols-2">
+        {availableColumns.map(column => {
+          const disabled = reservedColumns.has(column.name)
+          return (
+            <label
+              key={column.name}
+              className="flex items-center gap-2 rounded-md border bg-background p-2 text-sm"
+            >
+              <Checkbox
+                checked={selectedFields.includes(column.name)}
+                disabled={disabled}
+                aria-label={`Distribution ${column.name}`}
+                onCheckedChange={() => {
+                  if (!disabled) onToggleField(column.name)
+                }}
+              />
+              <span className="min-w-0 flex-1 truncate font-mono text-xs">{column.name}</span>
+              {disabled && <Badge variant="outline" className="text-[10px]">reserved</Badge>}
+            </label>
+          )
+        })}
+      </div>
+      {availableColumns.length === 0 && (
+        <p className="text-xs text-muted-foreground">No scalar columns found in preview.</p>
+      )}
+    </div>
+  )
+}
+
 /* ─── Scans Tab ─── */
 export function ScansTab({ slug }: { slug: string }) {
   const qc = useQueryClient()
@@ -215,6 +268,7 @@ export function ScansTab({ slug }: { slug: string }) {
   const [jsonValuePaths, setJsonValuePaths] = useState<string[]>([])
   const [metricBreakdownColumns, setMetricBreakdownColumns] = useState<string[]>([])
   const [metricBreakdownValuesLimit, setMetricBreakdownValuesLimit] = useState('')
+  const [distributionDriftFields, setDistributionDriftFields] = useState<string[]>([])
   const [cardinalityThreshold, setCardinalityThreshold] = useState(100)
   const [interval, setInterval] = useState('')
 
@@ -228,6 +282,7 @@ export function ScansTab({ slug }: { slug: string }) {
   const [editJsonValuePaths, setEditJsonValuePaths] = useState<string[]>([])
   const [editMetricBreakdownColumns, setEditMetricBreakdownColumns] = useState<string[]>([])
   const [editMetricBreakdownValuesLimit, setEditMetricBreakdownValuesLimit] = useState('')
+  const [editDistributionDriftFields, setEditDistributionDriftFields] = useState<string[]>([])
   const [editCardinalityThreshold, setEditCardinalityThreshold] = useState(100)
   const [editInterval, setEditInterval] = useState('')
 
@@ -261,6 +316,7 @@ export function ScansTab({ slug }: { slug: string }) {
         json_value_paths: jsonValuePaths,
         metric_breakdown_columns: metricBreakdownColumns,
         metric_breakdown_values_limit: metricBreakdownValuesLimit ? Number(metricBreakdownValuesLimit) : null,
+        distribution_drift_fields: distributionDriftFields,
         cardinality_threshold: cardinalityThreshold,
         interval: interval || null,
       }),
@@ -282,6 +338,7 @@ export function ScansTab({ slug }: { slug: string }) {
         json_value_paths: editJsonValuePaths,
         metric_breakdown_columns: editMetricBreakdownColumns,
         metric_breakdown_values_limit: editMetricBreakdownValuesLimit ? Number(editMetricBreakdownValuesLimit) : null,
+        distribution_drift_fields: editDistributionDriftFields,
         cardinality_threshold: editCardinalityThreshold,
         interval: editInterval || null,
       }),
@@ -308,6 +365,13 @@ export function ScansTab({ slug }: { slug: string }) {
           && column !== timeColumn,
         ),
       )
+      setDistributionDriftFields(current =>
+        current.filter(field =>
+          data.columns.some(item => item.name === field)
+          && field !== eventTypeColumn
+          && field !== timeColumn,
+        ),
+      )
     },
   })
 
@@ -330,6 +394,13 @@ export function ScansTab({ slug }: { slug: string }) {
           data.columns.some(item => item.name === column)
           && column !== editEventTypeColumn
           && column !== editTimeColumn,
+        ),
+      )
+      setEditDistributionDriftFields(current =>
+        current.filter(field =>
+          data.columns.some(item => item.name === field)
+          && field !== editEventTypeColumn
+          && field !== editTimeColumn,
         ),
       )
     },
@@ -361,6 +432,7 @@ export function ScansTab({ slug }: { slug: string }) {
     setEditJsonValuePaths(sc.json_value_paths ?? [])
     setEditMetricBreakdownColumns(sc.metric_breakdown_columns ?? [])
     setEditMetricBreakdownValuesLimit(sc.metric_breakdown_values_limit ? String(sc.metric_breakdown_values_limit) : '')
+    setEditDistributionDriftFields(sc.distribution_drift_fields ?? [])
     setEditCardinalityThreshold(sc.cardinality_threshold)
     setEditInterval(sc.interval ?? '')
     setEditPreview(null)
@@ -372,6 +444,7 @@ export function ScansTab({ slug }: { slug: string }) {
     setEventTypeId(''); setEventTypeColumn('')
     setTimeColumn(''); setEventNameFormat('')
     setJsonValuePaths([]); setMetricBreakdownColumns([])
+    setDistributionDriftFields([])
     setMetricBreakdownValuesLimit(''); setPreview(null)
     setCardinalityThreshold(100); setInterval('')
   }
@@ -408,6 +481,22 @@ export function ScansTab({ slug }: { slug: string }) {
     )
   }
 
+  const toggleDistributionDriftField = (field: string) => {
+    setDistributionDriftFields(current =>
+      current.includes(field)
+        ? current.filter(item => item !== field)
+        : [...current, field],
+    )
+  }
+
+  const toggleEditDistributionDriftField = (field: string) => {
+    setEditDistributionDriftFields(current =>
+      current.includes(field)
+        ? current.filter(item => item !== field)
+        : [...current, field],
+    )
+  }
+
   const selectClass = "flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm"
 
   return (
@@ -435,7 +524,7 @@ export function ScansTab({ slug }: { slug: string }) {
                 <div className="grid gap-2"><Label>Name</Label><Input value={scanName} onChange={e => setScanName(e.target.value)} required placeholder="e.g. Main events scan" /></div>
                 <div className="grid gap-2">
                   <Label>Data Source</Label>
-                  <select value={dsId} onChange={e => { setDsId(e.target.value); setPreview(null); setJsonValuePaths([]) }} className={selectClass} required>
+                  <select value={dsId} onChange={e => { setDsId(e.target.value); setPreview(null); setJsonValuePaths([]); setDistributionDriftFields([]) }} className={selectClass} required>
                     <option value="">Select…</option>
                     {dataSources.map((ds: DataSource) => <option key={ds.id} value={ds.id}>{ds.name}</option>)}
                   </select>
@@ -445,7 +534,7 @@ export function ScansTab({ slug }: { slug: string }) {
                 <Label>Base Query (used as subquery)</Label>
                 <Textarea
                   value={baseQuery}
-                  onChange={e => { setBaseQuery(e.target.value); setPreview(null); setJsonValuePaths([]) }}
+                  onChange={e => { setBaseQuery(e.target.value); setPreview(null); setJsonValuePaths([]); setDistributionDriftFields([]) }}
                   className="font-mono text-sm"
                   rows={4}
                   required
@@ -488,6 +577,7 @@ export function ScansTab({ slug }: { slug: string }) {
                       const next = e.target.value
                       setEventTypeColumn(next)
                       setMetricBreakdownColumns(current => current.filter(column => column !== next))
+                      setDistributionDriftFields(current => current.filter(field => field !== next))
                     }}
                     className={selectClass}
                     disabled={!preview}
@@ -508,6 +598,7 @@ export function ScansTab({ slug }: { slug: string }) {
                       const next = e.target.value
                       setTimeColumn(next)
                       setMetricBreakdownColumns(current => current.filter(column => column !== next))
+                      setDistributionDriftFields(current => current.filter(field => field !== next))
                     }}
                     className={selectClass}
                     disabled={!preview}
@@ -536,6 +627,15 @@ export function ScansTab({ slug }: { slug: string }) {
                   valuesLimit={metricBreakdownValuesLimit}
                   onToggleColumn={toggleMetricBreakdownColumn}
                   onValuesLimitChange={setMetricBreakdownValuesLimit}
+                />
+              )}
+              {preview && (
+                <DistributionDriftPicker
+                  columns={preview.columns}
+                  selectedFields={distributionDriftFields}
+                  eventTypeColumn={eventTypeColumn}
+                  timeColumn={timeColumn}
+                  onToggleField={toggleDistributionDriftField}
                 />
               )}
               <div className="grid grid-cols-2 gap-3">
@@ -573,7 +673,7 @@ export function ScansTab({ slug }: { slug: string }) {
                 <Label>Base Query (used as subquery)</Label>
                 <Textarea
                   value={editBaseQuery}
-                  onChange={e => { setEditBaseQuery(e.target.value); setEditPreview(null) }}
+                  onChange={e => { setEditBaseQuery(e.target.value); setEditPreview(null); setEditDistributionDriftFields([]) }}
                   className="font-mono text-sm"
                   rows={4}
                 />
@@ -614,6 +714,7 @@ export function ScansTab({ slug }: { slug: string }) {
                       const next = e.target.value
                       setEditEventTypeColumn(next)
                       setEditMetricBreakdownColumns(current => current.filter(column => column !== next))
+                      setEditDistributionDriftFields(current => current.filter(field => field !== next))
                     }}
                     className={selectClass}
                     disabled={!editPreview}
@@ -634,6 +735,7 @@ export function ScansTab({ slug }: { slug: string }) {
                       const next = e.target.value
                       setEditTimeColumn(next)
                       setEditMetricBreakdownColumns(current => current.filter(column => column !== next))
+                      setEditDistributionDriftFields(current => current.filter(field => field !== next))
                     }}
                     className={selectClass}
                     disabled={!editPreview}
@@ -662,6 +764,15 @@ export function ScansTab({ slug }: { slug: string }) {
                   valuesLimit={editMetricBreakdownValuesLimit}
                   onToggleColumn={toggleEditMetricBreakdownColumn}
                   onValuesLimitChange={setEditMetricBreakdownValuesLimit}
+                />
+              )}
+              {editPreview && (
+                <DistributionDriftPicker
+                  columns={editPreview.columns}
+                  selectedFields={editDistributionDriftFields}
+                  eventTypeColumn={editEventTypeColumn}
+                  timeColumn={editTimeColumn}
+                  onToggleField={toggleEditDistributionDriftField}
                 />
               )}
               <div className="grid grid-cols-2 gap-3">
@@ -702,6 +813,9 @@ export function ScansTab({ slug }: { slug: string }) {
                   )}
                   {sc.metric_breakdown_columns.length > 0 && (
                     <Badge variant="outline" className="text-xs">Breakdowns {sc.metric_breakdown_columns.length}</Badge>
+                  )}
+                  {sc.distribution_drift_fields.length > 0 && (
+                    <Badge variant="outline" className="text-xs">Distribution {sc.distribution_drift_fields.length}</Badge>
                   )}
                 </div>
                 <div className="flex items-center gap-2">
@@ -867,6 +981,15 @@ function ScanDetail({ slug, scanConfig, eventTypes }: { slug: string; scanConfig
                 </strong>
               </span>
             )}
+            {scanConfig.distribution_drift_fields.length > 0 && (
+              <span>
+                Distribution:
+                <strong className="text-foreground">
+                  {' '}
+                  {scanConfig.distribution_drift_fields.join(', ')}
+                </strong>
+              </span>
+            )}
             {etName && <span>Event Type: <strong className="text-foreground">{etName}</strong></span>}
             {scanConfig.interval && <span>Interval: <strong className="text-foreground">{scanConfig.interval}</strong></span>}
             <span>
@@ -963,6 +1086,9 @@ function ScanDetail({ slug, scanConfig, eventTypes }: { slug: string; scanConfig
                           {job.result_summary.breakdown_event_metrics != null && job.result_summary.breakdown_event_metrics > 0 && (
                             <Badge variant="outline" className="text-[10px]">{job.result_summary.breakdown_event_metrics} breakdowns</Badge>
                           )}
+                          {job.result_summary.distribution_drifts != null && job.result_summary.distribution_drifts > 0 && (
+                            <Badge variant="outline" className="text-[10px]">{job.result_summary.distribution_drifts} drift rows</Badge>
+                          )}
                           {job.result_summary.alerts_queued != null && job.result_summary.alerts_queued > 0 && (
                             <Badge variant="outline" className="text-[10px] text-amber-600">+{job.result_summary.alerts_queued} alerts</Badge>
                           )}
@@ -1036,6 +1162,18 @@ function ScanDetail({ slug, scanConfig, eventTypes }: { slug: string; scanConfig
                                 <Card className="p-3 text-center">
                                   <div className="text-lg font-bold text-destructive">{job.result_summary.breakdown_anomalies_detected}</div>
                                   <div className="text-muted-foreground">Breakdown anomalies</div>
+                                </Card>
+                              )}
+                              {job.result_summary.distribution_drifts != null && (
+                                <Card className="p-3 text-center">
+                                  <div className="text-lg font-bold text-foreground">{job.result_summary.distribution_drifts}</div>
+                                  <div className="text-muted-foreground">Distribution rows</div>
+                                </Card>
+                              )}
+                              {job.result_summary.significant_distribution_drifts != null && (
+                                <Card className="p-3 text-center">
+                                  <div className="text-lg font-bold text-destructive">{job.result_summary.significant_distribution_drifts}</div>
+                                  <div className="text-muted-foreground">Distribution signals</div>
                                 </Card>
                               )}
                               {job.result_summary.alerts_queued != null && (

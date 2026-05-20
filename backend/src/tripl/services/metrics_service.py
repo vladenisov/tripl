@@ -11,6 +11,7 @@ from sqlalchemy import func, literal, select, union_all
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from tripl import cache
+from tripl.models.distribution_drift import DistributionDrift
 from tripl.models.event import Event
 from tripl.models.event_metric import EventMetric
 from tripl.models.event_metric_breakdown import EventMetricBreakdown
@@ -21,6 +22,9 @@ from tripl.models.metric_breakdown_anomaly import MetricBreakdownAnomaly
 from tripl.models.project import Project
 from tripl.models.scan_config import ScanConfig
 from tripl.schemas.event_metric import (
+    DistributionDriftPoint,
+    DistributionDriftsResponse,
+    DistributionDriftTopMover,
     EventMetricBreakdownSeries,
     EventMetricBreakdownsResponse,
     EventMetricPoint,
@@ -1048,18 +1052,22 @@ async def get_top_movers(
         raise HTTPException(404, "Scan config not found")
 
     rows = (
-        await session.execute(
-            select(MetricBreakdownAnomaly)
-            .where(
-                MetricBreakdownAnomaly.scan_config_id == scan_config_id,
-                MetricBreakdownAnomaly.scope_type == scope_type,
-                MetricBreakdownAnomaly.scope_ref == scope_ref,
-                MetricBreakdownAnomaly.bucket == bucket,
+        (
+            await session.execute(
+                select(MetricBreakdownAnomaly)
+                .where(
+                    MetricBreakdownAnomaly.scan_config_id == scan_config_id,
+                    MetricBreakdownAnomaly.scope_type == scope_type,
+                    MetricBreakdownAnomaly.scope_ref == scope_ref,
+                    MetricBreakdownAnomaly.bucket == bucket,
+                )
+                .order_by(func.abs(MetricBreakdownAnomaly.z_score).desc())
+                .limit(limit)
             )
-            .order_by(func.abs(MetricBreakdownAnomaly.z_score).desc())
-            .limit(limit)
         )
-    ).scalars().all()
+        .scalars()
+        .all()
+    )
 
     return [
         TopMoverItem(
@@ -1074,3 +1082,132 @@ async def get_top_movers(
         )
         for row in rows
     ]
+
+
+def _parse_scope_uuid(scope_ref: str, *, label: str) -> uuid.UUID:
+    try:
+        return uuid.UUID(scope_ref)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=f"{label} must be a UUID") from exc
+
+
+def _mover_float(value: object) -> float:
+    if isinstance(value, (int, float, str)):
+        return float(value)
+    return 0.0
+
+
+def _distribution_top_movers_from_row(row: DistributionDrift) -> list[DistributionDriftTopMover]:
+    top_movers: list[DistributionDriftTopMover] = []
+    for mover in row.top_movers or []:
+        top_movers.append(
+            DistributionDriftTopMover(
+                value=str(mover.get("value", "")),
+                baseline_share=_mover_float(mover.get("baseline_share")),
+                current_share=_mover_float(mover.get("current_share")),
+                contribution=_mover_float(mover.get("contribution")),
+            )
+        )
+    return top_movers
+
+
+async def get_distribution_drifts(
+    session: AsyncSession,
+    slug: str,
+    *,
+    scope_type: str,
+    scope_ref: str,
+    scan_config_id: uuid.UUID | None,
+    time_from: datetime | None,
+    time_to: datetime | None,
+) -> DistributionDriftsResponse:
+    project = await _resolve_project(session, slug)
+    query = (
+        select(DistributionDrift)
+        .join(ScanConfig, ScanConfig.id == DistributionDrift.scan_config_id)
+        .where(ScanConfig.project_id == project.id)
+    )
+
+    resolved_scan_config_id = scan_config_id
+    event_type_id: uuid.UUID | None = None
+    if scope_type == SCOPE_PROJECT_TOTAL:
+        if resolved_scan_config_id is None:
+            resolved_scan_config_id = _parse_scope_uuid(scope_ref, label="scope_ref")
+        query = query.where(
+            DistributionDrift.scan_config_id == resolved_scan_config_id,
+            DistributionDrift.event_type_id.is_(None),
+        )
+    elif scope_type == SCOPE_EVENT_TYPE:
+        event_type_id = _parse_scope_uuid(scope_ref, label="scope_ref")
+        await _resolve_event_type(session, project.id, event_type_id)
+        resolved_scan_config_id = resolved_scan_config_id or await _resolve_scope_scan_config_id(
+            session,
+            project.id,
+            event_type_id=event_type_id,
+        )
+        query = query.where(DistributionDrift.event_type_id == event_type_id)
+        if resolved_scan_config_id is not None:
+            query = query.where(DistributionDrift.scan_config_id == resolved_scan_config_id)
+    elif scope_type == SCOPE_EVENT:
+        event_id = _parse_scope_uuid(scope_ref, label="scope_ref")
+        event = await _resolve_event(session, project.id, event_id)
+        event_type_id = event.event_type_id
+        resolved_scan_config_id = resolved_scan_config_id or await _resolve_scope_scan_config_id(
+            session,
+            project.id,
+            event_id=event.id,
+        )
+        query = query.where(DistributionDrift.event_type_id == event_type_id)
+        if resolved_scan_config_id is not None:
+            query = query.where(DistributionDrift.scan_config_id == resolved_scan_config_id)
+    else:
+        raise HTTPException(status_code=422, detail="Unsupported distribution drift scope_type")
+
+    if resolved_scan_config_id is not None:
+        scan_config = (
+            await session.execute(
+                select(ScanConfig.id).where(
+                    ScanConfig.id == resolved_scan_config_id,
+                    ScanConfig.project_id == project.id,
+                )
+            )
+        ).scalar_one_or_none()
+        if scan_config is None:
+            raise HTTPException(404, "Scan config not found")
+    if time_from is not None:
+        query = query.where(DistributionDrift.bucket >= time_from)
+    if time_to is not None:
+        query = query.where(DistributionDrift.bucket < time_to)
+
+    rows = (
+        (
+            await session.execute(
+                query.order_by(DistributionDrift.bucket, DistributionDrift.field_name)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    points = [
+        DistributionDriftPoint(
+            id=row.id,
+            scan_config_id=row.scan_config_id,
+            event_type_id=row.event_type_id,
+            field_name=row.field_name,
+            bucket=row.bucket,
+            psi=row.psi,
+            band=row.band,
+            baseline_total=row.baseline_total,
+            current_total=row.current_total,
+            top_movers=_distribution_top_movers_from_row(row),
+        )
+        for row in rows
+    ]
+    fields = sorted({point.field_name for point in points})
+    return DistributionDriftsResponse(
+        scope=scope_type,
+        scan_config_id=resolved_scan_config_id,
+        event_type_id=event_type_id,
+        fields=fields,
+        data=points,
+    )

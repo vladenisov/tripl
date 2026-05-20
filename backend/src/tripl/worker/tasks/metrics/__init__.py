@@ -34,6 +34,7 @@ from tripl.models.alert_delivery import AlertDelivery, AlertDeliveryStatus
 from tripl.models.alert_delivery_item import AlertDeliveryItem
 from tripl.models.alert_rule_state import AlertRuleState
 from tripl.models.data_source import DataSource
+from tripl.models.distribution_drift import DistributionDrift
 from tripl.models.event import Event
 from tripl.models.event_metric import EventMetric
 from tripl.models.event_metric_breakdown import EventMetricBreakdown
@@ -61,6 +62,7 @@ from tripl.worker.analyzers.cardinality import (
     analyze_cardinality,
     analyze_cardinality_grouped,
 )
+from tripl.worker.analyzers.distribution_drift import TopShift, compute_psi
 from tripl.worker.analyzers.event_generator import (
     GenerationResult,
     _apply_name_format,
@@ -91,6 +93,7 @@ from tripl.worker.tasks.metrics.alert_payload import (
     _load_enabled_alert_destinations,
 )
 from tripl.worker.tasks.metrics.signals import (
+    _get_active_distribution_drift_candidates,
     _get_active_schema_drift_candidates,
     _get_latest_active_anomalies,
     _get_visible_signal_scope_keys,
@@ -499,6 +502,31 @@ def _is_supported_metric_breakdown_column(
     )
 
 
+def _is_supported_distribution_drift_field(
+    config: ScanConfig,
+    *,
+    field_name: str,
+    regular_cols: list[str],
+) -> bool:
+    return _is_supported_metric_breakdown_column(
+        config,
+        column=field_name,
+        regular_cols=regular_cols,
+    )
+
+
+def _serialize_distribution_top_movers(top_movers: list[TopShift]) -> list[dict[str, object]]:
+    return [
+        {
+            "value": shift.value,
+            "baseline_share": shift.baseline_share,
+            "current_share": shift.current_share,
+            "contribution": shift.contribution,
+        }
+        for shift in top_movers
+    ]
+
+
 def _build_anomaly_settings(
     settings: ProjectAnomalySettings,
 ) -> AnomalyDetectionSettings:
@@ -841,6 +869,7 @@ def _prepare_alert_deliveries(
     active_candidates: dict[tuple[str, str], AlertMatchCandidate] = {}
     active_candidates.update(_get_latest_active_anomalies(session, config))
     active_candidates.update(_get_active_schema_drift_candidates(session, config))
+    active_candidates.update(_get_active_distribution_drift_candidates(session, config))
     destinations = _load_enabled_alert_destinations(session, config.project_id)
     if not destinations:
         return []
@@ -930,9 +959,9 @@ def _prepare_alert_deliveries(
             # shared correlation_group_id so the UI can chip + group rows.
             correlation_groups: dict[tuple[datetime, str], list[AlertMatchCandidate]] = {}
             for anomaly in anomalies_to_send:
-                correlation_groups.setdefault(
-                    (anomaly.bucket, anomaly.direction), []
-                ).append(anomaly)
+                correlation_groups.setdefault((anomaly.bucket, anomaly.direction), []).append(
+                    anomaly
+                )
             correlation_by_anomaly: dict[int, uuid.UUID] = {}
             for peers in correlation_groups.values():
                 if len(peers) < 2:
@@ -1481,6 +1510,24 @@ def _delete_event_metric_breakdowns_window(
     return int(rowcount or 0)
 
 
+def _delete_distribution_drifts_window(
+    session: Session,
+    *,
+    scan_config_id: uuid.UUID,
+    time_from: datetime,
+    time_to: datetime,
+) -> int:
+    result = session.execute(
+        delete(DistributionDrift).where(
+            DistributionDrift.scan_config_id == scan_config_id,
+            DistributionDrift.bucket >= time_from,
+            DistributionDrift.bucket < time_to,
+        )
+    )
+    rowcount = getattr(result, "rowcount", 0)
+    return int(rowcount or 0)
+
+
 def _collect_metric_breakdown_rows(
     *,
     adapter: BaseAdapter,
@@ -1636,6 +1683,160 @@ def _collect_metric_breakdown_rows(
     return event_rows, type_rows
 
 
+def _collect_distribution_drift_rows(
+    *,
+    adapter: BaseAdapter,
+    config: ScanConfig,
+    interval_ch_interval: str,
+    interval_delta: timedelta,
+    regular_cols: list[str],
+    json_cols: list[str],
+    json_value_path_map: dict[str, list[str]],
+    time_from: datetime,
+    time_to: datetime,
+    reg_index: dict[str, int],
+    et_by_name: dict[str, EventType],
+) -> tuple[list[dict[str, object]], int]:
+    distribution_fields: list[str] = []
+    seen_fields: set[str] = set()
+    for configured_field in config.distribution_drift_fields or []:
+        if configured_field in seen_fields:
+            continue
+        seen_fields.add(configured_field)
+        if _is_supported_distribution_drift_field(
+            config,
+            field_name=configured_field,
+            regular_cols=regular_cols,
+        ):
+            distribution_fields.append(configured_field)
+            continue
+        logger.warning(
+            "Skipping unsupported distribution drift field %r for scan %s",
+            configured_field,
+            config.id,
+        )
+
+    if not distribution_fields:
+        return [], 0
+
+    baseline_window_buckets = max(int(config.baseline_window_buckets or 1), 1)
+    min_history_buckets = max(int(config.min_history_buckets or 1), 1)
+    history_from = time_from - interval_delta * baseline_window_buckets
+
+    _col_names, _json_value_names, rows = adapter.get_time_bucketed_breakdown_counts_multi(
+        config.base_query,
+        config.time_column or "",
+        interval_ch_interval,
+        distribution_fields,
+        regular_cols,
+        json_cols,
+        json_value_path_map,
+        history_from,
+        time_to,
+        values_limit=None,
+    )
+    logger.info(
+        "Got %s bucketed distribution drift rows for %s from warehouse",
+        len(rows),
+        ", ".join(distribution_fields),
+    )
+
+    counts: dict[tuple[uuid.UUID | None, str, datetime, str], int] = {}
+    buckets_seen: dict[tuple[uuid.UUID | None, str], set[datetime]] = {}
+    et_col_idx = reg_index.get(config.event_type_column) if config.event_type_column else None
+
+    def add_count(
+        *,
+        event_type_id: uuid.UUID | None,
+        field_name: str,
+        bucket: datetime,
+        value: str,
+        count: int,
+    ) -> None:
+        key = (event_type_id, field_name, bucket, value)
+        counts[key] = counts.get(key, 0) + count
+        buckets_seen.setdefault((event_type_id, field_name), set()).add(bucket)
+
+    for row in rows:
+        bucket = cast(datetime, row[0])
+        field_name = str(row[1])
+        field_value = _normalize_breakdown_value(row[2])
+        data_row = row[4:]
+        count = int(cast(int | str | float, row[-1]))
+
+        event_type_id: uuid.UUID | None = None
+        if config.event_type_column and et_col_idx is not None:
+            event_type_name = str(data_row[et_col_idx])
+            event_type = et_by_name.get(event_type_name)
+            if event_type is not None:
+                event_type_id = event_type.id
+        elif config.event_type_id:
+            event_type_id = config.event_type_id
+
+        add_count(
+            event_type_id=None,
+            field_name=field_name,
+            bucket=bucket,
+            value=field_value,
+            count=count,
+        )
+        if event_type_id is not None:
+            add_count(
+                event_type_id=event_type_id,
+                field_name=field_name,
+                bucket=bucket,
+                value=field_value,
+                count=count,
+            )
+
+    output_rows: list[dict[str, object]] = []
+    significant_count = 0
+    scopes = sorted(buckets_seen, key=lambda item: (str(item[0] or ""), item[1]))
+    for event_type_id, field_name in scopes:
+        buckets = sorted(buckets_seen[(event_type_id, field_name)])
+        for bucket in buckets:
+            if bucket < time_from or bucket >= time_to:
+                continue
+
+            baseline_from = bucket - interval_delta * baseline_window_buckets
+            baseline_counts: dict[str, int] = {}
+            baseline_buckets: set[datetime] = set()
+            current_counts: dict[str, int] = {}
+
+            for (row_event_type_id, row_field_name, row_bucket, value), count in counts.items():
+                if row_event_type_id != event_type_id or row_field_name != field_name:
+                    continue
+                if row_bucket == bucket:
+                    current_counts[value] = current_counts.get(value, 0) + count
+                elif baseline_from <= row_bucket < bucket:
+                    baseline_counts[value] = baseline_counts.get(value, 0) + count
+                    baseline_buckets.add(row_bucket)
+
+            if len(baseline_buckets) < min_history_buckets or not current_counts:
+                continue
+
+            result = compute_psi(baseline_counts, current_counts)
+            top_movers = _serialize_distribution_top_movers(result.top_movers)
+            if result.band == "significant":
+                significant_count += 1
+            output_rows.append(
+                {
+                    "id": uuid.uuid4(),
+                    "scan_config_id": config.id,
+                    "event_type_id": event_type_id,
+                    "field_name": field_name,
+                    "bucket": bucket,
+                    "psi": result.psi,
+                    "band": result.band,
+                    "baseline_total": result.baseline_total,
+                    "current_total": result.current_total,
+                    "top_movers": top_movers,
+                }
+            )
+
+    return output_rows, significant_count
+
+
 @celery_app.task(  # type: ignore[untyped-decorator]
     name="tripl.worker.tasks.metrics.collect_metrics",
     bind=True,
@@ -1746,9 +1947,7 @@ def collect_metrics(
                     columns=columns,
                     skip_columns=skip_cols,
                     scan_config_id=config.id,
-                    cardinality_results=getattr(
-                        grouped_analyses[et_name], "results", None
-                    ),
+                    cardinality_results=getattr(grouped_analyses[et_name], "results", None),
                 )
                 et = _ensure_event_type_with_fields(
                     session,
@@ -1866,6 +2065,27 @@ def collect_metrics(
             time_from=time_from_dt,
             time_to=time_to_dt,
         )
+        distribution_drifts_deleted = _delete_distribution_drifts_window(
+            session,
+            scan_config_id=config.id,
+            time_from=time_from_dt,
+            time_to=time_to_dt,
+        )
+
+        # Build indices for row navigation (same layout as BreakdownAnalysis)
+        reg_index = {name: i for i, name in enumerate(regular_cols)}
+        json_index = {name: i for i, name in enumerate(json_cols)}
+        n_reg = len(regular_cols)
+
+        # Event type lookup (for grouped mode)
+        et_by_name: dict[str, EventType] = {}
+        if config.event_type_column:
+            all_ets = (
+                session.execute(select(EventType).where(EventType.project_id == config.project_id))
+                .scalars()
+                .all()
+            )
+            et_by_name = {et.name: et for et in all_ets}
 
         # Collect totals from Phase 1 for result_summary
         total_created = 0
@@ -1921,6 +2141,9 @@ def collect_metrics(
                 "breakdown_type_metrics": 0,
                 "metrics_deleted": metrics_deleted,
                 "breakdown_metrics_deleted": breakdown_metrics_deleted,
+                "distribution_drifts": 0,
+                "significant_distribution_drifts": 0,
+                "distribution_drifts_deleted": distribution_drifts_deleted,
                 "anomalies_detected": anomalies_detected,
                 "breakdown_anomalies_detected": breakdown_anomalies_detected,
                 "signals_added": signals_added,
@@ -1938,21 +2161,6 @@ def collect_metrics(
             for delivery_id in delivery_ids:
                 send_alert_delivery.delay(str(delivery_id))
             return result_summary
-
-        # Build indices for row navigation (same layout as BreakdownAnalysis)
-        reg_index = {name: i for i, name in enumerate(regular_cols)}
-        json_index = {name: i for i, name in enumerate(json_cols)}
-        n_reg = len(regular_cols)
-
-        # Event type lookup (for grouped mode)
-        et_by_name: dict[str, EventType] = {}
-        if config.event_type_column:
-            all_ets = (
-                session.execute(select(EventType).where(EventType.project_id == config.project_id))
-                .scalars()
-                .all()
-            )
-            et_by_name = {et.name: et for et in all_ets}
 
         # Aggregate metrics: (scan_config_id, event_id, bucket) -> count
         event_agg: dict[tuple[uuid.UUID, uuid.UUID, datetime], int] = {}
@@ -2048,6 +2256,19 @@ def collect_metrics(
             single_result=single_result,
             et_by_name=et_by_name,
         )
+        distribution_drift_rows, significant_distribution_drifts = _collect_distribution_drift_rows(
+            adapter=adapter,
+            config=config,
+            interval_ch_interval=interval_spec.ch_interval,
+            interval_delta=delta,
+            regular_cols=regular_cols,
+            json_cols=json_cols,
+            json_value_path_map=json_value_path_map,
+            time_from=time_from_dt,
+            time_to=time_to_dt,
+            reg_index=reg_index,
+            et_by_name=et_by_name,
+        )
 
         _upsert_event_metrics_rows(
             session,
@@ -2070,6 +2291,8 @@ def collect_metrics(
             rows=breakdown_type_rows,
             constraint="type",
         )
+        if distribution_drift_rows:
+            session.add_all(DistributionDrift(**row) for row in distribution_drift_rows)
 
         session.commit()
 
@@ -2077,13 +2300,16 @@ def collect_metrics(
         n_tp = len(type_rows)
         n_breakdown_ev = len(breakdown_event_rows)
         n_breakdown_tp = len(breakdown_type_rows)
+        n_distribution_drifts = len(distribution_drift_rows)
         logger.info(
             "Upserted %s event metrics + %s type metrics + "
-            "%s event breakdown metrics + %s type breakdown metrics",
+            "%s event breakdown metrics + %s type breakdown metrics + "
+            "%s distribution drift rows",
             n_ev,
             n_tp,
             n_breakdown_ev,
             n_breakdown_tp,
+            n_distribution_drifts,
         )
         anomalies_detected = _recalculate_metric_anomalies(
             session,
@@ -2120,6 +2346,9 @@ def collect_metrics(
             "breakdown_type_metrics": n_breakdown_tp,
             "metrics_deleted": metrics_deleted,
             "breakdown_metrics_deleted": breakdown_metrics_deleted,
+            "distribution_drifts": n_distribution_drifts,
+            "significant_distribution_drifts": significant_distribution_drifts,
+            "distribution_drifts_deleted": distribution_drifts_deleted,
             "anomalies_detected": anomalies_detected,
             "breakdown_anomalies_detected": breakdown_anomalies_detected,
             "signals_added": signals_added,

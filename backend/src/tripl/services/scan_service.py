@@ -53,18 +53,25 @@ def _build_adapter(ds: DataSource) -> BaseAdapter:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
-def _validate_metric_breakdown_selection(
+def _validate_scalar_monitoring_selection(
     *,
     metric_breakdown_columns: list[str],
+    distribution_drift_fields: list[str],
     event_type_column: str | None,
     time_column: str | None,
 ) -> None:
     reserved = {column for column in (event_type_column, time_column) if column}
-    invalid = sorted(set(metric_breakdown_columns) & reserved)
-    if invalid:
+    invalid_breakdowns = sorted(set(metric_breakdown_columns) & reserved)
+    if invalid_breakdowns:
         raise HTTPException(
             status_code=422,
             detail="metric_breakdown_columns cannot include event_type_column or time_column",
+        )
+    invalid_drift_fields = sorted(set(distribution_drift_fields) & reserved)
+    if invalid_drift_fields:
+        raise HTTPException(
+            status_code=422,
+            detail="distribution_drift_fields cannot include event_type_column or time_column",
         )
 
 
@@ -206,8 +213,9 @@ async def create_scan_config(
     if existing.scalar_one_or_none():
         raise HTTPException(status_code=409, detail="Scan config with this name already exists")
 
-    _validate_metric_breakdown_selection(
+    _validate_scalar_monitoring_selection(
         metric_breakdown_columns=data.metric_breakdown_columns,
+        distribution_drift_fields=data.distribution_drift_fields,
         event_type_column=data.event_type_column,
         time_column=data.time_column,
     )
@@ -230,10 +238,15 @@ async def update_scan_config(
 ) -> ScanConfig:
     config = await get_scan_config(session, slug, scan_id)
     update_dict = data.model_dump(exclude_unset=True)
-    _validate_metric_breakdown_selection(
+    _validate_scalar_monitoring_selection(
         metric_breakdown_columns=update_dict.get(
             "metric_breakdown_columns",
             config.metric_breakdown_columns,
+        )
+        or [],
+        distribution_drift_fields=update_dict.get(
+            "distribution_drift_fields",
+            config.distribution_drift_fields,
         )
         or [],
         event_type_column=update_dict.get("event_type_column", config.event_type_column),

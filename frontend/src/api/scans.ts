@@ -19,6 +19,7 @@ export const scansApi = {
     json_value_paths?: string[]
     metric_breakdown_columns?: string[]
     metric_breakdown_values_limit?: number | null
+    distribution_drift_fields?: string[]
     cardinality_threshold?: number
     interval?: string | null
   }) => api.post<ScanConfig>(`/projects/${slug}/scans`, data),
@@ -39,6 +40,7 @@ export const scansApi = {
     json_value_paths?: string[]
     metric_breakdown_columns?: string[]
     metric_breakdown_values_limit?: number | null
+    distribution_drift_fields?: string[]
     cardinality_threshold?: number
     interval?: string | null
   }) => api.patch<ScanConfig>(`/projects/${slug}/scans/${scanId}`, data),

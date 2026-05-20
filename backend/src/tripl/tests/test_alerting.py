@@ -259,9 +259,7 @@ async def test_alert_delivery_list_and_detail(client: AsyncClient) -> None:
     assert body["items"][0]["destination_name"] == "Audit Slack"
     assert body["items"][0]["rule_name"] == "Audit Rule"
 
-    detail_resp = await client.get(
-        f"/api/v1/projects/alert-audit/alert-deliveries/{delivery_id}"
-    )
+    detail_resp = await client.get(f"/api/v1/projects/alert-audit/alert-deliveries/{delivery_id}")
     assert detail_resp.status_code == 200
     detail = detail_resp.json()
     assert detail["items"][0]["direction"] == "drop"
@@ -410,10 +408,7 @@ def test_send_alert_delivery_renders_telegram_html_template(
             destination_id=destination.id,
             name="Main Rule",
             enabled=True,
-            message_template=(
-                "<b>Items</b>\n"
-                "${items_text}"
-            ),
+            message_template=("<b>Items</b>\n${items_text}"),
             items_template=(
                 "<b>${scope_name}</b> ${actual_count}/${expected_count}"
                 "${details_line}${monitoring_line}"
@@ -858,8 +853,7 @@ def test_send_alert_delivery_falls_back_from_telegram_markdownv2_to_plain(
     assert sent_payloads[0]["parse_mode"] == "MarkdownV2"
     assert "parse_mode" not in sent_payloads[1]
     assert sent_payloads[1]["text"] == (
-        "[tripl] 1 alerts\n"
-        "- Event purchase:success: down, actual=10, expected=20, delta=10 (50.0%)"
+        "[tripl] 1 alerts\n- Event purchase:success: down, actual=10, expected=20, delta=10 (50.0%)"
     )
 
     with sync_session_factory() as session:
@@ -885,6 +879,7 @@ def _build_rule(**overrides: object) -> AlertRule:
         "include_event_types": True,
         "include_events": True,
         "include_schema_drifts": False,
+        "include_distribution_drifts": False,
         "notify_on_spike": True,
         "notify_on_drop": True,
         "min_percent_delta": 0.0,
@@ -991,6 +986,40 @@ def test_schema_drift_rule_matching_uses_scope_gate_not_metric_thresholds() -> N
 
     enabled_rule = _build_rule(
         include_schema_drifts=True,
+        min_percent_delta=999,
+        min_absolute_delta=999,
+        min_expected_count=999,
+    )
+    assert rule_matches_anomaly(enabled_rule, candidate) is True
+
+
+def test_distribution_drift_rule_matching_uses_scope_gate_not_metric_thresholds() -> None:
+    from tripl.alerting_matching import (
+        SCOPE_DISTRIBUTION_DRIFT,
+        DistributionDriftAlertCandidate,
+        rule_matches_anomaly,
+    )
+
+    candidate = DistributionDriftAlertCandidate(
+        id=uuid.uuid4(),
+        scope_type=SCOPE_DISTRIBUTION_DRIFT,
+        scope_ref="distribution-scope",
+        event_id=None,
+        event_type_id=uuid.uuid4(),
+        bucket=datetime(2026, 5, 1, 12, tzinfo=UTC),
+        direction="spike",
+        actual_count=1000,
+        expected_count=1000,
+        drift_field="platform",
+        drift_type="distribution_shift",
+        sample_value="psi=0.400; ios 50.0%->90.0%",
+    )
+
+    disabled_rule = _build_rule(include_distribution_drifts=False)
+    assert rule_matches_anomaly(disabled_rule, candidate) is False
+
+    enabled_rule = _build_rule(
+        include_distribution_drifts=True,
         min_percent_delta=999,
         min_absolute_delta=999,
         min_expected_count=999,
@@ -1105,8 +1134,7 @@ async def test_alert_rule_simulate_endpoint(client: AsyncClient) -> None:
     assert isinstance(payload["rendered_message"], str)
     assert payload["rendered_message"]
     assert all(
-        isinstance(f["rendered_item"], str) and f["rendered_item"]
-        for f in payload["firings"]
+        isinstance(f["rendered_item"], str) and f["rendered_item"] for f in payload["firings"]
     )
 
     # Cooldown override = 0 disables grouping, so every anomaly fires.
@@ -1149,16 +1177,10 @@ def test_simulate_rule_firings_respects_cooldown_override() -> None:
     assert len(simulate_rule_firings(rule, anomalies)) == 1
 
     # Override to 0: every anomaly fires.
-    assert (
-        len(simulate_rule_firings(rule, anomalies, cooldown_minutes_override=0))
-        == 3
-    )
+    assert len(simulate_rule_firings(rule, anomalies, cooldown_minutes_override=0)) == 3
 
     # Override to 10: 15-min and 30-min anomalies each clear the gate.
-    assert (
-        len(simulate_rule_firings(rule, anomalies, cooldown_minutes_override=10))
-        == 3
-    )
+    assert len(simulate_rule_firings(rule, anomalies, cooldown_minutes_override=10)) == 3
 
     # Override to 20: only first and third clear (second is 15 min after first).
     fired_20 = simulate_rule_firings(rule, anomalies, cooldown_minutes_override=20)

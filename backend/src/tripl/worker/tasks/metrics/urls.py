@@ -12,6 +12,7 @@ import uuid
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from tripl.alerting_matching import SCOPE_DISTRIBUTION_DRIFT
 from tripl.config import settings
 from tripl.models.project import Project
 from tripl.worker.analyzers.anomaly_detector import (
@@ -35,7 +36,7 @@ def _build_monitoring_url(
         return f"{base}/p/{project_slug}/monitoring/project-total/{scope_ref}"
     if scope_type == SCOPE_EVENT_TYPE:
         return f"{base}/p/{project_slug}/monitoring/event-type/{scope_ref}"
-    if scope_type == SCOPE_SCHEMA_DRIFT:
+    if scope_type in {SCOPE_SCHEMA_DRIFT, SCOPE_DISTRIBUTION_DRIFT}:
         return None
     return f"{base}/p/{project_slug}/monitoring/event/{scope_ref}"
 

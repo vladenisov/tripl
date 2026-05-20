@@ -261,7 +261,7 @@ export function DestinationCard({
                 </div>
               </div>
 
-              <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
+              <div className="grid grid-cols-1 md:grid-cols-5 gap-3">
                 <label className="flex items-center gap-2 text-sm">
                   <Checkbox
                     checked={ruleForm.include_project_total}
@@ -289,6 +289,13 @@ export function DestinationCard({
                     onCheckedChange={checked => setRuleForm(current => ({ ...current, include_schema_drifts: !!checked }))}
                   />
                   Schema drift
+                </label>
+                <label className="flex items-center gap-2 text-sm">
+                  <Checkbox
+                    checked={ruleForm.include_distribution_drifts}
+                    onCheckedChange={checked => setRuleForm(current => ({ ...current, include_distribution_drifts: !!checked }))}
+                  />
+                  Distribution
                 </label>
               </div>
 

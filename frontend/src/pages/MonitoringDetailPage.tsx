@@ -16,10 +16,17 @@ import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from '@/components/ui/select'
 import { Separator } from '@/components/ui/separator'
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { aggregateMetricPoints, type MetricsGranularity } from '@/lib/metrics'
 import { resolveMetaFieldHref } from '@/lib/metaFields'
-import type { EventType, FieldDefinition, MetaFieldDefinition } from '@/types'
-import { AlertTriangle, ArrowLeft, CircleCheck, Eye, Tag } from 'lucide-react'
+import type {
+  DistributionDriftBand,
+  DistributionDriftPoint,
+  EventType,
+  FieldDefinition,
+  MetaFieldDefinition,
+} from '@/types'
+import { AlertTriangle, ArrowLeft, CircleCheck, Eye, GitCompareArrows, Tag } from 'lucide-react'
 
 const RANGE_OPTIONS = [
   { label: '7d', days: 7 },
@@ -50,6 +57,8 @@ export default function MonitoringDetailPage() {
   const navigate = useNavigate()
   const [rangeDays, setRangeDays] = useState(30)
   const [granularity, setGranularity] = useState<MetricsGranularity>('hour')
+  const [activeTab, setActiveTab] = useState<'volume' | 'distribution'>('volume')
+  const [distributionField, setDistributionField] = useState('')
 
   const scope = routeScopeToApiScope(scopeParam)
   const scopeId = id ?? eventId ?? ''
@@ -99,6 +108,44 @@ export default function MonitoringDetailPage() {
     refetchInterval: 60000,
   })
   const metrics = metricsQuery.data
+  const eventDistributionEventTypeId = event?.event_type_id ?? null
+
+  const distributionScope = useMemo(() => {
+    if (scope === 'project_total' && scopeId) {
+      return {
+        scope_type: 'project_total' as const,
+        scope_ref: scopeId,
+        scan_config_id: scopeId,
+      }
+    }
+    if (scope === 'event_type' && scopeId) {
+      return {
+        scope_type: 'event_type' as const,
+        scope_ref: scopeId,
+      }
+    }
+    if (scope === 'event' && eventDistributionEventTypeId) {
+      return {
+        scope_type: 'event_type' as const,
+        scope_ref: eventDistributionEventTypeId,
+      }
+    }
+    return null
+  }, [eventDistributionEventTypeId, scope, scopeId])
+
+  const distributionQuery = useQuery({
+    queryKey: ['distributionDrifts', slug, distributionScope, rangeDays],
+    queryFn: () => metricsApi.getDistributionDrifts(slug!, {
+      scope_type: distributionScope!.scope_type,
+      scope_ref: distributionScope!.scope_ref,
+      scan_config_id: 'scan_config_id' in distributionScope!
+        ? distributionScope!.scan_config_id
+        : undefined,
+      ...timeRange,
+    }),
+    enabled: activeTab === 'distribution' && !!slug && !!distributionScope,
+    refetchInterval: 60000,
+  })
 
   const chartData = useMemo(
     () => aggregateMetricPoints(metrics?.data ?? [], granularity),
@@ -135,18 +182,27 @@ export default function MonitoringDetailPage() {
     ? `${latestSignal.state === 'recent' ? 'Recent' : 'Latest scan'} ${latestSignal.direction === 'drop' ? 'drop' : 'spike'} anomaly`
     : null
 
-  if (eventQuery.isError || eventTypesQuery.isError || metaFieldsQuery.isError || metricsQuery.isError) {
+  if (
+    eventQuery.isError
+    || eventTypesQuery.isError
+    || metaFieldsQuery.isError
+    || metricsQuery.isError
+    || distributionQuery.isError
+  ) {
     return (
       <div className="p-6">
         <ErrorState
           title="Failed to load monitoring details"
           description="The monitoring page could not fetch data from the backend."
-          error={eventQuery.error ?? eventTypesQuery.error ?? metaFieldsQuery.error ?? metricsQuery.error}
+          error={eventQuery.error ?? eventTypesQuery.error ?? metaFieldsQuery.error ?? metricsQuery.error ?? distributionQuery.error}
           onRetry={() => {
             const refetches: Promise<unknown>[] = [
               eventTypesQuery.refetch(),
               metricsQuery.refetch(),
             ]
+            if (activeTab === 'distribution') {
+              refetches.push(distributionQuery.refetch())
+            }
             if (scope === 'event') {
               refetches.push(eventQuery.refetch(), metaFieldsQuery.refetch())
             }
@@ -214,93 +270,115 @@ export default function MonitoringDetailPage() {
         <EventPhotosSection slug={slug!} eventId={scopeId} />
       )}
 
-      {latestSignal && (
-        <Card>
-          <CardContent className="grid gap-3 p-4 md:grid-cols-4">
-            <div>
-              <p className="text-xs uppercase tracking-wide text-muted-foreground">Bucket</p>
-              <p className="text-sm font-medium">{new Date(latestSignal.bucket).toLocaleString()}</p>
-            </div>
-            <div>
-              <p className="text-xs uppercase tracking-wide text-muted-foreground">Actual</p>
-              <p className="text-sm font-medium">{latestSignal.actual_count.toLocaleString()}</p>
-            </div>
-            <div>
-              <p className="text-xs uppercase tracking-wide text-muted-foreground">Expected</p>
-              <p className="text-sm font-medium">{Math.round(latestSignal.expected_count).toLocaleString()}</p>
-            </div>
-            <div>
-              <p className="text-xs uppercase tracking-wide text-muted-foreground">Z-Score</p>
-              <p className="text-sm font-medium">{latestSignal.z_score.toFixed(2)}</p>
-            </div>
-          </CardContent>
-        </Card>
-      )}
+      <Tabs value={activeTab} onValueChange={value => setActiveTab(value as 'volume' | 'distribution')}>
+        <TabsList>
+          <TabsTrigger value="volume">Volume</TabsTrigger>
+          <TabsTrigger value="distribution">
+            <GitCompareArrows className="h-3.5 w-3.5" />
+            Distribution
+          </TabsTrigger>
+        </TabsList>
 
-      {latestSignal && slug && (
-        <TopMoversPanel
-          slug={slug}
-          scanConfigId={latestSignal.scan_config_id}
-          scopeType={latestSignal.scope_type}
-          scopeRef={latestSignal.scope_ref}
-          bucket={latestSignal.bucket}
-        />
-      )}
+        <TabsContent value="volume" className="space-y-6">
+          {latestSignal && (
+            <Card>
+              <CardContent className="grid gap-3 p-4 md:grid-cols-4">
+                <div>
+                  <p className="text-xs uppercase tracking-wide text-muted-foreground">Bucket</p>
+                  <p className="text-sm font-medium">{new Date(latestSignal.bucket).toLocaleString()}</p>
+                </div>
+                <div>
+                  <p className="text-xs uppercase tracking-wide text-muted-foreground">Actual</p>
+                  <p className="text-sm font-medium">{latestSignal.actual_count.toLocaleString()}</p>
+                </div>
+                <div>
+                  <p className="text-xs uppercase tracking-wide text-muted-foreground">Expected</p>
+                  <p className="text-sm font-medium">{Math.round(latestSignal.expected_count).toLocaleString()}</p>
+                </div>
+                <div>
+                  <p className="text-xs uppercase tracking-wide text-muted-foreground">Z-Score</p>
+                  <p className="text-sm font-medium">{latestSignal.z_score.toFixed(2)}</p>
+                </div>
+              </CardContent>
+            </Card>
+          )}
 
-      <Card>
-        <CardContent className="p-6">
-          <div className="flex items-center justify-between mb-4">
-            <h2 className="text-lg font-semibold">Volume</h2>
-            <div className="flex flex-wrap items-center gap-2">
-              <div className="flex gap-1">
-                {RANGE_OPTIONS.map(option => (
-                  <Button
-                    key={option.days}
-                    variant={rangeDays === option.days ? 'default' : 'outline'}
-                    size="sm"
-                    onClick={() => setRangeDays(option.days)}
-                  >
-                    {option.label}
-                  </Button>
-                ))}
-              </div>
-              <Select
-                value={granularity}
-                onValueChange={(value: MetricsGranularity) => setGranularity(value)}
-              >
-                <SelectTrigger className="h-8 w-[130px]">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  {GRANULARITY_OPTIONS.map(option => (
-                    <SelectItem key={option.value} value={option.value}>
-                      {option.label}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-          </div>
-          {metricsQuery.isLoading ? (
-            <div className="h-[280px] flex items-center justify-center text-sm text-muted-foreground">
-              Loading monitoring data…
-            </div>
-          ) : (
-            <MetricsChart
-              data={chartData}
-              height={280}
-              color={eventType?.color || 'var(--chart-3)'}
-              granularity={granularity}
-              seriesLabel="events"
+          {latestSignal && slug && (
+            <TopMoversPanel
+              slug={slug}
+              scanConfigId={latestSignal.scan_config_id}
+              scopeType={latestSignal.scope_type}
+              scopeRef={latestSignal.scope_ref}
+              bucket={latestSignal.bucket}
             />
           )}
-          {metrics?.interval && (
-            <p className="text-xs text-muted-foreground mt-2">
-              Collection interval: {metrics.interval}
-            </p>
-          )}
-        </CardContent>
-      </Card>
+
+          <Card>
+            <CardContent className="p-6">
+              <div className="flex items-center justify-between mb-4">
+                <h2 className="text-lg font-semibold">Volume</h2>
+                <div className="flex flex-wrap items-center gap-2">
+                  <div className="flex gap-1">
+                    {RANGE_OPTIONS.map(option => (
+                      <Button
+                        key={option.days}
+                        variant={rangeDays === option.days ? 'default' : 'outline'}
+                        size="sm"
+                        onClick={() => setRangeDays(option.days)}
+                      >
+                        {option.label}
+                      </Button>
+                    ))}
+                  </div>
+                  <Select
+                    value={granularity}
+                    onValueChange={(value: MetricsGranularity) => setGranularity(value)}
+                  >
+                    <SelectTrigger className="h-8 w-[130px]">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {GRANULARITY_OPTIONS.map(option => (
+                        <SelectItem key={option.value} value={option.value}>
+                          {option.label}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+              </div>
+              {metricsQuery.isLoading ? (
+                <div className="h-[280px] flex items-center justify-center text-sm text-muted-foreground">
+                  Loading monitoring data…
+                </div>
+              ) : (
+                <MetricsChart
+                  data={chartData}
+                  height={280}
+                  color={eventType?.color || 'var(--chart-3)'}
+                  granularity={granularity}
+                  seriesLabel="events"
+                />
+              )}
+              {metrics?.interval && (
+                <p className="text-xs text-muted-foreground mt-2">
+                  Collection interval: {metrics.interval}
+                </p>
+              )}
+            </CardContent>
+          </Card>
+        </TabsContent>
+
+        <TabsContent value="distribution">
+          <DistributionDriftPanel
+            data={distributionQuery.data?.data ?? []}
+            fields={distributionQuery.data?.fields ?? []}
+            isLoading={distributionQuery.isLoading}
+            selectedField={distributionField}
+            onSelectedFieldChange={setDistributionField}
+          />
+        </TabsContent>
+      </Tabs>
 
       {scope === 'event' && event && (
         <>
@@ -365,6 +443,198 @@ export default function MonitoringDetailPage() {
           )}
         </>
       )}
+    </div>
+  )
+}
+
+function formatPercent(value: number) {
+  return `${(value * 100).toFixed(1)}%`
+}
+
+function driftBandClassName(band: DistributionDriftBand) {
+  if (band === 'significant') return 'border-destructive/60 bg-destructive/10 text-destructive'
+  if (band === 'minor') return 'border-amber-500/60 bg-amber-400/15 text-amber-800'
+  return 'border-emerald-500/50 bg-emerald-400/10 text-emerald-800'
+}
+
+function DistributionShareBar({
+  label,
+  baselineShare,
+  currentShare,
+}: {
+  label: string
+  baselineShare: number
+  currentShare: number
+}) {
+  return (
+    <div className="grid gap-2 rounded-md border bg-background p-3">
+      <div className="flex items-center justify-between gap-3 text-xs">
+        <span className="min-w-0 truncate font-mono">{label}</span>
+        <span className="shrink-0 text-muted-foreground">
+          {formatPercent(baselineShare)} {'->'} {formatPercent(currentShare)}
+        </span>
+      </div>
+      <div className="grid gap-1.5">
+        <div className="h-2 rounded-full bg-muted">
+          <div
+            className="h-2 rounded-full bg-muted-foreground"
+            style={{ width: `${Math.max(2, baselineShare * 100)}%` }}
+          />
+        </div>
+        <div className="h-2 rounded-full bg-muted">
+          <div
+            className="h-2 rounded-full bg-primary"
+            style={{ width: `${Math.max(2, currentShare * 100)}%` }}
+          />
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function DistributionDriftPanel({
+  data,
+  fields,
+  isLoading,
+  selectedField,
+  onSelectedFieldChange,
+}: {
+  data: DistributionDriftPoint[]
+  fields: string[]
+  isLoading: boolean
+  selectedField: string
+  onSelectedFieldChange: (field: string) => void
+}) {
+  const activeField = fields.includes(selectedField) ? selectedField : fields[0] ?? ''
+  const rows = data
+    .filter(row => !activeField || row.field_name === activeField)
+    .sort((left, right) => left.bucket.localeCompare(right.bucket))
+  const latest = rows.at(-1)
+  const tableRows = [...rows].reverse().slice(0, 12)
+
+  if (isLoading) {
+    return (
+      <Card>
+        <CardContent className="flex h-56 items-center justify-center text-sm text-muted-foreground">
+          Loading distribution data…
+        </CardContent>
+      </Card>
+    )
+  }
+
+  if (!data.length || !fields.length) {
+    return (
+      <Card>
+        <CardContent className="flex h-56 items-center justify-center text-sm text-muted-foreground">
+          No distribution drift data available
+        </CardContent>
+      </Card>
+    )
+  }
+
+  return (
+    <div className="space-y-4">
+      <Card>
+        <CardContent className="space-y-4 p-6">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <h2 className="text-lg font-semibold">Distribution</h2>
+            <Select value={activeField} onValueChange={onSelectedFieldChange}>
+              <SelectTrigger className="h-8 w-[220px]">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {fields.map(field => (
+                  <SelectItem key={field} value={field}>
+                    {field}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+
+          {latest && (
+            <div className="grid gap-3 md:grid-cols-4">
+              <div>
+                <p className="text-xs uppercase tracking-wide text-muted-foreground">Bucket</p>
+                <p className="text-sm font-medium">{new Date(latest.bucket).toLocaleString()}</p>
+              </div>
+              <div>
+                <p className="text-xs uppercase tracking-wide text-muted-foreground">PSI</p>
+                <p className="text-sm font-medium">{latest.psi.toFixed(3)}</p>
+              </div>
+              <div>
+                <p className="text-xs uppercase tracking-wide text-muted-foreground">Band</p>
+                <Badge variant="outline" className={driftBandClassName(latest.band)}>
+                  {latest.band}
+                </Badge>
+              </div>
+              <div>
+                <p className="text-xs uppercase tracking-wide text-muted-foreground">Rows</p>
+                <p className="text-sm font-medium">
+                  {latest.baseline_total.toLocaleString()} {'->'} {latest.current_total.toLocaleString()}
+                </p>
+              </div>
+            </div>
+          )}
+
+          {latest && latest.top_movers.length > 0 && (
+            <div className="grid gap-3 md:grid-cols-2">
+              {latest.top_movers.slice(0, 6).map(mover => (
+                <DistributionShareBar
+                  key={mover.value}
+                  label={mover.value}
+                  baselineShare={mover.baseline_share}
+                  currentShare={mover.current_share}
+                />
+              ))}
+            </div>
+          )}
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardContent className="p-0">
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead className="border-b bg-muted/40 text-left text-xs uppercase tracking-wide text-muted-foreground">
+                <tr>
+                  <th className="px-4 py-3 font-medium">Bucket</th>
+                  <th className="px-4 py-3 font-medium">PSI</th>
+                  <th className="px-4 py-3 font-medium">Band</th>
+                  <th className="px-4 py-3 font-medium">Top contribution</th>
+                </tr>
+              </thead>
+              <tbody>
+                {tableRows.map(row => {
+                  const topMover = row.top_movers[0]
+                  return (
+                    <tr key={row.id} className="border-b last:border-0">
+                      <td className="px-4 py-3 text-muted-foreground">
+                        {new Date(row.bucket).toLocaleString()}
+                      </td>
+                      <td className="px-4 py-3 font-medium">{row.psi.toFixed(3)}</td>
+                      <td className="px-4 py-3">
+                        <Badge variant="outline" className={driftBandClassName(row.band)}>
+                          {row.band}
+                        </Badge>
+                      </td>
+                      <td className="px-4 py-3">
+                        {topMover ? (
+                          <span className="font-mono text-xs">
+                            {topMover.value}: {formatPercent(topMover.baseline_share)} {'->'} {formatPercent(topMover.current_share)}
+                          </span>
+                        ) : (
+                          <span className="text-muted-foreground">—</span>
+                        )}
+                      </td>
+                    </tr>
+                  )
+                })}
+              </tbody>
+            </table>
+          </div>
+        </CardContent>
+      </Card>
     </div>
   )
 }
