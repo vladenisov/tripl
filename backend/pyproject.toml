@@ -20,6 +20,7 @@ dependencies = [
     "statsmodels>=0.14.6",
     "redis[hiredis]>=5.0",
     "brotli-asgi>=1.6",
+    "prometheus-client>=0.20",
 ]
 
 [project.optional-dependencies]

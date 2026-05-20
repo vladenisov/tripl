@@ -20,6 +20,7 @@ x-backend-environment: &backend-environment
   LOG_LEVEL: ${LOG_LEVEL:-INFO}
   LOG_JSON: ${LOG_JSON:-false}
   REQUEST_ID_HEADER: ${REQUEST_ID_HEADER:-X-Request-ID}
+  PROMETHEUS_METRICS_ENABLED: ${PROMETHEUS_METRICS_ENABLED:-false}
 
 services:
   postgres:
