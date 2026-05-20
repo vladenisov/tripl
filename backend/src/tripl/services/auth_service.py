@@ -5,7 +5,7 @@ from datetime import UTC, datetime, timedelta
 from typing import cast
 
 from fastapi import HTTPException, status
-from sqlalchemy import delete, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -69,10 +69,16 @@ async def register_user(
             detail="User with this email already exists",
         )
 
+    # First registered user becomes owner so the instance always has at least
+    # one operator who can manage roles; subsequent users default to editor.
+    user_count = await session.scalar(select(func.count()).select_from(User))
+    role = "owner" if not user_count else "editor"
+
     user = User(
         email=email,
         name=_normalize_name(data.name),
         password_hash=hash_password(data.password),
+        role=role,
     )
     session.add(user)
     await session.flush()

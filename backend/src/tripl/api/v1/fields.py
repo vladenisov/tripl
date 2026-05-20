@@ -2,7 +2,7 @@ import uuid
 
 from fastapi import APIRouter
 
-from tripl.api.deps import CurrentUserDep, SessionDep
+from tripl.api.deps import EditorUserDep, SessionDep
 from tripl.models.field_definition import FieldDefinition
 from tripl.schemas.field_definition import (
     FieldDefinitionCreate,
@@ -28,7 +28,7 @@ async def create_field(
     slug: str,
     event_type_id: uuid.UUID,
     data: FieldDefinitionCreate,
-    current_user: CurrentUserDep,
+    current_user: EditorUserDep,
 ) -> FieldDefinition:
     field = await field_service.create_field(session, slug, event_type_id, data)
     await audit_service.record(
@@ -58,7 +58,7 @@ async def update_field(
     event_type_id: uuid.UUID,
     field_id: uuid.UUID,
     data: FieldDefinitionUpdate,
-    current_user: CurrentUserDep,
+    current_user: EditorUserDep,
 ) -> FieldDefinition:
     field = await field_service.update_field(session, slug, event_type_id, field_id, data)
     await audit_service.record(
@@ -80,7 +80,7 @@ async def delete_field(
     slug: str,
     event_type_id: uuid.UUID,
     field_id: uuid.UUID,
-    current_user: CurrentUserDep,
+    current_user: EditorUserDep,
 ) -> None:
     fields = await field_service.list_fields(session, slug, event_type_id)
     name = next((f.name for f in fields if f.id == field_id), "")

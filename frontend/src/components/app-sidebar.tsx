@@ -18,6 +18,7 @@ import {
   Search,
   Settings,
   Tag,
+  Users,
   type LucideIcon,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
@@ -117,6 +118,13 @@ export function AppSidebar() {
       to: '/data-sources',
       icon: Database,
       match: (path) => path.startsWith('/data-sources'),
+    },
+    {
+      id: 'users',
+      label: 'Users',
+      to: '/users',
+      icon: Users,
+      match: (path) => path.startsWith('/users'),
     },
   ]
 

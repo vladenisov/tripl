@@ -3,7 +3,7 @@ import uuid
 from fastapi import APIRouter, HTTPException
 from sqlalchemy import select
 
-from tripl.api.deps import CurrentUserDep, SessionDep
+from tripl.api.deps import EditorUserDep, SessionDep
 from tripl.models.meta_field_definition import MetaFieldDefinition
 from tripl.schemas.meta_field import MetaFieldCreate, MetaFieldResponse, MetaFieldUpdate
 from tripl.services import audit_service, meta_field_service
@@ -21,7 +21,7 @@ async def create_meta_field(
     session: SessionDep,
     slug: str,
     data: MetaFieldCreate,
-    current_user: CurrentUserDep,
+    current_user: EditorUserDep,
 ) -> MetaFieldDefinition:
     mf = await meta_field_service.create_meta_field(session, slug, data)
     await audit_service.record(
@@ -43,7 +43,7 @@ async def update_meta_field(
     slug: str,
     meta_field_id: uuid.UUID,
     data: MetaFieldUpdate,
-    current_user: CurrentUserDep,
+    current_user: EditorUserDep,
 ) -> MetaFieldDefinition:
     mf = await meta_field_service.update_meta_field(session, slug, meta_field_id, data)
     await audit_service.record(
@@ -64,7 +64,7 @@ async def delete_meta_field(
     session: SessionDep,
     slug: str,
     meta_field_id: uuid.UUID,
-    current_user: CurrentUserDep,
+    current_user: EditorUserDep,
 ) -> None:
     existing = await session.scalar(
         select(MetaFieldDefinition).where(MetaFieldDefinition.id == meta_field_id)

@@ -3,7 +3,7 @@ import uuid
 from fastapi import APIRouter, HTTPException
 from sqlalchemy import select
 
-from tripl.api.deps import CurrentUserDep, SessionDep
+from tripl.api.deps import EditorUserDep, SessionDep
 from tripl.models.variable import Variable
 from tripl.schemas.variable import VariableCreate, VariableResponse, VariableUpdate
 from tripl.services import audit_service, variable_service
@@ -21,7 +21,7 @@ async def create_variable(
     session: SessionDep,
     slug: str,
     data: VariableCreate,
-    current_user: CurrentUserDep,
+    current_user: EditorUserDep,
 ) -> Variable:
     v = await variable_service.create_variable(session, slug, data)
     await audit_service.record(
@@ -43,7 +43,7 @@ async def update_variable(
     slug: str,
     variable_id: uuid.UUID,
     data: VariableUpdate,
-    current_user: CurrentUserDep,
+    current_user: EditorUserDep,
 ) -> Variable:
     v = await variable_service.update_variable(session, slug, variable_id, data)
     await audit_service.record(
@@ -64,7 +64,7 @@ async def delete_variable(
     session: SessionDep,
     slug: str,
     variable_id: uuid.UUID,
-    current_user: CurrentUserDep,
+    current_user: EditorUserDep,
 ) -> None:
     existing = await session.scalar(select(Variable).where(Variable.id == variable_id))
     if existing is None:
