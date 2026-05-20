@@ -3,7 +3,7 @@ from typing import Annotated
 
 from fastapi import APIRouter, Query
 
-from tripl.api.deps import CurrentUserDep, EditorUserDep, SessionDep
+from tripl.api.deps import EditorUserDep, SessionDep
 from tripl.schemas.plan_revision import (
     PlanDiff,
     PlanRevisionCreate,
@@ -22,9 +22,7 @@ async def create_revision(
     slug: str,
     data: PlanRevisionCreate,
 ) -> PlanRevisionDetail:
-    rev = await plan_revision_service.create_revision(
-        session, slug, data, user_id=current_user.id
-    )
+    rev = await plan_revision_service.create_revision(session, slug, data, user_id=current_user.id)
     await audit_service.record(
         session,
         user=current_user,
@@ -62,6 +60,4 @@ async def diff_revision(
     revision_id: uuid.UUID,
     compare_to: Annotated[uuid.UUID, Query()],
 ) -> PlanDiff:
-    return await plan_revision_service.diff_revisions(
-        session, slug, revision_id, compare_to
-    )
+    return await plan_revision_service.diff_revisions(session, slug, revision_id, compare_to)

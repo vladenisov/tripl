@@ -29,6 +29,7 @@ export type RuleFormState = {
   include_event_types: boolean
   include_events: boolean
   include_schema_drifts: boolean
+  include_distribution_drifts: boolean
   notify_on_spike: boolean
   notify_on_drop: boolean
   min_percent_delta: number
@@ -94,9 +95,9 @@ export const ITEM_TEMPLATE_VARIABLE_OPTIONS = [
   { name: 'monitoring_url', description: 'Monitoring URL' },
   { name: 'details_line', description: 'Rendered details line with leading newline when URL exists' },
   { name: 'monitoring_line', description: 'Rendered monitoring line with leading newline when URL exists' },
-  { name: 'drift_field', description: 'Schema drift field name' },
-  { name: 'drift_type', description: 'Schema drift type' },
-  { name: 'sample_value', description: 'Schema drift sample value' },
+  { name: 'drift_field', description: 'Drift field name' },
+  { name: 'drift_type', description: 'Drift type' },
+  { name: 'sample_value', description: 'Drift sample value' },
   { name: 'drift_line', description: 'Rendered schema drift line with leading newline when drift context exists' },
 ] as const
 
@@ -226,6 +227,7 @@ export function defaultRuleForm(): RuleFormState {
     include_event_types: true,
     include_events: true,
     include_schema_drifts: false,
+    include_distribution_drifts: false,
     notify_on_spike: true,
     notify_on_drop: true,
     min_percent_delta: 0,
@@ -247,6 +249,7 @@ export function ruleToForm(rule: AlertRule): RuleFormState {
     include_event_types: rule.include_event_types,
     include_events: rule.include_events,
     include_schema_drifts: rule.include_schema_drifts,
+    include_distribution_drifts: rule.include_distribution_drifts,
     notify_on_spike: rule.notify_on_spike,
     notify_on_drop: rule.notify_on_drop,
     min_percent_delta: rule.min_percent_delta,
@@ -305,6 +308,7 @@ export function scopeSummary(rule: AlertRule) {
     rule.include_event_types ? 'groups' : null,
     rule.include_events ? 'events' : null,
     rule.include_schema_drifts ? 'schema' : null,
+    rule.include_distribution_drifts ? 'distribution' : null,
   ].filter(Boolean).join(', ')
 }
 

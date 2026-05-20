@@ -109,10 +109,10 @@ ALERT_ITEM_TEMPLATE_VARIABLES: dict[str, str] = {
     "monitoring_url": "Monitoring URL",
     "details_line": "Rendered details line with leading newline when URL exists",
     "monitoring_line": "Rendered monitoring line with leading newline when URL exists",
-    "drift_field": "Schema drift field name (empty for metric anomalies)",
-    "drift_type": "Schema drift type (empty for metric anomalies)",
-    "sample_value": "Schema drift sample value (empty when unavailable)",
-    "drift_line": "Rendered schema drift line with leading newline when drift context exists",
+    "drift_field": "Drift field name (empty for metric anomalies)",
+    "drift_type": "Drift type (empty for metric anomalies)",
+    "sample_value": "Drift sample value (empty when unavailable)",
+    "drift_line": "Rendered drift line with leading newline when drift context exists",
     "sparkline": "ASCII sparkline of recent bucket counts (empty if no history)",
     "top_movers": "Inline summary of top-3 breakdown movers (empty if none)",
     "sparkline_line": "Rendered trend line with leading newline when sparkline exists",
@@ -184,9 +184,7 @@ def validate_template_configuration(
             }
         )
         if unknown_variables:
-            raise ValueError(
-                "Unknown alert template variables: " + ", ".join(unknown_variables)
-            )
+            raise ValueError("Unknown alert template variables: " + ", ".join(unknown_variables))
 
     normalized_items_template = normalize_message_template(items_template)
     if normalized_items_template is not None:
@@ -211,15 +209,10 @@ def escape_alert_value(value: object, message_format: str) -> str:
         return html.escape(text, quote=True)
     if message_format == ALERT_MESSAGE_FORMAT_TELEGRAM_MARKDOWNV2:
         return "".join(
-            f"\\{char}" if char in _TELEGRAM_MARKDOWNV2_SPECIAL_CHARS else char
-            for char in text
+            f"\\{char}" if char in _TELEGRAM_MARKDOWNV2_SPECIAL_CHARS else char for char in text
         )
     if message_format == ALERT_MESSAGE_FORMAT_SLACK_MRKDWN:
-        return (
-            text.replace("&", "&amp;")
-            .replace("<", "&lt;")
-            .replace(">", "&gt;")
-        )
+        return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
     return text
 
 

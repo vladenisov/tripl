@@ -9,6 +9,7 @@ These functions never touch the session and never mutate state.
 
 from __future__ import annotations
 
+import hashlib
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta
@@ -16,6 +17,8 @@ from typing import Protocol
 
 from tripl.models.alert_rule import AlertRule
 from tripl.models.alert_rule_filter import AlertRuleFilter
+
+SCOPE_DISTRIBUTION_DRIFT = "distribution"
 
 
 class AlertMatchCandidate(Protocol):
@@ -44,6 +47,27 @@ class SchemaDriftAlertCandidate:
     drift_field: str | None
     drift_type: str | None
     sample_value: str | None
+
+
+@dataclass
+class DistributionDriftAlertCandidate:
+    id: uuid.UUID
+    scope_type: str
+    scope_ref: str
+    event_id: uuid.UUID | None
+    event_type_id: uuid.UUID | None
+    bucket: datetime
+    direction: str
+    actual_count: int
+    expected_count: float
+    drift_field: str | None
+    drift_type: str | None
+    sample_value: str | None
+
+
+def distribution_drift_scope_ref(owner_id: uuid.UUID, field_name: str) -> str:
+    field_hash = hashlib.sha1(field_name.encode("utf-8")).hexdigest()[:12]
+    return f"{owner_id.hex}:{field_hash}"
 
 
 def filter_matches_anomaly(filter_row: AlertRuleFilter, anomaly: AlertMatchCandidate) -> bool:
@@ -77,6 +101,8 @@ def rule_matches_anomaly(rule: AlertRule, anomaly: AlertMatchCandidate) -> bool:
         return False
     if anomaly.scope_type == "schema" and not rule.include_schema_drifts:
         return False
+    if anomaly.scope_type == SCOPE_DISTRIBUTION_DRIFT and not rule.include_distribution_drifts:
+        return False
 
     # Direction gates.
     if anomaly.direction == "spike" and not rule.notify_on_spike:
@@ -84,7 +110,7 @@ def rule_matches_anomaly(rule: AlertRule, anomaly: AlertMatchCandidate) -> bool:
     if anomaly.direction == "drop" and not rule.notify_on_drop:
         return False
 
-    if anomaly.scope_type == "schema":
+    if anomaly.scope_type in {"schema", SCOPE_DISTRIBUTION_DRIFT}:
         return all(filter_matches_anomaly(filter_row, anomaly) for filter_row in rule.filters)
 
     # Numeric thresholds.
@@ -122,9 +148,7 @@ def simulate_rule_firings(
         if cooldown_minutes_override is not None
         else rule.cooldown_minutes
     )
-    cooldown = (
-        timedelta(0) if effective_cooldown < 0 else timedelta(minutes=effective_cooldown)
-    )
+    cooldown = timedelta(0) if effective_cooldown < 0 else timedelta(minutes=effective_cooldown)
 
     fired: list[AlertMatchCandidate] = []
     last_fired_at: dict[tuple[str, str], datetime] = {}

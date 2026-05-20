@@ -14,6 +14,7 @@ from tripl.models.alert_delivery_item import AlertDeliveryItem
 from tripl.models.alert_destination import AlertDestination
 from tripl.models.alert_rule import AlertRule
 from tripl.models.data_source import DataSource
+from tripl.models.distribution_drift import DistributionDrift
 from tripl.models.event import Event
 from tripl.models.event_metric import EventMetric
 from tripl.models.event_metric_breakdown import EventMetricBreakdown
@@ -691,6 +692,175 @@ def test_collect_metrics_uses_database_grouped_breakdown_rows(
         }
 
 
+def test_collect_metrics_writes_distribution_drift_rows(
+    sync_session_factory: sessionmaker[Session],
+    monkeypatch: MonkeyPatch,
+) -> None:
+    with sync_session_factory() as session:
+        config = _create_scan_config(session, with_event_type=True)
+        assert config.event_type_id is not None
+        config.distribution_drift_fields = ["platform"]
+        config.baseline_window_buckets = 2
+        config.min_history_buckets = 2
+        login_event = Event(
+            id=uuid.uuid4(),
+            project_id=config.project_id,
+            event_type_id=config.event_type_id,
+            name="event_name=Login",
+            description="",
+            implemented=True,
+            reviewed=True,
+            archived=False,
+        )
+        stale_drift = DistributionDrift(
+            id=uuid.uuid4(),
+            scan_config_id=config.id,
+            event_type_id=None,
+            field_name="platform",
+            bucket=datetime(2026, 1, 1, 10),
+            psi=0.0,
+            band="stable",
+            baseline_total=1,
+            current_total=1,
+            top_movers=[],
+        )
+        session.add_all([login_event, stale_drift])
+        session.commit()
+        config_id = str(config.id)
+        login_event_id = login_event.id
+        event_type_id = config.event_type_id
+
+    class FakeAdapter:
+        def __init__(self) -> None:
+            self.breakdown_calls: list[list[str]] = []
+
+        def test_connection(self) -> bool:
+            return True
+
+        def get_columns(self, base_query: str) -> list[ColumnInfo]:
+            return [
+                ColumnInfo(name="time", type_name="DateTime"),
+                ColumnInfo(name="event_name", type_name="String"),
+                ColumnInfo(name="platform", type_name="String"),
+            ]
+
+        def get_time_bucketed_counts(
+            self,
+            base_query: str,
+            time_column: str,
+            ch_interval: str,
+            regular_columns: list[str],
+            json_columns: list[str],
+            json_value_paths: dict[str, list[str]] | None,
+            time_from: datetime,
+            time_to: datetime,
+            limit: int = 100000,
+        ) -> tuple[list[str], list[str], list[tuple[object, ...]]]:
+            return (
+                ["event_name", "platform"],
+                [],
+                [
+                    (datetime(2026, 1, 1, 10), "Login", "ios", 90),
+                    (datetime(2026, 1, 1, 10), "Login", "android", 10),
+                ],
+            )
+
+        def get_time_bucketed_breakdown_counts_multi(
+            self,
+            base_query: str,
+            time_column: str,
+            ch_interval: str,
+            breakdown_columns: list[str],
+            regular_columns: list[str],
+            json_columns: list[str],
+            json_value_paths: dict[str, list[str]] | None,
+            time_from: datetime,
+            time_to: datetime,
+            values_limit: int | None = None,
+            limit: int = 100000,
+        ) -> tuple[list[str], list[str], list[tuple[object, ...]]]:
+            self.breakdown_calls.append(breakdown_columns)
+            assert values_limit is None
+            assert time_from == datetime(2026, 1, 1, 8)
+            assert time_to == datetime(2026, 1, 1, 11)
+            return (
+                ["event_name", "platform"],
+                [],
+                [
+                    (datetime(2026, 1, 1, 8), "platform", "ios", False, "Login", "ios", 50),
+                    (
+                        datetime(2026, 1, 1, 8),
+                        "platform",
+                        "android",
+                        False,
+                        "Login",
+                        "android",
+                        50,
+                    ),
+                    (datetime(2026, 1, 1, 9), "platform", "ios", False, "Login", "ios", 50),
+                    (
+                        datetime(2026, 1, 1, 9),
+                        "platform",
+                        "android",
+                        False,
+                        "Login",
+                        "android",
+                        50,
+                    ),
+                    (datetime(2026, 1, 1, 10), "platform", "ios", False, "Login", "ios", 90),
+                    (
+                        datetime(2026, 1, 1, 10),
+                        "platform",
+                        "android",
+                        False,
+                        "Login",
+                        "android",
+                        10,
+                    ),
+                ],
+            )
+
+        def close(self) -> None:
+            return None
+
+    adapter = FakeAdapter()
+    monkeypatch.setattr(metrics, "_get_sync_session", sync_session_factory)
+    monkeypatch.setattr(metrics, "_build_adapter", lambda ds: adapter)
+    monkeypatch.setattr(
+        metrics,
+        "_resolve_collection_window",
+        lambda *args, **kwargs: (datetime(2026, 1, 1, 10), datetime(2026, 1, 1, 11), False),
+    )
+    monkeypatch.setattr(metrics, "analyze_cardinality", lambda *args, **kwargs: object())
+
+    def fake_generate_events(*args: object, **kwargs: object) -> GenerationResult:
+        with sync_session_factory() as session:
+            persisted_event = session.get(Event, login_event_id)
+            assert persisted_event is not None
+            return GenerationResult(
+                columns_analyzed=2,
+                col_meta={"event_name": {"is_json": False, "is_low": True}},
+                events_by_name={"event_name=Login": persisted_event},
+            )
+
+    monkeypatch.setattr(metrics, "generate_events", fake_generate_events)
+
+    result = metrics.collect_metrics.run(config_id)
+
+    assert adapter.breakdown_calls == [["platform"]]
+    assert result["distribution_drifts"] == 2
+    assert result["significant_distribution_drifts"] == 2
+    assert result["distribution_drifts_deleted"] == 1
+
+    with sync_session_factory() as session:
+        drifts = session.execute(select(DistributionDrift)).scalars().all()
+        assert len(drifts) == 2
+        assert {drift.event_type_id for drift in drifts} == {None, event_type_id}
+        assert {drift.band for drift in drifts} == {"significant"}
+        assert all(drift.field_name == "platform" for drift in drifts)
+        assert all(drift.top_movers for drift in drifts)
+
+
 def test_collect_metrics_rolls_back_metric_delete_when_job_fails(
     sync_session_factory: sessionmaker[Session],
     monkeypatch: MonkeyPatch,
@@ -1107,6 +1277,72 @@ def test_schema_drifts_queue_alert_deliveries(
         assert item.sample_value == "TASK-123"
 
 
+def test_distribution_drifts_queue_alert_deliveries(
+    sync_session_factory: sessionmaker[Session],
+) -> None:
+    with sync_session_factory() as session:
+        config, event_type, _event = _seed_anomaly_scan_state(session)
+        destination = AlertDestination(
+            id=uuid.uuid4(),
+            project_id=config.project_id,
+            type="slack",
+            name="Main Slack",
+            enabled=True,
+            webhook_url_encrypted="secret",
+        )
+        rule = AlertRule(
+            id=uuid.uuid4(),
+            destination_id=destination.id,
+            name="Distribution Rule",
+            enabled=True,
+            include_project_total=False,
+            include_event_types=False,
+            include_events=False,
+            include_schema_drifts=False,
+            include_distribution_drifts=True,
+            notify_on_spike=True,
+            notify_on_drop=False,
+            min_percent_delta=999,
+            min_absolute_delta=999,
+            min_expected_count=999,
+            cooldown_minutes=1440,
+        )
+        drift = DistributionDrift(
+            id=uuid.uuid4(),
+            scan_config_id=config.id,
+            event_type_id=event_type.id,
+            field_name="platform",
+            bucket=datetime(2026, 1, 1, 11),
+            psi=0.42,
+            band="significant",
+            baseline_total=1000,
+            current_total=1000,
+            top_movers=[
+                {
+                    "value": "ios",
+                    "baseline_share": 0.5,
+                    "current_share": 0.9,
+                    "contribution": 0.25,
+                }
+            ],
+        )
+        session.add_all([destination, rule, drift])
+        session.commit()
+
+        delivery_ids = metrics._prepare_alert_deliveries(session, config, scan_job_id=None)
+
+        assert len(delivery_ids) == 1
+        delivery = session.execute(select(AlertDelivery)).scalar_one()
+        item = session.execute(select(AlertDeliveryItem)).scalar_one()
+        assert delivery.matched_count == 1
+        assert item.scope_type == "distribution"
+        assert item.scope_name == f"{event_type.display_name}.platform"
+        assert item.drift_field == "platform"
+        assert item.drift_type == "distribution_shift"
+        assert item.sample_value is not None
+        assert "psi=0.420" in item.sample_value
+
+
 def test_bump_event_last_seen_is_monotonic_and_ignores_zero(
     sync_session_factory: sessionmaker[Session],
 ) -> None:
@@ -1224,9 +1460,7 @@ def test_diff_event_type_schema_detects_three_drift_kinds(
             skip_columns={"time"},
         )
 
-        triples = sorted(
-            (item["field_name"], item["drift_type"]) for item in drift_items
-        )
+        triples = sorted((item["field_name"], item["drift_type"]) for item in drift_items)
         assert triples == [
             ("device_id", "new_field"),
             ("legacy", "missing_field"),
@@ -1243,9 +1477,11 @@ def test_diff_event_type_schema_detects_three_drift_kinds(
 
         from tripl.models.schema_drift import SchemaDrift
 
-        rows = session.execute(
-            select(SchemaDrift).where(SchemaDrift.event_type_id == et.id)
-        ).scalars().all()
+        rows = (
+            session.execute(select(SchemaDrift).where(SchemaDrift.event_type_id == et.id))
+            .scalars()
+            .all()
+        )
         assert len(rows) == 3
 
         # Re-running the diff/upsert must be idempotent (unique constraint
@@ -1257,9 +1493,11 @@ def test_diff_event_type_schema_detects_three_drift_kinds(
             drift_items=drift_items,
         )
         session.commit()
-        rows = session.execute(
-            select(SchemaDrift).where(SchemaDrift.event_type_id == et.id)
-        ).scalars().all()
+        rows = (
+            session.execute(select(SchemaDrift).where(SchemaDrift.event_type_id == et.id))
+            .scalars()
+            .all()
+        )
         assert len(rows) == 3
 
 
@@ -1315,9 +1553,11 @@ def test_diff_event_type_schema_attaches_sample_value(
         )
         session.commit()
 
-        persisted = session.execute(
-            select(SchemaDrift).where(SchemaDrift.event_type_id == et.id)
-        ).scalars().all()
+        persisted = (
+            session.execute(select(SchemaDrift).where(SchemaDrift.event_type_id == et.id))
+            .scalars()
+            .all()
+        )
         by_persisted_kind = {(d.field_name, d.drift_type): d for d in persisted}
         assert by_persisted_kind[("device_id", "new_field")].sample_value == "ios-42"
         assert by_persisted_kind[("payload", "type_changed")].sample_value == '{"k": 1}'

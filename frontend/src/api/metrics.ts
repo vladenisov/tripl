@@ -2,6 +2,7 @@ import { api } from './client'
 import type {
   EventMetricBreakdownsResponse,
   EventMetricsResponse,
+  DistributionDriftsResponse,
   EventWindowMetrics,
   MonitoringSignal,
   TopMoverItem,
@@ -106,6 +107,28 @@ export const metricsApi = {
     if (params.limit !== undefined) sp.set('limit', String(params.limit))
     return api.get<TopMoverItem[]>(
       `/projects/${slug}/scans/${scanConfigId}/top-movers?${sp.toString()}`,
+    )
+  },
+
+  getDistributionDrifts: (
+    slug: string,
+    params: {
+      scope_type: 'project_total' | 'event_type' | 'event'
+      scope_ref: string
+      scan_config_id?: string
+      from?: string
+      to?: string
+    },
+  ) => {
+    const sp = new URLSearchParams({
+      scope_type: params.scope_type,
+      scope_ref: params.scope_ref,
+    })
+    if (params.scan_config_id) sp.set('scan_config_id', params.scan_config_id)
+    if (params.from) sp.set('from', params.from)
+    if (params.to) sp.set('to', params.to)
+    return api.get<DistributionDriftsResponse>(
+      `/projects/${slug}/distribution-drifts?${sp.toString()}`,
     )
   },
 }

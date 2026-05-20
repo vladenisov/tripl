@@ -12,6 +12,9 @@ export interface ScanJobResultSummary {
   breakdown_type_metrics?: number
   metrics_deleted?: number
   breakdown_metrics_deleted?: number
+  distribution_drifts?: number
+  significant_distribution_drifts?: number
+  distribution_drifts_deleted?: number
   anomalies_detected?: number
   breakdown_anomalies_detected?: number
   signals_added?: number
@@ -323,6 +326,7 @@ export interface ScanConfig {
   json_value_paths: string[]
   metric_breakdown_columns: string[]
   metric_breakdown_values_limit: number | null
+  distribution_drift_fields: string[]
   cardinality_threshold: number
   interval: IntervalCode | null
   created_at: string
@@ -415,6 +419,36 @@ export interface TopMoverItem {
   direction: 'spike' | 'drop'
 }
 
+export type DistributionDriftBand = 'stable' | 'minor' | 'significant'
+
+export interface DistributionDriftTopMover {
+  value: string
+  baseline_share: number
+  current_share: number
+  contribution: number
+}
+
+export interface DistributionDriftPoint {
+  id: string
+  scan_config_id: string
+  event_type_id: string | null
+  field_name: string
+  bucket: string
+  psi: number
+  band: DistributionDriftBand
+  baseline_total: number
+  current_total: number
+  top_movers: DistributionDriftTopMover[]
+}
+
+export interface DistributionDriftsResponse {
+  scope: 'project_total' | 'event_type' | 'event'
+  scan_config_id: string | null
+  event_type_id: string | null
+  fields: string[]
+  data: DistributionDriftPoint[]
+}
+
 export interface EventMetricsResponse {
   scope: 'project_total' | 'event_type' | 'event' | 'events_total'
   scan_config_id: string | null
@@ -466,6 +500,7 @@ export interface AlertRule {
   include_event_types: boolean
   include_events: boolean
   include_schema_drifts: boolean
+  include_distribution_drifts: boolean
   notify_on_spike: boolean
   notify_on_drop: boolean
   min_percent_delta: number
@@ -512,7 +547,7 @@ export interface AlertDestination {
 
 export interface SimulatedRuleFiring {
   anomaly_id: string
-  scope_type: 'project_total' | 'event_type' | 'event' | 'schema'
+  scope_type: 'project_total' | 'event_type' | 'event' | 'schema' | 'distribution'
   scope_ref: string
   scope_name: string
   event_type_id: string | null
@@ -547,7 +582,7 @@ export interface AlertRuleSimulateResponse {
 export interface AlertDeliveryItem {
   id: string
   delivery_id: string
-  scope_type: 'project_total' | 'event_type' | 'event' | 'schema'
+  scope_type: 'project_total' | 'event_type' | 'event' | 'schema' | 'distribution'
   scope_ref: string
   scope_name: string
   event_type_id: string | null

@@ -6,6 +6,7 @@ import pytest
 from httpx import AsyncClient
 
 from tripl.models.data_source import DataSource
+from tripl.models.distribution_drift import DistributionDrift
 from tripl.models.event_metric import EventMetric
 from tripl.models.event_metric_breakdown import EventMetricBreakdown
 from tripl.models.metric_anomaly import MetricAnomaly
@@ -908,3 +909,87 @@ async def test_get_top_movers_ranks_breakdown_anomalies_by_abs_z(
         ("DE", -8.0),
         ("US", -2.0),
     ]
+
+
+@pytest.mark.asyncio
+async def test_distribution_drifts_endpoint_filters_by_event_type(client: AsyncClient) -> None:
+    setup = await _setup_metrics_project(client, slug="distribution-api")
+    bucket = datetime(2026, 1, 1, 10, tzinfo=UTC)
+
+    async with TestSessionLocal() as session:
+        data_source = DataSource(
+            id=uuid.uuid4(),
+            name="Distribution DS",
+            db_type="clickhouse",
+            host="localhost",
+            port=8123,
+            database_name="default",
+            username="default",
+            password_encrypted="",
+        )
+        scan_config = ScanConfig(
+            id=uuid.uuid4(),
+            data_source_id=data_source.id,
+            project_id=uuid.UUID(setup["project_id"]),
+            event_type_id=uuid.UUID(setup["page_type_id"]),
+            name="Distribution Config",
+            base_query="SELECT time, event_name, platform FROM events",
+            time_column="time",
+            distribution_drift_fields=["platform"],
+            cardinality_threshold=100,
+            interval="1h",
+        )
+        session.add_all([data_source, scan_config])
+        session.add(
+            DistributionDrift(
+                id=uuid.uuid4(),
+                scan_config_id=scan_config.id,
+                event_type_id=uuid.UUID(setup["page_type_id"]),
+                field_name="platform",
+                bucket=bucket,
+                psi=0.42,
+                band="significant",
+                baseline_total=1000,
+                current_total=1000,
+                top_movers=[
+                    {
+                        "value": "ios",
+                        "baseline_share": 0.5,
+                        "current_share": 0.9,
+                        "contribution": 0.25,
+                    }
+                ],
+            )
+        )
+        session.add(
+            DistributionDrift(
+                id=uuid.uuid4(),
+                scan_config_id=scan_config.id,
+                event_type_id=uuid.UUID(setup["track_type_id"]),
+                field_name="country",
+                bucket=bucket,
+                psi=0.30,
+                band="significant",
+                baseline_total=10,
+                current_total=10,
+                top_movers=[],
+            )
+        )
+        await session.commit()
+
+    resp = await client.get(
+        "/api/v1/projects/distribution-api/distribution-drifts",
+        params={
+            "scope_type": "event_type",
+            "scope_ref": setup["page_type_id"],
+            "from": (bucket - timedelta(hours=1)).isoformat(),
+            "to": (bucket + timedelta(hours=1)).isoformat(),
+        },
+    )
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["fields"] == ["platform"]
+    assert len(body["data"]) == 1
+    assert body["data"][0]["band"] == "significant"
+    assert body["data"][0]["top_movers"][0]["value"] == "ios"

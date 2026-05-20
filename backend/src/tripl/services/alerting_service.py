@@ -18,8 +18,11 @@ from tripl.alert_templates import (
     validate_template_configuration,
 )
 from tripl.alerting_matching import (
+    SCOPE_DISTRIBUTION_DRIFT,
     AlertMatchCandidate,
+    DistributionDriftAlertCandidate,
     SchemaDriftAlertCandidate,
+    distribution_drift_scope_ref,
     rule_matches_anomaly,
     simulate_rule_firings,
 )
@@ -35,6 +38,7 @@ from tripl.models.alert_destination import AlertDestination, AlertDestinationTyp
 from tripl.models.alert_rule import AlertRule
 from tripl.models.alert_rule_filter import AlertRuleFilter
 from tripl.models.alert_rule_state import AlertRuleState
+from tripl.models.distribution_drift import DistributionDrift
 from tripl.models.event import Event
 from tripl.models.event_type import EventType
 from tripl.models.metric_anomaly import MetricAnomaly
@@ -66,6 +70,7 @@ _SCOPE_LABELS = {
     "event_type": "Event type",
     "event": "Event",
     "schema": "Schema drift",
+    SCOPE_DISTRIBUTION_DRIFT: "Distribution drift",
 }
 
 
@@ -140,10 +145,9 @@ def _render_firings_message(
     ]
     items_text = "\n".join(item for item in rendered_items if item)
 
-    message_template = (
-        normalize_message_template(rule.message_template)
-        or get_default_message_template(message_format)
-    )
+    message_template = normalize_message_template(
+        rule.message_template
+    ) or get_default_message_template(message_format)
     overall_variables = {
         "project_name": escape_alert_value(project.name, message_format),
         "project_slug": escape_alert_value(project.slug, message_format),
@@ -281,6 +285,7 @@ def _rule_to_response(rule: AlertRule) -> AlertRuleResponse:
         include_event_types=rule.include_event_types,
         include_events=rule.include_events,
         include_schema_drifts=rule.include_schema_drifts,
+        include_distribution_drifts=rule.include_distribution_drifts,
         notify_on_spike=rule.notify_on_spike,
         notify_on_drop=rule.notify_on_drop,
         min_percent_delta=rule.min_percent_delta,
@@ -327,9 +332,7 @@ async def _replace_rule_filters(
     rule: AlertRule,
     filters: list[AlertRuleFilterPayload],
 ) -> None:
-    await session.execute(
-        delete(AlertRuleFilter).where(AlertRuleFilter.rule_id == rule.id)
-    )
+    await session.execute(delete(AlertRuleFilter).where(AlertRuleFilter.rule_id == rule.id))
     await session.flush()
 
     for position, filter_payload in enumerate(filters):
@@ -490,6 +493,7 @@ async def create_rule(
         include_event_types=data.include_event_types,
         include_events=data.include_events,
         include_schema_drifts=data.include_schema_drifts,
+        include_distribution_drifts=data.include_distribution_drifts,
         notify_on_spike=data.notify_on_spike,
         notify_on_drop=data.notify_on_drop,
         min_percent_delta=data.min_percent_delta,
@@ -756,9 +760,7 @@ async def _build_scope_name_map(
     names: dict[tuple[str, str], str] = {}
     event_type_names: dict[uuid.UUID, str] = {}
     if event_ids:
-        rows = await session.execute(
-            select(Event.id, Event.name).where(Event.id.in_(event_ids))
-        )
+        rows = await session.execute(select(Event.id, Event.name).where(Event.id.in_(event_ids)))
         for event_id, name in rows.all():
             names[("event", str(event_id))] = name
     if event_type_ids:
@@ -769,12 +771,41 @@ async def _build_scope_name_map(
             event_type_names[event_type_id] = display_name
             names[("event_type", str(event_type_id))] = display_name
     for anomaly in anomalies:
-        if anomaly.scope_type != SCOPE_SCHEMA_DRIFT or anomaly.event_type_id is None:
+        if anomaly.event_type_id is None:
             continue
-        event_type_name = event_type_names.get(anomaly.event_type_id, "Schema")
+        event_type_name = event_type_names.get(anomaly.event_type_id, "Event type")
         drift_field = getattr(anomaly, "drift_field", None) or anomaly.scope_ref
-        names[(SCOPE_SCHEMA_DRIFT, anomaly.scope_ref)] = f"{event_type_name}.{drift_field}"
+        if anomaly.scope_type == SCOPE_SCHEMA_DRIFT:
+            names[(SCOPE_SCHEMA_DRIFT, anomaly.scope_ref)] = f"{event_type_name}.{drift_field}"
+        elif anomaly.scope_type == SCOPE_DISTRIBUTION_DRIFT:
+            names[(SCOPE_DISTRIBUTION_DRIFT, anomaly.scope_ref)] = (
+                f"{event_type_name}.{drift_field}"
+            )
+    for anomaly in anomalies:
+        if anomaly.scope_type != SCOPE_DISTRIBUTION_DRIFT or anomaly.event_type_id is not None:
+            continue
+        drift_field = getattr(anomaly, "drift_field", None) or anomaly.scope_ref
+        names[(SCOPE_DISTRIBUTION_DRIFT, anomaly.scope_ref)] = f"All events.{drift_field}"
     return names
+
+
+def _format_distribution_drift_sample(drift: DistributionDrift) -> str:
+    parts = [f"psi={drift.psi:.3f}"]
+    mover_parts: list[str] = []
+    for mover in (drift.top_movers or [])[:3]:
+        value = str(mover.get("value", ""))
+        baseline_share = _mover_float(mover.get("baseline_share")) * 100
+        current_share = _mover_float(mover.get("current_share")) * 100
+        mover_parts.append(f"{value} {baseline_share:.1f}%->{current_share:.1f}%")
+    if mover_parts:
+        parts.append(", ".join(mover_parts))
+    return _trim_alert_text("; ".join(parts)) or ""
+
+
+def _mover_float(value: object) -> float:
+    if isinstance(value, (int, float, str)):
+        return float(value)
+    return 0.0
 
 
 async def _load_schema_drift_candidates(
@@ -817,6 +848,52 @@ async def _load_schema_drift_candidates(
         )
         for drift in rows
     ]
+
+
+async def _load_distribution_drift_candidates(
+    session: AsyncSession,
+    *,
+    project_id: uuid.UUID,
+    window_from: datetime,
+    window_to: datetime,
+) -> list[DistributionDriftAlertCandidate]:
+    rows = (
+        (
+            await session.execute(
+                select(DistributionDrift)
+                .join(ScanConfig, ScanConfig.id == DistributionDrift.scan_config_id)
+                .where(
+                    ScanConfig.project_id == project_id,
+                    DistributionDrift.band == "significant",
+                    DistributionDrift.bucket >= window_from,
+                    DistributionDrift.bucket < window_to,
+                )
+                .order_by(DistributionDrift.bucket)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    candidates: list[DistributionDriftAlertCandidate] = []
+    for drift in rows:
+        owner_id = drift.event_type_id or drift.scan_config_id
+        candidates.append(
+            DistributionDriftAlertCandidate(
+                id=drift.id,
+                scope_type=SCOPE_DISTRIBUTION_DRIFT,
+                scope_ref=distribution_drift_scope_ref(owner_id, drift.field_name),
+                event_id=None,
+                event_type_id=drift.event_type_id,
+                bucket=drift.bucket,
+                direction="spike",
+                actual_count=drift.current_total,
+                expected_count=float(drift.baseline_total),
+                drift_field=drift.field_name,
+                drift_type="distribution_shift",
+                sample_value=_format_distribution_drift_sample(drift),
+            )
+        )
+    return candidates
 
 
 async def simulate_rule(
@@ -871,11 +948,19 @@ async def simulate_rule(
         window_from=window_from,
         window_to=window_to,
     )
-    anomalies: list[AlertMatchCandidate] = [*metric_anomalies, *schema_candidates]
-
-    matched_before_cooldown = sum(
-        1 for anomaly in anomalies if rule_matches_anomaly(rule, anomaly)
+    distribution_candidates = await _load_distribution_drift_candidates(
+        session,
+        project_id=project.id,
+        window_from=window_from,
+        window_to=window_to,
     )
+    anomalies: list[AlertMatchCandidate] = [
+        *metric_anomalies,
+        *schema_candidates,
+        *distribution_candidates,
+    ]
+
+    matched_before_cooldown = sum(1 for anomaly in anomalies if rule_matches_anomaly(rule, anomaly))
     fired = simulate_rule_firings(
         rule,
         anomalies,
@@ -888,9 +973,7 @@ async def simulate_rule(
     for anomaly in fired:
         absolute_delta = abs(anomaly.actual_count - anomaly.expected_count)
         percent_delta = (
-            absolute_delta / anomaly.expected_count * 100
-            if anomaly.expected_count > 0
-            else 0.0
+            absolute_delta / anomaly.expected_count * 100 if anomaly.expected_count > 0 else 0.0
         )
         scope_name = scope_names.get(
             (anomaly.scope_type, anomaly.scope_ref),
