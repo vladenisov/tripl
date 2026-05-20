@@ -22,10 +22,8 @@ from sqlalchemy.orm import Session
 from tripl import cache
 from tripl.alerting_matching import (
     AlertMatchCandidate,
-    SchemaDriftAlertCandidate,
     rule_matches_anomaly,
 )
-from tripl.config import settings
 from tripl.json_paths import (
     build_json_value,
     decode_json_path_value,
@@ -45,7 +43,6 @@ from tripl.models.event_type import EventType
 from tripl.models.field_definition import FieldDefinition
 from tripl.models.metric_anomaly import MetricAnomaly
 from tripl.models.metric_breakdown_anomaly import MetricBreakdownAnomaly
-from tripl.models.project import Project
 from tripl.models.project_anomaly_settings import ProjectAnomalySettings
 from tripl.models.scan_config import ScanConfig
 from tripl.models.scan_job import ScanJob, ScanJobStatus
@@ -73,54 +70,64 @@ from tripl.worker.analyzers.event_generator import (
     generate_events,
 )
 from tripl.worker.celery_app import celery_app
-from tripl.worker.db import SyncSessionLocal
 from tripl.worker.tasks.alerts import send_alert_delivery
+from tripl.worker.tasks.metrics._helpers import (
+    ACTIVE_SCAN_JOB_STATUSES,
+    MAX_BREAKDOWN_VALUE_LENGTH,
+    RECENT_SIGNAL_WINDOW,
+    SCOPE_SCHEMA_DRIFT,
+    STALE_ACTIVE_SCAN_JOB_TIMEOUT,
+    _build_adapter,
+    _ceil_to_interval,
+    _fail_stale_active_scan_job,
+    _floor_to_interval,
+    _get_active_scan_job,
+    _get_scan_job_activity_at,
+    _get_sync_session,
+    _normalize_job_timestamp,
+    _parse_task_datetime,
+)
+from tripl.worker.tasks.metrics.signals import (
+    _get_active_schema_drift_candidates,
+    _get_latest_active_anomalies,
+    _get_visible_signal_scope_keys,
+)
+from tripl.worker.tasks.metrics.urls import (
+    _build_event_details_url,
+    _build_monitoring_url,
+    _get_project_slug,
+    _trim_alert_text,
+)
 from tripl.worker.utils.intervals import get_interval
 
+# Re-exported from sibling modules so `tripl.worker.tasks.metrics.<name>`
+# attribute access (including monkey-patching from tests) keeps working after
+# the split.
+__all__ = [
+    "ACTIVE_SCAN_JOB_STATUSES",
+    "MAX_BREAKDOWN_VALUE_LENGTH",
+    "RECENT_SIGNAL_WINDOW",
+    "SCOPE_SCHEMA_DRIFT",
+    "STALE_ACTIVE_SCAN_JOB_TIMEOUT",
+    "_build_adapter",
+    "_build_event_details_url",
+    "_build_monitoring_url",
+    "_ceil_to_interval",
+    "_fail_stale_active_scan_job",
+    "_floor_to_interval",
+    "_get_active_scan_job",
+    "_get_project_slug",
+    "_get_scan_job_activity_at",
+    "_get_sync_session",
+    "_normalize_job_timestamp",
+    "_parse_task_datetime",
+    "_trim_alert_text",
+    "check_metrics_due",
+    "collect_metrics",
+    "send_alert_delivery",
+]
+
 logger = logging.getLogger(__name__)
-ACTIVE_SCAN_JOB_STATUSES = (
-    ScanJobStatus.pending.value,
-    ScanJobStatus.running.value,
-)
-STALE_ACTIVE_SCAN_JOB_TIMEOUT = timedelta(minutes=30)
-RECENT_SIGNAL_WINDOW = timedelta(hours=24)
-MAX_BREAKDOWN_VALUE_LENGTH = 500
-SCOPE_SCHEMA_DRIFT = "schema"
-
-
-def _get_sync_session() -> Session:
-    return SyncSessionLocal()
-
-
-def _build_adapter(ds: DataSource) -> BaseAdapter:
-    from tripl.worker.adapters.registry import build_adapter
-
-    return build_adapter(ds)
-
-
-def _floor_to_interval(dt: datetime, delta: timedelta) -> datetime:
-    """Floor a datetime to the nearest interval boundary."""
-    epoch = datetime(2000, 1, 1, tzinfo=UTC)
-    if dt.tzinfo is None:
-        epoch = epoch.replace(tzinfo=None)
-    total_seconds = delta.total_seconds()
-    elapsed = (dt - epoch).total_seconds()
-    floored = int(elapsed // total_seconds) * total_seconds
-    return epoch + timedelta(seconds=floored)
-
-
-def _ceil_to_interval(dt: datetime, delta: timedelta) -> datetime:
-    floored = _floor_to_interval(dt, delta)
-    if floored == dt:
-        return floored
-    return floored + delta
-
-
-def _parse_task_datetime(value: str) -> datetime:
-    parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
-    if parsed.tzinfo is None:
-        return parsed.replace(tzinfo=UTC)
-    return parsed.astimezone(UTC)
 
 
 def _resolve_collection_window(
@@ -131,6 +138,8 @@ def _resolve_collection_window(
     manual_time_from: str | None,
     manual_time_to: str | None,
 ) -> tuple[datetime, datetime, bool]:
+    """Window resolution lives here (not in _helpers) so tests can monkey-patch
+    `metrics._floor_to_interval` and have this function pick up the override."""
     if (manual_time_from is None) != (manual_time_to is None):
         msg = "Both time_from and time_to are required for metrics replay"
         raise ValueError(msg)
@@ -162,56 +171,6 @@ def _resolve_collection_window(
     ).scalar()
     time_from = last_bucket - delta if last_bucket is not None else time_to - delta * 30
     return time_from, time_to, False
-
-
-def _get_active_scan_job(session: Session, scan_config_id: uuid.UUID) -> ScanJob | None:
-    """Return the newest pending/running job for a scan config, if any."""
-    return session.execute(
-        select(ScanJob)
-        .where(
-            ScanJob.scan_config_id == scan_config_id,
-            ScanJob.status.in_(ACTIVE_SCAN_JOB_STATUSES),
-        )
-        .order_by(ScanJob.created_at.desc())
-        .limit(1)
-    ).scalar_one_or_none()
-
-
-def _normalize_job_timestamp(dt: datetime) -> datetime:
-    return dt if dt.tzinfo is not None else dt.replace(tzinfo=UTC)
-
-
-def _get_scan_job_activity_at(job: ScanJob) -> datetime:
-    activity_at = job.started_at or job.updated_at or job.created_at
-    return _normalize_job_timestamp(activity_at)
-
-
-def _fail_stale_active_scan_job(
-    session: Session,
-    job: ScanJob,
-    *,
-    now: datetime,
-    scan_name: str,
-) -> bool:
-    activity_at = _get_scan_job_activity_at(job)
-    if now - activity_at < STALE_ACTIVE_SCAN_JOB_TIMEOUT:
-        return False
-
-    logger.warning(
-        "Marking stale active job %s for %r as failed; status=%s, last_activity=%s",
-        job.id,
-        scan_name,
-        job.status,
-        activity_at.isoformat(),
-    )
-    job.status = ScanJobStatus.failed.value
-    job.completed_at = now
-    job.error_message = (
-        "Marked failed by scheduler after "
-        f"{int(STALE_ACTIVE_SCAN_JOB_TIMEOUT.total_seconds() // 60)} minutes without progress"
-    )
-    session.commit()
-    return True
 
 
 # Logical FieldDefinition.field_type values that `_ensure_event_type_with_fields`
@@ -861,225 +820,6 @@ def _collect_breakdown_scope_keys(
         else:
             keys.add((event_id, event_type_id, column, value, bool(is_other)))
     return keys
-
-
-def _classify_signal_state(
-    *,
-    anomaly_bucket: datetime,
-    latest_metric_bucket: datetime | None,
-) -> str | None:
-    if latest_metric_bucket is None or anomaly_bucket >= latest_metric_bucket:
-        return "latest_scan"
-
-    recent_cutoff = datetime.now(UTC)
-    if anomaly_bucket.tzinfo is None:
-        recent_cutoff = recent_cutoff.replace(tzinfo=None)
-    recent_cutoff -= RECENT_SIGNAL_WINDOW
-    if anomaly_bucket >= recent_cutoff:
-        return "recent"
-
-    return None
-
-
-def _get_visible_signal_scope_keys(
-    session: Session,
-    scan_config_id: uuid.UUID,
-) -> set[tuple[str, str]]:
-    latest_metrics: dict[tuple[str, str], datetime] = {}
-
-    latest_project_total_bucket = session.execute(
-        select(sa_func.max(EventMetric.bucket)).where(
-            EventMetric.scan_config_id == scan_config_id,
-            EventMetric.event_id.is_(None),
-            EventMetric.event_type_id.is_not(None),
-        )
-    ).scalar_one_or_none()
-    if latest_project_total_bucket is not None:
-        latest_metrics[(SCOPE_PROJECT_TOTAL, str(scan_config_id))] = latest_project_total_bucket
-
-    for event_type_id, bucket in session.execute(
-        select(EventMetric.event_type_id, sa_func.max(EventMetric.bucket))
-        .where(
-            EventMetric.scan_config_id == scan_config_id,
-            EventMetric.event_id.is_(None),
-            EventMetric.event_type_id.is_not(None),
-        )
-        .group_by(EventMetric.event_type_id)
-    ).all():
-        if event_type_id is not None:
-            latest_metrics[(SCOPE_EVENT_TYPE, str(event_type_id))] = bucket
-
-    for event_id, bucket in session.execute(
-        select(EventMetric.event_id, sa_func.max(EventMetric.bucket))
-        .where(
-            EventMetric.scan_config_id == scan_config_id,
-            EventMetric.event_id.is_not(None),
-        )
-        .group_by(EventMetric.event_id)
-    ).all():
-        if event_id is not None:
-            latest_metrics[(SCOPE_EVENT, str(event_id))] = bucket
-
-    latest_anomalies: dict[tuple[str, str], MetricAnomaly] = {}
-    for anomaly in session.execute(
-        select(MetricAnomaly)
-        .where(MetricAnomaly.scan_config_id == scan_config_id)
-        .order_by(MetricAnomaly.bucket.desc())
-    ).scalars():
-        key = (anomaly.scope_type, anomaly.scope_ref)
-        latest_anomalies.setdefault(key, anomaly)
-
-    return {
-        key
-        for key, anomaly in latest_anomalies.items()
-        if _classify_signal_state(
-            anomaly_bucket=anomaly.bucket,
-            latest_metric_bucket=latest_metrics.get(key),
-        )
-        is not None
-    }
-
-
-def _get_latest_metric_buckets(
-    session: Session,
-    scan_config_id: uuid.UUID,
-) -> dict[tuple[str, str], datetime]:
-    latest_metrics: dict[tuple[str, str], datetime] = {}
-    latest_project_total_bucket = session.execute(
-        select(sa_func.max(EventMetric.bucket)).where(
-            EventMetric.scan_config_id == scan_config_id,
-            EventMetric.event_id.is_(None),
-            EventMetric.event_type_id.is_not(None),
-        )
-    ).scalar_one_or_none()
-    if latest_project_total_bucket is not None:
-        latest_metrics[(SCOPE_PROJECT_TOTAL, str(scan_config_id))] = latest_project_total_bucket
-
-    for event_type_id, bucket in session.execute(
-        select(EventMetric.event_type_id, sa_func.max(EventMetric.bucket))
-        .where(
-            EventMetric.scan_config_id == scan_config_id,
-            EventMetric.event_id.is_(None),
-            EventMetric.event_type_id.is_not(None),
-        )
-        .group_by(EventMetric.event_type_id)
-    ).all():
-        if event_type_id is not None:
-            latest_metrics[(SCOPE_EVENT_TYPE, str(event_type_id))] = bucket
-
-    for event_id, bucket in session.execute(
-        select(EventMetric.event_id, sa_func.max(EventMetric.bucket))
-        .where(
-            EventMetric.scan_config_id == scan_config_id,
-            EventMetric.event_id.is_not(None),
-        )
-        .group_by(EventMetric.event_id)
-    ).all():
-        if event_id is not None:
-            latest_metrics[(SCOPE_EVENT, str(event_id))] = bucket
-
-    return latest_metrics
-
-
-def _build_monitoring_url(
-    project_slug: str,
-    *,
-    scope_type: str,
-    scope_ref: str,
-) -> str | None:
-    if not settings.app_base_url:
-        return None
-    base = settings.app_base_url.rstrip("/")
-    if scope_type == SCOPE_PROJECT_TOTAL:
-        return f"{base}/p/{project_slug}/monitoring/project-total/{scope_ref}"
-    if scope_type == SCOPE_EVENT_TYPE:
-        return f"{base}/p/{project_slug}/monitoring/event-type/{scope_ref}"
-    if scope_type == SCOPE_SCHEMA_DRIFT:
-        return None
-    return f"{base}/p/{project_slug}/monitoring/event/{scope_ref}"
-
-
-def _build_event_details_url(project_slug: str, event_id: uuid.UUID | None) -> str | None:
-    if not settings.app_base_url or event_id is None:
-        return None
-    base = settings.app_base_url.rstrip("/")
-    return f"{base}/p/{project_slug}/events/detail/{event_id}"
-
-
-def _get_project_slug(session: Session, project_id: uuid.UUID) -> str:
-    slug = session.execute(
-        select(Project.slug).where(Project.id == project_id)
-    ).scalar_one_or_none()
-    if slug is None:
-        msg = f"Project {project_id} not found"
-        raise ValueError(msg)
-    return slug
-
-
-def _get_latest_active_anomalies(
-    session: Session,
-    config: ScanConfig,
-) -> dict[tuple[str, str], MetricAnomaly]:
-    latest_metrics = _get_latest_metric_buckets(session, config.id)
-    latest_anomalies: dict[tuple[str, str], MetricAnomaly] = {}
-    for anomaly in session.execute(
-        select(MetricAnomaly)
-        .where(MetricAnomaly.scan_config_id == config.id)
-        .order_by(MetricAnomaly.bucket.desc())
-    ).scalars():
-        key = (anomaly.scope_type, anomaly.scope_ref)
-        latest_anomalies.setdefault(key, anomaly)
-
-    return {
-        key: anomaly
-        for key, anomaly in latest_anomalies.items()
-        if _classify_signal_state(
-            anomaly_bucket=anomaly.bucket,
-            latest_metric_bucket=latest_metrics.get(key),
-        )
-        == "latest_scan"
-    }
-
-
-def _trim_alert_text(value: str | None, *, max_length: int = 500) -> str | None:
-    if value is None or len(value) <= max_length:
-        return value
-    return value[: max_length - 3] + "..."
-
-
-def _get_active_schema_drift_candidates(
-    session: Session,
-    config: ScanConfig,
-) -> dict[tuple[str, str], SchemaDriftAlertCandidate]:
-    retention_cutoff = datetime.now(UTC) - timedelta(days=30)
-    candidates: dict[tuple[str, str], SchemaDriftAlertCandidate] = {}
-    for drift in session.execute(
-        select(SchemaDrift)
-        .join(EventType, EventType.id == SchemaDrift.event_type_id)
-        .where(
-            EventType.project_id == config.project_id,
-            SchemaDrift.scan_config_id == config.id,
-            SchemaDrift.detected_at >= retention_cutoff,
-        )
-        .order_by(SchemaDrift.detected_at.desc())
-    ).scalars():
-        scope_ref = str(drift.id)
-        candidate = SchemaDriftAlertCandidate(
-            id=drift.id,
-            scope_type=SCOPE_SCHEMA_DRIFT,
-            scope_ref=scope_ref,
-            event_id=None,
-            event_type_id=drift.event_type_id,
-            bucket=drift.detected_at,
-            direction="spike",
-            actual_count=1,
-            expected_count=0.0,
-            drift_field=drift.field_name,
-            drift_type=drift.drift_type,
-            sample_value=_trim_alert_text(drift.sample_value),
-        )
-        candidates[(candidate.scope_type, candidate.scope_ref)] = candidate
-    return candidates
 
 
 def _build_alert_scope_names(
