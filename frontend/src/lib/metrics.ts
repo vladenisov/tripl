@@ -67,11 +67,23 @@ export function aggregateMetricPoints(
       const expectedCount = bucketPoints.every(point => point.expected_count === null)
         ? null
         : bucketPoints.reduce((sum, point) => sum + (point.expected_count ?? 0), 0)
+      // Buckets are treated as independent samples, so variance adds —
+      // stddev for the aggregate is sqrt(Σ σᵢ²). Null when no source
+      // bucket carried a stddev.
+      const stddev = bucketPoints.every(point => point.stddev === null)
+        ? null
+        : Math.sqrt(
+            bucketPoints.reduce((sum, point) => {
+              const s = point.stddev ?? 0
+              return sum + s * s
+            }, 0),
+          )
 
       return {
         bucket,
         count: bucketPoints.reduce((sum, point) => sum + point.count, 0),
         expected_count: expectedCount,
+        stddev,
         is_anomaly: strongestAnomaly !== undefined,
         anomaly_direction: strongestAnomaly?.anomaly_direction ?? null,
         z_score: strongestAnomaly?.z_score ?? null,

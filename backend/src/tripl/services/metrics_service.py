@@ -27,6 +27,7 @@ from tripl.schemas.event_metric import (
     EventMetricsResponse,
     EventWindowMetricsResponse,
     MetricSignalResponse,
+    TopMoverItem,
 )
 from tripl.services.monitoring_utils import classify_signal_state
 from tripl.worker.analyzers.anomaly_detector import (
@@ -287,6 +288,11 @@ def _build_metric_points(
                     if point.bucket in anomalies_by_bucket
                     else None
                 ),
+                stddev=(
+                    anomalies_by_bucket[point.bucket].stddev
+                    if point.bucket in anomalies_by_bucket
+                    else None
+                ),
                 is_anomaly=point.bucket in anomalies_by_bucket,
                 anomaly_direction=(
                     anomalies_by_bucket[point.bucket].direction
@@ -310,6 +316,9 @@ def _build_metric_points(
                     anomalies_by_bucket[bucket].expected_count
                     if bucket in anomalies_by_bucket
                     else None
+                ),
+                stddev=(
+                    anomalies_by_bucket[bucket].stddev if bucket in anomalies_by_bucket else None
                 ),
                 is_anomaly=bucket in anomalies_by_bucket,
                 anomaly_direction=(
@@ -1008,3 +1017,60 @@ async def get_active_signals(
             ttl_seconds=30,
         )
     return signals
+
+
+async def get_top_movers(
+    session: AsyncSession,
+    slug: str,
+    *,
+    scan_config_id: uuid.UUID,
+    scope_type: str,
+    scope_ref: str,
+    bucket: datetime,
+    limit: int = 10,
+) -> list[TopMoverItem]:
+    """Return the breakdown rows that "moved the most" for a given anomaly.
+
+    Picks MetricBreakdownAnomaly rows on the same scope and bucket as the
+    provided anomaly key, ordered by |z_score| descending. Used by the UI
+    to render the "why did it move" panel on MonitoringDetailPage.
+    """
+    project = await _resolve_project(session, slug)
+    scan_config = (
+        await session.execute(
+            select(ScanConfig).where(
+                ScanConfig.id == scan_config_id,
+                ScanConfig.project_id == project.id,
+            )
+        )
+    ).scalar_one_or_none()
+    if scan_config is None:
+        raise HTTPException(404, "Scan config not found")
+
+    rows = (
+        await session.execute(
+            select(MetricBreakdownAnomaly)
+            .where(
+                MetricBreakdownAnomaly.scan_config_id == scan_config_id,
+                MetricBreakdownAnomaly.scope_type == scope_type,
+                MetricBreakdownAnomaly.scope_ref == scope_ref,
+                MetricBreakdownAnomaly.bucket == bucket,
+            )
+            .order_by(func.abs(MetricBreakdownAnomaly.z_score).desc())
+            .limit(limit)
+        )
+    ).scalars().all()
+
+    return [
+        TopMoverItem(
+            breakdown_column=row.breakdown_column,
+            breakdown_value=row.breakdown_value,
+            is_other=row.is_other,
+            actual_count=row.actual_count,
+            expected_count=row.expected_count,
+            stddev=row.stddev,
+            z_score=row.z_score,
+            direction=row.direction,
+        )
+        for row in rows
+    ]

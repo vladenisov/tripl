@@ -8,6 +8,10 @@ class EventMetricPoint(BaseModel):
     bucket: datetime
     count: int
     expected_count: float | None = None
+    # Stddev of the rolling baseline at this bucket — used by the UI to draw
+    # a confidence band around `expected_count`. Only populated for buckets
+    # that have an anomaly row; for the rest the band is undrawn.
+    stddev: float | None = None
     is_anomaly: bool = False
     anomaly_direction: str | None = None
     z_score: float | None = None
@@ -52,6 +56,19 @@ class EventMetricBreakdownsResponse(BaseModel):
     columns: list[str]
     selected_column: str | None = None
     series: list[EventMetricBreakdownSeries]
+
+
+class TopMoverItem(BaseModel):
+    """One row of "what moved this anomaly" — backed by MetricBreakdownAnomaly."""
+
+    breakdown_column: str
+    breakdown_value: str
+    is_other: bool
+    actual_count: int
+    expected_count: float
+    stddev: float
+    z_score: float
+    direction: str
 
 
 class EventWindowMetricsRequest(BaseModel):

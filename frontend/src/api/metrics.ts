@@ -4,6 +4,7 @@ import type {
   EventMetricsResponse,
   EventWindowMetrics,
   MonitoringSignal,
+  TopMoverItem,
 } from '../types'
 
 export interface EventsMetricsParams {
@@ -89,6 +90,22 @@ export const metricsApi = {
     return api.post<MonitoringSignal[]>(
       `/projects/${slug}/anomalies/signals/query`,
       { event_ids: eventIds },
+    )
+  },
+
+  getTopMovers: (
+    slug: string,
+    scanConfigId: string,
+    params: { scope_type: string; scope_ref: string; bucket: string; limit?: number },
+  ) => {
+    const sp = new URLSearchParams({
+      scope_type: params.scope_type,
+      scope_ref: params.scope_ref,
+      bucket: params.bucket,
+    })
+    if (params.limit !== undefined) sp.set('limit', String(params.limit))
+    return api.get<TopMoverItem[]>(
+      `/projects/${slug}/scans/${scanConfigId}/top-movers?${sp.toString()}`,
     )
   },
 }

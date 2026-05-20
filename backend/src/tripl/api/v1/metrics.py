@@ -12,6 +12,7 @@ from tripl.schemas.event_metric import (
     EventWindowMetricsRequest,
     EventWindowMetricsResponse,
     MetricSignalResponse,
+    TopMoverItem,
 )
 from tripl.services import metrics_service
 
@@ -168,4 +169,29 @@ async def query_active_signals(
 ) -> list[MetricSignalResponse]:
     return await metrics_service.get_active_signals(
         session, slug, event_ids=data.event_ids or None
+    )
+
+
+@router.get(
+    "/projects/{slug}/scans/{scan_config_id}/top-movers",
+    response_model=list[TopMoverItem],
+)
+async def get_top_movers(
+    session: SessionDep,
+    slug: str,
+    scan_config_id: uuid.UUID,
+    scope_type: str,
+    scope_ref: str,
+    bucket: datetime,
+    limit: int = 10,
+) -> list[TopMoverItem]:
+    """Top-N breakdown rows that "moved" a given anomaly bucket, |z| desc."""
+    return await metrics_service.get_top_movers(
+        session,
+        slug,
+        scan_config_id=scan_config_id,
+        scope_type=scope_type,
+        scope_ref=scope_ref,
+        bucket=bucket,
+        limit=limit,
     )
