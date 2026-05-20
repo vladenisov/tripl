@@ -87,6 +87,24 @@ async def test_audit_filters_by_action_and_project(client: AsyncClient) -> None:
 
 
 @pytest.mark.asyncio
+async def test_audit_filters_by_user_email_substring(client: AsyncClient) -> None:
+    await _setup_project(client, "audit-email")
+
+    # The conftest client is registered as test@example.com.
+    hit = await client.get("/api/v1/audit?user_email=example.com")
+    assert hit.status_code == 200
+    assert hit.json()["total"] >= 1
+    assert all(
+        "example.com" in entry["user_email"].lower()
+        for entry in hit.json()["items"]
+    )
+
+    miss = await client.get("/api/v1/audit?user_email=nobody")
+    assert miss.status_code == 200
+    assert miss.json()["total"] == 0
+
+
+@pytest.mark.asyncio
 async def test_audit_covers_meta_field_variable_revision(client: AsyncClient) -> None:
     """Wire-in sanity: meta_field / variable / plan_revision all emit audit
     entries with the right action namespace."""

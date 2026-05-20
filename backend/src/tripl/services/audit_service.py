@@ -82,6 +82,7 @@ async def list_entries(
     project_slug: str | None = None,
     action: str | None = None,
     user_id: uuid.UUID | None = None,
+    user_email: str | None = None,
     since: datetime | None = None,
     until: datetime | None = None,
     limit: int = 50,
@@ -99,6 +100,10 @@ async def list_entries(
     if user_id:
         base = base.where(AuditLog.user_id == user_id)
         count_base = count_base.where(AuditLog.user_id == user_id)
+    if user_email:
+        needle = f"%{user_email.lower()}%"
+        base = base.where(func.lower(AuditLog.user_email).like(needle))
+        count_base = count_base.where(func.lower(AuditLog.user_email).like(needle))
     if since:
         base = base.where(AuditLog.created_at >= since)
         count_base = count_base.where(AuditLog.created_at >= since)

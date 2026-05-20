@@ -6,6 +6,7 @@ export const auditApi = {
     projectSlug?: string
     action?: string
     userId?: string
+    userEmail?: string
     since?: string
     until?: string
     limit?: number
@@ -15,6 +16,7 @@ export const auditApi = {
     if (params?.projectSlug) sp.set('project_slug', params.projectSlug)
     if (params?.action) sp.set('action', params.action)
     if (params?.userId) sp.set('user_id', params.userId)
+    if (params?.userEmail) sp.set('user_email', params.userEmail)
     if (params?.since) sp.set('since', params.since)
     if (params?.until) sp.set('until', params.until)
     if (params?.limit !== undefined) sp.set('limit', String(params.limit))
