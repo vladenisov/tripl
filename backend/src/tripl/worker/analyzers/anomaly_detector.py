@@ -52,6 +52,13 @@ class DetectedAnomaly:
     direction: str
 
 
+@dataclass(frozen=True)
+class ForecastPoint:
+    bucket: datetime
+    expected_count: float
+    stddev: float
+
+
 def expand_series(
     points: list[SeriesPoint],
     *,
@@ -326,3 +333,84 @@ def detect_anomalies(
         settings=settings,
     )
     return _merge_anomalies(point_anomalies, sustained_shift_anomalies)
+
+
+def forecast_next_buckets(
+    points: list[SeriesPoint],
+    *,
+    interval: timedelta,
+    horizon: int = 1,
+) -> list[ForecastPoint]:
+    """One-step (or N-step) seasonal-naive + trend forecast.
+
+    Reuses the same STL/MSTL decomposition the anomaly detector fits, then
+    extrapolates: trend continues with the slope of the last full seasonal
+    period, and the seasonal component repeats with its phase. Stddev comes
+    from the robust scale of residuals so the UI can render a band of the
+    same width as the historical anomaly band.
+
+    Returns an empty list when there isn't enough history to fit a model.
+    """
+    if not points or horizon < 1:
+        return []
+
+    sorted_points = sorted(points, key=lambda point: point.bucket)
+    last_bucket = sorted_points[-1].bucket
+    counts = [point.count for point in sorted_points]
+
+    periods = _select_seasonal_periods(interval, len(counts))
+    if not periods:
+        return []
+
+    values = np.asarray(counts, dtype=float)
+
+    try:
+        if len(periods) == 1:
+            stl_result = STL(values, period=periods[0], robust=True).fit()
+            seasonal_columns = np.asarray(stl_result.seasonal, dtype=float)[:, np.newaxis]
+            trend = np.asarray(stl_result.trend, dtype=float)
+            residuals = np.asarray(stl_result.resid, dtype=float)
+        else:
+            mstl_result = MSTL(values, periods=periods, stl_kwargs={"robust": True}).fit()
+            seasonal_raw = np.asarray(mstl_result.seasonal, dtype=float)
+            seasonal_columns = (
+                seasonal_raw[:, np.newaxis] if seasonal_raw.ndim == 1 else seasonal_raw
+            )
+            trend = np.asarray(mstl_result.trend, dtype=float)
+            residuals = np.asarray(mstl_result.resid, dtype=float)
+    except Exception:
+        return []
+
+    # MSTL silently drops periods whose length exceeds half the series, so the
+    # column count can be smaller than `periods`. The remaining columns line
+    # up with the shortest periods we passed in (which matches the ascending
+    # order of `_SEASONAL_PERIODS_BY_INTERVAL_SECONDS`).
+    effective_periods = periods[: seasonal_columns.shape[1]]
+    if not effective_periods:
+        return []
+
+    # Slope from the longest surviving period back to "now" — captures the
+    # actual direction of the trend instead of bouncing on a 2-point delta.
+    window = min(len(trend), max(effective_periods))
+    last_trend = float(trend[-1])
+    slope = (last_trend - float(trend[-window])) / (window - 1) if window >= 2 else 0.0
+
+    stddev = _robust_scale(residuals.tolist())
+    series_length = len(counts)
+
+    forecasts: list[ForecastPoint] = []
+    for step in range(1, horizon + 1):
+        future_index = series_length - 1 + step
+        trend_future = last_trend + slope * step
+        seasonal_future = 0.0
+        for col, period in enumerate(effective_periods):
+            seasonal_future += float(seasonal_columns[future_index % period, col])
+        expected = max(trend_future + seasonal_future, 0.0)
+        forecasts.append(
+            ForecastPoint(
+                bucket=last_bucket + interval * step,
+                expected_count=expected,
+                stddev=stddev,
+            )
+        )
+    return forecasts

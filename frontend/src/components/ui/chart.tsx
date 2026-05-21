@@ -13,10 +13,11 @@ import {
 import { cn } from '@/lib/utils'
 import type { MetricsGranularity } from '@/lib/metrics'
 import { useTheme, type ChartStyle } from '@/components/theme-provider'
-import type { EventMetricPoint } from '@/types'
+import type { EventMetricPoint, ForecastPoint } from '@/types'
 
 interface MetricsChartProps {
   data: EventMetricPoint[]
+  forecast?: ForecastPoint[]
   className?: string
   color?: string
   height?: number
@@ -101,14 +102,27 @@ function formatCount(value: number) {
 // band so wide it always swallows the actual series.
 const CONFIDENCE_BAND_K = 2
 
-interface ChartDataPoint extends EventMetricPoint {
+interface ChartDataPoint {
+  bucket: string
+  count: number | null
+  expected_count: number | null
+  stddev: number | null
+  is_anomaly?: boolean
+  anomaly_direction?: 'spike' | 'drop' | null
+  z_score?: number | null
   band?: [number, number]
+  forecast_expected?: number
+  forecast_band?: [number, number]
+  is_forecast?: boolean
 }
 
-function buildChartData(data: EventMetricPoint[]): ChartDataPoint[] {
-  return data.map(point => {
+function buildChartData(
+  data: EventMetricPoint[],
+  forecast: ForecastPoint[] = [],
+): ChartDataPoint[] {
+  const points: ChartDataPoint[] = data.map(point => {
     if (point.expected_count == null || point.stddev == null) {
-      return point
+      return { ...point }
     }
     const offset = CONFIDENCE_BAND_K * point.stddev
     return {
@@ -116,6 +130,31 @@ function buildChartData(data: EventMetricPoint[]): ChartDataPoint[] {
       band: [point.expected_count - offset, point.expected_count + offset],
     }
   })
+
+  if (forecast.length > 0 && points.length > 0) {
+    // Anchor the dashed forecast line to the last actual count so the
+    // preview visibly extends *from* the chart instead of floating.
+    const anchor = points[points.length - 1]
+    anchor.forecast_expected = anchor.count ?? undefined
+    if (anchor.stddev != null && anchor.count != null) {
+      const anchorOffset = CONFIDENCE_BAND_K * anchor.stddev
+      anchor.forecast_band = [anchor.count - anchorOffset, anchor.count + anchorOffset]
+    }
+    for (const point of forecast) {
+      const offset = CONFIDENCE_BAND_K * point.stddev
+      points.push({
+        bucket: point.bucket,
+        count: null,
+        expected_count: null,
+        stddev: null,
+        forecast_expected: point.expected_count,
+        forecast_band: [point.expected_count - offset, point.expected_count + offset],
+        is_forecast: true,
+      })
+    }
+  }
+
+  return points
 }
 
 function CustomTooltip({
@@ -133,13 +172,32 @@ function CustomTooltip({
 }) {
   if (!active || !payload?.length) return null
   const point = payload[0].payload
+
+  if (point.is_forecast && point.forecast_expected != null) {
+    return (
+      <div className="rounded-lg border border-dashed bg-background px-3 py-2 shadow-md">
+        <p className="text-xs text-muted-foreground">{formatTooltipLabel(String(label ?? ''), granularity)}</p>
+        <p className="text-sm font-semibold">
+          ~{Math.round(point.forecast_expected).toLocaleString()} {seriesLabel}
+        </p>
+        <p className="text-xs text-muted-foreground">Forecast (next bucket)</p>
+        {point.forecast_band && (
+          <p className="text-xs text-muted-foreground">
+            ±{CONFIDENCE_BAND_K}σ band: {Math.round(point.forecast_band[0]).toLocaleString()}–{Math.round(point.forecast_band[1]).toLocaleString()}
+          </p>
+        )}
+      </div>
+    )
+  }
+
   const expectedCount = point.expected_count
-  const deviation = expectedCount === null ? null : point.count - expectedCount
+  const count = point.count ?? 0
+  const deviation = expectedCount === null ? null : count - expectedCount
 
   return (
     <div className="rounded-lg border bg-background px-3 py-2 shadow-md">
       <p className="text-xs text-muted-foreground">{formatTooltipLabel(String(label ?? ''), granularity)}</p>
-      <p className="text-sm font-semibold">{point.count.toLocaleString()} {seriesLabel}</p>
+      <p className="text-sm font-semibold">{count.toLocaleString()} {seriesLabel}</p>
       {expectedCount !== null && (
         <p className="text-xs text-muted-foreground">
           Expected: {Math.round(expectedCount).toLocaleString()}
@@ -196,6 +254,7 @@ function MultiSeriesTooltip({
 
 export function MetricsChart({
   data,
+  forecast,
   className,
   color,
   height = 300,
@@ -205,7 +264,7 @@ export function MetricsChart({
   const { chartStyle } = useTheme()
   const chartColor = color || 'var(--chart-1)'
   const gradientId = useId().replace(/:/g, '')
-  const chartData = useMemo(() => buildChartData(data), [data])
+  const chartData = useMemo(() => buildChartData(data, forecast), [data, forecast])
 
   if (!data.length) {
     return (
@@ -221,6 +280,11 @@ export function MetricsChart({
         {data.filter(point => point.is_anomaly).map(point => (
           <span key={point.bucket} data-testid="anomaly-dot">
             {point.bucket}
+          </span>
+        ))}
+        {(forecast ?? []).map(point => (
+          <span key={point.bucket} data-testid="forecast-point">
+            {point.bucket}: {Math.round(point.expected_count)}
           </span>
         ))}
       </div>
@@ -270,6 +334,30 @@ export function MetricsChart({
             strokeWidth={1.5}
             dot={false}
             connectNulls={false}
+          />
+          {/* Forecast preview: same dashed style as `expected_count` but in the
+              series color so it visibly extends from the chart edge. */}
+          <Area
+            type="monotone"
+            dataKey="forecast_band"
+            stroke="none"
+            fill={chartColor}
+            fillOpacity={0.08}
+            isAnimationActive={false}
+            connectNulls
+            activeDot={false}
+            legendType="none"
+          />
+          <Line
+            type="monotone"
+            dataKey="forecast_expected"
+            stroke={chartColor}
+            strokeDasharray="6 4"
+            strokeWidth={1.75}
+            strokeOpacity={0.7}
+            dot={false}
+            isAnimationActive={false}
+            connectNulls
           />
           {renderCountSeries({
             chartStyle,

@@ -4,6 +4,7 @@ from tripl.worker.analyzers.anomaly_detector import (
     AnomalyDetectionSettings,
     SeriesPoint,
     detect_anomalies,
+    forecast_next_buckets,
 )
 
 
@@ -240,3 +241,36 @@ def test_detect_anomalies_detects_sustained_growth_on_top_of_daily_pattern() -> 
     )
     assert sustained_anomaly.direction == "spike"
     assert sustained_anomaly.actual_count == _daily_pattern_count(growth_hours[-1]) + 35
+
+
+def test_forecast_next_buckets_returns_empty_without_enough_history() -> None:
+    points = [SeriesPoint(bucket=_bucket(hour), count=10) for hour in range(5)]
+
+    assert forecast_next_buckets(points, interval=timedelta(hours=1), horizon=1) == []
+
+
+def test_forecast_next_buckets_predicts_seasonal_pattern() -> None:
+    # Two full weeks of an hourly daily-shape series; the next bucket should
+    # follow the same hour-of-day pattern.
+    hours = 24 * 14
+    points = [
+        SeriesPoint(bucket=_bucket(hour), count=_daily_pattern_count(hour))
+        for hour in range(hours)
+    ]
+
+    forecast = forecast_next_buckets(points, interval=timedelta(hours=1), horizon=3)
+
+    assert len(forecast) == 3
+    next_hours = [hours, hours + 1, hours + 2]
+    for prediction, hour in zip(forecast, next_hours, strict=True):
+        assert prediction.bucket == _bucket(hour)
+        # Within 25% of the historical value at the matching hour-of-day —
+        # STL trend wobble can pull the absolute value a bit either way.
+        target = _daily_pattern_count(hour)
+        assert abs(prediction.expected_count - target) <= max(target * 0.25, 5)
+        assert prediction.stddev >= 0
+
+
+def test_forecast_next_buckets_handles_zero_horizon() -> None:
+    points = [SeriesPoint(bucket=_bucket(hour), count=10) for hour in range(50)]
+    assert forecast_next_buckets(points, interval=timedelta(hours=1), horizon=0) == []
