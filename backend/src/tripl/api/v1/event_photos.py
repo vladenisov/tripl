@@ -82,9 +82,7 @@ async def reorder_event_photos(
     current_user: EditorUserDep,
 ) -> list[EventPhotoResponse]:
     del current_user
-    photos = await event_photo_service.reorder_photos(
-        session, slug, event_id, data.photo_ids
-    )
+    photos = await event_photo_service.reorder_photos(session, slug, event_id, data.photo_ids)
     return [await _to_response(photo, slug) for photo in photos]
 
 

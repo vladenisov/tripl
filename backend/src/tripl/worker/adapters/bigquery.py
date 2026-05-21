@@ -5,15 +5,12 @@ import logging
 import re
 import time
 from datetime import datetime
-from typing import TYPE_CHECKING, Any, cast
+from typing import Any, cast
 
-from google.cloud import bigquery  # type: ignore[attr-defined]
+from google.cloud import bigquery
 from google.oauth2 import service_account
 
 from tripl.worker.adapters.base import BaseAdapter, ColumnInfo
-
-if TYPE_CHECKING:
-    from google.cloud.bigquery import RowIterator
 
 logger = logging.getLogger(__name__)
 
@@ -56,11 +53,15 @@ class BigQueryAdapter(BaseAdapter):
         if not password:
             raise ValueError("BigQuery: service-account JSON credentials are required")
         try:
-            info = json.loads(password)
+            info = cast(dict[str, object], json.loads(password))
         except json.JSONDecodeError as exc:
             raise ValueError(f"BigQuery: invalid service-account JSON: {exc}") from exc
-        creds = service_account.Credentials.from_service_account_info(info)
-        location = kwargs.get("location") if isinstance(kwargs.get("location"), str) else None
+        creds = cast(
+            service_account.Credentials,
+            service_account.Credentials.from_service_account_info(info),  # type: ignore[no-untyped-call]
+        )
+        raw_location = kwargs.get("location")
+        location = raw_location if isinstance(raw_location, str) else None
         self._client = bigquery.Client(
             project=host,
             credentials=creds,
@@ -74,11 +75,11 @@ class BigQueryAdapter(BaseAdapter):
         self._allowed_columns: set[str] = set()
 
     def close(self) -> None:
-        self._client.close()
+        self._client.close()  # type: ignore[no-untyped-call]
 
     def test_connection(self) -> bool:
         job = self._client.query("SELECT 1 AS ok")
-        row = next(iter(cast("RowIterator", job.result())))
+        row = next(iter(job.result()))
         return bool(row["ok"] == 1)
 
     def _validate_column(self, column: str) -> str:
@@ -138,10 +139,7 @@ class BigQueryAdapter(BaseAdapter):
         # JSON_KEYS returns top-level keys as an ARRAY<STRING>; sort for parity
         # with ClickHouse's `arraySort(JSONAllPaths(col))`.
         c = f"`{self._validate_column(column)}`"
-        return (
-            "(SELECT ARRAY_AGG(k ORDER BY k) "
-            f"FROM UNNEST(JSON_KEYS({c}, 1)) AS k)"
-        )
+        return f"(SELECT ARRAY_AGG(k ORDER BY k) FROM UNNEST(JSON_KEYS({c}, 1)) AS k)"
 
     def get_columns(self, base_query: str) -> list[ColumnInfo]:
         job = self._client.query(f"SELECT * FROM ({base_query}) AS _src LIMIT 0")
@@ -329,8 +327,7 @@ class BigQueryAdapter(BaseAdapter):
         t_to = time_to.strftime("%Y-%m-%d %H:%M:%S")
 
         prepared = [
-            f"{self._string_value_expression(c)} AS `__bd_raw_{i}`"
-            for i, c in enumerate(cols)
+            f"{self._string_value_expression(c)} AS `__bd_raw_{i}`" for i, c in enumerate(cols)
         ]
         grouping_sets = ", ".join(f"(`__bd_raw_{i}`)" for i in range(len(cols)))
         label_branches = " ".join(
@@ -338,8 +335,7 @@ class BigQueryAdapter(BaseAdapter):
             for i, c in enumerate(cols)
         )
         value_branches = " ".join(
-            f"WHEN GROUPING(`__bd_raw_{i}`) = 0 THEN `__bd_raw_{i}`"
-            for i in range(len(cols))
+            f"WHEN GROUPING(`__bd_raw_{i}`) = 0 THEN `__bd_raw_{i}`" for i in range(len(cols))
         )
 
         sql = (
@@ -400,7 +396,12 @@ class BigQueryAdapter(BaseAdapter):
         if values_limit is not None:
             top_count = max(values_limit - 1, 0)
             top_values_by_column = self._top_breakdown_values_multi(
-                base_query, time_column, breakdown_cols, time_from, time_to, top_count,
+                base_query,
+                time_column,
+                breakdown_cols,
+                time_from,
+                time_to,
+                top_count,
             )
 
         prepared_parts: list[str] = [f"{bucket_expr} AS _bucket"]
@@ -420,9 +421,7 @@ class BigQueryAdapter(BaseAdapter):
                 )
                 json_value_names.append(full_path)
 
-        grouping_columns = [
-            f"`{name}`" for name in [*reg_cols, *json_cols, *json_value_names]
-        ]
+        grouping_columns = [f"`{name}`" for name in [*reg_cols, *json_cols, *json_value_names]]
         label_when: list[str] = []
         value_when: list[str] = []
         other_when: list[str] = []

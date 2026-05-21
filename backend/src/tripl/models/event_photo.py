@@ -14,16 +14,10 @@ if TYPE_CHECKING:
 
 class EventPhoto(UUIDMixin, TimestampMixin, Base):
     __tablename__ = "event_photos"
-    __table_args__ = (
-        Index("ix_event_photo_event_order", "event_id", "sort_order"),
-    )
+    __table_args__ = (Index("ix_event_photo_event_order", "event_id", "sort_order"),)
 
-    project_id: Mapped[uuid.UUID] = mapped_column(
-        ForeignKey("projects.id", ondelete="CASCADE")
-    )
-    event_id: Mapped[uuid.UUID] = mapped_column(
-        ForeignKey("events.id", ondelete="CASCADE")
-    )
+    project_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"))
+    event_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("events.id", ondelete="CASCADE"))
     uploaded_by_user_id: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("users.id", ondelete="SET NULL"), nullable=True
     )
@@ -35,9 +29,7 @@ class EventPhoto(UUIDMixin, TimestampMixin, Base):
     # Attachment shape. "photo" rows have storage_backend/storage_key populated
     # and no external_url; "figma" rows store the embed URL and leave the
     # storage_* columns NULL (no blob is uploaded).
-    kind: Mapped[str] = mapped_column(
-        String(20), default="photo", server_default="photo"
-    )
+    kind: Mapped[str] = mapped_column(String(20), default="photo", server_default="photo")
     external_url: Mapped[str | None] = mapped_column(String(2000), nullable=True)
 
     # "local" or "gcs" — drives URL resolution and delete behavior. NULL for

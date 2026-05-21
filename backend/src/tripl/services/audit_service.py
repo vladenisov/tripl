@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import uuid
 from datetime import datetime
-from typing import Any
+from typing import Any, cast
 
 from sqlalchemy import desc, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -22,7 +22,7 @@ _REDACTED_KEYS = frozenset(
 
 def _jsonable(payload: dict[str, Any]) -> dict[str, Any]:
     """Round-trip through JSON to coerce UUIDs, datetimes, enums to primitives."""
-    return json.loads(json.dumps(payload, default=str))
+    return cast(dict[str, Any], json.loads(json.dumps(payload, default=str)))
 
 
 def _redact(payload: dict[str, Any]) -> dict[str, Any]:
@@ -112,10 +112,14 @@ async def list_entries(
         count_base = count_base.where(AuditLog.created_at < until)
 
     rows = (
-        await session.execute(
-            base.order_by(desc(AuditLog.created_at)).limit(limit).offset(offset)
+        (
+            await session.execute(
+                base.order_by(desc(AuditLog.created_at)).limit(limit).offset(offset)
+            )
         )
-    ).scalars().all()
+        .scalars()
+        .all()
+    )
     total = int(await session.scalar(count_base) or 0)
     return AuditListResponse(
         items=[AuditEntryResponse.model_validate(r) for r in rows],

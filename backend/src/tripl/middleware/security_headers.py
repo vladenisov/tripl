@@ -21,9 +21,7 @@ def _build_static_headers() -> list[tuple[bytes, bytes]]:
         (b"permissions-policy", b"camera=(), microphone=(), geolocation=(), payment=()"),
     ]
     if settings.content_security_policy:
-        headers.append(
-            (b"content-security-policy", settings.content_security_policy.encode())
-        )
+        headers.append((b"content-security-policy", settings.content_security_policy.encode()))
     if settings.hsts_enabled:
         headers.append(
             (

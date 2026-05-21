@@ -168,6 +168,7 @@ async def close() -> None:
 # Put all cache keys through these helpers so invalidation prefixes stay
 # aligned with reads. Never hand-roll a key at a call site.
 
+
 def key_projects_list() -> str:
     return "tripl:projects:list"
 

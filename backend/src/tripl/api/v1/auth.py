@@ -50,9 +50,7 @@ async def register(
     response_model=AuthUserResponse,
     dependencies=[Depends(enforce(login_rate_limiter))],
 )
-async def login(
-    response: Response, session: SessionDep, data: LoginRequest
-) -> AuthUserResponse:
+async def login(response: Response, session: SessionDep, data: LoginRequest) -> AuthUserResponse:
     user, session_token = await auth_service.authenticate_user(session, data)
     _set_session_cookie(response, session_token)
     return AuthUserResponse.model_validate(user)
@@ -66,9 +64,7 @@ async def logout(
     current_user: CurrentUserDep,
 ) -> None:
     del current_user
-    await auth_service.logout_session(
-        session, request.cookies.get(settings.session_cookie_name)
-    )
+    await auth_service.logout_session(session, request.cookies.get(settings.session_cookie_name))
     _clear_session_cookie(response)
 
 

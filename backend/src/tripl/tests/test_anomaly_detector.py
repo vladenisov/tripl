@@ -254,8 +254,7 @@ def test_forecast_next_buckets_predicts_seasonal_pattern() -> None:
     # follow the same hour-of-day pattern.
     hours = 24 * 14
     points = [
-        SeriesPoint(bucket=_bucket(hour), count=_daily_pattern_count(hour))
-        for hour in range(hours)
+        SeriesPoint(bucket=_bucket(hour), count=_daily_pattern_count(hour)) for hour in range(hours)
     ]
 
     forecast = forecast_next_buckets(points, interval=timedelta(hours=1), horizon=3)

@@ -94,10 +94,7 @@ async def test_audit_filters_by_user_email_substring(client: AsyncClient) -> Non
     hit = await client.get("/api/v1/audit?user_email=example.com")
     assert hit.status_code == 200
     assert hit.json()["total"] >= 1
-    assert all(
-        "example.com" in entry["user_email"].lower()
-        for entry in hit.json()["items"]
-    )
+    assert all("example.com" in entry["user_email"].lower() for entry in hit.json()["items"])
 
     miss = await client.get("/api/v1/audit?user_email=nobody")
     assert miss.status_code == 200

@@ -74,9 +74,7 @@ async def test_delete_figma_row_succeeds(client: AsyncClient) -> None:
     )
     photo_id = create.json()["id"]
 
-    resp = await client.delete(
-        f"/api/v1/projects/{slug}/events/{event_id}/photos/{photo_id}"
-    )
+    resp = await client.delete(f"/api/v1/projects/{slug}/events/{event_id}/photos/{photo_id}")
     assert resp.status_code == 204
 
 

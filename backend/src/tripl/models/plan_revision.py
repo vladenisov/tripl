@@ -19,9 +19,7 @@ class PlanRevision(UUIDMixin, Base):
     """
 
     __tablename__ = "plan_revisions"
-    __table_args__ = (
-        Index("ix_plan_revisions_project_created", "project_id", "created_at"),
-    )
+    __table_args__ = (Index("ix_plan_revisions_project_created", "project_id", "created_at"),)
 
     project_id: Mapped[uuid.UUID] = mapped_column(
         ForeignKey("projects.id", ondelete="CASCADE"),

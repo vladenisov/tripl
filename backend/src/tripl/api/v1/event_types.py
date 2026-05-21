@@ -89,6 +89,4 @@ async def delete_event_type(
 async def list_event_type_drifts(
     session: SessionDep, slug: str, event_type_id: uuid.UUID
 ) -> SchemaDriftListResponse:
-    return await schema_drift_service.list_drifts_for_event_type(
-        session, slug, event_type_id
-    )
+    return await schema_drift_service.list_drifts_for_event_type(session, slug, event_type_id)

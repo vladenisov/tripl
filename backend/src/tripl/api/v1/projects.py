@@ -15,7 +15,10 @@ async def list_projects(session: SessionDep) -> list[ProjectResponse]:
 
 
 @router.post(
-    "", response_model=ProjectResponse, status_code=201, dependencies=_editor_required,
+    "",
+    response_model=ProjectResponse,
+    status_code=201,
+    dependencies=_editor_required,
 )
 async def create_project(session: SessionDep, data: ProjectCreate) -> ProjectResponse:
     return await project_service.create_project(session, data)
@@ -27,11 +30,11 @@ async def get_project(session: SessionDep, slug: str) -> ProjectResponse:
 
 
 @router.patch(
-    "/{slug}", response_model=ProjectResponse, dependencies=_editor_required,
+    "/{slug}",
+    response_model=ProjectResponse,
+    dependencies=_editor_required,
 )
-async def update_project(
-    session: SessionDep, slug: str, data: ProjectUpdate
-) -> ProjectResponse:
+async def update_project(session: SessionDep, slug: str, data: ProjectUpdate) -> ProjectResponse:
     return await project_service.update_project(session, slug, data)
 
 

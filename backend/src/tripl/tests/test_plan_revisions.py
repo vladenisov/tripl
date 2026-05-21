@@ -54,9 +54,7 @@ async def test_create_revision_captures_full_plan_snapshot(client: AsyncClient) 
 async def test_list_revisions_orders_by_created_at_desc(client: AsyncClient) -> None:
     await _setup_project(client, "rev-list")
     for summary in ("first", "second", "third"):
-        r = await client.post(
-            "/api/v1/projects/rev-list/revisions", json={"summary": summary}
-        )
+        r = await client.post("/api/v1/projects/rev-list/revisions", json={"summary": summary})
         assert r.status_code == 201
 
     resp = await client.get("/api/v1/projects/rev-list/revisions")
@@ -106,9 +104,7 @@ async def test_diff_reports_added_removed_and_changed_entities(
     )
     assert ev_patch.status_code == 200
 
-    after = await client.post(
-        "/api/v1/projects/rev-diff/revisions", json={"summary": "after"}
-    )
+    after = await client.post("/api/v1/projects/rev-diff/revisions", json={"summary": "after"})
     after_id = after.json()["id"]
 
     diff_resp = await client.get(
@@ -117,9 +113,7 @@ async def test_diff_reports_added_removed_and_changed_entities(
     assert diff_resp.status_code == 200
     diff = diff_resp.json()
 
-    kinds_by_name = {
-        (entry["entity_type"], entry["name"]): entry for entry in diff["entries"]
-    }
+    kinds_by_name = {(entry["entity_type"], entry["name"]): entry for entry in diff["entries"]}
     assert kinds_by_name[("field_definition", "platform")]["kind"] == "added"
     assert kinds_by_name[("field_definition", "screen")]["kind"] == "changed"
     assert any(
@@ -132,8 +126,7 @@ async def test_diff_reports_added_removed_and_changed_entities(
     )
     assert kinds_by_name[("event", "Home View")]["kind"] == "changed"
     assert any(
-        "implemented" in change
-        for change in kinds_by_name[("event", "Home View")]["changes"]
+        "implemented" in change for change in kinds_by_name[("event", "Home View")]["changes"]
     )
     assert diff["summary"]["added"] >= 1
     assert diff["summary"]["changed"] >= 2

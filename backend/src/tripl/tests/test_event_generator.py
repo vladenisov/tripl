@@ -23,12 +23,8 @@ def _make_analysis(
     cardinality: dict[str, CardinalityResult],
 ) -> BreakdownAnalysis:
     """Build a BreakdownAnalysis with all row combinations from sample_values."""
-    reg_names = [
-        name for name, cr in cardinality.items() if cr.json_path_combos is None
-    ]
-    json_names = [
-        name for name, cr in cardinality.items() if cr.json_path_combos is not None
-    ]
+    reg_names = [name for name, cr in cardinality.items() if cr.json_path_combos is None]
+    json_names = [name for name, cr in cardinality.items() if cr.json_path_combos is not None]
 
     # Build rows as cartesian product of sample values (regular) / path combos (json)
     value_lists: list[list] = []

@@ -51,6 +51,7 @@ class RequestIDMiddleware:
 
         token = _request_id_var.set(request_id)
         try:
+
             async def send_with_header(message: Message) -> None:
                 if message["type"] == "http.response.start":
                     headers_list = list(message.get("headers") or [])
