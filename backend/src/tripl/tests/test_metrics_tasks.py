@@ -29,6 +29,9 @@ from tripl.models.schema_drift import SchemaDrift
 from tripl.worker.adapters.base import ColumnInfo
 from tripl.worker.analyzers.event_generator import GenerationResult
 from tripl.worker.tasks import metrics
+from tripl.worker.tasks.metrics import collect as metrics_collect
+from tripl.worker.tasks.metrics import dispatch as metrics_dispatch
+from tripl.worker.tasks.metrics import schema_drift as metrics_schema_drift
 
 
 @pytest.fixture
@@ -1214,7 +1217,7 @@ def test_breakdown_anomalies_do_not_queue_alert_deliveries(
         )
         session.commit()
 
-        delivery_ids = metrics._prepare_alert_deliveries(session, config, scan_job_id=None)
+        delivery_ids = metrics_dispatch._prepare_alert_deliveries(session, config, scan_job_id=None)
 
         assert delivery_ids == []
         assert session.execute(select(AlertDelivery)).scalars().all() == []
@@ -1263,7 +1266,7 @@ def test_schema_drifts_queue_alert_deliveries(
         session.add_all([destination, rule, drift])
         session.commit()
 
-        delivery_ids = metrics._prepare_alert_deliveries(session, config, scan_job_id=None)
+        delivery_ids = metrics_dispatch._prepare_alert_deliveries(session, config, scan_job_id=None)
 
         assert len(delivery_ids) == 1
         delivery = session.execute(select(AlertDelivery)).scalar_one()
@@ -1329,7 +1332,7 @@ def test_distribution_drifts_queue_alert_deliveries(
         session.add_all([destination, rule, drift])
         session.commit()
 
-        delivery_ids = metrics._prepare_alert_deliveries(session, config, scan_job_id=None)
+        delivery_ids = metrics_dispatch._prepare_alert_deliveries(session, config, scan_job_id=None)
 
         assert len(delivery_ids) == 1
         delivery = session.execute(select(AlertDelivery)).scalar_one()
@@ -1364,7 +1367,7 @@ def test_bump_event_last_seen_is_monotonic_and_ignores_zero(
             return value
 
         # First bump moves NULL → later.
-        metrics._bump_event_last_seen(
+        metrics_collect._bump_event_last_seen(
             session,
             event_agg={(config.id, event_id, later): 5},
         )
@@ -1372,7 +1375,7 @@ def test_bump_event_last_seen_is_monotonic_and_ignores_zero(
         assert _current_last_seen() == later
 
         # A second bump with an EARLIER bucket must NOT rewind the column.
-        metrics._bump_event_last_seen(
+        metrics_collect._bump_event_last_seen(
             session,
             event_agg={(config.id, event_id, earlier): 5},
         )
@@ -1381,7 +1384,7 @@ def test_bump_event_last_seen_is_monotonic_and_ignores_zero(
 
         # Zero-count buckets are ignored even if the bucket is newer.
         even_later = datetime(2026, 5, 2, 0, tzinfo=UTC)
-        metrics._bump_event_last_seen(
+        metrics_collect._bump_event_last_seen(
             session,
             event_agg={(config.id, event_id, even_later): 0},
         )
@@ -1454,7 +1457,7 @@ def test_diff_event_type_schema_detects_three_drift_kinds(
             ColumnInfo(name="time", type_name="DateTime"),
         ]
 
-        drift_items = metrics._diff_event_type_schema(
+        drift_items = metrics_schema_drift._diff_event_type_schema(
             et,
             columns,
             skip_columns={"time"},
@@ -1467,7 +1470,7 @@ def test_diff_event_type_schema_detects_three_drift_kinds(
             ("payload", "type_changed"),
         ]
 
-        metrics._upsert_schema_drifts(
+        metrics_schema_drift._upsert_schema_drifts(
             session,
             event_type_id=et.id,
             scan_config_id=config.id,
@@ -1486,7 +1489,7 @@ def test_diff_event_type_schema_detects_three_drift_kinds(
 
         # Re-running the diff/upsert must be idempotent (unique constraint
         # collapses duplicates onto detected_at refresh).
-        metrics._upsert_schema_drifts(
+        metrics_schema_drift._upsert_schema_drifts(
             session,
             event_type_id=et.id,
             scan_config_id=config.id,
@@ -1532,7 +1535,7 @@ def test_diff_event_type_schema_attaches_sample_value(
             ),
         }
 
-        drift_items = metrics._diff_event_type_schema(
+        drift_items = metrics_schema_drift._diff_event_type_schema(
             et,
             columns,
             skip_columns=set(),
@@ -1545,7 +1548,7 @@ def test_diff_event_type_schema_attaches_sample_value(
         # type_changed pulls the first non-empty sample for the same column.
         assert by_kind[("payload", "type_changed")]["sample_value"] == '{"k": 1}'
 
-        metrics._upsert_schema_drifts(
+        metrics_schema_drift._upsert_schema_drifts(
             session,
             event_type_id=et.id,
             scan_config_id=config.id,
