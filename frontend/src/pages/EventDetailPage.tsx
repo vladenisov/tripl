@@ -216,6 +216,7 @@ export default function EventDetailPage() {
           </div>
           <MetricsChart
             data={chartData}
+            forecast={metrics?.forecast}
             height={280}
             color={eventType?.color || undefined}
             granularity={granularity}

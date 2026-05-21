@@ -177,6 +177,7 @@ export function TabMetricsCard({
               <>
                 <MetricsChart
                   data={tabMetricsData}
+                  forecast={tabMetrics?.forecast}
                   height={160}
                   color={activeEt?.color || 'var(--chart-3)'}
                   granularity={granularity}

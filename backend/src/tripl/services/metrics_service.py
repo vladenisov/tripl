@@ -30,6 +30,7 @@ from tripl.schemas.event_metric import (
     EventMetricPoint,
     EventMetricsResponse,
     EventWindowMetricsResponse,
+    ForecastPoint,
     MetricSignalResponse,
     TopMoverItem,
 )
@@ -40,6 +41,7 @@ from tripl.worker.analyzers.anomaly_detector import (
     SCOPE_PROJECT_TOTAL,
     SeriesPoint,
     expand_series,
+    forecast_next_buckets,
 )
 from tripl.worker.utils.intervals import get_interval
 
@@ -338,6 +340,31 @@ def _build_metric_points(
     return data
 
 
+def _forecast_from_points(
+    *,
+    data: list[EventMetricPoint],
+    interval: str | None,
+) -> list[ForecastPoint]:
+    """One-step-ahead forecast off the densified series the chart already shows.
+
+    Returns an empty list when the series is too short to fit STL/MSTL — the
+    UI then simply omits the dashed preview rather than drawing a flat line.
+    """
+    if not data or not interval:
+        return []
+    delta = get_interval(interval).delta
+    series_points = [SeriesPoint(bucket=point.bucket, count=point.count) for point in data]
+    forecasted = forecast_next_buckets(series_points, interval=delta, horizon=1)
+    return [
+        ForecastPoint(
+            bucket=point.bucket,
+            expected_count=point.expected_count,
+            stddev=point.stddev,
+        )
+        for point in forecasted
+    ]
+
+
 def _build_metrics_response(
     *,
     scope: str,
@@ -373,6 +400,7 @@ def _build_metrics_response(
         interval=interval,
         latest_signal=latest_signal,
         data=data,
+        forecast=_forecast_from_points(data=data, interval=interval),
     )
 
 

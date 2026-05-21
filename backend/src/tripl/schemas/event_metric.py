@@ -32,6 +32,19 @@ class MetricSignalResponse(BaseModel):
     direction: str
 
 
+class ForecastPoint(BaseModel):
+    """One-step-ahead expected value emitted alongside the historical series.
+
+    `bucket` is the timestamp of the bucket *being forecast* (i.e. one
+    interval past the last actual point). `expected_count` and `stddev` come
+    from the same STL/MSTL decomposition used for anomaly detection.
+    """
+
+    bucket: datetime
+    expected_count: float
+    stddev: float
+
+
 class EventMetricsResponse(BaseModel):
     scope: str
     scan_config_id: uuid.UUID | None = None
@@ -40,6 +53,7 @@ class EventMetricsResponse(BaseModel):
     interval: str | None = None
     latest_signal: MetricSignalResponse | None = None
     data: list[EventMetricPoint]
+    forecast: list[ForecastPoint] = []
 
 
 class EventMetricBreakdownSeries(BaseModel):

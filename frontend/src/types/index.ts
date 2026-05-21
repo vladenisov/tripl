@@ -252,18 +252,32 @@ export interface EventListResponse {
   total: number
 }
 
+export type EventPhotoKind = 'photo' | 'figma'
+
 export interface EventPhoto {
   id: string
   event_id: string
   project_id: string
+  kind: EventPhotoKind
   original_filename: string
   content_type: string
   size_bytes: number
-  storage_backend: 'local' | 'gcs'
+  storage_backend: 'local' | 'gcs' | null
   sort_order: number
   url: string
+  external_url: string | null
   uploaded_by_user_id: string | null
   created_at: string
+}
+
+export interface EventPhotoComment {
+  id: string
+  photo_id: string
+  parent_id: string | null
+  user_id: string | null
+  body: string
+  created_at: string
+  updated_at: string
 }
 
 export type VariableType = 'string' | 'number' | 'boolean' | 'date' | 'datetime' | 'json' | 'string_array' | 'number_array'
@@ -449,6 +463,12 @@ export interface DistributionDriftsResponse {
   data: DistributionDriftPoint[]
 }
 
+export interface ForecastPoint {
+  bucket: string
+  expected_count: number
+  stddev: number
+}
+
 export interface EventMetricsResponse {
   scope: 'project_total' | 'event_type' | 'event' | 'events_total'
   scan_config_id: string | null
@@ -457,6 +477,7 @@ export interface EventMetricsResponse {
   interval: string | null
   latest_signal: MonitoringSignal | null
   data: EventMetricPoint[]
+  forecast: ForecastPoint[]
 }
 
 export interface EventMetricBreakdownSeries {

@@ -354,6 +354,7 @@ export default function MonitoringDetailPage() {
               ) : (
                 <MetricsChart
                   data={chartData}
+                  forecast={metrics?.forecast}
                   height={280}
                   color={eventType?.color || 'var(--chart-3)'}
                   granularity={granularity}
