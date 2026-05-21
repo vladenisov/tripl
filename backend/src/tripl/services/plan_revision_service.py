@@ -72,18 +72,20 @@ async def _resolve_project(session: AsyncSession, slug: str) -> Project:
     return project
 
 
-async def build_plan_snapshot(
-    session: AsyncSession, project_id: uuid.UUID
-) -> dict[str, Any]:
+async def build_plan_snapshot(session: AsyncSession, project_id: uuid.UUID) -> dict[str, Any]:
     """Construct a deterministic JSON snapshot of the project schema."""
     event_types_rows = (
-        await session.execute(
-            select(EventType)
-            .where(EventType.project_id == project_id)
-            .options(selectinload(EventType.field_definitions))
-            .order_by(EventType.name)
+        (
+            await session.execute(
+                select(EventType)
+                .where(EventType.project_id == project_id)
+                .options(selectinload(EventType.field_definitions))
+                .order_by(EventType.name)
+            )
         )
-    ).scalars().all()
+        .scalars()
+        .all()
+    )
 
     event_type_name_by_id: dict[uuid.UUID, str] = {et.id: et.name for et in event_types_rows}
 
@@ -116,12 +118,14 @@ async def build_plan_snapshot(
         )
 
     events_rows = (
-        await session.execute(
-            select(Event)
-            .where(Event.project_id == project_id)
-            .order_by(Event.name)
+        (
+            await session.execute(
+                select(Event).where(Event.project_id == project_id).order_by(Event.name)
+            )
         )
-    ).scalars().all()
+        .scalars()
+        .all()
+    )
     events = [
         {
             "id": str(ev.id),
@@ -138,12 +142,14 @@ async def build_plan_snapshot(
     ]
 
     variables_rows = (
-        await session.execute(
-            select(Variable)
-            .where(Variable.project_id == project_id)
-            .order_by(Variable.name)
+        (
+            await session.execute(
+                select(Variable).where(Variable.project_id == project_id).order_by(Variable.name)
+            )
         )
-    ).scalars().all()
+        .scalars()
+        .all()
+    )
     variables = [
         {
             "id": str(v.id),
@@ -156,12 +162,16 @@ async def build_plan_snapshot(
     ]
 
     meta_fields_rows = (
-        await session.execute(
-            select(MetaFieldDefinition)
-            .where(MetaFieldDefinition.project_id == project_id)
-            .order_by(MetaFieldDefinition.name)
+        (
+            await session.execute(
+                select(MetaFieldDefinition)
+                .where(MetaFieldDefinition.project_id == project_id)
+                .order_by(MetaFieldDefinition.name)
+            )
         )
-    ).scalars().all()
+        .scalars()
+        .all()
+    )
     meta_fields = [
         {
             "id": str(mf.id),
@@ -179,17 +189,21 @@ async def build_plan_snapshot(
     ]
 
     relations_rows = (
-        await session.execute(
-            select(EventTypeRelation)
-            .where(EventTypeRelation.project_id == project_id)
-            .options(
-                selectinload(EventTypeRelation.source_event_type),
-                selectinload(EventTypeRelation.target_event_type),
-                selectinload(EventTypeRelation.source_field),
-                selectinload(EventTypeRelation.target_field),
+        (
+            await session.execute(
+                select(EventTypeRelation)
+                .where(EventTypeRelation.project_id == project_id)
+                .options(
+                    selectinload(EventTypeRelation.source_event_type),
+                    selectinload(EventTypeRelation.target_event_type),
+                    selectinload(EventTypeRelation.source_field),
+                    selectinload(EventTypeRelation.target_field),
+                )
             )
         )
-    ).scalars().all()
+        .scalars()
+        .all()
+    )
     relations = [
         {
             "id": str(rel.id),
@@ -224,8 +238,7 @@ async def build_plan_snapshot(
 
 def _entity_counts(payload: dict[str, Any]) -> dict[str, int]:
     field_count = sum(
-        len(et.get("field_definitions") or [])
-        for et in payload.get("event_types", [])
+        len(et.get("field_definitions") or []) for et in payload.get("event_types", [])
     )
     return {
         "event_types": len(payload.get("event_types", [])),
@@ -252,9 +265,7 @@ def _format_change(key: str, old: Any, new: Any) -> str:
     return f"{key}: {old!r} → {new!r}"
 
 
-def _changes_between(
-    old: dict[str, Any], new: dict[str, Any], keys: Iterable[str]
-) -> list[str]:
+def _changes_between(old: dict[str, Any], new: dict[str, Any], keys: Iterable[str]) -> list[str]:
     return [
         _format_change(key, old.get(key), new.get(key))
         for key in keys
@@ -457,14 +468,18 @@ async def list_revisions(
         )
     ).scalar_one()
     rows = (
-        await session.execute(
-            select(PlanRevision)
-            .where(PlanRevision.project_id == project.id)
-            .order_by(PlanRevision.created_at.desc())
-            .offset(offset)
-            .limit(limit)
+        (
+            await session.execute(
+                select(PlanRevision)
+                .where(PlanRevision.project_id == project.id)
+                .order_by(PlanRevision.created_at.desc())
+                .offset(offset)
+                .limit(limit)
+            )
         )
-    ).scalars().all()
+        .scalars()
+        .all()
+    )
     return PlanRevisionList(items=[_to_summary(row) for row in rows], total=total)
 
 

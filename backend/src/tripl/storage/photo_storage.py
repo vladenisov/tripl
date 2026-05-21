@@ -107,9 +107,7 @@ class GCSPhotoStorage(PhotoStorage):
         signed_url_ttl_seconds: int = 3600,
     ) -> None:
         if not bucket_name:
-            raise RuntimeError(
-                "photo_storage_backend=gcs requires GCS_PHOTO_BUCKET to be set"
-            )
+            raise RuntimeError("photo_storage_backend=gcs requires GCS_PHOTO_BUCKET to be set")
         # Local import — google-cloud-storage is only needed when this backend
         # is active. Keeps the local-only path import-light.
         from google.cloud import storage as gcs

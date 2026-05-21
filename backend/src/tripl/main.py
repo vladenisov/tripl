@@ -92,6 +92,7 @@ async def health() -> JSONResponse:
 
 
 if settings.prometheus_metrics_enabled:
+
     @app.get("/metrics", include_in_schema=False)
     async def metrics_endpoint() -> Response:
         body, content_type = render_metrics()

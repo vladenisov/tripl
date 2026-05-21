@@ -24,9 +24,7 @@ async def test_security_headers_present_on_health(anon_client: AsyncClient) -> N
 
 @pytest.mark.asyncio
 async def test_request_id_is_echoed_when_provided(anon_client: AsyncClient) -> None:
-    response = await anon_client.get(
-        "/health", headers={settings.request_id_header: "abc-123"}
-    )
+    response = await anon_client.get("/health", headers={settings.request_id_header: "abc-123"})
     assert response.headers.get(settings.request_id_header) == "abc-123"
 
 

@@ -41,13 +41,9 @@ async def get_data_source(session: AsyncSession, ds_id: uuid.UUID) -> DataSource
     return _to_response(ds)
 
 
-async def create_data_source(
-    session: AsyncSession, data: DataSourceCreate
-) -> DataSourceResponse:
+async def create_data_source(session: AsyncSession, data: DataSourceCreate) -> DataSourceResponse:
     # Check for duplicates
-    existing = await session.execute(
-        select(DataSource).where(DataSource.name == data.name)
-    )
+    existing = await session.execute(select(DataSource).where(DataSource.name == data.name))
     if existing.scalar_one_or_none():
         raise HTTPException(status_code=409, detail="Data source with this name already exists")
 
@@ -97,9 +93,7 @@ async def delete_data_source(session: AsyncSession, ds_id: uuid.UUID) -> None:
 
 
 async def _fetch_data_source(session: AsyncSession, ds_id: uuid.UUID) -> DataSource:
-    result = await session.execute(
-        select(DataSource).where(DataSource.id == ds_id)
-    )
+    result = await session.execute(select(DataSource).where(DataSource.id == ds_id))
     ds = result.scalar_one_or_none()
     if ds is None:
         raise HTTPException(status_code=404, detail="Data source not found")
@@ -153,9 +147,7 @@ async def test_data_source_connection(
     tested_at = datetime.now(UTC)
 
     ds.last_test_at = tested_at
-    ds.last_test_status = (
-        TestStatus.success.value if success else TestStatus.failed.value
-    )
+    ds.last_test_status = TestStatus.success.value if success else TestStatus.failed.value
     ds.last_test_message = message
     await session.commit()
     await session.refresh(ds)

@@ -68,9 +68,7 @@ async def _get_event(session: AsyncSession, slug: str, event_id: uuid.UUID) -> E
     return event
 
 
-async def list_photos(
-    session: AsyncSession, slug: str, event_id: uuid.UUID
-) -> list[EventPhoto]:
+async def list_photos(session: AsyncSession, slug: str, event_id: uuid.UUID) -> list[EventPhoto]:
     event = await _get_event(session, slug, event_id)
     rows = await session.execute(
         select(EventPhoto)
@@ -283,9 +281,7 @@ async def reorder_photos(
 ) -> list[EventPhoto]:
     event = await _get_event(session, slug, event_id)
 
-    rows = await session.execute(
-        select(EventPhoto).where(EventPhoto.event_id == event.id)
-    )
+    rows = await session.execute(select(EventPhoto).where(EventPhoto.event_id == event.id))
     photos = list(rows.scalars().all())
     by_id = {photo.id: photo for photo in photos}
     if set(by_id.keys()) != set(photo_ids):
@@ -318,6 +314,4 @@ async def url_for(photo: EventPhoto, slug: str) -> str:
         if external:
             return external
 
-    return (
-        f"/api/v1/projects/{slug}/events/{photo.event_id}/photos/{photo.id}/file"
-    )
+    return f"/api/v1/projects/{slug}/events/{photo.event_id}/photos/{photo.id}/file"

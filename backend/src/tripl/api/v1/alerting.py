@@ -159,9 +159,7 @@ async def delete_alert_rule(
     current_user: EditorUserDep,
 ) -> None:
     rule = await session.scalar(
-        select(AlertRule).where(
-            AlertRule.id == rule_id, AlertRule.destination_id == destination_id
-        )
+        select(AlertRule).where(AlertRule.id == rule_id, AlertRule.destination_id == destination_id)
     )
     if rule is None:
         raise HTTPException(status_code=404, detail="Alert rule not found")

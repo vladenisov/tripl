@@ -11,9 +11,7 @@ from tripl.models.base import Base, UUIDMixin
 
 class ProjectAnomalySettings(UUIDMixin, Base):
     __tablename__ = "project_anomaly_settings"
-    __table_args__ = (
-        UniqueConstraint("project_id", name="uq_project_anomaly_settings_project"),
-    )
+    __table_args__ = (UniqueConstraint("project_id", name="uq_project_anomaly_settings_project"),)
 
     project_id: Mapped[uuid.UUID] = mapped_column(
         ForeignKey("projects.id", ondelete="CASCADE"),

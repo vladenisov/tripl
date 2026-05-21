@@ -59,11 +59,7 @@ async def list_events(
     project_id = await get_project_id_by_slug(session, slug)
     # Skip the selectin load for Event.event_type — the list response schema
     # ships only event_type_id, and the client already has EventTypes cached.
-    query = (
-        select(Event)
-        .where(Event.project_id == project_id)
-        .options(noload(Event.event_type))
-    )
+    query = select(Event).where(Event.project_id == project_id).options(noload(Event.event_type))
     count_query = select(func.count(Event.id)).where(Event.project_id == project_id)
 
     if event_type_id:
@@ -212,34 +208,34 @@ async def update_event(
 
     if data.field_values is not None:
         await _validate_field_values(session, event.event_type_id, data.field_values)
-        await session.execute(
-            delete(EventFieldValue).where(EventFieldValue.event_id == event.id)
-        )
+        await session.execute(delete(EventFieldValue).where(EventFieldValue.event_id == event.id))
         await session.flush()
         if data.field_values:
-            session.add_all([
-                EventFieldValue(
-                    event_id=event.id,
-                    field_definition_id=field_value.field_definition_id,
-                    value=field_value.value,
-                )
-                for field_value in data.field_values
-            ])
+            session.add_all(
+                [
+                    EventFieldValue(
+                        event_id=event.id,
+                        field_definition_id=field_value.field_definition_id,
+                        value=field_value.value,
+                    )
+                    for field_value in data.field_values
+                ]
+            )
 
     if data.meta_values is not None:
-        await session.execute(
-            delete(EventMetaValue).where(EventMetaValue.event_id == event.id)
-        )
+        await session.execute(delete(EventMetaValue).where(EventMetaValue.event_id == event.id))
         await session.flush()
         if data.meta_values:
-            session.add_all([
-                EventMetaValue(
-                    event_id=event.id,
-                    meta_field_definition_id=meta_value.meta_field_definition_id,
-                    value=meta_value.value,
-                )
-                for meta_value in data.meta_values
-            ])
+            session.add_all(
+                [
+                    EventMetaValue(
+                        event_id=event.id,
+                        meta_field_definition_id=meta_value.meta_field_definition_id,
+                        value=meta_value.value,
+                    )
+                    for meta_value in data.meta_values
+                ]
+            )
 
     await session.commit()
     await session.refresh(event)
@@ -338,9 +334,7 @@ async def reorder_events(
     await session.commit()
     # One round-trip with selectin relations (event_type/field_values/meta_values/tags)
     # instead of N×refresh after commit.
-    refreshed = await session.execute(
-        select(Event).where(Event.id.in_(data.event_ids))
-    )
+    refreshed = await session.execute(select(Event).where(Event.id.in_(data.event_ids)))
     by_id = {event.id: event for event in refreshed.scalars().all()}
     return [by_id[event_id] for event_id in data.event_ids]
 

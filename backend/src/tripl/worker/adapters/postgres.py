@@ -210,9 +210,7 @@ class PostgresAdapter(BaseAdapter):
         json_cols = [self._validate_column(c) for c in json_columns]
         json_value_paths = json_value_paths or {}
 
-        bucket_expr = (
-            f"date_bin(INTERVAL '{interval}', {_quote_ident(tc)}, TIMESTAMP 'epoch')"
-        )
+        bucket_expr = f"date_bin(INTERVAL '{interval}', {_quote_ident(tc)}, TIMESTAMP 'epoch')"
         select_parts: list[str] = [f"{bucket_expr} AS _bucket"]
         group_parts: list[str] = ["_bucket"]
         col_names: list[str] = []
@@ -303,19 +301,17 @@ class PostgresAdapter(BaseAdapter):
         t_to = time_to.strftime("%Y-%m-%d %H:%M:%S")
 
         prepared = [
-            f"{self._string_value_expression(c)} AS \"__bd_raw_{i}\""
-            for i, c in enumerate(cols)
+            f'{self._string_value_expression(c)} AS "__bd_raw_{i}"' for i, c in enumerate(cols)
         ]
         # One GROUPING SETS scan: per column, GROUP BY that single label so
         # ROW_NUMBER ranks values within that column only.
         grouping_sets = ", ".join(f'("__bd_raw_{i}")' for i in range(len(cols)))
         label_branches = " ".join(
-            f"WHEN GROUPING(\"__bd_raw_{i}\") = 0 THEN {self._quote_string(c)}"
+            f'WHEN GROUPING("__bd_raw_{i}") = 0 THEN {self._quote_string(c)}'
             for i, c in enumerate(cols)
         )
         value_branches = " ".join(
-            f"WHEN GROUPING(\"__bd_raw_{i}\") = 0 THEN \"__bd_raw_{i}\""
-            for i in range(len(cols))
+            f'WHEN GROUPING("__bd_raw_{i}") = 0 THEN "__bd_raw_{i}"' for i in range(len(cols))
         )
 
         sql = (
@@ -377,12 +373,15 @@ class PostgresAdapter(BaseAdapter):
         if values_limit is not None:
             top_count = max(values_limit - 1, 0)
             top_values_by_column = self._top_breakdown_values_multi(
-                base_query, time_column, breakdown_cols, time_from, time_to, top_count,
+                base_query,
+                time_column,
+                breakdown_cols,
+                time_from,
+                time_to,
+                top_count,
             )
 
-        bucket_expr = (
-            f"date_bin(INTERVAL '{interval}', {_quote_ident(tc)}, TIMESTAMP 'epoch')"
-        )
+        bucket_expr = f"date_bin(INTERVAL '{interval}', {_quote_ident(tc)}, TIMESTAMP 'epoch')"
         prepared_parts: list[str] = [f"{bucket_expr} AS _bucket"]
         col_names: list[str] = []
         json_value_names: list[str] = []

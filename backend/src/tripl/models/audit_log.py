@@ -14,9 +14,7 @@ from tripl.models.base import Base, UUIDMixin
 class AuditLog(UUIDMixin, Base):
     __tablename__ = "audit_log"
 
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now()
-    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     user_id: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("users.id", ondelete="SET NULL"), nullable=True
     )

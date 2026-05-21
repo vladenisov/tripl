@@ -70,9 +70,7 @@ def _build_handler() -> logging.Handler:
         handler.setFormatter(_JsonFormatter())
     else:
         handler.setFormatter(
-            logging.Formatter(
-                "%(asctime)s %(levelname)s %(name)s [%(request_id)s] %(message)s"
-            )
+            logging.Formatter("%(asctime)s %(levelname)s %(name)s [%(request_id)s] %(message)s")
         )
     return handler
 

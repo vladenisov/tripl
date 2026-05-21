@@ -58,9 +58,7 @@ async def _create_user_session(session: AsyncSession, user_id: uuid.UUID) -> str
     return session_token
 
 
-async def register_user(
-    session: AsyncSession, data: RegisterRequest
-) -> tuple[User, str]:
+async def register_user(session: AsyncSession, data: RegisterRequest) -> tuple[User, str]:
     email = normalize_email(data.email)
     existing = await _get_user_by_email(session, email)
     if existing is not None:
@@ -89,9 +87,7 @@ async def register_user(
     return user, session_token
 
 
-async def authenticate_user(
-    session: AsyncSession, data: LoginRequest
-) -> tuple[User, str]:
+async def authenticate_user(session: AsyncSession, data: LoginRequest) -> tuple[User, str]:
     email = normalize_email(data.email)
     user = await _get_user_by_email(session, email)
     if user is None or not verify_password(data.password, user.password_hash):
@@ -101,10 +97,12 @@ async def authenticate_user(
         )
 
     await session.execute(
-        delete(UserSession).where(
+        delete(UserSession)
+        .where(
             UserSession.user_id == user.id,
             UserSession.expires_at <= datetime.now(UTC),
-        ).execution_options(synchronize_session=False)
+        )
+        .execution_options(synchronize_session=False)
     )
     session_token = await _create_user_session(session, user.id)
     await session.commit()
@@ -112,9 +110,7 @@ async def authenticate_user(
     return user, session_token
 
 
-async def get_user_by_session_token(
-    session: AsyncSession, session_token: str
-) -> User | None:
+async def get_user_by_session_token(session: AsyncSession, session_token: str) -> User | None:
     statement = (
         select(UserSession)
         .options(selectinload(UserSession.user))

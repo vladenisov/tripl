@@ -33,10 +33,7 @@ def hash_password(password: str) -> str:
         r=SCRYPT_R,
         p=SCRYPT_P,
     )
-    return (
-        f"scrypt${SCRYPT_N}${SCRYPT_R}${SCRYPT_P}"
-        f"${_b64encode(salt)}${_b64encode(derived_key)}"
-    )
+    return f"scrypt${SCRYPT_N}${SCRYPT_R}${SCRYPT_P}${_b64encode(salt)}${_b64encode(derived_key)}"
 
 
 def verify_password(password: str, stored_hash: str) -> bool:

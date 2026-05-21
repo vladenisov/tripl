@@ -26,9 +26,7 @@ async def _set_role(owner_client: AsyncClient, target_email: str, role: str) -> 
     users = await owner_client.get("/api/v1/users")
     assert users.status_code == 200
     target = next(u for u in users.json() if u["email"] == target_email)
-    resp = await owner_client.patch(
-        f"/api/v1/users/{target['id']}", json={"role": role}
-    )
+    resp = await owner_client.patch(f"/api/v1/users/{target['id']}", json={"role": role})
     assert resp.status_code == 200, resp.text
 
 
@@ -51,9 +49,7 @@ async def test_first_user_becomes_owner_subsequent_users_are_editors(
 async def test_viewer_cannot_mutate_but_can_read(fresh_anon_client: AsyncClient) -> None:
     # Owner registers and creates a project + viewer user.
     await _register(fresh_anon_client, "owner@example.com")
-    await fresh_anon_client.post(
-        "/api/v1/projects", json={"name": "RBAC", "slug": "rbac-proj"}
-    )
+    await fresh_anon_client.post("/api/v1/projects", json={"name": "RBAC", "slug": "rbac-proj"})
 
     await fresh_anon_client.post("/api/v1/auth/logout")
     await _register(fresh_anon_client, "viewer@example.com")
@@ -98,9 +94,7 @@ async def test_only_owner_can_change_roles(fresh_anon_client: AsyncClient) -> No
     # Editor tries to change owner's role.
     users = await fresh_anon_client.get("/api/v1/users")
     owner = next(u for u in users.json() if u["email"] == "owner2@example.com")
-    resp = await fresh_anon_client.patch(
-        f"/api/v1/users/{owner['id']}", json={"role": "viewer"}
-    )
+    resp = await fresh_anon_client.patch(f"/api/v1/users/{owner['id']}", json={"role": "viewer"})
     assert resp.status_code == 403
 
 
@@ -108,8 +102,6 @@ async def test_only_owner_can_change_roles(fresh_anon_client: AsyncClient) -> No
 async def test_cannot_demote_last_owner(fresh_anon_client: AsyncClient) -> None:
     await _register(fresh_anon_client, "lone-owner@example.com")
     me = (await fresh_anon_client.get("/api/v1/auth/me")).json()
-    resp = await fresh_anon_client.patch(
-        f"/api/v1/users/{me['id']}", json={"role": "editor"}
-    )
+    resp = await fresh_anon_client.patch(f"/api/v1/users/{me['id']}", json={"role": "editor"})
     assert resp.status_code == 400
     assert "last remaining owner" in resp.json()["detail"]

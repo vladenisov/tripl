@@ -49,15 +49,19 @@ async def list_drifts_for_event_type(
 
     cutoff = _retention_cutoff()
     rows = (
-        await session.execute(
-            select(SchemaDrift)
-            .where(
-                SchemaDrift.event_type_id == event_type_id,
-                SchemaDrift.detected_at >= cutoff,
+        (
+            await session.execute(
+                select(SchemaDrift)
+                .where(
+                    SchemaDrift.event_type_id == event_type_id,
+                    SchemaDrift.detected_at >= cutoff,
+                )
+                .order_by(SchemaDrift.detected_at.desc(), SchemaDrift.field_name)
             )
-            .order_by(SchemaDrift.detected_at.desc(), SchemaDrift.field_name)
         )
-    ).scalars().all()
+        .scalars()
+        .all()
+    )
 
     items = [SchemaDriftResponse.model_validate(row) for row in rows]
     return SchemaDriftListResponse(items=items, total=len(items))
