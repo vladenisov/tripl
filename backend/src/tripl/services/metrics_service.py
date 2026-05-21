@@ -22,6 +22,8 @@ from tripl.models.metric_breakdown_anomaly import MetricBreakdownAnomaly
 from tripl.models.project import Project
 from tripl.models.scan_config import ScanConfig
 from tripl.schemas.event_metric import (
+    BreakdownTimelinePoint,
+    BreakdownTimelineResponse,
     DistributionDriftPoint,
     DistributionDriftsResponse,
     DistributionDriftTopMover,
@@ -32,6 +34,8 @@ from tripl.schemas.event_metric import (
     EventWindowMetricsResponse,
     ForecastPoint,
     MetricSignalResponse,
+    SeasonalityCell,
+    SeasonalityHeatmapResponse,
     TopMoverItem,
 )
 from tripl.services.monitoring_utils import classify_signal_state
@@ -1110,6 +1114,180 @@ async def get_top_movers(
         )
         for row in rows
     ]
+
+
+async def get_seasonality_heatmap(
+    session: AsyncSession,
+    slug: str,
+    *,
+    scan_config_id: uuid.UUID,
+    scope_type: str,
+    scope_ref: str,
+    time_from: datetime | None,
+    time_to: datetime | None,
+) -> SeasonalityHeatmapResponse:
+    """Aggregate counts and anomaly hits by (weekday, hour).
+
+    Aggregation runs in Python so the same code path works on Postgres and
+    SQLite — the windowed datasets are bounded (max ~90d × 24h × buckets)
+    and Python's datetime.weekday/.hour are timezone-aware.
+    """
+    project = await _resolve_project(session, slug)
+    scan_config = (
+        await session.execute(
+            select(ScanConfig).where(
+                ScanConfig.id == scan_config_id,
+                ScanConfig.project_id == project.id,
+            )
+        )
+    ).scalar_one_or_none()
+    if scan_config is None:
+        raise HTTPException(404, "Scan config not found")
+
+    metric_rows = await _get_metric_rows(
+        session,
+        scope=scope_type,
+        scan_config_id=scan_config_id,
+        scope_ref=scope_ref,
+        time_from=time_from,
+        time_to=time_to,
+    )
+    anomalies = await _get_anomaly_rows(
+        session,
+        scan_config_id=scan_config_id,
+        scope=scope_type,
+        scope_ref=scope_ref,
+        time_from=time_from,
+        time_to=time_to,
+    )
+
+    counts: dict[tuple[int, int], int] = {}
+    anomaly_counts: dict[tuple[int, int], int] = {}
+    total = 0
+    for bucket, count in metric_rows:
+        slot = (bucket.weekday(), bucket.hour)
+        counts[slot] = counts.get(slot, 0) + int(count)
+        total += int(count)
+    for anomaly in anomalies:
+        slot = (anomaly.bucket.weekday(), anomaly.bucket.hour)
+        anomaly_counts[slot] = anomaly_counts.get(slot, 0) + 1
+
+    cells: list[SeasonalityCell] = []
+    max_count = 0
+    for weekday in range(7):
+        for hour in range(24):
+            slot_key = (weekday, hour)
+            count = counts.get(slot_key, 0)
+            max_count = max(max_count, count)
+            cells.append(
+                SeasonalityCell(
+                    weekday=weekday,
+                    hour=hour,
+                    count=count,
+                    anomaly_count=anomaly_counts.get(slot_key, 0),
+                )
+            )
+
+    return SeasonalityHeatmapResponse(
+        scan_config_id=scan_config_id,
+        scope_type=scope_type,
+        scope_ref=scope_ref,
+        cells=cells,
+        max_count=max_count,
+        total_count=total,
+    )
+
+
+async def get_breakdown_timeline(
+    session: AsyncSession,
+    slug: str,
+    *,
+    scan_config_id: uuid.UUID,
+    scope_type: str,
+    scope_ref: str,
+    breakdown_column: str,
+    breakdown_value: str,
+    is_other: bool,
+    time_from: datetime | None,
+    time_to: datetime | None,
+) -> BreakdownTimelineResponse:
+    """Per-bucket counts for one breakdown_value over the requested window.
+
+    Powers the top-mover drill-down: clicking a breakdown row in the panel
+    opens its own timeline so users can see whether the move is a single
+    bucket spike or a sustained shift.
+    """
+    project = await _resolve_project(session, slug)
+    scan_config = (
+        await session.execute(
+            select(ScanConfig).where(
+                ScanConfig.id == scan_config_id,
+                ScanConfig.project_id == project.id,
+            )
+        )
+    ).scalar_one_or_none()
+    if scan_config is None:
+        raise HTTPException(404, "Scan config not found")
+
+    if scope_type == SCOPE_PROJECT_TOTAL:
+        # Sum across event_types so the row matches the project-total chart.
+        query = (
+            select(EventMetricBreakdown.bucket, func.sum(EventMetricBreakdown.count))
+            .where(
+                EventMetricBreakdown.scan_config_id == scan_config_id,
+                EventMetricBreakdown.event_id.is_(None),
+                EventMetricBreakdown.event_type_id.is_not(None),
+                EventMetricBreakdown.breakdown_column == breakdown_column,
+                EventMetricBreakdown.breakdown_value == breakdown_value,
+                EventMetricBreakdown.is_other.is_(is_other),
+            )
+            .group_by(EventMetricBreakdown.bucket)
+            .order_by(EventMetricBreakdown.bucket)
+        )
+    elif scope_type == SCOPE_EVENT_TYPE:
+        query = (
+            select(EventMetricBreakdown.bucket, EventMetricBreakdown.count)
+            .where(
+                EventMetricBreakdown.scan_config_id == scan_config_id,
+                EventMetricBreakdown.event_id.is_(None),
+                EventMetricBreakdown.event_type_id == _parse_scope_uuid(scope_ref, label="scope_ref"),
+                EventMetricBreakdown.breakdown_column == breakdown_column,
+                EventMetricBreakdown.breakdown_value == breakdown_value,
+                EventMetricBreakdown.is_other.is_(is_other),
+            )
+            .order_by(EventMetricBreakdown.bucket)
+        )
+    else:
+        query = (
+            select(EventMetricBreakdown.bucket, EventMetricBreakdown.count)
+            .where(
+                EventMetricBreakdown.scan_config_id == scan_config_id,
+                EventMetricBreakdown.event_id == _parse_scope_uuid(scope_ref, label="scope_ref"),
+                EventMetricBreakdown.breakdown_column == breakdown_column,
+                EventMetricBreakdown.breakdown_value == breakdown_value,
+                EventMetricBreakdown.is_other.is_(is_other),
+            )
+            .order_by(EventMetricBreakdown.bucket)
+        )
+
+    if time_from is not None:
+        query = query.where(EventMetricBreakdown.bucket >= time_from)
+    if time_to is not None:
+        query = query.where(EventMetricBreakdown.bucket < time_to)
+
+    rows = (await session.execute(query)).all()
+    data = [BreakdownTimelinePoint(bucket=bucket, count=int(count)) for bucket, count in rows]
+
+    return BreakdownTimelineResponse(
+        scan_config_id=scan_config_id,
+        scope_type=scope_type,
+        scope_ref=scope_ref,
+        breakdown_column=breakdown_column,
+        breakdown_value=breakdown_value,
+        is_other=is_other,
+        interval=scan_config.interval,
+        data=data,
+    )
 
 
 def _parse_scope_uuid(scope_ref: str, *, label: str) -> uuid.UUID:

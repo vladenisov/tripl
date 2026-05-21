@@ -5,6 +5,7 @@ from tripl.api.v1.activity import router as activity_router
 from tripl.api.v1.alerting import router as alerting_router
 from tripl.api.v1.audit import router as audit_router
 from tripl.api.v1.auth import router as auth_router
+from tripl.api.v1.chart_annotations import router as chart_annotations_router
 from tripl.api.v1.data_sources import router as data_sources_router
 from tripl.api.v1.event_photos import router as event_photos_router
 from tripl.api.v1.event_types import router as event_types_router
@@ -38,6 +39,7 @@ router.include_router(variables_router, dependencies=protected_dependencies)
 router.include_router(data_sources_router, dependencies=protected_dependencies)
 router.include_router(scans_router, dependencies=protected_dependencies)
 router.include_router(metrics_router, dependencies=protected_dependencies)
+router.include_router(chart_annotations_router, dependencies=protected_dependencies)
 router.include_router(plan_revisions_router, dependencies=protected_dependencies)
 router.include_router(audit_router, dependencies=protected_dependencies)
 router.include_router(users_router, dependencies=protected_dependencies)

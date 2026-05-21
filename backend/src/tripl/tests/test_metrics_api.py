@@ -993,3 +993,199 @@ async def test_distribution_drifts_endpoint_filters_by_event_type(client: AsyncC
     assert len(body["data"]) == 1
     assert body["data"][0]["band"] == "significant"
     assert body["data"][0]["top_movers"][0]["value"] == "ios"
+
+
+@pytest.mark.asyncio
+async def test_seasonality_heatmap_aggregates_by_weekday_hour(client: AsyncClient) -> None:
+    setup = await _setup_metrics_project(client, slug="heatmap-api")
+    event_resp = await client.post(
+        "/api/v1/projects/heatmap-api/events",
+        json={
+            "event_type_id": setup["page_type_id"],
+            "name": "Home",
+            "field_values": [
+                {"field_definition_id": setup["page_field_id"], "value": "home"},
+            ],
+        },
+    )
+    event_id = event_resp.json()["id"]
+
+    # 2026-01-05 is a Monday; 2026-01-06 a Tuesday. Hours 09 and 10 chosen
+    # so the assertions can target specific (weekday, hour) slots.
+    monday_9 = datetime(2026, 1, 5, 9, tzinfo=UTC)
+    monday_9_again = datetime(2026, 1, 12, 9, tzinfo=UTC)
+    monday_10 = datetime(2026, 1, 5, 10, tzinfo=UTC)
+    tuesday_10 = datetime(2026, 1, 6, 10, tzinfo=UTC)
+
+    async with TestSessionLocal() as session:
+        data_source = DataSource(
+            id=uuid.uuid4(),
+            name=f"Heatmap DS {uuid.uuid4().hex[:8]}",
+            db_type="clickhouse",
+            host="localhost",
+            port=8123,
+            database_name="default",
+            username="default",
+            password_encrypted="",
+        )
+        scan_config = ScanConfig(
+            id=uuid.uuid4(),
+            data_source_id=data_source.id,
+            project_id=uuid.UUID(setup["project_id"]),
+            event_type_id=uuid.UUID(setup["page_type_id"]),
+            name="Heatmap Config",
+            base_query="SELECT time, event_name FROM events",
+            time_column="time",
+            cardinality_threshold=100,
+            interval="1h",
+        )
+        session.add_all([data_source, scan_config])
+
+        for bucket, count in [
+            (monday_9, 30),
+            (monday_9_again, 20),
+            (monday_10, 5),
+            (tuesday_10, 50),
+        ]:
+            session.add(
+                EventMetric(
+                    id=uuid.uuid4(),
+                    scan_config_id=scan_config.id,
+                    event_id=uuid.UUID(event_id),
+                    event_type_id=None,
+                    bucket=bucket,
+                    count=count,
+                )
+            )
+        # One anomaly on Tuesday 10 — should show up as anomaly_count=1 in
+        # that cell.
+        session.add(
+            MetricAnomaly(
+                id=uuid.uuid4(),
+                scan_config_id=scan_config.id,
+                scope_type="event",
+                scope_ref=event_id,
+                event_id=uuid.UUID(event_id),
+                event_type_id=None,
+                bucket=tuesday_10,
+                actual_count=50,
+                expected_count=5.0,
+                stddev=2.0,
+                z_score=15.0,
+                direction="spike",
+            )
+        )
+        await session.commit()
+        scan_config_id = str(scan_config.id)
+
+    resp = await client.get(
+        f"/api/v1/projects/heatmap-api/scans/{scan_config_id}/seasonality",
+        params={
+            "scope_type": "event",
+            "scope_ref": event_id,
+        },
+    )
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert len(body["cells"]) == 7 * 24
+    assert body["total_count"] == 30 + 20 + 5 + 50
+    assert body["max_count"] == 50
+
+    by_slot = {(cell["weekday"], cell["hour"]): cell for cell in body["cells"]}
+    # Monday=0, Tuesday=1 (Python datetime.weekday()).
+    assert by_slot[(0, 9)]["count"] == 50  # 30 + 20 two Mondays at 09:00
+    assert by_slot[(0, 9)]["anomaly_count"] == 0
+    assert by_slot[(0, 10)]["count"] == 5
+    assert by_slot[(1, 10)]["count"] == 50
+    assert by_slot[(1, 10)]["anomaly_count"] == 1
+
+
+@pytest.mark.asyncio
+async def test_breakdown_timeline_returns_per_bucket_counts(client: AsyncClient) -> None:
+    setup = await _setup_metrics_project(client, slug="drilldown-api")
+    event_resp = await client.post(
+        "/api/v1/projects/drilldown-api/events",
+        json={
+            "event_type_id": setup["page_type_id"],
+            "name": "Home",
+            "field_values": [
+                {"field_definition_id": setup["page_field_id"], "value": "home"},
+            ],
+        },
+    )
+    event_id = event_resp.json()["id"]
+
+    async with TestSessionLocal() as session:
+        data_source = DataSource(
+            id=uuid.uuid4(),
+            name=f"Drilldown DS {uuid.uuid4().hex[:8]}",
+            db_type="clickhouse",
+            host="localhost",
+            port=8123,
+            database_name="default",
+            username="default",
+            password_encrypted="",
+        )
+        scan_config = ScanConfig(
+            id=uuid.uuid4(),
+            data_source_id=data_source.id,
+            project_id=uuid.UUID(setup["project_id"]),
+            event_type_id=uuid.UUID(setup["page_type_id"]),
+            name="Drilldown Config",
+            base_query="SELECT time, event_name, country FROM events",
+            time_column="time",
+            metric_breakdown_columns=["country"],
+            cardinality_threshold=100,
+            interval="1h",
+        )
+        session.add_all([data_source, scan_config])
+
+        buckets = [
+            datetime(2026, 1, 1, 10, tzinfo=UTC),
+            datetime(2026, 1, 1, 11, tzinfo=UTC),
+            datetime(2026, 1, 1, 12, tzinfo=UTC),
+        ]
+        # Two breakdown_values; expect drill-down to return only US.
+        for bucket, us_count, de_count in zip(buckets, [40, 50, 60], [10, 20, 30]):
+            session.add_all([
+                EventMetricBreakdown(
+                    id=uuid.uuid4(),
+                    scan_config_id=scan_config.id,
+                    event_id=uuid.UUID(event_id),
+                    event_type_id=None,
+                    bucket=bucket,
+                    breakdown_column="country",
+                    breakdown_value="US",
+                    is_other=False,
+                    count=us_count,
+                ),
+                EventMetricBreakdown(
+                    id=uuid.uuid4(),
+                    scan_config_id=scan_config.id,
+                    event_id=uuid.UUID(event_id),
+                    event_type_id=None,
+                    bucket=bucket,
+                    breakdown_column="country",
+                    breakdown_value="DE",
+                    is_other=False,
+                    count=de_count,
+                ),
+            ])
+        await session.commit()
+        scan_config_id = str(scan_config.id)
+
+    resp = await client.get(
+        f"/api/v1/projects/drilldown-api/scans/{scan_config_id}/breakdown-timeline",
+        params={
+            "scope_type": "event",
+            "scope_ref": event_id,
+            "breakdown_column": "country",
+            "breakdown_value": "US",
+        },
+    )
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["breakdown_value"] == "US"
+    assert [point["count"] for point in body["data"]] == [40, 50, 60]
