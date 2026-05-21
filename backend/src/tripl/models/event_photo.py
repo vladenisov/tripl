@@ -32,11 +32,20 @@ class EventPhoto(UUIDMixin, TimestampMixin, Base):
     content_type: Mapped[str] = mapped_column(String(120), default="")
     size_bytes: Mapped[int] = mapped_column(Integer, default=0)
 
-    # "local" or "gcs" — drives URL resolution and delete behavior.
-    storage_backend: Mapped[str] = mapped_column(String(20))
+    # Attachment shape. "photo" rows have storage_backend/storage_key populated
+    # and no external_url; "figma" rows store the embed URL and leave the
+    # storage_* columns NULL (no blob is uploaded).
+    kind: Mapped[str] = mapped_column(
+        String(20), default="photo", server_default="photo"
+    )
+    external_url: Mapped[str | None] = mapped_column(String(2000), nullable=True)
+
+    # "local" or "gcs" — drives URL resolution and delete behavior. NULL for
+    # figma-kind rows that have no uploaded blob.
+    storage_backend: Mapped[str | None] = mapped_column(String(20), nullable=True)
     # Relative key under the configured storage root. Same shape for both
     # backends, e.g. "events/<event_id>/<photo_id>.jpg".
-    storage_key: Mapped[str] = mapped_column(String(500))
+    storage_key: Mapped[str | None] = mapped_column(String(500), nullable=True)
 
     sort_order: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
 

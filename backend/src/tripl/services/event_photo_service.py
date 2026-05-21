@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import mimetypes
+import re
 import uuid
 
 from fastapi import HTTPException
@@ -10,8 +11,19 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from tripl.config import settings
 from tripl.models.event import Event
 from tripl.models.event_photo import EventPhoto
+from tripl.models.event_photo_comment import EventPhotoComment
 from tripl.services.project_service import get_project_id_by_slug
 from tripl.storage import get_photo_storage
+
+PHOTO_KIND_PHOTO = "photo"
+PHOTO_KIND_FIGMA = "figma"
+
+# Match canonical figma.com URLs only — narrow on purpose so we don't render
+# arbitrary cross-origin iframes for users.
+_FIGMA_URL_RE = re.compile(
+    r"^https://(?:www\.)?figma\.com/(?:file|proto|design|board|community/file)/[A-Za-z0-9_\-]+",
+    re.IGNORECASE,
+)
 
 _EXT_BY_MIME = {
     "image/jpeg": ".jpg",
@@ -153,9 +165,113 @@ async def delete_photo(
     session: AsyncSession, slug: str, event_id: uuid.UUID, photo_id: uuid.UUID
 ) -> None:
     photo = await get_photo(session, slug, event_id, photo_id)
-    storage = get_photo_storage()
-    await storage.delete(photo.storage_key)
+    # Figma-kind rows have no uploaded blob — skip storage cleanup.
+    if photo.kind == PHOTO_KIND_PHOTO and photo.storage_key:
+        storage = get_photo_storage()
+        await storage.delete(photo.storage_key)
     await session.delete(photo)
+    await session.commit()
+
+
+async def attach_figma(
+    session: AsyncSession,
+    slug: str,
+    event_id: uuid.UUID,
+    *,
+    external_url: str,
+    title: str,
+    uploaded_by_user_id: uuid.UUID | None,
+) -> EventPhoto:
+    normalized_url = external_url.strip()
+    if not _FIGMA_URL_RE.match(normalized_url):
+        raise HTTPException(
+            status_code=422,
+            detail="Only Figma URLs (figma.com/file, /design, /proto, /board) are supported",
+        )
+
+    event = await _get_event(session, slug, event_id)
+    next_order = await session.scalar(
+        select(func.coalesce(func.max(EventPhoto.sort_order), -1) + 1).where(
+            EventPhoto.event_id == event.id
+        )
+    )
+
+    photo = EventPhoto(
+        project_id=event.project_id,
+        event_id=event.id,
+        uploaded_by_user_id=uploaded_by_user_id,
+        kind=PHOTO_KIND_FIGMA,
+        external_url=normalized_url,
+        original_filename=(title or "Figma frame")[:500],
+        content_type="application/x-figma-embed",
+        size_bytes=0,
+        storage_backend=None,
+        storage_key=None,
+        sort_order=int(next_order or 0),
+    )
+    session.add(photo)
+    await session.commit()
+    await session.refresh(photo)
+    return photo
+
+
+async def list_comments(
+    session: AsyncSession,
+    slug: str,
+    event_id: uuid.UUID,
+    photo_id: uuid.UUID,
+) -> list[EventPhotoComment]:
+    # Validates that the photo belongs to this event/project before returning
+    # comments — keeps cross-project leakage from being possible via id-guess.
+    await get_photo(session, slug, event_id, photo_id)
+    rows = await session.execute(
+        select(EventPhotoComment)
+        .where(EventPhotoComment.photo_id == photo_id)
+        .order_by(EventPhotoComment.created_at.asc())
+    )
+    return list(rows.scalars().all())
+
+
+async def create_comment(
+    session: AsyncSession,
+    slug: str,
+    event_id: uuid.UUID,
+    photo_id: uuid.UUID,
+    *,
+    body: str,
+    parent_id: uuid.UUID | None,
+    user_id: uuid.UUID | None,
+) -> EventPhotoComment:
+    await get_photo(session, slug, event_id, photo_id)
+    if parent_id is not None:
+        parent = await session.get(EventPhotoComment, parent_id)
+        if parent is None or parent.photo_id != photo_id:
+            raise HTTPException(status_code=400, detail="parent_id must belong to this photo")
+
+    comment = EventPhotoComment(
+        photo_id=photo_id,
+        parent_id=parent_id,
+        user_id=user_id,
+        body=body.strip(),
+    )
+    session.add(comment)
+    await session.commit()
+    await session.refresh(comment)
+    return comment
+
+
+async def delete_comment(
+    session: AsyncSession,
+    slug: str,
+    event_id: uuid.UUID,
+    photo_id: uuid.UUID,
+    comment_id: uuid.UUID,
+) -> None:
+    await get_photo(session, slug, event_id, photo_id)
+    comment = await session.get(EventPhotoComment, comment_id)
+    if comment is None or comment.photo_id != photo_id:
+        raise HTTPException(status_code=404, detail="Comment not found")
+    await session.delete(comment)
     await session.commit()
 
 
@@ -190,10 +306,14 @@ async def url_for(photo: EventPhoto, slug: str) -> str:
 
     GCS returns a signed (or public) URL the browser can fetch directly.
     Local backend defers to the authenticated download endpoint exposed under
-    the project router.
+    the project router. Figma-kind rows simply return the embed URL the
+    frontend iframes.
     """
+    if photo.kind == PHOTO_KIND_FIGMA:
+        return photo.external_url or ""
+
     storage = get_photo_storage()
-    if photo.storage_backend == storage.backend_name:
+    if photo.storage_key and photo.storage_backend == storage.backend_name:
         external = await storage.public_url(photo.storage_key, photo.content_type)
         if external:
             return external
