@@ -1,4 +1,4 @@
-import type { EventPhoto } from '../types'
+import type { EventPhoto, EventPhotoComment } from '../types'
 
 const BASE = '/api/v1'
 
@@ -51,5 +51,64 @@ export const eventPhotosApi = {
       body: JSON.stringify({ photo_ids: photoIds }),
     })
     return unwrap<EventPhoto[]>(res)
+  },
+
+  attachFigma: async (
+    slug: string,
+    eventId: string,
+    url: string,
+    title = '',
+  ): Promise<EventPhoto> => {
+    const res = await fetch(`${BASE}/projects/${slug}/events/${eventId}/photos/figma`, {
+      method: 'POST',
+      credentials: 'include',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ url, title }),
+    })
+    return unwrap<EventPhoto>(res)
+  },
+
+  listComments: async (
+    slug: string,
+    eventId: string,
+    photoId: string,
+  ): Promise<EventPhotoComment[]> => {
+    const res = await fetch(
+      `${BASE}/projects/${slug}/events/${eventId}/photos/${photoId}/comments`,
+      { credentials: 'include' },
+    )
+    return unwrap<EventPhotoComment[]>(res)
+  },
+
+  createComment: async (
+    slug: string,
+    eventId: string,
+    photoId: string,
+    body: string,
+    parentId: string | null = null,
+  ): Promise<EventPhotoComment> => {
+    const res = await fetch(
+      `${BASE}/projects/${slug}/events/${eventId}/photos/${photoId}/comments`,
+      {
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ body, parent_id: parentId }),
+      },
+    )
+    return unwrap<EventPhotoComment>(res)
+  },
+
+  deleteComment: async (
+    slug: string,
+    eventId: string,
+    photoId: string,
+    commentId: string,
+  ): Promise<void> => {
+    const res = await fetch(
+      `${BASE}/projects/${slug}/events/${eventId}/photos/${photoId}/comments/${commentId}`,
+      { method: 'DELETE', credentials: 'include' },
+    )
+    await unwrap<void>(res)
   },
 }
