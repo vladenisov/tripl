@@ -32,6 +32,46 @@ class MetricSignalResponse(BaseModel):
     direction: str
 
 
+class SeasonalityCell(BaseModel):
+    """One cell of the 7×24 hour-of-day × weekday seasonality heatmap.
+
+    `weekday` is ISO-style with Monday=0..Sunday=6 to match Python's
+    `datetime.weekday()`. `count` is the total volume observed in that
+    slot across the queried time range; `anomaly_count` is the number of
+    detected anomalies whose bucket fell into the same slot.
+    """
+
+    weekday: int
+    hour: int
+    count: int
+    anomaly_count: int
+
+
+class SeasonalityHeatmapResponse(BaseModel):
+    scan_config_id: uuid.UUID
+    scope_type: str
+    scope_ref: str
+    cells: list[SeasonalityCell]
+    max_count: int
+    total_count: int
+
+
+class BreakdownTimelinePoint(BaseModel):
+    bucket: datetime
+    count: int
+
+
+class BreakdownTimelineResponse(BaseModel):
+    scan_config_id: uuid.UUID
+    scope_type: str
+    scope_ref: str
+    breakdown_column: str
+    breakdown_value: str
+    is_other: bool
+    interval: str | None
+    data: list[BreakdownTimelinePoint]
+
+
 class ForecastPoint(BaseModel):
     """One-step-ahead expected value emitted alongside the historical series.
 

@@ -5,6 +5,7 @@ import {
   ComposedChart,
   CartesianGrid,
   Line,
+  ReferenceLine,
   ResponsiveContainer,
   Tooltip,
   XAxis,
@@ -13,11 +14,12 @@ import {
 import { cn } from '@/lib/utils'
 import type { MetricsGranularity } from '@/lib/metrics'
 import { useTheme, type ChartStyle } from '@/components/theme-provider'
-import type { EventMetricPoint, ForecastPoint } from '@/types'
+import type { ChartAnnotation, EventMetricPoint, ForecastPoint } from '@/types'
 
 interface MetricsChartProps {
   data: EventMetricPoint[]
   forecast?: ForecastPoint[]
+  annotations?: ChartAnnotation[]
   className?: string
   color?: string
   height?: number
@@ -252,9 +254,45 @@ function MultiSeriesTooltip({
   )
 }
 
+function snapAnnotationsToBuckets(
+  annotations: ChartAnnotation[] | undefined,
+  data: ChartDataPoint[],
+): Array<{ id: string; bucket: string; label: string; color: string }> {
+  if (!annotations?.length || !data.length) return []
+  // Categorical x-axis only renders ReferenceLine for x values that exist
+  // on rendered points, so snap each annotation to the closest bucket in
+  // the visible data. Annotations outside the window simply drop.
+  const bucketTimes = data.map(point => new Date(point.bucket).getTime())
+  return annotations
+    .map(annotation => {
+      const annotationTime = new Date(annotation.bucket).getTime()
+      if (Number.isNaN(annotationTime)) return null
+      if (annotationTime < bucketTimes[0] || annotationTime > bucketTimes[bucketTimes.length - 1]) {
+        return null
+      }
+      let closestIndex = 0
+      let closestDelta = Math.abs(annotationTime - bucketTimes[0])
+      for (let i = 1; i < bucketTimes.length; i++) {
+        const delta = Math.abs(annotationTime - bucketTimes[i])
+        if (delta < closestDelta) {
+          closestDelta = delta
+          closestIndex = i
+        }
+      }
+      return {
+        id: annotation.id,
+        bucket: data[closestIndex].bucket,
+        label: annotation.label,
+        color: annotation.color || 'var(--destructive)',
+      }
+    })
+    .filter((value): value is { id: string; bucket: string; label: string; color: string } => value !== null)
+}
+
 export function MetricsChart({
   data,
   forecast,
+  annotations,
   className,
   color,
   height = 300,
@@ -265,6 +303,10 @@ export function MetricsChart({
   const chartColor = color || 'var(--chart-1)'
   const gradientId = useId().replace(/:/g, '')
   const chartData = useMemo(() => buildChartData(data, forecast), [data, forecast])
+  const snappedAnnotations = useMemo(
+    () => snapAnnotationsToBuckets(annotations, chartData),
+    [annotations, chartData],
+  )
 
   if (!data.length) {
     return (
@@ -285,6 +327,11 @@ export function MetricsChart({
         {(forecast ?? []).map(point => (
           <span key={point.bucket} data-testid="forecast-point">
             {point.bucket}: {Math.round(point.expected_count)}
+          </span>
+        ))}
+        {snappedAnnotations.map(annotation => (
+          <span key={annotation.id} data-testid="chart-annotation">
+            {annotation.bucket}: {annotation.label}
           </span>
         ))}
       </div>
@@ -365,6 +412,22 @@ export function MetricsChart({
             gradientId,
             mini: false,
           })}
+          {snappedAnnotations.map(annotation => (
+            <ReferenceLine
+              key={annotation.id}
+              x={annotation.bucket}
+              stroke={annotation.color}
+              strokeDasharray="2 3"
+              strokeWidth={1.5}
+              label={{
+                value: annotation.label,
+                position: 'top',
+                fill: annotation.color,
+                fontSize: 10,
+              }}
+              ifOverflow="extendDomain"
+            />
+          ))}
         </ComposedChart>
       </ResponsiveContainer>
     </div>

@@ -1,6 +1,7 @@
 import { useMemo, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
-import { useQuery } from '@tanstack/react-query'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { chartAnnotationsApi } from '@/api/chartAnnotations'
 import { eventTypesApi } from '@/api/eventTypes'
 import { eventsApi } from '@/api/events'
 import { metaFieldsApi } from '@/api/metaFields'
@@ -8,8 +9,10 @@ import { metricsApi } from '@/api/metrics'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
+import { Input } from '@/components/ui/input'
 import { ErrorState } from '@/components/error-state'
 import EventPhotosSection from '@/components/event-photos-section'
+import { SeasonalityHeatmap } from '@/components/monitoring/seasonality-heatmap'
 import { TopMoversPanel } from '@/components/monitoring/top-movers-panel'
 import { MetricsChart } from '@/components/ui/chart'
 import {
@@ -26,7 +29,7 @@ import type {
   FieldDefinition,
   MetaFieldDefinition,
 } from '@/types'
-import { AlertTriangle, ArrowLeft, CircleCheck, Eye, GitCompareArrows, Tag } from 'lucide-react'
+import { AlertTriangle, ArrowLeft, CalendarPlus, CircleCheck, Eye, GitCompareArrows, Tag, Trash2 } from 'lucide-react'
 
 const RANGE_OPTIONS = [
   { label: '7d', days: 7 },
@@ -57,7 +60,7 @@ export default function MonitoringDetailPage() {
   const navigate = useNavigate()
   const [rangeDays, setRangeDays] = useState(30)
   const [granularity, setGranularity] = useState<MetricsGranularity>('hour')
-  const [activeTab, setActiveTab] = useState<'volume' | 'distribution'>('volume')
+  const [activeTab, setActiveTab] = useState<'volume' | 'distribution' | 'heatmap'>('volume')
   const [distributionField, setDistributionField] = useState('')
 
   const scope = routeScopeToApiScope(scopeParam)
@@ -151,6 +154,44 @@ export default function MonitoringDetailPage() {
     () => aggregateMetricPoints(metrics?.data ?? [], granularity),
     [granularity, metrics?.data],
   )
+
+  const queryClient = useQueryClient()
+  const annotationsKey = ['chartAnnotations', slug, scope, scopeId, timeRange.from, timeRange.to]
+  const annotationsQuery = useQuery({
+    queryKey: annotationsKey,
+    queryFn: () =>
+      chartAnnotationsApi.list(slug!, {
+        scope_type: scope,
+        scope_ref: scopeId,
+        from: timeRange.from,
+        to: timeRange.to,
+      }),
+    enabled: !!slug && !!scopeId,
+  })
+  const annotations = annotationsQuery.data ?? []
+
+  const [annotationBucket, setAnnotationBucket] = useState('')
+  const [annotationLabel, setAnnotationLabel] = useState('')
+  const createAnnotationMut = useMutation({
+    mutationFn: () =>
+      chartAnnotationsApi.create(slug!, {
+        bucket: new Date(annotationBucket).toISOString(),
+        label: annotationLabel.trim(),
+        scope_type: scope,
+        scope_ref: scopeId,
+      }),
+    onSuccess: () => {
+      setAnnotationBucket('')
+      setAnnotationLabel('')
+      void queryClient.invalidateQueries({ queryKey: annotationsKey })
+    },
+  })
+  const deleteAnnotationMut = useMutation({
+    mutationFn: (id: string) => chartAnnotationsApi.delete(slug!, id),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: annotationsKey })
+    },
+  })
 
   const eventType = eventTypes.find((candidate: EventType) => (
     scope === 'event'
@@ -270,9 +311,10 @@ export default function MonitoringDetailPage() {
         <EventPhotosSection slug={slug!} eventId={scopeId} />
       )}
 
-      <Tabs value={activeTab} onValueChange={value => setActiveTab(value as 'volume' | 'distribution')}>
+      <Tabs value={activeTab} onValueChange={value => setActiveTab(value as 'volume' | 'distribution' | 'heatmap')}>
         <TabsList>
           <TabsTrigger value="volume">Volume</TabsTrigger>
+          <TabsTrigger value="heatmap">Heatmap</TabsTrigger>
           <TabsTrigger value="distribution">
             <GitCompareArrows className="h-3.5 w-3.5" />
             Distribution
@@ -310,6 +352,8 @@ export default function MonitoringDetailPage() {
               scopeType={latestSignal.scope_type}
               scopeRef={latestSignal.scope_ref}
               bucket={latestSignal.bucket}
+              from={timeRange.from}
+              to={timeRange.to}
             />
           )}
 
@@ -355,6 +399,7 @@ export default function MonitoringDetailPage() {
                 <MetricsChart
                   data={chartData}
                   forecast={metrics?.forecast}
+                  annotations={annotations}
                   height={280}
                   color={eventType?.color || 'var(--chart-3)'}
                   granularity={granularity}
@@ -368,6 +413,110 @@ export default function MonitoringDetailPage() {
               )}
             </CardContent>
           </Card>
+
+          <Card>
+            <CardContent className="space-y-3 p-4">
+              <div className="flex items-center gap-2">
+                <CalendarPlus className="h-4 w-4 text-muted-foreground" />
+                <h2 className="text-sm font-semibold">Annotations</h2>
+                <span className="text-xs text-muted-foreground">
+                  ({annotations.length})
+                </span>
+              </div>
+              <p className="text-xs text-muted-foreground">
+                Mark deploys, releases, or incidents so the chart shows what
+                changed when. Snaps to the closest bucket of the current
+                scope.
+              </p>
+              <form
+                className="flex flex-wrap items-center gap-2"
+                onSubmit={event => {
+                  event.preventDefault()
+                  if (!annotationBucket || !annotationLabel.trim()) return
+                  createAnnotationMut.mutate()
+                }}
+              >
+                <Input
+                  type="datetime-local"
+                  value={annotationBucket}
+                  onChange={event => setAnnotationBucket(event.target.value)}
+                  className="h-8 w-[200px]"
+                />
+                <Input
+                  placeholder="Label (e.g. v1.4 deploy)"
+                  value={annotationLabel}
+                  onChange={event => setAnnotationLabel(event.target.value)}
+                  className="h-8 w-[280px]"
+                />
+                <Button
+                  type="submit"
+                  size="sm"
+                  variant="secondary"
+                  disabled={
+                    !annotationBucket
+                    || !annotationLabel.trim()
+                    || createAnnotationMut.isPending
+                  }
+                >
+                  Add
+                </Button>
+              </form>
+              {annotations.length > 0 && (
+                <ul className="divide-y divide-border text-xs">
+                  {annotations.map(annotation => (
+                    <li
+                      key={annotation.id}
+                      className="flex items-center justify-between gap-2 py-2"
+                    >
+                      <div className="flex items-center gap-2">
+                        <span
+                          className="inline-block h-2.5 w-2.5 rounded-full"
+                          style={{ backgroundColor: annotation.color }}
+                        />
+                        <span className="text-muted-foreground">
+                          {new Date(annotation.bucket).toLocaleString()}
+                        </span>
+                        <span className="font-medium">{annotation.label}</span>
+                        {annotation.scope_type === null && (
+                          <Badge variant="outline" className="text-[10px]">project-wide</Badge>
+                        )}
+                      </div>
+                      <Button
+                        size="icon"
+                        variant="ghost"
+                        className="h-7 w-7 text-muted-foreground hover:text-destructive"
+                        onClick={() => deleteAnnotationMut.mutate(annotation.id)}
+                        disabled={deleteAnnotationMut.isPending}
+                      >
+                        <Trash2 className="h-3.5 w-3.5" />
+                      </Button>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </CardContent>
+          </Card>
+        </TabsContent>
+
+        <TabsContent value="heatmap">
+          {metrics?.scan_config_id ? (
+            <SeasonalityHeatmap
+              slug={slug!}
+              scanConfigId={metrics.scan_config_id}
+              scopeType={scope}
+              scopeRef={scopeId}
+              from={timeRange.from}
+              to={timeRange.to}
+              color={eventType?.color || 'var(--chart-3)'}
+            />
+          ) : (
+            <Card>
+              <CardContent className="p-6 text-sm text-muted-foreground">
+                No scan config found for this scope yet — run a scan to populate
+                the heatmap.
+              </CardContent>
+            </Card>
+          )}
         </TabsContent>
 
         <TabsContent value="distribution">

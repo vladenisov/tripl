@@ -469,6 +469,51 @@ export interface ForecastPoint {
   stddev: number
 }
 
+export interface ChartAnnotation {
+  id: string
+  project_id: string
+  scope_type: 'project_total' | 'event_type' | 'event' | null
+  scope_ref: string | null
+  bucket: string
+  label: string
+  description: string | null
+  color: string
+  created_by_user_id: string | null
+  created_at: string
+}
+
+export interface SeasonalityCell {
+  weekday: number
+  hour: number
+  count: number
+  anomaly_count: number
+}
+
+export interface SeasonalityHeatmap {
+  scan_config_id: string
+  scope_type: string
+  scope_ref: string
+  cells: SeasonalityCell[]
+  max_count: number
+  total_count: number
+}
+
+export interface BreakdownTimelinePoint {
+  bucket: string
+  count: number
+}
+
+export interface BreakdownTimeline {
+  scan_config_id: string
+  scope_type: string
+  scope_ref: string
+  breakdown_column: string
+  breakdown_value: string
+  is_other: boolean
+  interval: string | null
+  data: BreakdownTimelinePoint[]
+}
+
 export interface EventMetricsResponse {
   scope: 'project_total' | 'event_type' | 'event' | 'events_total'
   scan_config_id: string | null

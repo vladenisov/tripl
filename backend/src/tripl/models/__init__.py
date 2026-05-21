@@ -6,6 +6,7 @@ from tripl.models.alert_rule_filter import AlertRuleFilter
 from tripl.models.alert_rule_state import AlertRuleState
 from tripl.models.audit_log import AuditLog
 from tripl.models.base import Base
+from tripl.models.chart_annotation import ChartAnnotation
 from tripl.models.data_source import DataSource
 from tripl.models.distribution_drift import DistributionDrift
 from tripl.models.event import Event
@@ -41,6 +42,7 @@ __all__ = [
     "AlertDelivery",
     "AlertDeliveryItem",
     "AuditLog",
+    "ChartAnnotation",
     "Project",
     "EventType",
     "FieldDefinition",

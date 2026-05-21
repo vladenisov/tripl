@@ -1,10 +1,12 @@
 import { api } from './client'
 import type {
+  BreakdownTimeline,
   EventMetricBreakdownsResponse,
   EventMetricsResponse,
   DistributionDriftsResponse,
   EventWindowMetrics,
   MonitoringSignal,
+  SeasonalityHeatmap,
   TopMoverItem,
 } from '../types'
 
@@ -107,6 +109,49 @@ export const metricsApi = {
     if (params.limit !== undefined) sp.set('limit', String(params.limit))
     return api.get<TopMoverItem[]>(
       `/projects/${slug}/scans/${scanConfigId}/top-movers?${sp.toString()}`,
+    )
+  },
+
+  getSeasonalityHeatmap: (
+    slug: string,
+    scanConfigId: string,
+    params: { scope_type: string; scope_ref: string; from?: string; to?: string },
+  ) => {
+    const sp = new URLSearchParams({
+      scope_type: params.scope_type,
+      scope_ref: params.scope_ref,
+    })
+    if (params.from) sp.set('from', params.from)
+    if (params.to) sp.set('to', params.to)
+    return api.get<SeasonalityHeatmap>(
+      `/projects/${slug}/scans/${scanConfigId}/seasonality?${sp.toString()}`,
+    )
+  },
+
+  getBreakdownTimeline: (
+    slug: string,
+    scanConfigId: string,
+    params: {
+      scope_type: string
+      scope_ref: string
+      breakdown_column: string
+      breakdown_value: string
+      is_other?: boolean
+      from?: string
+      to?: string
+    },
+  ) => {
+    const sp = new URLSearchParams({
+      scope_type: params.scope_type,
+      scope_ref: params.scope_ref,
+      breakdown_column: params.breakdown_column,
+      breakdown_value: params.breakdown_value,
+    })
+    if (params.is_other !== undefined) sp.set('is_other', String(params.is_other))
+    if (params.from) sp.set('from', params.from)
+    if (params.to) sp.set('to', params.to)
+    return api.get<BreakdownTimeline>(
+      `/projects/${slug}/scans/${scanConfigId}/breakdown-timeline?${sp.toString()}`,
     )
   },
 

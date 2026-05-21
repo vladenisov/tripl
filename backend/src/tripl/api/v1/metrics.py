@@ -7,12 +7,14 @@ from fastapi import APIRouter, Query
 from tripl.api.deps import SessionDep
 from tripl.schemas.event_metric import (
     ActiveSignalsQuery,
+    BreakdownTimelineResponse,
     DistributionDriftsResponse,
     EventMetricBreakdownsResponse,
     EventMetricsResponse,
     EventWindowMetricsRequest,
     EventWindowMetricsResponse,
     MetricSignalResponse,
+    SeasonalityHeatmapResponse,
     TopMoverItem,
 )
 from tripl.services import metrics_service
@@ -193,6 +195,62 @@ async def get_top_movers(
         scope_ref=scope_ref,
         bucket=bucket,
         limit=limit,
+    )
+
+
+@router.get(
+    "/projects/{slug}/scans/{scan_config_id}/seasonality",
+    response_model=SeasonalityHeatmapResponse,
+)
+async def get_seasonality_heatmap(
+    session: SessionDep,
+    slug: str,
+    scan_config_id: uuid.UUID,
+    scope_type: str,
+    scope_ref: str,
+    time_from: TimeFrom = None,
+    time_to: TimeTo = None,
+) -> SeasonalityHeatmapResponse:
+    """7×24 hour-of-day × weekday heatmap of volume and anomaly density."""
+    return await metrics_service.get_seasonality_heatmap(
+        session,
+        slug,
+        scan_config_id=scan_config_id,
+        scope_type=scope_type,
+        scope_ref=scope_ref,
+        time_from=time_from,
+        time_to=time_to,
+    )
+
+
+@router.get(
+    "/projects/{slug}/scans/{scan_config_id}/breakdown-timeline",
+    response_model=BreakdownTimelineResponse,
+)
+async def get_breakdown_timeline(
+    session: SessionDep,
+    slug: str,
+    scan_config_id: uuid.UUID,
+    scope_type: str,
+    scope_ref: str,
+    breakdown_column: str,
+    breakdown_value: str,
+    is_other: bool = False,
+    time_from: TimeFrom = None,
+    time_to: TimeTo = None,
+) -> BreakdownTimelineResponse:
+    """Per-bucket count timeline for one breakdown_value (drill-down)."""
+    return await metrics_service.get_breakdown_timeline(
+        session,
+        slug,
+        scan_config_id=scan_config_id,
+        scope_type=scope_type,
+        scope_ref=scope_ref,
+        breakdown_column=breakdown_column,
+        breakdown_value=breakdown_value,
+        is_other=is_other,
+        time_from=time_from,
+        time_to=time_to,
     )
 
 
