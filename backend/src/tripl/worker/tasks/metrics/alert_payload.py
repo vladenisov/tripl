@@ -1,8 +1,7 @@
 """Alert payload helpers: scope-name lookup, destination loader, snapshot.
 
-`_prepare_alert_deliveries` stays in `__init__.py` because tests monkey-patch
-it, but the small builders it composes have no patches against them and only
-call sibling helpers from this package, so they live here.
+The live alert dispatch loop lives in `dispatch.py`; these small builders stay
+separate because they are also useful to inspect and test independently.
 """
 
 from __future__ import annotations
