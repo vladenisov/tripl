@@ -7,6 +7,7 @@ from sqlalchemy import delete, select
 from sqlalchemy import func as sa_func
 from sqlalchemy.orm import Session
 
+from tripl.models.event import Event
 from tripl.models.event_metric import EventMetric
 from tripl.models.event_metric_breakdown import EventMetricBreakdown
 from tripl.models.metric_anomaly import MetricAnomaly
@@ -43,6 +44,21 @@ def _get_project_anomaly_settings(
     return session.execute(
         select(ProjectAnomalySettings).where(ProjectAnomalySettings.project_id == project_id)
     ).scalar_one_or_none()
+
+
+def _scan_has_event_level_breakdown_columns(session: Session, scan_config_id: uuid.UUID) -> bool:
+    event_ids = (
+        select(EventMetric.event_id)
+        .where(
+            EventMetric.scan_config_id == scan_config_id,
+            EventMetric.event_id.is_not(None),
+        )
+        .distinct()
+    )
+    rows = session.execute(
+        select(Event.metric_breakdown_columns).where(Event.id.in_(event_ids))
+    ).scalars()
+    return any(columns for columns in rows)
 
 
 def _load_scope_points(
@@ -513,7 +529,10 @@ def _recalculate_metric_breakdown_anomalies(
         session.flush()
         return 0
 
-    if not config.interval or not config.metric_breakdown_columns:
+    if not config.interval or (
+        not config.metric_breakdown_columns
+        and not _scan_has_event_level_breakdown_columns(session, config.id)
+    ):
         session.execute(
             delete(MetricBreakdownAnomaly).where(MetricBreakdownAnomaly.scan_config_id == config.id)
         )

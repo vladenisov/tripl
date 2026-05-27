@@ -42,6 +42,7 @@ async def test_create_event(client: AsyncClient):
         json={
             "event_type_id": et_id,
             "name": "Home Page View",
+            "metric_breakdown_columns": ["country", "country", " platform "],
             "field_values": [{"field_definition_id": field_id, "value": "home"}],
             "meta_values": [
                 {"meta_field_definition_id": meta_id, "value": "https://jira.example.com/TICK-1"}
@@ -52,6 +53,7 @@ async def test_create_event(client: AsyncClient):
     data = resp.json()
     assert data["name"] == "Home Page View"
     assert data["order"] == 0
+    assert data["metric_breakdown_columns"] == ["country", "platform"]
     assert len(data["field_values"]) == 1
     assert len(data["meta_values"]) == 1
 
@@ -134,10 +136,11 @@ async def test_update_event(client: AsyncClient):
     event_id = create.json()["id"]
     resp = await client.patch(
         f"/api/v1/projects/ev-upd/events/{event_id}",
-        json={"name": "New Name"},
+        json={"name": "New Name", "metric_breakdown_columns": ["country"]},
     )
     assert resp.status_code == 200
     assert resp.json()["name"] == "New Name"
+    assert resp.json()["metric_breakdown_columns"] == ["country"]
 
 
 @pytest.mark.asyncio

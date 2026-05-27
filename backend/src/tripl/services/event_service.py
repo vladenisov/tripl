@@ -152,6 +152,7 @@ async def create_event(session: AsyncSession, slug: str, data: EventCreate) -> E
         implemented=data.implemented,
         reviewed=data.reviewed,
         archived=data.archived,
+        metric_breakdown_columns=data.metric_breakdown_columns,
     )
     session.add(event)
     await session.flush()
@@ -197,6 +198,8 @@ async def update_event(
         event.reviewed = update_data["reviewed"]
     if "archived" in update_data:
         event.archived = update_data["archived"]
+    if "metric_breakdown_columns" in update_data:
+        event.metric_breakdown_columns = update_data["metric_breakdown_columns"]
 
     # Replace child rows via a single DELETE+INSERT-batch per relation, instead
     # of `await session.delete(row)` per existing child (was ~N round-trips).
@@ -387,6 +390,7 @@ async def bulk_create_events(
                 implemented=data.implemented,
                 reviewed=data.reviewed,
                 archived=data.archived,
+                metric_breakdown_columns=data.metric_breakdown_columns,
             )
         )
     session.add_all(events)

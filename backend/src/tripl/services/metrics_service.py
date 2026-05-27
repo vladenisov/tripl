@@ -473,14 +473,29 @@ async def get_event_metric_breakdowns(
         project.id,
         event_id=event.id,
     )
+    event_columns = list(dict.fromkeys(event.metric_breakdown_columns or []))
     if scan_config_id is None:
-        return EventMetricBreakdownsResponse(event_id=event.id, columns=[], series=[])
+        if column is not None and column not in event_columns:
+            raise HTTPException(400, "Breakdown column is not configured for this event")
+        return EventMetricBreakdownsResponse(
+            event_id=event.id,
+            columns=event_columns,
+            selected_column=column if column in event_columns else None,
+            series=[],
+        )
 
     config = await session.get(ScanConfig, scan_config_id)
     if config is None or config.project_id != project.id:
-        return EventMetricBreakdownsResponse(event_id=event.id, columns=[], series=[])
+        if column is not None and column not in event_columns:
+            raise HTTPException(400, "Breakdown column is not configured for this event")
+        return EventMetricBreakdownsResponse(
+            event_id=event.id,
+            columns=event_columns,
+            selected_column=column if column in event_columns else None,
+            series=[],
+        )
 
-    columns = list(config.metric_breakdown_columns or [])
+    columns = list(dict.fromkeys([*(config.metric_breakdown_columns or []), *event_columns]))
     if not columns:
         return EventMetricBreakdownsResponse(
             event_id=event.id,
@@ -491,7 +506,7 @@ async def get_event_metric_breakdowns(
         )
 
     if column is not None and column not in columns:
-        raise HTTPException(400, "Breakdown column is not configured for this scan")
+        raise HTTPException(400, "Breakdown column is not configured for this event")
 
     selected_column = column
     if selected_column is None:
@@ -1250,7 +1265,8 @@ async def get_breakdown_timeline(
             .where(
                 EventMetricBreakdown.scan_config_id == scan_config_id,
                 EventMetricBreakdown.event_id.is_(None),
-                EventMetricBreakdown.event_type_id == _parse_scope_uuid(scope_ref, label="scope_ref"),
+                EventMetricBreakdown.event_type_id
+                == _parse_scope_uuid(scope_ref, label="scope_ref"),
                 EventMetricBreakdown.breakdown_column == breakdown_column,
                 EventMetricBreakdown.breakdown_value == breakdown_value,
                 EventMetricBreakdown.is_other.is_(is_other),

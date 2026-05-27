@@ -483,23 +483,49 @@ def _collect_metric_breakdown_rows(
     et_col_idx = reg_index.get(config.event_type_column) if config.event_type_column else None
 
     breakdown_columns: list[str] = []
+    scan_breakdown_column_set: set[str] = set()
+    event_breakdown_columns_by_event_id: dict[uuid.UUID, set[str]] = {}
     seen_breakdown_columns: set[str] = set()
-    for configured_column in config.metric_breakdown_columns or []:
-        if configured_column in seen_breakdown_columns:
-            continue
-        seen_breakdown_columns.add(configured_column)
+    unsupported_breakdown_columns: set[str] = set()
+
+    def add_supported_column(configured_column: str, *, source: str) -> bool:
         if _is_supported_metric_breakdown_column(
             config,
             column=configured_column,
             regular_cols=regular_cols,
         ):
-            breakdown_columns.append(configured_column)
+            if configured_column not in seen_breakdown_columns:
+                breakdown_columns.append(configured_column)
+                seen_breakdown_columns.add(configured_column)
+            return True
+        if configured_column not in unsupported_breakdown_columns:
+            logger.warning(
+                "Skipping unsupported metric breakdown column %r for scan %s (%s)",
+                configured_column,
+                config.id,
+                source,
+            )
+            unsupported_breakdown_columns.add(configured_column)
+        return False
+
+    for configured_column in config.metric_breakdown_columns or []:
+        if configured_column in scan_breakdown_column_set:
             continue
-        logger.warning(
-            "Skipping unsupported metric breakdown column %r for scan %s",
-            configured_column,
-            config.id,
-        )
+        if add_supported_column(configured_column, source="scan_config"):
+            scan_breakdown_column_set.add(configured_column)
+
+    generation_results: list[GenerationResult] = []
+    if single_result is not None:
+        generation_results.append(single_result)
+    generation_results.extend(gen_results.values())
+    for generation_result in generation_results:
+        for event in generation_result.events_by_name.values():
+            event_columns: set[str] = set()
+            for configured_column in event.metric_breakdown_columns or []:
+                if add_supported_column(configured_column, source=f"event:{event.id}"):
+                    event_columns.add(configured_column)
+            if event_columns:
+                event_breakdown_columns_by_event_id[event.id] = event_columns
 
     if not breakdown_columns:
         return [], []
@@ -561,9 +587,16 @@ def _collect_metric_breakdown_rows(
             config.event_name_format,
         )
 
+        scan_wide_column = breakdown_column in scan_breakdown_column_set
+
         if event_name:
             ev = events_by_name.get(event_name)
-            if isinstance(ev, Event):
+            event_columns = (
+                event_breakdown_columns_by_event_id.get(ev.id, set())
+                if isinstance(ev, Event)
+                else set()
+            )
+            if isinstance(ev, Event) and (scan_wide_column or breakdown_column in event_columns):
                 key = (
                     config.id,
                     ev.id,
@@ -574,7 +607,7 @@ def _collect_metric_breakdown_rows(
                 )
                 event_agg[key] = event_agg.get(key, 0) + cnt
 
-        if event_type_id:
+        if event_type_id and scan_wide_column:
             key = (
                 config.id,
                 event_type_id,

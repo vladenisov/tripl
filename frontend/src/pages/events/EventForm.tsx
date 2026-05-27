@@ -19,6 +19,18 @@ import { META_FIELD_LINK_PLACEHOLDER } from '@/lib/metaFields'
 import { JsonEditor } from './JsonEditor'
 import { VariableInput } from './VariableInput'
 
+function parseMetricBreakdownColumns(value: string): string[] {
+  const seen = new Set<string>()
+  return value
+    .split(',')
+    .map(column => column.trim())
+    .filter(column => {
+      if (!column || seen.has(column)) return false
+      seen.add(column)
+      return true
+    })
+}
+
 export function EventForm({
   slug,
   eventTypes,
@@ -41,6 +53,9 @@ export function EventForm({
   const [name, setName] = useState(event?.name ?? '')
   const [description, setDescription] = useState(event?.description ?? '')
   const [implemented, setImplemented] = useState(event?.implemented ?? false)
+  const [metricBreakdownInput, setMetricBreakdownInput] = useState(
+    event?.metric_breakdown_columns?.join(', ') ?? '',
+  )
   const [tags, setTags] = useState<string[]>(event?.tags?.map(t => t.name) ?? [])
   const [tagInput, setTagInput] = useState('')
   const [fieldValues, setFieldValues] = useState<Record<string, string>>(() => {
@@ -61,6 +76,10 @@ export function EventForm({
   const varSuggestions = useMemo(() => {
     return projectVariables.map(v => ({ name: v.name, label: v.description || v.name }))
   }, [projectVariables])
+  const metricBreakdownColumns = useMemo(
+    () => parseMetricBreakdownColumns(metricBreakdownInput),
+    [metricBreakdownInput],
+  )
 
   const createMut = useMutation({
     mutationFn: () => {
@@ -69,6 +88,7 @@ export function EventForm({
         name,
         description,
         implemented,
+        metric_breakdown_columns: metricBreakdownColumns,
         tags,
         field_values: Object.entries(fieldValues)
           .filter(([, v]) => v !== '')
@@ -129,6 +149,24 @@ export function EventForm({
                 onCheckedChange={c => setImplemented(!!c)}
               />
               <Label htmlFor="form-impl" className="text-sm cursor-pointer">Implemented</Label>
+            </div>
+
+            <div className="grid gap-2">
+              <Label>Metric breakdown columns</Label>
+              <Input
+                value={metricBreakdownInput}
+                onChange={e => setMetricBreakdownInput(e.target.value)}
+                placeholder="country, platform"
+              />
+              {metricBreakdownColumns.length > 0 && (
+                <div className="flex flex-wrap gap-1">
+                  {metricBreakdownColumns.map(column => (
+                    <Badge key={column} variant="outline" className="font-mono text-[11px]">
+                      {column}
+                    </Badge>
+                  ))}
+                </div>
+              )}
             </div>
 
             {/* Tags */}

@@ -695,6 +695,143 @@ def test_collect_metrics_uses_database_grouped_breakdown_rows(
         }
 
 
+def test_collect_metrics_uses_event_level_breakdown_columns(
+    sync_session_factory: sessionmaker[Session],
+    monkeypatch: MonkeyPatch,
+) -> None:
+    with sync_session_factory() as session:
+        config = _create_scan_config(session, with_event_type=True)
+        assert config.event_type_id is not None
+        login_event = Event(
+            id=uuid.uuid4(),
+            project_id=config.project_id,
+            event_type_id=config.event_type_id,
+            name="event_name=Login",
+            description="",
+            implemented=True,
+            reviewed=True,
+            archived=False,
+            metric_breakdown_columns=["country"],
+        )
+        signup_event = Event(
+            id=uuid.uuid4(),
+            project_id=config.project_id,
+            event_type_id=config.event_type_id,
+            name="event_name=Signup",
+            description="",
+            implemented=True,
+            reviewed=True,
+            archived=False,
+        )
+        session.add_all([login_event, signup_event])
+        session.commit()
+        config_id = str(config.id)
+        login_event_id = login_event.id
+        signup_event_id = signup_event.id
+
+    class FakeAdapter:
+        def __init__(self) -> None:
+            self.breakdown_calls: list[tuple[list[str], int | None]] = []
+
+        def test_connection(self) -> bool:
+            return True
+
+        def get_columns(self, base_query: str) -> list[ColumnInfo]:
+            return [
+                ColumnInfo(name="time", type_name="DateTime"),
+                ColumnInfo(name="event_name", type_name="String"),
+                ColumnInfo(name="country", type_name="String"),
+            ]
+
+        def get_time_bucketed_counts(
+            self,
+            base_query: str,
+            time_column: str,
+            ch_interval: str,
+            regular_columns: list[str],
+            json_columns: list[str],
+            json_value_paths: dict[str, list[str]] | None,
+            time_from: datetime,
+            time_to: datetime,
+            limit: int = 100000,
+        ) -> tuple[list[str], list[str], list[tuple[object, ...]]]:
+            return (
+                ["event_name", "country"],
+                [],
+                [
+                    (datetime(2026, 1, 1, 10), "Login", "US", 7),
+                    (datetime(2026, 1, 1, 10), "Signup", "US", 11),
+                ],
+            )
+
+        def get_time_bucketed_breakdown_counts_multi(
+            self,
+            base_query: str,
+            time_column: str,
+            ch_interval: str,
+            breakdown_columns: list[str],
+            regular_columns: list[str],
+            json_columns: list[str],
+            json_value_paths: dict[str, list[str]] | None,
+            time_from: datetime,
+            time_to: datetime,
+            values_limit: int | None = None,
+            limit: int = 100000,
+        ) -> tuple[list[str], list[str], list[tuple[object, ...]]]:
+            self.breakdown_calls.append((breakdown_columns, values_limit))
+            return (
+                ["event_name", "country"],
+                [],
+                [
+                    (datetime(2026, 1, 1, 10), "country", "US", False, "Login", "US", 7),
+                    (datetime(2026, 1, 1, 10), "country", "US", False, "Signup", "US", 11),
+                ],
+            )
+
+        def close(self) -> None:
+            return None
+
+    adapter = FakeAdapter()
+    monkeypatch.setattr(metrics, "_get_sync_session", sync_session_factory)
+    monkeypatch.setattr(metrics, "_build_adapter", lambda ds: adapter)
+    monkeypatch.setattr(
+        metrics,
+        "_resolve_collection_window",
+        lambda *args, **kwargs: (datetime(2026, 1, 1, 10), datetime(2026, 1, 1, 11), False),
+    )
+    monkeypatch.setattr(metrics, "analyze_cardinality", lambda *args, **kwargs: object())
+
+    def fake_generate_events(*args: object, **kwargs: object) -> GenerationResult:
+        with sync_session_factory() as session:
+            login = session.get(Event, login_event_id)
+            signup = session.get(Event, signup_event_id)
+            assert login is not None
+            assert signup is not None
+            return GenerationResult(
+                columns_analyzed=1,
+                col_meta={"event_name": {"is_json": False, "is_low": True}},
+                events_by_name={
+                    "event_name=Login": login,
+                    "event_name=Signup": signup,
+                },
+            )
+
+    monkeypatch.setattr(metrics, "generate_events", fake_generate_events)
+
+    result = metrics.collect_metrics.run(config_id)
+
+    assert adapter.breakdown_calls == [(["country"], None)]
+    assert result["breakdown_event_metrics"] == 1
+    assert result["breakdown_type_metrics"] == 0
+
+    with sync_session_factory() as session:
+        event_breakdowns = session.execute(select(EventMetricBreakdown)).scalars().all()
+        assert [
+            (row.event_id, row.breakdown_column, row.breakdown_value, row.count)
+            for row in event_breakdowns
+        ] == [(login_event_id, "country", "US", 7)]
+
+
 def test_collect_metrics_writes_distribution_drift_rows(
     sync_session_factory: sessionmaker[Session],
     monkeypatch: MonkeyPatch,

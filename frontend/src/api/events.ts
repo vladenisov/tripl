@@ -21,18 +21,21 @@ export const eventsApi = {
   create: (slug: string, data: {
     event_type_id: string; name: string; description?: string;
     implemented?: boolean; reviewed?: boolean; tags?: string[];
+    metric_breakdown_columns?: string[];
     field_values?: { field_definition_id: string; value: string }[];
     meta_values?: { meta_field_definition_id: string; value: string }[];
   }) => api.post<Event>(`/projects/${slug}/events`, data),
   update: (slug: string, id: string, data: {
     name?: string; description?: string;
     implemented?: boolean; reviewed?: boolean; archived?: boolean; tags?: string[];
+    metric_breakdown_columns?: string[];
     field_values?: { field_definition_id: string; value: string }[];
     meta_values?: { meta_field_definition_id: string; value: string }[];
   }) => api.patch<Event>(`/projects/${slug}/events/${id}`, data),
   del: (slug: string, id: string) => api.del(`/projects/${slug}/events/${id}`),
   bulkCreate: (slug: string, data: {
     event_type_id: string; name: string;
+    metric_breakdown_columns?: string[];
     field_values?: { field_definition_id: string; value: string }[];
     meta_values?: { meta_field_definition_id: string; value: string }[];
   }[]) => api.post<Event[]>(`/projects/${slug}/events/bulk`, data),
