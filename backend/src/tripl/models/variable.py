@@ -8,6 +8,7 @@ from sqlalchemy import ForeignKey, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from tripl.models.base import Base, UUIDMixin
+from tripl.models.plan_branch import default_branch_id
 
 if TYPE_CHECKING:
     from tripl.models.project import Project
@@ -27,11 +28,16 @@ class VariableType(enum.StrEnum):
 class Variable(UUIDMixin, Base):
     __tablename__ = "variables"
     __table_args__ = (
-        UniqueConstraint("project_id", "name", name="uq_variable_project_name"),
-        UniqueConstraint("project_id", "source_name", name="uq_variable_project_source_name"),
+        UniqueConstraint("project_id", "branch_id", "name", name="uq_variable_project_name"),
+        UniqueConstraint(
+            "project_id", "branch_id", "source_name", name="uq_variable_project_source_name"
+        ),
     )
 
     project_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"))
+    branch_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("plan_branches.id", ondelete="CASCADE"), index=True, default=default_branch_id
+    )
     name: Mapped[str] = mapped_column(String(100))
     source_name: Mapped[str | None] = mapped_column(String(100), nullable=True)
     variable_type: Mapped[str] = mapped_column(String(20), default=VariableType.string.value)

@@ -8,28 +8,34 @@ from tripl.models.event import Event
 from tripl.models.event_field_value import EventFieldValue
 from tripl.models.variable import Variable
 from tripl.schemas.variable import VariableCreate, VariableUpdate
+from tripl.services.plan_branch_service import ensure_main_branch_id
 from tripl.services.project_service import get_project_id_by_slug
 
 
 async def list_variables(session: AsyncSession, slug: str) -> list[Variable]:
     project_id = await get_project_id_by_slug(session, slug)
+    branch_id = await ensure_main_branch_id(session, project_id)
     result = await session.execute(
-        select(Variable).where(Variable.project_id == project_id).order_by(Variable.name)
+        select(Variable)
+        .where(Variable.project_id == project_id, Variable.branch_id == branch_id)
+        .order_by(Variable.name)
     )
     return list(result.scalars().all())
 
 
 async def create_variable(session: AsyncSession, slug: str, data: VariableCreate) -> Variable:
     project_id = await get_project_id_by_slug(session, slug)
+    branch_id = await ensure_main_branch_id(session, project_id)
     existing = await session.execute(
         select(Variable).where(
             Variable.project_id == project_id,
+            Variable.branch_id == branch_id,
             Variable.name == data.name,
         )
     )
     if existing.scalar_one_or_none():
         raise HTTPException(status_code=409, detail="Variable with this name already exists")
-    var = Variable(**data.model_dump(), project_id=project_id)
+    var = Variable(**data.model_dump(), project_id=project_id, branch_id=branch_id)
     session.add(var)
     await session.commit()
     await session.refresh(var)
@@ -40,10 +46,12 @@ async def update_variable(
     session: AsyncSession, slug: str, variable_id: uuid.UUID, data: VariableUpdate
 ) -> Variable:
     project_id = await get_project_id_by_slug(session, slug)
+    branch_id = await ensure_main_branch_id(session, project_id)
     result = await session.execute(
         select(Variable).where(
             Variable.id == variable_id,
             Variable.project_id == project_id,
+            Variable.branch_id == branch_id,
         )
     )
     var = result.scalar_one_or_none()
@@ -54,6 +62,7 @@ async def update_variable(
         dup = await session.execute(
             select(Variable).where(
                 Variable.project_id == project_id,
+                Variable.branch_id == branch_id,
                 Variable.name == update_data["name"],
             )
         )
@@ -72,6 +81,7 @@ async def update_variable(
             .join(Event, EventFieldValue.event_id == Event.id)
             .where(
                 Event.project_id == project_id,
+                Event.branch_id == branch_id,
                 EventFieldValue.value.contains(old_ref),
             )
         )
@@ -87,10 +97,12 @@ async def update_variable(
 
 async def delete_variable(session: AsyncSession, slug: str, variable_id: uuid.UUID) -> None:
     project_id = await get_project_id_by_slug(session, slug)
+    branch_id = await ensure_main_branch_id(session, project_id)
     result = await session.execute(
         select(Variable).where(
             Variable.id == variable_id,
             Variable.project_id == project_id,
+            Variable.branch_id == branch_id,
         )
     )
     var = result.scalar_one_or_none()

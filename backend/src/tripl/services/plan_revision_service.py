@@ -21,6 +21,7 @@ from tripl.models.event import Event
 from tripl.models.event_type import EventType
 from tripl.models.event_type_relation import EventTypeRelation
 from tripl.models.meta_field_definition import MetaFieldDefinition
+from tripl.models.plan_branch import BranchKind, PlanBranch
 from tripl.models.plan_revision import PlanRevision
 from tripl.models.project import Project
 from tripl.models.variable import Variable
@@ -72,13 +73,30 @@ async def _resolve_project(session: AsyncSession, slug: str) -> Project:
     return project
 
 
-async def build_plan_snapshot(session: AsyncSession, project_id: uuid.UUID) -> dict[str, Any]:
-    """Construct a deterministic JSON snapshot of the project schema."""
+async def build_plan_snapshot(
+    session: AsyncSession,
+    project_id: uuid.UUID,
+    branch_id: uuid.UUID | None = None,
+) -> dict[str, Any]:
+    """Construct a deterministic JSON snapshot of the project schema.
+
+    Scoped to a single branch. When ``branch_id`` is omitted it resolves the
+    project's main branch (the live plan), so existing callers keep snapshotting
+    main unchanged.
+    """
+    if branch_id is None:
+        branch_id = await session.scalar(
+            select(PlanBranch.id).where(
+                PlanBranch.project_id == project_id,
+                PlanBranch.kind == BranchKind.main.value,
+            )
+        )
+
     event_types_rows = (
         (
             await session.execute(
                 select(EventType)
-                .where(EventType.project_id == project_id)
+                .where(EventType.project_id == project_id, EventType.branch_id == branch_id)
                 .options(selectinload(EventType.field_definitions))
                 .order_by(EventType.name)
             )
@@ -120,7 +138,9 @@ async def build_plan_snapshot(session: AsyncSession, project_id: uuid.UUID) -> d
     events_rows = (
         (
             await session.execute(
-                select(Event).where(Event.project_id == project_id).order_by(Event.name)
+                select(Event)
+                .where(Event.project_id == project_id, Event.branch_id == branch_id)
+                .order_by(Event.name)
             )
         )
         .scalars()
@@ -144,7 +164,9 @@ async def build_plan_snapshot(session: AsyncSession, project_id: uuid.UUID) -> d
     variables_rows = (
         (
             await session.execute(
-                select(Variable).where(Variable.project_id == project_id).order_by(Variable.name)
+                select(Variable)
+                .where(Variable.project_id == project_id, Variable.branch_id == branch_id)
+                .order_by(Variable.name)
             )
         )
         .scalars()
@@ -165,7 +187,10 @@ async def build_plan_snapshot(session: AsyncSession, project_id: uuid.UUID) -> d
         (
             await session.execute(
                 select(MetaFieldDefinition)
-                .where(MetaFieldDefinition.project_id == project_id)
+                .where(
+                    MetaFieldDefinition.project_id == project_id,
+                    MetaFieldDefinition.branch_id == branch_id,
+                )
                 .order_by(MetaFieldDefinition.name)
             )
         )
@@ -192,7 +217,10 @@ async def build_plan_snapshot(session: AsyncSession, project_id: uuid.UUID) -> d
         (
             await session.execute(
                 select(EventTypeRelation)
-                .where(EventTypeRelation.project_id == project_id)
+                .where(
+                    EventTypeRelation.project_id == project_id,
+                    EventTypeRelation.branch_id == branch_id,
+                )
                 .options(
                     selectinload(EventTypeRelation.source_event_type),
                     selectinload(EventTypeRelation.target_event_type),

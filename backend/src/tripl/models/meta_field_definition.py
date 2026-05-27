@@ -8,6 +8,7 @@ from sqlalchemy import Boolean, ForeignKey, Integer, String, Text, UniqueConstra
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from tripl.models.base import Base, UUIDMixin
+from tripl.models.plan_branch import default_branch_id
 
 if TYPE_CHECKING:
     from tripl.models.project import Project
@@ -16,10 +17,15 @@ if TYPE_CHECKING:
 class MetaFieldDefinition(UUIDMixin, Base):
     __tablename__ = "meta_field_definitions"
     __table_args__ = (
-        UniqueConstraint("project_id", "name", name="uq_meta_field_def_project_name"),
+        UniqueConstraint(
+            "project_id", "branch_id", "name", name="uq_meta_field_def_project_name"
+        ),
     )
 
     project_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"))
+    branch_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("plan_branches.id", ondelete="CASCADE"), index=True, default=default_branch_id
+    )
     name: Mapped[str] = mapped_column(String(100))
     display_name: Mapped[str] = mapped_column(String(255))
     field_type: Mapped[str] = mapped_column(String(20))  # string, url, boolean, enum, date

@@ -20,6 +20,7 @@ from tripl.schemas.event import (
     EventReorder,
     EventUpdate,
 )
+from tripl.services.plan_branch_service import ensure_main_branch_id
 from tripl.services.project_service import get_project_id_by_slug
 from tripl.services.schema_drift_service import get_drift_counts_by_event_type
 
@@ -57,10 +58,17 @@ async def list_events(
     silent_since_days: int | None = None,
 ) -> tuple[list[Event], int]:
     project_id = await get_project_id_by_slug(session, slug)
+    branch_id = await ensure_main_branch_id(session, project_id)
     # Skip the selectin load for Event.event_type — the list response schema
     # ships only event_type_id, and the client already has EventTypes cached.
-    query = select(Event).where(Event.project_id == project_id).options(noload(Event.event_type))
-    count_query = select(func.count(Event.id)).where(Event.project_id == project_id)
+    query = (
+        select(Event)
+        .where(Event.project_id == project_id, Event.branch_id == branch_id)
+        .options(noload(Event.event_type))
+    )
+    count_query = select(func.count(Event.id)).where(
+        Event.project_id == project_id, Event.branch_id == branch_id
+    )
 
     if event_type_id:
         query = query.where(Event.event_type_id == event_type_id)
@@ -109,19 +117,24 @@ async def list_events(
     return events, total
 
 
-async def _get_next_event_order(session: AsyncSession, project_id: uuid.UUID) -> int:
+async def _get_next_event_order(
+    session: AsyncSession, project_id: uuid.UUID, branch_id: uuid.UUID
+) -> int:
     max_order = await session.scalar(
-        select(func.max(Event.order)).where(Event.project_id == project_id)
+        select(func.max(Event.order)).where(
+            Event.project_id == project_id, Event.branch_id == branch_id
+        )
     )
     return int(max_order or 0) + 1 if max_order is not None else 0
 
 
 async def list_tags(session: AsyncSession, slug: str) -> list[str]:
     project_id = await get_project_id_by_slug(session, slug)
+    branch_id = await ensure_main_branch_id(session, project_id)
     result = await session.execute(
         select(EventTag.name)
         .join(Event, EventTag.event_id == Event.id)
-        .where(Event.project_id == project_id)
+        .where(Event.project_id == project_id, Event.branch_id == branch_id)
         .distinct()
         .order_by(EventTag.name)
     )
@@ -130,8 +143,13 @@ async def list_tags(session: AsyncSession, slug: str) -> list[str]:
 
 async def get_event(session: AsyncSession, slug: str, event_id: uuid.UUID) -> Event:
     project_id = await get_project_id_by_slug(session, slug)
+    branch_id = await ensure_main_branch_id(session, project_id)
     result = await session.execute(
-        select(Event).where(Event.id == event_id, Event.project_id == project_id)
+        select(Event).where(
+            Event.id == event_id,
+            Event.project_id == project_id,
+            Event.branch_id == branch_id,
+        )
     )
     event = result.scalar_one_or_none()
     if not event:
@@ -141,14 +159,16 @@ async def get_event(session: AsyncSession, slug: str, event_id: uuid.UUID) -> Ev
 
 async def create_event(session: AsyncSession, slug: str, data: EventCreate) -> Event:
     project_id = await get_project_id_by_slug(session, slug)
+    branch_id = await ensure_main_branch_id(session, project_id)
     await _validate_field_values(session, data.event_type_id, data.field_values)
 
     event = Event(
         project_id=project_id,
+        branch_id=branch_id,
         event_type_id=data.event_type_id,
         name=data.name,
         description=data.description,
-        order=await _get_next_event_order(session, project_id),
+        order=await _get_next_event_order(session, project_id, branch_id),
         implemented=data.implemented,
         reviewed=data.reviewed,
         archived=data.archived,
@@ -259,10 +279,12 @@ async def bulk_delete_events(
     data: EventBulkDelete,
 ) -> None:
     project_id = await get_project_id_by_slug(session, slug)
-    # Validate all ids exist + belong to this project in a single count query.
+    branch_id = await ensure_main_branch_id(session, project_id)
+    # Validate all ids exist + belong to this project+branch in a single count query.
     present = await session.scalar(
         select(func.count(Event.id)).where(
             Event.project_id == project_id,
+            Event.branch_id == branch_id,
             Event.id.in_(data.event_ids),
         )
     )
@@ -273,6 +295,7 @@ async def bulk_delete_events(
     await session.execute(
         delete(Event).where(
             Event.project_id == project_id,
+            Event.branch_id == branch_id,
             Event.id.in_(data.event_ids),
         )
     )
@@ -288,7 +311,9 @@ async def move_event(
 ) -> Event:
     event = await get_event(session, slug, event_id)
 
-    query = select(Event).where(Event.project_id == event.project_id)
+    query = select(Event).where(
+        Event.project_id == event.project_id, Event.branch_id == event.branch_id
+    )
     if data.visible_event_ids:
         query = query.where(Event.id.in_(data.visible_event_ids))
 
@@ -318,10 +343,12 @@ async def reorder_events(
     data: EventReorder,
 ) -> list[Event]:
     project_id = await get_project_id_by_slug(session, slug)
+    branch_id = await ensure_main_branch_id(session, project_id)
 
     result = await session.execute(
         select(Event).where(
             Event.project_id == project_id,
+            Event.branch_id == branch_id,
             Event.id.in_(data.event_ids),
         )
     )
@@ -349,6 +376,7 @@ async def bulk_create_events(
         return []
 
     project_id = await get_project_id_by_slug(session, slug)
+    branch_id = await ensure_main_branch_id(session, project_id)
 
     # Batched per-event-type validation: one SELECT per unique event_type_id, then
     # per-event check using the cached field definitions.
@@ -376,13 +404,14 @@ async def bulk_create_events(
                 )
 
     # One SELECT max(order) instead of N — we assign consecutive orders ourselves.
-    base_order = await _get_next_event_order(session, project_id)
+    base_order = await _get_next_event_order(session, project_id, branch_id)
 
     events: list[Event] = []
     for i, data in enumerate(events_data):
         events.append(
             Event(
                 project_id=project_id,
+                branch_id=branch_id,
                 event_type_id=data.event_type_id,
                 name=data.name,
                 description=data.description,

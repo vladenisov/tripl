@@ -22,6 +22,7 @@ from tripl.schemas.project import (
     ProjectSummary,
     ProjectUpdate,
 )
+from tripl.services import plan_branch_service
 from tripl.services.monitoring_utils import classify_signal_state
 from tripl.worker.analyzers.anomaly_detector import (
     SCOPE_EVENT,
@@ -422,6 +423,10 @@ async def create_project(session: AsyncSession, data: ProjectCreate) -> ProjectR
         raise HTTPException(status_code=409, detail="Project with this slug already exists")
     project = Project(**data.model_dump())
     session.add(project)
+    await session.flush()
+    # Every project owns one main branch (the live plan); create it up front so
+    # branch_id resolution on plan entities is a plain read thereafter.
+    await plan_branch_service.ensure_main_branch_id(session, project.id)
     await session.commit()
     await session.refresh(project)
     await cache.delete_prefix(cache.prefix_projects())
