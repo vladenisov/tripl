@@ -57,6 +57,10 @@ class ScanConfig(UUIDMixin, TimestampMixin, Base):
     )
     cardinality_threshold: Mapped[int] = mapped_column(Integer, default=100)
     interval: Mapped[str | None] = mapped_column(String(10), nullable=True)
+    # Splits the metrics collection window into interval-aligned chunks so a long
+    # replay runs several bounded warehouse queries instead of one that times out.
+    # Must be >= ``interval``; NULL means "scan the whole window in one query".
+    replay_chunk_interval: Mapped[str | None] = mapped_column(String(10), nullable=True)
     anomaly_detection_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
     detect_project_total: Mapped[bool] = mapped_column(Boolean, default=True)
     detect_event_types: Mapped[bool] = mapped_column(Boolean, default=True)

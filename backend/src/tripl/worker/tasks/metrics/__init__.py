@@ -166,6 +166,39 @@ def _resolve_collection_window(
     return time_from, time_to, False
 
 
+def _iter_window_chunks(
+    time_from: datetime,
+    time_to: datetime,
+    *,
+    interval_delta: timedelta,
+    chunk_interval_code: str | None,
+) -> list[tuple[datetime, datetime]]:
+    """Split ``[time_from, time_to)`` into interval-aligned sub-windows.
+
+    Each chunk spans ``chunk_interval_code`` worth of wall-clock, rounded down to
+    a whole number of buckets (never below one bucket). This bounds the per-query
+    range so a long replay runs several queries instead of one that times out.
+    ``chunk_interval_code`` of ``None`` keeps the legacy single-query behavior.
+    Boundaries stay interval-aligned because ``time_from``/``time_to`` are already
+    floored/ceiled to the interval and the step is a whole multiple of it, so no
+    bucket is ever split across two chunks.
+    """
+    if chunk_interval_code is None or time_from >= time_to:
+        return [(time_from, time_to)]
+
+    chunk_delta = get_interval(chunk_interval_code).delta
+    buckets_per_chunk = max(1, int(chunk_delta // interval_delta))
+    step = interval_delta * buckets_per_chunk
+
+    chunks: list[tuple[datetime, datetime]] = []
+    cursor = time_from
+    while cursor < time_to:
+        chunk_to = min(cursor + step, time_to)
+        chunks.append((cursor, chunk_to))
+        cursor = chunk_to
+    return chunks
+
+
 def _ensure_event_type_with_fields(
     session: Session,
     project_id: uuid.UUID,
@@ -998,50 +1031,29 @@ def collect_metrics(
             manual_time_to=time_to,
         )
 
+        chunks = _iter_window_chunks(
+            time_from_dt,
+            time_to_dt,
+            interval_delta=delta,
+            chunk_interval_code=config.replay_chunk_interval,
+        )
         logger.info(
             f"Collecting metrics: {time_from_dt.isoformat()} to {time_to_dt.isoformat()}, "
-            f"interval={config.interval}, replay={is_replay}"
+            f"interval={config.interval}, replay={is_replay}, "
+            f"chunk={config.replay_chunk_interval or 'whole-window'} "
+            f"({len(chunks)} sub-window(s))"
         )
 
-        # Split columns for the CH query (same split as cardinality.py uses)
+        # Split columns for the warehouse query (same split as cardinality.py uses)
         regular_cols = [c.name for c in columns if not _is_json_type(c.type_name)]
         json_cols = [c.name for c in columns if _is_json_type(c.type_name)]
 
-        col_names, json_value_names, rows = adapter.get_time_bucketed_counts(
-            config.base_query,
-            config.time_column,
-            interval_spec.ch_interval,
-            regular_cols,
-            json_cols,
-            json_value_path_map,
-            time_from_dt,
-            time_to_dt,
-        )
-        logger.info(f"Got {len(rows)} bucketed rows from ClickHouse")
-
-        metrics_deleted = _delete_event_metrics_window(
-            session,
-            scan_config_id=config.id,
-            time_from=time_from_dt,
-            time_to=time_to_dt,
-        )
-        breakdown_metrics_deleted = _delete_event_metric_breakdowns_window(
-            session,
-            scan_config_id=config.id,
-            time_from=time_from_dt,
-            time_to=time_to_dt,
-        )
-        distribution_drifts_deleted = _delete_distribution_drifts_window(
-            session,
-            scan_config_id=config.id,
-            time_from=time_from_dt,
-            time_to=time_to_dt,
-        )
-
-        # Build indices for row navigation (same layout as BreakdownAnalysis)
+        # Build indices for row navigation (same layout as BreakdownAnalysis).
+        # These do not depend on the time window, so compute them once.
         reg_index = {name: i for i, name in enumerate(regular_cols)}
         json_index = {name: i for i, name in enumerate(json_cols)}
         n_reg = len(regular_cols)
+        et_col_idx = reg_index.get(config.event_type_column) if config.event_type_column else None
 
         # Event type lookup (for grouped mode)
         et_by_name: dict[str, EventType] = {}
@@ -1072,211 +1084,214 @@ def collect_metrics(
             total_cols = max(total_cols, gr.columns_analyzed)
             all_details.extend(gr.details)
 
-        if not rows:
-            anomalies_detected = _recalculate_metric_anomalies(
-                session,
-                config,
-                evaluation_start=time_from_dt,
-                evaluation_end=time_to_dt,
+        # Per-chunk accumulators. Each chunk runs its own bounded warehouse query,
+        # delete, and UPSERT so a long replay never scans the whole range at once.
+        metrics_deleted = 0
+        breakdown_metrics_deleted = 0
+        distribution_drifts_deleted = 0
+        n_ev = 0
+        n_tp = 0
+        n_breakdown_ev = 0
+        n_breakdown_tp = 0
+        n_distribution_drifts = 0
+        significant_distribution_drifts = 0
+
+        for chunk_from, chunk_to in chunks:
+            _col_names, json_value_names, rows = adapter.get_time_bucketed_counts(
+                config.base_query,
+                config.time_column,
+                interval_spec.ch_interval,
+                regular_cols,
+                json_cols,
+                json_value_path_map,
+                chunk_from,
+                chunk_to,
             )
-            breakdown_anomalies_detected = _recalculate_metric_breakdown_anomalies(
-                session,
-                config,
-                evaluation_start=time_from_dt,
-                evaluation_end=time_to_dt,
+            logger.info(
+                "Got %s bucketed rows from warehouse for %s..%s",
+                len(rows),
+                chunk_from.isoformat(),
+                chunk_to.isoformat(),
             )
-            delivery_ids = _prepare_alert_deliveries(
+
+            metrics_deleted += _delete_event_metrics_window(
                 session,
-                config,
-                scan_job_id=job.id if job else None,
+                scan_config_id=config.id,
+                time_from=chunk_from,
+                time_to=chunk_to,
             )
-            visible_signals_after = _get_visible_signal_scope_keys(session, config.id)
-            signals_added = len(visible_signals_after - visible_signals_before)
-            signals_removed = len(visible_signals_before - visible_signals_after)
-            result_summary: dict[str, object] = {
-                "mode": "metrics_replay" if is_replay else "metrics_collection",
-                "time_from": time_from_dt.isoformat(),
-                "time_to": time_to_dt.isoformat(),
-                "events_created": total_created,
-                "events_skipped": total_skipped,
-                "variables_created": total_vars,
-                "columns_analyzed": total_cols,
-                "event_metrics": 0,
-                "type_metrics": 0,
-                "breakdown_event_metrics": 0,
-                "breakdown_type_metrics": 0,
-                "metrics_deleted": metrics_deleted,
-                "breakdown_metrics_deleted": breakdown_metrics_deleted,
-                "distribution_drifts": 0,
-                "significant_distribution_drifts": 0,
-                "distribution_drifts_deleted": distribution_drifts_deleted,
-                "anomalies_detected": anomalies_detected,
-                "breakdown_anomalies_detected": breakdown_anomalies_detected,
-                "signals_added": signals_added,
-                "signals_removed": signals_removed,
-                "alerts_queued": len(delivery_ids),
-                "details": all_details,
-            }
-            if job:
-                job.status = ScanJobStatus.completed.value
-                job.completed_at = datetime.now(UTC)
-                job.result_summary = result_summary
+            breakdown_metrics_deleted += _delete_event_metric_breakdowns_window(
+                session,
+                scan_config_id=config.id,
+                time_from=chunk_from,
+                time_to=chunk_to,
+            )
+            distribution_drifts_deleted += _delete_distribution_drifts_window(
+                session,
+                scan_config_id=config.id,
+                time_from=chunk_from,
+                time_to=chunk_to,
+            )
+
+            if not rows:
+                # Deletes above already cleared this sub-window; nothing to re-insert.
+                session.commit()
+                continue
+
+            # Aggregate metrics: (scan_config_id, event_id, bucket) -> count
+            event_agg: dict[tuple[uuid.UUID, uuid.UUID, datetime], int] = {}
+            # (scan_config_id, event_type_id, bucket) -> count
+            type_agg: dict[tuple[uuid.UUID, uuid.UUID, datetime], int] = {}
+
+            for row in rows:
+                bucket = cast(datetime, row[0])
+                data_row = row[1:]  # strip _bucket; _cnt is last but not indexed by col_meta
+                cnt = int(cast(int | str | float, row[-1]))
+                col_meta: dict[str, dict[str, object]]
+                events_by_name: dict[str, Event]
+                event_type_id: uuid.UUID | None
+
+                # Determine event type and get the matching gen result
+                if config.event_type_column and et_col_idx is not None:
+                    et_name = str(data_row[et_col_idx])
+                    event_type = et_by_name.get(et_name)
+                    if event_type is None:
+                        continue
+                    event_type_id = event_type.id
+                    gen_result: GenerationResult | None = gen_results.get(et_name)
+                    if gen_result is None:
+                        continue
+                    col_meta = gen_result.col_meta
+                    events_by_name = gen_result.events_by_name
+                else:
+                    event_type_id = config.event_type_id
+                    if single_result is None:
+                        continue
+                    col_meta = single_result.col_meta
+                    events_by_name = single_result.events_by_name
+
+                # Build event name from row (same logic as generate_events)
+                event_name = _build_event_name_from_row(
+                    data_row,
+                    col_meta,
+                    reg_index,
+                    json_index,
+                    n_reg,
+                    json_value_names,
+                    config.event_name_format,
+                )
+
+                if event_name:
+                    ev = events_by_name.get(event_name)
+                    if isinstance(ev, Event):
+                        key = (config.id, ev.id, bucket)
+                        event_agg[key] = event_agg.get(key, 0) + cnt
+
+                if event_type_id:
+                    key = (config.id, event_type_id, bucket)
+                    type_agg[key] = type_agg.get(key, 0) + cnt
+
+            # Build metrics rows for UPSERT
+            event_rows: list[dict[str, object]] = [
+                {
+                    "id": uuid.uuid4(),
+                    "scan_config_id": sc_id,
+                    "event_id": ev_id,
+                    "event_type_id": None,
+                    "bucket": bucket,
+                    "count": total,
+                }
+                for (sc_id, ev_id, bucket), total in event_agg.items()
+            ]
+            type_rows: list[dict[str, object]] = [
+                {
+                    "id": uuid.uuid4(),
+                    "scan_config_id": sc_id,
+                    "event_id": None,
+                    "event_type_id": et_id,
+                    "bucket": bucket,
+                    "count": total,
+                }
+                for (sc_id, et_id, bucket), total in type_agg.items()
+            ]
+            breakdown_event_rows, breakdown_type_rows = _collect_metric_breakdown_rows(
+                adapter=adapter,
+                config=config,
+                interval_ch_interval=interval_spec.ch_interval,
+                regular_cols=regular_cols,
+                json_cols=json_cols,
+                json_value_path_map=json_value_path_map,
+                time_from=chunk_from,
+                time_to=chunk_to,
+                reg_index=reg_index,
+                json_index=json_index,
+                n_reg=n_reg,
+                gen_results=gen_results,
+                single_result=single_result,
+                et_by_name=et_by_name,
+            )
+            chunk_drift_rows, chunk_significant_drifts = _collect_distribution_drift_rows(
+                adapter=adapter,
+                config=config,
+                interval_ch_interval=interval_spec.ch_interval,
+                interval_delta=delta,
+                regular_cols=regular_cols,
+                json_cols=json_cols,
+                json_value_path_map=json_value_path_map,
+                time_from=chunk_from,
+                time_to=chunk_to,
+                reg_index=reg_index,
+                et_by_name=et_by_name,
+            )
+
+            _upsert_event_metrics_rows(
+                session,
+                rows=event_rows,
+                constraint="uq_event_metric_config_event_bucket",
+            )
+            _upsert_event_metrics_rows(
+                session,
+                rows=type_rows,
+                constraint="uq_event_metric_config_type_bucket",
+            )
+            _bump_event_last_seen(session, event_agg=event_agg)
+            _upsert_event_metric_breakdown_rows(
+                session,
+                rows=breakdown_event_rows,
+                constraint="event",
+            )
+            _upsert_event_metric_breakdown_rows(
+                session,
+                rows=breakdown_type_rows,
+                constraint="type",
+            )
+            if chunk_drift_rows:
+                session.add_all(DistributionDrift(**row) for row in chunk_drift_rows)
+
             session.commit()
-            cache.sync_delete_prefix(cache.prefix_signals())
-            cache.sync_delete_prefix(cache.prefix_projects())
-            for delivery_id in delivery_ids:
-                send_alert_delivery.delay(str(delivery_id))
-            return result_summary
 
-        # Aggregate metrics: (scan_config_id, event_id, bucket) -> count
-        event_agg: dict[tuple[uuid.UUID, uuid.UUID, datetime], int] = {}
-        # (scan_config_id, event_type_id, bucket) -> count
-        type_agg: dict[tuple[uuid.UUID, uuid.UUID, datetime], int] = {}
+            n_ev += len(event_rows)
+            n_tp += len(type_rows)
+            n_breakdown_ev += len(breakdown_event_rows)
+            n_breakdown_tp += len(breakdown_type_rows)
+            n_distribution_drifts += len(chunk_drift_rows)
+            significant_distribution_drifts += chunk_significant_drifts
 
-        et_col_idx = reg_index.get(config.event_type_column) if config.event_type_column else None
-
-        for row in rows:
-            bucket = cast(datetime, row[0])
-            data_row = row[1:]  # strip _bucket; _cnt is at the end but not indexed by col_meta
-            cnt = int(cast(int | str | float, row[-1]))
-            col_meta: dict[str, dict[str, object]]
-            events_by_name: dict[str, Event]
-            event_type_id: uuid.UUID | None
-
-            # Determine event type and get the matching gen result
-            if config.event_type_column and et_col_idx is not None:
-                et_name = str(data_row[et_col_idx])
-                event_type = et_by_name.get(et_name)
-                if event_type is None:
-                    continue
-                event_type_id = event_type.id
-                gen_result: GenerationResult | None = gen_results.get(et_name)
-                if gen_result is None:
-                    continue
-                col_meta = gen_result.col_meta
-                events_by_name = gen_result.events_by_name
-            else:
-                event_type_id = config.event_type_id
-                if single_result is None:
-                    continue
-                col_meta = single_result.col_meta
-                events_by_name = single_result.events_by_name
-
-            # Build event name from row (same logic as generate_events)
-            event_name = _build_event_name_from_row(
-                data_row,
-                col_meta,
-                reg_index,
-                json_index,
-                n_reg,
-                json_value_names,
-                config.event_name_format,
-            )
-
-            if event_name:
-                ev = events_by_name.get(event_name)
-                if isinstance(ev, Event):
-                    key = (config.id, ev.id, bucket)
-                    event_agg[key] = event_agg.get(key, 0) + cnt
-
-            if event_type_id:
-                key = (config.id, event_type_id, bucket)
-                type_agg[key] = type_agg.get(key, 0) + cnt
-
-        # Build metrics rows for UPSERT
-        event_rows: list[dict[str, object]] = [
-            {
-                "id": uuid.uuid4(),
-                "scan_config_id": sc_id,
-                "event_id": ev_id,
-                "event_type_id": None,
-                "bucket": bucket,
-                "count": total,
-            }
-            for (sc_id, ev_id, bucket), total in event_agg.items()
-        ]
-        type_rows: list[dict[str, object]] = [
-            {
-                "id": uuid.uuid4(),
-                "scan_config_id": sc_id,
-                "event_id": None,
-                "event_type_id": et_id,
-                "bucket": bucket,
-                "count": total,
-            }
-            for (sc_id, et_id, bucket), total in type_agg.items()
-        ]
-        breakdown_event_rows, breakdown_type_rows = _collect_metric_breakdown_rows(
-            adapter=adapter,
-            config=config,
-            interval_ch_interval=interval_spec.ch_interval,
-            regular_cols=regular_cols,
-            json_cols=json_cols,
-            json_value_path_map=json_value_path_map,
-            time_from=time_from_dt,
-            time_to=time_to_dt,
-            reg_index=reg_index,
-            json_index=json_index,
-            n_reg=n_reg,
-            gen_results=gen_results,
-            single_result=single_result,
-            et_by_name=et_by_name,
-        )
-        distribution_drift_rows, significant_distribution_drifts = _collect_distribution_drift_rows(
-            adapter=adapter,
-            config=config,
-            interval_ch_interval=interval_spec.ch_interval,
-            interval_delta=delta,
-            regular_cols=regular_cols,
-            json_cols=json_cols,
-            json_value_path_map=json_value_path_map,
-            time_from=time_from_dt,
-            time_to=time_to_dt,
-            reg_index=reg_index,
-            et_by_name=et_by_name,
-        )
-
-        _upsert_event_metrics_rows(
-            session,
-            rows=event_rows,
-            constraint="uq_event_metric_config_event_bucket",
-        )
-        _upsert_event_metrics_rows(
-            session,
-            rows=type_rows,
-            constraint="uq_event_metric_config_type_bucket",
-        )
-        _bump_event_last_seen(session, event_agg=event_agg)
-        _upsert_event_metric_breakdown_rows(
-            session,
-            rows=breakdown_event_rows,
-            constraint="event",
-        )
-        _upsert_event_metric_breakdown_rows(
-            session,
-            rows=breakdown_type_rows,
-            constraint="type",
-        )
-        if distribution_drift_rows:
-            session.add_all(DistributionDrift(**row) for row in distribution_drift_rows)
-
-        session.commit()
-
-        n_ev = len(event_rows)
-        n_tp = len(type_rows)
-        n_breakdown_ev = len(breakdown_event_rows)
-        n_breakdown_tp = len(breakdown_type_rows)
-        n_distribution_drifts = len(distribution_drift_rows)
         logger.info(
             "Upserted %s event metrics + %s type metrics + "
             "%s event breakdown metrics + %s type breakdown metrics + "
-            "%s distribution drift rows",
+            "%s distribution drift rows across %s sub-window(s)",
             n_ev,
             n_tp,
             n_breakdown_ev,
             n_breakdown_tp,
             n_distribution_drifts,
+            len(chunks),
         )
+
+        # Anomaly detection and alert delivery read the metrics we just stored in
+        # Postgres (not the warehouse), so they run once over the full window
+        # regardless of how many sub-windows fetched it.
         anomalies_detected = _recalculate_metric_anomalies(
             session,
             config,
@@ -1298,7 +1313,7 @@ def collect_metrics(
         signals_added = len(visible_signals_after - visible_signals_before)
         signals_removed = len(visible_signals_before - visible_signals_after)
 
-        result_summary = {
+        result_summary: dict[str, object] = {
             "mode": "metrics_replay" if is_replay else "metrics_collection",
             "time_from": time_from_dt.isoformat(),
             "time_to": time_to_dt.isoformat(),

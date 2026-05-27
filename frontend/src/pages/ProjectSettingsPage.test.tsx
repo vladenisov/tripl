@@ -138,6 +138,7 @@ describe('ProjectSettingsPage', () => {
             distribution_drift_fields: [],
             cardinality_threshold: 100,
             interval: '1h',
+            replay_chunk_interval: null,
             created_at: '2026-01-01T00:00:00Z',
             updated_at: '2026-01-01T00:00:00Z',
           },
@@ -250,6 +251,7 @@ describe('ProjectSettingsPage', () => {
             distribution_drift_fields: [],
             cardinality_threshold: 100,
             interval: '1h',
+            replay_chunk_interval: null,
             created_at: '2026-01-01T00:00:00Z',
             updated_at: '2026-01-01T00:00:00Z',
           },
@@ -751,6 +753,7 @@ describe('ProjectSettingsPage', () => {
           distribution_drift_fields: body.distribution_drift_fields,
           cardinality_threshold: body.cardinality_threshold,
           interval: body.interval,
+          replay_chunk_interval: body.replay_chunk_interval,
           created_at: '2026-04-12T00:00:00Z',
           updated_at: '2026-04-12T00:00:00Z',
         })
@@ -811,6 +814,7 @@ describe('ProjectSettingsPage', () => {
         distribution_drift_fields: [],
         cardinality_threshold: 100,
         interval: null,
+        replay_chunk_interval: null,
       })
     })
   })
