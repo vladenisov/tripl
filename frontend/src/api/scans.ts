@@ -22,6 +22,7 @@ export const scansApi = {
     distribution_drift_fields?: string[]
     cardinality_threshold?: number
     interval?: string | null
+    replay_chunk_interval?: string | null
   }) => api.post<ScanConfig>(`/projects/${slug}/scans`, data),
 
   preview: (slug: string, data: {
@@ -43,6 +44,7 @@ export const scansApi = {
     distribution_drift_fields?: string[]
     cardinality_threshold?: number
     interval?: string | null
+    replay_chunk_interval?: string | null
   }) => api.patch<ScanConfig>(`/projects/${slug}/scans/${scanId}`, data),
 
   del: (slug: string, scanId: string) =>

@@ -28,6 +28,7 @@ from tripl.schemas.scan_config import (
 from tripl.worker.adapters.base import BaseAdapter, ColumnInfo
 from tripl.worker.adapters.registry import build_adapter
 from tripl.worker.analyzers.cardinality import _is_json_type
+from tripl.worker.utils.intervals import get_interval
 
 
 async def _get_project_id(session: AsyncSession, slug: str) -> uuid.UUID:
@@ -72,6 +73,28 @@ def _validate_scalar_monitoring_selection(
         raise HTTPException(
             status_code=422,
             detail="distribution_drift_fields cannot include event_type_column or time_column",
+        )
+
+
+def _validate_replay_chunk_interval(
+    *,
+    interval: str | None,
+    replay_chunk_interval: str | None,
+) -> None:
+    """A replay chunk cannot be finer than the collection interval (you can't
+    split a window below one bucket). NULL chunk means "no split" and is allowed
+    regardless of interval."""
+    if replay_chunk_interval is None:
+        return
+    if interval is None:
+        raise HTTPException(
+            status_code=422,
+            detail="replay_chunk_interval requires a collection interval",
+        )
+    if get_interval(replay_chunk_interval).delta < get_interval(interval).delta:
+        raise HTTPException(
+            status_code=422,
+            detail="replay_chunk_interval must be greater than or equal to interval",
         )
 
 
@@ -219,6 +242,10 @@ async def create_scan_config(
         event_type_column=data.event_type_column,
         time_column=data.time_column,
     )
+    _validate_replay_chunk_interval(
+        interval=data.interval,
+        replay_chunk_interval=data.replay_chunk_interval,
+    )
 
     config = ScanConfig(
         project_id=project_id,
@@ -251,6 +278,13 @@ async def update_scan_config(
         or [],
         event_type_column=update_dict.get("event_type_column", config.event_type_column),
         time_column=update_dict.get("time_column", config.time_column),
+    )
+    _validate_replay_chunk_interval(
+        interval=update_dict.get("interval", config.interval),
+        replay_chunk_interval=update_dict.get(
+            "replay_chunk_interval",
+            config.replay_chunk_interval,
+        ),
     )
     for key, value in update_dict.items():
         setattr(config, key, value)

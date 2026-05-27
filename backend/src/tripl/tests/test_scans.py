@@ -73,7 +73,80 @@ class TestScanConfigsCRUD:
         assert data["metric_breakdown_columns"] == ["country", "platform"]
         assert data["metric_breakdown_values_limit"] == 20
         assert data["distribution_drift_fields"] == ["platform"]
+        assert data["replay_chunk_interval"] is None
         assert "anomaly_detection_enabled" not in data
+
+    async def test_create_scan_config_with_replay_chunk_interval(
+        self, client: AsyncClient, project: dict, data_source: dict, event_type: dict
+    ):
+        resp = await client.post(
+            f"/api/v1/projects/{project['slug']}/scans",
+            json={
+                "data_source_id": data_source["id"],
+                "name": "Chunked scan",
+                "base_query": "SELECT * FROM events",
+                "event_type_id": event_type["id"],
+                "time_column": "time",
+                "interval": "1h",
+                "replay_chunk_interval": "1d",
+            },
+        )
+        assert resp.status_code == 201
+        assert resp.json()["replay_chunk_interval"] == "1d"
+
+    async def test_replay_chunk_interval_must_not_be_finer_than_interval(
+        self, client: AsyncClient, project: dict, data_source: dict, event_type: dict
+    ):
+        resp = await client.post(
+            f"/api/v1/projects/{project['slug']}/scans",
+            json={
+                "data_source_id": data_source["id"],
+                "name": "Bad chunk",
+                "base_query": "SELECT * FROM events",
+                "event_type_id": event_type["id"],
+                "time_column": "time",
+                "interval": "1d",
+                "replay_chunk_interval": "1h",
+            },
+        )
+        assert resp.status_code == 422
+
+    async def test_replay_chunk_interval_requires_interval(
+        self, client: AsyncClient, project: dict, data_source: dict, event_type: dict
+    ):
+        resp = await client.post(
+            f"/api/v1/projects/{project['slug']}/scans",
+            json={
+                "data_source_id": data_source["id"],
+                "name": "No interval chunk",
+                "base_query": "SELECT * FROM events",
+                "event_type_id": event_type["id"],
+                "replay_chunk_interval": "1d",
+            },
+        )
+        assert resp.status_code == 422
+
+    async def test_update_rejects_replay_chunk_finer_than_existing_interval(
+        self, client: AsyncClient, project: dict, data_source: dict, event_type: dict
+    ):
+        create_resp = await client.post(
+            f"/api/v1/projects/{project['slug']}/scans",
+            json={
+                "data_source_id": data_source["id"],
+                "name": "Updatable",
+                "base_query": "SELECT * FROM events",
+                "event_type_id": event_type["id"],
+                "time_column": "time",
+                "interval": "1d",
+            },
+        )
+        assert create_resp.status_code == 201
+        scan_id = create_resp.json()["id"]
+        resp = await client.patch(
+            f"/api/v1/projects/{project['slug']}/scans/{scan_id}",
+            json={"replay_chunk_interval": "1h"},
+        )
+        assert resp.status_code == 422
 
     async def test_list_scan_configs(self, client: AsyncClient, project: dict, data_source: dict):
         for i in range(3):

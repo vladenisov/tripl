@@ -1748,3 +1748,172 @@ def test_cleanup_schema_drifts_prunes_only_expired_rows(
     with sync_session_factory() as session:
         rows = session.execute(select(SchemaDrift)).scalars().all()
         assert [r.field_name for r in rows] == ["fresh"]
+
+
+def test_iter_window_chunks_splits_by_interval() -> None:
+    start = datetime(2026, 1, 1, 8)
+    end = datetime(2026, 1, 1, 11)
+    hour = timedelta(hours=1)
+
+    # No chunk code → single whole-window pass (legacy behavior).
+    assert metrics._iter_window_chunks(
+        start, end, interval_delta=hour, chunk_interval_code=None
+    ) == [(start, end)]
+
+    # chunk == interval → one bucket per chunk.
+    assert metrics._iter_window_chunks(
+        start, end, interval_delta=hour, chunk_interval_code="1h"
+    ) == [
+        (datetime(2026, 1, 1, 8), datetime(2026, 1, 1, 9)),
+        (datetime(2026, 1, 1, 9), datetime(2026, 1, 1, 10)),
+        (datetime(2026, 1, 1, 10), datetime(2026, 1, 1, 11)),
+    ]
+
+    # chunk coarser than interval → many buckets per chunk, trailing chunk clipped.
+    assert metrics._iter_window_chunks(
+        datetime(2026, 1, 1, 0),
+        datetime(2026, 1, 2, 5),
+        interval_delta=hour,
+        chunk_interval_code="1d",
+    ) == [
+        (datetime(2026, 1, 1, 0), datetime(2026, 1, 2, 0)),
+        (datetime(2026, 1, 2, 0), datetime(2026, 1, 2, 5)),
+    ]
+
+    # chunk finer than interval is clamped to one bucket (never below a bucket).
+    assert metrics._iter_window_chunks(
+        start,
+        datetime(2026, 1, 1, 10),
+        interval_delta=hour,
+        chunk_interval_code="15m",
+    ) == [
+        (datetime(2026, 1, 1, 8), datetime(2026, 1, 1, 9)),
+        (datetime(2026, 1, 1, 9), datetime(2026, 1, 1, 10)),
+    ]
+
+
+def test_collect_metrics_splits_replay_into_interval_chunks(
+    sync_session_factory: sessionmaker[Session],
+    monkeypatch: MonkeyPatch,
+) -> None:
+    with sync_session_factory() as session:
+        config = _create_scan_config(session, with_event_type=True)
+        assert config.event_type_id is not None
+        # 1h chunk over a 1h interval → exactly one bucket per warehouse query.
+        config.replay_chunk_interval = "1h"
+        login_event = Event(
+            id=uuid.uuid4(),
+            project_id=config.project_id,
+            event_type_id=config.event_type_id,
+            name="event_name=Login",
+            description="",
+            implemented=True,
+            reviewed=True,
+            archived=False,
+        )
+        session.add(login_event)
+        session.commit()
+        config_id = str(config.id)
+        login_event_id = login_event.id
+        event_type_id = config.event_type_id
+
+    counts_by_bucket = {
+        datetime(2026, 1, 1, 8): 8,
+        datetime(2026, 1, 1, 9): 9,
+        datetime(2026, 1, 1, 10): 10,
+    }
+
+    class FakeAdapter:
+        def __init__(self) -> None:
+            self.count_calls: list[tuple[datetime, datetime]] = []
+
+        def test_connection(self) -> bool:
+            return True
+
+        def get_columns(self, base_query: str) -> list[ColumnInfo]:
+            return [
+                ColumnInfo(name="time", type_name="DateTime"),
+                ColumnInfo(name="event_name", type_name="String"),
+            ]
+
+        def get_time_bucketed_counts(
+            self,
+            base_query: str,
+            time_column: str,
+            ch_interval: str,
+            regular_columns: list[str],
+            json_columns: list[str],
+            json_value_paths: dict[str, list[str]] | None,
+            time_from: datetime,
+            time_to: datetime,
+            limit: int = 100000,
+        ) -> tuple[list[str], list[str], list[tuple[object, ...]]]:
+            self.count_calls.append((time_from, time_to))
+            rows: list[tuple[object, ...]] = [
+                (bucket, "Login", count)
+                for bucket, count in counts_by_bucket.items()
+                if time_from <= bucket < time_to
+            ]
+            return (["event_name"], [], rows)
+
+        def close(self) -> None:
+            return None
+
+    adapter = FakeAdapter()
+    monkeypatch.setattr(metrics, "_get_sync_session", sync_session_factory)
+    monkeypatch.setattr(metrics, "_build_adapter", lambda ds: adapter)
+    monkeypatch.setattr(
+        metrics,
+        "_resolve_collection_window",
+        lambda *args, **kwargs: (datetime(2026, 1, 1, 8), datetime(2026, 1, 1, 11), True),
+    )
+    monkeypatch.setattr(metrics, "analyze_cardinality", lambda *args, **kwargs: object())
+
+    def fake_generate_events(*args: object, **kwargs: object) -> GenerationResult:
+        with sync_session_factory() as session:
+            persisted_event = session.get(Event, login_event_id)
+            assert persisted_event is not None
+            return GenerationResult(
+                columns_analyzed=1,
+                col_meta={"event_name": {"is_json": False, "is_low": True}},
+                events_by_name={"event_name=Login": persisted_event},
+            )
+
+    monkeypatch.setattr(metrics, "generate_events", fake_generate_events)
+
+    result = metrics.collect_metrics.run(config_id)
+
+    # One bounded warehouse query per 1-hour sub-window, not one giant query.
+    assert adapter.count_calls == [
+        (datetime(2026, 1, 1, 8), datetime(2026, 1, 1, 9)),
+        (datetime(2026, 1, 1, 9), datetime(2026, 1, 1, 10)),
+        (datetime(2026, 1, 1, 10), datetime(2026, 1, 1, 11)),
+    ]
+    assert result["mode"] == "metrics_replay"
+    assert result["event_metrics"] == 3
+    assert result["type_metrics"] == 3
+
+    with sync_session_factory() as session:
+        login_metrics = (
+            session.execute(
+                select(EventMetric)
+                .where(EventMetric.event_id == login_event_id)
+                .order_by(EventMetric.bucket)
+            )
+            .scalars()
+            .all()
+        )
+        assert [m.bucket for m in login_metrics] == [
+            datetime(2026, 1, 1, 8),
+            datetime(2026, 1, 1, 9),
+            datetime(2026, 1, 1, 10),
+        ]
+        assert [m.count for m in login_metrics] == [8, 9, 10]
+        type_metrics = (
+            session.execute(
+                select(EventMetric).where(EventMetric.event_type_id == event_type_id)
+            )
+            .scalars()
+            .all()
+        )
+        assert len(type_metrics) == 3
