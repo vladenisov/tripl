@@ -344,6 +344,7 @@ export interface ScanConfig {
   distribution_drift_fields: string[]
   cardinality_threshold: number
   interval: IntervalCode | null
+  replay_chunk_interval: IntervalCode | null
   created_at: string
   updated_at: string
 }

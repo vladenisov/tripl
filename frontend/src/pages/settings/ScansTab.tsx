@@ -7,6 +7,7 @@ import { scansApi } from "@/api/scans"
 import type {
   DataSource,
   EventType,
+  IntervalCode,
   ScanConfig,
   ScanConfigPreview,
   ScanJob,
@@ -28,6 +29,23 @@ function formatPreviewCell(value: unknown): string {
   if (value == null) return '—'
   if (typeof value === 'string') return value
   return JSON.stringify(value)
+}
+
+// Ordered finest → coarsest. A replay chunk must be >= the collection interval,
+// so eligible chunk sizes are the interval itself and anything coarser.
+const INTERVAL_ORDER: IntervalCode[] = ['15m', '1h', '6h', '1d', '1w']
+const CHUNK_LABELS: Record<IntervalCode, string> = {
+  '15m': '15 minutes',
+  '1h': '1 hour',
+  '6h': '6 hours',
+  '1d': '1 day',
+  '1w': '1 week',
+}
+
+function eligibleChunkIntervals(interval: string): IntervalCode[] {
+  const idx = INTERVAL_ORDER.indexOf(interval as IntervalCode)
+  if (idx < 0) return []
+  return INTERVAL_ORDER.slice(idx)
 }
 
 function ScanPreviewPanel({
@@ -271,6 +289,7 @@ export function ScansTab({ slug }: { slug: string }) {
   const [distributionDriftFields, setDistributionDriftFields] = useState<string[]>([])
   const [cardinalityThreshold, setCardinalityThreshold] = useState(100)
   const [interval, setInterval] = useState('')
+  const [chunkInterval, setChunkInterval] = useState('')
 
   // Edit state
   const [editName, setEditName] = useState('')
@@ -285,6 +304,7 @@ export function ScansTab({ slug }: { slug: string }) {
   const [editDistributionDriftFields, setEditDistributionDriftFields] = useState<string[]>([])
   const [editCardinalityThreshold, setEditCardinalityThreshold] = useState(100)
   const [editInterval, setEditInterval] = useState('')
+  const [editChunkInterval, setEditChunkInterval] = useState('')
 
   const { data: dataSources = [] } = useQuery({
     queryKey: ['dataSources'],
@@ -319,6 +339,7 @@ export function ScansTab({ slug }: { slug: string }) {
         distribution_drift_fields: distributionDriftFields,
         cardinality_threshold: cardinalityThreshold,
         interval: interval || null,
+        replay_chunk_interval: chunkInterval || null,
       }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['scans', slug] })
@@ -341,6 +362,7 @@ export function ScansTab({ slug }: { slug: string }) {
         distribution_drift_fields: editDistributionDriftFields,
         cardinality_threshold: editCardinalityThreshold,
         interval: editInterval || null,
+        replay_chunk_interval: editChunkInterval || null,
       }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['scans', slug] })
@@ -435,6 +457,7 @@ export function ScansTab({ slug }: { slug: string }) {
     setEditDistributionDriftFields(sc.distribution_drift_fields ?? [])
     setEditCardinalityThreshold(sc.cardinality_threshold)
     setEditInterval(sc.interval ?? '')
+    setEditChunkInterval(sc.replay_chunk_interval ?? '')
     setEditPreview(null)
   }
 
@@ -446,7 +469,7 @@ export function ScansTab({ slug }: { slug: string }) {
     setJsonValuePaths([]); setMetricBreakdownColumns([])
     setDistributionDriftFields([])
     setMetricBreakdownValuesLimit(''); setPreview(null)
-    setCardinalityThreshold(100); setInterval('')
+    setCardinalityThreshold(100); setInterval(''); setChunkInterval('')
   }
 
   const toggleJsonValuePath = (path: string) => {
@@ -642,7 +665,17 @@ export function ScansTab({ slug }: { slug: string }) {
                 <div className="grid gap-2"><Label>Cardinality Threshold</Label><Input type="number" value={cardinalityThreshold} onChange={e => setCardinalityThreshold(Number(e.target.value))} min={1} /></div>
                 <div className="grid gap-2">
                   <Label>Collection Interval</Label>
-                  <select value={interval} onChange={e => setInterval(e.target.value)} className={selectClass}>
+                  <select
+                    value={interval}
+                    onChange={e => {
+                      const next = e.target.value
+                      setInterval(next)
+                      if (chunkInterval && !eligibleChunkIntervals(next).includes(chunkInterval as IntervalCode)) {
+                        setChunkInterval('')
+                      }
+                    }}
+                    className={selectClass}
+                  >
                     <option value="">No schedule</option>
                     <option value="15m">Every 15 min</option>
                     <option value="1h">Every hour</option>
@@ -652,6 +685,20 @@ export function ScansTab({ slug }: { slug: string }) {
                   </select>
                 </div>
               </div>
+              {interval && (
+                <div className="grid gap-2">
+                  <Label>Replay Chunk Size</Label>
+                  <select value={chunkInterval} onChange={e => setChunkInterval(e.target.value)} className={selectClass}>
+                    <option value="">Whole window (no split)</option>
+                    {eligibleChunkIntervals(interval).map(code => (
+                      <option key={code} value={code}>{CHUNK_LABELS[code]}</option>
+                    ))}
+                  </select>
+                  <p className="text-xs text-muted-foreground">
+                    Splits a long replay into smaller warehouse queries so it doesn't time out. Must be ≥ the collection interval.
+                  </p>
+                </div>
+              )}
               {createMut.isError && <p className="text-sm text-destructive">{(createMut.error as Error).message}</p>}
             </div>
             <DialogFooter className="shrink-0 border-t bg-background px-6 py-4">
@@ -779,7 +826,17 @@ export function ScansTab({ slug }: { slug: string }) {
                 <div className="grid gap-2"><Label>Cardinality Threshold</Label><Input type="number" value={editCardinalityThreshold} onChange={e => setEditCardinalityThreshold(Number(e.target.value))} min={1} /></div>
                 <div className="grid gap-2">
                   <Label>Collection Interval</Label>
-                  <select value={editInterval} onChange={e => setEditInterval(e.target.value)} className={selectClass}>
+                  <select
+                    value={editInterval}
+                    onChange={e => {
+                      const next = e.target.value
+                      setEditInterval(next)
+                      if (editChunkInterval && !eligibleChunkIntervals(next).includes(editChunkInterval as IntervalCode)) {
+                        setEditChunkInterval('')
+                      }
+                    }}
+                    className={selectClass}
+                  >
                     <option value="">No schedule</option>
                     <option value="15m">Every 15 min</option>
                     <option value="1h">Every hour</option>
@@ -789,6 +846,20 @@ export function ScansTab({ slug }: { slug: string }) {
                   </select>
                 </div>
               </div>
+              {editInterval && (
+                <div className="grid gap-2">
+                  <Label>Replay Chunk Size</Label>
+                  <select value={editChunkInterval} onChange={e => setEditChunkInterval(e.target.value)} className={selectClass}>
+                    <option value="">Whole window (no split)</option>
+                    {eligibleChunkIntervals(editInterval).map(code => (
+                      <option key={code} value={code}>{CHUNK_LABELS[code]}</option>
+                    ))}
+                  </select>
+                  <p className="text-xs text-muted-foreground">
+                    Splits a long replay into smaller warehouse queries so it doesn't time out. Must be ≥ the collection interval.
+                  </p>
+                </div>
+              )}
               {updateMut.isError && <p className="text-sm text-destructive">{(updateMut.error as Error).message}</p>}
             </div>
             <DialogFooter className="shrink-0 border-t bg-background px-6 py-4">
@@ -992,6 +1063,7 @@ function ScanDetail({ slug, scanConfig, eventTypes }: { slug: string; scanConfig
             )}
             {etName && <span>Event Type: <strong className="text-foreground">{etName}</strong></span>}
             {scanConfig.interval && <span>Interval: <strong className="text-foreground">{scanConfig.interval}</strong></span>}
+            {scanConfig.replay_chunk_interval && <span>Replay chunk: <strong className="text-foreground">{scanConfig.replay_chunk_interval}</strong></span>}
             <span>
               Monitoring:
               <strong className="text-foreground">
