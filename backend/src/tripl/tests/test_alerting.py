@@ -173,6 +173,70 @@ async def test_alerting_destination_validates_credentials(client: AsyncClient) -
 
 
 @pytest.mark.asyncio
+async def test_alerting_webhook_destination_crud_and_validation(client: AsyncClient) -> None:
+    project_resp = await client.post(
+        "/api/v1/projects",
+        json={"name": "Webhook Alerts", "slug": "webhook-alerts", "description": ""},
+    )
+    assert project_resp.status_code == 201
+
+    # Non-https target rejected.
+    bad_url_resp = await client.post(
+        "/api/v1/projects/webhook-alerts/alert-destinations",
+        json={"type": "webhook", "name": "Bad", "target_url": "http://example.com/hook"},
+    )
+    assert bad_url_resp.status_code == 422
+    assert "target_url" in bad_url_resp.text
+
+    # A secret header requires both name and value.
+    pair_resp = await client.post(
+        "/api/v1/projects/webhook-alerts/alert-destinations",
+        json={
+            "type": "webhook",
+            "name": "Pair",
+            "target_url": "https://example.com/hook",
+            "webhook_header_name": "Authorization",
+        },
+    )
+    assert pair_resp.status_code == 422
+
+    create_resp = await client.post(
+        "/api/v1/projects/webhook-alerts/alert-destinations",
+        json={
+            "type": "webhook",
+            "name": "Ops Webhook",
+            "target_url": "https://example.com/hook",
+            "webhook_header_name": "Authorization",
+            "webhook_header_value": "Bearer secret",
+        },
+    )
+    assert create_resp.status_code == 201
+    destination = create_resp.json()
+    assert destination["type"] == "webhook"
+    assert destination["target_url_set"] is True
+    assert destination["webhook_header_name"] == "Authorization"
+    # Secrets are never echoed back.
+    assert "target_url" not in destination
+    assert "webhook_header_value" not in destination
+    destination_id = destination["id"]
+
+    bad_update = await client.patch(
+        f"/api/v1/projects/webhook-alerts/alert-destinations/{destination_id}",
+        json={"target_url": "ftp://example.com/hook"},
+    )
+    assert bad_update.status_code == 422
+    assert "target_url" in bad_update.text
+
+    good_update = await client.patch(
+        f"/api/v1/projects/webhook-alerts/alert-destinations/{destination_id}",
+        json={"target_url": "https://example.com/hook2", "name": "Renamed"},
+    )
+    assert good_update.status_code == 200
+    assert good_update.json()["name"] == "Renamed"
+    assert good_update.json()["target_url_set"] is True
+
+
+@pytest.mark.asyncio
 async def test_alert_delivery_list_and_detail(client: AsyncClient) -> None:
     project_resp = await client.post(
         "/api/v1/projects",
@@ -864,6 +928,134 @@ def test_send_alert_delivery_falls_back_from_telegram_markdownv2_to_plain(
         assert persisted.payload_snapshot["requested_message_format"] == "telegram_markdownv2"
         assert persisted.payload_snapshot["message_format"] == "plain"
         assert persisted.payload_snapshot["fallback_reason"] == "telegram_markdown_parse_error"
+
+    Base.metadata.drop_all(engine)
+    engine.dispose()
+
+
+def test_send_alert_delivery_posts_generic_webhook(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    engine = create_engine(f"sqlite:///{tmp_path / 'alerting_webhook_send.db'}")
+    Base.metadata.create_all(engine)
+    sync_session_factory = sessionmaker(engine, expire_on_commit=False)
+    sent: dict[str, object] = {}
+
+    with sync_session_factory() as session:
+        project = Project(
+            id=uuid.uuid4(),
+            name="Alert Runtime",
+            slug="alert-runtime",
+            description="",
+        )
+        data_source = DataSource(
+            id=uuid.uuid4(),
+            name="Runtime DS",
+            db_type="clickhouse",
+            host="localhost",
+            port=8123,
+            database_name="default",
+            username="default",
+            password_encrypted="",
+        )
+        scan_config = ScanConfig(
+            id=uuid.uuid4(),
+            data_source_id=data_source.id,
+            project_id=project.id,
+            name="Runtime Scan",
+            base_query="SELECT * FROM events",
+            time_column="created_at",
+            cardinality_threshold=100,
+            interval="1h",
+        )
+        # Secrets are stored encrypted; in dev/test the crypto layer is a
+        # passthrough, so plaintext here round-trips through _decrypt_secret.
+        destination = AlertDestination(
+            id=uuid.uuid4(),
+            project_id=project.id,
+            type="webhook",
+            name="Ops Webhook",
+            enabled=True,
+            target_url_encrypted="https://example.com/hook",
+            webhook_header_name="X-Webhook-Token",
+            webhook_header_value_encrypted="secret-abc",
+        )
+        rule = AlertRule(
+            id=uuid.uuid4(),
+            destination_id=destination.id,
+            name="Main Rule",
+            enabled=True,
+            message_format="plain",
+        )
+        delivery = AlertDelivery(
+            id=uuid.uuid4(),
+            project_id=project.id,
+            scan_config_id=scan_config.id,
+            destination_id=destination.id,
+            rule_id=rule.id,
+            channel="webhook",
+            status="pending",
+            matched_count=1,
+            payload_snapshot={"preview": "one alert"},
+        )
+        item = AlertDeliveryItem(
+            id=uuid.uuid4(),
+            delivery_id=delivery.id,
+            scope_type="event",
+            scope_ref="event-1",
+            scope_name="purchase:success",
+            bucket=datetime(2026, 4, 11, 9, tzinfo=UTC),
+            direction="drop",
+            actual_count=10,
+            expected_count=20,
+            absolute_delta=10,
+            percent_delta=50,
+            details_path=None,
+            monitoring_path=None,
+        )
+        session.add_all([project, data_source, scan_config, destination, rule, delivery, item])
+        session.commit()
+        delivery_id = str(delivery.id)
+
+    def capture_post_json(url: str, body: dict[str, object], headers: dict[str, str] | None = None):
+        sent["url"] = url
+        sent["body"] = body
+        sent["headers"] = headers
+
+    monkeypatch.setitem(
+        metrics.send_alert_delivery.run.__globals__,
+        "_get_sync_session",
+        sync_session_factory,
+    )
+    monkeypatch.setitem(
+        metrics.send_alert_delivery.run.__globals__,
+        "_post_json",
+        capture_post_json,
+    )
+
+    result = metrics.send_alert_delivery.run(delivery_id)
+
+    assert result["status"] == "sent"
+    assert sent["url"] == "https://example.com/hook"
+    assert sent["headers"] == {"X-Webhook-Token": "secret-abc"}
+    body = sent["body"]
+    assert isinstance(body, dict)
+    assert body["matched_count"] == 1
+    assert body["rule"]["name"] == "Main Rule"
+    assert body["scan"]["name"] == "Runtime Scan"
+    assert body["project"]["slug"] == "alert-runtime"
+    assert len(body["items"]) == 1
+    assert body["items"][0]["scope_name"] == "purchase:success"
+    assert body["items"][0]["direction"] == "drop"
+    assert isinstance(body["message"], str)
+    assert "purchase:success" in body["message"]
+
+    with sync_session_factory() as session:
+        persisted = session.get(AlertDelivery, uuid.UUID(delivery_id))
+        assert persisted is not None
+        assert persisted.status == AlertDeliveryStatus.sent.value
+        assert persisted.error_message is None
 
     Base.metadata.drop_all(engine)
     engine.dispose()

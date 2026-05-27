@@ -10,6 +10,9 @@ from tripl.alerting_validation import (
     validate_slack_webhook_url,
     validate_telegram_bot_token,
     validate_telegram_chat_id,
+    validate_webhook_header_name,
+    validate_webhook_header_value,
+    validate_webhook_target_url,
 )
 
 AlertRuleFilterField = Literal["event_type", "event", "direction"]
@@ -132,6 +135,9 @@ class AlertDestinationCreate(BaseModel):
     webhook_url: str | None = None
     bot_token: str | None = None
     chat_id: str | None = None
+    target_url: str | None = None
+    webhook_header_name: str | None = None
+    webhook_header_value: str | None = None
 
     @field_validator("type")
     @classmethod
@@ -143,7 +149,14 @@ class AlertDestinationCreate(BaseModel):
     def normalize_name(cls, value: str) -> str:
         return normalize_required_text(value, field_name="Destination name")
 
-    @field_validator("webhook_url", "bot_token", mode="before")
+    @field_validator(
+        "webhook_url",
+        "bot_token",
+        "target_url",
+        "webhook_header_name",
+        "webhook_header_value",
+        mode="before",
+    )
     @classmethod
     def normalize_optional_secret_fields(cls, value: str | None) -> str | None:
         return normalize_optional_secret(value)
@@ -162,6 +175,12 @@ class AlertDestinationCreate(BaseModel):
         elif self.type == "telegram":
             self.bot_token = validate_telegram_bot_token(self.bot_token)
             self.chat_id = validate_telegram_chat_id(self.chat_id)
+        elif self.type == "webhook":
+            self.target_url = validate_webhook_target_url(self.target_url)
+            self.webhook_header_name = validate_webhook_header_name(self.webhook_header_name)
+            self.webhook_header_value = validate_webhook_header_value(self.webhook_header_value)
+            if (self.webhook_header_name is None) != (self.webhook_header_value is None):
+                raise ValueError("Webhook header name and value must be provided together")
         else:
             raise ValueError("Unsupported destination type")
         return self
@@ -173,6 +192,9 @@ class AlertDestinationUpdate(BaseModel):
     webhook_url: str | None = None
     bot_token: str | None = None
     chat_id: str | None = None
+    target_url: str | None = None
+    webhook_header_name: str | None = None
+    webhook_header_value: str | None = None
 
     @field_validator("name")
     @classmethod
@@ -204,6 +226,24 @@ class AlertDestinationUpdate(BaseModel):
             return None
         return validate_telegram_chat_id(value)
 
+    @field_validator("target_url", mode="before")
+    @classmethod
+    def validate_target_url(cls, value: str | None) -> str | None:
+        normalized = normalize_optional_secret(value)
+        if normalized is None:
+            return None
+        return validate_webhook_target_url(normalized)
+
+    @field_validator("webhook_header_value", mode="before")
+    @classmethod
+    def validate_header_value(cls, value: str | None) -> str | None:
+        return validate_webhook_header_value(value)
+
+    @field_validator("webhook_header_name")
+    @classmethod
+    def validate_header_name(cls, value: str | None) -> str | None:
+        return validate_webhook_header_name(value)
+
 
 class AlertDestinationResponse(BaseModel):
     id: uuid.UUID
@@ -214,6 +254,8 @@ class AlertDestinationResponse(BaseModel):
     webhook_set: bool
     bot_token_set: bool
     chat_id: str | None
+    target_url_set: bool
+    webhook_header_name: str | None
     rules: list[AlertRuleResponse]
     created_at: datetime
     updated_at: datetime

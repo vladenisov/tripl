@@ -139,6 +139,12 @@ export function DestinationCard({
                 {destination.type === 'telegram' && destination.chat_id && (
                   <Badge variant="outline" className="text-[10px]">chat {destination.chat_id}</Badge>
                 )}
+                {destination.type === 'webhook' && destination.target_url_set && (
+                  <Badge variant="outline" className="text-[10px]">url set</Badge>
+                )}
+                {destination.type === 'webhook' && destination.webhook_header_name && (
+                  <Badge variant="outline" className="text-[10px]">header {destination.webhook_header_name}</Badge>
+                )}
               </div>
               <p className="text-xs text-muted-foreground">
                 {destination.rules.length} rule{destination.rules.length === 1 ? '' : 's'}

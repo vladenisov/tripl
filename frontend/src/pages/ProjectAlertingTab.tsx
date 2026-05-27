@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Send, Trash2, Webhook } from 'lucide-react'
+import { Globe, Send, Trash2, Webhook } from 'lucide-react'
 
 import { alertingApi } from '@/api/alerting'
 import { eventTypesApi } from '@/api/eventTypes'
@@ -30,7 +30,7 @@ import {
 export default function ProjectAlertingTab({ slug }: { slug: string }) {
   const qc = useQueryClient()
   const { confirm, dialog } = useConfirm()
-  const [createType, setCreateType] = useState<'slack' | 'telegram' | null>(null)
+  const [createType, setCreateType] = useState<'slack' | 'telegram' | 'webhook' | null>(null)
   const [destinationForm, setDestinationForm] = useState<DestinationFormState>(defaultDestinationForm('slack'))
   const [editingDestination, setEditingDestination] = useState<AlertDestination | null>(null)
   const [deliveryFilters, setDeliveryFilters] = useState<{
@@ -81,6 +81,7 @@ export default function ProjectAlertingTab({ slug }: { slug: string }) {
   const groupedDestinations = useMemo(() => ({
     slack: destinations.filter(destination => destination.type === 'slack'),
     telegram: destinations.filter(destination => destination.type === 'telegram'),
+    webhook: destinations.filter(destination => destination.type === 'webhook'),
   }), [destinations])
 
   const allRules = destinations.flatMap(destination =>
@@ -108,6 +109,9 @@ export default function ProjectAlertingTab({ slug }: { slug: string }) {
         webhook_url: destinationForm.type === 'slack' && destinationForm.webhook_url ? destinationForm.webhook_url : undefined,
         bot_token: destinationForm.type === 'telegram' && destinationForm.bot_token ? destinationForm.bot_token : undefined,
         chat_id: destinationForm.type === 'telegram' ? destinationForm.chat_id : undefined,
+        target_url: destinationForm.type === 'webhook' && destinationForm.target_url ? destinationForm.target_url : undefined,
+        webhook_header_name: destinationForm.type === 'webhook' ? destinationForm.webhook_header_name : undefined,
+        webhook_header_value: destinationForm.type === 'webhook' && destinationForm.webhook_header_value ? destinationForm.webhook_header_value : undefined,
       })
     },
     onSuccess: () => {
@@ -122,7 +126,7 @@ export default function ProjectAlertingTab({ slug }: { slug: string }) {
     onSuccess: () => qc.invalidateQueries({ queryKey: ['alertDestinations', slug] }),
   })
 
-  const openCreate = (type: 'slack' | 'telegram') => {
+  const openCreate = (type: 'slack' | 'telegram' | 'webhook') => {
     setCreateType(type)
     setEditingDestination(null)
     setDestinationForm(defaultDestinationForm(type))
@@ -138,6 +142,9 @@ export default function ProjectAlertingTab({ slug }: { slug: string }) {
       webhook_url: '',
       bot_token: '',
       chat_id: destination.chat_id ?? '',
+      target_url: '',
+      webhook_header_name: destination.webhook_header_name ?? '',
+      webhook_header_value: '',
     })
   }
 
@@ -166,7 +173,7 @@ export default function ProjectAlertingTab({ slug }: { slug: string }) {
       <div>
         <h2 className="text-lg font-semibold">Alerting</h2>
         <p className="text-sm text-muted-foreground mt-1">
-          Route active anomaly signals to Slack and Telegram. Rules are project-level and apply to every scan in the project.
+          Route active anomaly signals to Slack, Telegram, or a generic webhook. Rules are project-level and apply to every scan in the project.
         </p>
       </div>
 
@@ -183,6 +190,10 @@ export default function ProjectAlertingTab({ slug }: { slug: string }) {
                 <Send className="mr-2 h-4 w-4" />
                 Add Telegram
               </Button>
+              <Button variant="outline" size="sm" onClick={() => openCreate('webhook')}>
+                <Globe className="mr-2 h-4 w-4" />
+                Add Webhook
+              </Button>
             </div>
           </div>
 
@@ -190,11 +201,11 @@ export default function ProjectAlertingTab({ slug }: { slug: string }) {
             <EmptyState
               icon={Webhook}
               title="No alert destinations"
-              description="Create a Slack webhook or Telegram bot destination, then attach rules to it."
+              description="Create a Slack webhook, Telegram bot, or generic webhook destination, then attach rules to it."
             />
           )}
 
-          {(['slack', 'telegram'] as const).map(channel => (
+          {(['slack', 'telegram', 'webhook'] as const).map(channel => (
             <div key={channel} className="space-y-3">
               <div className="flex items-center gap-2">
                 <h4 className="text-sm font-medium capitalize">{channel}</h4>
@@ -264,6 +275,7 @@ export default function ProjectAlertingTab({ slug }: { slug: string }) {
                       <SelectItem value="all">All</SelectItem>
                       <SelectItem value="slack">Slack</SelectItem>
                       <SelectItem value="telegram">Telegram</SelectItem>
+                      <SelectItem value="webhook">Webhook</SelectItem>
                     </SelectContent>
                   </Select>
                 </div>
@@ -350,7 +362,7 @@ export default function ProjectAlertingTab({ slug }: { slug: string }) {
         <DialogContent className="max-w-lg">
           <form onSubmit={event => { event.preventDefault(); destinationMutation.mutate() }}>
             <DialogHeader>
-              <DialogTitle>{editingDestination ? 'Edit Destination' : `New ${activeDestinationType === 'slack' ? 'Slack' : 'Telegram'} Destination`}</DialogTitle>
+              <DialogTitle>{editingDestination ? 'Edit Destination' : `New ${activeDestinationType === 'slack' ? 'Slack' : activeDestinationType === 'telegram' ? 'Telegram' : 'Webhook'} Destination`}</DialogTitle>
             </DialogHeader>
             <div className="grid gap-4 py-4">
               <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
@@ -367,13 +379,14 @@ export default function ProjectAlertingTab({ slug }: { slug: string }) {
                   <Label>Channel</Label>
                   <Select
                     value={destinationForm.type}
-                    onValueChange={value => setDestinationForm(current => ({ ...defaultDestinationForm(value as 'slack' | 'telegram'), name: current.name }))}
+                    onValueChange={value => setDestinationForm(current => ({ ...defaultDestinationForm(value as 'slack' | 'telegram' | 'webhook'), name: current.name }))}
                     disabled={!!editingDestination}
                   >
                     <SelectTrigger><SelectValue /></SelectTrigger>
                     <SelectContent>
                       <SelectItem value="slack">Slack</SelectItem>
                       <SelectItem value="telegram">Telegram</SelectItem>
+                      <SelectItem value="webhook">Webhook</SelectItem>
                     </SelectContent>
                   </Select>
                 </div>
@@ -391,7 +404,7 @@ export default function ProjectAlertingTab({ slug }: { slug: string }) {
                     required={!editingDestination || !editingDestination.webhook_set}
                   />
                 </div>
-              ) : (
+              ) : destinationForm.type === 'telegram' ? (
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                   <div className="grid gap-2">
                     <Label>Bot Token</Label>
@@ -413,6 +426,43 @@ export default function ProjectAlertingTab({ slug }: { slug: string }) {
                       required
                     />
                   </div>
+                </div>
+              ) : (
+                <div className="grid gap-3">
+                  <div className="grid gap-2">
+                    <Label>Target URL</Label>
+                    <Input
+                      aria-label="Target URL"
+                      placeholder={editingDestination?.target_url_set ? 'Leave empty to keep current URL' : 'https://example.com/webhook'}
+                      value={destinationForm.target_url}
+                      onChange={event => setDestinationForm(current => ({ ...current, target_url: event.target.value }))}
+                      required={!editingDestination || !editingDestination.target_url_set}
+                    />
+                  </div>
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                    <div className="grid gap-2">
+                      <Label>Secret Header Name</Label>
+                      <Input
+                        aria-label="Webhook Header Name"
+                        placeholder="Authorization (optional)"
+                        value={destinationForm.webhook_header_name}
+                        onChange={event => setDestinationForm(current => ({ ...current, webhook_header_name: event.target.value }))}
+                      />
+                    </div>
+                    <div className="grid gap-2">
+                      <Label>Secret Header Value</Label>
+                      <Input
+                        type="password"
+                        aria-label="Webhook Header Value"
+                        placeholder={editingDestination?.webhook_header_name ? 'Leave empty to keep current value' : 'Bearer … (optional)'}
+                        value={destinationForm.webhook_header_value}
+                        onChange={event => setDestinationForm(current => ({ ...current, webhook_header_value: event.target.value }))}
+                      />
+                    </div>
+                  </div>
+                  <p className="text-xs text-muted-foreground">
+                    Alerts POST a JSON payload (project, rule, scan, message, items). The optional secret header is sent with every request — use it for auth (e.g. Authorization).
+                  </p>
                 </div>
               )}
 

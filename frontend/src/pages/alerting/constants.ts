@@ -7,12 +7,15 @@ import type {
 } from "@/types"
 
 export type DestinationFormState = {
-  type: 'slack' | 'telegram'
+  type: 'slack' | 'telegram' | 'webhook'
   name: string
   enabled: boolean
   webhook_url: string
   bot_token: string
   chat_id: string
+  target_url: string
+  webhook_header_name: string
+  webhook_header_value: string
 }
 
 export type RuleFilterDraft = {
@@ -143,7 +146,7 @@ export const DEFAULT_ITEMS_TEMPLATES: Record<AlertMessageFormat, string> = {
   telegram_markdownv2: '\\- ${scope_label} ${scope_name}: ${direction_label}, actual=${actual_count}, expected=${expected_count}, delta=${absolute_delta} \\(${percent_delta}%\\)${drift_line}${details_line}${monitoring_line}',
 }
 
-export const MESSAGE_FORMAT_OPTIONS: Record<'slack' | 'telegram', { value: AlertMessageFormat; label: string }[]> = {
+export const MESSAGE_FORMAT_OPTIONS: Record<'slack' | 'telegram' | 'webhook', { value: AlertMessageFormat; label: string }[]> = {
   slack: [
     { value: 'plain', label: 'Plain text' },
     { value: 'slack_mrkdwn', label: 'Slack mrkdwn' },
@@ -152,6 +155,9 @@ export const MESSAGE_FORMAT_OPTIONS: Record<'slack' | 'telegram', { value: Alert
     { value: 'plain', label: 'Plain text' },
     { value: 'telegram_html', label: 'Telegram HTML' },
     { value: 'telegram_markdownv2', label: 'Telegram MarkdownV2' },
+  ],
+  webhook: [
+    { value: 'plain', label: 'Plain text' },
   ],
 }
 
@@ -182,7 +188,7 @@ export const FORMAT_HELP: Record<AlertMessageFormat, string[]> = {
   ],
 }
 
-export function defaultDestinationForm(type: 'slack' | 'telegram'): DestinationFormState {
+export function defaultDestinationForm(type: 'slack' | 'telegram' | 'webhook'): DestinationFormState {
   return {
     type,
     name: '',
@@ -190,6 +196,9 @@ export function defaultDestinationForm(type: 'slack' | 'telegram'): DestinationF
     webhook_url: '',
     bot_token: '',
     chat_id: '',
+    target_url: '',
+    webhook_header_name: '',
+    webhook_header_value: '',
   }
 }
 

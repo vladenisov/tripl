@@ -320,6 +320,8 @@ def _destination_to_response(destination: AlertDestination) -> AlertDestinationR
         webhook_set=bool(destination.webhook_url_encrypted),
         bot_token_set=bool(destination.bot_token_encrypted),
         chat_id=destination.chat_id,
+        target_url_set=bool(destination.target_url_encrypted),
+        webhook_header_name=destination.webhook_header_name,
         rules=[_rule_to_response(rule) for rule in rules],
         created_at=destination.created_at,
         updated_at=destination.updated_at,
@@ -373,6 +375,9 @@ async def create_destination(
         webhook_url_encrypted=_encrypt_secret(data.webhook_url),
         bot_token_encrypted=_encrypt_secret(data.bot_token),
         chat_id=data.chat_id,
+        target_url_encrypted=_encrypt_secret(data.target_url),
+        webhook_header_name=data.webhook_header_name,
+        webhook_header_value_encrypted=_encrypt_secret(data.webhook_header_value),
     )
     session.add(destination)
     await session.commit()
@@ -432,6 +437,15 @@ async def update_destination(
                 )
         if "chat_id" in update_dict:
             destination.chat_id = validate_telegram_chat_id(update_dict["chat_id"])
+    if destination.type == AlertDestinationType.webhook:
+        # Field validators already normalized/validated these values.
+        if "target_url" in update_dict and update_dict["target_url"] is not None:
+            destination.target_url_encrypted = _encrypt_secret(update_dict["target_url"])
+        if "webhook_header_name" in update_dict:
+            destination.webhook_header_name = update_dict["webhook_header_name"]
+        header_value = update_dict.get("webhook_header_value")
+        if header_value is not None:
+            destination.webhook_header_value_encrypted = _encrypt_secret(header_value)
 
     await session.commit()
     destination = await _get_destination(

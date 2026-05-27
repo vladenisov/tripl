@@ -15,12 +15,15 @@ export const alertingApi = {
   createDestination: (
     slug: string,
     data: {
-      type: 'slack' | 'telegram'
+      type: 'slack' | 'telegram' | 'webhook'
       name: string
       enabled?: boolean
       webhook_url?: string | null
       bot_token?: string | null
       chat_id?: string | null
+      target_url?: string | null
+      webhook_header_name?: string | null
+      webhook_header_value?: string | null
     },
   ) => api.post<AlertDestination>(`/projects/${slug}/alert-destinations`, data),
 
@@ -33,6 +36,9 @@ export const alertingApi = {
       webhook_url?: string | null
       bot_token?: string | null
       chat_id?: string | null
+      target_url?: string | null
+      webhook_header_name?: string | null
+      webhook_header_value?: string | null
     },
   ) => api.patch<AlertDestination>(`/projects/${slug}/alert-destinations/${destinationId}`, data),
 

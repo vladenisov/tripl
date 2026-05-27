@@ -551,7 +551,7 @@ export interface EventWindowMetrics {
   data: EventMetricPoint[]
 }
 
-export type AlertDestinationType = 'slack' | 'telegram'
+export type AlertDestinationType = 'slack' | 'telegram' | 'webhook'
 export type AlertDeliveryStatus = 'pending' | 'sent' | 'failed'
 export type AlertMessageFormat =
   | 'plain'
@@ -608,6 +608,8 @@ export interface AlertDestination {
   webhook_set: boolean
   bot_token_set: boolean
   chat_id: string | null
+  target_url_set: boolean
+  webhook_header_name: string | null
   rules: AlertRule[]
   created_at: string
   updated_at: string
