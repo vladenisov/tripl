@@ -8,6 +8,7 @@ from sqlalchemy import JSON, Boolean, DateTime, ForeignKey, Index, Integer, Stri
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from tripl.models.base import Base, TimestampMixin, UUIDMixin
+from tripl.models.plan_branch import default_branch_id
 
 if TYPE_CHECKING:
     from tripl.models.event_field_value import EventFieldValue
@@ -25,6 +26,9 @@ class Event(UUIDMixin, TimestampMixin, Base):
     )
 
     project_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"))
+    branch_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("plan_branches.id", ondelete="CASCADE"), index=True, default=default_branch_id
+    )
     event_type_id: Mapped[uuid.UUID] = mapped_column(
         ForeignKey("event_types.id", ondelete="CASCADE")
     )

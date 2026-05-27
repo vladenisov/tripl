@@ -7,6 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from tripl import cache
 from tripl.models.meta_field_definition import MetaFieldDefinition
 from tripl.schemas.meta_field import MetaFieldCreate, MetaFieldResponse, MetaFieldUpdate
+from tripl.services.plan_branch_service import ensure_main_branch_id
 from tripl.services.project_service import get_project_id_by_slug
 
 
@@ -16,9 +17,13 @@ async def list_meta_fields(session: AsyncSession, slug: str) -> list[MetaFieldRe
         return [MetaFieldResponse.model_validate(item) for item in cached]
 
     project_id = await get_project_id_by_slug(session, slug)
+    branch_id = await ensure_main_branch_id(session, project_id)
     result = await session.execute(
         select(MetaFieldDefinition)
-        .where(MetaFieldDefinition.project_id == project_id)
+        .where(
+            MetaFieldDefinition.project_id == project_id,
+            MetaFieldDefinition.branch_id == branch_id,
+        )
         .order_by(MetaFieldDefinition.order)
         .limit(1000)  # defensive cap; realistic projects have <50 meta fields
     )
@@ -36,15 +41,17 @@ async def create_meta_field(
     session: AsyncSession, slug: str, data: MetaFieldCreate
 ) -> MetaFieldDefinition:
     project_id = await get_project_id_by_slug(session, slug)
+    branch_id = await ensure_main_branch_id(session, project_id)
     existing = await session.execute(
         select(MetaFieldDefinition).where(
             MetaFieldDefinition.project_id == project_id,
+            MetaFieldDefinition.branch_id == branch_id,
             MetaFieldDefinition.name == data.name,
         )
     )
     if existing.scalar_one_or_none():
         raise HTTPException(status_code=409, detail="Meta field with this name already exists")
-    mf = MetaFieldDefinition(**data.model_dump(), project_id=project_id)
+    mf = MetaFieldDefinition(**data.model_dump(), project_id=project_id, branch_id=branch_id)
     session.add(mf)
     await session.commit()
     await session.refresh(mf)
@@ -56,10 +63,12 @@ async def update_meta_field(
     session: AsyncSession, slug: str, meta_field_id: uuid.UUID, data: MetaFieldUpdate
 ) -> MetaFieldDefinition:
     project_id = await get_project_id_by_slug(session, slug)
+    branch_id = await ensure_main_branch_id(session, project_id)
     result = await session.execute(
         select(MetaFieldDefinition).where(
             MetaFieldDefinition.id == meta_field_id,
             MetaFieldDefinition.project_id == project_id,
+            MetaFieldDefinition.branch_id == branch_id,
         )
     )
     mf = result.scalar_one_or_none()
@@ -76,10 +85,12 @@ async def update_meta_field(
 
 async def delete_meta_field(session: AsyncSession, slug: str, meta_field_id: uuid.UUID) -> None:
     project_id = await get_project_id_by_slug(session, slug)
+    branch_id = await ensure_main_branch_id(session, project_id)
     result = await session.execute(
         select(MetaFieldDefinition).where(
             MetaFieldDefinition.id == meta_field_id,
             MetaFieldDefinition.project_id == project_id,
+            MetaFieldDefinition.branch_id == branch_id,
         )
     )
     mf = result.scalar_one_or_none()

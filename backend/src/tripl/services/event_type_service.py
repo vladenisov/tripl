@@ -7,6 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from tripl import cache
 from tripl.models.event_type import EventType
 from tripl.schemas.event_type import EventTypeCreate, EventTypeResponse, EventTypeUpdate
+from tripl.services.plan_branch_service import ensure_main_branch_id
 from tripl.services.project_service import get_project_id_by_slug
 
 
@@ -16,9 +17,10 @@ async def list_event_types(session: AsyncSession, slug: str) -> list[EventTypeRe
         return [EventTypeResponse.model_validate(item) for item in cached]
 
     project_id = await get_project_id_by_slug(session, slug)
+    branch_id = await ensure_main_branch_id(session, project_id)
     result = await session.execute(
         select(EventType)
-        .where(EventType.project_id == project_id)
+        .where(EventType.project_id == project_id, EventType.branch_id == branch_id)
         .order_by(EventType.order, EventType.created_at)
         .limit(1000)  # defensive cap; realistic projects have <100 event types
     )
@@ -34,8 +36,13 @@ async def list_event_types(session: AsyncSession, slug: str) -> list[EventTypeRe
 
 async def get_event_type(session: AsyncSession, slug: str, event_type_id: uuid.UUID) -> EventType:
     project_id = await get_project_id_by_slug(session, slug)
+    branch_id = await ensure_main_branch_id(session, project_id)
     result = await session.execute(
-        select(EventType).where(EventType.id == event_type_id, EventType.project_id == project_id)
+        select(EventType).where(
+            EventType.id == event_type_id,
+            EventType.project_id == project_id,
+            EventType.branch_id == branch_id,
+        )
     )
     et = result.scalar_one_or_none()
     if not et:
@@ -45,14 +52,19 @@ async def get_event_type(session: AsyncSession, slug: str, event_type_id: uuid.U
 
 async def create_event_type(session: AsyncSession, slug: str, data: EventTypeCreate) -> EventType:
     project_id = await get_project_id_by_slug(session, slug)
+    branch_id = await ensure_main_branch_id(session, project_id)
     existing = await session.execute(
-        select(EventType).where(EventType.project_id == project_id, EventType.name == data.name)
+        select(EventType).where(
+            EventType.project_id == project_id,
+            EventType.branch_id == branch_id,
+            EventType.name == data.name,
+        )
     )
     if existing.scalar_one_or_none():
         raise HTTPException(
             status_code=409, detail="Event type with this name already exists in project"
         )
-    et = EventType(**data.model_dump(), project_id=project_id)
+    et = EventType(**data.model_dump(), project_id=project_id, branch_id=branch_id)
     session.add(et)
     await session.commit()
     await session.refresh(et)

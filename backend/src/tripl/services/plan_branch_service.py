@@ -1,0 +1,377 @@
+"""Plan branch lifecycle: main-branch resolution, branch CRUD, deep-copy.
+
+A project's tracking plan lives on its single ``kind="main"`` PlanBranch. Creating
+a working branch deep-copies every design-time entity from main into the new branch
+(fresh ids, FK remap) so edits are isolated. ``main`` is a real row (never NULL) so
+the ``(project_id, branch_id, name)`` unique constraints are enforced on the live plan.
+"""
+
+from __future__ import annotations
+
+import uuid
+
+from fastapi import HTTPException
+from sqlalchemy import func, select
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
+
+from tripl.models.event import Event
+from tripl.models.event_field_value import EventFieldValue
+from tripl.models.event_meta_value import EventMetaValue
+from tripl.models.event_tag import EventTag
+from tripl.models.event_type import EventType
+from tripl.models.event_type_relation import EventTypeRelation
+from tripl.models.field_definition import FieldDefinition
+from tripl.models.meta_field_definition import MetaFieldDefinition
+from tripl.models.plan_branch import BranchKind, BranchStatus, PlanBranch
+from tripl.models.plan_revision import PlanRevision
+from tripl.models.project import Project
+from tripl.models.variable import Variable
+from tripl.schemas.plan_branch import PlanBranchCreate, PlanBranchList, PlanBranchResponse
+from tripl.services.plan_revision_service import build_plan_snapshot
+
+MAIN_BRANCH_NAME = "main"
+
+
+async def ensure_main_branch_id(session: AsyncSession, project_id: uuid.UUID) -> uuid.UUID:
+    """Return the project's main branch id, creating it on first use.
+
+    Resolved lazily (rather than only at project creation) so every code path —
+    including projects seeded directly via the ORM in tests — gets a valid
+    ``branch_id`` for the live plan. Flushes (not commits) so it joins the
+    caller's transaction.
+    """
+    existing = await session.scalar(
+        select(PlanBranch.id).where(
+            PlanBranch.project_id == project_id,
+            PlanBranch.kind == BranchKind.main.value,
+        )
+    )
+    if existing is not None:
+        return existing
+    branch = PlanBranch(
+        project_id=project_id,
+        name=MAIN_BRANCH_NAME,
+        kind=BranchKind.main.value,
+        status=BranchStatus.merged.value,
+    )
+    session.add(branch)
+    await session.flush()
+    return branch.id
+
+
+async def _resolve_project(session: AsyncSession, slug: str) -> Project:
+    project = await session.scalar(select(Project).where(Project.slug == slug))
+    if project is None:
+        raise HTTPException(status_code=404, detail="Project not found")
+    return project
+
+
+def _to_response(branch: PlanBranch) -> PlanBranchResponse:
+    return PlanBranchResponse.model_validate(branch)
+
+
+async def list_branches(session: AsyncSession, slug: str) -> PlanBranchList:
+    project = await _resolve_project(session, slug)
+    await ensure_main_branch_id(session, project.id)
+    await session.commit()
+    rows = (
+        (
+            await session.execute(
+                select(PlanBranch)
+                .where(PlanBranch.project_id == project.id)
+                # main first, then most-recent working branches.
+                .order_by(PlanBranch.kind.desc(), PlanBranch.created_at.desc())
+            )
+        )
+        .scalars()
+        .all()
+    )
+    total = (
+        await session.execute(
+            select(func.count(PlanBranch.id)).where(PlanBranch.project_id == project.id)
+        )
+    ).scalar_one()
+    return PlanBranchList(items=[_to_response(b) for b in rows], total=total)
+
+
+async def _get_branch(
+    session: AsyncSession, project_id: uuid.UUID, branch_id: uuid.UUID
+) -> PlanBranch:
+    branch = await session.get(PlanBranch, branch_id)
+    if branch is None or branch.project_id != project_id:
+        raise HTTPException(status_code=404, detail="Branch not found")
+    return branch
+
+
+async def get_branch(session: AsyncSession, slug: str, branch_id: uuid.UUID) -> PlanBranchResponse:
+    project = await _resolve_project(session, slug)
+    branch = await _get_branch(session, project.id, branch_id)
+    return _to_response(branch)
+
+
+async def _deep_copy_plan(
+    session: AsyncSession,
+    *,
+    project_id: uuid.UUID,
+    source_branch_id: uuid.UUID,
+    target_branch_id: uuid.UUID,
+) -> None:
+    """Copy every design-time entity from source branch into target branch.
+
+    New ids are minted up front so FK remaps need no intermediate flush.
+    Child tables (field_definitions, event_field_values, event_meta_values,
+    event_tags) inherit their branch from the parent and carry no branch_id.
+    """
+    event_types = (
+        (
+            await session.execute(
+                select(EventType)
+                .where(
+                    EventType.project_id == project_id,
+                    EventType.branch_id == source_branch_id,
+                )
+                .options(selectinload(EventType.field_definitions))
+            )
+        )
+        .scalars()
+        .all()
+    )
+    et_map: dict[uuid.UUID, uuid.UUID] = {}
+    fd_map: dict[uuid.UUID, uuid.UUID] = {}
+    new_objs: list[object] = []
+    for et in event_types:
+        new_et_id = uuid.uuid4()
+        et_map[et.id] = new_et_id
+        new_objs.append(
+            EventType(
+                id=new_et_id,
+                project_id=project_id,
+                branch_id=target_branch_id,
+                name=et.name,
+                display_name=et.display_name,
+                description=et.description,
+                color=et.color,
+                order=et.order,
+            )
+        )
+        for fd in et.field_definitions:
+            new_fd_id = uuid.uuid4()
+            fd_map[fd.id] = new_fd_id
+            new_objs.append(
+                FieldDefinition(
+                    id=new_fd_id,
+                    event_type_id=new_et_id,
+                    name=fd.name,
+                    display_name=fd.display_name,
+                    field_type=fd.field_type,
+                    is_required=fd.is_required,
+                    enum_options=list(fd.enum_options) if fd.enum_options else None,
+                    description=fd.description,
+                    order=fd.order,
+                    sensitivity=fd.sensitivity,
+                )
+            )
+
+    meta_fields = (
+        (
+            await session.execute(
+                select(MetaFieldDefinition).where(
+                    MetaFieldDefinition.project_id == project_id,
+                    MetaFieldDefinition.branch_id == source_branch_id,
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    mf_map: dict[uuid.UUID, uuid.UUID] = {}
+    for mf in meta_fields:
+        new_mf_id = uuid.uuid4()
+        mf_map[mf.id] = new_mf_id
+        new_objs.append(
+            MetaFieldDefinition(
+                id=new_mf_id,
+                project_id=project_id,
+                branch_id=target_branch_id,
+                name=mf.name,
+                display_name=mf.display_name,
+                field_type=mf.field_type,
+                is_required=mf.is_required,
+                enum_options=list(mf.enum_options) if mf.enum_options else None,
+                default_value=mf.default_value,
+                link_template=mf.link_template,
+                order=mf.order,
+                sensitivity=mf.sensitivity,
+            )
+        )
+
+    variables = (
+        (
+            await session.execute(
+                select(Variable).where(
+                    Variable.project_id == project_id,
+                    Variable.branch_id == source_branch_id,
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    for var in variables:
+        new_objs.append(
+            Variable(
+                id=uuid.uuid4(),
+                project_id=project_id,
+                branch_id=target_branch_id,
+                name=var.name,
+                source_name=var.source_name,
+                variable_type=var.variable_type,
+                description=var.description,
+            )
+        )
+
+    events = (
+        (
+            await session.execute(
+                select(Event)
+                .where(Event.project_id == project_id, Event.branch_id == source_branch_id)
+                .options(
+                    selectinload(Event.field_values),
+                    selectinload(Event.meta_values),
+                    selectinload(Event.tags),
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    for ev in events:
+        new_ev_id = uuid.uuid4()
+        new_objs.append(
+            Event(
+                id=new_ev_id,
+                project_id=project_id,
+                branch_id=target_branch_id,
+                event_type_id=et_map[ev.event_type_id],
+                name=ev.name,
+                description=ev.description,
+                order=ev.order,
+                implemented=ev.implemented,
+                reviewed=ev.reviewed,
+                archived=ev.archived,
+                last_seen_at=ev.last_seen_at,
+                metric_breakdown_columns=list(ev.metric_breakdown_columns or []),
+            )
+        )
+        for fv in ev.field_values:
+            new_objs.append(
+                EventFieldValue(
+                    id=uuid.uuid4(),
+                    event_id=new_ev_id,
+                    field_definition_id=fd_map[fv.field_definition_id],
+                    value=fv.value,
+                )
+            )
+        for mv in ev.meta_values:
+            new_objs.append(
+                EventMetaValue(
+                    id=uuid.uuid4(),
+                    event_id=new_ev_id,
+                    meta_field_definition_id=mf_map[mv.meta_field_definition_id],
+                    value=mv.value,
+                )
+            )
+        for tag in ev.tags:
+            new_objs.append(EventTag(id=uuid.uuid4(), event_id=new_ev_id, name=tag.name))
+
+    relations = (
+        (
+            await session.execute(
+                select(EventTypeRelation).where(
+                    EventTypeRelation.project_id == project_id,
+                    EventTypeRelation.branch_id == source_branch_id,
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    for rel in relations:
+        new_objs.append(
+            EventTypeRelation(
+                id=uuid.uuid4(),
+                project_id=project_id,
+                branch_id=target_branch_id,
+                source_event_type_id=et_map[rel.source_event_type_id],
+                target_event_type_id=et_map[rel.target_event_type_id],
+                source_field_id=fd_map[rel.source_field_id],
+                target_field_id=fd_map[rel.target_field_id],
+                relation_type=rel.relation_type,
+                description=rel.description,
+            )
+        )
+
+    session.add_all(new_objs)
+
+
+async def create_branch(
+    session: AsyncSession,
+    slug: str,
+    data: PlanBranchCreate,
+    *,
+    user_id: uuid.UUID | None = None,
+) -> PlanBranchResponse:
+    project = await _resolve_project(session, slug)
+    main_branch_id = await ensure_main_branch_id(session, project.id)
+
+    dup = await session.scalar(
+        select(PlanBranch.id).where(
+            PlanBranch.project_id == project.id,
+            PlanBranch.name == data.name,
+        )
+    )
+    if dup is not None:
+        raise HTTPException(status_code=409, detail="Branch with this name already exists")
+
+    # Capture the main snapshot as the merge base.
+    base_payload = await build_plan_snapshot(session, project.id, branch_id=main_branch_id)
+    base_revision = PlanRevision(
+        project_id=project.id,
+        created_by=user_id,
+        summary=f"Base snapshot for branch '{data.name}'",
+        payload=base_payload,
+    )
+    session.add(base_revision)
+    await session.flush()
+
+    branch = PlanBranch(
+        project_id=project.id,
+        name=data.name,
+        kind=BranchKind.working.value,
+        status=BranchStatus.draft.value,
+        description=data.description,
+        base_revision_id=base_revision.id,
+        created_by=user_id,
+    )
+    session.add(branch)
+    await session.flush()
+
+    await _deep_copy_plan(
+        session,
+        project_id=project.id,
+        source_branch_id=main_branch_id,
+        target_branch_id=branch.id,
+    )
+    await session.commit()
+    await session.refresh(branch)
+    return _to_response(branch)
+
+
+async def delete_branch(session: AsyncSession, slug: str, branch_id: uuid.UUID) -> None:
+    project = await _resolve_project(session, slug)
+    branch = await _get_branch(session, project.id, branch_id)
+    if branch.kind == BranchKind.main.value:
+        raise HTTPException(status_code=400, detail="The main branch cannot be deleted")
+    await session.delete(branch)
+    await session.commit()
