@@ -19,7 +19,7 @@ export function TemplateEditor({
   value,
   onChange,
 }: {
-  destinationType: 'slack' | 'telegram'
+  destinationType: 'slack' | 'telegram' | 'webhook'
   messageFormat: AlertMessageFormat
   onMessageFormatChange: (value: AlertMessageFormat) => void
   title: string

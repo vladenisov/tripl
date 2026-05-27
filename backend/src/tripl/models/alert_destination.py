@@ -17,6 +17,7 @@ if TYPE_CHECKING:
 class AlertDestinationType(enum.StrEnum):
     slack = "slack"
     telegram = "telegram"
+    webhook = "webhook"
 
 
 class AlertDestination(UUIDMixin, TimestampMixin, Base):
@@ -32,6 +33,10 @@ class AlertDestination(UUIDMixin, TimestampMixin, Base):
     webhook_url_encrypted: Mapped[str | None] = mapped_column(Text, nullable=True)
     bot_token_encrypted: Mapped[str | None] = mapped_column(Text, nullable=True)
     chat_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    # Generic webhook channel: arbitrary https endpoint + optional secret header.
+    target_url_encrypted: Mapped[str | None] = mapped_column(Text, nullable=True)
+    webhook_header_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    webhook_header_value_encrypted: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     rules: Mapped[list[AlertRule]] = relationship(
         back_populates="destination",

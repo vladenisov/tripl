@@ -26,6 +26,7 @@ from tripl.alerting_validation import (
     validate_slack_webhook_url,
     validate_telegram_bot_token,
     validate_telegram_chat_id,
+    validate_webhook_target_url,
 )
 from tripl.anomaly_context import build_alert_item_context
 from tripl.crypto import decrypt_value
@@ -207,11 +208,18 @@ def _render_delivery_message(
     return render_alert_template(template, context).rstrip(), context.message_format
 
 
-def _post_json(url: str, body: dict[str, object]) -> None:
+def _post_json(
+    url: str,
+    body: dict[str, object],
+    headers: dict[str, str] | None = None,
+) -> None:
+    request_headers = {"Content-Type": "application/json"}
+    if headers:
+        request_headers.update(headers)
     request = urllib.request.Request(
         url,
         data=json.dumps(body).encode(),
-        headers={"Content-Type": "application/json"},
+        headers=request_headers,
         method="POST",
     )
     try:
@@ -267,6 +275,63 @@ def _send_telegram_message(
         url,
         body,
     )
+
+
+def _webhook_item_payload(item: AlertDeliveryItem) -> dict[str, object]:
+    return {
+        "scope_type": item.scope_type,
+        "scope_ref": item.scope_ref,
+        "scope_name": item.scope_name,
+        "direction": item.direction,
+        "actual_count": item.actual_count,
+        "expected_count": item.expected_count,
+        "absolute_delta": item.absolute_delta,
+        "percent_delta": item.percent_delta,
+        "bucket": item.bucket.isoformat() if item.bucket else None,
+        "details_url": item.details_path,
+        "monitoring_url": item.monitoring_path,
+        "drift_field": item.drift_field,
+        "drift_type": item.drift_type,
+        "sample_value": item.sample_value,
+    }
+
+
+def _build_webhook_payload(
+    delivery: AlertDelivery,
+    *,
+    destination: AlertDestination,
+    rule: AlertRule,
+    scan_name: str,
+    project: Project | None,
+    message: str,
+) -> dict[str, object]:
+    """Structured JSON body so downstream automation (Zapier/n8n/etc.) can parse
+    individual fields without scraping the rendered ``message`` text."""
+    return {
+        "project": {
+            "name": project.name if project else None,
+            "slug": project.slug if project else None,
+        },
+        "destination": {"id": str(destination.id), "name": destination.name},
+        "rule": {"id": str(rule.id), "name": rule.name},
+        "scan": {"id": str(delivery.scan_config_id), "name": scan_name},
+        "matched_count": delivery.matched_count,
+        "message": message,
+        "items": [_webhook_item_payload(item) for item in delivery.items],
+    }
+
+
+def _send_webhook_message(
+    target_url: str,
+    payload: dict[str, object],
+    *,
+    header_name: str | None = None,
+    header_value: str | None = None,
+) -> None:
+    headers: dict[str, str] | None = None
+    if header_name and header_value is not None:
+        headers = {header_name: header_value}
+    _post_json(target_url, payload, headers)
 
 
 def _is_telegram_markdown_parse_error(error: Exception) -> bool:
@@ -371,6 +436,34 @@ def send_alert_delivery(self: object, delivery_id: str) -> dict[str, object]:
                     message_format = fallback_format
                 else:
                     raise
+        elif destination.type == AlertDestinationType.webhook:
+            try:
+                target_url = validate_webhook_target_url(
+                    _decrypt_secret(destination.target_url_encrypted)
+                )
+            except ValueError as exc:
+                raise ValueError(
+                    "Webhook destination configuration is invalid. Update the target URL."
+                ) from exc
+            header_value = (
+                _decrypt_secret(destination.webhook_header_value_encrypted)
+                if destination.webhook_header_value_encrypted
+                else None
+            )
+            webhook_payload = _build_webhook_payload(
+                delivery,
+                destination=destination,
+                rule=rule,
+                scan_name=scan_config.name,
+                project=project,
+                message=text,
+            )
+            _send_webhook_message(
+                target_url,
+                webhook_payload,
+                header_name=destination.webhook_header_name,
+                header_value=header_value,
+            )
         else:
             raise ValueError(f"Unsupported destination type {destination.type}")
 
