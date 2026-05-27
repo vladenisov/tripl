@@ -216,6 +216,7 @@ export interface Event {
   reviewed: boolean
   archived: boolean
   last_seen_at: string | null
+  metric_breakdown_columns: string[]
   drift_count: number
   tags: EventTag[]
   field_values: EventFieldValue[]

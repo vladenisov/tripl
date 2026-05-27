@@ -4,7 +4,7 @@ import uuid
 from datetime import datetime
 from typing import TYPE_CHECKING
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, Index, Integer, String, Text
+from sqlalchemy import JSON, Boolean, DateTime, ForeignKey, Index, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from tripl.models.base import Base, TimestampMixin, UUIDMixin
@@ -35,6 +35,11 @@ class Event(UUIDMixin, TimestampMixin, Base):
     reviewed: Mapped[bool] = mapped_column(Boolean, default=True, server_default="true")
     archived: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
     last_seen_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    metric_breakdown_columns: Mapped[list[str]] = mapped_column(
+        JSON,
+        default=list,
+        server_default="[]",
+    )
 
     event_type: Mapped[EventType] = relationship(lazy="selectin")
     field_values: Mapped[list[EventFieldValue]] = relationship(

@@ -613,6 +613,7 @@ async def test_get_event_metric_breakdowns_returns_series(client: AsyncClient) -
             "name": "event_name=Login",
             "implemented": True,
             "reviewed": True,
+            "metric_breakdown_columns": ["country"],
             "field_values": [{"field_definition_id": setup["page_field_id"], "value": "home"}],
         },
     )
@@ -637,7 +638,7 @@ async def test_get_event_metric_breakdowns_returns_series(client: AsyncClient) -
             name="Breakdown Config",
             base_query="SELECT time, event_name, country FROM events",
             time_column="time",
-            metric_breakdown_columns=["country", "platform"],
+            metric_breakdown_columns=["platform"],
             cardinality_threshold=100,
             interval="1h",
         )
@@ -697,7 +698,7 @@ async def test_get_event_metric_breakdowns_returns_series(client: AsyncClient) -
 
     assert resp.status_code == 200
     body = resp.json()
-    assert body["columns"] == ["country", "platform"]
+    assert body["columns"] == ["platform", "country"]
     assert body["selected_column"] == "country"
     assert [series["breakdown_value"] for series in body["series"]] == ["US", "Other"]
     assert body["series"][0]["total_count"] == 22
@@ -1147,31 +1148,33 @@ async def test_breakdown_timeline_returns_per_bucket_counts(client: AsyncClient)
             datetime(2026, 1, 1, 12, tzinfo=UTC),
         ]
         # Two breakdown_values; expect drill-down to return only US.
-        for bucket, us_count, de_count in zip(buckets, [40, 50, 60], [10, 20, 30]):
-            session.add_all([
-                EventMetricBreakdown(
-                    id=uuid.uuid4(),
-                    scan_config_id=scan_config.id,
-                    event_id=uuid.UUID(event_id),
-                    event_type_id=None,
-                    bucket=bucket,
-                    breakdown_column="country",
-                    breakdown_value="US",
-                    is_other=False,
-                    count=us_count,
-                ),
-                EventMetricBreakdown(
-                    id=uuid.uuid4(),
-                    scan_config_id=scan_config.id,
-                    event_id=uuid.UUID(event_id),
-                    event_type_id=None,
-                    bucket=bucket,
-                    breakdown_column="country",
-                    breakdown_value="DE",
-                    is_other=False,
-                    count=de_count,
-                ),
-            ])
+        for bucket, us_count, de_count in zip(buckets, [40, 50, 60], [10, 20, 30], strict=True):
+            session.add_all(
+                [
+                    EventMetricBreakdown(
+                        id=uuid.uuid4(),
+                        scan_config_id=scan_config.id,
+                        event_id=uuid.UUID(event_id),
+                        event_type_id=None,
+                        bucket=bucket,
+                        breakdown_column="country",
+                        breakdown_value="US",
+                        is_other=False,
+                        count=us_count,
+                    ),
+                    EventMetricBreakdown(
+                        id=uuid.uuid4(),
+                        scan_config_id=scan_config.id,
+                        event_id=uuid.UUID(event_id),
+                        event_type_id=None,
+                        bucket=bucket,
+                        breakdown_column="country",
+                        breakdown_value="DE",
+                        is_other=False,
+                        count=de_count,
+                    ),
+                ]
+            )
         await session.commit()
         scan_config_id = str(scan_config.id)
 

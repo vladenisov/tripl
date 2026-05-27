@@ -2,7 +2,7 @@ import uuid
 from datetime import datetime
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from tripl.schemas.event_type import EventTypeBrief
 
@@ -24,9 +24,15 @@ class EventCreate(BaseModel):
     implemented: bool = False
     reviewed: bool = True
     archived: bool = False
+    metric_breakdown_columns: list[str] = []
     tags: list[str] = []
     field_values: list[EventFieldValueIn] = []
     meta_values: list[EventMetaValueIn] = []
+
+    @field_validator("metric_breakdown_columns")
+    @classmethod
+    def validate_metric_breakdown_columns(cls, value: list[str]) -> list[str]:
+        return _normalize_metric_breakdown_columns(value)
 
 
 class EventUpdate(BaseModel):
@@ -35,9 +41,32 @@ class EventUpdate(BaseModel):
     implemented: bool | None = None
     reviewed: bool | None = None
     archived: bool | None = None
+    metric_breakdown_columns: list[str] | None = None
     tags: list[str] | None = None
     field_values: list[EventFieldValueIn] | None = None
     meta_values: list[EventMetaValueIn] | None = None
+
+    @field_validator("metric_breakdown_columns")
+    @classmethod
+    def validate_metric_breakdown_columns(cls, value: list[str] | None) -> list[str] | None:
+        if value is None:
+            return None
+        return _normalize_metric_breakdown_columns(value)
+
+
+def _normalize_metric_breakdown_columns(value: list[str]) -> list[str]:
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for item in value:
+        column = item.strip()
+        if not column:
+            continue
+        if "." in column:
+            raise ValueError("metric_breakdown_columns supports scalar columns only")
+        if column not in seen:
+            normalized.append(column)
+            seen.add(column)
+    return normalized
 
 
 class EventBulkDelete(BaseModel):
@@ -88,6 +117,7 @@ class EventResponse(BaseModel):
     reviewed: bool
     archived: bool
     last_seen_at: datetime | None = None
+    metric_breakdown_columns: list[str] = []
     drift_count: int = 0
     tags: list[EventTagResponse] = []
     field_values: list[EventFieldValueResponse] = []
@@ -116,6 +146,7 @@ class EventListItemResponse(BaseModel):
     reviewed: bool
     archived: bool
     last_seen_at: datetime | None = None
+    metric_breakdown_columns: list[str] = []
     drift_count: int = 0
     tags: list[EventTagResponse] = []
     field_values: list[EventFieldValueResponse] = []
