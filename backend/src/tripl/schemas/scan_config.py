@@ -22,6 +22,7 @@ class ScanConfigCreate(BaseModel):
     distribution_drift_fields: list[str] = Field(default_factory=list)
     cardinality_threshold: int = Field(default=100, ge=1)
     interval: str | None = Field(None, pattern=r"^(15m|1h|6h|1d|1w)$")
+    replay_chunk_interval: str | None = Field(None, pattern=r"^(15m|1h|6h|1d|1w)$")
 
     @field_validator("json_value_paths")
     @classmethod
@@ -77,6 +78,7 @@ class ScanConfigUpdate(BaseModel):
     distribution_drift_fields: list[str] | None = None
     cardinality_threshold: int | None = Field(None, ge=1)
     interval: str | None = Field(None, pattern=r"^(15m|1h|6h|1d|1w)$")
+    replay_chunk_interval: str | None = Field(None, pattern=r"^(15m|1h|6h|1d|1w)$")
 
     @field_validator("json_value_paths")
     @classmethod
@@ -120,6 +122,7 @@ class ScanConfigResponse(BaseModel):
     distribution_drift_fields: list[str]
     cardinality_threshold: int
     interval: str | None
+    replay_chunk_interval: str | None
     created_at: datetime
     updated_at: datetime
 
