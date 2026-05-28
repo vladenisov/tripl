@@ -322,6 +322,9 @@ def _destination_to_response(destination: AlertDestination) -> AlertDestinationR
         chat_id=destination.chat_id,
         target_url_set=bool(destination.target_url_encrypted),
         webhook_header_name=destination.webhook_header_name,
+        email_recipients=destination.email_recipients,
+        email_from_address=destination.email_from_address,
+        email_subject_template=destination.email_subject_template,
         rules=[_rule_to_response(rule) for rule in rules],
         created_at=destination.created_at,
         updated_at=destination.updated_at,
@@ -378,6 +381,9 @@ async def create_destination(
         target_url_encrypted=_encrypt_secret(data.target_url),
         webhook_header_name=data.webhook_header_name,
         webhook_header_value_encrypted=_encrypt_secret(data.webhook_header_value),
+        email_recipients=data.email_recipients,
+        email_from_address=data.email_from_address,
+        email_subject_template=data.email_subject_template,
     )
     session.add(destination)
     await session.commit()
@@ -446,6 +452,14 @@ async def update_destination(
         header_value = update_dict.get("webhook_header_value")
         if header_value is not None:
             destination.webhook_header_value_encrypted = _encrypt_secret(header_value)
+    if destination.type == AlertDestinationType.email:
+        # Field validators on AlertDestinationUpdate already normalized these.
+        if "email_recipients" in update_dict and update_dict["email_recipients"] is not None:
+            destination.email_recipients = update_dict["email_recipients"]
+        if "email_from_address" in update_dict:
+            destination.email_from_address = update_dict["email_from_address"]
+        if "email_subject_template" in update_dict:
+            destination.email_subject_template = update_dict["email_subject_template"]
 
     await session.commit()
     destination = await _get_destination(

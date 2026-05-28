@@ -3,10 +3,12 @@ from __future__ import annotations
 import json
 import logging
 import re
+import smtplib
 import urllib.error
 import urllib.request
 import uuid
 from datetime import UTC, datetime
+from email.message import EmailMessage
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
@@ -23,12 +25,15 @@ from tripl.alert_templates import (
     render_alert_template,
 )
 from tripl.alerting_validation import (
+    validate_email_address,
+    validate_email_recipients,
     validate_slack_webhook_url,
     validate_telegram_bot_token,
     validate_telegram_chat_id,
     validate_webhook_target_url,
 )
 from tripl.anomaly_context import build_alert_item_context
+from tripl.config import settings as app_settings
 from tripl.crypto import decrypt_value
 from tripl.models.alert_delivery import AlertDelivery, AlertDeliveryStatus
 from tripl.models.alert_delivery_item import AlertDeliveryItem
@@ -334,6 +339,65 @@ def _send_webhook_message(
     _post_json(target_url, payload, headers)
 
 
+def _parse_email_recipients(value: str | None) -> list[str]:
+    if not value:
+        return []
+    return [r.strip() for r in value.split(",") if r.strip()]
+
+
+def _build_email_subject(
+    *,
+    template: str | None,
+    rule: AlertRule,
+    project: Project | None,
+    matched_count: int,
+    destination: AlertDestination,
+    message_format: str,
+) -> str:
+    """Render the subject template. Falls back to a sensible default."""
+    if template is None:
+        prefix = project.name if project else "tripl"
+        return f"[{prefix}] {rule.name} — {matched_count} alert(s)"
+    variables = {
+        "project_name": escape_alert_value(project.name if project else "", message_format),
+        "project_slug": escape_alert_value(project.slug if project else "", message_format),
+        "rule_name": escape_alert_value(rule.name, message_format),
+        "destination_name": escape_alert_value(destination.name, message_format),
+        "matched_count": escape_alert_value(matched_count, message_format),
+    }
+    rendered = render_alert_template(
+        template,
+        AlertTemplateContext(variables=variables, message_format=ALERT_MESSAGE_FORMAT_PLAIN),
+    ).strip()
+    # Subject MUST be single-line — strip any newline injection that snuck in.
+    return rendered.replace("\r", " ").replace("\n", " ") or rule.name
+
+
+def _send_email_message(
+    *,
+    smtp_host: str,
+    smtp_port: int,
+    smtp_username: str,
+    smtp_password: str,
+    smtp_use_tls: bool,
+    from_address: str,
+    recipients: list[str],
+    subject: str,
+    body: str,
+) -> None:
+    msg = EmailMessage()
+    msg["From"] = from_address
+    msg["To"] = ", ".join(recipients)
+    msg["Subject"] = subject
+    msg.set_content(body)
+    with smtplib.SMTP(smtp_host, smtp_port, timeout=10) as conn:
+        if smtp_use_tls:
+            conn.starttls()
+        if smtp_username:
+            conn.login(smtp_username, smtp_password)
+        conn.send_message(msg)
+
+
 def _is_telegram_markdown_parse_error(error: Exception) -> bool:
     message = str(error).lower()
     return "can't parse entities" in message or "can't find end of" in message
@@ -463,6 +527,50 @@ def send_alert_delivery(self: object, delivery_id: str) -> dict[str, object]:
                 webhook_payload,
                 header_name=destination.webhook_header_name,
                 header_value=header_value,
+            )
+        elif destination.type == AlertDestinationType.email:
+            if not app_settings.smtp_host:
+                raise ValueError(
+                    "Email destination is configured but SMTP is not — set SMTP_HOST "
+                    "(and SMTP_USERNAME/SMTP_PASSWORD if your relay requires auth)."
+                )
+            try:
+                recipients_csv = validate_email_recipients(destination.email_recipients)
+            except ValueError as exc:
+                raise ValueError(
+                    "Email destination configuration is invalid. Update the recipients list."
+                ) from exc
+            recipients = _parse_email_recipients(recipients_csv)
+            from_address = destination.email_from_address or app_settings.smtp_from_address
+            if not from_address:
+                raise ValueError(
+                    "Email destination has no From: address and SMTP_FROM_ADDRESS is unset."
+                )
+            try:
+                from_address = validate_email_address(from_address)
+            except ValueError as exc:
+                raise ValueError(
+                    "Email destination From: address is invalid. Update the override "
+                    "or SMTP_FROM_ADDRESS."
+                ) from exc
+            subject = _build_email_subject(
+                template=destination.email_subject_template,
+                rule=rule,
+                project=project,
+                matched_count=delivery.matched_count,
+                destination=destination,
+                message_format=message_format,
+            )
+            _send_email_message(
+                smtp_host=app_settings.smtp_host,
+                smtp_port=app_settings.smtp_port,
+                smtp_username=app_settings.smtp_username,
+                smtp_password=app_settings.smtp_password,
+                smtp_use_tls=app_settings.smtp_use_tls,
+                from_address=from_address,
+                recipients=recipients,
+                subject=subject,
+                body=text,
             )
         else:
             raise ValueError(f"Unsupported destination type {destination.type}")

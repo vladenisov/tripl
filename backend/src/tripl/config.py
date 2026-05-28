@@ -65,6 +65,18 @@ class Settings(BaseSettings):
     # behind an internal-only ingress path.
     prometheus_metrics_enabled: bool = False
 
+    # SMTP for the email alert delivery channel. Optional — leaving smtp_host
+    # blank disables email destinations (creation still works; sends fail with
+    # a friendly error pointing at this config). Worker reads these at send time
+    # so config changes take effect without re-creating destinations.
+    smtp_host: str = ""
+    smtp_port: int = 587
+    smtp_username: str = ""
+    smtp_password: str = ""
+    smtp_use_tls: bool = True
+    # Default From: address used when a destination doesn't override it.
+    smtp_from_address: str = ""
+
     model_config = {"env_file": ".env", "extra": "ignore"}
 
     @field_validator("log_level")

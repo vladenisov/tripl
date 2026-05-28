@@ -6,8 +6,10 @@ import type {
   AlertRuleFilterPayload,
 } from "@/types"
 
+export type DestinationChannel = 'slack' | 'telegram' | 'webhook' | 'email'
+
 export type DestinationFormState = {
-  type: 'slack' | 'telegram' | 'webhook'
+  type: DestinationChannel
   name: string
   enabled: boolean
   webhook_url: string
@@ -16,6 +18,9 @@ export type DestinationFormState = {
   target_url: string
   webhook_header_name: string
   webhook_header_value: string
+  email_recipients: string
+  email_from_address: string
+  email_subject_template: string
 }
 
 export type RuleFilterDraft = {
@@ -146,7 +151,7 @@ export const DEFAULT_ITEMS_TEMPLATES: Record<AlertMessageFormat, string> = {
   telegram_markdownv2: '\\- ${scope_label} ${scope_name}: ${direction_label}, actual=${actual_count}, expected=${expected_count}, delta=${absolute_delta} \\(${percent_delta}%\\)${drift_line}${details_line}${monitoring_line}',
 }
 
-export const MESSAGE_FORMAT_OPTIONS: Record<'slack' | 'telegram' | 'webhook', { value: AlertMessageFormat; label: string }[]> = {
+export const MESSAGE_FORMAT_OPTIONS: Record<DestinationChannel, { value: AlertMessageFormat; label: string }[]> = {
   slack: [
     { value: 'plain', label: 'Plain text' },
     { value: 'slack_mrkdwn', label: 'Slack mrkdwn' },
@@ -157,6 +162,9 @@ export const MESSAGE_FORMAT_OPTIONS: Record<'slack' | 'telegram' | 'webhook', { 
     { value: 'telegram_markdownv2', label: 'Telegram MarkdownV2' },
   ],
   webhook: [
+    { value: 'plain', label: 'Plain text' },
+  ],
+  email: [
     { value: 'plain', label: 'Plain text' },
   ],
 }
@@ -188,7 +196,7 @@ export const FORMAT_HELP: Record<AlertMessageFormat, string[]> = {
   ],
 }
 
-export function defaultDestinationForm(type: 'slack' | 'telegram' | 'webhook'): DestinationFormState {
+export function defaultDestinationForm(type: DestinationChannel): DestinationFormState {
   return {
     type,
     name: '',
@@ -199,6 +207,9 @@ export function defaultDestinationForm(type: 'slack' | 'telegram' | 'webhook'): 
     target_url: '',
     webhook_header_name: '',
     webhook_header_value: '',
+    email_recipients: '',
+    email_from_address: '',
+    email_subject_template: '',
   }
 }
 

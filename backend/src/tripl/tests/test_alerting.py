@@ -1591,3 +1591,300 @@ async def test_send_alert_delivery_attaches_top_movers_and_sparkline(
 
     Base.metadata.drop_all(engine)
     engine.dispose()
+
+
+# --- Email channel ----------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_alerting_email_destination_crud_and_validation(client: AsyncClient) -> None:
+    project_resp = await client.post(
+        "/api/v1/projects",
+        json={"name": "Email Alerts", "slug": "email-alerts", "description": ""},
+    )
+    assert project_resp.status_code == 201
+
+    # Empty / malformed recipient list rejected.
+    empty_resp = await client.post(
+        "/api/v1/projects/email-alerts/alert-destinations",
+        json={"type": "email", "name": "Bad", "email_recipients": "   ,  "},
+    )
+    assert empty_resp.status_code == 422
+
+    bad_addr_resp = await client.post(
+        "/api/v1/projects/email-alerts/alert-destinations",
+        json={"type": "email", "name": "Bad", "email_recipients": "not-an-email"},
+    )
+    assert bad_addr_resp.status_code == 422
+
+    # Newline in subject template is header injection → reject.
+    bad_subject_resp = await client.post(
+        "/api/v1/projects/email-alerts/alert-destinations",
+        json={
+            "type": "email",
+            "name": "Bad Subject",
+            "email_recipients": "alice@example.com",
+            "email_subject_template": "spike\nBcc: attacker@example.com",
+        },
+    )
+    assert bad_subject_resp.status_code == 422
+
+    create_resp = await client.post(
+        "/api/v1/projects/email-alerts/alert-destinations",
+        json={
+            "type": "email",
+            "name": "Ops Email",
+            "email_recipients": "alice@example.com, bob@example.com , alice@example.com",
+            "email_from_address": "alerts@tripl.test",
+            "email_subject_template": "[{project_name}] {rule_name}",
+        },
+    )
+    assert create_resp.status_code == 201
+    destination = create_resp.json()
+    assert destination["type"] == "email"
+    # Dedup + normalized whitespace in the recipient CSV.
+    assert destination["email_recipients"] == "alice@example.com, bob@example.com"
+    assert destination["email_from_address"] == "alerts@tripl.test"
+    assert destination["email_subject_template"] == "[{project_name}] {rule_name}"
+    destination_id = destination["id"]
+
+    # Update validation: bad address in the new list is rejected; good update sticks.
+    bad_update = await client.patch(
+        f"/api/v1/projects/email-alerts/alert-destinations/{destination_id}",
+        json={"email_recipients": "not-an-email"},
+    )
+    assert bad_update.status_code == 422
+
+    good_update = await client.patch(
+        f"/api/v1/projects/email-alerts/alert-destinations/{destination_id}",
+        json={"email_recipients": "carol@example.com", "name": "Renamed Email"},
+    )
+    assert good_update.status_code == 200
+    body = good_update.json()
+    assert body["name"] == "Renamed Email"
+    assert body["email_recipients"] == "carol@example.com"
+
+
+def test_send_alert_delivery_sends_email(monkeypatch, tmp_path) -> None:
+    engine = create_engine(f"sqlite:///{tmp_path / 'alerting_email_send.db'}")
+    Base.metadata.create_all(engine)
+    sync_session_factory = sessionmaker(engine, expire_on_commit=False)
+    sent_messages: list[dict[str, object]] = []
+
+    with sync_session_factory() as session:
+        project = Project(
+            id=uuid.uuid4(), name="Alert Runtime", slug="alert-runtime", description=""
+        )
+        data_source = DataSource(
+            id=uuid.uuid4(),
+            name="Runtime DS",
+            db_type="clickhouse",
+            host="localhost",
+            port=8123,
+            database_name="default",
+            username="default",
+            password_encrypted="",
+        )
+        scan_config = ScanConfig(
+            id=uuid.uuid4(),
+            data_source_id=data_source.id,
+            project_id=project.id,
+            name="Runtime Scan",
+            base_query="SELECT * FROM events",
+            time_column="created_at",
+            cardinality_threshold=100,
+            interval="1h",
+        )
+        destination = AlertDestination(
+            id=uuid.uuid4(),
+            project_id=project.id,
+            type="email",
+            name="Ops Email",
+            enabled=True,
+            email_recipients="alice@example.com, bob@example.com",
+            email_from_address=None,
+            email_subject_template=None,
+        )
+        rule = AlertRule(
+            id=uuid.uuid4(),
+            destination_id=destination.id,
+            name="Main Rule",
+            enabled=True,
+            message_format="plain",
+        )
+        delivery = AlertDelivery(
+            id=uuid.uuid4(),
+            project_id=project.id,
+            scan_config_id=scan_config.id,
+            destination_id=destination.id,
+            rule_id=rule.id,
+            channel="email",
+            status="pending",
+            matched_count=1,
+            payload_snapshot={"preview": "one alert"},
+        )
+        item = AlertDeliveryItem(
+            id=uuid.uuid4(),
+            delivery_id=delivery.id,
+            scope_type="event",
+            scope_ref="event-1",
+            scope_name="purchase:success",
+            bucket=datetime(2026, 4, 11, 9, tzinfo=UTC),
+            direction="drop",
+            actual_count=10,
+            expected_count=20,
+            absolute_delta=10,
+            percent_delta=50,
+            details_path=None,
+            monitoring_path=None,
+        )
+        session.add_all([project, data_source, scan_config, destination, rule, delivery, item])
+        session.commit()
+        delivery_id = str(delivery.id)
+
+    # Fake SMTP client — captures the EmailMessage that send_message would ship.
+    class FakeSMTP:
+        def __init__(self, host: str, port: int, timeout: int = 10) -> None:
+            sent_messages.append({"connect_host": host, "connect_port": port})
+
+        def __enter__(self) -> "FakeSMTP":
+            return self
+
+        def __exit__(self, *_: object) -> None:
+            return None
+
+        def starttls(self) -> None:
+            sent_messages.append({"event": "starttls"})
+
+        def login(self, username: str, password: str) -> None:
+            sent_messages.append({"event": "login", "username": username})
+
+        def send_message(self, msg) -> None:  # type: ignore[no-untyped-def]
+            sent_messages.append(
+                {
+                    "event": "send",
+                    "From": msg["From"],
+                    "To": msg["To"],
+                    "Subject": msg["Subject"],
+                    "body": msg.get_content(),
+                }
+            )
+
+    from tripl.config import settings as live_settings
+
+    alerts_globals = metrics.send_alert_delivery.run.__globals__
+    fake_smtplib = type("FakeSmtplibModule", (), {"SMTP": FakeSMTP})
+    monkeypatch.setitem(alerts_globals, "_get_sync_session", sync_session_factory)
+    monkeypatch.setitem(alerts_globals, "smtplib", fake_smtplib)
+    monkeypatch.setattr(live_settings, "smtp_host", "smtp.example.com")
+    monkeypatch.setattr(live_settings, "smtp_port", 587)
+    monkeypatch.setattr(live_settings, "smtp_username", "tripl-bot")
+    monkeypatch.setattr(live_settings, "smtp_password", "hunter2")
+    monkeypatch.setattr(live_settings, "smtp_use_tls", True)
+    monkeypatch.setattr(live_settings, "smtp_from_address", "alerts@tripl.test")
+
+    result = metrics.send_alert_delivery.run(delivery_id)
+    assert result["status"] == "sent"
+
+    # Connect → TLS → login → send.
+    events = [m.get("event") for m in sent_messages if "event" in m]
+    assert events == ["starttls", "login", "send"]
+    send_event = next(m for m in sent_messages if m.get("event") == "send")
+    assert send_event["From"] == "alerts@tripl.test"
+    assert send_event["To"] == "alice@example.com, bob@example.com"
+    # Default subject: "[<project>] <rule> — N alert(s)"
+    assert send_event["Subject"] == "[Alert Runtime] Main Rule — 1 alert(s)"
+    body = send_event["body"]
+    assert isinstance(body, str)
+    assert "purchase:success" in body
+
+    with sync_session_factory() as session:
+        persisted = session.get(AlertDelivery, uuid.UUID(delivery_id))
+        assert persisted is not None
+        assert persisted.status == AlertDeliveryStatus.sent.value
+
+    Base.metadata.drop_all(engine)
+    engine.dispose()
+
+
+def test_send_alert_delivery_email_fails_without_smtp(monkeypatch, tmp_path) -> None:
+    """Destination exists but SMTP is unconfigured → delivery is marked failed
+    with an actionable error message (rather than crashing the worker)."""
+    engine = create_engine(f"sqlite:///{tmp_path / 'alerting_email_no_smtp.db'}")
+    Base.metadata.create_all(engine)
+    sync_session_factory = sessionmaker(engine, expire_on_commit=False)
+
+    with sync_session_factory() as session:
+        project = Project(id=uuid.uuid4(), name="P", slug="p", description="")
+        data_source = DataSource(
+            id=uuid.uuid4(),
+            name="DS",
+            db_type="clickhouse",
+            host="localhost",
+            port=8123,
+            database_name="d",
+            username="u",
+            password_encrypted="",
+        )
+        scan_config = ScanConfig(
+            id=uuid.uuid4(),
+            data_source_id=data_source.id,
+            project_id=project.id,
+            name="S",
+            base_query="SELECT 1",
+            time_column="ts",
+            cardinality_threshold=10,
+            interval="1h",
+        )
+        destination = AlertDestination(
+            id=uuid.uuid4(),
+            project_id=project.id,
+            type="email",
+            name="Email",
+            enabled=True,
+            email_recipients="x@example.com",
+        )
+        rule = AlertRule(
+            id=uuid.uuid4(),
+            destination_id=destination.id,
+            name="R",
+            enabled=True,
+            message_format="plain",
+        )
+        delivery = AlertDelivery(
+            id=uuid.uuid4(),
+            project_id=project.id,
+            scan_config_id=scan_config.id,
+            destination_id=destination.id,
+            rule_id=rule.id,
+            channel="email",
+            status="pending",
+            matched_count=0,
+            payload_snapshot=None,
+        )
+        session.add_all([project, data_source, scan_config, destination, rule, delivery])
+        session.commit()
+        delivery_id = str(delivery.id)
+
+    from tripl.config import settings as live_settings
+
+    monkeypatch.setitem(
+        metrics.send_alert_delivery.run.__globals__,
+        "_get_sync_session",
+        sync_session_factory,
+    )
+    monkeypatch.setattr(live_settings, "smtp_host", "")
+
+    result = metrics.send_alert_delivery.run(delivery_id)
+    assert result["status"] == "failed"
+    assert "SMTP" in result["error"]
+
+    with sync_session_factory() as session:
+        persisted = session.get(AlertDelivery, uuid.UUID(delivery_id))
+        assert persisted is not None
+        assert persisted.status == AlertDeliveryStatus.failed.value
+        assert persisted.error_message is not None
+        assert "SMTP" in persisted.error_message
+
+    Base.metadata.drop_all(engine)
+    engine.dispose()
