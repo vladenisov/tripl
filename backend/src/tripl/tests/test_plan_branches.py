@@ -381,3 +381,217 @@ async def test_diff_rejects_main_branch(client: AsyncClient) -> None:
         f"/api/v1/projects/branch-diff-main/branches/{main_id}/diff"
     )
     assert resp.status_code == 400
+
+
+# --- Phase 4: merge engine ------------------------------------------------
+
+
+async def _approve_and_merge(client: AsyncClient, slug: str, branch_id: str):
+    await _transition(client, slug, branch_id, "submit")
+    await _transition(client, slug, branch_id, "approve")
+    return await client.post(f"/api/v1/projects/{slug}/branches/{branch_id}/merge")
+
+
+@pytest.mark.asyncio
+async def test_merge_requires_approved_status(client: AsyncClient) -> None:
+    await _seed_plan(client, "merge-gate")
+    branch_id = await _create_branch(client, "merge-gate")
+    resp = await client.post(
+        f"/api/v1/projects/merge-gate/branches/{branch_id}/merge"
+    )
+    assert resp.status_code == 409  # status is draft, not approved
+
+
+@pytest.mark.asyncio
+async def test_merge_rejects_main_branch(client: AsyncClient) -> None:
+    await _seed_plan(client, "merge-main")
+    branches = await client.get("/api/v1/projects/merge-main/branches")
+    main_id = next(b for b in branches.json()["items"] if b["kind"] == "main")["id"]
+    resp = await client.post(f"/api/v1/projects/merge-main/branches/{main_id}/merge")
+    assert resp.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_merge_no_op_marks_branch_merged_and_writes_revision(
+    client: AsyncClient,
+) -> None:
+    """A branch identical to main still merges cleanly — status flips, a
+    post-merge PlanRevision is recorded."""
+    await _seed_plan(client, "merge-noop")
+    branch_id = await _create_branch(client, "merge-noop")
+
+    # Count revisions before merge (base snapshot + N from earlier ops).
+    pre = await client.get("/api/v1/projects/merge-noop/revisions")
+    pre_total = pre.json()["total"]
+
+    resp = await _approve_and_merge(client, "merge-noop", branch_id)
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["status"] == "merged"
+    assert body["merged_at"] is not None
+    assert body["merged_by"] is not None
+
+    post = await client.get("/api/v1/projects/merge-noop/revisions")
+    assert post.json()["total"] == pre_total + 1
+
+
+@pytest.mark.asyncio
+async def test_merge_preserves_main_event_type_id(client: AsyncClient) -> None:
+    """Branch modifies an existing event type; the live main row keeps its id
+    (so runtime rows linked to it survive)."""
+    await _seed_plan(client, "merge-id")
+
+    # Pre-merge: capture the live main event_type id.
+    async with TestSessionLocal() as session:
+        main_branch_id = (
+            await session.execute(
+                select(PlanBranch).where(PlanBranch.name == "main")
+            )
+        ).scalars().first().id
+        original_et = (
+            (
+                await session.execute(
+                    select(EventType).where(
+                        EventType.name == "track", EventType.branch_id == main_branch_id
+                    )
+                )
+            )
+            .scalars()
+            .first()
+        )
+        original_et_id = original_et.id
+
+    branch_id = await _create_branch(client, "merge-id")
+
+    # Mutate the branch's copy via ORM (the ?branch= editing API lands in Phase 5).
+    async with TestSessionLocal() as session:
+        branch_et = (
+            (
+                await session.execute(
+                    select(EventType).where(
+                        EventType.name == "track",
+                        EventType.branch_id == uuid.UUID(branch_id),
+                    )
+                )
+            )
+            .scalars()
+            .first()
+        )
+        branch_et.color = "#ff0000"
+        branch_et.description = "renamed on branch"
+        await session.commit()
+
+    resp = await _approve_and_merge(client, "merge-id", branch_id)
+    assert resp.status_code == 200
+
+    async with TestSessionLocal() as session:
+        survived = (
+            (
+                await session.execute(
+                    select(EventType).where(
+                        EventType.name == "track", EventType.branch_id == main_branch_id
+                    )
+                )
+            )
+            .scalars()
+            .first()
+        )
+        # Same id => attached metrics/photos/alerts survive the merge.
+        assert survived.id == original_et_id
+        assert survived.color == "#ff0000"
+        assert survived.description == "renamed on branch"
+
+
+@pytest.mark.asyncio
+async def test_merge_adds_and_removes_event_types(client: AsyncClient) -> None:
+    await _seed_plan(client, "merge-add-rm")
+    branch_id = await _create_branch(client, "merge-add-rm")
+
+    async with TestSessionLocal() as session:
+        # Branch removes "track" and adds "checkout".
+        branch_uuid = uuid.UUID(branch_id)
+        branch_track = (
+            (
+                await session.execute(
+                    select(EventType).where(
+                        EventType.name == "track", EventType.branch_id == branch_uuid
+                    )
+                )
+            )
+            .scalars()
+            .first()
+        )
+        # Branch events also reference branch_track — drop the matching event too.
+        branch_track_event = (
+            (
+                await session.execute(
+                    select(Event).where(
+                        Event.branch_id == branch_uuid, Event.name == "purchase:success"
+                    )
+                )
+            )
+            .scalars()
+            .first()
+        )
+        await session.delete(branch_track_event)
+        await session.delete(branch_track)
+        # Add a new event type on the branch.
+        session.add(
+            EventType(
+                id=uuid.uuid4(),
+                project_id=branch_track.project_id,
+                branch_id=branch_uuid,
+                name="checkout",
+                display_name="Checkout",
+                description="",
+                color="#00ff00",
+                order=1,
+            )
+        )
+        await session.commit()
+
+    resp = await _approve_and_merge(client, "merge-add-rm", branch_id)
+    assert resp.status_code == 200
+
+    main_ets = await client.get("/api/v1/projects/merge-add-rm/event-types")
+    names = {et["name"] for et in main_ets.json()}
+    assert "track" not in names
+    assert "checkout" in names
+
+
+@pytest.mark.asyncio
+async def test_merge_detects_conflict_on_same_event_type(client: AsyncClient) -> None:
+    await _seed_plan(client, "merge-conflict")
+    branch_id = await _create_branch(client, "merge-conflict")
+
+    # Change the same event type on both sides, with different field deltas.
+    main_ets = await client.get("/api/v1/projects/merge-conflict/event-types")
+    main_track_id = next(et["id"] for et in main_ets.json() if et["name"] == "track")
+    await client.patch(
+        f"/api/v1/projects/merge-conflict/event-types/{main_track_id}",
+        json={"color": "#0000ff"},
+    )
+
+    async with TestSessionLocal() as session:
+        branch_track = (
+            (
+                await session.execute(
+                    select(EventType).where(
+                        EventType.name == "track",
+                        EventType.branch_id == uuid.UUID(branch_id),
+                    )
+                )
+            )
+            .scalars()
+            .first()
+        )
+        branch_track.description = "changed on branch"
+        await session.commit()
+
+    resp = await _approve_and_merge(client, "merge-conflict", branch_id)
+    assert resp.status_code == 409
+    detail = resp.json()["detail"]
+    assert any(
+        c["entity_type"] == "event_type" and c["name"] == "track"
+        for c in detail["conflicts"]
+    )

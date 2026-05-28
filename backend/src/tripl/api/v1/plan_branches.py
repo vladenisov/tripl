@@ -180,3 +180,26 @@ async def diff_branch(
     session: SessionDep, slug: str, branch_id: uuid.UUID
 ) -> PlanBranchDiff:
     return await plan_branch_service.diff_branch(session, slug, branch_id)
+
+
+@router.post("/{branch_id}/merge", response_model=PlanBranchDetailResponse)
+async def merge_branch(
+    session: SessionDep,
+    current_user: EditorUserDep,
+    slug: str,
+    branch_id: uuid.UUID,
+) -> PlanBranchDetailResponse:
+    detail = await plan_branch_service.merge_branch(
+        session, slug, branch_id, user_id=current_user.id
+    )
+    await audit_service.record(
+        session,
+        user=current_user,
+        action="plan_branch.merge",
+        target_type="plan_branch",
+        target_id=branch_id,
+        target_name=detail.name,
+        project_slug=slug,
+        payload={"status": detail.status},
+    )
+    return detail
