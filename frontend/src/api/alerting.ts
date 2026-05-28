@@ -15,7 +15,7 @@ export const alertingApi = {
   createDestination: (
     slug: string,
     data: {
-      type: 'slack' | 'telegram' | 'webhook'
+      type: 'slack' | 'telegram' | 'webhook' | 'email'
       name: string
       enabled?: boolean
       webhook_url?: string | null
@@ -24,6 +24,9 @@ export const alertingApi = {
       target_url?: string | null
       webhook_header_name?: string | null
       webhook_header_value?: string | null
+      email_recipients?: string | null
+      email_from_address?: string | null
+      email_subject_template?: string | null
     },
   ) => api.post<AlertDestination>(`/projects/${slug}/alert-destinations`, data),
 
@@ -39,6 +42,9 @@ export const alertingApi = {
       target_url?: string | null
       webhook_header_name?: string | null
       webhook_header_value?: string | null
+      email_recipients?: string | null
+      email_from_address?: string | null
+      email_subject_template?: string | null
     },
   ) => api.patch<AlertDestination>(`/projects/${slug}/alert-destinations/${destinationId}`, data),
 

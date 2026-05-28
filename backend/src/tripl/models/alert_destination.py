@@ -18,6 +18,7 @@ class AlertDestinationType(enum.StrEnum):
     slack = "slack"
     telegram = "telegram"
     webhook = "webhook"
+    email = "email"
 
 
 class AlertDestination(UUIDMixin, TimestampMixin, Base):
@@ -37,6 +38,12 @@ class AlertDestination(UUIDMixin, TimestampMixin, Base):
     target_url_encrypted: Mapped[str | None] = mapped_column(Text, nullable=True)
     webhook_header_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
     webhook_header_value_encrypted: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Email channel: per-destination recipient list (comma-separated string), plus
+    # optional from-address and subject-template overrides. SMTP credentials live
+    # at the instance level (settings.smtp_*) so destinations stay credential-free.
+    email_recipients: Mapped[str | None] = mapped_column(Text, nullable=True)
+    email_from_address: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    email_subject_template: Mapped[str | None] = mapped_column(String(500), nullable=True)
 
     rules: Mapped[list[AlertRule]] = relationship(
         back_populates="destination",

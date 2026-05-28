@@ -7,6 +7,9 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 from tripl.alerting_validation import (
     normalize_optional_secret,
     normalize_required_text,
+    validate_email_from_address,
+    validate_email_recipients,
+    validate_email_subject_template,
     validate_slack_webhook_url,
     validate_telegram_bot_token,
     validate_telegram_chat_id,
@@ -138,6 +141,9 @@ class AlertDestinationCreate(BaseModel):
     target_url: str | None = None
     webhook_header_name: str | None = None
     webhook_header_value: str | None = None
+    email_recipients: str | None = None
+    email_from_address: str | None = None
+    email_subject_template: str | None = None
 
     @field_validator("type")
     @classmethod
@@ -181,6 +187,12 @@ class AlertDestinationCreate(BaseModel):
             self.webhook_header_value = validate_webhook_header_value(self.webhook_header_value)
             if (self.webhook_header_name is None) != (self.webhook_header_value is None):
                 raise ValueError("Webhook header name and value must be provided together")
+        elif self.type == "email":
+            self.email_recipients = validate_email_recipients(self.email_recipients)
+            self.email_from_address = validate_email_from_address(self.email_from_address)
+            self.email_subject_template = validate_email_subject_template(
+                self.email_subject_template
+            )
         else:
             raise ValueError("Unsupported destination type")
         return self
@@ -195,6 +207,9 @@ class AlertDestinationUpdate(BaseModel):
     target_url: str | None = None
     webhook_header_name: str | None = None
     webhook_header_value: str | None = None
+    email_recipients: str | None = None
+    email_from_address: str | None = None
+    email_subject_template: str | None = None
 
     @field_validator("name")
     @classmethod
@@ -244,6 +259,23 @@ class AlertDestinationUpdate(BaseModel):
     def validate_header_name(cls, value: str | None) -> str | None:
         return validate_webhook_header_name(value)
 
+    @field_validator("email_recipients")
+    @classmethod
+    def validate_recipients(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        return validate_email_recipients(value)
+
+    @field_validator("email_from_address")
+    @classmethod
+    def validate_from(cls, value: str | None) -> str | None:
+        return validate_email_from_address(value)
+
+    @field_validator("email_subject_template")
+    @classmethod
+    def validate_subject(cls, value: str | None) -> str | None:
+        return validate_email_subject_template(value)
+
 
 class AlertDestinationResponse(BaseModel):
     id: uuid.UUID
@@ -256,6 +288,9 @@ class AlertDestinationResponse(BaseModel):
     chat_id: str | None
     target_url_set: bool
     webhook_header_name: str | None
+    email_recipients: str | None
+    email_from_address: str | None
+    email_subject_template: str | None
     rules: list[AlertRuleResponse]
     created_at: datetime
     updated_at: datetime
