@@ -11,7 +11,7 @@ from __future__ import annotations
 import uuid
 
 from fastapi import HTTPException
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -24,13 +24,60 @@ from tripl.models.event_type_relation import EventTypeRelation
 from tripl.models.field_definition import FieldDefinition
 from tripl.models.meta_field_definition import MetaFieldDefinition
 from tripl.models.plan_branch import BranchKind, BranchStatus, PlanBranch
+from tripl.models.plan_branch_approval import PlanBranchApproval
+from tripl.models.plan_branch_comment import PlanBranchComment
+from tripl.models.plan_branch_reviewer import PlanBranchReviewer
 from tripl.models.plan_revision import PlanRevision
 from tripl.models.project import Project
+from tripl.models.user import User
 from tripl.models.variable import Variable
-from tripl.schemas.plan_branch import PlanBranchCreate, PlanBranchList, PlanBranchResponse
-from tripl.services.plan_revision_service import build_plan_snapshot
+from tripl.schemas.plan_branch import (
+    BranchCommentCreate,
+    BranchCommentResponse,
+    BranchReviewerCreate,
+    BranchReviewerResponse,
+    BranchTransitionAction,
+    PlanBranchCreate,
+    PlanBranchDetailResponse,
+    PlanBranchDiff,
+    PlanBranchList,
+    PlanBranchResponse,
+)
+from tripl.services.plan_revision_service import build_plan_snapshot, compute_plan_diff_entries
 
 MAIN_BRANCH_NAME = "main"
+
+# action -> (allowed source states, target state)
+_TRANSITIONS: dict[str, tuple[set[str], str]] = {
+    "submit": (
+        {BranchStatus.draft.value, BranchStatus.changes_requested.value},
+        BranchStatus.ready_for_review.value,
+    ),
+    "request_changes": (
+        {BranchStatus.ready_for_review.value, BranchStatus.approved.value},
+        BranchStatus.changes_requested.value,
+    ),
+    "approve": ({BranchStatus.ready_for_review.value}, BranchStatus.approved.value),
+    "reopen": (
+        {
+            BranchStatus.approved.value,
+            BranchStatus.changes_requested.value,
+            BranchStatus.closed.value,
+        },
+        BranchStatus.draft.value,
+    ),
+    "close": (
+        {
+            BranchStatus.draft.value,
+            BranchStatus.ready_for_review.value,
+            BranchStatus.changes_requested.value,
+            BranchStatus.approved.value,
+        },
+        BranchStatus.closed.value,
+    ),
+}
+# Transitions that invalidate prior approvals (fresh review needed).
+_APPROVAL_CLEARING_ACTIONS = {"submit", "request_changes", "reopen"}
 
 
 async def ensure_main_branch_id(session: AsyncSession, project_id: uuid.UUID) -> uuid.UUID:
@@ -104,10 +151,59 @@ async def _get_branch(
     return branch
 
 
-async def get_branch(session: AsyncSession, slug: str, branch_id: uuid.UUID) -> PlanBranchResponse:
+async def _load_reviewers(
+    session: AsyncSession, branch_id: uuid.UUID
+) -> list[PlanBranchReviewer]:
+    return list(
+        (
+            await session.execute(
+                select(PlanBranchReviewer)
+                .where(PlanBranchReviewer.branch_id == branch_id)
+                .order_by(PlanBranchReviewer.created_at)
+            )
+        )
+        .scalars()
+        .all()
+    )
+
+
+async def _load_approvals(
+    session: AsyncSession, branch_id: uuid.UUID
+) -> list[PlanBranchApproval]:
+    return list(
+        (
+            await session.execute(
+                select(PlanBranchApproval)
+                .where(PlanBranchApproval.branch_id == branch_id)
+                .order_by(PlanBranchApproval.approved_at)
+            )
+        )
+        .scalars()
+        .all()
+    )
+
+
+async def _to_detail(
+    session: AsyncSession, branch: PlanBranch
+) -> PlanBranchDetailResponse:
+    reviewers = await _load_reviewers(session, branch.id)
+    approvals = await _load_approvals(session, branch.id)
+    base = _to_response(branch)
+    return PlanBranchDetailResponse(
+        **base.model_dump(),
+        reviewers=[BranchReviewerResponse.model_validate(r) for r in reviewers],
+        approvals=[
+            {"user_id": a.user_id, "approved_at": a.approved_at} for a in approvals
+        ],  # type: ignore[list-item]
+    )
+
+
+async def get_branch(
+    session: AsyncSession, slug: str, branch_id: uuid.UUID
+) -> PlanBranchDetailResponse:
     project = await _resolve_project(session, slug)
     branch = await _get_branch(session, project.id, branch_id)
-    return _to_response(branch)
+    return await _to_detail(session, branch)
 
 
 async def _deep_copy_plan(
@@ -375,3 +471,194 @@ async def delete_branch(session: AsyncSession, slug: str, branch_id: uuid.UUID) 
         raise HTTPException(status_code=400, detail="The main branch cannot be deleted")
     await session.delete(branch)
     await session.commit()
+
+
+def _reject_main(branch: PlanBranch) -> None:
+    if branch.kind == BranchKind.main.value:
+        raise HTTPException(
+            status_code=400, detail="The main branch has no review workflow"
+        )
+
+
+async def transition_branch(
+    session: AsyncSession,
+    slug: str,
+    branch_id: uuid.UUID,
+    action: BranchTransitionAction,
+    user_id: uuid.UUID,
+) -> PlanBranchDetailResponse:
+    project = await _resolve_project(session, slug)
+    branch = await _get_branch(session, project.id, branch_id)
+    _reject_main(branch)
+    if branch.status == BranchStatus.merged.value:
+        raise HTTPException(status_code=400, detail="Merged branches are immutable")
+
+    allowed_from, target = _TRANSITIONS[action]
+    if branch.status not in allowed_from:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Cannot {action} from status '{branch.status}'",
+        )
+
+    branch.status = target
+
+    if action in _APPROVAL_CLEARING_ACTIONS:
+        await session.execute(
+            delete(PlanBranchApproval).where(PlanBranchApproval.branch_id == branch.id)
+        )
+
+    if action == "approve":
+        # Upsert: re-approving by the same user just refreshes the timestamp.
+        existing = await session.scalar(
+            select(PlanBranchApproval).where(
+                PlanBranchApproval.branch_id == branch.id,
+                PlanBranchApproval.user_id == user_id,
+            )
+        )
+        if existing is None:
+            session.add(PlanBranchApproval(branch_id=branch.id, user_id=user_id))
+
+    await session.commit()
+    await session.refresh(branch)
+    return await _to_detail(session, branch)
+
+
+async def _resolve_user(session: AsyncSession, user_id: uuid.UUID) -> User:
+    user = await session.get(User, user_id)
+    if user is None:
+        raise HTTPException(status_code=404, detail="User not found")
+    return user
+
+
+async def add_reviewer(
+    session: AsyncSession,
+    slug: str,
+    branch_id: uuid.UUID,
+    data: BranchReviewerCreate,
+) -> BranchReviewerResponse:
+    project = await _resolve_project(session, slug)
+    branch = await _get_branch(session, project.id, branch_id)
+    _reject_main(branch)
+    await _resolve_user(session, data.user_id)
+    existing = await session.scalar(
+        select(PlanBranchReviewer).where(
+            PlanBranchReviewer.branch_id == branch.id,
+            PlanBranchReviewer.user_id == data.user_id,
+        )
+    )
+    if existing is not None:
+        return BranchReviewerResponse.model_validate(existing)
+    reviewer = PlanBranchReviewer(branch_id=branch.id, user_id=data.user_id)
+    session.add(reviewer)
+    await session.commit()
+    await session.refresh(reviewer)
+    return BranchReviewerResponse.model_validate(reviewer)
+
+
+async def remove_reviewer(
+    session: AsyncSession, slug: str, branch_id: uuid.UUID, user_id: uuid.UUID
+) -> None:
+    project = await _resolve_project(session, slug)
+    branch = await _get_branch(session, project.id, branch_id)
+    _reject_main(branch)
+    reviewer = await session.scalar(
+        select(PlanBranchReviewer).where(
+            PlanBranchReviewer.branch_id == branch.id,
+            PlanBranchReviewer.user_id == user_id,
+        )
+    )
+    if reviewer is None:
+        raise HTTPException(status_code=404, detail="Reviewer not assigned")
+    await session.delete(reviewer)
+    await session.commit()
+
+
+async def list_comments(
+    session: AsyncSession, slug: str, branch_id: uuid.UUID
+) -> list[BranchCommentResponse]:
+    project = await _resolve_project(session, slug)
+    branch = await _get_branch(session, project.id, branch_id)
+    rows = (
+        (
+            await session.execute(
+                select(PlanBranchComment)
+                .where(PlanBranchComment.branch_id == branch.id)
+                .order_by(PlanBranchComment.created_at)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    return [BranchCommentResponse.model_validate(c) for c in rows]
+
+
+async def create_comment(
+    session: AsyncSession,
+    slug: str,
+    branch_id: uuid.UUID,
+    data: BranchCommentCreate,
+    user_id: uuid.UUID,
+) -> BranchCommentResponse:
+    project = await _resolve_project(session, slug)
+    branch = await _get_branch(session, project.id, branch_id)
+    if data.parent_id is not None:
+        parent = await session.get(PlanBranchComment, data.parent_id)
+        if parent is None or parent.branch_id != branch.id:
+            raise HTTPException(status_code=404, detail="Parent comment not found")
+    comment = PlanBranchComment(
+        branch_id=branch.id,
+        parent_id=data.parent_id,
+        user_id=user_id,
+        body=data.body,
+    )
+    session.add(comment)
+    await session.commit()
+    await session.refresh(comment)
+    return BranchCommentResponse.model_validate(comment)
+
+
+async def delete_comment(
+    session: AsyncSession, slug: str, branch_id: uuid.UUID, comment_id: uuid.UUID
+) -> None:
+    project = await _resolve_project(session, slug)
+    branch = await _get_branch(session, project.id, branch_id)
+    comment = await session.get(PlanBranchComment, comment_id)
+    if comment is None or comment.branch_id != branch.id:
+        raise HTTPException(status_code=404, detail="Comment not found")
+    await session.delete(comment)
+    await session.commit()
+
+
+def _summary_counts(entries: list) -> dict[str, int]:
+    out = {"added": 0, "removed": 0, "changed": 0}
+    for entry in entries:
+        out[entry.kind] += 1
+    return out
+
+
+async def diff_branch(
+    session: AsyncSession, slug: str, branch_id: uuid.UUID
+) -> PlanBranchDiff:
+    project = await _resolve_project(session, slug)
+    branch = await _get_branch(session, project.id, branch_id)
+    _reject_main(branch)
+    main_branch_id = await ensure_main_branch_id(session, project.id)
+
+    main_snapshot = await build_plan_snapshot(session, project.id, branch_id=main_branch_id)
+    branch_snapshot = await build_plan_snapshot(session, project.id, branch_id=branch.id)
+    # old = main, new = branch — entries describe what the branch changes vs main.
+    entries = compute_plan_diff_entries(main_snapshot, branch_snapshot)
+
+    behind_base = False
+    if branch.base_revision_id is not None:
+        base_revision = await session.get(PlanRevision, branch.base_revision_id)
+        if base_revision is not None:
+            base_payload = base_revision.payload or {}
+            behind_entries = compute_plan_diff_entries(base_payload, main_snapshot)
+            behind_base = len(behind_entries) > 0
+
+    return PlanBranchDiff(
+        entries=entries,
+        summary=_summary_counts(entries),
+        behind_base=behind_base,
+    )

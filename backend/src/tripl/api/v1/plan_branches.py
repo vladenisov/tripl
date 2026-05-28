@@ -4,7 +4,14 @@ from fastapi import APIRouter
 
 from tripl.api.deps import EditorUserDep, SessionDep
 from tripl.schemas.plan_branch import (
+    BranchCommentCreate,
+    BranchCommentResponse,
+    BranchReviewerCreate,
+    BranchReviewerResponse,
+    BranchTransitionRequest,
     PlanBranchCreate,
+    PlanBranchDetailResponse,
+    PlanBranchDiff,
     PlanBranchList,
     PlanBranchResponse,
 )
@@ -39,8 +46,10 @@ async def create_branch(
     return branch
 
 
-@router.get("/{branch_id}", response_model=PlanBranchResponse)
-async def get_branch(session: SessionDep, slug: str, branch_id: uuid.UUID) -> PlanBranchResponse:
+@router.get("/{branch_id}", response_model=PlanBranchDetailResponse)
+async def get_branch(
+    session: SessionDep, slug: str, branch_id: uuid.UUID
+) -> PlanBranchDetailResponse:
     return await plan_branch_service.get_branch(session, slug, branch_id)
 
 
@@ -62,3 +71,112 @@ async def delete_branch(
         target_name=existing.name,
         project_slug=slug,
     )
+
+
+@router.post("/{branch_id}/transition", response_model=PlanBranchDetailResponse)
+async def transition_branch(
+    session: SessionDep,
+    current_user: EditorUserDep,
+    slug: str,
+    branch_id: uuid.UUID,
+    data: BranchTransitionRequest,
+) -> PlanBranchDetailResponse:
+    detail = await plan_branch_service.transition_branch(
+        session, slug, branch_id, data.action, user_id=current_user.id
+    )
+    await audit_service.record(
+        session,
+        user=current_user,
+        action=f"plan_branch.{data.action}",
+        target_type="plan_branch",
+        target_id=branch_id,
+        target_name=detail.name,
+        project_slug=slug,
+        payload={"status": detail.status},
+    )
+    return detail
+
+
+@router.post(
+    "/{branch_id}/reviewers", response_model=BranchReviewerResponse, status_code=201
+)
+async def add_reviewer(
+    session: SessionDep,
+    current_user: EditorUserDep,
+    slug: str,
+    branch_id: uuid.UUID,
+    data: BranchReviewerCreate,
+) -> BranchReviewerResponse:
+    reviewer = await plan_branch_service.add_reviewer(session, slug, branch_id, data)
+    await audit_service.record(
+        session,
+        user=current_user,
+        action="plan_branch.add_reviewer",
+        target_type="plan_branch",
+        target_id=branch_id,
+        target_name="",
+        project_slug=slug,
+        payload={"user_id": str(data.user_id)},
+    )
+    return reviewer
+
+
+@router.delete("/{branch_id}/reviewers/{user_id}", status_code=204)
+async def remove_reviewer(
+    session: SessionDep,
+    current_user: EditorUserDep,
+    slug: str,
+    branch_id: uuid.UUID,
+    user_id: uuid.UUID,
+) -> None:
+    await plan_branch_service.remove_reviewer(session, slug, branch_id, user_id)
+    await audit_service.record(
+        session,
+        user=current_user,
+        action="plan_branch.remove_reviewer",
+        target_type="plan_branch",
+        target_id=branch_id,
+        target_name="",
+        project_slug=slug,
+        payload={"user_id": str(user_id)},
+    )
+
+
+@router.get("/{branch_id}/comments", response_model=list[BranchCommentResponse])
+async def list_comments(
+    session: SessionDep, slug: str, branch_id: uuid.UUID
+) -> list[BranchCommentResponse]:
+    return await plan_branch_service.list_comments(session, slug, branch_id)
+
+
+@router.post(
+    "/{branch_id}/comments", response_model=BranchCommentResponse, status_code=201
+)
+async def create_comment(
+    session: SessionDep,
+    current_user: EditorUserDep,
+    slug: str,
+    branch_id: uuid.UUID,
+    data: BranchCommentCreate,
+) -> BranchCommentResponse:
+    return await plan_branch_service.create_comment(
+        session, slug, branch_id, data, user_id=current_user.id
+    )
+
+
+@router.delete("/{branch_id}/comments/{comment_id}", status_code=204)
+async def delete_comment(
+    session: SessionDep,
+    current_user: EditorUserDep,  # noqa: ARG001 — kept for editor-only auth gate
+    slug: str,
+    branch_id: uuid.UUID,
+    comment_id: uuid.UUID,
+) -> None:
+    await plan_branch_service.delete_comment(session, slug, branch_id, comment_id)
+
+
+@router.get("/{branch_id}/diff", response_model=PlanBranchDiff)
+async def diff_branch(
+    session: SessionDep, slug: str, branch_id: uuid.UUID
+) -> PlanBranchDiff:
+    return await plan_branch_service.diff_branch(session, slug, branch_id)
