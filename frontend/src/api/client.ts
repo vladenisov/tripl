@@ -69,3 +69,10 @@ export const api = {
     request<T>(path, { method: 'PATCH', body: JSON.stringify(data) }),
   del: <T>(path: string) => request<T>(path, { method: 'DELETE' }),
 }
+
+/** Append `?branch=<id>` (or `&branch=<id>`) to a path. No-op when branchId is null/undefined. */
+export function withBranch(path: string, branchId?: string | null): string {
+  if (!branchId) return path
+  const sep = path.includes('?') ? '&' : '?'
+  return `${path}${sep}branch=${encodeURIComponent(branchId)}`
+}

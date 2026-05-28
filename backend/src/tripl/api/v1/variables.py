@@ -1,9 +1,8 @@
 import uuid
 
-from fastapi import APIRouter, HTTPException
-from sqlalchemy import select
+from fastapi import APIRouter
 
-from tripl.api.deps import EditorUserDep, SessionDep
+from tripl.api.deps import BranchIdDep, EditorUserDep, SessionDep
 from tripl.models.variable import Variable
 from tripl.schemas.variable import VariableCreate, VariableResponse, VariableUpdate
 from tripl.services import audit_service, variable_service
@@ -12,8 +11,10 @@ router = APIRouter(prefix="/projects/{slug}/variables", tags=["variables"])
 
 
 @router.get("", response_model=list[VariableResponse])
-async def list_variables(session: SessionDep, slug: str) -> list[Variable]:
-    return await variable_service.list_variables(session, slug)
+async def list_variables(
+    session: SessionDep, slug: str, branch_id: BranchIdDep
+) -> list[Variable]:
+    return await variable_service.list_variables(session, slug, branch_id)
 
 
 @router.post("", response_model=VariableResponse, status_code=201)
@@ -22,8 +23,9 @@ async def create_variable(
     slug: str,
     data: VariableCreate,
     current_user: EditorUserDep,
+    branch_id: BranchIdDep,
 ) -> Variable:
-    v = await variable_service.create_variable(session, slug, data)
+    v = await variable_service.create_variable(session, slug, data, branch_id)
     await audit_service.record(
         session,
         user=current_user,
@@ -44,8 +46,9 @@ async def update_variable(
     variable_id: uuid.UUID,
     data: VariableUpdate,
     current_user: EditorUserDep,
+    branch_id: BranchIdDep,
 ) -> Variable:
-    v = await variable_service.update_variable(session, slug, variable_id, data)
+    v = await variable_service.update_variable(session, slug, variable_id, data, branch_id)
     await audit_service.record(
         session,
         user=current_user,
@@ -65,12 +68,19 @@ async def delete_variable(
     slug: str,
     variable_id: uuid.UUID,
     current_user: EditorUserDep,
+    branch_id: BranchIdDep,
 ) -> None:
-    existing = await session.scalar(select(Variable).where(Variable.id == variable_id))
-    if existing is None:
-        raise HTTPException(status_code=404, detail="Variable not found")
-    name = existing.name
-    await variable_service.delete_variable(session, slug, variable_id)
+    # Look up via variable_service to enforce branch scope and yield a 404 if missing.
+    existing = next(
+        (
+            v
+            for v in await variable_service.list_variables(session, slug, branch_id)
+            if v.id == variable_id
+        ),
+        None,
+    )
+    name = existing.name if existing else ""
+    await variable_service.delete_variable(session, slug, variable_id, branch_id)
     await audit_service.record(
         session,
         user=current_user,

@@ -595,3 +595,93 @@ async def test_merge_detects_conflict_on_same_event_type(client: AsyncClient) ->
         c["entity_type"] == "event_type" and c["name"] == "track"
         for c in detail["conflicts"]
     )
+
+
+# --- ?branch= router param threading ----------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_router_branch_param_lists_branch_event_types(client: AsyncClient) -> None:
+    """GET /event-types?branch=<id> returns the branch's deep copy, not main's."""
+    await _seed_plan(client, "branch-route-list")
+    branch_id = await _create_branch(client, "branch-route-list", "feature-A")
+
+    # Editing on the branch adds a second event type; main keeps its one.
+    create_resp = await client.post(
+        f"/api/v1/projects/branch-route-list/event-types?branch={branch_id}",
+        json={"name": "checkout", "display_name": "Checkout"},
+    )
+    assert create_resp.status_code == 201
+
+    main_list = (await client.get("/api/v1/projects/branch-route-list/event-types")).json()
+    assert {et["name"] for et in main_list} == {"track"}
+
+    branch_list = (
+        await client.get(
+            f"/api/v1/projects/branch-route-list/event-types?branch={branch_id}"
+        )
+    ).json()
+    assert {et["name"] for et in branch_list} == {"track", "checkout"}
+
+
+@pytest.mark.asyncio
+async def test_router_branch_param_threads_variables(client: AsyncClient) -> None:
+    """Variables CRUD scoped to a branch leaves main untouched."""
+    await _seed_plan(client, "branch-route-vars")
+    branch_id = await _create_branch(client, "branch-route-vars", "feature-vars")
+
+    create_resp = await client.post(
+        f"/api/v1/projects/branch-route-vars/variables?branch={branch_id}",
+        json={"name": "spot_id", "variable_type": "string"},
+    )
+    assert create_resp.status_code == 201
+
+    main_vars = (await client.get("/api/v1/projects/branch-route-vars/variables")).json()
+    assert main_vars == []
+
+    branch_vars = (
+        await client.get(f"/api/v1/projects/branch-route-vars/variables?branch={branch_id}")
+    ).json()
+    assert [v["name"] for v in branch_vars] == ["spot_id"]
+
+
+@pytest.mark.asyncio
+async def test_router_branch_param_invalid_uuid_returns_400(client: AsyncClient) -> None:
+    """Malformed ?branch= value yields 400 — the dep rejects before service runs."""
+    await _seed_plan(client, "branch-route-bad")
+    resp = await client.get("/api/v1/projects/branch-route-bad/event-types?branch=not-a-uuid")
+    assert resp.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_router_branch_param_cross_project_404(client: AsyncClient) -> None:
+    """A real branch id belonging to another project is rejected as 404."""
+    await _seed_plan(client, "branch-route-iso-a")
+    await _seed_plan(client, "branch-route-iso-b")
+    other_branch_id = await _create_branch(client, "branch-route-iso-b", "feature-b")
+    resp = await client.get(
+        f"/api/v1/projects/branch-route-iso-a/event-types?branch={other_branch_id}"
+    )
+    assert resp.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_router_branch_param_threads_meta_fields(client: AsyncClient) -> None:
+    """Meta-field create on branch is isolated from main."""
+    await _seed_plan(client, "branch-route-meta")
+    branch_id = await _create_branch(client, "branch-route-meta", "feature-meta")
+
+    create_resp = await client.post(
+        f"/api/v1/projects/branch-route-meta/meta-fields?branch={branch_id}",
+        json={"name": "owner", "display_name": "Owner", "field_type": "string"},
+    )
+    assert create_resp.status_code == 201
+
+    main_mf = (await client.get("/api/v1/projects/branch-route-meta/meta-fields")).json()
+    assert main_mf == []
+    branch_mf = (
+        await client.get(
+            f"/api/v1/projects/branch-route-meta/meta-fields?branch={branch_id}"
+        )
+    ).json()
+    assert [mf["name"] for mf in branch_mf] == ["owner"]

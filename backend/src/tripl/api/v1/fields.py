@@ -2,7 +2,7 @@ import uuid
 
 from fastapi import APIRouter
 
-from tripl.api.deps import EditorUserDep, SessionDep
+from tripl.api.deps import BranchIdDep, EditorUserDep, SessionDep
 from tripl.models.field_definition import FieldDefinition
 from tripl.schemas.field_definition import (
     FieldDefinitionCreate,
@@ -17,9 +17,12 @@ router = APIRouter(prefix="/projects/{slug}/event-types/{event_type_id}/fields",
 
 @router.get("", response_model=list[FieldDefinitionResponse])
 async def list_fields(
-    session: SessionDep, slug: str, event_type_id: uuid.UUID
+    session: SessionDep,
+    slug: str,
+    event_type_id: uuid.UUID,
+    branch_id: BranchIdDep,
 ) -> list[FieldDefinition]:
-    return await field_service.list_fields(session, slug, event_type_id)
+    return await field_service.list_fields(session, slug, event_type_id, branch_id)
 
 
 @router.post("", response_model=FieldDefinitionResponse, status_code=201)
@@ -29,8 +32,9 @@ async def create_field(
     event_type_id: uuid.UUID,
     data: FieldDefinitionCreate,
     current_user: EditorUserDep,
+    branch_id: BranchIdDep,
 ) -> FieldDefinition:
-    field = await field_service.create_field(session, slug, event_type_id, data)
+    field = await field_service.create_field(session, slug, event_type_id, data, branch_id)
     await audit_service.record(
         session,
         user=current_user,
@@ -46,9 +50,13 @@ async def create_field(
 
 @router.patch("/reorder", response_model=list[FieldDefinitionResponse])
 async def reorder_fields(
-    session: SessionDep, slug: str, event_type_id: uuid.UUID, data: FieldReorder
+    session: SessionDep,
+    slug: str,
+    event_type_id: uuid.UUID,
+    data: FieldReorder,
+    branch_id: BranchIdDep,
 ) -> list[FieldDefinition]:
-    return await field_service.reorder_fields(session, slug, event_type_id, data)
+    return await field_service.reorder_fields(session, slug, event_type_id, data, branch_id)
 
 
 @router.patch("/{field_id}", response_model=FieldDefinitionResponse)
@@ -59,8 +67,11 @@ async def update_field(
     field_id: uuid.UUID,
     data: FieldDefinitionUpdate,
     current_user: EditorUserDep,
+    branch_id: BranchIdDep,
 ) -> FieldDefinition:
-    field = await field_service.update_field(session, slug, event_type_id, field_id, data)
+    field = await field_service.update_field(
+        session, slug, event_type_id, field_id, data, branch_id
+    )
     await audit_service.record(
         session,
         user=current_user,
@@ -81,10 +92,11 @@ async def delete_field(
     event_type_id: uuid.UUID,
     field_id: uuid.UUID,
     current_user: EditorUserDep,
+    branch_id: BranchIdDep,
 ) -> None:
-    fields = await field_service.list_fields(session, slug, event_type_id)
+    fields = await field_service.list_fields(session, slug, event_type_id, branch_id)
     name = next((f.name for f in fields if f.id == field_id), "")
-    await field_service.delete_field(session, slug, event_type_id, field_id)
+    await field_service.delete_field(session, slug, event_type_id, field_id, branch_id)
     await audit_service.record(
         session,
         user=current_user,

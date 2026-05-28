@@ -1,5 +1,6 @@
 import { useCallback, useMemo, useState } from 'react'
 import { useConfirm } from '@/hooks/useConfirm'
+import { useActiveBranchId } from '@/hooks/useBranch'
 import { ErrorState } from '@/components/error-state'
 
 import { BulkActionBar } from './events/BulkActionBar'
@@ -36,6 +37,7 @@ export default function EventsPage() {
     showForm,
     slug,
   } = useEventsRouteState()
+  const branchId = useActiveBranchId()
   const [expandedCell, setExpandedCell] = useState<string | null>(null)
   const { hiddenColumns, toggleColumn, colMenuOpen, setColMenuOpen } = useColumnVisibility()
   const {
@@ -57,7 +59,7 @@ export default function EventsPage() {
     urlEvent,
     dataError,
     refetchPageData,
-  } = useEventsPageData({ slug, openEventId })
+  } = useEventsPageData({ slug, openEventId, branchId })
 
   const {
     search,
@@ -83,7 +85,7 @@ export default function EventsPage() {
     eventsQuery,
     rawEvents,
     total,
-  } = useEventsQuery({ slug, activeTab, eventTypes })
+  } = useEventsQuery({ slug, activeTab, eventTypes, branchId })
 
   const { projectTotalSignal, eventTypeSignals, eventSignals } = useEventsSignals({
     slug,
@@ -153,6 +155,7 @@ export default function EventsPage() {
 
   const mutations = useEventMutations({
     slug,
+    branchId,
     onBulkDeleteOptimistic: clearSelection,
   })
   const { bulkDeleteMut } = mutations

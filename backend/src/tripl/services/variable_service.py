@@ -8,13 +8,15 @@ from tripl.models.event import Event
 from tripl.models.event_field_value import EventFieldValue
 from tripl.models.variable import Variable
 from tripl.schemas.variable import VariableCreate, VariableUpdate
-from tripl.services.plan_branch_service import ensure_main_branch_id
+from tripl.services.plan_branch_service import resolve_branch_id
 from tripl.services.project_service import get_project_id_by_slug
 
 
-async def list_variables(session: AsyncSession, slug: str) -> list[Variable]:
+async def list_variables(
+    session: AsyncSession, slug: str, branch_id: uuid.UUID | None = None
+) -> list[Variable]:
     project_id = await get_project_id_by_slug(session, slug)
-    branch_id = await ensure_main_branch_id(session, project_id)
+    branch_id = await resolve_branch_id(session, project_id, branch_id)
     result = await session.execute(
         select(Variable)
         .where(Variable.project_id == project_id, Variable.branch_id == branch_id)
@@ -23,9 +25,14 @@ async def list_variables(session: AsyncSession, slug: str) -> list[Variable]:
     return list(result.scalars().all())
 
 
-async def create_variable(session: AsyncSession, slug: str, data: VariableCreate) -> Variable:
+async def create_variable(
+    session: AsyncSession,
+    slug: str,
+    data: VariableCreate,
+    branch_id: uuid.UUID | None = None,
+) -> Variable:
     project_id = await get_project_id_by_slug(session, slug)
-    branch_id = await ensure_main_branch_id(session, project_id)
+    branch_id = await resolve_branch_id(session, project_id, branch_id)
     existing = await session.execute(
         select(Variable).where(
             Variable.project_id == project_id,
@@ -43,10 +50,14 @@ async def create_variable(session: AsyncSession, slug: str, data: VariableCreate
 
 
 async def update_variable(
-    session: AsyncSession, slug: str, variable_id: uuid.UUID, data: VariableUpdate
+    session: AsyncSession,
+    slug: str,
+    variable_id: uuid.UUID,
+    data: VariableUpdate,
+    branch_id: uuid.UUID | None = None,
 ) -> Variable:
     project_id = await get_project_id_by_slug(session, slug)
-    branch_id = await ensure_main_branch_id(session, project_id)
+    branch_id = await resolve_branch_id(session, project_id, branch_id)
     result = await session.execute(
         select(Variable).where(
             Variable.id == variable_id,
@@ -95,9 +106,14 @@ async def update_variable(
     return var
 
 
-async def delete_variable(session: AsyncSession, slug: str, variable_id: uuid.UUID) -> None:
+async def delete_variable(
+    session: AsyncSession,
+    slug: str,
+    variable_id: uuid.UUID,
+    branch_id: uuid.UUID | None = None,
+) -> None:
     project_id = await get_project_id_by_slug(session, slug)
-    branch_id = await ensure_main_branch_id(session, project_id)
+    branch_id = await resolve_branch_id(session, project_id, branch_id)
     result = await session.execute(
         select(Variable).where(
             Variable.id == variable_id,

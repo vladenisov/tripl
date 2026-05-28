@@ -15,9 +15,12 @@ from tripl.services.event_type_service import get_event_type
 
 
 async def list_fields(
-    session: AsyncSession, slug: str, event_type_id: uuid.UUID
+    session: AsyncSession,
+    slug: str,
+    event_type_id: uuid.UUID,
+    branch_id: uuid.UUID | None = None,
 ) -> list[FieldDefinition]:
-    et = await get_event_type(session, slug, event_type_id)
+    et = await get_event_type(session, slug, event_type_id, branch_id)
     result = await session.execute(
         select(FieldDefinition)
         .where(FieldDefinition.event_type_id == et.id)
@@ -27,9 +30,14 @@ async def list_fields(
 
 
 async def create_field(
-    session: AsyncSession, slug: str, event_type_id: uuid.UUID, data: FieldDefinitionCreate
+    session: AsyncSession,
+    slug: str,
+    event_type_id: uuid.UUID,
+    data: FieldDefinitionCreate,
+    branch_id: uuid.UUID | None = None,
 ) -> FieldDefinition:
-    et = await get_event_type(session, slug, event_type_id)
+    is_main = branch_id is None
+    et = await get_event_type(session, slug, event_type_id, branch_id)
     existing = await session.execute(
         select(FieldDefinition).where(
             FieldDefinition.event_type_id == et.id, FieldDefinition.name == data.name
@@ -43,7 +51,8 @@ async def create_field(
     session.add(field)
     await session.commit()
     await session.refresh(field)
-    await cache.delete_prefix(cache.prefix_event_types(slug))
+    if is_main:
+        await cache.delete_prefix(cache.prefix_event_types(slug))
     return field
 
 
@@ -53,8 +62,10 @@ async def update_field(
     event_type_id: uuid.UUID,
     field_id: uuid.UUID,
     data: FieldDefinitionUpdate,
+    branch_id: uuid.UUID | None = None,
 ) -> FieldDefinition:
-    await get_event_type(session, slug, event_type_id)
+    is_main = branch_id is None
+    await get_event_type(session, slug, event_type_id, branch_id)
     result = await session.execute(
         select(FieldDefinition).where(
             FieldDefinition.id == field_id, FieldDefinition.event_type_id == event_type_id
@@ -68,14 +79,20 @@ async def update_field(
         setattr(field, key, value)
     await session.commit()
     await session.refresh(field)
-    await cache.delete_prefix(cache.prefix_event_types(slug))
+    if is_main:
+        await cache.delete_prefix(cache.prefix_event_types(slug))
     return field
 
 
 async def delete_field(
-    session: AsyncSession, slug: str, event_type_id: uuid.UUID, field_id: uuid.UUID
+    session: AsyncSession,
+    slug: str,
+    event_type_id: uuid.UUID,
+    field_id: uuid.UUID,
+    branch_id: uuid.UUID | None = None,
 ) -> None:
-    await get_event_type(session, slug, event_type_id)
+    is_main = branch_id is None
+    await get_event_type(session, slug, event_type_id, branch_id)
     result = await session.execute(
         select(FieldDefinition).where(
             FieldDefinition.id == field_id, FieldDefinition.event_type_id == event_type_id
@@ -86,13 +103,19 @@ async def delete_field(
         raise HTTPException(status_code=404, detail="Field not found")
     await session.delete(field)
     await session.commit()
-    await cache.delete_prefix(cache.prefix_event_types(slug))
+    if is_main:
+        await cache.delete_prefix(cache.prefix_event_types(slug))
 
 
 async def reorder_fields(
-    session: AsyncSession, slug: str, event_type_id: uuid.UUID, data: FieldReorder
+    session: AsyncSession,
+    slug: str,
+    event_type_id: uuid.UUID,
+    data: FieldReorder,
+    branch_id: uuid.UUID | None = None,
 ) -> list[FieldDefinition]:
-    await get_event_type(session, slug, event_type_id)
+    is_main = branch_id is None
+    await get_event_type(session, slug, event_type_id, branch_id)
     for idx, field_id in enumerate(data.field_ids):
         result = await session.execute(
             select(FieldDefinition).where(
@@ -103,5 +126,6 @@ async def reorder_fields(
         if field:
             field.order = idx
     await session.commit()
-    await cache.delete_prefix(cache.prefix_event_types(slug))
-    return await list_fields(session, slug, event_type_id)
+    if is_main:
+        await cache.delete_prefix(cache.prefix_event_types(slug))
+    return await list_fields(session, slug, event_type_id, branch_id)

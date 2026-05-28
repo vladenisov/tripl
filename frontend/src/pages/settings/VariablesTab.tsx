@@ -2,6 +2,7 @@ import { useState } from "react"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { Pencil, Plus, Trash2, Variable as VariableIcon } from "lucide-react"
 import { variablesApi } from "@/api/variables"
+import { useActiveBranchId } from "@/hooks/useBranch"
 import type { Variable, VariableType } from "@/types"
 import { useConfirm } from "@/hooks/useConfirm"
 import { Badge } from "@/components/ui/badge"
@@ -14,6 +15,7 @@ import { EmptyState } from "@/components/empty-state"
 
 export function VariablesTab({ slug }: { slug: string }) {
   const qc = useQueryClient()
+  const branchId = useActiveBranchId()
   const [showForm, setShowForm] = useState(false)
   const [name, setName] = useState('')
   const [varType, setVarType] = useState<VariableType>('string')
@@ -31,29 +33,29 @@ export function VariablesTab({ slug }: { slug: string }) {
   }
 
   const { data: variables = [] } = useQuery({
-    queryKey: ['variables', slug],
-    queryFn: () => variablesApi.list(slug),
+    queryKey: ['variables', slug, branchId],
+    queryFn: () => variablesApi.list(slug, branchId),
   })
 
   const createMut = useMutation({
-    mutationFn: () => variablesApi.create(slug, { name, variable_type: varType, description }),
+    mutationFn: () => variablesApi.create(slug, { name, variable_type: varType, description }, branchId),
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ['variables', slug] })
+      qc.invalidateQueries({ queryKey: ['variables', slug, branchId] })
       setShowForm(false); setName(''); setVarType('string'); setDescription('')
     },
   })
 
   const updateMut = useMutation({
-    mutationFn: (id: string) => variablesApi.update(slug, id, { name: editVarName, variable_type: editVarType, description: editDescription }),
+    mutationFn: (id: string) => variablesApi.update(slug, id, { name: editVarName, variable_type: editVarType, description: editDescription }, branchId),
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ['variables', slug] })
+      qc.invalidateQueries({ queryKey: ['variables', slug, branchId] })
       setEditingVar(null)
     },
   })
 
   const deleteMut = useMutation({
-    mutationFn: (id: string) => variablesApi.del(slug, id),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['variables', slug] }),
+    mutationFn: (id: string) => variablesApi.del(slug, id, branchId),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['variables', slug, branchId] }),
   })
 
   const handleDelete = async (v: Variable) => {

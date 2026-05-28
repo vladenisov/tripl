@@ -108,6 +108,26 @@ async def ensure_main_branch_id(session: AsyncSession, project_id: uuid.UUID) ->
     return branch.id
 
 
+async def resolve_branch_id(
+    session: AsyncSession,
+    project_id: uuid.UUID,
+    branch_id_override: uuid.UUID | None = None,
+) -> uuid.UUID:
+    """Resolve which branch a service call should act on.
+
+    Service code passes the editor's optional override through (``None`` =
+    operate on main). Defence in depth: even though the API dep already
+    validates the override against the slug, the service re-checks ownership so
+    non-HTTP callers (workers, tests) can't slip into the wrong project.
+    """
+    if branch_id_override is None:
+        return await ensure_main_branch_id(session, project_id)
+    branch = await session.get(PlanBranch, branch_id_override)
+    if branch is None or branch.project_id != project_id:
+        raise HTTPException(status_code=404, detail="Branch not found")
+    return branch.id
+
+
 async def _resolve_project(session: AsyncSession, slug: str) -> Project:
     project = await session.scalar(select(Project).where(Project.slug == slug))
     if project is None:

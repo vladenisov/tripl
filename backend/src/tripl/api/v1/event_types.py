@@ -2,7 +2,7 @@ import uuid
 
 from fastapi import APIRouter
 
-from tripl.api.deps import EditorUserDep, SessionDep
+from tripl.api.deps import BranchIdDep, EditorUserDep, SessionDep
 from tripl.models.event_type import EventType
 from tripl.schemas.event_type import EventTypeCreate, EventTypeResponse, EventTypeUpdate
 from tripl.schemas.schema_drift import SchemaDriftListResponse
@@ -12,8 +12,10 @@ router = APIRouter(prefix="/projects/{slug}/event-types", tags=["event-types"])
 
 
 @router.get("", response_model=list[EventTypeResponse])
-async def list_event_types(session: SessionDep, slug: str) -> list[EventTypeResponse]:
-    return await event_type_service.list_event_types(session, slug)
+async def list_event_types(
+    session: SessionDep, slug: str, branch_id: BranchIdDep
+) -> list[EventTypeResponse]:
+    return await event_type_service.list_event_types(session, slug, branch_id)
 
 
 @router.post("", response_model=EventTypeResponse, status_code=201)
@@ -22,8 +24,9 @@ async def create_event_type(
     slug: str,
     data: EventTypeCreate,
     current_user: EditorUserDep,
+    branch_id: BranchIdDep,
 ) -> EventType:
-    et = await event_type_service.create_event_type(session, slug, data)
+    et = await event_type_service.create_event_type(session, slug, data, branch_id)
     await audit_service.record(
         session,
         user=current_user,
@@ -38,8 +41,13 @@ async def create_event_type(
 
 
 @router.get("/{event_type_id}", response_model=EventTypeResponse)
-async def get_event_type(session: SessionDep, slug: str, event_type_id: uuid.UUID) -> EventType:
-    return await event_type_service.get_event_type(session, slug, event_type_id)
+async def get_event_type(
+    session: SessionDep,
+    slug: str,
+    event_type_id: uuid.UUID,
+    branch_id: BranchIdDep,
+) -> EventType:
+    return await event_type_service.get_event_type(session, slug, event_type_id, branch_id)
 
 
 @router.patch("/{event_type_id}", response_model=EventTypeResponse)
@@ -49,8 +57,11 @@ async def update_event_type(
     event_type_id: uuid.UUID,
     data: EventTypeUpdate,
     current_user: EditorUserDep,
+    branch_id: BranchIdDep,
 ) -> EventType:
-    et = await event_type_service.update_event_type(session, slug, event_type_id, data)
+    et = await event_type_service.update_event_type(
+        session, slug, event_type_id, data, branch_id
+    )
     await audit_service.record(
         session,
         user=current_user,
@@ -70,10 +81,11 @@ async def delete_event_type(
     slug: str,
     event_type_id: uuid.UUID,
     current_user: EditorUserDep,
+    branch_id: BranchIdDep,
 ) -> None:
-    existing = await event_type_service.get_event_type(session, slug, event_type_id)
+    existing = await event_type_service.get_event_type(session, slug, event_type_id, branch_id)
     name = existing.name
-    await event_type_service.delete_event_type(session, slug, event_type_id)
+    await event_type_service.delete_event_type(session, slug, event_type_id, branch_id)
     await audit_service.record(
         session,
         user=current_user,

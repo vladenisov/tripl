@@ -41,10 +41,12 @@ export function useEventsQuery({
   slug,
   activeTab,
   eventTypes,
+  branchId,
 }: {
   slug: string | undefined
   activeTab: string
   eventTypes: EventType[]
+  branchId: string | null
 }) {
   const [searchParams, setSearchParams] = useSearchParams()
 
@@ -191,6 +193,7 @@ export function useEventsQuery({
     queryKey: [
       'events',
       slug,
+      branchId,
       filterEtId,
       debouncedSearch,
       filterImplemented,
@@ -210,7 +213,7 @@ export function useEventsQuery({
         silent_since_days: filterSilentDays,
         offset: pageParam,
         limit: EVENTS_PAGE_SIZE,
-      }),
+      }, branchId),
     initialPageParam: 0,
     getNextPageParam: (lastPage, allPages) => {
       const loaded = allPages.reduce((sum, page) => sum + page.items.length, 0)

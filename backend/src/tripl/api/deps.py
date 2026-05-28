@@ -1,10 +1,14 @@
+import uuid
 from typing import Annotated
 
 from fastapi import Depends, HTTPException, Request, status
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from tripl.config import settings
 from tripl.database import get_session
+from tripl.models.plan_branch import PlanBranch
+from tripl.models.project import Project
 from tripl.models.user import User
 from tripl.services.auth_service import get_user_by_session_token
 
@@ -62,3 +66,44 @@ async def get_owner_user(user: CurrentUserDep) -> User:
 
 EditorUserDep = Annotated[User, Depends(get_editor_user)]
 OwnerUserDep = Annotated[User, Depends(get_owner_user)]
+
+
+async def get_branch_id_override(
+    request: Request, session: SessionDep
+) -> uuid.UUID | None:
+    """Resolve the editor's active branch from the ``?branch=`` query param.
+
+    Returns ``None`` when no override is supplied (services then default to the
+    project's main branch). Validates that the branch belongs to the project
+    referenced by the path's ``slug`` so cross-project ids can't leak through.
+    """
+    branch_raw = request.query_params.get("branch")
+    if not branch_raw:
+        return None
+    try:
+        branch_id = uuid.UUID(branch_raw)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid branch id",
+        ) from exc
+    slug = request.path_params.get("slug")
+    if not slug:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Branch context requires a project slug in the path",
+        )
+    branch = await session.scalar(
+        select(PlanBranch)
+        .join(Project, Project.id == PlanBranch.project_id)
+        .where(PlanBranch.id == branch_id, Project.slug == slug)
+    )
+    if branch is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Branch not found",
+        )
+    return branch.id
+
+
+BranchIdDep = Annotated[uuid.UUID | None, Depends(get_branch_id_override)]
