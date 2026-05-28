@@ -10,6 +10,15 @@ from tripl.alerting_validation import (
     validate_email_from_address,
     validate_email_recipients,
     validate_email_subject_template,
+    validate_jira_api_token,
+    validate_jira_auth_email,
+    validate_jira_base_url,
+    validate_jira_issue_type,
+    validate_jira_project_key,
+    validate_linear_api_key,
+    validate_linear_label_ids,
+    validate_linear_state_id,
+    validate_linear_team_id,
     validate_slack_webhook_url,
     validate_telegram_bot_token,
     validate_telegram_chat_id,
@@ -144,6 +153,15 @@ class AlertDestinationCreate(BaseModel):
     email_recipients: str | None = None
     email_from_address: str | None = None
     email_subject_template: str | None = None
+    jira_base_url: str | None = None
+    jira_auth_email: str | None = None
+    jira_api_token: str | None = None
+    jira_project_key: str | None = None
+    jira_issue_type: str | None = None
+    linear_api_key: str | None = None
+    linear_team_id: str | None = None
+    linear_state_id: str | None = None
+    linear_label_ids: str | None = None
 
     @field_validator("type")
     @classmethod
@@ -161,6 +179,8 @@ class AlertDestinationCreate(BaseModel):
         "target_url",
         "webhook_header_name",
         "webhook_header_value",
+        "jira_api_token",
+        "linear_api_key",
         mode="before",
     )
     @classmethod
@@ -193,6 +213,17 @@ class AlertDestinationCreate(BaseModel):
             self.email_subject_template = validate_email_subject_template(
                 self.email_subject_template
             )
+        elif self.type == "jira":
+            self.jira_base_url = validate_jira_base_url(self.jira_base_url)
+            self.jira_auth_email = validate_jira_auth_email(self.jira_auth_email)
+            self.jira_api_token = validate_jira_api_token(self.jira_api_token)
+            self.jira_project_key = validate_jira_project_key(self.jira_project_key)
+            self.jira_issue_type = validate_jira_issue_type(self.jira_issue_type or "Task")
+        elif self.type == "linear":
+            self.linear_api_key = validate_linear_api_key(self.linear_api_key)
+            self.linear_team_id = validate_linear_team_id(self.linear_team_id)
+            self.linear_state_id = validate_linear_state_id(self.linear_state_id)
+            self.linear_label_ids = validate_linear_label_ids(self.linear_label_ids)
         else:
             raise ValueError("Unsupported destination type")
         return self
@@ -210,6 +241,15 @@ class AlertDestinationUpdate(BaseModel):
     email_recipients: str | None = None
     email_from_address: str | None = None
     email_subject_template: str | None = None
+    jira_base_url: str | None = None
+    jira_auth_email: str | None = None
+    jira_api_token: str | None = None
+    jira_project_key: str | None = None
+    jira_issue_type: str | None = None
+    linear_api_key: str | None = None
+    linear_team_id: str | None = None
+    linear_state_id: str | None = None
+    linear_label_ids: str | None = None
 
     @field_validator("name")
     @classmethod
@@ -276,6 +316,68 @@ class AlertDestinationUpdate(BaseModel):
     def validate_subject(cls, value: str | None) -> str | None:
         return validate_email_subject_template(value)
 
+    @field_validator("jira_base_url", mode="before")
+    @classmethod
+    def validate_jira_base_url_update(cls, value: str | None) -> str | None:
+        normalized = normalize_optional_secret(value)
+        if normalized is None:
+            return None
+        return validate_jira_base_url(normalized)
+
+    @field_validator("jira_auth_email")
+    @classmethod
+    def validate_jira_auth_email_update(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        return validate_jira_auth_email(value)
+
+    @field_validator("jira_api_token", mode="before")
+    @classmethod
+    def validate_jira_api_token_update(cls, value: str | None) -> str | None:
+        normalized = normalize_optional_secret(value)
+        if normalized is None:
+            return None
+        return validate_jira_api_token(normalized)
+
+    @field_validator("jira_project_key")
+    @classmethod
+    def validate_jira_project_key_update(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        return validate_jira_project_key(value)
+
+    @field_validator("jira_issue_type")
+    @classmethod
+    def validate_jira_issue_type_update(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        return validate_jira_issue_type(value)
+
+    @field_validator("linear_api_key", mode="before")
+    @classmethod
+    def validate_linear_api_key_update(cls, value: str | None) -> str | None:
+        normalized = normalize_optional_secret(value)
+        if normalized is None:
+            return None
+        return validate_linear_api_key(normalized)
+
+    @field_validator("linear_team_id")
+    @classmethod
+    def validate_linear_team_id_update(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        return validate_linear_team_id(value)
+
+    @field_validator("linear_state_id")
+    @classmethod
+    def validate_linear_state_id_update(cls, value: str | None) -> str | None:
+        return validate_linear_state_id(value)
+
+    @field_validator("linear_label_ids")
+    @classmethod
+    def validate_linear_label_ids_update(cls, value: str | None) -> str | None:
+        return validate_linear_label_ids(value)
+
 
 class AlertDestinationResponse(BaseModel):
     id: uuid.UUID
@@ -291,6 +393,15 @@ class AlertDestinationResponse(BaseModel):
     email_recipients: str | None
     email_from_address: str | None
     email_subject_template: str | None
+    jira_base_url: str | None
+    jira_auth_email: str | None
+    jira_api_token_set: bool
+    jira_project_key: str | None
+    jira_issue_type: str | None
+    linear_api_key_set: bool
+    linear_team_id: str | None
+    linear_state_id: str | None
+    linear_label_ids: str | None
     rules: list[AlertRuleResponse]
     created_at: datetime
     updated_at: datetime

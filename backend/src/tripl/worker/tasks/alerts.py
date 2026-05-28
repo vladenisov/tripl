@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import json
 import logging
 import re
@@ -27,6 +28,13 @@ from tripl.alert_templates import (
 from tripl.alerting_validation import (
     validate_email_address,
     validate_email_recipients,
+    validate_jira_api_token,
+    validate_jira_auth_email,
+    validate_jira_base_url,
+    validate_jira_issue_type,
+    validate_jira_project_key,
+    validate_linear_api_key,
+    validate_linear_team_id,
     validate_slack_webhook_url,
     validate_telegram_bot_token,
     validate_telegram_chat_id,
@@ -398,6 +406,98 @@ def _send_email_message(
         conn.send_message(msg)
 
 
+def _build_jira_adf_body(text: str) -> dict[str, object]:
+    """Render plain text as Atlassian Document Format (ADF).
+
+    One paragraph per non-empty line is enough for the alert message — we don't
+    need the full rich tree, just a structure Jira will accept and display as a
+    multi-line ticket body.
+    """
+    paragraphs: list[dict[str, object]] = []
+    for line in text.splitlines():
+        if not line:
+            paragraphs.append({"type": "paragraph", "content": []})
+            continue
+        paragraphs.append(
+            {
+                "type": "paragraph",
+                "content": [{"type": "text", "text": line}],
+            }
+        )
+    if not paragraphs:
+        paragraphs.append({"type": "paragraph", "content": []})
+    return {"type": "doc", "version": 1, "content": paragraphs}
+
+
+def _send_jira_issue(
+    *,
+    base_url: str,
+    auth_email: str,
+    api_token: str,
+    project_key: str,
+    issue_type: str,
+    summary: str,
+    body_text: str,
+) -> None:
+    credentials = base64.b64encode(f"{auth_email}:{api_token}".encode()).decode()
+    url = f"{base_url}/rest/api/3/issue"
+    payload: dict[str, object] = {
+        "fields": {
+            "project": {"key": project_key},
+            "issuetype": {"name": issue_type},
+            "summary": summary,
+            "description": _build_jira_adf_body(body_text),
+        }
+    }
+    _post_json(
+        url,
+        payload,
+        headers={"Authorization": f"Basic {credentials}", "Accept": "application/json"},
+    )
+
+
+def _send_linear_issue(
+    *,
+    api_key: str,
+    team_id: str,
+    title: str,
+    body_text: str,
+    state_id: str | None = None,
+    label_ids: list[str] | None = None,
+) -> None:
+    input_payload: dict[str, object] = {
+        "teamId": team_id,
+        "title": title,
+        "description": body_text,
+    }
+    if state_id:
+        input_payload["stateId"] = state_id
+    if label_ids:
+        input_payload["labelIds"] = label_ids
+    mutation = (
+        "mutation IssueCreate($input: IssueCreateInput!) {"
+        " issueCreate(input: $input) { success issue { id identifier } }"
+        " }"
+    )
+    _post_json(
+        "https://api.linear.app/graphql",
+        {"query": mutation, "variables": {"input": input_payload}},
+        headers={"Authorization": api_key, "Accept": "application/json"},
+    )
+
+
+def _build_ticket_subject(
+    *,
+    rule: AlertRule,
+    project: Project | None,
+    matched_count: int,
+) -> str:
+    """Single-line summary for Jira / Linear titles. Matches the email subject
+    default so all three ticket-style channels stay consistent."""
+    prefix = project.name if project else "tripl"
+    return f"[{prefix}] {rule.name} — {matched_count} alert(s)"
+
+
 def _is_telegram_markdown_parse_error(error: Exception) -> bool:
     message = str(error).lower()
     return "can't parse entities" in message or "can't find end of" in message
@@ -571,6 +671,63 @@ def send_alert_delivery(self: object, delivery_id: str) -> dict[str, object]:
                 recipients=recipients,
                 subject=subject,
                 body=text,
+            )
+        elif destination.type == AlertDestinationType.jira:
+            try:
+                base_url = validate_jira_base_url(destination.jira_base_url)
+                auth_email = validate_jira_auth_email(destination.jira_auth_email)
+                api_token = validate_jira_api_token(
+                    _decrypt_secret(destination.jira_api_token_encrypted)
+                )
+                project_key = validate_jira_project_key(destination.jira_project_key)
+                issue_type = validate_jira_issue_type(destination.jira_issue_type or "Task")
+            except ValueError as exc:
+                raise ValueError(
+                    "Jira destination configuration is invalid. Update the base URL, "
+                    "credentials, project key, or issue type."
+                ) from exc
+            summary = _build_ticket_subject(
+                rule=rule,
+                project=project,
+                matched_count=delivery.matched_count,
+            )
+            _send_jira_issue(
+                base_url=base_url,
+                auth_email=auth_email,
+                api_token=api_token,
+                project_key=project_key,
+                issue_type=issue_type,
+                summary=summary,
+                body_text=text,
+            )
+        elif destination.type == AlertDestinationType.linear:
+            try:
+                api_key = validate_linear_api_key(
+                    _decrypt_secret(destination.linear_api_key_encrypted)
+                )
+                team_id = validate_linear_team_id(destination.linear_team_id)
+            except ValueError as exc:
+                raise ValueError(
+                    "Linear destination configuration is invalid. Update the API key "
+                    "or team id."
+                ) from exc
+            label_ids = (
+                [lid for lid in destination.linear_label_ids.split(",") if lid]
+                if destination.linear_label_ids
+                else None
+            )
+            title = _build_ticket_subject(
+                rule=rule,
+                project=project,
+                matched_count=delivery.matched_count,
+            )
+            _send_linear_issue(
+                api_key=api_key,
+                team_id=team_id,
+                title=title,
+                body_text=text,
+                state_id=destination.linear_state_id,
+                label_ids=label_ids,
             )
         else:
             raise ValueError(f"Unsupported destination type {destination.type}")

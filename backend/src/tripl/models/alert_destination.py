@@ -19,6 +19,8 @@ class AlertDestinationType(enum.StrEnum):
     telegram = "telegram"
     webhook = "webhook"
     email = "email"
+    jira = "jira"
+    linear = "linear"
 
 
 class AlertDestination(UUIDMixin, TimestampMixin, Base):
@@ -44,6 +46,19 @@ class AlertDestination(UUIDMixin, TimestampMixin, Base):
     email_recipients: Mapped[str | None] = mapped_column(Text, nullable=True)
     email_from_address: Mapped[str | None] = mapped_column(String(255), nullable=True)
     email_subject_template: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    # Jira channel: REST API v3 — Basic auth with auth_email + api_token (encrypted),
+    # creates an issue per delivery on jira_project_key with jira_issue_type.
+    jira_base_url: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    jira_auth_email: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    jira_api_token_encrypted: Mapped[str | None] = mapped_column(Text, nullable=True)
+    jira_project_key: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    jira_issue_type: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    # Linear channel: GraphQL — Authorization header with api_key (encrypted),
+    # creates an issue on linear_team_id with optional state + label ids (CSV).
+    linear_api_key_encrypted: Mapped[str | None] = mapped_column(Text, nullable=True)
+    linear_team_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    linear_state_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    linear_label_ids: Mapped[str | None] = mapped_column(String(1024), nullable=True)
 
     rules: Mapped[list[AlertRule]] = relationship(
         back_populates="destination",
