@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Globe, Mail, Send, Trash2, Webhook } from 'lucide-react'
+import { ClipboardList, Globe, Mail, Send, Ticket, Trash2, Webhook } from 'lucide-react'
 
 import { alertingApi } from '@/api/alerting'
 import { eventTypesApi } from '@/api/eventTypes'
@@ -84,6 +84,8 @@ export default function ProjectAlertingTab({ slug }: { slug: string }) {
     telegram: destinations.filter(destination => destination.type === 'telegram'),
     webhook: destinations.filter(destination => destination.type === 'webhook'),
     email: destinations.filter(destination => destination.type === 'email'),
+    jira: destinations.filter(destination => destination.type === 'jira'),
+    linear: destinations.filter(destination => destination.type === 'linear'),
   }), [destinations])
 
   const allRules = destinations.flatMap(destination =>
@@ -117,6 +119,15 @@ export default function ProjectAlertingTab({ slug }: { slug: string }) {
         email_recipients: destinationForm.type === 'email' && destinationForm.email_recipients ? destinationForm.email_recipients : undefined,
         email_from_address: destinationForm.type === 'email' ? (destinationForm.email_from_address || null) : undefined,
         email_subject_template: destinationForm.type === 'email' ? (destinationForm.email_subject_template || null) : undefined,
+        jira_base_url: destinationForm.type === 'jira' && destinationForm.jira_base_url ? destinationForm.jira_base_url : undefined,
+        jira_auth_email: destinationForm.type === 'jira' && destinationForm.jira_auth_email ? destinationForm.jira_auth_email : undefined,
+        jira_api_token: destinationForm.type === 'jira' && destinationForm.jira_api_token ? destinationForm.jira_api_token : undefined,
+        jira_project_key: destinationForm.type === 'jira' && destinationForm.jira_project_key ? destinationForm.jira_project_key : undefined,
+        jira_issue_type: destinationForm.type === 'jira' && destinationForm.jira_issue_type ? destinationForm.jira_issue_type : undefined,
+        linear_api_key: destinationForm.type === 'linear' && destinationForm.linear_api_key ? destinationForm.linear_api_key : undefined,
+        linear_team_id: destinationForm.type === 'linear' && destinationForm.linear_team_id ? destinationForm.linear_team_id : undefined,
+        linear_state_id: destinationForm.type === 'linear' ? (destinationForm.linear_state_id || null) : undefined,
+        linear_label_ids: destinationForm.type === 'linear' ? (destinationForm.linear_label_ids || null) : undefined,
       })
     },
     onSuccess: () => {
@@ -153,6 +164,15 @@ export default function ProjectAlertingTab({ slug }: { slug: string }) {
       email_recipients: destination.email_recipients ?? '',
       email_from_address: destination.email_from_address ?? '',
       email_subject_template: destination.email_subject_template ?? '',
+      jira_base_url: destination.jira_base_url ?? '',
+      jira_auth_email: destination.jira_auth_email ?? '',
+      jira_api_token: '',
+      jira_project_key: destination.jira_project_key ?? '',
+      jira_issue_type: destination.jira_issue_type ?? 'Task',
+      linear_api_key: '',
+      linear_team_id: destination.linear_team_id ?? '',
+      linear_state_id: destination.linear_state_id ?? '',
+      linear_label_ids: destination.linear_label_ids ?? '',
     })
   }
 
@@ -206,6 +226,14 @@ export default function ProjectAlertingTab({ slug }: { slug: string }) {
                 <Mail className="mr-2 h-4 w-4" />
                 Add Email
               </Button>
+              <Button variant="outline" size="sm" onClick={() => openCreate('jira')}>
+                <Ticket className="mr-2 h-4 w-4" />
+                Add Jira
+              </Button>
+              <Button variant="outline" size="sm" onClick={() => openCreate('linear')}>
+                <ClipboardList className="mr-2 h-4 w-4" />
+                Add Linear
+              </Button>
             </div>
           </div>
 
@@ -217,7 +245,7 @@ export default function ProjectAlertingTab({ slug }: { slug: string }) {
             />
           )}
 
-          {(['slack', 'telegram', 'webhook', 'email'] as const).map(channel => (
+          {(['slack', 'telegram', 'webhook', 'email', 'jira', 'linear'] as const).map(channel => (
             <div key={channel} className="space-y-3">
               <div className="flex items-center gap-2">
                 <h4 className="text-sm font-medium capitalize">{channel}</h4>
@@ -289,6 +317,8 @@ export default function ProjectAlertingTab({ slug }: { slug: string }) {
                       <SelectItem value="telegram">Telegram</SelectItem>
                       <SelectItem value="webhook">Webhook</SelectItem>
                       <SelectItem value="email">Email</SelectItem>
+                      <SelectItem value="jira">Jira</SelectItem>
+                      <SelectItem value="linear">Linear</SelectItem>
                     </SelectContent>
                   </Select>
                 </div>
@@ -375,7 +405,7 @@ export default function ProjectAlertingTab({ slug }: { slug: string }) {
         <DialogContent className="max-w-lg">
           <form onSubmit={event => { event.preventDefault(); destinationMutation.mutate() }}>
             <DialogHeader>
-              <DialogTitle>{editingDestination ? 'Edit Destination' : `New ${activeDestinationType === 'slack' ? 'Slack' : activeDestinationType === 'telegram' ? 'Telegram' : activeDestinationType === 'email' ? 'Email' : 'Webhook'} Destination`}</DialogTitle>
+              <DialogTitle>{editingDestination ? 'Edit Destination' : `New ${activeDestinationType === 'slack' ? 'Slack' : activeDestinationType === 'telegram' ? 'Telegram' : activeDestinationType === 'email' ? 'Email' : activeDestinationType === 'jira' ? 'Jira' : activeDestinationType === 'linear' ? 'Linear' : 'Webhook'} Destination`}</DialogTitle>
             </DialogHeader>
             <div className="grid gap-4 py-4">
               <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
@@ -401,6 +431,8 @@ export default function ProjectAlertingTab({ slug }: { slug: string }) {
                       <SelectItem value="telegram">Telegram</SelectItem>
                       <SelectItem value="webhook">Webhook</SelectItem>
                       <SelectItem value="email">Email</SelectItem>
+                      <SelectItem value="jira">Jira</SelectItem>
+                      <SelectItem value="linear">Linear</SelectItem>
                     </SelectContent>
                   </Select>
                 </div>
@@ -478,7 +510,7 @@ export default function ProjectAlertingTab({ slug }: { slug: string }) {
                     Alerts POST a JSON payload (project, rule, scan, message, items). The optional secret header is sent with every request — use it for auth (e.g. Authorization).
                   </p>
                 </div>
-              ) : (
+              ) : destinationForm.type === 'email' ? (
                 <div className="grid gap-3">
                   <div className="grid gap-2">
                     <Label>Recipients</Label>
@@ -512,6 +544,113 @@ export default function ProjectAlertingTab({ slug }: { slug: string }) {
                   </div>
                   <p className="text-xs text-muted-foreground">
                     SMTP settings (host/port/credentials) come from the instance config. Recipients are comma-separated. Subject supports {`\${project_name}`}, {`\${rule_name}`}, {`\${destination_name}`}, {`\${matched_count}`}.
+                  </p>
+                </div>
+              ) : destinationForm.type === 'jira' ? (
+                <div className="grid gap-3">
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                    <div className="grid gap-2">
+                      <Label>Base URL</Label>
+                      <Input
+                        aria-label="Jira Base URL"
+                        placeholder="https://acme.atlassian.net"
+                        value={destinationForm.jira_base_url}
+                        onChange={event => setDestinationForm(current => ({ ...current, jira_base_url: event.target.value }))}
+                        required={!editingDestination}
+                      />
+                    </div>
+                    <div className="grid gap-2">
+                      <Label>Auth Email</Label>
+                      <Input
+                        aria-label="Jira Auth Email"
+                        placeholder="alice@example.com"
+                        value={destinationForm.jira_auth_email}
+                        onChange={event => setDestinationForm(current => ({ ...current, jira_auth_email: event.target.value }))}
+                        required={!editingDestination}
+                      />
+                    </div>
+                  </div>
+                  <div className="grid gap-2">
+                    <Label>API Token</Label>
+                    <Input
+                      type="password"
+                      aria-label="Jira API Token"
+                      placeholder={editingDestination?.jira_api_token_set ? 'Leave empty to keep current token' : 'Atlassian API token'}
+                      value={destinationForm.jira_api_token}
+                      onChange={event => setDestinationForm(current => ({ ...current, jira_api_token: event.target.value }))}
+                      required={!editingDestination || !editingDestination.jira_api_token_set}
+                    />
+                  </div>
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                    <div className="grid gap-2">
+                      <Label>Project Key</Label>
+                      <Input
+                        aria-label="Jira Project Key"
+                        placeholder="ENG"
+                        value={destinationForm.jira_project_key}
+                        onChange={event => setDestinationForm(current => ({ ...current, jira_project_key: event.target.value.toUpperCase() }))}
+                        required={!editingDestination}
+                      />
+                    </div>
+                    <div className="grid gap-2">
+                      <Label>Issue Type</Label>
+                      <Input
+                        aria-label="Jira Issue Type"
+                        placeholder="Task"
+                        value={destinationForm.jira_issue_type}
+                        onChange={event => setDestinationForm(current => ({ ...current, jira_issue_type: event.target.value }))}
+                      />
+                    </div>
+                  </div>
+                  <p className="text-xs text-muted-foreground">
+                    Each delivery opens a new issue in the project via Jira REST API v3 with Basic auth (email + API token). Body is rendered as ADF.
+                  </p>
+                </div>
+              ) : (
+                <div className="grid gap-3">
+                  <div className="grid gap-2">
+                    <Label>API Key</Label>
+                    <Input
+                      type="password"
+                      aria-label="Linear API Key"
+                      placeholder={editingDestination?.linear_api_key_set ? 'Leave empty to keep current key' : 'lin_api_…'}
+                      value={destinationForm.linear_api_key}
+                      onChange={event => setDestinationForm(current => ({ ...current, linear_api_key: event.target.value }))}
+                      required={!editingDestination || !editingDestination.linear_api_key_set}
+                    />
+                  </div>
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                    <div className="grid gap-2">
+                      <Label>Team ID</Label>
+                      <Input
+                        aria-label="Linear Team ID"
+                        placeholder="team-uuid or short id"
+                        value={destinationForm.linear_team_id}
+                        onChange={event => setDestinationForm(current => ({ ...current, linear_team_id: event.target.value }))}
+                        required={!editingDestination}
+                      />
+                    </div>
+                    <div className="grid gap-2">
+                      <Label>State ID (optional)</Label>
+                      <Input
+                        aria-label="Linear State ID"
+                        placeholder="state-uuid"
+                        value={destinationForm.linear_state_id}
+                        onChange={event => setDestinationForm(current => ({ ...current, linear_state_id: event.target.value }))}
+                      />
+                    </div>
+                  </div>
+                  <div className="grid gap-2">
+                    <Label>Label IDs (optional, comma-separated)</Label>
+                    <Input
+                      aria-label="Linear Label IDs"
+                      placeholder="label-1, label-2"
+                      value={destinationForm.linear_label_ids}
+                      onChange={event => setDestinationForm(current => ({ ...current, linear_label_ids: event.target.value }))}
+                    />
+                  </div>
+                  <p className="text-xs text-muted-foreground">
+                    Each delivery opens a new issue in the team via Linear's GraphQL <code>issueCreate</code>. Use API key from Linear settings → API.
                   </p>
                 </div>
               )}

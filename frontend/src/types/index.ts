@@ -551,7 +551,7 @@ export interface EventWindowMetrics {
   data: EventMetricPoint[]
 }
 
-export type AlertDestinationType = 'slack' | 'telegram' | 'webhook' | 'email'
+export type AlertDestinationType = 'slack' | 'telegram' | 'webhook' | 'email' | 'jira' | 'linear'
 export type AlertDeliveryStatus = 'pending' | 'sent' | 'failed'
 export type AlertMessageFormat =
   | 'plain'
@@ -613,6 +613,15 @@ export interface AlertDestination {
   email_recipients: string | null
   email_from_address: string | null
   email_subject_template: string | null
+  jira_base_url: string | null
+  jira_auth_email: string | null
+  jira_api_token_set: boolean
+  jira_project_key: string | null
+  jira_issue_type: string | null
+  linear_api_key_set: boolean
+  linear_team_id: string | null
+  linear_state_id: string | null
+  linear_label_ids: string | null
   rules: AlertRule[]
   created_at: string
   updated_at: string

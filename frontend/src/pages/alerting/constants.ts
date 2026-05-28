@@ -6,7 +6,7 @@ import type {
   AlertRuleFilterPayload,
 } from "@/types"
 
-export type DestinationChannel = 'slack' | 'telegram' | 'webhook' | 'email'
+export type DestinationChannel = 'slack' | 'telegram' | 'webhook' | 'email' | 'jira' | 'linear'
 
 export type DestinationFormState = {
   type: DestinationChannel
@@ -21,6 +21,15 @@ export type DestinationFormState = {
   email_recipients: string
   email_from_address: string
   email_subject_template: string
+  jira_base_url: string
+  jira_auth_email: string
+  jira_api_token: string
+  jira_project_key: string
+  jira_issue_type: string
+  linear_api_key: string
+  linear_team_id: string
+  linear_state_id: string
+  linear_label_ids: string
 }
 
 export type RuleFilterDraft = {
@@ -167,6 +176,12 @@ export const MESSAGE_FORMAT_OPTIONS: Record<DestinationChannel, { value: AlertMe
   email: [
     { value: 'plain', label: 'Plain text' },
   ],
+  jira: [
+    { value: 'plain', label: 'Plain text' },
+  ],
+  linear: [
+    { value: 'plain', label: 'Plain text' },
+  ],
 }
 
 export const FORMAT_HELP: Record<AlertMessageFormat, string[]> = {
@@ -210,6 +225,15 @@ export function defaultDestinationForm(type: DestinationChannel): DestinationFor
     email_recipients: '',
     email_from_address: '',
     email_subject_template: '',
+    jira_base_url: '',
+    jira_auth_email: '',
+    jira_api_token: '',
+    jira_project_key: '',
+    jira_issue_type: type === 'jira' ? 'Task' : '',
+    linear_api_key: '',
+    linear_team_id: '',
+    linear_state_id: '',
+    linear_label_ids: '',
   }
 }
 

@@ -15,7 +15,7 @@ export const alertingApi = {
   createDestination: (
     slug: string,
     data: {
-      type: 'slack' | 'telegram' | 'webhook' | 'email'
+      type: 'slack' | 'telegram' | 'webhook' | 'email' | 'jira' | 'linear'
       name: string
       enabled?: boolean
       webhook_url?: string | null
@@ -27,6 +27,15 @@ export const alertingApi = {
       email_recipients?: string | null
       email_from_address?: string | null
       email_subject_template?: string | null
+      jira_base_url?: string | null
+      jira_auth_email?: string | null
+      jira_api_token?: string | null
+      jira_project_key?: string | null
+      jira_issue_type?: string | null
+      linear_api_key?: string | null
+      linear_team_id?: string | null
+      linear_state_id?: string | null
+      linear_label_ids?: string | null
     },
   ) => api.post<AlertDestination>(`/projects/${slug}/alert-destinations`, data),
 
@@ -45,6 +54,15 @@ export const alertingApi = {
       email_recipients?: string | null
       email_from_address?: string | null
       email_subject_template?: string | null
+      jira_base_url?: string | null
+      jira_auth_email?: string | null
+      jira_api_token?: string | null
+      jira_project_key?: string | null
+      jira_issue_type?: string | null
+      linear_api_key?: string | null
+      linear_team_id?: string | null
+      linear_state_id?: string | null
+      linear_label_ids?: string | null
     },
   ) => api.patch<AlertDestination>(`/projects/${slug}/alert-destinations/${destinationId}`, data),
 

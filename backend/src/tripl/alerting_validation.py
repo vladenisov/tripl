@@ -161,3 +161,111 @@ def validate_email_subject_template(value: str | None) -> str | None:
     if len(normalized) > 500:
         raise ValueError("Email subject template must be <= 500 characters")
     return normalized
+
+
+# Jira project keys / issue type names: ASCII alnum + underscore, kept conservative.
+# Atlassian's actual rules are more permissive but harder to encode safely in a URL.
+_JIRA_PROJECT_KEY_RE = re.compile(r"^[A-Z][A-Z0-9_]{1,31}$")
+_LINEAR_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+
+
+def validate_jira_base_url(value: str | None) -> str:
+    if value is None:
+        raise ValueError("Jira base_url is required")
+    normalized = normalize_required_text(value, field_name="Jira base_url")
+    if _has_disallowed_characters(normalized):
+        raise ValueError("Jira base_url must not contain whitespace or control characters")
+    parsed = urlparse(normalized)
+    if parsed.scheme != "https" or not parsed.netloc:
+        raise ValueError("Jira base_url must be a valid https URL")
+    # Strip trailing slash so downstream path concat stays predictable.
+    return normalized.rstrip("/")
+
+
+def validate_jira_auth_email(value: str | None) -> str:
+    if value is None:
+        raise ValueError("Jira auth_email is required")
+    return validate_email_address(value)
+
+
+def validate_jira_api_token(value: str | None) -> str:
+    if value is None:
+        raise ValueError("Jira api_token is required")
+    normalized = normalize_required_text(value, field_name="Jira api_token")
+    if _has_disallowed_characters(normalized):
+        raise ValueError("Jira api_token must not contain whitespace or control characters")
+    return normalized
+
+
+def validate_jira_project_key(value: str | None) -> str:
+    if value is None:
+        raise ValueError("Jira project_key is required")
+    normalized = normalize_required_text(value, field_name="Jira project_key").upper()
+    if not _JIRA_PROJECT_KEY_RE.fullmatch(normalized):
+        raise ValueError("Jira project_key must be uppercase ASCII (e.g. ENG, PLAT_OPS)")
+    return normalized
+
+
+def validate_jira_issue_type(value: str | None) -> str:
+    """Issue-type name as configured in Jira (e.g. 'Task', 'Bug'). Atlassian
+    treats these as case-sensitive display names — pass through after trimming
+    and rejecting CR/LF."""
+    if value is None:
+        raise ValueError("Jira issue_type is required")
+    normalized = normalize_required_text(value, field_name="Jira issue_type")
+    if "\n" in normalized or "\r" in normalized:
+        raise ValueError("Jira issue_type must not contain newlines")
+    if len(normalized) > 64:
+        raise ValueError("Jira issue_type must be <= 64 characters")
+    return normalized
+
+
+def validate_linear_api_key(value: str | None) -> str:
+    if value is None:
+        raise ValueError("Linear api_key is required")
+    normalized = normalize_required_text(value, field_name="Linear api_key")
+    if _has_disallowed_characters(normalized):
+        raise ValueError("Linear api_key must not contain whitespace or control characters")
+    return normalized
+
+
+def validate_linear_team_id(value: str | None) -> str:
+    """Linear identifiers are UUIDs or short alnum strings — keep the regex
+    conservative so a typo doesn't reach the GraphQL endpoint."""
+    if value is None:
+        raise ValueError("Linear team_id is required")
+    normalized = normalize_required_text(value, field_name="Linear team_id")
+    if not _LINEAR_ID_RE.fullmatch(normalized):
+        raise ValueError("Linear team_id must be an alnum / dash / underscore id")
+    return normalized
+
+
+def validate_linear_state_id(value: str | None) -> str | None:
+    if value is None:
+        return None
+    normalized = value.strip()
+    if not normalized:
+        return None
+    if not _LINEAR_ID_RE.fullmatch(normalized):
+        raise ValueError("Linear state_id must be an alnum / dash / underscore id")
+    return normalized
+
+
+def validate_linear_label_ids(value: str | None) -> str | None:
+    """Comma-separated label ids. Empty / whitespace-only input is normalized
+    to None; each entry must match the Linear id format."""
+    if value is None:
+        return None
+    seen: dict[str, None] = {}
+    for raw in value.split(","):
+        candidate = raw.strip()
+        if not candidate:
+            continue
+        if not _LINEAR_ID_RE.fullmatch(candidate):
+            raise ValueError("Linear label_ids must be alnum / dash / underscore ids")
+        seen.setdefault(candidate, None)
+    if not seen:
+        return None
+    if len(seen) > 20:
+        raise ValueError("Linear label_ids must contain at most 20 entries")
+    return ",".join(seen)

@@ -1,3 +1,5 @@
+import base64
+import json
 import uuid
 from datetime import UTC, datetime
 from pathlib import Path
@@ -1885,6 +1887,385 @@ def test_send_alert_delivery_email_fails_without_smtp(monkeypatch, tmp_path) -> 
         assert persisted.status == AlertDeliveryStatus.failed.value
         assert persisted.error_message is not None
         assert "SMTP" in persisted.error_message
+
+    Base.metadata.drop_all(engine)
+    engine.dispose()
+
+
+# --- Jira channel -----------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_alerting_jira_destination_crud_and_validation(client: AsyncClient) -> None:
+    project_resp = await client.post(
+        "/api/v1/projects",
+        json={"name": "Jira Alerts", "slug": "jira-alerts", "description": ""},
+    )
+    assert project_resp.status_code == 201
+
+    # Non-https base_url rejected.
+    bad_url_resp = await client.post(
+        "/api/v1/projects/jira-alerts/alert-destinations",
+        json={
+            "type": "jira",
+            "name": "Bad",
+            "jira_base_url": "http://example.atlassian.net",
+            "jira_auth_email": "alice@example.com",
+            "jira_api_token": "secret",
+            "jira_project_key": "ENG",
+        },
+    )
+    assert bad_url_resp.status_code == 422
+
+    # Lowercase / invalid project key rejected.
+    bad_key_resp = await client.post(
+        "/api/v1/projects/jira-alerts/alert-destinations",
+        json={
+            "type": "jira",
+            "name": "Bad",
+            "jira_base_url": "https://example.atlassian.net",
+            "jira_auth_email": "alice@example.com",
+            "jira_api_token": "secret",
+            "jira_project_key": "engineering team",
+        },
+    )
+    assert bad_key_resp.status_code == 422
+
+    create_resp = await client.post(
+        "/api/v1/projects/jira-alerts/alert-destinations",
+        json={
+            "type": "jira",
+            "name": "Ops Jira",
+            "jira_base_url": "https://example.atlassian.net/",
+            "jira_auth_email": "alice@example.com",
+            "jira_api_token": "secret-token",
+            "jira_project_key": "eng",
+            "jira_issue_type": "Bug",
+        },
+    )
+    assert create_resp.status_code == 201
+    destination = create_resp.json()
+    assert destination["type"] == "jira"
+    # base_url has trailing slash stripped, project key uppercased.
+    assert destination["jira_base_url"] == "https://example.atlassian.net"
+    assert destination["jira_project_key"] == "ENG"
+    assert destination["jira_issue_type"] == "Bug"
+    assert destination["jira_api_token_set"] is True
+    # Secrets are never echoed back.
+    assert "jira_api_token" not in destination
+    destination_id = destination["id"]
+
+    update_resp = await client.patch(
+        f"/api/v1/projects/jira-alerts/alert-destinations/{destination_id}",
+        json={"jira_issue_type": "Task", "name": "Renamed Jira"},
+    )
+    assert update_resp.status_code == 200
+    body = update_resp.json()
+    assert body["name"] == "Renamed Jira"
+    assert body["jira_issue_type"] == "Task"
+
+
+def test_send_alert_delivery_creates_jira_issue(monkeypatch, tmp_path) -> None:
+    engine = create_engine(f"sqlite:///{tmp_path / 'alerting_jira_send.db'}")
+    Base.metadata.create_all(engine)
+    sync_session_factory = sessionmaker(engine, expire_on_commit=False)
+    sent: dict[str, object] = {}
+
+    with sync_session_factory() as session:
+        project = Project(
+            id=uuid.uuid4(), name="Alert Runtime", slug="alert-runtime", description=""
+        )
+        data_source = DataSource(
+            id=uuid.uuid4(),
+            name="Runtime DS",
+            db_type="clickhouse",
+            host="localhost",
+            port=8123,
+            database_name="default",
+            username="default",
+            password_encrypted="",
+        )
+        scan_config = ScanConfig(
+            id=uuid.uuid4(),
+            data_source_id=data_source.id,
+            project_id=project.id,
+            name="Runtime Scan",
+            base_query="SELECT * FROM events",
+            time_column="created_at",
+            cardinality_threshold=100,
+            interval="1h",
+        )
+        destination = AlertDestination(
+            id=uuid.uuid4(),
+            project_id=project.id,
+            type="jira",
+            name="Ops Jira",
+            enabled=True,
+            jira_base_url="https://example.atlassian.net",
+            jira_auth_email="alice@example.com",
+            jira_api_token_encrypted="api-token-1",
+            jira_project_key="ENG",
+            jira_issue_type="Task",
+        )
+        rule = AlertRule(
+            id=uuid.uuid4(),
+            destination_id=destination.id,
+            name="Main Rule",
+            enabled=True,
+            message_format="plain",
+        )
+        delivery = AlertDelivery(
+            id=uuid.uuid4(),
+            project_id=project.id,
+            scan_config_id=scan_config.id,
+            destination_id=destination.id,
+            rule_id=rule.id,
+            channel="jira",
+            status="pending",
+            matched_count=2,
+            payload_snapshot={"preview": "two alerts"},
+        )
+        item = AlertDeliveryItem(
+            id=uuid.uuid4(),
+            delivery_id=delivery.id,
+            scope_type="event",
+            scope_ref="event-1",
+            scope_name="purchase:success",
+            bucket=datetime(2026, 4, 11, 9, tzinfo=UTC),
+            direction="drop",
+            actual_count=10,
+            expected_count=20,
+            absolute_delta=10,
+            percent_delta=50,
+            details_path=None,
+            monitoring_path=None,
+        )
+        session.add_all([project, data_source, scan_config, destination, rule, delivery, item])
+        session.commit()
+        delivery_id = str(delivery.id)
+
+    def capture_post_json(url: str, body: dict[str, object], headers: dict[str, str] | None = None):
+        sent["url"] = url
+        sent["body"] = body
+        sent["headers"] = headers
+
+    monkeypatch.setitem(
+        metrics.send_alert_delivery.run.__globals__,
+        "_get_sync_session",
+        sync_session_factory,
+    )
+    monkeypatch.setitem(
+        metrics.send_alert_delivery.run.__globals__,
+        "_post_json",
+        capture_post_json,
+    )
+
+    result = metrics.send_alert_delivery.run(delivery_id)
+    assert result["status"] == "sent"
+
+    assert sent["url"] == "https://example.atlassian.net/rest/api/3/issue"
+    headers = sent["headers"]
+    assert isinstance(headers, dict)
+    # Basic auth header is base64("email:token").
+    assert headers["Authorization"].startswith("Basic ")
+    expected_creds = base64.b64encode(b"alice@example.com:api-token-1").decode()
+    assert headers["Authorization"] == f"Basic {expected_creds}"
+    body = sent["body"]
+    assert isinstance(body, dict)
+    fields = body["fields"]
+    assert isinstance(fields, dict)
+    assert fields["project"] == {"key": "ENG"}
+    assert fields["issuetype"] == {"name": "Task"}
+    assert "Main Rule" in fields["summary"]
+    description = fields["description"]
+    assert isinstance(description, dict)
+    assert description["type"] == "doc"
+    # Body has paragraphs; render text contains the scope name.
+    rendered = json.dumps(description)
+    assert "purchase:success" in rendered
+
+    with sync_session_factory() as session:
+        persisted = session.get(AlertDelivery, uuid.UUID(delivery_id))
+        assert persisted is not None
+        assert persisted.status == AlertDeliveryStatus.sent.value
+
+    Base.metadata.drop_all(engine)
+    engine.dispose()
+
+
+# --- Linear channel ---------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_alerting_linear_destination_crud_and_validation(client: AsyncClient) -> None:
+    project_resp = await client.post(
+        "/api/v1/projects",
+        json={"name": "Linear Alerts", "slug": "linear-alerts", "description": ""},
+    )
+    assert project_resp.status_code == 201
+
+    # Team id with whitespace rejected.
+    bad_team_resp = await client.post(
+        "/api/v1/projects/linear-alerts/alert-destinations",
+        json={
+            "type": "linear",
+            "name": "Bad",
+            "linear_api_key": "lin_api_xyz",
+            "linear_team_id": "team with space",
+        },
+    )
+    assert bad_team_resp.status_code == 422
+
+    create_resp = await client.post(
+        "/api/v1/projects/linear-alerts/alert-destinations",
+        json={
+            "type": "linear",
+            "name": "Ops Linear",
+            "linear_api_key": "lin_api_xyz",
+            "linear_team_id": "team-eng-1",
+            "linear_state_id": "state-backlog",
+            "linear_label_ids": "label-1, label-2, label-1, ",
+        },
+    )
+    assert create_resp.status_code == 201
+    destination = create_resp.json()
+    assert destination["type"] == "linear"
+    assert destination["linear_team_id"] == "team-eng-1"
+    assert destination["linear_state_id"] == "state-backlog"
+    # Dedup + normalize: "label-1,label-2".
+    assert destination["linear_label_ids"] == "label-1,label-2"
+    assert destination["linear_api_key_set"] is True
+    assert "linear_api_key" not in destination
+    destination_id = destination["id"]
+
+    update_resp = await client.patch(
+        f"/api/v1/projects/linear-alerts/alert-destinations/{destination_id}",
+        json={"linear_label_ids": None, "name": "Renamed Linear"},
+    )
+    assert update_resp.status_code == 200
+    body = update_resp.json()
+    assert body["name"] == "Renamed Linear"
+    assert body["linear_label_ids"] is None
+
+
+def test_send_alert_delivery_creates_linear_issue(monkeypatch, tmp_path) -> None:
+    engine = create_engine(f"sqlite:///{tmp_path / 'alerting_linear_send.db'}")
+    Base.metadata.create_all(engine)
+    sync_session_factory = sessionmaker(engine, expire_on_commit=False)
+    sent: dict[str, object] = {}
+
+    with sync_session_factory() as session:
+        project = Project(
+            id=uuid.uuid4(), name="Alert Runtime", slug="alert-runtime", description=""
+        )
+        data_source = DataSource(
+            id=uuid.uuid4(),
+            name="Runtime DS",
+            db_type="clickhouse",
+            host="localhost",
+            port=8123,
+            database_name="default",
+            username="default",
+            password_encrypted="",
+        )
+        scan_config = ScanConfig(
+            id=uuid.uuid4(),
+            data_source_id=data_source.id,
+            project_id=project.id,
+            name="Runtime Scan",
+            base_query="SELECT * FROM events",
+            time_column="created_at",
+            cardinality_threshold=100,
+            interval="1h",
+        )
+        destination = AlertDestination(
+            id=uuid.uuid4(),
+            project_id=project.id,
+            type="linear",
+            name="Ops Linear",
+            enabled=True,
+            linear_api_key_encrypted="lin_api_xyz",
+            linear_team_id="team-eng-1",
+            linear_state_id="state-backlog",
+            linear_label_ids="label-1,label-2",
+        )
+        rule = AlertRule(
+            id=uuid.uuid4(),
+            destination_id=destination.id,
+            name="Main Rule",
+            enabled=True,
+            message_format="plain",
+        )
+        delivery = AlertDelivery(
+            id=uuid.uuid4(),
+            project_id=project.id,
+            scan_config_id=scan_config.id,
+            destination_id=destination.id,
+            rule_id=rule.id,
+            channel="linear",
+            status="pending",
+            matched_count=1,
+            payload_snapshot={"preview": "one alert"},
+        )
+        item = AlertDeliveryItem(
+            id=uuid.uuid4(),
+            delivery_id=delivery.id,
+            scope_type="event",
+            scope_ref="event-1",
+            scope_name="purchase:success",
+            bucket=datetime(2026, 4, 11, 9, tzinfo=UTC),
+            direction="drop",
+            actual_count=10,
+            expected_count=20,
+            absolute_delta=10,
+            percent_delta=50,
+            details_path=None,
+            monitoring_path=None,
+        )
+        session.add_all([project, data_source, scan_config, destination, rule, delivery, item])
+        session.commit()
+        delivery_id = str(delivery.id)
+
+    def capture_post_json(url: str, body: dict[str, object], headers: dict[str, str] | None = None):
+        sent["url"] = url
+        sent["body"] = body
+        sent["headers"] = headers
+
+    monkeypatch.setitem(
+        metrics.send_alert_delivery.run.__globals__,
+        "_get_sync_session",
+        sync_session_factory,
+    )
+    monkeypatch.setitem(
+        metrics.send_alert_delivery.run.__globals__,
+        "_post_json",
+        capture_post_json,
+    )
+
+    result = metrics.send_alert_delivery.run(delivery_id)
+    assert result["status"] == "sent"
+
+    assert sent["url"] == "https://api.linear.app/graphql"
+    headers = sent["headers"]
+    assert isinstance(headers, dict)
+    assert headers["Authorization"] == "lin_api_xyz"
+    body = sent["body"]
+    assert isinstance(body, dict)
+    assert "mutation IssueCreate" in body["query"]
+    variables = body["variables"]
+    assert isinstance(variables, dict)
+    input_payload = variables["input"]
+    assert isinstance(input_payload, dict)
+    assert input_payload["teamId"] == "team-eng-1"
+    assert input_payload["stateId"] == "state-backlog"
+    assert input_payload["labelIds"] == ["label-1", "label-2"]
+    assert "Main Rule" in input_payload["title"]
+    assert "purchase:success" in input_payload["description"]
+
+    with sync_session_factory() as session:
+        persisted = session.get(AlertDelivery, uuid.UUID(delivery_id))
+        assert persisted is not None
+        assert persisted.status == AlertDeliveryStatus.sent.value
 
     Base.metadata.drop_all(engine)
     engine.dispose()

@@ -325,6 +325,15 @@ def _destination_to_response(destination: AlertDestination) -> AlertDestinationR
         email_recipients=destination.email_recipients,
         email_from_address=destination.email_from_address,
         email_subject_template=destination.email_subject_template,
+        jira_base_url=destination.jira_base_url,
+        jira_auth_email=destination.jira_auth_email,
+        jira_api_token_set=bool(destination.jira_api_token_encrypted),
+        jira_project_key=destination.jira_project_key,
+        jira_issue_type=destination.jira_issue_type,
+        linear_api_key_set=bool(destination.linear_api_key_encrypted),
+        linear_team_id=destination.linear_team_id,
+        linear_state_id=destination.linear_state_id,
+        linear_label_ids=destination.linear_label_ids,
         rules=[_rule_to_response(rule) for rule in rules],
         created_at=destination.created_at,
         updated_at=destination.updated_at,
@@ -384,6 +393,15 @@ async def create_destination(
         email_recipients=data.email_recipients,
         email_from_address=data.email_from_address,
         email_subject_template=data.email_subject_template,
+        jira_base_url=data.jira_base_url,
+        jira_auth_email=data.jira_auth_email,
+        jira_api_token_encrypted=_encrypt_secret(data.jira_api_token),
+        jira_project_key=data.jira_project_key,
+        jira_issue_type=data.jira_issue_type,
+        linear_api_key_encrypted=_encrypt_secret(data.linear_api_key),
+        linear_team_id=data.linear_team_id,
+        linear_state_id=data.linear_state_id,
+        linear_label_ids=data.linear_label_ids,
     )
     session.add(destination)
     await session.commit()
@@ -460,6 +478,28 @@ async def update_destination(
             destination.email_from_address = update_dict["email_from_address"]
         if "email_subject_template" in update_dict:
             destination.email_subject_template = update_dict["email_subject_template"]
+    if destination.type == AlertDestinationType.jira:
+        if "jira_base_url" in update_dict and update_dict["jira_base_url"] is not None:
+            destination.jira_base_url = update_dict["jira_base_url"]
+        if "jira_auth_email" in update_dict and update_dict["jira_auth_email"] is not None:
+            destination.jira_auth_email = update_dict["jira_auth_email"]
+        jira_token = update_dict.get("jira_api_token")
+        if jira_token is not None:
+            destination.jira_api_token_encrypted = _encrypt_secret(jira_token)
+        if "jira_project_key" in update_dict and update_dict["jira_project_key"] is not None:
+            destination.jira_project_key = update_dict["jira_project_key"]
+        if "jira_issue_type" in update_dict and update_dict["jira_issue_type"] is not None:
+            destination.jira_issue_type = update_dict["jira_issue_type"]
+    if destination.type == AlertDestinationType.linear:
+        linear_key = update_dict.get("linear_api_key")
+        if linear_key is not None:
+            destination.linear_api_key_encrypted = _encrypt_secret(linear_key)
+        if "linear_team_id" in update_dict and update_dict["linear_team_id"] is not None:
+            destination.linear_team_id = update_dict["linear_team_id"]
+        if "linear_state_id" in update_dict:
+            destination.linear_state_id = update_dict["linear_state_id"]
+        if "linear_label_ids" in update_dict:
+            destination.linear_label_ids = update_dict["linear_label_ids"]
 
     await session.commit()
     destination = await _get_destination(
