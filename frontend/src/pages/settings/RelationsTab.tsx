@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { Link2, Plus, Trash2 } from "lucide-react"
 import { eventTypesApi } from "@/api/eventTypes"
 import { relationsApi } from "@/api/relations"
+import { useActiveBranchId } from "@/hooks/useBranch"
 import type { EventType, EventTypeRelation } from "@/types"
 import { useConfirm } from "@/hooks/useConfirm"
 import { Button } from "@/components/ui/button"
@@ -13,6 +14,7 @@ import { EmptyState } from "@/components/empty-state"
 
 export function RelationsTab({ slug }: { slug: string }) {
   const qc = useQueryClient()
+  const branchId = useActiveBranchId()
   const [showForm, setShowForm] = useState(false)
   const [srcEtId, setSrcEtId] = useState('')
   const [tgtEtId, setTgtEtId] = useState('')
@@ -21,12 +23,12 @@ export function RelationsTab({ slug }: { slug: string }) {
   const { confirm, dialog } = useConfirm()
 
   const { data: eventTypes = [] } = useQuery({
-    queryKey: ['eventTypes', slug],
-    queryFn: () => eventTypesApi.list(slug),
+    queryKey: ['eventTypes', slug, branchId],
+    queryFn: () => eventTypesApi.list(slug, branchId),
   })
   const { data: relations = [] } = useQuery({
-    queryKey: ['relations', slug],
-    queryFn: () => relationsApi.list(slug),
+    queryKey: ['relations', slug, branchId],
+    queryFn: () => relationsApi.list(slug, branchId),
   })
 
   const srcEt = eventTypes.find((e: EventType) => e.id === srcEtId)
@@ -36,16 +38,16 @@ export function RelationsTab({ slug }: { slug: string }) {
     mutationFn: () => relationsApi.create(slug, {
       source_event_type_id: srcEtId, target_event_type_id: tgtEtId,
       source_field_id: srcFieldId, target_field_id: tgtFieldId,
-    }),
+    }, branchId),
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ['relations', slug] })
+      qc.invalidateQueries({ queryKey: ['relations', slug, branchId] })
       setShowForm(false); setSrcEtId(''); setTgtEtId(''); setSrcFieldId(''); setTgtFieldId('')
     },
   })
 
   const deleteMut = useMutation({
-    mutationFn: (id: string) => relationsApi.del(slug, id),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['relations', slug] }),
+    mutationFn: (id: string) => relationsApi.del(slug, id, branchId),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['relations', slug, branchId] }),
   })
 
   const handleDelete = async (r: EventTypeRelation) => {

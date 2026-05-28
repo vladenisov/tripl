@@ -7,6 +7,7 @@ import type {
   Variable,
 } from '@/types'
 import { eventsApi } from '@/api/events'
+import { useActiveBranchId } from '@/hooks/useBranch'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Checkbox } from '@/components/ui/checkbox'
@@ -49,6 +50,7 @@ export function EventForm({
   onClose: () => void
 }) {
   const qc = useQueryClient()
+  const branchId = useActiveBranchId()
   const [etId, setEtId] = useState(event?.event_type_id ?? defaultEventTypeId ?? '')
   const [name, setName] = useState(event?.name ?? '')
   const [description, setDescription] = useState(event?.description ?? '')
@@ -98,12 +100,12 @@ export function EventForm({
           .map(([k, v]) => ({ meta_field_definition_id: k, value: v })),
       }
       return event
-        ? eventsApi.update(slug, event.id, payload)
-        : eventsApi.create(slug, payload)
+        ? eventsApi.update(slug, event.id, payload, branchId)
+        : eventsApi.create(slug, payload, branchId)
     },
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ['events', slug] })
-      qc.invalidateQueries({ queryKey: ['eventTags', slug] })
+      qc.invalidateQueries({ queryKey: ['events', slug, branchId] })
+      qc.invalidateQueries({ queryKey: ['eventTags', slug, branchId] })
       onClose()
     },
   })

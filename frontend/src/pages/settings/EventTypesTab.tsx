@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { ArrowDown, ArrowUp, ChevronDown, Layers, Pencil, Plus, Trash2 } from 'lucide-react'
 import { eventTypesApi } from '@/api/eventTypes'
 import { fieldsApi } from '@/api/fields'
+import { useActiveBranchId } from '@/hooks/useBranch'
 import type { EventType, FieldDefinition, Sensitivity } from '@/types'
 import { SENSITIVITY_OPTIONS } from '@/types'
 import { useConfirm } from '@/hooks/useConfirm'
@@ -20,6 +21,7 @@ import { SensitivityChip } from '@/components/primitives/sensitivity-chip'
 
 export function EventTypesTab({ slug }: { slug: string }) {
   const qc = useQueryClient()
+  const branchId = useActiveBranchId()
   const [showForm, setShowForm] = useState(false)
   const [name, setName] = useState('')
   const [displayName, setDisplayName] = useState('')
@@ -32,29 +34,29 @@ export function EventTypesTab({ slug }: { slug: string }) {
   const { confirm, dialog } = useConfirm()
 
   const { data: eventTypes = [] } = useQuery({
-    queryKey: ['eventTypes', slug],
-    queryFn: () => eventTypesApi.list(slug),
+    queryKey: ['eventTypes', slug, branchId],
+    queryFn: () => eventTypesApi.list(slug, branchId),
   })
 
   const createMut = useMutation({
-    mutationFn: () => eventTypesApi.create(slug, { name, display_name: displayName, color }),
+    mutationFn: () => eventTypesApi.create(slug, { name, display_name: displayName, color }, branchId),
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ['eventTypes', slug] })
+      qc.invalidateQueries({ queryKey: ['eventTypes', slug, branchId] })
       setShowForm(false); setName(''); setDisplayName(''); setColor('#6366f1')
     },
   })
 
   const updateMut = useMutation({
-    mutationFn: (id: string) => eventTypesApi.update(slug, id, { display_name: editDisplayName, color: editColor, description: editDescription }),
+    mutationFn: (id: string) => eventTypesApi.update(slug, id, { display_name: editDisplayName, color: editColor, description: editDescription }, branchId),
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ['eventTypes', slug] })
+      qc.invalidateQueries({ queryKey: ['eventTypes', slug, branchId] })
       setEditingEt(null)
     },
   })
 
   const deleteMut = useMutation({
-    mutationFn: (id: string) => eventTypesApi.del(slug, id),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['eventTypes', slug] }),
+    mutationFn: (id: string) => eventTypesApi.del(slug, id, branchId),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['eventTypes', slug, branchId] }),
   })
 
   const handleDelete = async (et: EventType) => {
@@ -172,7 +174,7 @@ export function EventTypesTab({ slug }: { slug: string }) {
               </CardContent>
             </CollapsibleTrigger>
             <CollapsibleContent>
-              <FieldsEditor slug={slug} eventType={et} />
+              <FieldsEditor slug={slug} eventType={et} branchId={branchId} />
             </CollapsibleContent>
           </Card>
         </Collapsible>
@@ -181,7 +183,7 @@ export function EventTypesTab({ slug }: { slug: string }) {
   )
 }
 
-function FieldsEditor({ slug, eventType }: { slug: string; eventType: EventType }) {
+function FieldsEditor({ slug, eventType, branchId }: { slug: string; eventType: EventType; branchId: string | null }) {
   const qc = useQueryClient()
   const [showForm, setShowForm] = useState(false)
   const [name, setName] = useState('')
@@ -209,30 +211,30 @@ function FieldsEditor({ slug, eventType }: { slug: string; eventType: EventType 
       ...(fieldType === 'enum' && enumOptions.length > 0 ? { enum_options: enumOptions } : {}),
       order: sortedFields.length,
       sensitivity,
-    }),
+    }, branchId),
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ['eventTypes', slug] })
+      qc.invalidateQueries({ queryKey: ['eventTypes', slug, branchId] })
       setShowForm(false); setName(''); setDisplayName(''); setFieldType('string'); setIsRequired(false)
       setEnumOptions([]); setEnumInput(''); setSensitivity('none')
     },
   })
 
   const updateMut = useMutation({
-    mutationFn: ({ fid, data }: { fid: string; data: Partial<FieldDefinition> }) => fieldsApi.update(slug, eventType.id, fid, data),
+    mutationFn: ({ fid, data }: { fid: string; data: Partial<FieldDefinition> }) => fieldsApi.update(slug, eventType.id, fid, data, branchId),
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ['eventTypes', slug] })
+      qc.invalidateQueries({ queryKey: ['eventTypes', slug, branchId] })
       setEditingField(null)
     },
   })
 
   const reorderMut = useMutation({
-    mutationFn: (fieldIds: string[]) => fieldsApi.reorder(slug, eventType.id, fieldIds),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['eventTypes', slug] }),
+    mutationFn: (fieldIds: string[]) => fieldsApi.reorder(slug, eventType.id, fieldIds, branchId),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['eventTypes', slug, branchId] }),
   })
 
   const deleteMut = useMutation({
-    mutationFn: (fid: string) => fieldsApi.del(slug, eventType.id, fid),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['eventTypes', slug] }),
+    mutationFn: (fid: string) => fieldsApi.del(slug, eventType.id, fid, branchId),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['eventTypes', slug, branchId] }),
   })
 
   const handleDeleteField = async (f: FieldDefinition) => {

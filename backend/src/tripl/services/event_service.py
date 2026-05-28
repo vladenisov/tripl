@@ -20,7 +20,7 @@ from tripl.schemas.event import (
     EventReorder,
     EventUpdate,
 )
-from tripl.services.plan_branch_service import ensure_main_branch_id
+from tripl.services.plan_branch_service import resolve_branch_id
 from tripl.services.project_service import get_project_id_by_slug
 from tripl.services.schema_drift_service import get_drift_counts_by_event_type
 
@@ -56,9 +56,10 @@ async def list_events(
     offset: int = 0,
     limit: int = 200,
     silent_since_days: int | None = None,
+    branch_id: uuid.UUID | None = None,
 ) -> tuple[list[Event], int]:
     project_id = await get_project_id_by_slug(session, slug)
-    branch_id = await ensure_main_branch_id(session, project_id)
+    branch_id = await resolve_branch_id(session, project_id, branch_id)
     # Skip the selectin load for Event.event_type — the list response schema
     # ships only event_type_id, and the client already has EventTypes cached.
     query = (
@@ -128,9 +129,11 @@ async def _get_next_event_order(
     return int(max_order or 0) + 1 if max_order is not None else 0
 
 
-async def list_tags(session: AsyncSession, slug: str) -> list[str]:
+async def list_tags(
+    session: AsyncSession, slug: str, branch_id: uuid.UUID | None = None
+) -> list[str]:
     project_id = await get_project_id_by_slug(session, slug)
-    branch_id = await ensure_main_branch_id(session, project_id)
+    branch_id = await resolve_branch_id(session, project_id, branch_id)
     result = await session.execute(
         select(EventTag.name)
         .join(Event, EventTag.event_id == Event.id)
@@ -141,9 +144,14 @@ async def list_tags(session: AsyncSession, slug: str) -> list[str]:
     return list(result.scalars().all())
 
 
-async def get_event(session: AsyncSession, slug: str, event_id: uuid.UUID) -> Event:
+async def get_event(
+    session: AsyncSession,
+    slug: str,
+    event_id: uuid.UUID,
+    branch_id: uuid.UUID | None = None,
+) -> Event:
     project_id = await get_project_id_by_slug(session, slug)
-    branch_id = await ensure_main_branch_id(session, project_id)
+    branch_id = await resolve_branch_id(session, project_id, branch_id)
     result = await session.execute(
         select(Event).where(
             Event.id == event_id,
@@ -157,9 +165,15 @@ async def get_event(session: AsyncSession, slug: str, event_id: uuid.UUID) -> Ev
     return event
 
 
-async def create_event(session: AsyncSession, slug: str, data: EventCreate) -> Event:
+async def create_event(
+    session: AsyncSession,
+    slug: str,
+    data: EventCreate,
+    branch_id: uuid.UUID | None = None,
+) -> Event:
+    is_main = branch_id is None
     project_id = await get_project_id_by_slug(session, slug)
-    branch_id = await ensure_main_branch_id(session, project_id)
+    branch_id = await resolve_branch_id(session, project_id, branch_id)
     await _validate_field_values(session, data.event_type_id, data.field_values)
 
     event = Event(
@@ -198,14 +212,20 @@ async def create_event(session: AsyncSession, slug: str, data: EventCreate) -> E
 
     await session.commit()
     await session.refresh(event)
-    await cache.delete_prefix(cache.prefix_projects())
+    if is_main:
+        await cache.delete_prefix(cache.prefix_projects())
     return event
 
 
 async def update_event(
-    session: AsyncSession, slug: str, event_id: uuid.UUID, data: EventUpdate
+    session: AsyncSession,
+    slug: str,
+    event_id: uuid.UUID,
+    data: EventUpdate,
+    branch_id: uuid.UUID | None = None,
 ) -> Event:
-    event = await get_event(session, slug, event_id)
+    is_main = branch_id is None
+    event = await get_event(session, slug, event_id, branch_id)
     update_data = data.model_dump(exclude_unset=True)
 
     if "name" in update_data:
@@ -262,24 +282,34 @@ async def update_event(
 
     await session.commit()
     await session.refresh(event)
-    await cache.delete_prefix(cache.prefix_projects())
+    if is_main:
+        await cache.delete_prefix(cache.prefix_projects())
     return event
 
 
-async def delete_event(session: AsyncSession, slug: str, event_id: uuid.UUID) -> None:
-    event = await get_event(session, slug, event_id)
+async def delete_event(
+    session: AsyncSession,
+    slug: str,
+    event_id: uuid.UUID,
+    branch_id: uuid.UUID | None = None,
+) -> None:
+    is_main = branch_id is None
+    event = await get_event(session, slug, event_id, branch_id)
     await session.delete(event)
     await session.commit()
-    await cache.delete_prefix(cache.prefix_projects())
+    if is_main:
+        await cache.delete_prefix(cache.prefix_projects())
 
 
 async def bulk_delete_events(
     session: AsyncSession,
     slug: str,
     data: EventBulkDelete,
+    branch_id: uuid.UUID | None = None,
 ) -> None:
+    is_main = branch_id is None
     project_id = await get_project_id_by_slug(session, slug)
-    branch_id = await ensure_main_branch_id(session, project_id)
+    branch_id = await resolve_branch_id(session, project_id, branch_id)
     # Validate all ids exist + belong to this project+branch in a single count query.
     present = await session.scalar(
         select(func.count(Event.id)).where(
@@ -300,7 +330,8 @@ async def bulk_delete_events(
         )
     )
     await session.commit()
-    await cache.delete_prefix(cache.prefix_projects())
+    if is_main:
+        await cache.delete_prefix(cache.prefix_projects())
 
 
 async def move_event(
@@ -308,8 +339,9 @@ async def move_event(
     slug: str,
     event_id: uuid.UUID,
     data: EventMove,
+    branch_id: uuid.UUID | None = None,
 ) -> Event:
-    event = await get_event(session, slug, event_id)
+    event = await get_event(session, slug, event_id, branch_id)
 
     query = select(Event).where(
         Event.project_id == event.project_id, Event.branch_id == event.branch_id
@@ -341,9 +373,10 @@ async def reorder_events(
     session: AsyncSession,
     slug: str,
     data: EventReorder,
+    branch_id: uuid.UUID | None = None,
 ) -> list[Event]:
     project_id = await get_project_id_by_slug(session, slug)
-    branch_id = await ensure_main_branch_id(session, project_id)
+    branch_id = await resolve_branch_id(session, project_id, branch_id)
 
     result = await session.execute(
         select(Event).where(
@@ -370,13 +403,17 @@ async def reorder_events(
 
 
 async def bulk_create_events(
-    session: AsyncSession, slug: str, events_data: list[EventCreate]
+    session: AsyncSession,
+    slug: str,
+    events_data: list[EventCreate],
+    branch_id: uuid.UUID | None = None,
 ) -> list[Event]:
     if not events_data:
         return []
 
+    is_main = branch_id is None
     project_id = await get_project_id_by_slug(session, slug)
-    branch_id = await ensure_main_branch_id(session, project_id)
+    branch_id = await resolve_branch_id(session, project_id, branch_id)
 
     # Batched per-event-type validation: one SELECT per unique event_type_id, then
     # per-event check using the cached field definitions.
@@ -454,5 +491,6 @@ async def bulk_create_events(
     event_ids = [event.id for event in events]
     refreshed = await session.execute(select(Event).where(Event.id.in_(event_ids)))
     by_id = {event.id: event for event in refreshed.scalars().all()}
-    await cache.delete_prefix(cache.prefix_projects())
+    if is_main:
+        await cache.delete_prefix(cache.prefix_projects())
     return [by_id[event_id] for event_id in event_ids]

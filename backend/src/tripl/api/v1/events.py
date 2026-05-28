@@ -2,7 +2,7 @@ import uuid
 
 from fastapi import APIRouter, Query
 
-from tripl.api.deps import SessionDep
+from tripl.api.deps import BranchIdDep, SessionDep
 from tripl.models.event import Event
 from tripl.schemas.event import (
     EventBulkDelete,
@@ -22,6 +22,7 @@ router = APIRouter(prefix="/projects/{slug}/events", tags=["events"])
 async def list_events(
     session: SessionDep,
     slug: str,
+    branch_id: BranchIdDep,
     event_type_id: uuid.UUID | None = None,
     search: str | None = None,
     implemented: bool | None = None,
@@ -44,54 +45,75 @@ async def list_events(
         offset,
         limit,
         silent_since_days=silent_since_days,
+        branch_id=branch_id,
     )
     return EventListResponse(items=items, total=total)
 
 
 @router.get("/tags", response_model=list[str])
-async def list_tags(session: SessionDep, slug: str) -> list[str]:
-    return await event_service.list_tags(session, slug)
+async def list_tags(session: SessionDep, slug: str, branch_id: BranchIdDep) -> list[str]:
+    return await event_service.list_tags(session, slug, branch_id)
 
 
 @router.post("", response_model=EventResponse, status_code=201)
-async def create_event(session: SessionDep, slug: str, data: EventCreate) -> Event:
-    return await event_service.create_event(session, slug, data)
+async def create_event(
+    session: SessionDep, slug: str, data: EventCreate, branch_id: BranchIdDep
+) -> Event:
+    return await event_service.create_event(session, slug, data, branch_id)
 
 
 @router.post("/bulk", response_model=list[EventResponse], status_code=201)
 async def bulk_create_events(
-    session: SessionDep, slug: str, data: list[EventCreate]
+    session: SessionDep, slug: str, data: list[EventCreate], branch_id: BranchIdDep
 ) -> list[Event]:
-    return await event_service.bulk_create_events(session, slug, data)
+    return await event_service.bulk_create_events(session, slug, data, branch_id)
 
 
 @router.post("/bulk-delete", status_code=204)
-async def bulk_delete_events(session: SessionDep, slug: str, data: EventBulkDelete) -> None:
-    await event_service.bulk_delete_events(session, slug, data)
+async def bulk_delete_events(
+    session: SessionDep, slug: str, data: EventBulkDelete, branch_id: BranchIdDep
+) -> None:
+    await event_service.bulk_delete_events(session, slug, data, branch_id)
 
 
 @router.patch("/reorder", response_model=list[EventResponse])
-async def reorder_events(session: SessionDep, slug: str, data: EventReorder) -> list[Event]:
-    return await event_service.reorder_events(session, slug, data)
+async def reorder_events(
+    session: SessionDep, slug: str, data: EventReorder, branch_id: BranchIdDep
+) -> list[Event]:
+    return await event_service.reorder_events(session, slug, data, branch_id)
 
 
 @router.get("/{event_id}", response_model=EventResponse)
-async def get_event(session: SessionDep, slug: str, event_id: uuid.UUID) -> Event:
-    return await event_service.get_event(session, slug, event_id)
+async def get_event(
+    session: SessionDep, slug: str, event_id: uuid.UUID, branch_id: BranchIdDep
+) -> Event:
+    return await event_service.get_event(session, slug, event_id, branch_id)
 
 
 @router.patch("/{event_id}", response_model=EventResponse)
 async def update_event(
-    session: SessionDep, slug: str, event_id: uuid.UUID, data: EventUpdate
+    session: SessionDep,
+    slug: str,
+    event_id: uuid.UUID,
+    data: EventUpdate,
+    branch_id: BranchIdDep,
 ) -> Event:
-    return await event_service.update_event(session, slug, event_id, data)
+    return await event_service.update_event(session, slug, event_id, data, branch_id)
 
 
 @router.patch("/{event_id}/move", response_model=EventResponse)
-async def move_event(session: SessionDep, slug: str, event_id: uuid.UUID, data: EventMove) -> Event:
-    return await event_service.move_event(session, slug, event_id, data)
+async def move_event(
+    session: SessionDep,
+    slug: str,
+    event_id: uuid.UUID,
+    data: EventMove,
+    branch_id: BranchIdDep,
+) -> Event:
+    return await event_service.move_event(session, slug, event_id, data, branch_id)
 
 
 @router.delete("/{event_id}", status_code=204)
-async def delete_event(session: SessionDep, slug: str, event_id: uuid.UUID) -> None:
-    await event_service.delete_event(session, slug, event_id)
+async def delete_event(
+    session: SessionDep, slug: str, event_id: uuid.UUID, branch_id: BranchIdDep
+) -> None:
+    await event_service.delete_event(session, slug, event_id, branch_id)

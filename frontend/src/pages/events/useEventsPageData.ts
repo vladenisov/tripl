@@ -16,38 +16,40 @@ import {
 export function useEventsPageData({
   slug,
   openEventId,
+  branchId,
 }: {
   slug: string | undefined
   openEventId: string | null
+  branchId: string | null
 }) {
   const eventTypesQuery = useQuery({
-    queryKey: ['eventTypes', slug],
-    queryFn: () => eventTypesApi.list(slug!),
+    queryKey: ['eventTypes', slug, branchId],
+    queryFn: () => eventTypesApi.list(slug!, branchId),
     enabled: !!slug,
   })
   const metaFieldsQuery = useQuery({
-    queryKey: ['metaFields', slug],
-    queryFn: () => metaFieldsApi.list(slug!),
+    queryKey: ['metaFields', slug, branchId],
+    queryFn: () => metaFieldsApi.list(slug!, branchId),
     enabled: !!slug,
   })
   const variablesQuery = useQuery({
-    queryKey: ['variables', slug],
-    queryFn: () => variablesApi.list(slug!),
+    queryKey: ['variables', slug, branchId],
+    queryFn: () => variablesApi.list(slug!, branchId),
     enabled: !!slug,
   })
   const allTagsQuery = useQuery({
-    queryKey: ['eventTags', slug],
-    queryFn: () => eventsApi.tags(slug!),
+    queryKey: ['eventTags', slug, branchId],
+    queryFn: () => eventsApi.tags(slug!, branchId),
     enabled: !!slug,
   })
   const unreviewedDataQuery = useQuery({
-    queryKey: ['events', slug, 'unreviewedCount'],
-    queryFn: () => eventsApi.list(slug!, { reviewed: false, archived: false, limit: 1 }),
+    queryKey: ['events', slug, branchId, 'unreviewedCount'],
+    queryFn: () => eventsApi.list(slug!, { reviewed: false, archived: false, limit: 1 }, branchId),
     enabled: !!slug,
   })
   const urlEventQuery = useQuery({
-    queryKey: ['event', slug, openEventId],
-    queryFn: () => eventsApi.get(slug!, openEventId!),
+    queryKey: ['event', slug, branchId, openEventId],
+    queryFn: () => eventsApi.get(slug!, openEventId!, branchId),
     enabled: !!slug && !!openEventId,
   })
 

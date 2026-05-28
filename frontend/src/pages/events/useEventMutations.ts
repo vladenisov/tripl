@@ -1,4 +1,4 @@
-import { useCallback } from 'react'
+import { useCallback, useMemo } from 'react'
 import {
   useMutation,
   useQueryClient,
@@ -20,17 +20,22 @@ export type EventMutations = ReturnType<typeof useEventMutations>
 
 export function useEventMutations({
   slug,
+  branchId,
   onBulkDeleteOptimistic,
 }: {
   slug: string | undefined
+  branchId: string | null
   onBulkDeleteOptimistic?: () => void
 }) {
   const qc = useQueryClient()
+  // Mutations and cache patches scope to `['events', slug, branchId]` so editing
+  // the active branch never touches another branch's cache.
+  const eventsKey = useMemo(() => ['events', slug, branchId] as const, [slug, branchId])
 
   const applyToEventsCaches = useCallback(
     (transform: (items: EventListItem[]) => EventListItem[]): Snapshot[] => {
-      const snapshots = qc.getQueriesData<EventsQueryData>({ queryKey: ['events', slug] })
-      qc.setQueriesData<EventsQueryData>({ queryKey: ['events', slug] }, (data) => {
+      const snapshots = qc.getQueriesData<EventsQueryData>({ queryKey: eventsKey })
+      qc.setQueriesData<EventsQueryData>({ queryKey: eventsKey }, (data) => {
         if (!data) return data
         if ('pages' in data) {
           return {
@@ -42,7 +47,7 @@ export function useEventMutations({
       })
       return snapshots
     },
-    [qc, slug],
+    [qc, eventsKey],
   )
 
   const rollbackEventsCaches = useCallback((snapshots: Snapshot[] | undefined) => {
@@ -53,27 +58,27 @@ export function useEventMutations({
   }, [qc])
 
   const deleteMut = useMutation({
-    mutationFn: (id: string) => eventsApi.del(slug!, id),
+    mutationFn: (id: string) => eventsApi.del(slug!, id, branchId),
     onMutate: async (id) => {
-      await qc.cancelQueries({ queryKey: ['events', slug] })
+      await qc.cancelQueries({ queryKey: eventsKey })
       const snapshots = applyToEventsCaches((items) => items.filter((e) => e.id !== id))
       return { snapshots }
     },
     onError: (_e, _v, ctx) => rollbackEventsCaches(ctx?.snapshots),
-    onSettled: () => qc.invalidateQueries({ queryKey: ['events', slug] }),
+    onSettled: () => qc.invalidateQueries({ queryKey: eventsKey }),
   })
 
   const bulkDeleteMut = useMutation({
-    mutationFn: (eventIds: string[]) => eventsApi.bulkDelete(slug!, eventIds),
+    mutationFn: (eventIds: string[]) => eventsApi.bulkDelete(slug!, eventIds, branchId),
     onMutate: async (eventIds) => {
-      await qc.cancelQueries({ queryKey: ['events', slug] })
+      await qc.cancelQueries({ queryKey: eventsKey })
       const idSet = new Set(eventIds)
       const snapshots = applyToEventsCaches((items) => items.filter((e) => !idSet.has(e.id)))
       onBulkDeleteOptimistic?.()
       return { snapshots }
     },
     onError: (_e, _v, ctx) => rollbackEventsCaches(ctx?.snapshots),
-    onSettled: () => qc.invalidateQueries({ queryKey: ['events', slug] }),
+    onSettled: () => qc.invalidateQueries({ queryKey: eventsKey }),
   })
 
   // Toggle mutations: optimistic patch with no on-success refetch. Boolean
@@ -83,9 +88,9 @@ export function useEventMutations({
   // on the review tab) reconcile on the next natural refetch.
   const toggleImplementedMut = useMutation({
     mutationFn: ({ id, implemented }: { id: string; implemented: boolean }) =>
-      eventsApi.update(slug!, id, { implemented }),
+      eventsApi.update(slug!, id, { implemented }, branchId),
     onMutate: async ({ id, implemented }) => {
-      await qc.cancelQueries({ queryKey: ['events', slug] })
+      await qc.cancelQueries({ queryKey: eventsKey })
       const snapshots = applyToEventsCaches((items) =>
         items.map((e) => (e.id === id ? { ...e, implemented } : e)),
       )
@@ -96,9 +101,9 @@ export function useEventMutations({
 
   const toggleReviewedMut = useMutation({
     mutationFn: ({ id, reviewed }: { id: string; reviewed: boolean }) =>
-      eventsApi.update(slug!, id, { reviewed }),
+      eventsApi.update(slug!, id, { reviewed }, branchId),
     onMutate: async ({ id, reviewed }) => {
-      await qc.cancelQueries({ queryKey: ['events', slug] })
+      await qc.cancelQueries({ queryKey: eventsKey })
       const snapshots = applyToEventsCaches((items) =>
         items.map((e) => (e.id === id ? { ...e, reviewed } : e)),
       )
@@ -109,9 +114,9 @@ export function useEventMutations({
 
   const toggleArchivedMut = useMutation({
     mutationFn: ({ id, archived }: { id: string; archived: boolean }) =>
-      eventsApi.update(slug!, id, { archived }),
+      eventsApi.update(slug!, id, { archived }, branchId),
     onMutate: async ({ id, archived }) => {
-      await qc.cancelQueries({ queryKey: ['events', slug] })
+      await qc.cancelQueries({ queryKey: eventsKey })
       const snapshots = applyToEventsCaches((items) =>
         items.map((e) => (e.id === id ? { ...e, archived } : e)),
       )
@@ -129,15 +134,15 @@ export function useEventMutations({
       id: string
       direction: 'up' | 'down'
       visibleEventIds: string[]
-    }) => eventsApi.move(slug!, id, { direction, visible_event_ids: visibleEventIds }),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['events', slug] }),
+    }) => eventsApi.move(slug!, id, { direction, visible_event_ids: visibleEventIds }, branchId),
+    onSuccess: () => qc.invalidateQueries({ queryKey: eventsKey }),
   })
 
   const reorderEventsMut = useMutation({
-    mutationFn: (eventIds: string[]) => eventsApi.reorder(slug!, eventIds),
+    mutationFn: (eventIds: string[]) => eventsApi.reorder(slug!, eventIds, branchId),
     onMutate: async (eventIds) => {
-      await qc.cancelQueries({ queryKey: ['events', slug] })
-      const snapshots = qc.getQueriesData<EventsQueryData>({ queryKey: ['events', slug] })
+      await qc.cancelQueries({ queryKey: eventsKey })
+      const snapshots = qc.getQueriesData<EventsQueryData>({ queryKey: eventsKey })
       const reorderItems = (items: EventListItem[]) => {
         const indexById = new Map(eventIds.map((id, i) => [id, i]))
         const idSet = new Set(eventIds)
@@ -149,7 +154,7 @@ export function useEventMutations({
           idSet.has(event.id) ? reorderedIns[pointer++] : event,
         )
       }
-      qc.setQueriesData<EventsQueryData>({ queryKey: ['events', slug] }, (data) => {
+      qc.setQueriesData<EventsQueryData>({ queryKey: eventsKey }, (data) => {
         if (!data) return data
         if ('pages' in data) {
           return {
@@ -162,7 +167,7 @@ export function useEventMutations({
       return { snapshots }
     },
     onError: (_error, _vars, ctx) => rollbackEventsCaches(ctx?.snapshots),
-    onSettled: () => qc.invalidateQueries({ queryKey: ['events', slug] }),
+    onSettled: () => qc.invalidateQueries({ queryKey: eventsKey }),
   })
 
   return {

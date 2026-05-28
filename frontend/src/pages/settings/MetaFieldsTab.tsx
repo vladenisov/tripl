@@ -2,6 +2,7 @@ import { useState } from "react"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { List, Pencil, Plus, Trash2 } from "lucide-react"
 import { metaFieldsApi } from "@/api/metaFields"
+import { useActiveBranchId } from "@/hooks/useBranch"
 import type { MetaFieldDefinition, Sensitivity } from "@/types"
 import { SENSITIVITY_OPTIONS } from "@/types"
 import { SensitivityChip } from "@/components/primitives/sensitivity-chip"
@@ -18,6 +19,7 @@ import { META_FIELD_LINK_PLACEHOLDER } from "@/lib/metaFields"
 
 export function MetaFieldsTab({ slug }: { slug: string }) {
   const qc = useQueryClient()
+  const branchId = useActiveBranchId()
   const [showForm, setShowForm] = useState(false)
   const [name, setName] = useState('')
   const [displayName, setDisplayName] = useState('')
@@ -44,8 +46,8 @@ export function MetaFieldsTab({ slug }: { slug: string }) {
   const metaFieldTypes = ['string', 'url', 'boolean', 'enum', 'date']
 
   const { data: metaFields = [] } = useQuery({
-    queryKey: ['metaFields', slug],
-    queryFn: () => metaFieldsApi.list(slug),
+    queryKey: ['metaFields', slug, branchId],
+    queryFn: () => metaFieldsApi.list(slug, branchId),
   })
 
   const createMut = useMutation({
@@ -55,9 +57,9 @@ export function MetaFieldsTab({ slug }: { slug: string }) {
       ...(defaultValue ? { default_value: defaultValue } : {}),
       ...(displayAsLink ? { link_template: linkTemplate.trim() || null } : {}),
       sensitivity,
-    }),
+    }, branchId),
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ['metaFields', slug] })
+      qc.invalidateQueries({ queryKey: ['metaFields', slug, branchId] })
       setShowForm(false); setName(''); setDisplayName(''); setFieldType('string')
       setIsRequired(false); setEnumOptions([]); setEnumInput(''); setDefaultValue('')
       setDisplayAsLink(false); setLinkTemplate(''); setSensitivity('none')
@@ -71,16 +73,16 @@ export function MetaFieldsTab({ slug }: { slug: string }) {
       default_value: editDefaultValue || null,
       link_template: editDisplayAsLink ? (editLinkTemplate.trim() || null) : null,
       sensitivity: editSensitivity,
-    }),
+    }, branchId),
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ['metaFields', slug] })
+      qc.invalidateQueries({ queryKey: ['metaFields', slug, branchId] })
       setEditingMf(null)
     },
   })
 
   const deleteMut = useMutation({
-    mutationFn: (id: string) => metaFieldsApi.del(slug, id),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['metaFields', slug] }),
+    mutationFn: (id: string) => metaFieldsApi.del(slug, id, branchId),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['metaFields', slug, branchId] }),
   })
 
   const handleDelete = async (mf: MetaFieldDefinition) => {
