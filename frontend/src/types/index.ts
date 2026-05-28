@@ -722,6 +722,75 @@ export interface PlanRevisionDetail extends PlanRevisionSummary {
   payload: Record<string, unknown>
 }
 
+export type PlanBranchKind = 'main' | 'working'
+
+export type PlanBranchStatus =
+  | 'draft'
+  | 'ready_for_review'
+  | 'changes_requested'
+  | 'approved'
+  | 'merged'
+  | 'closed'
+
+export type PlanBranchTransitionAction =
+  | 'submit'
+  | 'request_changes'
+  | 'approve'
+  | 'reopen'
+  | 'close'
+
+export interface PlanBranchSummary {
+  id: string
+  project_id: string
+  name: string
+  kind: PlanBranchKind
+  status: PlanBranchStatus
+  description: string
+  base_revision_id: string | null
+  created_by: string | null
+  merged_at: string | null
+  merged_by: string | null
+  created_at: string
+  updated_at: string
+}
+
+export interface PlanBranchReviewer {
+  id: string
+  user_id: string
+  created_at: string
+}
+
+export interface PlanBranchApproval {
+  user_id: string | null
+  approved_at: string
+}
+
+export interface PlanBranchDetail extends PlanBranchSummary {
+  reviewers: PlanBranchReviewer[]
+  approvals: PlanBranchApproval[]
+}
+
+export interface PlanBranchList {
+  items: PlanBranchSummary[]
+  total: number
+}
+
+export interface PlanBranchComment {
+  id: string
+  branch_id: string
+  parent_id: string | null
+  user_id: string | null
+  body: string
+  created_at: string
+  updated_at: string
+}
+
+export interface PlanBranchDiffSummary {
+  entries: PlanDiffEntry[]
+  summary: { added: number; removed: number; changed: number }
+  behind_base: boolean
+}
+
 export interface PlanRevisionList {
   items: PlanRevisionSummary[]
   total: number

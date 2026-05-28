@@ -2,6 +2,7 @@ import { lazy, Suspense } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { AuditTab } from './settings/AuditTab'
+import { BranchesTab } from './settings/BranchesTab'
 import { GeneralTab } from './settings/GeneralTab'
 import { EventTypesTab } from './settings/EventTypesTab'
 import { HistoryTab } from './settings/HistoryTab'
@@ -20,6 +21,7 @@ type SettingsTab =
   | 'monitoring'
   | 'alerting'
   | 'scans'
+  | 'branches'
   | 'history'
   | 'audit'
 const ProjectAlertingTab = lazy(() => import('@/pages/ProjectAlertingTab'))
@@ -36,6 +38,7 @@ export default function ProjectSettingsPage() {
     'monitoring',
     'alerting',
     'scans',
+    'branches',
     'history',
     'audit',
   ]
@@ -62,6 +65,7 @@ export default function ProjectSettingsPage() {
           <TabsTrigger value="monitoring">Monitoring</TabsTrigger>
           <TabsTrigger value="alerting">Alerting</TabsTrigger>
           <TabsTrigger value="scans">Scans</TabsTrigger>
+          <TabsTrigger value="branches">Branches</TabsTrigger>
           <TabsTrigger value="history">History</TabsTrigger>
           <TabsTrigger value="audit">Audit</TabsTrigger>
         </TabsList>
@@ -79,6 +83,7 @@ export default function ProjectSettingsPage() {
         </Suspense>
       )}
       {tab === 'scans' && slug && <ScansTab slug={slug} />}
+      {tab === 'branches' && slug && <BranchesTab slug={slug} />}
       {tab === 'history' && slug && <HistoryTab slug={slug} />}
       {tab === 'audit' && slug && <AuditTab slug={slug} />}
     </div>
