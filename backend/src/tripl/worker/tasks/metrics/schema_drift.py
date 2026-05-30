@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 
 from tripl.models.event_type import EventType
 from tripl.models.schema_drift import SchemaDrift
+from tripl.observability.metrics import schema_drifts_detected_total
 from tripl.worker.adapters.base import ColumnInfo
 from tripl.worker.analyzers.cardinality import CardinalityResult, _is_json_type
 
@@ -106,6 +107,17 @@ def _diff_event_type_schema(
     return drift_items
 
 
+def _record_drift_metrics(rows: list[dict[str, object]]) -> None:
+    """Bump the schema_drifts_detected counter once per upserted row.
+
+    Upserts fire on every scan, so this over-counts when a drift persists
+    across runs — that's intentional for a counter (rate = drift activity).
+    """
+    for row in rows:
+        drift_type = str(row.get("drift_type") or "unknown")
+        schema_drifts_detected_total.labels(drift_type=drift_type).inc()
+
+
 def _upsert_schema_drifts(
     session: Session,
     *,
@@ -145,6 +157,7 @@ def _upsert_schema_drifts(
             },
         )
         session.execute(sqlite_stmt)
+        _record_drift_metrics(rows)
         return
 
     pg_stmt = pg_insert(SchemaDrift).values(rows)
@@ -159,6 +172,7 @@ def _upsert_schema_drifts(
         },
     )
     session.execute(pg_stmt)
+    _record_drift_metrics(rows)
 
 
 def _detect_event_type_drift(

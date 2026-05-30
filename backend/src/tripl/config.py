@@ -65,6 +65,14 @@ class Settings(BaseSettings):
     # behind an internal-only ingress path.
     prometheus_metrics_enabled: bool = False
 
+    # OpenTelemetry tracing. Setting `otel_exporter_otlp_endpoint` to a non-
+    # empty string opts the API + worker into FastAPI/SQLAlchemy/Celery auto-
+    # instrumentation with an OTLP exporter. No-op when the env is blank or
+    # the opentelemetry-* packages aren't installed (graceful — keeps the
+    # base image lean).
+    otel_exporter_otlp_endpoint: str = ""
+    otel_service_name: str = "tripl"
+
     # SMTP for the email alert delivery channel. Optional — leaving smtp_host
     # blank disables email destinations (creation still works; sends fail with
     # a friendly error pointing at this config). Worker reads these at send time

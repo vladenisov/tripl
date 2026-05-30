@@ -7,6 +7,11 @@ if settings.prometheus_metrics_enabled:
 
     install_celery_instrumentation()
 
+# Opt-in OpenTelemetry tracing for Celery — same env gate as the API.
+from tripl.observability.tracing import setup_worker_tracing  # noqa: E402
+
+setup_worker_tracing()
+
 celery_app = Celery("tripl")
 celery_app.conf.broker_url = settings.rabbitmq_url
 celery_app.conf.result_backend = None

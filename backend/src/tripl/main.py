@@ -44,6 +44,12 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+# Opt-in OpenTelemetry tracing — gated on OTEL_EXPORTER_OTLP_ENDPOINT env;
+# graceful no-op when the env is empty or the otel packages aren't installed.
+from tripl.observability.tracing import setup_api_tracing  # noqa: E402
+
+setup_api_tracing(app)
+
 # Order matters: outermost runs first on requests, last on responses.
 # - RequestID assigns/propagates the id before any other middleware logs.
 # - SecurityHeaders is added before the response leaves so its headers are
