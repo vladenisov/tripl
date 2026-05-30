@@ -3,15 +3,13 @@ from __future__ import annotations
 import re
 from urllib.parse import urlparse
 
+from email_validator import EmailNotValidError, validate_email
+
 _TELEGRAM_BOT_TOKEN_RE = re.compile(r"^\d+:[A-Za-z0-9_-]+$")
 _TELEGRAM_CHAT_ID_RE = re.compile(r"^(?:-?\d+|@[A-Za-z0-9_]+)$")
 _ALLOWED_SLACK_HOSTS = {"hooks.slack.com", "hooks.slack-gov.com"}
 # RFC 7230 header field-name token characters.
 _HTTP_HEADER_NAME_RE = re.compile(r"^[A-Za-z0-9!#$%&'*+.^_`|~-]+$")
-# Pragmatic email regex: one '@', domain has at least one '.', no spaces/control
-# chars. Validating to RFC 5321/6531 would be ~500 lines and still wrong for
-# some edge cases — the SMTP server is the actual source of truth.
-_EMAIL_ADDRESS_RE = re.compile(r"^[^\s@]+@[^\s@]+\.[^\s@]+$")
 _RECIPIENT_LIMIT = 50
 # Jira project keys / issue type names: ASCII alnum + underscore, kept conservative.
 # Atlassian's actual rules are more permissive but harder to encode safely in a URL.
@@ -189,10 +187,18 @@ def validate_webhook_header_value(value: str | None) -> str | None:
 
 
 def validate_email_address(value: str | None) -> str:
-    normalized = _require_clean(value, field="Email address")
-    if not _EMAIL_ADDRESS_RE.fullmatch(normalized):
-        raise ValueError("Email address must look like name@example.com")
-    return normalized
+    """RFC-compliant email validation via the ``email-validator`` package
+    (the same backend pydantic's ``EmailStr`` uses). DNS deliverability is
+    skipped — that's the SMTP server's job at send time."""
+    if value is None:
+        raise ValueError("Email address is required")
+    normalized = value.strip()
+    if not normalized:
+        raise ValueError("Email address is required")
+    try:
+        return validate_email(normalized, check_deliverability=False).normalized
+    except EmailNotValidError as exc:
+        raise ValueError(f"Invalid email address: {exc}") from exc
 
 
 def validate_email_recipients(value: str | None) -> str:
