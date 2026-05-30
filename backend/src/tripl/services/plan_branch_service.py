@@ -144,6 +144,25 @@ async def _resolve_project(session: AsyncSession, slug: str) -> Project:
     return project
 
 
+async def _load_for_branch(
+    session: AsyncSession,
+    model: type,
+    project_id: uuid.UUID,
+    branch_id: uuid.UUID,
+) -> list:
+    """SELECT all rows of ``model`` for ``(project_id, branch_id)`` as a list.
+
+    Compact form of the ``select(...).where(project_id, branch_id)`` pattern
+    used throughout deep-copy and merge. Joined-loaded selects (those that
+    need ``selectinload``) stay inline because they want options on the
+    statement that vary per call.
+    """
+    rows = await session.execute(
+        select(model).where(model.project_id == project_id, model.branch_id == branch_id)
+    )
+    return list(rows.scalars().all())
+
+
 def _to_response(branch: PlanBranch) -> PlanBranchResponse:
     return PlanBranchResponse.model_validate(branch)
 
@@ -299,17 +318,8 @@ async def _deep_copy_plan(
                 )
             )
 
-    meta_fields = (
-        (
-            await session.execute(
-                select(MetaFieldDefinition).where(
-                    MetaFieldDefinition.project_id == project_id,
-                    MetaFieldDefinition.branch_id == source_branch_id,
-                )
-            )
-        )
-        .scalars()
-        .all()
+    meta_fields = await _load_for_branch(
+        session, MetaFieldDefinition, project_id, source_branch_id
     )
     mf_map: dict[uuid.UUID, uuid.UUID] = {}
     for mf in meta_fields:
@@ -332,17 +342,8 @@ async def _deep_copy_plan(
             )
         )
 
-    variables = (
-        (
-            await session.execute(
-                select(Variable).where(
-                    Variable.project_id == project_id,
-                    Variable.branch_id == source_branch_id,
-                )
-            )
-        )
-        .scalars()
-        .all()
+    variables = await _load_for_branch(
+        session, Variable, project_id, source_branch_id
     )
     for var in variables:
         new_objs.append(
@@ -476,17 +477,8 @@ async def _deep_copy_plan(
                     )
                 )
 
-    relations = (
-        (
-            await session.execute(
-                select(EventTypeRelation).where(
-                    EventTypeRelation.project_id == project_id,
-                    EventTypeRelation.branch_id == source_branch_id,
-                )
-            )
-        )
-        .scalars()
-        .all()
+    relations = await _load_for_branch(
+        session, EventTypeRelation, project_id, source_branch_id
     )
     for rel in relations:
         new_objs.append(
@@ -1248,29 +1240,11 @@ async def _apply_merge(
     }
 
     # --- meta_field_definitions: upsert by name (preserve ids)
-    main_mfs = list(
-        (
-            await session.execute(
-                select(MetaFieldDefinition).where(
-                    MetaFieldDefinition.project_id == project_id,
-                    MetaFieldDefinition.branch_id == main_branch_id,
-                )
-            )
-        )
-        .scalars()
-        .all()
+    main_mfs = await _load_for_branch(
+        session, MetaFieldDefinition, project_id, main_branch_id
     )
-    branch_mfs = list(
-        (
-            await session.execute(
-                select(MetaFieldDefinition).where(
-                    MetaFieldDefinition.project_id == project_id,
-                    MetaFieldDefinition.branch_id == branch_id,
-                )
-            )
-        )
-        .scalars()
-        .all()
+    branch_mfs = await _load_for_branch(
+        session, MetaFieldDefinition, project_id, branch_id
     )
     main_mf_by_name = {mf.name: mf for mf in main_mfs}
     branch_mf_by_name = {mf.name: mf for mf in branch_mfs}
@@ -1308,42 +1282,15 @@ async def _apply_merge(
     await session.flush()
     main_mf_name_to_id = {
         mf.name: mf.id
-        for mf in (
-            await session.execute(
-                select(MetaFieldDefinition).where(
-                    MetaFieldDefinition.project_id == project_id,
-                    MetaFieldDefinition.branch_id == main_branch_id,
-                )
-            )
+        for mf in await _load_for_branch(
+            session, MetaFieldDefinition, project_id, main_branch_id
         )
-        .scalars()
-        .all()
     }
     branch_mf_id_to_name = {mf.id: mf.name for mf in branch_mfs}
 
     # --- variables: upsert by name
-    main_vars = list(
-        (
-            await session.execute(
-                select(Variable).where(
-                    Variable.project_id == project_id, Variable.branch_id == main_branch_id
-                )
-            )
-        )
-        .scalars()
-        .all()
-    )
-    branch_vars = list(
-        (
-            await session.execute(
-                select(Variable).where(
-                    Variable.project_id == project_id, Variable.branch_id == branch_id
-                )
-            )
-        )
-        .scalars()
-        .all()
-    )
+    main_vars = await _load_for_branch(session, Variable, project_id, main_branch_id)
+    branch_vars = await _load_for_branch(session, Variable, project_id, branch_id)
     main_var_by_name = {v.name: v for v in main_vars}
     branch_var_by_name = {v.name: v for v in branch_vars}
     for name, b_v in branch_var_by_name.items():
@@ -1596,17 +1543,8 @@ async def _apply_merge(
             await session.flush()
 
     # --- relations: wholesale replace on main using name-based FK remap
-    branch_relations = list(
-        (
-            await session.execute(
-                select(EventTypeRelation).where(
-                    EventTypeRelation.project_id == project_id,
-                    EventTypeRelation.branch_id == branch_id,
-                )
-            )
-        )
-        .scalars()
-        .all()
+    branch_relations = await _load_for_branch(
+        session, EventTypeRelation, project_id, branch_id
     )
     await session.execute(
         delete(EventTypeRelation).where(

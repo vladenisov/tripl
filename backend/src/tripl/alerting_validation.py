@@ -8,6 +8,16 @@ _TELEGRAM_CHAT_ID_RE = re.compile(r"^(?:-?\d+|@[A-Za-z0-9_]+)$")
 _ALLOWED_SLACK_HOSTS = {"hooks.slack.com", "hooks.slack-gov.com"}
 # RFC 7230 header field-name token characters.
 _HTTP_HEADER_NAME_RE = re.compile(r"^[A-Za-z0-9!#$%&'*+.^_`|~-]+$")
+# Pragmatic email regex: one '@', domain has at least one '.', no spaces/control
+# chars. Validating to RFC 5321/6531 would be ~500 lines and still wrong for
+# some edge cases — the SMTP server is the actual source of truth.
+_EMAIL_ADDRESS_RE = re.compile(r"^[^\s@]+@[^\s@]+\.[^\s@]+$")
+_RECIPIENT_LIMIT = 50
+# Jira project keys / issue type names: ASCII alnum + underscore, kept conservative.
+# Atlassian's actual rules are more permissive but harder to encode safely in a URL.
+_JIRA_PROJECT_KEY_RE = re.compile(r"^[A-Z][A-Z0-9_]{1,31}$")
+_LINEAR_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+_LINEAR_LABEL_LIMIT = 20
 
 
 def normalize_required_text(value: str, *, field_name: str) -> str:
@@ -28,54 +38,134 @@ def _has_disallowed_characters(value: str) -> bool:
     return any(char.isspace() or ord(char) < 32 or ord(char) == 127 for char in value)
 
 
-def validate_slack_webhook_url(value: str | None) -> str:
-    if value is None:
-        raise ValueError("Slack webhook_url is required")
-    normalized = normalize_required_text(value, field_name="Slack webhook_url")
-    if _has_disallowed_characters(normalized):
-        raise ValueError("Slack webhook_url must not contain whitespace or control characters")
+# --- generic shapes ---------------------------------------------------------
 
-    parsed = urlparse(normalized)
-    if parsed.scheme != "https" or not parsed.netloc:
-        raise ValueError("Slack webhook_url must be a valid https URL")
-    if parsed.hostname not in _ALLOWED_SLACK_HOSTS:
-        raise ValueError("Slack webhook_url must point to hooks.slack.com")
+
+def _require_clean(value: str | None, *, field: str) -> str:
+    """Require a non-empty value with no whitespace / control chars."""
+    if value is None:
+        raise ValueError(f"{field} is required")
+    normalized = normalize_required_text(value, field_name=field)
+    if _has_disallowed_characters(normalized):
+        raise ValueError(f"{field} must not contain whitespace or control characters")
     return normalized
 
 
-def validate_telegram_bot_token(value: str | None) -> str:
+def _validate_https_url(
+    value: str | None,
+    *,
+    field: str,
+    allowed_hosts: set[str] | None = None,
+    strip_trailing_slash: bool = False,
+) -> str:
+    """https-only URL validator shared by Slack/Webhook/Jira."""
+    normalized = _require_clean(value, field=field)
+    parsed = urlparse(normalized)
+    if parsed.scheme != "https" or not parsed.netloc:
+        raise ValueError(f"{field} must be a valid https URL")
+    if allowed_hosts is not None and parsed.hostname not in allowed_hosts:
+        raise ValueError(f"{field} must point to {sorted(allowed_hosts)[0]}")
+    if strip_trailing_slash:
+        normalized = normalized.rstrip("/")
+    return normalized
+
+
+def _validate_id_regex(
+    value: str | None,
+    *,
+    field: str,
+    regex: re.Pattern[str],
+    error_msg: str,
+    optional: bool = False,
+) -> str | None:
+    """Regex-matched identifier shared by Telegram chat ids and Linear ids."""
     if value is None:
-        raise ValueError("Telegram bot_token is required")
-    normalized = normalize_required_text(value, field_name="Telegram bot_token")
-    if _has_disallowed_characters(normalized):
-        raise ValueError("Telegram bot_token must not contain whitespace or control characters")
+        if optional:
+            return None
+        raise ValueError(f"{field} is required")
+    normalized = value.strip()
+    if not normalized:
+        if optional:
+            return None
+        raise ValueError(f"{field} is required")
+    if not regex.fullmatch(normalized):
+        raise ValueError(error_msg)
+    return normalized
+
+
+def _validate_single_line(
+    value: str | None,
+    *,
+    field: str,
+    max_len: int,
+    required: bool = False,
+) -> str | None:
+    """Trimmed text that must not contain CR/LF — for header-like surfaces
+    (email subject, jira issue type) where newlines enable header injection."""
+    if value is None:
+        if required:
+            raise ValueError(f"{field} is required")
+        return None
+    normalized = value.strip()
+    if not normalized:
+        if required:
+            raise ValueError(f"{field} is required")
+        return None
+    if "\n" in normalized or "\r" in normalized:
+        raise ValueError(f"{field} must not contain newlines")
+    if len(normalized) > max_len:
+        raise ValueError(f"{field} must be <= {max_len} characters")
+    return normalized
+
+
+def _parse_csv_unique(
+    value: str | None,
+    *,
+    item_validator,
+    limit: int,
+    limit_msg: str,
+) -> list[str]:
+    """Split a CSV string, validate each entry, drop blanks, dedupe (first wins)."""
+    seen: dict[str, None] = {}
+    for raw in (value or "").split(","):
+        candidate = raw.strip()
+        if not candidate:
+            continue
+        seen.setdefault(item_validator(candidate), None)
+    if len(seen) > limit:
+        raise ValueError(limit_msg)
+    return list(seen)
+
+
+# --- channel validators -----------------------------------------------------
+
+
+def validate_slack_webhook_url(value: str | None) -> str:
+    return _validate_https_url(
+        value, field="Slack webhook_url", allowed_hosts=_ALLOWED_SLACK_HOSTS
+    )
+
+
+def validate_telegram_bot_token(value: str | None) -> str:
+    normalized = _require_clean(value, field="Telegram bot_token")
     if not _TELEGRAM_BOT_TOKEN_RE.fullmatch(normalized):
         raise ValueError("Telegram bot_token must match <digits>:<token>")
     return normalized
 
 
 def validate_telegram_chat_id(value: str | None) -> str:
-    if value is None:
-        raise ValueError("Telegram chat_id is required")
-    normalized = normalize_required_text(value, field_name="Telegram chat_id")
-    if _has_disallowed_characters(normalized):
-        raise ValueError("Telegram chat_id must not contain whitespace or control characters")
-    if not _TELEGRAM_CHAT_ID_RE.fullmatch(normalized):
-        raise ValueError("Telegram chat_id must be a numeric chat id or @channel")
-    return normalized
+    result = _validate_id_regex(
+        value,
+        field="Telegram chat_id",
+        regex=_TELEGRAM_CHAT_ID_RE,
+        error_msg="Telegram chat_id must be a numeric chat id or @channel",
+    )
+    assert result is not None  # required path
+    return result
 
 
 def validate_webhook_target_url(value: str | None) -> str:
-    if value is None:
-        raise ValueError("Webhook target_url is required")
-    normalized = normalize_required_text(value, field_name="Webhook target_url")
-    if _has_disallowed_characters(normalized):
-        raise ValueError("Webhook target_url must not contain whitespace or control characters")
-
-    parsed = urlparse(normalized)
-    if parsed.scheme != "https" or not parsed.netloc:
-        raise ValueError("Webhook target_url must be a valid https URL")
-    return normalized
+    return _validate_https_url(value, field="Webhook target_url")
 
 
 def validate_webhook_header_name(value: str | None) -> str | None:
@@ -98,19 +188,8 @@ def validate_webhook_header_value(value: str | None) -> str | None:
     return normalized or None
 
 
-# Pragmatic email regex: one '@', domain has at least one '.', no spaces/control
-# chars. Validating to RFC 5321/6531 would be ~500 lines and still wrong for
-# some edge cases — the SMTP server is the actual source of truth.
-_EMAIL_ADDRESS_RE = re.compile(r"^[^\s@]+@[^\s@]+\.[^\s@]+$")
-_RECIPIENT_LIMIT = 50
-
-
 def validate_email_address(value: str | None) -> str:
-    if value is None:
-        raise ValueError("Email address is required")
-    normalized = normalize_required_text(value, field_name="Email address")
-    if _has_disallowed_characters(normalized):
-        raise ValueError("Email address must not contain whitespace or control characters")
+    normalized = _require_clean(value, field="Email address")
     if not _EMAIL_ADDRESS_RE.fullmatch(normalized):
         raise ValueError("Email address must look like name@example.com")
     return normalized
@@ -125,61 +204,33 @@ def validate_email_recipients(value: str | None) -> str:
     """
     if value is None:
         raise ValueError("Email recipients list is required")
-    seen: dict[str, None] = {}
-    for raw in value.split(","):
-        candidate = raw.strip()
-        if not candidate:
-            continue
-        address = validate_email_address(candidate)
-        seen.setdefault(address, None)
-    if not seen:
+    addresses = _parse_csv_unique(
+        value,
+        item_validator=validate_email_address,
+        limit=_RECIPIENT_LIMIT,
+        limit_msg=f"Email recipients list cannot exceed {_RECIPIENT_LIMIT} entries",
+    )
+    if not addresses:
         raise ValueError("Email recipients list must contain at least one address")
-    if len(seen) > _RECIPIENT_LIMIT:
-        raise ValueError(f"Email recipients list cannot exceed {_RECIPIENT_LIMIT} entries")
-    return ", ".join(seen)
+    return ", ".join(addresses)
 
 
 def validate_email_from_address(value: str | None) -> str | None:
     """Optional override — None falls back to settings.smtp_from_address."""
-    if value is None:
+    if value is None or not value.strip():
         return None
-    normalized = value.strip()
-    if not normalized:
-        return None
-    return validate_email_address(normalized)
+    return validate_email_address(value)
 
 
 def validate_email_subject_template(value: str | None) -> str | None:
     """Optional subject template. CR/LF would enable header injection; reject."""
-    if value is None:
-        return None
-    normalized = value.strip()
-    if not normalized:
-        return None
-    if "\n" in normalized or "\r" in normalized:
-        raise ValueError("Email subject template must not contain newlines")
-    if len(normalized) > 500:
-        raise ValueError("Email subject template must be <= 500 characters")
-    return normalized
-
-
-# Jira project keys / issue type names: ASCII alnum + underscore, kept conservative.
-# Atlassian's actual rules are more permissive but harder to encode safely in a URL.
-_JIRA_PROJECT_KEY_RE = re.compile(r"^[A-Z][A-Z0-9_]{1,31}$")
-_LINEAR_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+    return _validate_single_line(value, field="Email subject template", max_len=500)
 
 
 def validate_jira_base_url(value: str | None) -> str:
-    if value is None:
-        raise ValueError("Jira base_url is required")
-    normalized = normalize_required_text(value, field_name="Jira base_url")
-    if _has_disallowed_characters(normalized):
-        raise ValueError("Jira base_url must not contain whitespace or control characters")
-    parsed = urlparse(normalized)
-    if parsed.scheme != "https" or not parsed.netloc:
-        raise ValueError("Jira base_url must be a valid https URL")
-    # Strip trailing slash so downstream path concat stays predictable.
-    return normalized.rstrip("/")
+    return _validate_https_url(
+        value, field="Jira base_url", strip_trailing_slash=True
+    )
 
 
 def validate_jira_auth_email(value: str | None) -> str:
@@ -189,18 +240,11 @@ def validate_jira_auth_email(value: str | None) -> str:
 
 
 def validate_jira_api_token(value: str | None) -> str:
-    if value is None:
-        raise ValueError("Jira api_token is required")
-    normalized = normalize_required_text(value, field_name="Jira api_token")
-    if _has_disallowed_characters(normalized):
-        raise ValueError("Jira api_token must not contain whitespace or control characters")
-    return normalized
+    return _require_clean(value, field="Jira api_token")
 
 
 def validate_jira_project_key(value: str | None) -> str:
-    if value is None:
-        raise ValueError("Jira project_key is required")
-    normalized = normalize_required_text(value, field_name="Jira project_key").upper()
+    normalized = _require_clean(value, field="Jira project_key").upper()
     if not _JIRA_PROJECT_KEY_RE.fullmatch(normalized):
         raise ValueError("Jira project_key must be uppercase ASCII (e.g. ENG, PLAT_OPS)")
     return normalized
@@ -210,45 +254,44 @@ def validate_jira_issue_type(value: str | None) -> str:
     """Issue-type name as configured in Jira (e.g. 'Task', 'Bug'). Atlassian
     treats these as case-sensitive display names — pass through after trimming
     and rejecting CR/LF."""
-    if value is None:
-        raise ValueError("Jira issue_type is required")
-    normalized = normalize_required_text(value, field_name="Jira issue_type")
-    if "\n" in normalized or "\r" in normalized:
-        raise ValueError("Jira issue_type must not contain newlines")
-    if len(normalized) > 64:
-        raise ValueError("Jira issue_type must be <= 64 characters")
-    return normalized
+    result = _validate_single_line(
+        value, field="Jira issue_type", max_len=64, required=True
+    )
+    assert result is not None  # required path
+    return result
 
 
 def validate_linear_api_key(value: str | None) -> str:
-    if value is None:
-        raise ValueError("Linear api_key is required")
-    normalized = normalize_required_text(value, field_name="Linear api_key")
-    if _has_disallowed_characters(normalized):
-        raise ValueError("Linear api_key must not contain whitespace or control characters")
-    return normalized
+    return _require_clean(value, field="Linear api_key")
 
 
 def validate_linear_team_id(value: str | None) -> str:
     """Linear identifiers are UUIDs or short alnum strings — keep the regex
     conservative so a typo doesn't reach the GraphQL endpoint."""
-    if value is None:
-        raise ValueError("Linear team_id is required")
-    normalized = normalize_required_text(value, field_name="Linear team_id")
-    if not _LINEAR_ID_RE.fullmatch(normalized):
-        raise ValueError("Linear team_id must be an alnum / dash / underscore id")
-    return normalized
+    result = _validate_id_regex(
+        value,
+        field="Linear team_id",
+        regex=_LINEAR_ID_RE,
+        error_msg="Linear team_id must be an alnum / dash / underscore id",
+    )
+    assert result is not None  # required path
+    return result
 
 
 def validate_linear_state_id(value: str | None) -> str | None:
-    if value is None:
-        return None
-    normalized = value.strip()
-    if not normalized:
-        return None
-    if not _LINEAR_ID_RE.fullmatch(normalized):
-        raise ValueError("Linear state_id must be an alnum / dash / underscore id")
-    return normalized
+    return _validate_id_regex(
+        value,
+        field="Linear state_id",
+        regex=_LINEAR_ID_RE,
+        error_msg="Linear state_id must be an alnum / dash / underscore id",
+        optional=True,
+    )
+
+
+def _check_linear_id(value: str) -> str:
+    if not _LINEAR_ID_RE.fullmatch(value):
+        raise ValueError("Linear label_ids must be alnum / dash / underscore ids")
+    return value
 
 
 def validate_linear_label_ids(value: str | None) -> str | None:
@@ -256,16 +299,12 @@ def validate_linear_label_ids(value: str | None) -> str | None:
     to None; each entry must match the Linear id format."""
     if value is None:
         return None
-    seen: dict[str, None] = {}
-    for raw in value.split(","):
-        candidate = raw.strip()
-        if not candidate:
-            continue
-        if not _LINEAR_ID_RE.fullmatch(candidate):
-            raise ValueError("Linear label_ids must be alnum / dash / underscore ids")
-        seen.setdefault(candidate, None)
-    if not seen:
+    ids = _parse_csv_unique(
+        value,
+        item_validator=_check_linear_id,
+        limit=_LINEAR_LABEL_LIMIT,
+        limit_msg=f"Linear label_ids must contain at most {_LINEAR_LABEL_LIMIT} entries",
+    )
+    if not ids:
         return None
-    if len(seen) > 20:
-        raise ValueError("Linear label_ids must contain at most 20 entries")
-    return ",".join(seen)
+    return ",".join(ids)
