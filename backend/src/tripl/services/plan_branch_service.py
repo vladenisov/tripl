@@ -30,6 +30,7 @@ from tripl.models.meta_field_definition import MetaFieldDefinition
 from tripl.models.plan_branch import BranchKind, BranchStatus, PlanBranch
 from tripl.models.plan_branch_approval import PlanBranchApproval
 from tripl.models.plan_branch_comment import PlanBranchComment
+from tripl.models.plan_branch_merge_resolution import PlanBranchMergeResolution
 from tripl.models.plan_branch_reviewer import PlanBranchReviewer
 from tripl.models.plan_revision import PlanRevision
 from tripl.models.project import Project
@@ -38,14 +39,19 @@ from tripl.models.variable import Variable
 from tripl.schemas.plan_branch import (
     BranchCommentCreate,
     BranchCommentResponse,
+    BranchConflictsResponse,
     BranchReviewerCreate,
     BranchReviewerResponse,
     BranchTransitionAction,
+    ConflictEntity,
+    ConflictField,
     PlanBranchCreate,
     PlanBranchDetailResponse,
     PlanBranchDiff,
     PlanBranchList,
     PlanBranchResponse,
+    ResolutionCreate,
+    ResolutionResponse,
 )
 from tripl.services.plan_revision_service import build_plan_snapshot, compute_plan_diff_entries
 
@@ -595,6 +601,15 @@ async def transition_branch(
         await session.execute(
             delete(PlanBranchApproval).where(PlanBranchApproval.branch_id == branch.id)
         )
+        # Same lifecycle as approvals: once the branch goes back into draft /
+        # changes-requested / ready-for-review, prior per-field merge choices
+        # don't survive — the reviewer makes a fresh round of picks against
+        # the new base/ours/theirs.
+        await session.execute(
+            delete(PlanBranchMergeResolution).where(
+                PlanBranchMergeResolution.branch_id == branch.id
+            )
+        )
 
     if action == "approve":
         # Upsert: re-approving by the same user just refreshes the timestamp.
@@ -839,19 +854,36 @@ def _conflict_set(
     return conflicts
 
 
+def _event_type_add_remove_conflicts(
+    base: dict, ours: dict, theirs: dict
+) -> list[dict]:
+    """add/remove-class conflicts on event_type — modify-vs-modify is handled
+    at field level via _field_conflicts_event_type. Conflict only if BOTH
+    sides made a divergent change (one-sided edits auto-merge)."""
+    base_by = {e["name"]: e for e in base.get("event_types", [])}
+    ours_by = {e["name"]: e for e in ours.get("event_types", [])}
+    theirs_by = {e["name"]: e for e in theirs.get("event_types", [])}
+
+    conflicts: list[dict] = []
+    for name in set(base_by) | set(ours_by) | set(theirs_by):
+        b = base_by.get(name)
+        o = ours_by.get(name)
+        t = theirs_by.get(name)
+        # Modify-vs-modify path lives in _field_conflicts_event_type.
+        if b is not None and o is not None and t is not None:
+            continue
+        ours_changed = _entity_changed(b, o, _ET_CHANGE_KEYS)
+        theirs_changed = _entity_changed(b, t, _ET_CHANGE_KEYS)
+        if ours_changed and theirs_changed and not _entities_equal(
+            o, t, _ET_CHANGE_KEYS
+        ):
+            conflicts.append({"entity_type": "event_type", "name": name})
+    return conflicts
+
+
 def _detect_merge_conflicts(base: dict, ours: dict, theirs: dict) -> list[dict]:
     conflicts: list[dict] = []
-    conflicts.extend(
-        _conflict_set(
-            entity_type="event_type",
-            base_items=base.get("event_types", []),
-            ours_items=ours.get("event_types", []),
-            theirs_items=theirs.get("event_types", []),
-            key_fn=lambda x: x["name"],
-            name_fn=lambda x: x["name"],
-            change_keys=_ET_CHANGE_KEYS,
-        )
-    )
+    conflicts.extend(_event_type_add_remove_conflicts(base, ours, theirs))
     conflicts.extend(
         _conflict_set(
             entity_type="field_definition",
@@ -918,11 +950,171 @@ def _detect_merge_conflicts(base: dict, ours: dict, theirs: dict) -> list[dict]:
     return conflicts
 
 
+# --- inline 3-way field conflicts (v1 covers event_type metadata only) -------
+
+
+def _field_conflicts_event_type(base: dict, ours: dict, theirs: dict) -> list[dict]:
+    """Per-field conflicts on event_type metadata.
+
+    Returns one dict per (entity_name, field) where main and the branch both
+    changed the value vs base and the two new values disagree. The shape feeds
+    the inline-resolution UI: name + field + base/ours/theirs values.
+    """
+    base_by = {e["name"]: e for e in base.get("event_types", [])}
+    ours_by = {e["name"]: e for e in ours.get("event_types", [])}
+    theirs_by = {e["name"]: e for e in theirs.get("event_types", [])}
+
+    rows: list[dict] = []
+    for name in set(base_by) | set(ours_by) | set(theirs_by):
+        b = base_by.get(name)
+        o = ours_by.get(name)
+        t = theirs_by.get(name)
+        # Adds and removes are not field-level — they bubble up to the
+        # entity-level _detect_merge_conflicts path. Skip here.
+        if b is None or o is None or t is None:
+            continue
+        for field in _ET_CHANGE_KEYS:
+            bv = b.get(field)
+            ov = o.get(field)
+            tv = t.get(field)
+            if ov != bv and tv != bv and ov != tv:
+                rows.append(
+                    {
+                        "entity_type": "event_type",
+                        "name": name,
+                        "field": field,
+                        "base": bv,
+                        "ours": ov,
+                        "theirs": tv,
+                    }
+                )
+    return rows
+
+
+async def _load_resolutions(
+    session: AsyncSession, branch_id: uuid.UUID
+) -> dict[tuple[str, str, str], PlanBranchMergeResolution]:
+    rows = (
+        (
+            await session.execute(
+                select(PlanBranchMergeResolution).where(
+                    PlanBranchMergeResolution.branch_id == branch_id
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    return {(r.entity_type, r.entity_name, r.field_name): r for r in rows}
+
+
+async def get_branch_conflicts(
+    session: AsyncSession, slug: str, branch_id: uuid.UUID
+) -> BranchConflictsResponse:
+    project = await _resolve_project(session, slug)
+    branch = await _get_branch(session, project.id, branch_id)
+    _reject_main(branch)
+
+    main_branch_id = await ensure_main_branch_id(session, project.id)
+    base_payload: dict = {}
+    if branch.base_revision_id is not None:
+        base_rev = await session.get(PlanRevision, branch.base_revision_id)
+        if base_rev is not None:
+            base_payload = base_rev.payload or {}
+    main_payload = await build_plan_snapshot(session, project.id, branch_id=main_branch_id)
+    branch_payload = await build_plan_snapshot(session, project.id, branch_id=branch.id)
+
+    raw = _field_conflicts_event_type(base_payload, main_payload, branch_payload)
+    resolutions = await _load_resolutions(session, branch.id)
+
+    by_entity: dict[str, list[ConflictField]] = {}
+    unresolved = 0
+    for row in raw:
+        choice = None
+        key = (row["entity_type"], row["name"], row["field"])
+        if key in resolutions:
+            choice = resolutions[key].choice
+        else:
+            unresolved += 1
+        by_entity.setdefault(row["name"], []).append(
+            ConflictField(
+                field=row["field"],
+                base=row["base"],
+                ours=row["ours"],
+                theirs=row["theirs"],
+                choice=choice,
+            )
+        )
+
+    entities = [
+        ConflictEntity(entity_type="event_type", name=name, fields=fields)
+        for name, fields in sorted(by_entity.items())
+    ]
+    return BranchConflictsResponse(entities=entities, unresolved_count=unresolved)
+
+
+async def save_resolution(
+    session: AsyncSession,
+    slug: str,
+    branch_id: uuid.UUID,
+    data: ResolutionCreate,
+    user_id: uuid.UUID | None,
+) -> ResolutionResponse:
+    project = await _resolve_project(session, slug)
+    branch = await _get_branch(session, project.id, branch_id)
+    _reject_main(branch)
+
+    existing = await session.scalar(
+        select(PlanBranchMergeResolution).where(
+            PlanBranchMergeResolution.branch_id == branch.id,
+            PlanBranchMergeResolution.entity_type == data.entity_type,
+            PlanBranchMergeResolution.entity_name == data.entity_name,
+            PlanBranchMergeResolution.field_name == data.field_name,
+        )
+    )
+    if existing is not None:
+        existing.choice = data.choice
+        existing.resolved_by = user_id
+        resolution = existing
+    else:
+        resolution = PlanBranchMergeResolution(
+            branch_id=branch.id,
+            entity_type=data.entity_type,
+            entity_name=data.entity_name,
+            field_name=data.field_name,
+            choice=data.choice,
+            resolved_by=user_id,
+        )
+        session.add(resolution)
+    await session.commit()
+    await session.refresh(resolution)
+    return ResolutionResponse.model_validate(resolution)
+
+
+async def delete_resolution(
+    session: AsyncSession,
+    slug: str,
+    branch_id: uuid.UUID,
+    resolution_id: uuid.UUID,
+) -> None:
+    project = await _resolve_project(session, slug)
+    branch = await _get_branch(session, project.id, branch_id)
+    _reject_main(branch)
+    resolution = await session.get(PlanBranchMergeResolution, resolution_id)
+    if resolution is None or resolution.branch_id != branch.id:
+        raise HTTPException(status_code=404, detail="Resolution not found")
+    await session.delete(resolution)
+    await session.commit()
+
+
 async def _apply_merge(
     session: AsyncSession,
     project_id: uuid.UUID,
     main_branch_id: uuid.UUID,
     branch_id: uuid.UUID,
+    *,
+    resolutions: dict[tuple[str, str, str], str] | None = None,
+    base_payload: dict | None = None,
 ) -> None:
     """Apply the branch's plan onto main with upsert-by-natural-key.
 
@@ -930,7 +1122,16 @@ async def _apply_merge(
     runtime rows linked by id (metrics, photos, alerts) survive the merge.
     Children (field_definitions, event_field_values, event_meta_values,
     event_tags) are replaced wholesale with FK-remapped copies.
+
+    ``resolutions`` maps (entity_type, name, field) -> "ours" | "theirs" and
+    is honored for event_type metadata fields: "ours" keeps main's current
+    value for that field instead of taking the branch's. Defaults to "theirs"
+    (branch wins) when no resolution is supplied.
     """
+    resolutions = resolutions or {}
+    base_et_by_name: dict[str, dict] = {
+        e["name"]: e for e in (base_payload or {}).get("event_types", [])
+    }
     # --- event_types
     main_ets = list(
         (
@@ -960,10 +1161,25 @@ async def _apply_merge(
     for name, b_et in branch_et_by_name.items():
         m_et = main_et_by_name.get(name)
         if m_et is not None:
-            m_et.display_name = b_et.display_name
-            m_et.description = b_et.description
-            m_et.color = b_et.color
-            m_et.order = b_et.order
+            # 3-way per-field merge. Falls back to branch-wins when no base
+            # snapshot is available (legacy path).
+            b_dict = base_et_by_name.get(name)
+            for field in _ET_CHANGE_KEYS:
+                choice = resolutions.get(("event_type", name, field))
+                if choice == "ours":
+                    continue
+                if choice == "theirs":
+                    setattr(m_et, field, getattr(b_et, field))
+                    continue
+                if b_dict is None:
+                    setattr(m_et, field, getattr(b_et, field))
+                    continue
+                base_v = b_dict.get(field)
+                theirs_v = getattr(b_et, field)
+                # Branch changed this field → take it; otherwise keep main's
+                # current value (which may include main-side edits).
+                if theirs_v != base_v:
+                    setattr(m_et, field, theirs_v)
         else:
             session.add(
                 EventType(
@@ -1534,9 +1750,42 @@ async def merge_branch(
     main_payload = await build_plan_snapshot(session, project.id, branch_id=main_branch_id)
     branch_payload = await build_plan_snapshot(session, project.id, branch_id=branch.id)
 
-    conflicts = _detect_merge_conflicts(base_payload, main_payload, branch_payload)
-    if conflicts:
-        raise HTTPException(status_code=409, detail={"conflicts": conflicts})
+    all_conflicts = _detect_merge_conflicts(base_payload, main_payload, branch_payload)
+    field_conflicts = _field_conflicts_event_type(
+        base_payload, main_payload, branch_payload
+    )
+    # Modify-modify clashes on event_type fields are surfaced via the inline
+    # resolution flow; entity-level adds/removes and conflicts on other entity
+    # kinds stay hard blockers — they aren't covered by v1 resolutions.
+    resolvable = {(c["entity_type"], c["name"]) for c in field_conflicts}
+    blocking = [
+        c for c in all_conflicts if (c["entity_type"], c["name"]) not in resolvable
+    ]
+    if blocking:
+        raise HTTPException(status_code=409, detail={"conflicts": blocking})
+
+    resolution_map: dict[tuple[str, str, str], str] = {}
+    if field_conflicts:
+        resolutions = await _load_resolutions(session, branch.id)
+        unresolved: list[dict] = []
+        for fc in field_conflicts:
+            key = (fc["entity_type"], fc["name"], fc["field"])
+            res = resolutions.get(key)
+            if res is None:
+                unresolved.append(
+                    {
+                        "entity_type": fc["entity_type"],
+                        "name": fc["name"],
+                        "field": fc["field"],
+                    }
+                )
+            else:
+                resolution_map[key] = res.choice
+        if unresolved:
+            raise HTTPException(
+                status_code=409,
+                detail={"unresolved_field_conflicts": unresolved},
+            )
 
     await _check_owner_approvals(
         session,
@@ -1547,7 +1796,14 @@ async def merge_branch(
         branch_payload=branch_payload,
     )
 
-    await _apply_merge(session, project.id, main_branch_id, branch.id)
+    await _apply_merge(
+        session,
+        project.id,
+        main_branch_id,
+        branch.id,
+        resolutions=resolution_map,
+        base_payload=base_payload,
+    )
 
     # Post-merge snapshot of the live plan.
     post_payload = await build_plan_snapshot(session, project.id, branch_id=main_branch_id)

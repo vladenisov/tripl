@@ -787,6 +787,38 @@ export interface PlanBranchApproval {
   approved_at: string
 }
 
+export type ResolutionChoice = 'ours' | 'theirs'
+
+export interface PlanBranchConflictField {
+  field: string
+  base: unknown
+  ours: unknown
+  theirs: unknown
+  choice: ResolutionChoice | null
+}
+
+export interface PlanBranchConflictEntity {
+  entity_type: string
+  name: string
+  fields: PlanBranchConflictField[]
+}
+
+export interface PlanBranchConflicts {
+  entities: PlanBranchConflictEntity[]
+  unresolved_count: number
+}
+
+export interface PlanBranchMergeResolution {
+  id: string
+  branch_id: string
+  entity_type: string
+  entity_name: string
+  field_name: string
+  choice: ResolutionChoice
+  resolved_by: string | null
+  created_at: string
+}
+
 export interface PlanBranchDetail extends PlanBranchSummary {
   reviewers: PlanBranchReviewer[]
   approvals: PlanBranchApproval[]

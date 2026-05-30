@@ -6,6 +6,7 @@ from tripl.api.deps import EditorUserDep, SessionDep
 from tripl.schemas.plan_branch import (
     BranchCommentCreate,
     BranchCommentResponse,
+    BranchConflictsResponse,
     BranchReviewerCreate,
     BranchReviewerResponse,
     BranchTransitionRequest,
@@ -14,6 +15,8 @@ from tripl.schemas.plan_branch import (
     PlanBranchDiff,
     PlanBranchList,
     PlanBranchResponse,
+    ResolutionCreate,
+    ResolutionResponse,
 )
 from tripl.services import audit_service, plan_branch_service
 
@@ -180,6 +183,39 @@ async def diff_branch(
     session: SessionDep, slug: str, branch_id: uuid.UUID
 ) -> PlanBranchDiff:
     return await plan_branch_service.diff_branch(session, slug, branch_id)
+
+
+@router.get("/{branch_id}/conflicts", response_model=BranchConflictsResponse)
+async def get_branch_conflicts(
+    session: SessionDep, slug: str, branch_id: uuid.UUID
+) -> BranchConflictsResponse:
+    return await plan_branch_service.get_branch_conflicts(session, slug, branch_id)
+
+
+@router.post(
+    "/{branch_id}/resolutions", response_model=ResolutionResponse, status_code=201
+)
+async def save_branch_resolution(
+    session: SessionDep,
+    current_user: EditorUserDep,
+    slug: str,
+    branch_id: uuid.UUID,
+    data: ResolutionCreate,
+) -> ResolutionResponse:
+    return await plan_branch_service.save_resolution(
+        session, slug, branch_id, data, user_id=current_user.id
+    )
+
+
+@router.delete("/{branch_id}/resolutions/{resolution_id}", status_code=204)
+async def delete_branch_resolution(
+    session: SessionDep,
+    current_user: EditorUserDep,  # noqa: ARG001 — kept for editor-only auth gate
+    slug: str,
+    branch_id: uuid.UUID,
+    resolution_id: uuid.UUID,
+) -> None:
+    await plan_branch_service.delete_resolution(session, slug, branch_id, resolution_id)
 
 
 @router.post("/{branch_id}/merge", response_model=PlanBranchDetailResponse)

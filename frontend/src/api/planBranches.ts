@@ -1,12 +1,15 @@
 import { api } from './client'
 import type {
   PlanBranchComment,
+  PlanBranchConflicts,
   PlanBranchDetail,
   PlanBranchDiffSummary,
   PlanBranchList,
+  PlanBranchMergeResolution,
   PlanBranchReviewer,
   PlanBranchSummary,
   PlanBranchTransitionAction,
+  ResolutionChoice,
 } from '../types'
 
 export const planBranchesApi = {
@@ -71,5 +74,30 @@ export const planBranchesApi = {
     api.post<PlanBranchDetail>(
       `/projects/${slug}/branches/${branchId}/merge`,
       undefined,
+    ),
+
+  getConflicts: (slug: string, branchId: string) =>
+    api.get<PlanBranchConflicts>(
+      `/projects/${slug}/branches/${branchId}/conflicts`,
+    ),
+
+  saveResolution: (
+    slug: string,
+    branchId: string,
+    data: {
+      entity_type: string
+      entity_name: string
+      field_name: string
+      choice: ResolutionChoice
+    },
+  ) =>
+    api.post<PlanBranchMergeResolution>(
+      `/projects/${slug}/branches/${branchId}/resolutions`,
+      data,
+    ),
+
+  deleteResolution: (slug: string, branchId: string, resolutionId: string) =>
+    api.del(
+      `/projects/${slug}/branches/${branchId}/resolutions/${resolutionId}`,
     ),
 }

@@ -27,6 +27,7 @@ from tripl.models.metric_breakdown_anomaly import MetricBreakdownAnomaly
 from tripl.models.plan_branch import PlanBranch
 from tripl.models.plan_branch_approval import PlanBranchApproval
 from tripl.models.plan_branch_comment import PlanBranchComment
+from tripl.models.plan_branch_merge_resolution import PlanBranchMergeResolution
 from tripl.models.plan_branch_reviewer import PlanBranchReviewer
 from tripl.models.plan_revision import PlanRevision
 from tripl.models.project import Project
@@ -67,6 +68,7 @@ __all__ = [
     "PlanBranch",
     "PlanBranchApproval",
     "PlanBranchComment",
+    "PlanBranchMergeResolution",
     "PlanBranchReviewer",
     "PlanRevision",
     "ProjectAnomalySettings",

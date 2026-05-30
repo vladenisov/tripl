@@ -562,15 +562,18 @@ async def test_merge_adds_and_removes_event_types(client: AsyncClient) -> None:
 
 
 @pytest.mark.asyncio
-async def test_merge_detects_conflict_on_same_event_type(client: AsyncClient) -> None:
-    await _seed_plan(client, "merge-conflict")
-    branch_id = await _create_branch(client, "merge-conflict")
+async def test_merge_3way_auto_merges_non_overlapping_field_changes(
+    client: AsyncClient,
+) -> None:
+    """Main and branch edit different fields of the same event type — true
+    3-way merge keeps both sides without a conflict."""
+    await _seed_plan(client, "merge-3way")
+    branch_id = await _create_branch(client, "merge-3way")
 
-    # Change the same event type on both sides, with different field deltas.
-    main_ets = await client.get("/api/v1/projects/merge-conflict/event-types")
+    main_ets = await client.get("/api/v1/projects/merge-3way/event-types")
     main_track_id = next(et["id"] for et in main_ets.json() if et["name"] == "track")
     await client.patch(
-        f"/api/v1/projects/merge-conflict/event-types/{main_track_id}",
+        f"/api/v1/projects/merge-3way/event-types/{main_track_id}",
         json={"color": "#0000ff"},
     )
 
@@ -590,13 +593,163 @@ async def test_merge_detects_conflict_on_same_event_type(client: AsyncClient) ->
         branch_track.description = "changed on branch"
         await session.commit()
 
-    resp = await _approve_and_merge(client, "merge-conflict", branch_id)
-    assert resp.status_code == 409
-    detail = resp.json()["detail"]
-    assert any(
-        c["entity_type"] == "event_type" and c["name"] == "track"
-        for c in detail["conflicts"]
+    resp = await _approve_and_merge(client, "merge-3way", branch_id)
+    assert resp.status_code == 200, resp.text
+
+    main_after = await client.get(
+        f"/api/v1/projects/merge-3way/event-types/{main_track_id}"
     )
+    body = main_after.json()
+    # Main's color edit survives; branch's description edit lands too.
+    assert body["color"] == "#0000ff"
+    assert body["description"] == "changed on branch"
+
+
+@pytest.mark.asyncio
+async def test_merge_blocks_on_same_field_conflict_until_resolved(
+    client: AsyncClient,
+) -> None:
+    """Both sides edit the *same* event_type field with different values →
+    409 with unresolved_field_conflicts; once a resolution is saved, merge
+    proceeds with the chosen value."""
+    await _seed_plan(client, "merge-fconflict")
+    branch_id = await _create_branch(client, "merge-fconflict")
+
+    main_ets = await client.get("/api/v1/projects/merge-fconflict/event-types")
+    main_track_id = next(et["id"] for et in main_ets.json() if et["name"] == "track")
+    await client.patch(
+        f"/api/v1/projects/merge-fconflict/event-types/{main_track_id}",
+        json={"color": "#aaaaaa"},
+    )
+
+    async with TestSessionLocal() as session:
+        branch_track = (
+            (
+                await session.execute(
+                    select(EventType).where(
+                        EventType.name == "track",
+                        EventType.branch_id == uuid.UUID(branch_id),
+                    )
+                )
+            )
+            .scalars()
+            .first()
+        )
+        branch_track.color = "#bbbbbb"
+        await session.commit()
+
+    first = await _approve_and_merge(client, "merge-fconflict", branch_id)
+    assert first.status_code == 409
+    unresolved = first.json()["detail"]["unresolved_field_conflicts"]
+    assert any(
+        c["entity_type"] == "event_type"
+        and c["name"] == "track"
+        and c["field"] == "color"
+        for c in unresolved
+    )
+
+    # Inspect the rich conflicts payload and pick "ours" for the color field.
+    conflicts = await client.get(
+        f"/api/v1/projects/merge-fconflict/branches/{branch_id}/conflicts"
+    )
+    assert conflicts.status_code == 200
+    body = conflicts.json()
+    assert body["unresolved_count"] == 1
+    entity = body["entities"][0]
+    assert entity["fields"][0]["field"] == "color"
+    assert entity["fields"][0]["ours"] == "#aaaaaa"
+    assert entity["fields"][0]["theirs"] == "#bbbbbb"
+
+    save = await client.post(
+        f"/api/v1/projects/merge-fconflict/branches/{branch_id}/resolutions",
+        json={
+            "entity_type": "event_type",
+            "entity_name": "track",
+            "field_name": "color",
+            "choice": "ours",
+        },
+    )
+    assert save.status_code == 201
+
+    # Branch is now in 'merged' state? No — it was approved → merge failed →
+    # status is still approved. Just call merge again; transitions stay intact.
+    merge = await client.post(
+        f"/api/v1/projects/merge-fconflict/branches/{branch_id}/merge"
+    )
+    assert merge.status_code == 200, merge.text
+
+    main_after = await client.get(
+        f"/api/v1/projects/merge-fconflict/event-types/{main_track_id}"
+    )
+    # "ours" wins for color — main's value survives the merge.
+    assert main_after.json()["color"] == "#aaaaaa"
+
+
+@pytest.mark.asyncio
+async def test_resolutions_cleared_on_branch_reopen(client: AsyncClient) -> None:
+    """Reopening the branch (back to draft) drops any captured resolutions —
+    the reviewer must re-pick against the new base/ours/theirs."""
+    await _seed_plan(client, "merge-clear-res")
+    branch_id = await _create_branch(client, "merge-clear-res")
+
+    async with TestSessionLocal() as session:
+        branch_track = (
+            (
+                await session.execute(
+                    select(EventType).where(
+                        EventType.name == "track",
+                        EventType.branch_id == uuid.UUID(branch_id),
+                    )
+                )
+            )
+            .scalars()
+            .first()
+        )
+        branch_track.color = "#cccccc"
+        await session.commit()
+
+    await client.patch(
+        f"/api/v1/projects/merge-clear-res/event-types/"
+        f"{(await client.get('/api/v1/projects/merge-clear-res/event-types')).json()[0]['id']}",
+        json={"color": "#dddddd"},
+    )
+
+    save = await client.post(
+        f"/api/v1/projects/merge-clear-res/branches/{branch_id}/resolutions",
+        json={
+            "entity_type": "event_type",
+            "entity_name": "track",
+            "field_name": "color",
+            "choice": "theirs",
+        },
+    )
+    assert save.status_code == 201
+
+    # Push the branch back to draft via reopen — transition path used by the
+    # UI when changes are requested.
+    await client.post(
+        f"/api/v1/projects/merge-clear-res/branches/{branch_id}/transition",
+        json={"action": "submit"},
+    )
+    await client.post(
+        f"/api/v1/projects/merge-clear-res/branches/{branch_id}/transition",
+        json={"action": "approve"},
+    )
+    await client.post(
+        f"/api/v1/projects/merge-clear-res/branches/{branch_id}/transition",
+        json={"action": "reopen"},
+    )
+
+    conflicts = await client.get(
+        f"/api/v1/projects/merge-clear-res/branches/{branch_id}/conflicts"
+    )
+    assert conflicts.status_code == 200
+    body = conflicts.json()
+    # Resolutions are gone — every conflict is unresolved again.
+    assert body["unresolved_count"] == 1
+    for entity in body["entities"]:
+        for field in entity["fields"]:
+            assert field["choice"] is None
 
 
 # --- event_photos branching --------------------------------------------------
