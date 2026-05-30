@@ -24,11 +24,12 @@ from tripl.schemas.scan_config import (
     ScanPreviewColumnResponse,
     ScanPreviewJsonColumnResponse,
     ScanPreviewJsonPathResponse,
+    check_replay_chunk_against_interval,
+    check_scalar_columns_unreserved,
 )
 from tripl.worker.adapters.base import BaseAdapter, ColumnInfo
 from tripl.worker.adapters.registry import build_adapter
 from tripl.worker.analyzers.cardinality import _is_json_type
-from tripl.worker.utils.intervals import get_interval
 
 
 async def _get_project_id(session: AsyncSession, slug: str) -> uuid.UUID:
@@ -52,50 +53,6 @@ def _build_adapter(ds: DataSource) -> BaseAdapter:
         return build_adapter(ds)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-
-
-def _validate_scalar_monitoring_selection(
-    *,
-    metric_breakdown_columns: list[str],
-    distribution_drift_fields: list[str],
-    event_type_column: str | None,
-    time_column: str | None,
-) -> None:
-    reserved = {column for column in (event_type_column, time_column) if column}
-    invalid_breakdowns = sorted(set(metric_breakdown_columns) & reserved)
-    if invalid_breakdowns:
-        raise HTTPException(
-            status_code=422,
-            detail="metric_breakdown_columns cannot include event_type_column or time_column",
-        )
-    invalid_drift_fields = sorted(set(distribution_drift_fields) & reserved)
-    if invalid_drift_fields:
-        raise HTTPException(
-            status_code=422,
-            detail="distribution_drift_fields cannot include event_type_column or time_column",
-        )
-
-
-def _validate_replay_chunk_interval(
-    *,
-    interval: str | None,
-    replay_chunk_interval: str | None,
-) -> None:
-    """A replay chunk cannot be finer than the collection interval (you can't
-    split a window below one bucket). NULL chunk means "no split" and is allowed
-    regardless of interval."""
-    if replay_chunk_interval is None:
-        return
-    if interval is None:
-        raise HTTPException(
-            status_code=422,
-            detail="replay_chunk_interval requires a collection interval",
-        )
-    if get_interval(replay_chunk_interval).delta < get_interval(interval).delta:
-        raise HTTPException(
-            status_code=422,
-            detail="replay_chunk_interval must be greater than or equal to interval",
-        )
 
 
 def _serialize_preview_value(value: object) -> object:
@@ -236,17 +193,6 @@ async def create_scan_config(
     if existing.scalar_one_or_none():
         raise HTTPException(status_code=409, detail="Scan config with this name already exists")
 
-    _validate_scalar_monitoring_selection(
-        metric_breakdown_columns=data.metric_breakdown_columns,
-        distribution_drift_fields=data.distribution_drift_fields,
-        event_type_column=data.event_type_column,
-        time_column=data.time_column,
-    )
-    _validate_replay_chunk_interval(
-        interval=data.interval,
-        replay_chunk_interval=data.replay_chunk_interval,
-    )
-
     config = ScanConfig(
         project_id=project_id,
         **data.model_dump(),
@@ -265,27 +211,32 @@ async def update_scan_config(
 ) -> ScanConfig:
     config = await get_scan_config(session, slug, scan_id)
     update_dict = data.model_dump(exclude_unset=True)
-    _validate_scalar_monitoring_selection(
-        metric_breakdown_columns=update_dict.get(
-            "metric_breakdown_columns",
-            config.metric_breakdown_columns,
+    # PATCH semantics: merge the partial payload onto the live config first so
+    # cross-field checks see the post-update state, not just the diff.
+    try:
+        check_scalar_columns_unreserved(
+            metric_breakdown_columns=update_dict.get(
+                "metric_breakdown_columns", config.metric_breakdown_columns
+            )
+            or [],
+            distribution_drift_fields=update_dict.get(
+                "distribution_drift_fields", config.distribution_drift_fields
+            )
+            or [],
+            event_type_column=update_dict.get(
+                "event_type_column", config.event_type_column
+            ),
+            time_column=update_dict.get("time_column", config.time_column),
         )
-        or [],
-        distribution_drift_fields=update_dict.get(
-            "distribution_drift_fields",
-            config.distribution_drift_fields,
+        check_replay_chunk_against_interval(
+            interval=update_dict.get("interval", config.interval),
+            replay_chunk_interval=update_dict.get(
+                "replay_chunk_interval", config.replay_chunk_interval
+            ),
         )
-        or [],
-        event_type_column=update_dict.get("event_type_column", config.event_type_column),
-        time_column=update_dict.get("time_column", config.time_column),
-    )
-    _validate_replay_chunk_interval(
-        interval=update_dict.get("interval", config.interval),
-        replay_chunk_interval=update_dict.get(
-            "replay_chunk_interval",
-            config.replay_chunk_interval,
-        ),
-    )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
     for key, value in update_dict.items():
         setattr(config, key, value)
     await session.commit()
