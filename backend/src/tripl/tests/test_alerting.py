@@ -1637,7 +1637,7 @@ async def test_alerting_email_destination_crud_and_validation(client: AsyncClien
             "type": "email",
             "name": "Ops Email",
             "email_recipients": "alice@example.com, bob@example.com , alice@example.com",
-            "email_from_address": "alerts@tripl.test",
+            "email_from_address": "alerts@tripl-app.io",
             "email_subject_template": "[{project_name}] {rule_name}",
         },
     )
@@ -1646,7 +1646,7 @@ async def test_alerting_email_destination_crud_and_validation(client: AsyncClien
     assert destination["type"] == "email"
     # Dedup + normalized whitespace in the recipient CSV.
     assert destination["email_recipients"] == "alice@example.com, bob@example.com"
-    assert destination["email_from_address"] == "alerts@tripl.test"
+    assert destination["email_from_address"] == "alerts@tripl-app.io"
     assert destination["email_subject_template"] == "[{project_name}] {rule_name}"
     destination_id = destination["id"]
 
@@ -1783,7 +1783,7 @@ def test_send_alert_delivery_sends_email(monkeypatch, tmp_path) -> None:
     monkeypatch.setattr(live_settings, "smtp_username", "tripl-bot")
     monkeypatch.setattr(live_settings, "smtp_password", "hunter2")
     monkeypatch.setattr(live_settings, "smtp_use_tls", True)
-    monkeypatch.setattr(live_settings, "smtp_from_address", "alerts@tripl.test")
+    monkeypatch.setattr(live_settings, "smtp_from_address", "alerts@tripl-app.io")
 
     result = metrics.send_alert_delivery.run(delivery_id)
     assert result["status"] == "sent"
@@ -1792,7 +1792,7 @@ def test_send_alert_delivery_sends_email(monkeypatch, tmp_path) -> None:
     events = [m.get("event") for m in sent_messages if "event" in m]
     assert events == ["starttls", "login", "send"]
     send_event = next(m for m in sent_messages if m.get("event") == "send")
-    assert send_event["From"] == "alerts@tripl.test"
+    assert send_event["From"] == "alerts@tripl-app.io"
     assert send_event["To"] == "alice@example.com, bob@example.com"
     # Default subject: "[<project>] <rule> — N alert(s)"
     assert send_event["Subject"] == "[Alert Runtime] Main Rule — 1 alert(s)"

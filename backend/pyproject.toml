@@ -21,6 +21,7 @@ dependencies = [
     "redis[hiredis]>=5.0",
     "brotli-asgi>=1.6",
     "prometheus-client>=0.20",
+    "email-validator>=2.2",
 ]
 
 [project.optional-dependencies]
