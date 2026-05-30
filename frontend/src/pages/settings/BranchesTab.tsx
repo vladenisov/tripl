@@ -18,9 +18,12 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Textarea } from '@/components/ui/textarea'
 import type {
+  PlanBranchConflictEntity,
+  PlanBranchConflictField,
   PlanBranchSummary,
   PlanBranchStatus,
   PlanBranchTransitionAction,
+  ResolutionChoice,
 } from '@/types'
 
 const STATUS_LABEL: Record<PlanBranchStatus, string> = {
@@ -308,6 +311,32 @@ function BranchDetailDialog({
     enabled: !!branchId,
   })
 
+  const { data: conflicts } = useQuery({
+    queryKey: ['planBranchConflicts', slug, branchId],
+    queryFn: () => planBranchesApi.getConflicts(slug, branchId!),
+    enabled: !!branchId,
+  })
+
+  const resolutionMut = useMutation({
+    mutationFn: ({
+      entity_name,
+      field,
+      choice,
+    }: {
+      entity_name: string
+      field: string
+      choice: ResolutionChoice
+    }) =>
+      planBranchesApi.saveResolution(slug, branchId!, {
+        entity_type: 'event_type',
+        entity_name,
+        field_name: field,
+        choice,
+      }),
+    onSuccess: () =>
+      qc.invalidateQueries({ queryKey: ['planBranchConflicts', slug, branchId] }),
+  })
+
   const { data: comments } = useQuery({
     queryKey: ['planBranchComments', slug, branchId],
     queryFn: () => planBranchesApi.listComments(slug, branchId!),
@@ -368,6 +397,70 @@ function BranchDetailDialog({
               <p className="text-sm text-muted-foreground">Loading diff…</p>
             )}
           </section>
+
+          {conflicts && conflicts.entities.length > 0 && (
+            <section>
+              <div className="flex items-center justify-between mb-2">
+                <h3 className="text-sm font-semibold">Conflicts</h3>
+                <Badge
+                  variant={conflicts.unresolved_count > 0 ? 'default' : 'outline'}
+                  className="text-[10px]"
+                >
+                  {conflicts.unresolved_count} unresolved
+                </Badge>
+              </div>
+              <div className="space-y-3 max-h-64 overflow-y-auto">
+                {conflicts.entities.map((entity: PlanBranchConflictEntity) => (
+                  <div key={entity.name} className="rounded-md border p-2">
+                    <div className="text-xs font-mono font-semibold mb-1">
+                      {entity.entity_type}: {entity.name}
+                    </div>
+                    <div className="space-y-2">
+                      {entity.fields.map((field: PlanBranchConflictField) => (
+                        <div key={field.field} className="text-xs">
+                          <div className="font-medium">{field.field}</div>
+                          <div className="grid grid-cols-3 gap-2 mt-1 font-mono">
+                            <div>
+                              <span className="text-muted-foreground">base: </span>
+                              {String(field.base ?? '∅')}
+                            </div>
+                            <div>
+                              <span className="text-muted-foreground">ours: </span>
+                              {String(field.ours ?? '∅')}
+                            </div>
+                            <div>
+                              <span className="text-muted-foreground">theirs: </span>
+                              {String(field.theirs ?? '∅')}
+                            </div>
+                          </div>
+                          <div className="mt-1 flex gap-1.5">
+                            {(['ours', 'theirs'] as ResolutionChoice[]).map((choice) => (
+                              <Button
+                                key={choice}
+                                size="sm"
+                                variant={field.choice === choice ? 'default' : 'outline'}
+                                className="h-6 text-[11px] px-2"
+                                onClick={() =>
+                                  resolutionMut.mutate({
+                                    entity_name: entity.name,
+                                    field: field.field,
+                                    choice,
+                                  })
+                                }
+                                disabled={resolutionMut.isPending}
+                              >
+                                Keep {choice}
+                              </Button>
+                            ))}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </section>
+          )}
 
           <section>
             <h3 className="text-sm font-semibold mb-2">Comments</h3>

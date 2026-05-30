@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, field_validator
 
@@ -113,3 +113,55 @@ class PlanBranchDiff(BaseModel):
     # True when main advanced since the branch's base snapshot — the branch is
     # behind and should be rebased before merge (Phase 4).
     behind_base: bool
+
+
+# --- inline 3-way merge conflict resolution ---------------------------------
+
+ResolutionChoice = Literal["ours", "theirs"]
+
+
+class ConflictField(BaseModel):
+    """A single field that diverged on both sides of the merge.
+
+    ``base`` is the value when the branch was created; ``ours`` is main's
+    current value; ``theirs`` is the branch's current value. The reviewer
+    picks ``choice`` to drive the merge for this field; ``None`` means
+    unresolved (merge stays blocked).
+    """
+
+    field: str
+    base: Any | None
+    ours: Any | None
+    theirs: Any | None
+    choice: ResolutionChoice | None = None
+
+
+class ConflictEntity(BaseModel):
+    entity_type: str
+    name: str
+    fields: list[ConflictField]
+
+
+class BranchConflictsResponse(BaseModel):
+    entities: list[ConflictEntity]
+    unresolved_count: int
+
+
+class ResolutionCreate(BaseModel):
+    entity_type: str
+    entity_name: str
+    field_name: str
+    choice: ResolutionChoice
+
+
+class ResolutionResponse(BaseModel):
+    id: uuid.UUID
+    branch_id: uuid.UUID
+    entity_type: str
+    entity_name: str
+    field_name: str
+    choice: ResolutionChoice
+    resolved_by: uuid.UUID | None
+    created_at: datetime
+
+    model_config = {"from_attributes": True}
