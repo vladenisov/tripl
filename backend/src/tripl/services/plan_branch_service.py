@@ -19,6 +19,8 @@ from sqlalchemy.orm import selectinload
 from tripl.models.event import Event
 from tripl.models.event_field_value import EventFieldValue
 from tripl.models.event_meta_value import EventMetaValue
+from tripl.models.event_photo import EventPhoto
+from tripl.models.event_photo_comment import EventPhotoComment
 from tripl.models.event_tag import EventTag
 from tripl.models.event_type import EventType
 from tripl.models.event_type_relation import EventTypeRelation
@@ -363,8 +365,10 @@ async def _deep_copy_plan(
         .scalars()
         .all()
     )
+    event_id_map: dict[uuid.UUID, uuid.UUID] = {}
     for ev in events:
         new_ev_id = uuid.uuid4()
+        event_id_map[ev.id] = new_ev_id
         new_objs.append(
             Event(
                 id=new_ev_id,
@@ -401,6 +405,69 @@ async def _deep_copy_plan(
             )
         for tag in ev.tags:
             new_objs.append(EventTag(id=uuid.uuid4(), event_id=new_ev_id, name=tag.name))
+
+    # Photos + threaded comments. Reuse storage_key/external_url so blobs aren't
+    # duplicated: branch and main rows reference the same underlying object.
+    if event_id_map:
+        source_event_ids = list(event_id_map.keys())
+        photos = (
+            (
+                await session.execute(
+                    select(EventPhoto)
+                    .where(EventPhoto.event_id.in_(source_event_ids))
+                    .order_by(EventPhoto.created_at.asc())
+                )
+            )
+            .scalars()
+            .all()
+        )
+        photo_id_map: dict[uuid.UUID, uuid.UUID] = {}
+        for ph in photos:
+            new_ph_id = uuid.uuid4()
+            photo_id_map[ph.id] = new_ph_id
+            new_objs.append(
+                EventPhoto(
+                    id=new_ph_id,
+                    project_id=ph.project_id,
+                    event_id=event_id_map[ph.event_id],
+                    uploaded_by_user_id=ph.uploaded_by_user_id,
+                    original_filename=ph.original_filename,
+                    content_type=ph.content_type,
+                    size_bytes=ph.size_bytes,
+                    kind=ph.kind,
+                    external_url=ph.external_url,
+                    storage_backend=ph.storage_backend,
+                    storage_key=ph.storage_key,
+                    sort_order=ph.sort_order,
+                )
+            )
+        if photo_id_map:
+            comments = (
+                (
+                    await session.execute(
+                        select(EventPhotoComment)
+                        .where(EventPhotoComment.photo_id.in_(list(photo_id_map.keys())))
+                        .order_by(EventPhotoComment.created_at.asc())
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            comment_id_map: dict[uuid.UUID, uuid.UUID] = {}
+            for c in comments:
+                new_c_id = uuid.uuid4()
+                comment_id_map[c.id] = new_c_id
+                new_objs.append(
+                    EventPhotoComment(
+                        id=new_c_id,
+                        photo_id=photo_id_map[c.photo_id],
+                        parent_id=(
+                            comment_id_map.get(c.parent_id) if c.parent_id is not None else None
+                        ),
+                        user_id=c.user_id,
+                        body=c.body,
+                    )
+                )
 
     relations = (
         (
@@ -1216,6 +1283,100 @@ async def _apply_merge(
         if key not in branch_event_by_key:
             await session.delete(m_ev)
     await session.flush()
+
+    # --- photos + comments: wholesale replace per surviving event on main.
+    # The branch is the source of truth for the design canvas, so main photos
+    # under matched/new events are dropped and re-copied from the branch with
+    # remapped event_id. storage_key/external_url is reused — no blob copies.
+    # Bulk delete via session.execute(delete(...)) is intentional: it bypasses
+    # the ORM session.delete() path so storage backends aren't invoked here
+    # (the blob is still referenced by the freshly-inserted main row).
+    main_events_after = list(
+        (
+            await session.execute(
+                select(Event).where(
+                    Event.project_id == project_id, Event.branch_id == main_branch_id
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    main_event_key_to_id: dict[tuple[str, str], uuid.UUID] = {}
+    for e in main_events_after:
+        et_name = main_et_id_to_name.get(e.event_type_id)
+        if et_name is not None:
+            main_event_key_to_id[(et_name, e.name)] = e.id
+
+    for key, b_ev in branch_event_by_key.items():
+        main_ev_id = main_event_key_to_id.get(key)
+        if main_ev_id is None:
+            continue
+        await session.execute(delete(EventPhoto).where(EventPhoto.event_id == main_ev_id))
+        await session.flush()
+
+        branch_photos = list(
+            (
+                await session.execute(
+                    select(EventPhoto)
+                    .where(EventPhoto.event_id == b_ev.id)
+                    .order_by(EventPhoto.created_at.asc())
+                )
+            )
+            .scalars()
+            .all()
+        )
+        photo_id_map: dict[uuid.UUID, uuid.UUID] = {}
+        for bp in branch_photos:
+            new_ph_id = uuid.uuid4()
+            photo_id_map[bp.id] = new_ph_id
+            session.add(
+                EventPhoto(
+                    id=new_ph_id,
+                    project_id=project_id,
+                    event_id=main_ev_id,
+                    uploaded_by_user_id=bp.uploaded_by_user_id,
+                    original_filename=bp.original_filename,
+                    content_type=bp.content_type,
+                    size_bytes=bp.size_bytes,
+                    kind=bp.kind,
+                    external_url=bp.external_url,
+                    storage_backend=bp.storage_backend,
+                    storage_key=bp.storage_key,
+                    sort_order=bp.sort_order,
+                )
+            )
+        await session.flush()
+        if photo_id_map:
+            branch_comments = list(
+                (
+                    await session.execute(
+                        select(EventPhotoComment)
+                        .where(EventPhotoComment.photo_id.in_(list(photo_id_map.keys())))
+                        .order_by(EventPhotoComment.created_at.asc())
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            comment_id_map: dict[uuid.UUID, uuid.UUID] = {}
+            for bc in branch_comments:
+                new_c_id = uuid.uuid4()
+                comment_id_map[bc.id] = new_c_id
+                session.add(
+                    EventPhotoComment(
+                        id=new_c_id,
+                        photo_id=photo_id_map[bc.photo_id],
+                        parent_id=(
+                            comment_id_map.get(bc.parent_id)
+                            if bc.parent_id is not None
+                            else None
+                        ),
+                        user_id=bc.user_id,
+                        body=bc.body,
+                    )
+                )
+            await session.flush()
 
     # --- relations: wholesale replace on main using name-based FK remap
     branch_relations = list(

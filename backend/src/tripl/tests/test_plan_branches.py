@@ -5,6 +5,8 @@ from httpx import AsyncClient
 from sqlalchemy import select
 
 from tripl.models.event import Event
+from tripl.models.event_photo import EventPhoto
+from tripl.models.event_photo_comment import EventPhotoComment
 from tripl.models.event_type import EventType
 from tripl.models.field_definition import FieldDefinition
 from tripl.models.plan_branch import PlanBranch
@@ -595,6 +597,155 @@ async def test_merge_detects_conflict_on_same_event_type(client: AsyncClient) ->
         c["entity_type"] == "event_type" and c["name"] == "track"
         for c in detail["conflicts"]
     )
+
+
+# --- event_photos branching --------------------------------------------------
+
+
+async def _attach_main_figma(
+    client: AsyncClient, slug: str, event_id: str, url: str, title: str
+) -> str:
+    resp = await client.post(
+        f"/api/v1/projects/{slug}/events/{event_id}/photos/figma",
+        json={"url": url, "title": title},
+    )
+    assert resp.status_code == 201, resp.text
+    return resp.json()["id"]
+
+
+@pytest.mark.asyncio
+async def test_branch_create_copies_event_photos_and_comments(
+    client: AsyncClient,
+) -> None:
+    """Creating a branch deep-copies photos + threaded comments onto the
+    branch's events with fresh ids and FK remap."""
+    await _seed_plan(client, "branch-photos")
+    events = await client.get("/api/v1/projects/branch-photos/events")
+    main_event_id = events.json()["items"][0]["id"]
+    main_photo_id = await _attach_main_figma(
+        client,
+        "branch-photos",
+        main_event_id,
+        "https://www.figma.com/file/abc/Spec",
+        "Spec",
+    )
+    # One top-level comment + one reply.
+    base = f"/api/v1/projects/branch-photos/events/{main_event_id}/photos/{main_photo_id}/comments"
+    top = await client.post(base, json={"body": "looks good"})
+    assert top.status_code == 201
+    reply = await client.post(
+        base, json={"body": "thanks!", "parent_id": top.json()["id"]}
+    )
+    assert reply.status_code == 201
+
+    branch_id = await _create_branch(client, "branch-photos", "feature-photos")
+
+    async with TestSessionLocal() as session:
+        branch_event = (
+            (
+                await session.execute(
+                    select(Event).where(Event.branch_id == uuid.UUID(branch_id))
+                )
+            )
+            .scalars()
+            .first()
+        )
+        assert branch_event is not None
+        assert branch_event.id != uuid.UUID(main_event_id)
+
+        branch_photos = (
+            (
+                await session.execute(
+                    select(EventPhoto).where(EventPhoto.event_id == branch_event.id)
+                )
+            )
+            .scalars()
+            .all()
+        )
+        assert len(branch_photos) == 1
+        branch_photo = branch_photos[0]
+        # Fresh id but the same blob target (storage_key/external_url reused).
+        assert branch_photo.id != uuid.UUID(main_photo_id)
+        assert branch_photo.external_url == "https://www.figma.com/file/abc/Spec"
+        assert branch_photo.kind == "figma"
+
+        branch_comments = (
+            (
+                await session.execute(
+                    select(EventPhotoComment).where(
+                        EventPhotoComment.photo_id == branch_photo.id
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        assert {c.body for c in branch_comments} == {"looks good", "thanks!"}
+        # The reply's parent_id was remapped to the branch's top-level comment.
+        top_branch = next(c for c in branch_comments if c.parent_id is None)
+        reply_branch = next(c for c in branch_comments if c.parent_id is not None)
+        assert reply_branch.parent_id == top_branch.id
+
+
+@pytest.mark.asyncio
+async def test_merge_carries_branch_photo_changes_to_main(client: AsyncClient) -> None:
+    """Branch removes a main photo and attaches a new one; merge replaces
+    main's photo set with the branch's set (reachable as the source of truth)."""
+    await _seed_plan(client, "merge-photos")
+    events = await client.get("/api/v1/projects/merge-photos/events")
+    main_event_id = events.json()["items"][0]["id"]
+    await _attach_main_figma(
+        client,
+        "merge-photos",
+        main_event_id,
+        "https://www.figma.com/file/old/Old",
+        "Old",
+    )
+
+    branch_id = await _create_branch(client, "merge-photos", "feature-art")
+
+    async with TestSessionLocal() as session:
+        branch_event = (
+            (
+                await session.execute(
+                    select(Event).where(Event.branch_id == uuid.UUID(branch_id))
+                )
+            )
+            .scalars()
+            .first()
+        )
+        branch_event_id = branch_event.id
+        # Drop the deep-copied photo from the branch.
+        branch_photos = (
+            (
+                await session.execute(
+                    select(EventPhoto).where(EventPhoto.event_id == branch_event_id)
+                )
+            )
+            .scalars()
+            .all()
+        )
+        for ph in branch_photos:
+            await session.delete(ph)
+        await session.commit()
+
+    # Attach a new figma row directly on the branch event.
+    new_url = "https://www.figma.com/file/new/New"
+    await _attach_main_figma(
+        client, "merge-photos", str(branch_event_id), new_url, "New"
+    )
+
+    resp = await _approve_and_merge(client, "merge-photos", branch_id)
+    assert resp.status_code == 200
+
+    # On main, the live event now carries the branch's photo set: one figma row
+    # with the new URL, the old one gone.
+    listed = await client.get(
+        f"/api/v1/projects/merge-photos/events/{main_event_id}/photos"
+    )
+    assert listed.status_code == 200
+    urls = [row["external_url"] for row in listed.json()]
+    assert urls == [new_url]
 
 
 # --- ?branch= router param threading ----------------------------------------
