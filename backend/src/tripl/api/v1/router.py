@@ -8,6 +8,7 @@ from tripl.api.v1.auth import router as auth_router
 from tripl.api.v1.chart_annotations import router as chart_annotations_router
 from tripl.api.v1.data_sources import router as data_sources_router
 from tripl.api.v1.event_photos import router as event_photos_router
+from tripl.api.v1.event_type_owners import router as event_type_owners_router
 from tripl.api.v1.event_types import router as event_types_router
 from tripl.api.v1.events import router as events_router
 from tripl.api.v1.fields import router as fields_router
@@ -31,6 +32,7 @@ router.include_router(projects_router, dependencies=protected_dependencies)
 router.include_router(project_anomaly_settings_router, dependencies=protected_dependencies)
 router.include_router(alerting_router, dependencies=protected_dependencies)
 router.include_router(event_types_router, dependencies=protected_dependencies)
+router.include_router(event_type_owners_router, dependencies=protected_dependencies)
 router.include_router(fields_router, dependencies=protected_dependencies)
 router.include_router(relations_router, dependencies=protected_dependencies)
 router.include_router(meta_fields_router, dependencies=protected_dependencies)

@@ -74,6 +74,16 @@ export interface UserListItem {
   created_at: string
 }
 
+export interface EventTypeOwner {
+  id: string
+  event_type_id: string
+  user_id: string
+  user_email: string
+  user_name: string
+  granted_by: string | null
+  created_at: string
+}
+
 export interface ProjectSummary {
   event_type_count: number
   event_count: number
