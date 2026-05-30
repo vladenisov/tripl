@@ -14,7 +14,7 @@ Analytics tracking-plan, monitoring, and alerting service.
 - Plan revisions + diff history.
 - PII / sensitivity tagging on fields.
 
-### Branch-based plan workflow (Avo-style)
+### Branch-based plan workflow
 
 - Every project has a real `main` branch plus working branches that deep-copy the live plan (event types, fields, events, variables, meta fields, relations, photos, threaded comments).
 - Review workflow: Draft → Ready for Review → Changes Requested → Approved → Merged / Closed.
