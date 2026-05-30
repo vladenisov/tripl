@@ -1,5 +1,5 @@
 import { useMemo, useRef, useState } from "react"
-import type { AlertMessageFormat } from "@/types"
+import type { AlertDestinationType, AlertMessageFormat } from "@/types"
 import { Button } from "@/components/ui/button"
 import { Label } from "@/components/ui/label"
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
@@ -19,7 +19,7 @@ export function TemplateEditor({
   value,
   onChange,
 }: {
-  destinationType: 'slack' | 'telegram' | 'webhook'
+  destinationType: AlertDestinationType
   messageFormat: AlertMessageFormat
   onMessageFormatChange: (value: AlertMessageFormat) => void
   title: string

@@ -18,6 +18,7 @@ from tripl.models.event_photo import EventPhoto
 from tripl.models.event_photo_comment import EventPhotoComment
 from tripl.models.event_tag import EventTag
 from tripl.models.event_type import EventType
+from tripl.models.event_type_owner import EventTypeOwner
 from tripl.models.event_type_relation import EventTypeRelation
 from tripl.models.field_definition import FieldDefinition
 from tripl.models.meta_field_definition import MetaFieldDefinition
@@ -49,6 +50,7 @@ __all__ = [
     "ChartAnnotation",
     "Project",
     "EventType",
+    "EventTypeOwner",
     "FieldDefinition",
     "EventTypeRelation",
     "MetaFieldDefinition",

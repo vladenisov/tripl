@@ -23,6 +23,7 @@ from tripl.models.event_photo import EventPhoto
 from tripl.models.event_photo_comment import EventPhotoComment
 from tripl.models.event_tag import EventTag
 from tripl.models.event_type import EventType
+from tripl.models.event_type_owner import EventTypeOwner
 from tripl.models.event_type_relation import EventTypeRelation
 from tripl.models.field_definition import FieldDefinition
 from tripl.models.meta_field_definition import MetaFieldDefinition
@@ -1425,6 +1426,89 @@ async def _apply_merge(
         )
 
 
+def _touched_event_type_names(base_payload: dict, branch_payload: dict) -> set[str]:
+    """Event-type names whose metadata differs between base and branch.
+
+    Used to decide which event types' owners must approve the merge. Picks up
+    additions, removals, and metadata changes (``_ET_CHANGE_KEYS``). Pure
+    add/remove of children under an unchanged type does not count for v1 —
+    owner gating triggers on type-level edits only.
+    """
+    base_by_name = {e["name"]: e for e in base_payload.get("event_types", [])}
+    branch_by_name = {e["name"]: e for e in branch_payload.get("event_types", [])}
+    touched: set[str] = set()
+    for name in set(base_by_name) | set(branch_by_name):
+        b = base_by_name.get(name)
+        n = branch_by_name.get(name)
+        if b is None or n is None or _entity_changed(b, n, _ET_CHANGE_KEYS):
+            touched.add(name)
+    return touched
+
+
+async def _check_owner_approvals(
+    session: AsyncSession,
+    *,
+    project_id: uuid.UUID,
+    main_branch_id: uuid.UUID,
+    branch_id: uuid.UUID,
+    base_payload: dict,
+    branch_payload: dict,
+) -> None:
+    """Block the merge when an owned event type is touched without an owner's
+    approval. Owners attach to live main rows only, so unowned event types
+    (including freshly added ones that don't exist on main yet) auto-pass."""
+    touched = _touched_event_type_names(base_payload, branch_payload)
+    if not touched:
+        return
+
+    rows = await session.execute(
+        select(EventType.id, EventType.name).where(
+            EventType.project_id == project_id,
+            EventType.branch_id == main_branch_id,
+            EventType.name.in_(list(touched)),
+        )
+    )
+    main_name_to_id = {name: et_id for et_id, name in rows.all()}
+    if not main_name_to_id:
+        return
+
+    owners = await session.execute(
+        select(EventTypeOwner.event_type_id, EventTypeOwner.user_id).where(
+            EventTypeOwner.event_type_id.in_(list(main_name_to_id.values()))
+        )
+    )
+    owners_by_et: dict[uuid.UUID, set[uuid.UUID]] = {}
+    for et_id, user_id in owners.all():
+        owners_by_et.setdefault(et_id, set()).add(user_id)
+    if not owners_by_et:
+        return
+
+    approvals = await session.execute(
+        select(PlanBranchApproval.user_id).where(
+            PlanBranchApproval.branch_id == branch_id
+        )
+    )
+    approver_ids = {row[0] for row in approvals.all()}
+
+    missing: list[dict] = []
+    for name, et_id in main_name_to_id.items():
+        owners_set = owners_by_et.get(et_id)
+        if not owners_set:
+            continue
+        if not (owners_set & approver_ids):
+            missing.append(
+                {
+                    "event_type": name,
+                    "owner_user_ids": [str(u) for u in sorted(owners_set, key=str)],
+                }
+            )
+    if missing:
+        raise HTTPException(
+            status_code=409,
+            detail={"missing_owner_approvals": missing},
+        )
+
+
 async def merge_branch(
     session: AsyncSession,
     slug: str,
@@ -1453,6 +1537,15 @@ async def merge_branch(
     conflicts = _detect_merge_conflicts(base_payload, main_payload, branch_payload)
     if conflicts:
         raise HTTPException(status_code=409, detail={"conflicts": conflicts})
+
+    await _check_owner_approvals(
+        session,
+        project_id=project.id,
+        main_branch_id=main_branch_id,
+        branch_id=branch.id,
+        base_payload=base_payload,
+        branch_payload=branch_payload,
+    )
 
     await _apply_merge(session, project.id, main_branch_id, branch.id)
 

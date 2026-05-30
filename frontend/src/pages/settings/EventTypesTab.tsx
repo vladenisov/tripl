@@ -1,10 +1,12 @@
 import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { ArrowDown, ArrowUp, ChevronDown, Layers, Pencil, Plus, Trash2 } from 'lucide-react'
+import { eventTypeOwnersApi } from '@/api/eventTypeOwners'
 import { eventTypesApi } from '@/api/eventTypes'
 import { fieldsApi } from '@/api/fields'
+import { usersApi } from '@/api/users'
 import { useActiveBranchId } from '@/hooks/useBranch'
-import type { EventType, FieldDefinition, Sensitivity } from '@/types'
+import type { EventType, EventTypeOwner, FieldDefinition, Sensitivity, UserListItem } from '@/types'
 import { SENSITIVITY_OPTIONS } from '@/types'
 import { useConfirm } from '@/hooks/useConfirm'
 import { Badge } from '@/components/ui/badge'
@@ -175,6 +177,7 @@ export function EventTypesTab({ slug }: { slug: string }) {
             </CollapsibleTrigger>
             <CollapsibleContent>
               <FieldsEditor slug={slug} eventType={et} branchId={branchId} />
+              {branchId === null && <OwnersEditor slug={slug} eventType={et} />}
             </CollapsibleContent>
           </Card>
         </Collapsible>
@@ -479,6 +482,101 @@ function FieldsEditor({ slug, eventType, branchId }: { slug: string; eventType: 
         </div>
       ) : (
         <p className="text-xs text-muted-foreground py-2">No fields defined yet.</p>
+      )}
+    </div>
+  )
+}
+
+function OwnersEditor({ slug, eventType }: { slug: string; eventType: EventType }) {
+  const qc = useQueryClient()
+  const [selectedUserId, setSelectedUserId] = useState('')
+
+  const { data: owners = [] } = useQuery({
+    queryKey: ['eventTypeOwners', slug, eventType.id],
+    queryFn: () => eventTypeOwnersApi.list(slug, eventType.id),
+  })
+  const { data: users = [] } = useQuery({
+    queryKey: ['users'],
+    queryFn: () => usersApi.list(),
+  })
+
+  const addMut = useMutation({
+    mutationFn: (userId: string) => eventTypeOwnersApi.add(slug, eventType.id, userId),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['eventTypeOwners', slug, eventType.id] })
+      setSelectedUserId('')
+    },
+  })
+
+  const removeMut = useMutation({
+    mutationFn: (ownerId: string) => eventTypeOwnersApi.remove(slug, eventType.id, ownerId),
+    onSuccess: () =>
+      qc.invalidateQueries({ queryKey: ['eventTypeOwners', slug, eventType.id] }),
+  })
+
+  const ownerUserIds = new Set(owners.map((o: EventTypeOwner) => o.user_id))
+  const availableUsers = users.filter((u: UserListItem) => !ownerUserIds.has(u.id))
+
+  return (
+    <div className="px-4 pb-4 space-y-2 border-t">
+      <div className="flex items-center justify-between pt-3">
+        <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">
+          Owners
+        </span>
+        <Badge variant="secondary" className="text-[10px]">
+          gates branch merge
+        </Badge>
+      </div>
+      {owners.length === 0 ? (
+        <p className="text-xs text-muted-foreground py-2">
+          No owners. Anyone can merge a branch touching this event type until at least one
+          owner is assigned.
+        </p>
+      ) : (
+        <div className="flex flex-wrap gap-2">
+          {owners.map((owner: EventTypeOwner) => (
+            <span
+              key={owner.id}
+              className="inline-flex items-center gap-1.5 rounded-md border bg-muted/40 px-2 py-1 text-xs"
+            >
+              <span className="font-medium">{owner.user_name}</span>
+              <span className="text-muted-foreground">{owner.user_email}</span>
+              <Button
+                variant="ghost"
+                size="icon"
+                className="h-5 w-5 text-muted-foreground hover:text-destructive"
+                onClick={() => removeMut.mutate(owner.id)}
+                disabled={removeMut.isPending}
+              >
+                <Trash2 className="h-3 w-3" />
+              </Button>
+            </span>
+          ))}
+        </div>
+      )}
+      {availableUsers.length > 0 && (
+        <div className="flex gap-2 pt-1">
+          <select
+            value={selectedUserId}
+            onChange={e => setSelectedUserId(e.target.value)}
+            className="h-8 rounded-md border bg-background px-2 text-xs"
+          >
+            <option value="">Select user…</option>
+            {availableUsers.map((u: UserListItem) => (
+              <option key={u.id} value={u.id}>
+                {u.name || u.email} ({u.email})
+              </option>
+            ))}
+          </select>
+          <Button
+            size="sm"
+            disabled={!selectedUserId || addMut.isPending}
+            onClick={() => addMut.mutate(selectedUserId)}
+          >
+            <Plus className="h-3.5 w-3.5 mr-1" />
+            Add owner
+          </Button>
+        </div>
       )}
     </div>
   )
