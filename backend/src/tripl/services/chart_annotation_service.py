@@ -12,23 +12,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from tripl.models.chart_annotation import ChartAnnotation
 from tripl.services.project_service import get_project_id_by_slug
 
-ALLOWED_SCOPES = {"project_total", "event_type", "event"}
-
-
-def _validate_scope(scope_type: str | None, scope_ref: str | None) -> None:
-    if scope_type is None and scope_ref is None:
-        return
-    if scope_type is None or scope_ref is None:
-        raise HTTPException(
-            status_code=422,
-            detail="scope_type and scope_ref must both be provided or both be null",
-        )
-    if scope_type not in ALLOWED_SCOPES:
-        raise HTTPException(
-            status_code=422,
-            detail=f"scope_type must be one of {sorted(ALLOWED_SCOPES)}",
-        )
-
 
 async def list_annotations(
     session: AsyncSession,
@@ -81,7 +64,6 @@ async def create_annotation(
     user_id: uuid.UUID | None,
 ) -> ChartAnnotation:
     project_id = await get_project_id_by_slug(session, slug)
-    _validate_scope(scope_type, scope_ref)
 
     annotation = ChartAnnotation(
         project_id=project_id,

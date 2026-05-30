@@ -4,8 +4,49 @@ from datetime import UTC, datetime
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 from tripl.json_paths import normalize_json_value_paths
+from tripl.worker.utils.intervals import get_interval
 
 VALID_INTERVALS = ("15m", "1h", "6h", "1d", "1w")
+
+
+def check_scalar_columns_unreserved(
+    *,
+    metric_breakdown_columns: list[str],
+    distribution_drift_fields: list[str],
+    event_type_column: str | None,
+    time_column: str | None,
+) -> None:
+    """Reject selections that overlap reserved time/grouping columns.
+
+    Used by both ScanConfigCreate (full payload) and the scan service
+    update path (merged payload). Raises ValueError so pydantic surfaces it
+    as 422 directly; the service-layer catches it to convert to HTTPException.
+    """
+    reserved = {column for column in (event_type_column, time_column) if column}
+    if set(metric_breakdown_columns) & reserved:
+        raise ValueError(
+            "metric_breakdown_columns cannot include event_type_column or time_column"
+        )
+    if set(distribution_drift_fields) & reserved:
+        raise ValueError(
+            "distribution_drift_fields cannot include event_type_column or time_column"
+        )
+
+
+def check_replay_chunk_against_interval(
+    *,
+    interval: str | None,
+    replay_chunk_interval: str | None,
+) -> None:
+    """A replay chunk cannot be finer than the collection interval (you can't
+    split a window below one bucket). NULL chunk means "no split" and is allowed
+    regardless of interval."""
+    if replay_chunk_interval is None:
+        return
+    if interval is None:
+        raise ValueError("replay_chunk_interval requires a collection interval")
+    if get_interval(replay_chunk_interval).delta < get_interval(interval).delta:
+        raise ValueError("replay_chunk_interval must be greater than or equal to interval")
 
 
 class ScanConfigCreate(BaseModel):
@@ -48,6 +89,20 @@ class ScanConfigCreate(BaseModel):
             value,
             field_name="distribution_drift_fields",
         )
+
+    @model_validator(mode="after")
+    def validate_monitoring_selection(self) -> "ScanConfigCreate":
+        check_scalar_columns_unreserved(
+            metric_breakdown_columns=self.metric_breakdown_columns,
+            distribution_drift_fields=self.distribution_drift_fields,
+            event_type_column=self.event_type_column,
+            time_column=self.time_column,
+        )
+        check_replay_chunk_against_interval(
+            interval=self.interval,
+            replay_chunk_interval=self.replay_chunk_interval,
+        )
+        return self
 
 
 def _normalize_scalar_columns(value: list[str], *, field_name: str) -> list[str]:
