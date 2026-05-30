@@ -50,6 +50,7 @@ from tripl.models.alert_rule import AlertRule
 from tripl.models.alert_rule_state import AlertRuleState
 from tripl.models.project import Project
 from tripl.models.scan_config import ScanConfig
+from tripl.observability.metrics import alert_deliveries_total
 from tripl.worker.celery_app import celery_app
 from tripl.worker.db import SyncSessionLocal
 
@@ -735,6 +736,7 @@ def send_alert_delivery(self: object, delivery_id: str) -> dict[str, object]:
         delivery.status = AlertDeliveryStatus.sent.value
         delivery.sent_at = datetime.now(UTC)
         delivery.error_message = None
+        alert_deliveries_total.labels(status=AlertDeliveryStatus.sent.value).inc()
         for item in delivery.items:
             state = session.execute(
                 select(AlertRuleState).where(
@@ -768,6 +770,7 @@ def send_alert_delivery(self: object, delivery_id: str) -> dict[str, object]:
             delivery.status = AlertDeliveryStatus.failed.value
             delivery.error_message = str(exc)
             session.commit()
+        alert_deliveries_total.labels(status=AlertDeliveryStatus.failed.value).inc()
         return {"status": "failed", "delivery_id": delivery_id, "error": str(exc)}
     finally:
         session.close()

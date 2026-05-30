@@ -14,6 +14,7 @@ from tripl.models.data_source import DataSource
 from tripl.models.event_type import EventType
 from tripl.models.scan_config import ScanConfig
 from tripl.models.scan_job import ScanJob, ScanJobStatus
+from tripl.observability.metrics import scan_runs_total
 from tripl.worker.adapters.base import BaseAdapter, ColumnInfo
 from tripl.worker.adapters.registry import build_adapter
 from tripl.worker.analyzers.cardinality import analyze_cardinality, analyze_cardinality_grouped
@@ -136,6 +137,7 @@ def run_scan(self: object, scan_config_id: str, job_id: str) -> dict[str, object
             f"Scan completed: {result.events_created} events created, "
             f"{result.events_skipped} skipped, {result.variables_created} variables created"
         )
+        scan_runs_total.labels(status="completed").inc()
         return job.result_summary
 
     except Exception as e:
@@ -150,6 +152,7 @@ def run_scan(self: object, scan_config_id: str, job_id: str) -> dict[str, object
                 session.commit()
         except Exception:
             logger.exception("Failed to update job status after error")
+        scan_runs_total.labels(status="failed").inc()
         raise
     finally:
         if adapter is not None:

@@ -14,6 +14,7 @@ from tripl.models.metric_anomaly import MetricAnomaly
 from tripl.models.metric_breakdown_anomaly import MetricBreakdownAnomaly
 from tripl.models.project_anomaly_settings import ProjectAnomalySettings
 from tripl.models.scan_config import ScanConfig
+from tripl.observability.metrics import anomalies_detected_total
 from tripl.worker.analyzers.anomaly_detector import (
     SCOPE_EVENT,
     SCOPE_EVENT_TYPE,
@@ -153,6 +154,9 @@ def _replace_scope_anomalies(
                 direction=anomaly.direction,
             )
         )
+        anomalies_detected_total.labels(
+            scope=scope_type, direction=anomaly.direction
+        ).inc()
 
     return len(anomalies)
 
@@ -229,6 +233,9 @@ def _replace_scope_breakdown_anomalies(
     )
 
     for anomaly in anomalies:
+        anomalies_detected_total.labels(
+            scope=f"{scope_type}_breakdown", direction=anomaly.direction
+        ).inc()
         session.add(
             MetricBreakdownAnomaly(
                 id=uuid.uuid4(),
