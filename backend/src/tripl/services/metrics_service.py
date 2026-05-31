@@ -39,6 +39,7 @@ from tripl.schemas.event_metric import (
     TopMoverItem,
 )
 from tripl.services.monitoring_utils import classify_signal_state
+from tripl.services.project_lookup import get_project_by_slug
 from tripl.worker.analyzers.anomaly_detector import (
     SCOPE_EVENT,
     SCOPE_EVENT_TYPE,
@@ -51,11 +52,7 @@ from tripl.worker.utils.intervals import get_interval
 
 
 async def _resolve_project(session: AsyncSession, slug: str) -> Project:
-    result = await session.execute(select(Project).where(Project.slug == slug))
-    project = result.scalar_one_or_none()
-    if project is None:
-        raise HTTPException(404, f"Project '{slug}' not found")
-    return project
+    return await get_project_by_slug(session, slug, detail=f"Project '{slug}' not found")
 
 
 async def _resolve_event(

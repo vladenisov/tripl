@@ -60,6 +60,7 @@ from tripl.schemas.alerting import (
     AlertRuleUpdate,
     SimulatedRuleFiring,
 )
+from tripl.services.project_lookup import get_project_by_slug as _get_project
 
 SIMULATE_NOISY_THRESHOLD = 50
 SIMULATE_MAX_DAYS = 90
@@ -170,13 +171,6 @@ def _encrypt_secret(value: str | None) -> str | None:
     if value is None:
         return None
     return encrypt_value(value)
-
-
-async def _get_project(session: AsyncSession, slug: str) -> Project:
-    project = await session.scalar(select(Project).where(Project.slug == slug))
-    if project is None:
-        raise HTTPException(status_code=404, detail="Project not found")
-    return project
 
 
 def _destination_query(project_id: uuid.UUID) -> Select[tuple[AlertDestination]]:

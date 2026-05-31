@@ -12,7 +12,6 @@ from tripl.json_paths import (
     format_json_path_value,
 )
 from tripl.models.data_source import DataSource
-from tripl.models.project import Project
 from tripl.models.scan_config import ScanConfig
 from tripl.models.scan_job import ScanJob, ScanJobStatus
 from tripl.schemas.scan_config import (
@@ -27,17 +26,10 @@ from tripl.schemas.scan_config import (
     check_replay_chunk_against_interval,
     check_scalar_columns_unreserved,
 )
+from tripl.services.project_lookup import get_project_id_by_slug
 from tripl.worker.adapters.base import BaseAdapter, ColumnInfo
 from tripl.worker.adapters.registry import build_adapter
 from tripl.worker.analyzers.cardinality import _is_json_type
-
-
-async def _get_project_id(session: AsyncSession, slug: str) -> uuid.UUID:
-    result = await session.execute(select(Project.id).where(Project.slug == slug))
-    project_id = result.scalar_one_or_none()
-    if project_id is None:
-        raise HTTPException(status_code=404, detail="Project not found")
-    return project_id
 
 
 async def _verify_data_source(session: AsyncSession, ds_id: uuid.UUID) -> DataSource:
@@ -157,7 +149,7 @@ def _select_diverse_preview_rows(
 
 
 async def list_scan_configs(session: AsyncSession, slug: str) -> list[ScanConfig]:
-    project_id = await _get_project_id(session, slug)
+    project_id = await get_project_id_by_slug(session, slug)
     result = await session.execute(
         select(ScanConfig)
         .where(ScanConfig.project_id == project_id)
@@ -167,7 +159,7 @@ async def list_scan_configs(session: AsyncSession, slug: str) -> list[ScanConfig
 
 
 async def get_scan_config(session: AsyncSession, slug: str, scan_id: uuid.UUID) -> ScanConfig:
-    project_id = await _get_project_id(session, slug)
+    project_id = await get_project_id_by_slug(session, slug)
     result = await session.execute(
         select(ScanConfig).where(ScanConfig.id == scan_id, ScanConfig.project_id == project_id)
     )
@@ -180,7 +172,7 @@ async def get_scan_config(session: AsyncSession, slug: str, scan_id: uuid.UUID) 
 async def create_scan_config(
     session: AsyncSession, slug: str, data: ScanConfigCreate
 ) -> ScanConfig:
-    project_id = await _get_project_id(session, slug)
+    project_id = await get_project_id_by_slug(session, slug)
     await _verify_data_source(session, data.data_source_id)
 
     existing = await session.execute(
@@ -223,9 +215,7 @@ async def update_scan_config(
                 "distribution_drift_fields", config.distribution_drift_fields
             )
             or [],
-            event_type_column=update_dict.get(
-                "event_type_column", config.event_type_column
-            ),
+            event_type_column=update_dict.get("event_type_column", config.event_type_column),
             time_column=update_dict.get("time_column", config.time_column),
         )
         check_replay_chunk_against_interval(
@@ -249,7 +239,7 @@ async def preview_scan_config(
     slug: str,
     data: ScanConfigPreviewRequest,
 ) -> ScanConfigPreviewResponse:
-    await _get_project_id(session, slug)
+    await get_project_id_by_slug(session, slug)
     ds = await _verify_data_source(session, data.data_source_id)
 
     adapter: BaseAdapter | None = None
