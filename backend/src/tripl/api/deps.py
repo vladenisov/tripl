@@ -10,12 +10,45 @@ from tripl.database import get_session
 from tripl.models.plan_branch import PlanBranch
 from tripl.models.project import Project
 from tripl.models.user import User
+from tripl.services import api_key_service
 from tripl.services.auth_service import get_user_by_session_token
 
 SessionDep = Annotated[AsyncSession, Depends(get_session)]
 
 
+async def _resolve_api_key_user(
+    request: Request, session: AsyncSession
+) -> User | None:
+    """Resolve ``Authorization: Bearer <token>`` to a User.
+
+    Returns ``None`` when no Bearer header is present (caller falls back to
+    cookie auth). Raises 401 on a malformed / revoked / expired token so we
+    don't silently downgrade an explicit-but-bad token to anonymous.
+    """
+    auth = request.headers.get("Authorization", "")
+    if not auth.startswith("Bearer "):
+        return None
+    raw_token = auth.removeprefix("Bearer ").strip()
+    if not raw_token:
+        return None
+    api_key = await api_key_service.verify_and_touch(session, raw_token)
+    if api_key is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid or expired API key",
+        )
+    # Stash on request.state so role/scope checks downstream can tell whether
+    # the caller is a session user or an API-key client.
+    request.state.api_key_scope = api_key.scope
+    return await session.get(User, api_key.user_id)
+
+
 async def get_current_user(request: Request, session: SessionDep) -> User:
+    # Bearer first — agents shouldn't need to send cookies.
+    api_user = await _resolve_api_key_user(request, session)
+    if api_user is not None:
+        return api_user
+
     session_token = request.cookies.get(settings.session_cookie_name)
     if session_token is None:
         raise HTTPException(
@@ -54,12 +87,28 @@ def require_owner(user: User) -> None:
         )
 
 
-async def get_editor_user(user: CurrentUserDep) -> User:
+def require_write_scope(request: Request) -> None:
+    """API keys carry a scope; ``read`` keys are blocked from mutation endpoints.
+
+    Session-authenticated users have no scope tag on request.state and so
+    bypass this check — their role is the only gate.
+    """
+    scope = getattr(request.state, "api_key_scope", None)
+    if scope == "read":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="API key has read-only scope",
+        )
+
+
+async def get_editor_user(request: Request, user: CurrentUserDep) -> User:
+    require_write_scope(request)
     require_editor(user)
     return user
 
 
-async def get_owner_user(user: CurrentUserDep) -> User:
+async def get_owner_user(request: Request, user: CurrentUserDep) -> User:
+    require_write_scope(request)
     require_owner(user)
     return user
 

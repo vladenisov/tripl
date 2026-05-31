@@ -3,6 +3,7 @@ from fastapi import APIRouter, Depends
 from tripl.api.deps import get_current_user
 from tripl.api.v1.activity import router as activity_router
 from tripl.api.v1.alerting import router as alerting_router
+from tripl.api.v1.api_keys import router as api_keys_router
 from tripl.api.v1.audit import router as audit_router
 from tripl.api.v1.auth import router as auth_router
 from tripl.api.v1.chart_annotations import router as chart_annotations_router
@@ -47,3 +48,4 @@ router.include_router(plan_branches_router, dependencies=protected_dependencies)
 router.include_router(plan_revisions_router, dependencies=protected_dependencies)
 router.include_router(audit_router, dependencies=protected_dependencies)
 router.include_router(users_router, dependencies=protected_dependencies)
+router.include_router(api_keys_router, dependencies=protected_dependencies)

@@ -13,6 +13,7 @@ import {
   Eye,
   Folder,
   Grid3x3,
+  Key,
   LayoutDashboard,
   LogOut,
   Search,
@@ -125,6 +126,13 @@ export function AppSidebar() {
       to: '/users',
       icon: Users,
       match: (path) => path.startsWith('/users'),
+    },
+    {
+      id: 'account',
+      label: 'Account',
+      to: '/account',
+      icon: Key,
+      match: (path) => path.startsWith('/account'),
     },
   ]
 

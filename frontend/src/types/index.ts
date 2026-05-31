@@ -74,6 +74,23 @@ export interface UserListItem {
   created_at: string
 }
 
+export type ApiKeyScope = 'read' | 'write'
+
+export interface ApiKey {
+  id: string
+  name: string
+  key_prefix: string
+  scope: ApiKeyScope
+  expires_at: string | null
+  revoked_at: string | null
+  last_used_at: string | null
+  created_at: string
+}
+
+export interface ApiKeyWithToken extends ApiKey {
+  token: string
+}
+
 export interface EventTypeOwner {
   id: string
   event_type_id: string

@@ -56,6 +56,7 @@ Analytics tracking-plan, monitoring, and alerting service.
 ### Access & governance
 
 - Session-based authentication (HTTP-only cookie), email validated via `email-validator` (RFC 5321 / 6531).
+- **User-issued API keys** (Bearer tokens) for LLM agents and CLI scripts: `read` (GET only) or `write` (full editor) scope, optional `expires_in_days`, revocable from the Account page. Send as `Authorization: Bearer tk_…`; only the sha-256 hash is stored.
 - **RBAC**: owner / editor / viewer roles.
 - Audit log UI with filters (action, user, target type, email).
 
