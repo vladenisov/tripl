@@ -14,6 +14,7 @@ const MonitoringDetailPage = lazy(() => import('./pages/MonitoringDetailPage'))
 const ProjectSettingsPage = lazy(() => import('./pages/ProjectSettingsPage'))
 const DataSourcesPage = lazy(() => import('./pages/DataSourcesPage'))
 const UsersPage = lazy(() => import('./pages/UsersPage'))
+const AccountPage = lazy(() => import('./pages/AccountPage'))
 
 function RouteFallback() {
   return (
@@ -110,6 +111,7 @@ export default function App() {
             <Route path="/" element={withSuspense(<MainPage />)} />
             <Route path="/data-sources" element={withSuspense(<DataSourcesPage />)} />
               <Route path="/users" element={withSuspense(<UsersPage />)} />
+            <Route path="/account" element={withSuspense(<AccountPage />)} />
             <Route path="/data-sources/:dsId" element={withSuspense(<DataSourcesPage />)} />
             <Route path="/p/:slug/monitoring" element={<ProjectSettingsRedirect tab="monitoring" />} />
             <Route path="/p/:slug/alerting" element={<ProjectSettingsRedirect tab="alerting" />} />
