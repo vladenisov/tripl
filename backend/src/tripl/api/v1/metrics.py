@@ -17,7 +17,7 @@ from tripl.schemas.event_metric import (
     SeasonalityHeatmapResponse,
     TopMoverItem,
 )
-from tripl.services import metrics_service
+from tripl.services import metrics_insights_service, metrics_service
 
 router = APIRouter(tags=["metrics"])
 
@@ -158,7 +158,7 @@ async def get_active_signals(
     """Cacheable no-args variant. For filtering by a large event-id list
     (>>a few), prefer ``POST /anomalies/signals/query`` — GET's query-string
     overflow is real once you cross ~50 ids (proxy/browser limits)."""
-    return await metrics_service.get_active_signals(session, slug, event_ids=event_ids)
+    return await metrics_insights_service.get_active_signals(session, slug, event_ids=event_ids)
 
 
 @router.post(
@@ -170,7 +170,9 @@ async def query_active_signals(
     slug: str,
     data: ActiveSignalsQuery,
 ) -> list[MetricSignalResponse]:
-    return await metrics_service.get_active_signals(session, slug, event_ids=data.event_ids or None)
+    return await metrics_insights_service.get_active_signals(
+        session, slug, event_ids=data.event_ids or None
+    )
 
 
 @router.get(
@@ -187,7 +189,7 @@ async def get_top_movers(
     limit: int = 10,
 ) -> list[TopMoverItem]:
     """Top-N breakdown rows that "moved" a given anomaly bucket, |z| desc."""
-    return await metrics_service.get_top_movers(
+    return await metrics_insights_service.get_top_movers(
         session,
         slug,
         scan_config_id=scan_config_id,
@@ -212,7 +214,7 @@ async def get_seasonality_heatmap(
     time_to: TimeTo = None,
 ) -> SeasonalityHeatmapResponse:
     """7×24 hour-of-day × weekday heatmap of volume and anomaly density."""
-    return await metrics_service.get_seasonality_heatmap(
+    return await metrics_insights_service.get_seasonality_heatmap(
         session,
         slug,
         scan_config_id=scan_config_id,
@@ -240,7 +242,7 @@ async def get_breakdown_timeline(
     time_to: TimeTo = None,
 ) -> BreakdownTimelineResponse:
     """Per-bucket count timeline for one breakdown_value (drill-down)."""
-    return await metrics_service.get_breakdown_timeline(
+    return await metrics_insights_service.get_breakdown_timeline(
         session,
         slug,
         scan_config_id=scan_config_id,
@@ -267,7 +269,7 @@ async def get_distribution_drifts(
     time_from: TimeFrom = None,
     time_to: TimeTo = None,
 ) -> DistributionDriftsResponse:
-    return await metrics_service.get_distribution_drifts(
+    return await metrics_insights_service.get_distribution_drifts(
         session,
         slug,
         scope_type=scope_type,

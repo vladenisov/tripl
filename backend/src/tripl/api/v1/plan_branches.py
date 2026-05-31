@@ -18,7 +18,12 @@ from tripl.schemas.plan_branch import (
     ResolutionCreate,
     ResolutionResponse,
 )
-from tripl.services import audit_service, plan_branch_service
+from tripl.services import (
+    audit_service,
+    plan_branch_conflicts,
+    plan_branch_merge_service,
+    plan_branch_service,
+)
 
 router = APIRouter(prefix="/projects/{slug}/branches", tags=["plan-branches"])
 
@@ -100,9 +105,7 @@ async def transition_branch(
     return detail
 
 
-@router.post(
-    "/{branch_id}/reviewers", response_model=BranchReviewerResponse, status_code=201
-)
+@router.post("/{branch_id}/reviewers", response_model=BranchReviewerResponse, status_code=201)
 async def add_reviewer(
     session: SessionDep,
     current_user: EditorUserDep,
@@ -152,9 +155,7 @@ async def list_comments(
     return await plan_branch_service.list_comments(session, slug, branch_id)
 
 
-@router.post(
-    "/{branch_id}/comments", response_model=BranchCommentResponse, status_code=201
-)
+@router.post("/{branch_id}/comments", response_model=BranchCommentResponse, status_code=201)
 async def create_comment(
     session: SessionDep,
     current_user: EditorUserDep,
@@ -179,9 +180,7 @@ async def delete_comment(
 
 
 @router.get("/{branch_id}/diff", response_model=PlanBranchDiff)
-async def diff_branch(
-    session: SessionDep, slug: str, branch_id: uuid.UUID
-) -> PlanBranchDiff:
+async def diff_branch(session: SessionDep, slug: str, branch_id: uuid.UUID) -> PlanBranchDiff:
     return await plan_branch_service.diff_branch(session, slug, branch_id)
 
 
@@ -189,12 +188,10 @@ async def diff_branch(
 async def get_branch_conflicts(
     session: SessionDep, slug: str, branch_id: uuid.UUID
 ) -> BranchConflictsResponse:
-    return await plan_branch_service.get_branch_conflicts(session, slug, branch_id)
+    return await plan_branch_conflicts.get_branch_conflicts(session, slug, branch_id)
 
 
-@router.post(
-    "/{branch_id}/resolutions", response_model=ResolutionResponse, status_code=201
-)
+@router.post("/{branch_id}/resolutions", response_model=ResolutionResponse, status_code=201)
 async def save_branch_resolution(
     session: SessionDep,
     current_user: EditorUserDep,
@@ -202,7 +199,7 @@ async def save_branch_resolution(
     branch_id: uuid.UUID,
     data: ResolutionCreate,
 ) -> ResolutionResponse:
-    return await plan_branch_service.save_resolution(
+    return await plan_branch_conflicts.save_resolution(
         session, slug, branch_id, data, user_id=current_user.id
     )
 
@@ -215,7 +212,7 @@ async def delete_branch_resolution(
     branch_id: uuid.UUID,
     resolution_id: uuid.UUID,
 ) -> None:
-    await plan_branch_service.delete_resolution(session, slug, branch_id, resolution_id)
+    await plan_branch_conflicts.delete_resolution(session, slug, branch_id, resolution_id)
 
 
 @router.post("/{branch_id}/merge", response_model=PlanBranchDetailResponse)
@@ -225,7 +222,7 @@ async def merge_branch(
     slug: str,
     branch_id: uuid.UUID,
 ) -> PlanBranchDetailResponse:
-    detail = await plan_branch_service.merge_branch(
+    detail = await plan_branch_merge_service.merge_branch(
         session, slug, branch_id, user_id=current_user.id
     )
     await audit_service.record(
