@@ -33,6 +33,7 @@ from tripl.schemas.plan_revision import (
     PlanRevisionList,
     PlanRevisionSummary,
 )
+from tripl.services.project_lookup import get_project_by_slug
 
 PLAN_REVISIONS_DEFAULT_LIMIT = 50
 
@@ -67,10 +68,7 @@ _RELATION_CHANGE_KEYS = ("relation_type", "description")
 
 
 async def _resolve_project(session: AsyncSession, slug: str) -> Project:
-    project = await session.scalar(select(Project).where(Project.slug == slug))
-    if project is None:
-        raise HTTPException(status_code=404, detail=f"Project '{slug}' not found")
-    return project
+    return await get_project_by_slug(session, slug, detail=f"Project '{slug}' not found")
 
 
 async def build_plan_snapshot(

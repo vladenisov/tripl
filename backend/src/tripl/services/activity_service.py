@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from fastapi import HTTPException
 from sqlalchemy import desc, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -16,6 +15,7 @@ from tripl.models.project import Project
 from tripl.models.scan_config import ScanConfig
 from tripl.models.scan_job import ScanJob
 from tripl.schemas.activity import ActivityItemResponse
+from tripl.services.project_lookup import get_project_id_by_slug
 from tripl.worker.analyzers.anomaly_detector import (
     SCOPE_EVENT,
     SCOPE_EVENT_TYPE,
@@ -30,9 +30,7 @@ async def list_activity(
     limit: int = 20,
 ) -> list[ActivityItemResponse]:
     if slug is not None:
-        project_exists = await session.scalar(select(Project.id).where(Project.slug == slug))
-        if project_exists is None:
-            raise HTTPException(status_code=404, detail="Project not found")
+        await get_project_id_by_slug(session, slug)
 
     items: list[ActivityItemResponse] = []
     items.extend(await _anomaly_items(session, slug=slug, limit=limit))

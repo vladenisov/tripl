@@ -24,6 +24,12 @@ from tripl.schemas.project import (
 )
 from tripl.services import plan_branch_service
 from tripl.services.monitoring_utils import classify_signal_state
+from tripl.services.project_lookup import (
+    get_project_by_slug as _lookup_project_by_slug,
+)
+from tripl.services.project_lookup import (
+    get_project_id_by_slug as _lookup_project_id_by_slug,
+)
 from tripl.worker.analyzers.anomaly_detector import (
     SCOPE_EVENT,
     SCOPE_EVENT_TYPE,
@@ -405,11 +411,7 @@ async def list_projects(session: AsyncSession) -> list[ProjectResponse]:
 
 
 async def get_project_by_slug(session: AsyncSession, slug: str) -> Project:
-    result = await session.execute(select(Project).where(Project.slug == slug))
-    project = result.scalar_one_or_none()
-    if not project:
-        raise HTTPException(status_code=404, detail="Project not found")
-    return project
+    return await _lookup_project_by_slug(session, slug)
 
 
 async def get_project(session: AsyncSession, slug: str) -> ProjectResponse:
@@ -459,5 +461,4 @@ async def delete_project(session: AsyncSession, slug: str) -> None:
 
 
 async def get_project_id_by_slug(session: AsyncSession, slug: str) -> uuid.UUID:
-    project = await get_project_by_slug(session, slug)
-    return project.id
+    return await _lookup_project_id_by_slug(session, slug)

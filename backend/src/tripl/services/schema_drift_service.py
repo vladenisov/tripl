@@ -14,9 +14,9 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from tripl.models.event_type import EventType
-from tripl.models.project import Project
 from tripl.models.schema_drift import SchemaDrift
 from tripl.schemas.schema_drift import SchemaDriftListResponse, SchemaDriftResponse
+from tripl.services.project_lookup import get_project_id_by_slug
 
 # Drift rows older than this are filtered out at read time. The writer
 # upserts on (event_type_id, field_name, drift_type) so a drift that
@@ -29,19 +29,12 @@ def _retention_cutoff(now: datetime | None = None) -> datetime:
     return now - timedelta(days=DRIFT_RETENTION_DAYS)
 
 
-async def _resolve_project_id(session: AsyncSession, slug: str) -> uuid.UUID:
-    project_id = await session.scalar(select(Project.id).where(Project.slug == slug))
-    if project_id is None:
-        raise HTTPException(status_code=404, detail=f"Project '{slug}' not found")
-    return project_id
-
-
 async def list_drifts_for_event_type(
     session: AsyncSession,
     slug: str,
     event_type_id: uuid.UUID,
 ) -> SchemaDriftListResponse:
-    project_id = await _resolve_project_id(session, slug)
+    project_id = await get_project_id_by_slug(session, slug, detail=f"Project '{slug}' not found")
 
     event_type = await session.get(EventType, event_type_id)
     if event_type is None or event_type.project_id != project_id:
