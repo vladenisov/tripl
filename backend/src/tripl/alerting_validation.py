@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Callable
 from urllib.parse import urlparse
 
 from email_validator import EmailNotValidError, validate_email
@@ -119,7 +120,7 @@ def _validate_single_line(
 def _parse_csv_unique(
     value: str | None,
     *,
-    item_validator,
+    item_validator: Callable[[str], str],
     limit: int,
     limit_msg: str,
 ) -> list[str]:

@@ -62,5 +62,5 @@ exclude = ["src/tripl/tests/"]
 plugins = ["pydantic.mypy"]
 
 [[tool.mypy.overrides]]
-module = ["celery.*", "statsmodels.*", "google.cloud.*"]
+module = ["celery.*", "statsmodels.*", "google.cloud.*", "opentelemetry.*"]
 ignore_missing_imports = true

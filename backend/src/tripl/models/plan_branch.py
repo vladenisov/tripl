@@ -3,9 +3,9 @@ from __future__ import annotations
 import enum
 import uuid
 from datetime import datetime
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
-from sqlalchemy import DateTime, ForeignKey, Index, String, Text, UniqueConstraint, select
+from sqlalchemy import DateTime, ForeignKey, Index, String, Text, UniqueConstraint, insert, select
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from tripl.models.base import Base, TimestampMixin, UUIDMixin
@@ -93,7 +93,7 @@ def default_branch_id(context: ExecutionContext) -> uuid.UUID | None:
     project_id = params.get("project_id")
     if project_id is None:
         return None
-    conn = context.connection  # type: ignore[attr-defined]
+    conn = context.connection
     table = PlanBranch.__table__
     existing = conn.execute(
         select(table.c.id).where(
@@ -102,10 +102,10 @@ def default_branch_id(context: ExecutionContext) -> uuid.UUID | None:
         )
     ).first()
     if existing is not None:
-        return existing[0]
+        return cast(uuid.UUID, existing[0])
     new_id = uuid.uuid4()
     conn.execute(
-        table.insert().values(
+        insert(PlanBranch).values(
             id=new_id,
             project_id=project_id,
             name="main",

@@ -9,6 +9,7 @@ the ``(project_id, branch_id, name)`` unique constraints are enforced on the liv
 from __future__ import annotations
 
 import uuid
+from typing import Any
 
 from fastapi import HTTPException
 from sqlalchemy import delete, func, select
@@ -139,10 +140,10 @@ async def _resolve_project(session: AsyncSession, slug: str) -> Project:
 
 async def _load_for_branch(
     session: AsyncSession,
-    model: type,
+    model: Any,
     project_id: uuid.UUID,
     branch_id: uuid.UUID,
-) -> list:
+) -> list[Any]:
     """SELECT all rows of ``model`` for ``(project_id, branch_id)`` as a list.
 
     Compact form of the ``select(...).where(project_id, branch_id)`` pattern
@@ -228,7 +229,7 @@ async def _to_detail(session: AsyncSession, branch: PlanBranch) -> PlanBranchDet
     return PlanBranchDetailResponse(
         **base.model_dump(),
         reviewers=[BranchReviewerResponse.model_validate(r) for r in reviewers],
-        approvals=[{"user_id": a.user_id, "approved_at": a.approved_at} for a in approvals],  # type: ignore[list-item]
+        approvals=[{"user_id": a.user_id, "approved_at": a.approved_at} for a in approvals],
     )
 
 
@@ -702,7 +703,7 @@ async def delete_comment(
     await session.commit()
 
 
-def _summary_counts(entries: list) -> dict[str, int]:
+def _summary_counts(entries: list[Any]) -> dict[str, int]:
     out = {"added": 0, "removed": 0, "changed": 0}
     for entry in entries:
         out[entry.kind] += 1
