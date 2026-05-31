@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import uuid
+from collections.abc import Callable
+from typing import Any
 
 from fastapi import HTTPException
 from sqlalchemy import select
@@ -58,26 +60,34 @@ _MF_CHANGE_KEYS = (
 _REL_CHANGE_KEYS = ("relation_type", "description")
 
 
-def _flatten_fields(payload: dict) -> list[dict]:
-    out: list[dict] = []
+def _flatten_fields(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
     for et in payload.get("event_types", []):
         for fd in et.get("field_definitions", []):
             out.append({**fd, "_et": et["name"]})
     return out
 
 
-def _entity_changed(base_item, new_item, fields) -> bool:
+def _entity_changed(
+    base_item: dict[str, Any] | None,
+    new_item: dict[str, Any] | None,
+    fields: tuple[str, ...] | list[str],
+) -> bool:
     if (base_item is None) != (new_item is None):
         return True
-    if base_item is None:
+    if base_item is None or new_item is None:
         return False
     return any(base_item.get(f) != new_item.get(f) for f in fields)
 
 
-def _entities_equal(a, b, fields) -> bool:
+def _entities_equal(
+    a: dict[str, Any] | None,
+    b: dict[str, Any] | None,
+    fields: tuple[str, ...] | list[str],
+) -> bool:
     if (a is None) != (b is None):
         return False
-    if a is None:
+    if a is None or b is None:
         return True
     return all(a.get(f) == b.get(f) for f in fields)
 
@@ -85,18 +95,18 @@ def _entities_equal(a, b, fields) -> bool:
 def _conflict_set(
     *,
     entity_type: str,
-    base_items: list[dict],
-    ours_items: list[dict],
-    theirs_items: list[dict],
-    key_fn,
-    name_fn,
-    change_keys,
-) -> list[dict]:
+    base_items: list[dict[str, Any]],
+    ours_items: list[dict[str, Any]],
+    theirs_items: list[dict[str, Any]],
+    key_fn: Callable[[dict[str, Any]], Any],
+    name_fn: Callable[[dict[str, Any]], str],
+    change_keys: tuple[str, ...] | list[str],
+) -> list[dict[str, Any]]:
     base_by = {key_fn(item): item for item in base_items}
     ours_by = {key_fn(item): item for item in ours_items}
     theirs_by = {key_fn(item): item for item in theirs_items}
 
-    conflicts: list[dict] = []
+    conflicts: list[dict[str, Any]] = []
     for key in set(ours_by) | set(theirs_by) | set(base_by):
         b = base_by.get(key)
         o = ours_by.get(key)
@@ -109,7 +119,9 @@ def _conflict_set(
     return conflicts
 
 
-def _event_type_add_remove_conflicts(base: dict, ours: dict, theirs: dict) -> list[dict]:
+def _event_type_add_remove_conflicts(
+    base: dict[str, Any], ours: dict[str, Any], theirs: dict[str, Any]
+) -> list[dict[str, Any]]:
     """add/remove-class conflicts on event_type — modify-vs-modify is handled
     at field level via _field_conflicts_event_type. Conflict only if BOTH
     sides made a divergent change (one-sided edits auto-merge)."""
@@ -117,7 +129,7 @@ def _event_type_add_remove_conflicts(base: dict, ours: dict, theirs: dict) -> li
     ours_by = {e["name"]: e for e in ours.get("event_types", [])}
     theirs_by = {e["name"]: e for e in theirs.get("event_types", [])}
 
-    conflicts: list[dict] = []
+    conflicts: list[dict[str, Any]] = []
     for name in set(base_by) | set(ours_by) | set(theirs_by):
         b = base_by.get(name)
         o = ours_by.get(name)
@@ -132,8 +144,10 @@ def _event_type_add_remove_conflicts(base: dict, ours: dict, theirs: dict) -> li
     return conflicts
 
 
-def _detect_merge_conflicts(base: dict, ours: dict, theirs: dict) -> list[dict]:
-    conflicts: list[dict] = []
+def _detect_merge_conflicts(
+    base: dict[str, Any], ours: dict[str, Any], theirs: dict[str, Any]
+) -> list[dict[str, Any]]:
+    conflicts: list[dict[str, Any]] = []
     conflicts.extend(_event_type_add_remove_conflicts(base, ours, theirs))
     conflicts.extend(
         _conflict_set(
@@ -204,7 +218,9 @@ def _detect_merge_conflicts(base: dict, ours: dict, theirs: dict) -> list[dict]:
 # --- inline 3-way field conflicts (v1 covers event_type metadata only) -------
 
 
-def _field_conflicts_event_type(base: dict, ours: dict, theirs: dict) -> list[dict]:
+def _field_conflicts_event_type(
+    base: dict[str, Any], ours: dict[str, Any], theirs: dict[str, Any]
+) -> list[dict[str, Any]]:
     """Per-field conflicts on event_type metadata.
 
     Returns one dict per (entity_name, field) where main and the branch both
@@ -215,7 +231,7 @@ def _field_conflicts_event_type(base: dict, ours: dict, theirs: dict) -> list[di
     ours_by = {e["name"]: e for e in ours.get("event_types", [])}
     theirs_by = {e["name"]: e for e in theirs.get("event_types", [])}
 
-    rows: list[dict] = []
+    rows: list[dict[str, Any]] = []
     for name in set(base_by) | set(ours_by) | set(theirs_by):
         b = base_by.get(name)
         o = ours_by.get(name)
@@ -267,7 +283,7 @@ async def get_branch_conflicts(
     _reject_main(branch)
 
     main_branch_id = await ensure_main_branch_id(session, project.id)
-    base_payload: dict = {}
+    base_payload: dict[str, Any] = {}
     if branch.base_revision_id is not None:
         base_rev = await session.get(PlanRevision, branch.base_revision_id)
         if base_rev is not None:

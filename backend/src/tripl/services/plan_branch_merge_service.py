@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import UTC, datetime
+from typing import Any
 
 from fastapi import HTTPException
 from sqlalchemy import delete, select
@@ -49,7 +50,7 @@ async def _apply_merge(
     branch_id: uuid.UUID,
     *,
     resolutions: dict[tuple[str, str, str], str] | None = None,
-    base_payload: dict | None = None,
+    base_payload: dict[str, Any] | None = None,
 ) -> None:
     """Apply the branch's plan onto main with upsert-by-natural-key.
 
@@ -64,7 +65,7 @@ async def _apply_merge(
     (branch wins) when no resolution is supplied.
     """
     resolutions = resolutions or {}
-    base_et_by_name: dict[str, dict] = {
+    base_et_by_name: dict[str, dict[str, Any]] = {
         e["name"]: e for e in (base_payload or {}).get("event_types", [])
     }
     # --- event_types
@@ -401,9 +402,9 @@ async def _apply_merge(
     )
     main_event_key_to_id: dict[tuple[str, str], uuid.UUID] = {}
     for e in main_events_after:
-        et_name = main_et_id_to_name.get(e.event_type_id)
-        if et_name is not None:
-            main_event_key_to_id[(et_name, e.name)] = e.id
+        main_et_name = main_et_id_to_name.get(e.event_type_id)
+        if main_et_name is not None:
+            main_event_key_to_id[(main_et_name, e.name)] = e.id
 
     for key, b_ev in branch_event_by_key.items():
         main_ev_id = main_event_key_to_id.get(key)
@@ -509,7 +510,9 @@ async def _apply_merge(
         )
 
 
-def _touched_event_type_names(base_payload: dict, branch_payload: dict) -> set[str]:
+def _touched_event_type_names(
+    base_payload: dict[str, Any], branch_payload: dict[str, Any]
+) -> set[str]:
     """Event-type names whose metadata differs between base and branch.
 
     Used to decide which event types' owners must approve the merge. Picks up
@@ -534,8 +537,8 @@ async def _check_owner_approvals(
     project_id: uuid.UUID,
     main_branch_id: uuid.UUID,
     branch_id: uuid.UUID,
-    base_payload: dict,
-    branch_payload: dict,
+    base_payload: dict[str, Any],
+    branch_payload: dict[str, Any],
 ) -> None:
     """Block the merge when an owned event type is touched without an owner's
     approval. Owners attach to live main rows only, so unowned event types
@@ -571,7 +574,7 @@ async def _check_owner_approvals(
     )
     approver_ids = {row[0] for row in approvals.all()}
 
-    missing: list[dict] = []
+    missing: list[dict[str, Any]] = []
     for name, et_id in main_name_to_id.items():
         owners_set = owners_by_et.get(et_id)
         if not owners_set:
@@ -605,7 +608,7 @@ async def merge_branch(
         raise HTTPException(status_code=409, detail="Branch must be approved before merging")
 
     main_branch_id = await ensure_main_branch_id(session, project.id)
-    base_payload: dict = {}
+    base_payload: dict[str, Any] = {}
     if branch.base_revision_id is not None:
         base_rev = await session.get(PlanRevision, branch.base_revision_id)
         if base_rev is not None:
@@ -626,7 +629,7 @@ async def merge_branch(
     resolution_map: dict[tuple[str, str, str], str] = {}
     if field_conflicts:
         resolutions = await _load_resolutions(session, branch.id)
-        unresolved: list[dict] = []
+        unresolved: list[dict[str, Any]] = []
         for fc in field_conflicts:
             key = (fc["entity_type"], fc["name"], fc["field"])
             res = resolutions.get(key)

@@ -15,7 +15,7 @@ Spans are emitted from:
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from tripl.config import settings
 
@@ -29,7 +29,7 @@ def _tracing_enabled() -> bool:
     return bool(settings.otel_exporter_otlp_endpoint)
 
 
-def _build_tracer_provider():  # pragma: no cover — exercised at runtime only
+def _build_tracer_provider() -> Any:  # pragma: no cover — exercised at runtime only
     """Construct the global TracerProvider with the OTLP exporter.
 
     Imports happen inside the function so app boot doesn't pay for them when
