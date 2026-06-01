@@ -73,6 +73,7 @@ async def create_key(
     expires_at = (
         datetime.now(UTC) + timedelta(days=expires_in_days) if expires_in_days is not None else None
     )
+    created_at = datetime.now(UTC)
     row = ApiKey(
         user_id=user_id,
         project_id=project_id,
@@ -81,6 +82,8 @@ async def create_key(
         key_hash=_hash_token(raw),
         scope=scope,
         expires_at=expires_at,
+        created_at=created_at,
+        updated_at=created_at,
     )
     session.add(row)
     await session.commit()
