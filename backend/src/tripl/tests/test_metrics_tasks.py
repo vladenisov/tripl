@@ -19,6 +19,7 @@ from tripl.models.event import Event
 from tripl.models.event_metric import EventMetric
 from tripl.models.event_metric_breakdown import EventMetricBreakdown
 from tripl.models.event_type import EventType
+from tripl.models.field_definition import FieldDefinition
 from tripl.models.metric_anomaly import MetricAnomaly
 from tripl.models.metric_breakdown_anomaly import MetricBreakdownAnomaly
 from tripl.models.project import Project
@@ -1801,6 +1802,17 @@ def test_collect_metrics_splits_replay_into_interval_chunks(
         assert config.event_type_id is not None
         # 1h chunk over a 1h interval → exactly one bucket per warehouse query.
         config.replay_chunk_interval = "1h"
+        session.add(
+            FieldDefinition(
+                id=uuid.uuid4(),
+                event_type_id=config.event_type_id,
+                name="event_name",
+                display_name="Event name",
+                field_type="string",
+                is_required=False,
+                description="",
+            )
+        )
         login_event = Event(
             id=uuid.uuid4(),
             project_id=config.project_id,
@@ -1867,19 +1879,16 @@ def test_collect_metrics_splits_replay_into_interval_chunks(
         "_resolve_collection_window",
         lambda *args, **kwargs: (datetime(2026, 1, 1, 8), datetime(2026, 1, 1, 11), True),
     )
-    monkeypatch.setattr(metrics, "analyze_cardinality", lambda *args, **kwargs: object())
-
-    def fake_generate_events(*args: object, **kwargs: object) -> GenerationResult:
-        with sync_session_factory() as session:
-            persisted_event = session.get(Event, login_event_id)
-            assert persisted_event is not None
-            return GenerationResult(
-                columns_analyzed=1,
-                col_meta={"event_name": {"is_json": False, "is_low": True}},
-                events_by_name={"event_name=Login": persisted_event},
-            )
-
-    monkeypatch.setattr(metrics, "generate_events", fake_generate_events)
+    monkeypatch.setattr(
+        metrics,
+        "analyze_cardinality",
+        lambda *args, **kwargs: pytest.fail("replay must not run cardinality analysis"),
+    )
+    monkeypatch.setattr(
+        metrics,
+        "generate_events",
+        lambda *args, **kwargs: pytest.fail("replay must not sync catalog events"),
+    )
 
     result = metrics.collect_metrics.run(config_id)
 
@@ -1890,6 +1899,7 @@ def test_collect_metrics_splits_replay_into_interval_chunks(
         (datetime(2026, 1, 1, 10), datetime(2026, 1, 1, 11)),
     ]
     assert result["mode"] == "metrics_replay"
+    assert result["catalog_sync_skipped"] is True
     assert result["event_metrics"] == 3
     assert result["type_metrics"] == 3
 
