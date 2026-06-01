@@ -24,13 +24,9 @@ class ChartAnnotationCreate(BaseModel):
         if self.scope_type is None and self.scope_ref is None:
             return self
         if self.scope_type is None or self.scope_ref is None:
-            raise ValueError(
-                "scope_type and scope_ref must both be provided or both be null"
-            )
+            raise ValueError("scope_type and scope_ref must both be provided or both be null")
         if self.scope_type not in ALLOWED_SCOPES:
-            raise ValueError(
-                f"scope_type must be one of {sorted(ALLOWED_SCOPES)}"
-            )
+            raise ValueError(f"scope_type must be one of {sorted(ALLOWED_SCOPES)}")
         return self
 
 

@@ -97,9 +97,7 @@ async def test_delete_annotation_removes_it(client: AsyncClient) -> None:
     )
     annotation_id = create.json()["id"]
 
-    deleted = await client.delete(
-        f"/api/v1/projects/{slug}/annotations/{annotation_id}"
-    )
+    deleted = await client.delete(f"/api/v1/projects/{slug}/annotations/{annotation_id}")
     assert deleted.status_code == 204
 
     listed = await client.get(f"/api/v1/projects/{slug}/annotations")

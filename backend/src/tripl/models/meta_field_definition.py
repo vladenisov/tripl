@@ -17,9 +17,7 @@ if TYPE_CHECKING:
 class MetaFieldDefinition(UUIDMixin, Base):
     __tablename__ = "meta_field_definitions"
     __table_args__ = (
-        UniqueConstraint(
-            "project_id", "branch_id", "name", name="uq_meta_field_def_project_name"
-        ),
+        UniqueConstraint("project_id", "branch_id", "name", name="uq_meta_field_def_project_name"),
     )
 
     project_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"))

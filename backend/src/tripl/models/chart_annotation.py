@@ -19,9 +19,7 @@ class ChartAnnotation(UUIDMixin, TimestampMixin, Base):
 
     __tablename__ = "chart_annotations"
 
-    project_id: Mapped[uuid.UUID] = mapped_column(
-        ForeignKey("projects.id", ondelete="CASCADE")
-    )
+    project_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"))
     scope_type: Mapped[str | None] = mapped_column(String(30), nullable=True)
     scope_ref: Mapped[str | None] = mapped_column(String(120), nullable=True)
     bucket: Mapped[datetime] = mapped_column(DateTime(timezone=True))

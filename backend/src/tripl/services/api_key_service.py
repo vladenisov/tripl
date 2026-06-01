@@ -41,9 +41,7 @@ def _generate_token(scope: str) -> tuple[str, str]:
 
 async def list_keys(session: AsyncSession, user_id: uuid.UUID) -> list[ApiKey]:
     rows = await session.execute(
-        select(ApiKey)
-        .where(ApiKey.user_id == user_id)
-        .order_by(ApiKey.created_at.desc())
+        select(ApiKey).where(ApiKey.user_id == user_id).order_by(ApiKey.created_at.desc())
     )
     return list(rows.scalars().all())
 
@@ -63,9 +61,7 @@ async def create_key(
     immediately and never again.
     """
     if scope not in ALLOWED_SCOPES:
-        raise HTTPException(
-            status_code=422, detail=f"scope must be one of {list(ALLOWED_SCOPES)}"
-        )
+        raise HTTPException(status_code=422, detail=f"scope must be one of {list(ALLOWED_SCOPES)}")
     normalized_name = name.strip()
     if not normalized_name:
         raise HTTPException(status_code=422, detail="name is required")
@@ -74,9 +70,7 @@ async def create_key(
 
     raw, prefix = _generate_token(scope)
     expires_at = (
-        datetime.now(UTC) + timedelta(days=expires_in_days)
-        if expires_in_days is not None
-        else None
+        datetime.now(UTC) + timedelta(days=expires_in_days) if expires_in_days is not None else None
     )
     row = ApiKey(
         user_id=user_id,
@@ -92,9 +86,7 @@ async def create_key(
     return row, raw
 
 
-async def revoke_key(
-    session: AsyncSession, user_id: uuid.UUID, key_id: uuid.UUID
-) -> None:
+async def revoke_key(session: AsyncSession, user_id: uuid.UUID, key_id: uuid.UUID) -> None:
     """Mark a key revoked. Idempotent: revoking an already-revoked row is a no-op."""
     row = await session.get(ApiKey, key_id)
     if row is None or row.user_id != user_id:
@@ -114,9 +106,7 @@ async def verify_and_touch(session: AsyncSession, raw_token: str) -> ApiKey | No
     it is in error responses)."""
     if not raw_token.startswith(_PREFIX):
         return None
-    row = await session.scalar(
-        select(ApiKey).where(ApiKey.key_hash == _hash_token(raw_token))
-    )
+    row = await session.scalar(select(ApiKey).where(ApiKey.key_hash == _hash_token(raw_token)))
     if row is None:
         return None
     if row.revoked_at is not None:

@@ -140,9 +140,7 @@ def _parse_csv_unique(
 
 
 def validate_slack_webhook_url(value: str | None) -> str:
-    return _validate_https_url(
-        value, field="Slack webhook_url", allowed_hosts=_ALLOWED_SLACK_HOSTS
-    )
+    return _validate_https_url(value, field="Slack webhook_url", allowed_hosts=_ALLOWED_SLACK_HOSTS)
 
 
 def validate_telegram_bot_token(value: str | None) -> str:
@@ -235,9 +233,7 @@ def validate_email_subject_template(value: str | None) -> str | None:
 
 
 def validate_jira_base_url(value: str | None) -> str:
-    return _validate_https_url(
-        value, field="Jira base_url", strip_trailing_slash=True
-    )
+    return _validate_https_url(value, field="Jira base_url", strip_trailing_slash=True)
 
 
 def validate_jira_auth_email(value: str | None) -> str:
@@ -261,9 +257,7 @@ def validate_jira_issue_type(value: str | None) -> str:
     """Issue-type name as configured in Jira (e.g. 'Task', 'Bug'). Atlassian
     treats these as case-sensitive display names — pass through after trimming
     and rejecting CR/LF."""
-    result = _validate_single_line(
-        value, field="Jira issue_type", max_len=64, required=True
-    )
+    result = _validate_single_line(value, field="Jira issue_type", max_len=64, required=True)
     assert result is not None  # required path
     return result
 

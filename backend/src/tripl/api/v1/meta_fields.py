@@ -48,9 +48,7 @@ async def update_meta_field(
     current_user: EditorUserDep,
     branch_id: BranchIdDep,
 ) -> MetaFieldDefinition:
-    mf = await meta_field_service.update_meta_field(
-        session, slug, meta_field_id, data, branch_id
-    )
+    mf = await meta_field_service.update_meta_field(session, slug, meta_field_id, data, branch_id)
     await audit_service.record(
         session,
         user=current_user,

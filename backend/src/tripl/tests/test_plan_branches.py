@@ -104,9 +104,7 @@ async def test_create_branch_deep_copies_and_isolates(client: AsyncClient) -> No
         branch_fields = (
             (
                 await session.execute(
-                    select(FieldDefinition).where(
-                        FieldDefinition.event_type_id == branch_et.id
-                    )
+                    select(FieldDefinition).where(FieldDefinition.event_type_id == branch_et.id)
                 )
             )
             .scalars()
@@ -322,9 +320,7 @@ async def test_branch_comments_threaded(client: AsyncClient) -> None:
     assert reply.status_code == 201
     assert reply.json()["parent_id"] == root_id
 
-    listed = await client.get(
-        f"/api/v1/projects/branch-cmt/branches/{branch_id}/comments"
-    )
+    listed = await client.get(f"/api/v1/projects/branch-cmt/branches/{branch_id}/comments")
     bodies = [c["body"] for c in listed.json()]
     assert bodies == ["Looks good but…", "fixed"]
 
@@ -379,9 +375,7 @@ async def test_diff_rejects_main_branch(client: AsyncClient) -> None:
     await _seed_plan(client, "branch-diff-main")
     branches = await client.get("/api/v1/projects/branch-diff-main/branches")
     main_id = next(b for b in branches.json()["items"] if b["kind"] == "main")["id"]
-    resp = await client.get(
-        f"/api/v1/projects/branch-diff-main/branches/{main_id}/diff"
-    )
+    resp = await client.get(f"/api/v1/projects/branch-diff-main/branches/{main_id}/diff")
     assert resp.status_code == 400
 
 
@@ -398,9 +392,7 @@ async def _approve_and_merge(client: AsyncClient, slug: str, branch_id: str):
 async def test_merge_requires_approved_status(client: AsyncClient) -> None:
     await _seed_plan(client, "merge-gate")
     branch_id = await _create_branch(client, "merge-gate")
-    resp = await client.post(
-        f"/api/v1/projects/merge-gate/branches/{branch_id}/merge"
-    )
+    resp = await client.post(f"/api/v1/projects/merge-gate/branches/{branch_id}/merge")
     assert resp.status_code == 409  # status is draft, not approved
 
 
@@ -446,10 +438,11 @@ async def test_merge_preserves_main_event_type_id(client: AsyncClient) -> None:
     # Pre-merge: capture the live main event_type id.
     async with TestSessionLocal() as session:
         main_branch_id = (
-            await session.execute(
-                select(PlanBranch).where(PlanBranch.name == "main")
-            )
-        ).scalars().first().id
+            (await session.execute(select(PlanBranch).where(PlanBranch.name == "main")))
+            .scalars()
+            .first()
+            .id
+        )
         original_et = (
             (
                 await session.execute(
@@ -596,9 +589,7 @@ async def test_merge_3way_auto_merges_non_overlapping_field_changes(
     resp = await _approve_and_merge(client, "merge-3way", branch_id)
     assert resp.status_code == 200, resp.text
 
-    main_after = await client.get(
-        f"/api/v1/projects/merge-3way/event-types/{main_track_id}"
-    )
+    main_after = await client.get(f"/api/v1/projects/merge-3way/event-types/{main_track_id}")
     body = main_after.json()
     # Main's color edit survives; branch's description edit lands too.
     assert body["color"] == "#0000ff"
@@ -642,16 +633,12 @@ async def test_merge_blocks_on_same_field_conflict_until_resolved(
     assert first.status_code == 409
     unresolved = first.json()["detail"]["unresolved_field_conflicts"]
     assert any(
-        c["entity_type"] == "event_type"
-        and c["name"] == "track"
-        and c["field"] == "color"
+        c["entity_type"] == "event_type" and c["name"] == "track" and c["field"] == "color"
         for c in unresolved
     )
 
     # Inspect the rich conflicts payload and pick "ours" for the color field.
-    conflicts = await client.get(
-        f"/api/v1/projects/merge-fconflict/branches/{branch_id}/conflicts"
-    )
+    conflicts = await client.get(f"/api/v1/projects/merge-fconflict/branches/{branch_id}/conflicts")
     assert conflicts.status_code == 200
     body = conflicts.json()
     assert body["unresolved_count"] == 1
@@ -673,14 +660,10 @@ async def test_merge_blocks_on_same_field_conflict_until_resolved(
 
     # Branch is now in 'merged' state? No — it was approved → merge failed →
     # status is still approved. Just call merge again; transitions stay intact.
-    merge = await client.post(
-        f"/api/v1/projects/merge-fconflict/branches/{branch_id}/merge"
-    )
+    merge = await client.post(f"/api/v1/projects/merge-fconflict/branches/{branch_id}/merge")
     assert merge.status_code == 200, merge.text
 
-    main_after = await client.get(
-        f"/api/v1/projects/merge-fconflict/event-types/{main_track_id}"
-    )
+    main_after = await client.get(f"/api/v1/projects/merge-fconflict/event-types/{main_track_id}")
     # "ours" wins for color — main's value survives the merge.
     assert main_after.json()["color"] == "#aaaaaa"
 
@@ -740,9 +723,7 @@ async def test_resolutions_cleared_on_branch_reopen(client: AsyncClient) -> None
         json={"action": "reopen"},
     )
 
-    conflicts = await client.get(
-        f"/api/v1/projects/merge-clear-res/branches/{branch_id}/conflicts"
-    )
+    conflicts = await client.get(f"/api/v1/projects/merge-clear-res/branches/{branch_id}/conflicts")
     assert conflicts.status_code == 200
     body = conflicts.json()
     # Resolutions are gone — every conflict is unresolved again.
@@ -786,20 +767,14 @@ async def test_branch_create_copies_event_photos_and_comments(
     base = f"/api/v1/projects/branch-photos/events/{main_event_id}/photos/{main_photo_id}/comments"
     top = await client.post(base, json={"body": "looks good"})
     assert top.status_code == 201
-    reply = await client.post(
-        base, json={"body": "thanks!", "parent_id": top.json()["id"]}
-    )
+    reply = await client.post(base, json={"body": "thanks!", "parent_id": top.json()["id"]})
     assert reply.status_code == 201
 
     branch_id = await _create_branch(client, "branch-photos", "feature-photos")
 
     async with TestSessionLocal() as session:
         branch_event = (
-            (
-                await session.execute(
-                    select(Event).where(Event.branch_id == uuid.UUID(branch_id))
-                )
-            )
+            (await session.execute(select(Event).where(Event.branch_id == uuid.UUID(branch_id))))
             .scalars()
             .first()
         )
@@ -825,9 +800,7 @@ async def test_branch_create_copies_event_photos_and_comments(
         branch_comments = (
             (
                 await session.execute(
-                    select(EventPhotoComment).where(
-                        EventPhotoComment.photo_id == branch_photo.id
-                    )
+                    select(EventPhotoComment).where(EventPhotoComment.photo_id == branch_photo.id)
                 )
             )
             .scalars()
@@ -859,11 +832,7 @@ async def test_merge_carries_branch_photo_changes_to_main(client: AsyncClient) -
 
     async with TestSessionLocal() as session:
         branch_event = (
-            (
-                await session.execute(
-                    select(Event).where(Event.branch_id == uuid.UUID(branch_id))
-                )
-            )
+            (await session.execute(select(Event).where(Event.branch_id == uuid.UUID(branch_id))))
             .scalars()
             .first()
         )
@@ -884,18 +853,14 @@ async def test_merge_carries_branch_photo_changes_to_main(client: AsyncClient) -
 
     # Attach a new figma row directly on the branch event.
     new_url = "https://www.figma.com/file/new/New"
-    await _attach_main_figma(
-        client, "merge-photos", str(branch_event_id), new_url, "New"
-    )
+    await _attach_main_figma(client, "merge-photos", str(branch_event_id), new_url, "New")
 
     resp = await _approve_and_merge(client, "merge-photos", branch_id)
     assert resp.status_code == 200
 
     # On main, the live event now carries the branch's photo set: one figma row
     # with the new URL, the old one gone.
-    listed = await client.get(
-        f"/api/v1/projects/merge-photos/events/{main_event_id}/photos"
-    )
+    listed = await client.get(f"/api/v1/projects/merge-photos/events/{main_event_id}/photos")
     assert listed.status_code == 200
     urls = [row["external_url"] for row in listed.json()]
     assert urls == [new_url]
@@ -921,9 +886,7 @@ async def test_router_branch_param_lists_branch_event_types(client: AsyncClient)
     assert {et["name"] for et in main_list} == {"track"}
 
     branch_list = (
-        await client.get(
-            f"/api/v1/projects/branch-route-list/event-types?branch={branch_id}"
-        )
+        await client.get(f"/api/v1/projects/branch-route-list/event-types?branch={branch_id}")
     ).json()
     assert {et["name"] for et in branch_list} == {"track", "checkout"}
 
@@ -984,8 +947,6 @@ async def test_router_branch_param_threads_meta_fields(client: AsyncClient) -> N
     main_mf = (await client.get("/api/v1/projects/branch-route-meta/meta-fields")).json()
     assert main_mf == []
     branch_mf = (
-        await client.get(
-            f"/api/v1/projects/branch-route-meta/meta-fields?branch={branch_id}"
-        )
+        await client.get(f"/api/v1/projects/branch-route-meta/meta-fields?branch={branch_id}")
     ).json()
     assert [mf["name"] for mf in branch_mf] == ["owner"]
