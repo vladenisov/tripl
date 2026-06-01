@@ -19,17 +19,21 @@ import { Textarea } from '@/components/ui/textarea'
 import { META_FIELD_LINK_PLACEHOLDER } from '@/lib/metaFields'
 import { JsonEditor } from './JsonEditor'
 import { VariableInput } from './VariableInput'
+import { Plus, X } from 'lucide-react'
 
-function parseMetricBreakdownColumns(value: string): string[] {
+function normalizeMetricBreakdownColumns(columns: string[]): string[] {
   const seen = new Set<string>()
-  return value
-    .split(',')
+  return columns
     .map(column => column.trim())
     .filter(column => {
       if (!column || seen.has(column)) return false
       seen.add(column)
       return true
     })
+}
+
+function isMetricBreakdownFieldType(fieldType: string) {
+  return fieldType !== 'json'
 }
 
 export function EventForm({
@@ -55,9 +59,10 @@ export function EventForm({
   const [name, setName] = useState(event?.name ?? '')
   const [description, setDescription] = useState(event?.description ?? '')
   const [implemented, setImplemented] = useState(event?.implemented ?? false)
-  const [metricBreakdownInput, setMetricBreakdownInput] = useState(
-    event?.metric_breakdown_columns?.join(', ') ?? '',
+  const [metricBreakdownColumns, setMetricBreakdownColumns] = useState(
+    () => normalizeMetricBreakdownColumns(event?.metric_breakdown_columns ?? []),
   )
+  const [metricBreakdownInput, setMetricBreakdownInput] = useState('')
   const [tags, setTags] = useState<string[]>(event?.tags?.map(t => t.name) ?? [])
   const [tagInput, setTagInput] = useState('')
   const [fieldValues, setFieldValues] = useState<Record<string, string>>(() => {
@@ -74,14 +79,28 @@ export function EventForm({
     () => selectedEt ? [...selectedEt.field_definitions].sort((a, b) => a.order - b.order) : [],
     [selectedEt],
   )
+  const metricBreakdownFields = useMemo(
+    () => sortedFields.filter(field => isMetricBreakdownFieldType(field.field_type)),
+    [sortedFields],
+  )
 
   const varSuggestions = useMemo(() => {
     return projectVariables.map(v => ({ name: v.name, label: v.description || v.name }))
   }, [projectVariables])
-  const metricBreakdownColumns = useMemo(
-    () => parseMetricBreakdownColumns(metricBreakdownInput),
-    [metricBreakdownInput],
-  )
+  const toggleMetricBreakdownColumn = (column: string) => {
+    setMetricBreakdownColumns(current =>
+      current.includes(column)
+        ? current.filter(item => item !== column)
+        : normalizeMetricBreakdownColumns([...current, column]),
+    )
+  }
+
+  const addMetricBreakdownColumn = () => {
+    const next = metricBreakdownInput.trim()
+    if (!next) return
+    setMetricBreakdownColumns(current => normalizeMetricBreakdownColumns([...current, next]))
+    setMetricBreakdownInput('')
+  }
 
   const createMut = useMutation({
     mutationFn: () => {
@@ -154,21 +173,75 @@ export function EventForm({
             </div>
 
             <div className="grid gap-2">
-              <Label>Metric breakdown columns</Label>
-              <Input
-                value={metricBreakdownInput}
-                onChange={e => setMetricBreakdownInput(e.target.value)}
-                placeholder="country, platform"
-              />
-              {metricBreakdownColumns.length > 0 && (
-                <div className="flex flex-wrap gap-1">
-                  {metricBreakdownColumns.map(column => (
-                    <Badge key={column} variant="outline" className="font-mono text-[11px]">
-                      {column}
-                    </Badge>
+              <Label>Metric breakdowns</Label>
+              {metricBreakdownFields.length > 0 && (
+                <div className="grid gap-2 sm:grid-cols-2">
+                  {metricBreakdownFields.map(field => (
+                    <label
+                      key={field.id}
+                      className="flex items-center gap-2 rounded-md border bg-background p-2 text-sm"
+                    >
+                      <Checkbox
+                        checked={metricBreakdownColumns.includes(field.name)}
+                        onCheckedChange={() => toggleMetricBreakdownColumn(field.name)}
+                      />
+                      <span className="min-w-0 flex-1">
+                        <span className="block truncate">{field.display_name}</span>
+                        <span className="block truncate font-mono text-[11px] text-muted-foreground">
+                          {field.name}
+                        </span>
+                      </span>
+                    </label>
                   ))}
                 </div>
               )}
+              <div className="flex gap-2">
+                <Input
+                  value={metricBreakdownInput}
+                  onChange={e => setMetricBreakdownInput(e.target.value)}
+                  onKeyDown={e => {
+                    if (e.key === 'Enter' && metricBreakdownInput.trim()) {
+                      e.preventDefault()
+                      addMetricBreakdownColumn()
+                    }
+                  }}
+                  placeholder="Add warehouse column"
+                  aria-label="Metric breakdown column name"
+                />
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="icon"
+                  onClick={addMetricBreakdownColumn}
+                  disabled={!metricBreakdownInput.trim()}
+                  aria-label="Add metric breakdown column"
+                >
+                  <Plus className="h-4 w-4" />
+                </Button>
+              </div>
+              <div className="flex min-h-6 flex-wrap gap-1">
+                {metricBreakdownColumns.length === 0 ? (
+                  <span className="text-xs text-muted-foreground">No event-level breakdowns</span>
+                ) : (
+                  metricBreakdownColumns.map(column => (
+                    <Badge key={column} variant="outline" className="gap-1 font-mono text-[11px]">
+                      {column}
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setMetricBreakdownColumns(current =>
+                            current.filter(item => item !== column),
+                          )
+                        }}
+                        className="text-muted-foreground hover:text-foreground"
+                        aria-label={`Remove ${column} breakdown`}
+                      >
+                        <X className="h-3 w-3" />
+                      </button>
+                    </Badge>
+                  ))
+                )}
+              </div>
             </div>
 
             {/* Tags */}
