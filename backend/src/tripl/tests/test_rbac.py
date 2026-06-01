@@ -1,8 +1,10 @@
 from collections.abc import AsyncGenerator
 
 import pytest
+from fastapi.routing import APIRoute
 from httpx import ASGITransport, AsyncClient
 
+from tripl.api.deps import get_editor_user, get_owner_user, get_write_user
 from tripl.main import app
 
 
@@ -28,6 +30,35 @@ async def _set_role(owner_client: AsyncClient, target_email: str, role: str) -> 
     target = next(u for u in users.json() if u["email"] == target_email)
     resp = await owner_client.patch(f"/api/v1/users/{target['id']}", json={"role": role})
     assert resp.status_code == 200, resp.text
+
+
+def test_mutating_routes_require_write_gate() -> None:
+    """Every mutating API route needs a write-scope dependency unless it is
+    intentionally read-like or an auth endpoint."""
+    allowed_without_write_gate = {
+        "/api/v1/auth/register",
+        "/api/v1/auth/login",
+        "/api/v1/auth/logout",
+        "/api/v1/projects/{slug}/events/window-metrics",
+        "/api/v1/projects/{slug}/anomalies/signals/query",
+        "/api/v1/projects/{slug}/alert-destinations/{destination_id}/rules/{rule_id}/simulate",
+    }
+    write_gates = {get_write_user, get_editor_user, get_owner_user}
+    offenders: list[str] = []
+
+    for route in app.routes:
+        if not isinstance(route, APIRoute):
+            continue
+        mutating_methods = (route.methods or set()) & {"POST", "PATCH", "PUT", "DELETE"}
+        if not mutating_methods or not route.path.startswith("/api/v1"):
+            continue
+        if route.path in allowed_without_write_gate:
+            continue
+        dependency_calls = {dependency.call for dependency in route.dependant.dependencies}
+        if dependency_calls.isdisjoint(write_gates):
+            offenders.append(f"{','.join(sorted(mutating_methods))} {route.path}")
+
+    assert offenders == []
 
 
 @pytest.mark.asyncio

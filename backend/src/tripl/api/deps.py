@@ -16,9 +16,7 @@ from tripl.services.auth_service import get_user_by_session_token
 SessionDep = Annotated[AsyncSession, Depends(get_session)]
 
 
-async def _resolve_api_key_user(
-    request: Request, session: AsyncSession
-) -> User | None:
+async def _resolve_api_key_user(request: Request, session: AsyncSession) -> User | None:
     """Resolve ``Authorization: Bearer <token>`` to a User.
 
     Returns ``None`` when no Bearer header is present (caller falls back to
@@ -101,6 +99,11 @@ def require_write_scope(request: Request) -> None:
         )
 
 
+async def get_write_user(request: Request, user: CurrentUserDep) -> User:
+    require_write_scope(request)
+    return user
+
+
 async def get_editor_user(request: Request, user: CurrentUserDep) -> User:
     require_write_scope(request)
     require_editor(user)
@@ -113,13 +116,12 @@ async def get_owner_user(request: Request, user: CurrentUserDep) -> User:
     return user
 
 
+WriteUserDep = Annotated[User, Depends(get_write_user)]
 EditorUserDep = Annotated[User, Depends(get_editor_user)]
 OwnerUserDep = Annotated[User, Depends(get_owner_user)]
 
 
-async def get_branch_id_override(
-    request: Request, session: SessionDep
-) -> uuid.UUID | None:
+async def get_branch_id_override(request: Request, session: SessionDep) -> uuid.UUID | None:
     """Resolve the editor's active branch from the ``?branch=`` query param.
 
     Returns ``None`` when no override is supplied (services then default to the
