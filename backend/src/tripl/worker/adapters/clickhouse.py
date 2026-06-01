@@ -62,6 +62,96 @@ class ClickHouseAdapter(BaseAdapter):
         result = self._client.query(sql)
         return list(result.column_names), result.result_rows
 
+    def get_json_path_samples(
+        self,
+        base_query: str,
+        json_columns: list[str],
+        *,
+        path_limit: int = 1000,
+        sample_limit: int = 3,
+        sample_row_limit: int = 1000,
+    ) -> dict[str, dict[str, list[object]]]:
+        """Discover JSON paths independently from visible preview rows.
+
+        JSONAllPaths is already the scan-time primitive used by the adapter; here
+        it is run across the source query so the UI sees path candidates even
+        when they do not happen to appear in the small preview sample.
+        """
+        if not json_columns or path_limit <= 0 or sample_limit <= 0 or sample_row_limit <= 0:
+            return {column: {} for column in json_columns}
+
+        samples_by_column: dict[str, dict[str, list[object]]] = {}
+        for column in json_columns:
+            c = self._validate_column(column)
+            path_sql = (
+                "SELECT _path "
+                "FROM ("
+                f"SELECT arrayJoin(JSONAllPaths(`{c}`)) AS _path "
+                f"FROM ({base_query}) AS _src"
+                ") "
+                "WHERE _path != '' "
+                "GROUP BY _path "
+                "ORDER BY _path "
+                f"LIMIT {int(path_limit)}"
+            )
+            logger.info("CH JSON path discovery query: %s", path_sql)
+            path_result = self._client.query(path_sql)
+
+            paths: list[str] = []
+            for row in path_result.result_rows:
+                path = str(row[0])
+                try:
+                    self._json_path_expression(c, path)
+                except ValueError:
+                    logger.info("Skipping unsupported JSON path %s.%s", c, path)
+                    continue
+                paths.append(path)
+
+            column_samples: dict[str, list[object]] = {path: [] for path in paths}
+            samples_by_column[c] = column_samples
+            if not paths:
+                continue
+
+            select_parts: list[str] = []
+            path_by_alias: dict[str, str] = {}
+            for index, path in enumerate(paths):
+                alias = f"__json_path_{index}"
+                select_parts.append(
+                    f"toJSONString({self._json_path_expression(c, path)}) AS `{alias}`"
+                )
+                path_by_alias[alias] = path
+
+            sample_sql = (
+                f"SELECT {', '.join(select_parts)} "
+                f"FROM ({base_query}) AS _src "
+                f"LIMIT {int(sample_row_limit)}"
+            )
+            logger.info("CH JSON path sample query: %s", sample_sql)
+            sample_result = self._client.query(sample_sql)
+            index_to_path = {
+                index: path_by_alias[name]
+                for index, name in enumerate(sample_result.column_names)
+                if name in path_by_alias
+            }
+            seen_by_path: dict[str, set[str]] = {path: set() for path in paths}
+
+            for row in sample_result.result_rows:
+                if all(len(values) >= sample_limit for values in column_samples.values()):
+                    break
+                for index, path in index_to_path.items():
+                    if len(column_samples[path]) >= sample_limit:
+                        continue
+                    value = row[index]
+                    if value is None or value == "null":
+                        continue
+                    sample_key = str(value)
+                    if sample_key in seen_by_path[path]:
+                        continue
+                    seen_by_path[path].add(sample_key)
+                    column_samples[path].append(value)
+
+        return samples_by_column
+
     def _validate_column(self, column: str) -> str:
         if not _IDENTIFIER_RE.match(column):
             msg = f"Invalid column name: {column}"

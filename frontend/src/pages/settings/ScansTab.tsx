@@ -32,6 +32,45 @@ function formatPreviewCell(value: unknown): string {
   return JSON.stringify(value)
 }
 
+function splitFullJsonPath(fullPath: string): { column: string; path: string } | null {
+  const separatorIndex = fullPath.indexOf('.')
+  if (separatorIndex <= 0 || separatorIndex === fullPath.length - 1) return null
+  return {
+    column: fullPath.slice(0, separatorIndex),
+    path: fullPath.slice(separatorIndex + 1),
+  }
+}
+
+function jsonColumnsWithSelectedPaths(
+  preview: ScanConfigPreview,
+  selectedJsonValuePaths: string[],
+): ScanConfigPreview['json_columns'] {
+  const byColumn = new Map<string, ScanConfigPreview['json_columns'][number]>()
+
+  preview.json_columns.forEach(jsonColumn => {
+    byColumn.set(jsonColumn.column, {
+      column: jsonColumn.column,
+      paths: jsonColumn.paths.map(path => ({ ...path, sample_values: [...path.sample_values] })),
+    })
+  })
+
+  selectedJsonValuePaths.forEach(fullPath => {
+    const parsed = splitFullJsonPath(fullPath)
+    if (!parsed) return
+
+    const jsonColumn = byColumn.get(parsed.column) ?? { column: parsed.column, paths: [] }
+    if (!jsonColumn.paths.some(path => path.full_path === fullPath)) {
+      jsonColumn.paths.push({ full_path: fullPath, path: parsed.path, sample_values: [] })
+    }
+    byColumn.set(parsed.column, jsonColumn)
+  })
+
+  return Array.from(byColumn.values()).map(jsonColumn => ({
+    ...jsonColumn,
+    paths: [...jsonColumn.paths].sort((a, b) => a.path.localeCompare(b.path)),
+  }))
+}
+
 // Ordered finest → coarsest. A replay chunk must be >= the collection interval,
 // so eligible chunk sizes are the interval itself and anything coarser.
 const INTERVAL_ORDER: IntervalCode[] = ['15m', '1h', '6h', '1d', '1w']
@@ -58,12 +97,14 @@ function ScanPreviewPanel({
   selectedJsonValuePaths: string[]
   onToggleJsonValuePath: (path: string) => void
 }) {
+  const jsonColumns = jsonColumnsWithSelectedPaths(preview, selectedJsonValuePaths)
+
   return (
     <div className="space-y-4 rounded-lg border bg-muted/20 p-4">
       <div className="space-y-1">
         <div className="text-sm font-medium">Preview</div>
         <p className="text-xs text-muted-foreground">
-          Column pickers and JSON path options are built from this sample. Rows are picked from a larger fetch to show more variety when possible.
+          Column pickers use the sample rows; JSON path options are discovered from the source query.
         </p>
       </div>
 
@@ -90,7 +131,7 @@ function ScanPreviewPanel({
         </Table>
       </div>
 
-      {preview.json_columns.some(column => column.paths.length > 0) && (
+      {jsonColumns.some(column => column.paths.length > 0) && (
         <div className="space-y-3">
           <div>
             <div className="text-sm font-medium">JSON values to keep as-is</div>
@@ -99,7 +140,7 @@ function ScanPreviewPanel({
             </p>
           </div>
           <div className="space-y-3">
-            {preview.json_columns.map(jsonColumn => (
+            {jsonColumns.map(jsonColumn => (
               <div key={jsonColumn.column} className="space-y-2">
                 <div className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
                   {jsonColumn.column}
@@ -433,6 +474,7 @@ export function ScansTab({ slug }: { slug: string }) {
       data_source_id: dsId,
       base_query: baseQuery,
       limit: 10,
+      json_value_paths: jsonValuePaths,
     }),
     onSuccess: data => {
       setPreview(data)
@@ -463,6 +505,7 @@ export function ScansTab({ slug }: { slug: string }) {
         data_source_id: scanConfig.data_source_id,
         base_query: editBaseQuery,
         limit: 10,
+        json_value_paths: editJsonValuePaths,
       })
     },
     onSuccess: data => {

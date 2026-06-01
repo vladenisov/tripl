@@ -26,6 +26,56 @@ class BaseAdapter(abc.ABC):
         limit: int = 10,
     ) -> tuple[list[str], list[tuple[object, ...]]]: ...
 
+    def get_json_path_samples(
+        self,
+        base_query: str,
+        json_columns: list[str],
+        *,
+        path_limit: int = 1000,
+        sample_limit: int = 3,
+        sample_row_limit: int = 1000,
+    ) -> dict[str, dict[str, list[object]]]:
+        """Best-effort JSON path discovery for adapters without native support.
+
+        Concrete adapters can override this with a warehouse-side path discovery
+        query. The default keeps behavior compatible by sampling more rows than
+        the visible preview and flattening JSON locally.
+        """
+        if not json_columns or path_limit <= 0 or sample_limit <= 0 or sample_row_limit <= 0:
+            return {column: {} for column in json_columns}
+
+        from tripl.json_paths import (
+            decode_json_path_value,
+            flatten_json_paths,
+            format_json_path_value,
+        )
+
+        column_names, rows = self.get_preview_rows(base_query, limit=sample_row_limit)
+        index_by_name = {name: index for index, name in enumerate(column_names)}
+        samples_by_column: dict[str, dict[str, list[object]]] = {
+            column: {} for column in json_columns
+        }
+        seen_by_column: dict[str, dict[str, set[str]]] = {column: {} for column in json_columns}
+
+        for row in rows:
+            for column in json_columns:
+                index = index_by_name.get(column)
+                if index is None or index >= len(row):
+                    continue
+                parsed_value = decode_json_path_value(row[index])
+                for path, raw_value in flatten_json_paths(parsed_value):
+                    column_samples = samples_by_column.setdefault(column, {})
+                    if path not in column_samples and len(column_samples) >= path_limit:
+                        continue
+                    seen = seen_by_column.setdefault(column, {}).setdefault(path, set())
+                    sample_text = format_json_path_value(raw_value)
+                    if sample_text in seen or len(seen) >= sample_limit:
+                        continue
+                    seen.add(sample_text)
+                    column_samples.setdefault(path, []).append(raw_value)
+
+        return samples_by_column
+
     @abc.abstractmethod
     def get_full_breakdown(
         self,
