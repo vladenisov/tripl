@@ -53,6 +53,7 @@ async def create_key(
     name: str,
     scope: str,
     expires_in_days: int | None,
+    project_id: uuid.UUID | None = None,
 ) -> tuple[ApiKey, str]:
     """Create a key row and return ``(row, raw_token)``.
 
@@ -74,6 +75,7 @@ async def create_key(
     )
     row = ApiKey(
         user_id=user_id,
+        project_id=project_id,
         name=normalized_name,
         key_prefix=prefix,
         key_hash=_hash_token(raw),
