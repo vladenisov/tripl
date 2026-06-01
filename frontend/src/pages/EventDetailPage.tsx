@@ -160,6 +160,11 @@ export default function EventDetailPage() {
               <Eye className="h-3 w-3" /> Reviewed
             </Badge>
           )}
+          {event.metric_breakdown_columns.length > 0 && (
+            <Badge variant="outline" className="gap-1">
+              <Layers className="h-3 w-3" /> Breakdowns {event.metric_breakdown_columns.length}
+            </Badge>
+          )}
         </div>
         {event.description && (
           <p className="text-muted-foreground">{event.description}</p>

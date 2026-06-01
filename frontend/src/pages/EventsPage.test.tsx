@@ -1,5 +1,5 @@
 import type { ReactNode } from 'react'
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -586,6 +586,137 @@ describe('EventsPage', () => {
         event_ids: ['event-1', 'event-2'],
         reviewed: false,
         archived: false,
+      })
+    })
+  })
+
+  it('creates an event with selected event-level metric breakdowns', async () => {
+    const eventCreateBodies: unknown[] = []
+
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const url = String(input)
+
+      if (url.endsWith('/api/v1/projects/demo/event-types')) {
+        return mockJsonResponse([
+          {
+            id: 'type-1',
+            project_id: 'project-1',
+            name: 'page',
+            display_name: 'Page',
+            description: '',
+            color: '#0ea5e9',
+            order: 0,
+            created_at: '2026-01-01T00:00:00Z',
+            updated_at: '2026-01-01T00:00:00Z',
+            field_definitions: [
+              {
+                id: 'field-country',
+                event_type_id: 'type-1',
+                name: 'country',
+                display_name: 'Country',
+                field_type: 'string',
+                is_required: false,
+                enum_options: null,
+                description: '',
+                order: 0,
+                sensitivity: 'none',
+              },
+              {
+                id: 'field-payload',
+                event_type_id: 'type-1',
+                name: 'payload',
+                display_name: 'Payload',
+                field_type: 'json',
+                is_required: false,
+                enum_options: null,
+                description: '',
+                order: 1,
+                sensitivity: 'none',
+              },
+            ],
+          },
+        ])
+      }
+      if (url.endsWith('/api/v1/projects/demo/meta-fields')) return mockJsonResponse([])
+      if (url.endsWith('/api/v1/projects/demo/variables')) return mockJsonResponse([])
+      if (url.endsWith('/api/v1/projects/demo/events/tags')) return mockJsonResponse([])
+      if (url.includes('/api/v1/projects/demo/events?reviewed=false')) return mockJsonResponse({ items: [], total: 0 })
+      if (url.includes('/api/v1/projects/demo/events?archived=true')) return mockJsonResponse({ items: [], total: 0 })
+      if (url.includes('/api/v1/projects/demo/events-metrics')) {
+        return mockJsonResponse({
+          scope: 'events_total',
+          scan_config_id: null,
+          event_id: null,
+          event_type_id: null,
+          interval: '1h',
+          latest_signal: null,
+          data: [],
+        })
+      }
+      if (url.endsWith('/api/v1/projects/demo/events/window-metrics') && init?.method === 'POST') {
+        return mockJsonResponse([])
+      }
+      if (url.includes('/api/v1/projects/demo/anomalies/signals')) return mockJsonResponse([])
+      if (url.endsWith('/api/v1/projects/demo/events') && init?.method === 'POST') {
+        const body = JSON.parse(String(init.body))
+        eventCreateBodies.push(body)
+        return mockJsonResponse({
+          id: 'event-1',
+          project_id: 'project-1',
+          event_type_id: body.event_type_id,
+          event_type: {
+            id: 'type-1',
+            name: 'page',
+            display_name: 'Page',
+            color: '#0ea5e9',
+          },
+          name: body.name,
+          description: body.description,
+          order: 0,
+          implemented: body.implemented,
+          reviewed: true,
+          archived: false,
+          metric_breakdown_columns: body.metric_breakdown_columns,
+          tags: [],
+          field_values: [],
+          meta_values: [],
+          created_at: '2026-01-01T00:00:00Z',
+          updated_at: '2026-01-01T00:00:00Z',
+        })
+      }
+      if (url.includes('/api/v1/projects/demo/events')) {
+        return mockJsonResponse({ items: [], total: 0 })
+      }
+
+      throw new Error(`Unhandled fetch: ${url}`)
+    })
+
+    renderEventsPage()
+
+    fireEvent.click(await screen.findByRole('button', { name: 'New Event' }))
+    const dialog = await screen.findByRole('dialog')
+
+    fireEvent.change(within(dialog).getByRole('combobox'), { target: { value: 'type-1' } })
+    fireEvent.change(within(dialog).getByPlaceholderText('e.g. Home Page View'), {
+      target: { value: 'Homepage View' },
+    })
+    fireEvent.click(within(dialog).getAllByRole('checkbox')[1])
+    fireEvent.change(within(dialog).getByLabelText('Metric breakdown column name'), {
+      target: { value: 'platform' },
+    })
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Add metric breakdown column' }))
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Create' }))
+
+    await waitFor(() => {
+      expect(eventCreateBodies).toContainEqual({
+        event_type_id: 'type-1',
+        name: 'Homepage View',
+        description: '',
+        implemented: false,
+        metric_breakdown_columns: ['country', 'platform'],
+        tags: [],
+        field_values: [],
+        meta_values: [],
       })
     })
   })
