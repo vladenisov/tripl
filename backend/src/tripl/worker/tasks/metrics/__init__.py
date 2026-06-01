@@ -1,20 +1,22 @@
 """Celery tasks for collecting time-bucketed event metrics from ClickHouse.
 
-Uses the same cardinality analysis + event generation pipeline as the manual
-scan task (analyze_cardinality / generate_events), then collects time-bucketed
-counts and matches them to the generated events.
+Scheduled collection refreshes catalog events with the same cardinality analysis
+pipeline as the manual scan, then collects time-bucketed counts. Explicit
+metrics replay reuses the existing catalog so replay chunking bounds every
+warehouse query it issues.
 """
 
 from __future__ import annotations
 
 import logging
+import re
 import uuid
 from datetime import UTC, datetime, timedelta
 from typing import cast
 
 from sqlalchemy import func as sa_func
 from sqlalchemy import select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, selectinload
 
 from tripl import cache
 from tripl.models.data_source import DataSource
@@ -136,6 +138,8 @@ __all__ = [
 ]
 
 logger = logging.getLogger(__name__)
+_FMT_PATTERN = re.compile(r"\{([^}]+)\}")
+_VARIABLE_TEMPLATE_PATTERN = re.compile(r"\$\{[^}]+\}")
 
 
 def _resolve_collection_window(
@@ -263,6 +267,140 @@ def _ensure_event_type_with_fields(
     return et
 
 
+def _event_name_format_columns(event_name_format: str | None) -> set[str]:
+    if not event_name_format:
+        return set()
+    return set(_FMT_PATTERN.findall(event_name_format))
+
+
+def _field_template(values: list[str]) -> str | None:
+    """Return an existing variable template for high-cardinality replay fields.
+
+    Replay does not run cardinality analysis, but generated events persist the
+    template values that analysis produced earlier. Reusing those templates lets
+    no-format scans still match rows such as ``user_id=123`` to catalog events
+    named with ``user_id=${user_id}``.
+    """
+    templates = sorted({value for value in values if _VARIABLE_TEMPLATE_PATTERN.search(value)})
+    return templates[0] if len(templates) == 1 else None
+
+
+def _load_existing_generation_result(
+    session: Session,
+    *,
+    project_id: uuid.UUID,
+    event_type_id: uuid.UUID,
+    columns: list[ColumnInfo],
+    config: ScanConfig,
+) -> GenerationResult:
+    field_definitions = {
+        fd.name: fd
+        for fd in session.execute(
+            select(FieldDefinition).where(FieldDefinition.event_type_id == event_type_id)
+        ).scalars()
+    }
+    events = (
+        session.execute(
+            select(Event)
+            .options(selectinload(Event.field_values))
+            .where(
+                Event.project_id == project_id,
+                Event.event_type_id == event_type_id,
+            )
+        )
+        .scalars()
+        .all()
+    )
+    values_by_field_id: dict[uuid.UUID, list[str]] = {}
+    for event in events:
+        for field_value in event.field_values:
+            values_by_field_id.setdefault(field_value.field_definition_id, []).append(
+                field_value.value
+            )
+
+    name_columns = _event_name_format_columns(config.event_name_format)
+    json_value_path_map = _get_scan_json_value_path_map(config)
+    col_meta: dict[str, dict[str, object]] = {}
+    details: list[str] = []
+
+    for column in columns:
+        if column.name == config.event_type_column or column.name == config.time_column:
+            continue
+        fd = field_definitions.get(column.name)
+        if fd is None:
+            details.append(f"Skipped column {column.name!r}: no matching field definition")
+            continue
+
+        meta: dict[str, object] = {"fd_id": fd.id, "col_name": column.name}
+        if _is_json_type(column.type_name):
+            meta["is_json"] = True
+            meta["json_passthrough_paths"] = [
+                f"{column.name}.{path}" for path in json_value_path_map.get(column.name, [])
+            ]
+        else:
+            template = (
+                None
+                if column.name in name_columns
+                else _field_template(values_by_field_id.get(fd.id, []))
+            )
+            meta["is_json"] = False
+            if template is None:
+                meta["is_low"] = True
+            else:
+                meta["is_low"] = False
+                meta["template"] = template
+        col_meta[column.name] = meta
+
+    return GenerationResult(
+        columns_analyzed=len(col_meta),
+        details=details,
+        col_meta=col_meta,
+        events_by_name={event.name: event for event in events},
+    )
+
+
+def _load_existing_generation_results(
+    session: Session,
+    *,
+    config: ScanConfig,
+    columns: list[ColumnInfo],
+) -> tuple[dict[str, GenerationResult], GenerationResult | None]:
+    """Build replay-time event matching metadata without warehouse cardinality scans."""
+    if config.event_type_column:
+        event_types = (
+            session.execute(select(EventType).where(EventType.project_id == config.project_id))
+            .scalars()
+            .all()
+        )
+        return (
+            {
+                event_type.name: _load_existing_generation_result(
+                    session,
+                    project_id=config.project_id,
+                    event_type_id=event_type.id,
+                    columns=columns,
+                    config=config,
+                )
+                for event_type in event_types
+            },
+            None,
+        )
+
+    if config.event_type_id:
+        return (
+            {},
+            _load_existing_generation_result(
+                session,
+                project_id=config.project_id,
+                event_type_id=config.event_type_id,
+                columns=columns,
+                config=config,
+            ),
+        )
+
+    return {}, None
+
+
 @celery_app.task(  # type: ignore[untyped-decorator]
     name="tripl.worker.tasks.metrics.collect_metrics",
     bind=True,
@@ -341,12 +479,45 @@ def collect_metrics(
             skip_cols.add(config.time_column)
         json_value_path_map = _get_scan_json_value_path_map(config)
 
+        assert config.interval is not None
+        interval_spec = get_interval(config.interval)
+        delta = interval_spec.delta
+        time_from_dt, time_to_dt, is_replay = _resolve_collection_window(
+            session,
+            config=config,
+            delta=delta,
+            manual_time_from=time_from,
+            manual_time_to=time_to,
+        )
+
+        chunks = _iter_window_chunks(
+            time_from_dt,
+            time_to_dt,
+            interval_delta=delta,
+            chunk_interval_code=config.replay_chunk_interval,
+        )
+
         # ---- PHASE 1: Sync events via exact scan pipeline ----
 
         gen_results: dict[str, GenerationResult] = {}
         single_result: GenerationResult | None = None
 
-        if config.event_type_column:
+        if is_replay:
+            gen_results, single_result = _load_existing_generation_results(
+                session,
+                config=config,
+                columns=columns,
+            )
+            replay_event_mappings = sum(
+                len(result.events_by_name) for result in gen_results.values()
+            )
+            if single_result is not None:
+                replay_event_mappings += len(single_result.events_by_name)
+            logger.info(
+                "Metrics replay: skipped catalog sync and loaded %s existing event mapping(s)",
+                replay_event_mappings,
+            )
+        elif config.event_type_column:
             # Grouped scan: same as _scan_with_grouping in scan.py
             group_values, grouped_analyses = analyze_cardinality_grouped(
                 adapter,
@@ -446,24 +617,6 @@ def collect_metrics(
         session.commit()
 
         # ---- PHASE 2: Collect time-bucketed metrics ----
-
-        assert config.interval is not None
-        interval_spec = get_interval(config.interval)
-        delta = interval_spec.delta
-        time_from_dt, time_to_dt, is_replay = _resolve_collection_window(
-            session,
-            config=config,
-            delta=delta,
-            manual_time_from=time_from,
-            manual_time_to=time_to,
-        )
-
-        chunks = _iter_window_chunks(
-            time_from_dt,
-            time_to_dt,
-            interval_delta=delta,
-            chunk_interval_code=config.replay_chunk_interval,
-        )
         logger.info(
             f"Collecting metrics: {time_from_dt.isoformat()} to {time_to_dt.isoformat()}, "
             f"interval={config.interval}, replay={is_replay}, "
@@ -744,6 +897,7 @@ def collect_metrics(
             "mode": "metrics_replay" if is_replay else "metrics_collection",
             "time_from": time_from_dt.isoformat(),
             "time_to": time_to_dt.isoformat(),
+            "catalog_sync_skipped": is_replay,
             "events_created": total_created,
             "events_skipped": total_skipped,
             "variables_created": total_vars,
