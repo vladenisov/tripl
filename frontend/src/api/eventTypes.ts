@@ -1,5 +1,5 @@
 import { api, withBranch } from './client'
-import type { EventType, SchemaDriftList } from '../types'
+import type { EventType, SchemaDriftList, Sensitivity } from '../types'
 
 export const eventTypesApi = {
   list: (slug: string, branchId?: string | null) =>
@@ -8,7 +8,19 @@ export const eventTypesApi = {
     api.get<EventType>(withBranch(`/projects/${slug}/event-types/${id}`, branchId)),
   create: (
     slug: string,
-    data: { name: string; display_name: string; description?: string; color?: string },
+    data: {
+      name: string
+      display_name: string
+      description?: string
+      color?: string
+      field_definitions?: Array<{
+        name: string
+        display_name: string
+        field_type: string
+        is_required?: boolean
+        sensitivity?: Sensitivity
+      }>
+    },
     branchId?: string | null,
   ) => api.post<EventType>(withBranch(`/projects/${slug}/event-types`, branchId), data),
   update: (

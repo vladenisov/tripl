@@ -5,6 +5,7 @@ from fastapi import APIRouter, Depends
 from tripl.api.deps import BranchIdDep, EditorUserDep, SessionDep, get_editor_user
 from tripl.models.field_definition import FieldDefinition
 from tripl.schemas.field_definition import (
+    FieldDefinitionBulkCreate,
     FieldDefinitionCreate,
     FieldDefinitionResponse,
     FieldDefinitionUpdate,
@@ -47,6 +48,32 @@ async def create_field(
         payload=data.model_dump(),
     )
     return field
+
+
+@router.post("/bulk", response_model=list[FieldDefinitionResponse], status_code=201)
+async def bulk_create_fields(
+    session: SessionDep,
+    slug: str,
+    event_type_id: uuid.UUID,
+    data: FieldDefinitionBulkCreate,
+    current_user: EditorUserDep,
+    branch_id: BranchIdDep,
+) -> list[FieldDefinition]:
+    before = await field_service.list_fields(session, slug, event_type_id, branch_id)
+    before_names = {f.name for f in before}
+    fields = await field_service.bulk_create_fields(session, slug, event_type_id, data, branch_id)
+    created = [f for f in fields if f.name not in before_names]
+    for field in created:
+        await audit_service.record(
+            session,
+            user=current_user,
+            action="field.create",
+            target_type="field_definition",
+            target_id=field.id,
+            target_name=field.name,
+            project_slug=slug,
+        )
+    return fields
 
 
 @router.patch(

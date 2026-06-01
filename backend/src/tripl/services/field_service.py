@@ -7,6 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from tripl import cache
 from tripl.models.field_definition import FieldDefinition
 from tripl.schemas.field_definition import (
+    FieldDefinitionBulkCreate,
     FieldDefinitionCreate,
     FieldDefinitionUpdate,
     FieldReorder,
@@ -54,6 +55,41 @@ async def create_field(
     if is_main:
         await cache.delete_prefix(cache.prefix_event_types(slug))
     return field
+
+
+async def bulk_create_fields(
+    session: AsyncSession,
+    slug: str,
+    event_type_id: uuid.UUID,
+    data: FieldDefinitionBulkCreate,
+    branch_id: uuid.UUID | None = None,
+) -> list[FieldDefinition]:
+    """Create the supplied fields on an event type, skipping names that already
+    exist. Idempotent so it can back a "create missing fields" action."""
+    is_main = branch_id is None
+    et = await get_event_type(session, slug, event_type_id, branch_id)
+    existing = await session.execute(
+        select(FieldDefinition).where(FieldDefinition.event_type_id == et.id)
+    )
+    existing_fields = list(existing.scalars().all())
+    existing_names = {f.name for f in existing_fields}
+    next_order = max((f.order for f in existing_fields), default=-1) + 1
+    created = False
+    seen: set[str] = set()
+    for field_in in data.fields:
+        if field_in.name in existing_names or field_in.name in seen:
+            continue
+        seen.add(field_in.name)
+        payload = field_in.model_dump()
+        payload["order"] = next_order
+        next_order += 1
+        session.add(FieldDefinition(**payload, event_type_id=et.id))
+        created = True
+    if created:
+        await session.commit()
+        if is_main:
+            await cache.delete_prefix(cache.prefix_event_types(slug))
+    return await list_fields(session, slug, event_type_id, branch_id)
 
 
 async def update_field(

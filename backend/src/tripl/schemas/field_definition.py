@@ -44,3 +44,7 @@ class FieldDefinitionResponse(BaseModel):
 
 class FieldReorder(BaseModel):
     field_ids: list[uuid.UUID]
+
+
+class FieldDefinitionBulkCreate(BaseModel):
+    fields: list[FieldDefinitionCreate] = Field(min_length=1)

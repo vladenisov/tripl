@@ -6,6 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from tripl import cache
 from tripl.models.event_type import EventType
+from tripl.models.field_definition import FieldDefinition
 from tripl.schemas.event_type import EventTypeCreate, EventTypeResponse, EventTypeUpdate
 from tripl.services.plan_branch_service import resolve_branch_id
 from tripl.services.project_service import get_project_id_by_slug
@@ -67,6 +68,7 @@ async def create_event_type(
     branch_id: uuid.UUID | None = None,
 ) -> EventType:
     is_main = branch_id is None
+    requested_branch_id = branch_id
     project_id = await get_project_id_by_slug(session, slug)
     branch_id = await resolve_branch_id(session, project_id, branch_id)
     existing = await session.execute(
@@ -80,15 +82,27 @@ async def create_event_type(
         raise HTTPException(
             status_code=409, detail="Event type with this name already exists in project"
         )
-    et = EventType(**data.model_dump(), project_id=project_id, branch_id=branch_id)
+    payload = data.model_dump(exclude={"field_definitions"})
+    et = EventType(**payload, project_id=project_id, branch_id=branch_id)
     session.add(et)
+    await session.flush()
+    seen_names: set[str] = set()
+    for idx, fd in enumerate(data.field_definitions):
+        if fd.name in seen_names:
+            raise HTTPException(
+                status_code=409, detail=f"Duplicate field name {fd.name!r} in event type"
+            )
+        seen_names.add(fd.name)
+        fd_payload = fd.model_dump()
+        fd_payload["order"] = fd.order or idx
+        session.add(FieldDefinition(**fd_payload, event_type_id=et.id))
     await session.commit()
-    await session.refresh(et)
     if is_main:
         await cache.delete_prefix(cache.prefix_event_types(slug))
         # Event types feed ProjectsPage summary counts; bust those too.
         await cache.delete_prefix(cache.prefix_projects())
-    return et
+    # Re-fetch so the selectin field_definitions relationship is populated for the response.
+    return await get_event_type(session, slug, et.id, requested_branch_id)
 
 
 async def update_event_type(

@@ -23,6 +23,22 @@ export const fieldsApi = {
       withBranch(`/projects/${slug}/event-types/${etId}/fields`, branchId),
       data,
     ),
+  bulkCreate: (
+    slug: string,
+    etId: string,
+    fields: Array<{
+      name: string
+      display_name: string
+      field_type: string
+      is_required?: boolean
+      sensitivity?: Sensitivity
+    }>,
+    branchId?: string | null,
+  ) =>
+    api.post<FieldDefinition[]>(
+      withBranch(`/projects/${slug}/event-types/${etId}/fields/bulk`, branchId),
+      { fields },
+    ),
   update: (
     slug: string,
     etId: string,
