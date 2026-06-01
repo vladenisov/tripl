@@ -34,6 +34,15 @@ def test_assert_production_ready_skipped_in_debug() -> None:
     Settings(debug=True, encryption_key="").assert_production_ready()
 
 
+def test_debug_accepts_release_env_alias(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("DEBUG", "release")
+    assert Settings().debug is False
+
+
+def test_debug_accepts_development_alias() -> None:
+    assert Settings(debug="development").debug is True
+
+
 def test_assert_production_ready_requires_encryption_key() -> None:
     s = Settings(
         debug=False,
