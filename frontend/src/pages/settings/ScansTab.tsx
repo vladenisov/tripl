@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { ChevronDown, Pencil, Plus, Search, Trash2 } from "lucide-react"
 import { dataSourcesApi } from "@/api/dataSources"
 import { eventTypesApi } from "@/api/eventTypes"
+import { fieldsApi } from "@/api/fields"
 import { scansApi } from "@/api/scans"
 import type {
   DataSource,
@@ -136,6 +137,63 @@ function ScanPreviewPanel({
 
 function isJsonPreviewType(typeName: string) {
   return typeName.toLowerCase().includes('json')
+}
+
+// When a scan targets an explicit event type, its base-query columns must exist as
+// field definitions on that event type or the scan generates nothing. This derives the
+// missing fields straight from the loaded preview so names always match the query.
+function CreateMissingFieldsButton({
+  slug,
+  eventType,
+  preview,
+  eventTypeColumn,
+  timeColumn,
+}: {
+  slug: string
+  eventType: EventType | undefined
+  preview: ScanConfigPreview | null
+  eventTypeColumn: string
+  timeColumn: string
+}) {
+  const qc = useQueryClient()
+  const mutation = useMutation({
+    mutationFn: (fields: { name: string; display_name: string; field_type: string }[]) =>
+      fieldsApi.bulkCreate(slug, eventType!.id, fields),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['eventTypes', slug] }),
+  })
+
+  if (!eventType || !preview) return null
+
+  const reserved = new Set([eventTypeColumn, timeColumn].filter(Boolean))
+  const existing = new Set(eventType.field_definitions.map(f => f.name))
+  const missing = preview.columns.filter(c => !reserved.has(c.name) && !existing.has(c.name))
+
+  return (
+    <div className="flex items-center justify-between rounded-md border border-dashed bg-muted/10 px-3 py-2">
+      <p className="text-xs text-muted-foreground">
+        {missing.length === 0
+          ? `All preview columns already exist as fields on "${eventType.display_name}".`
+          : `${missing.length} preview column${missing.length === 1 ? '' : 's'} have no matching field on "${eventType.display_name}" — the scan will skip ${missing.length === 1 ? 'it' : 'them'}.`}
+      </p>
+      <Button
+        type="button"
+        variant="outline"
+        size="sm"
+        disabled={missing.length === 0 || mutation.isPending}
+        onClick={() =>
+          mutation.mutate(
+            missing.map(c => ({
+              name: c.name,
+              display_name: c.name,
+              field_type: isJsonPreviewType(c.type_name) ? 'json' : 'string',
+            })),
+          )
+        }
+      >
+        {mutation.isPending ? 'Creating…' : `Create ${missing.length} field${missing.length === 1 ? '' : 's'}`}
+      </Button>
+    </div>
+  )
 }
 
 function MetricBreakdownPicker({
@@ -634,6 +692,15 @@ export function ScansTab({ slug }: { slug: string }) {
                 </div>
                 <div className="grid gap-2"><Label>Event Name Format (optional)</Label><Input value={eventNameFormat} onChange={e => setEventNameFormat(e.target.value)} placeholder="e.g. {action}:{category}" /></div>
               </div>
+              {preview && eventTypeId && (
+                <CreateMissingFieldsButton
+                  slug={slug}
+                  eventType={eventTypes.find((et: EventType) => et.id === eventTypeId)}
+                  preview={preview}
+                  eventTypeColumn={eventTypeColumn}
+                  timeColumn={timeColumn}
+                />
+              )}
               {preview && (
                 <ScanPreviewPanel
                   preview={preview}
@@ -795,6 +862,15 @@ export function ScansTab({ slug }: { slug: string }) {
                 </div>
                 <div className="grid gap-2"><Label>Event Name Format (optional)</Label><Input value={editEventNameFormat} onChange={e => setEditEventNameFormat(e.target.value)} placeholder="e.g. {action}:{category}" /></div>
               </div>
+              {editPreview && editEventTypeId && (
+                <CreateMissingFieldsButton
+                  slug={slug}
+                  eventType={eventTypes.find((et: EventType) => et.id === editEventTypeId)}
+                  preview={editPreview}
+                  eventTypeColumn={editEventTypeColumn}
+                  timeColumn={editTimeColumn}
+                />
+              )}
               {editPreview && (
                 <ScanPreviewPanel
                   preview={editPreview}

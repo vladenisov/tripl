@@ -21,6 +21,15 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 import { EmptyState } from '@/components/empty-state'
 import { SensitivityChip } from '@/components/primitives/sensitivity-chip'
 
+const FIELD_TYPES = ['string', 'number', 'boolean', 'json', 'enum', 'url']
+
+interface DraftField {
+  name: string
+  display_name: string
+  field_type: string
+  is_required: boolean
+}
+
 export function EventTypesTab({ slug }: { slug: string }) {
   const qc = useQueryClient()
   const branchId = useActiveBranchId()
@@ -28,6 +37,7 @@ export function EventTypesTab({ slug }: { slug: string }) {
   const [name, setName] = useState('')
   const [displayName, setDisplayName] = useState('')
   const [color, setColor] = useState('#6366f1')
+  const [draftFields, setDraftFields] = useState<DraftField[]>([])
   const [expandedId, setExpandedId] = useState<string | null>(null)
   const [editingEt, setEditingEt] = useState<EventType | null>(null)
   const [editDisplayName, setEditDisplayName] = useState('')
@@ -41,10 +51,19 @@ export function EventTypesTab({ slug }: { slug: string }) {
   })
 
   const createMut = useMutation({
-    mutationFn: () => eventTypesApi.create(slug, { name, display_name: displayName, color }, branchId),
+    mutationFn: () => {
+      const fields = draftFields
+        .map(f => ({ ...f, name: f.name.trim(), display_name: f.display_name.trim() || f.name.trim() }))
+        .filter(f => f.name)
+      return eventTypesApi.create(
+        slug,
+        { name, display_name: displayName, color, ...(fields.length > 0 ? { field_definitions: fields } : {}) },
+        branchId,
+      )
+    },
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['eventTypes', slug, branchId] })
-      setShowForm(false); setName(''); setDisplayName(''); setColor('#6366f1')
+      setShowForm(false); setName(''); setDisplayName(''); setColor('#6366f1'); setDraftFields([])
     },
   })
 
@@ -90,7 +109,7 @@ export function EventTypesTab({ slug }: { slug: string }) {
       </div>
 
       {/* Create dialog */}
-      <Dialog open={showForm} onOpenChange={setShowForm}>
+      <Dialog open={showForm} onOpenChange={v => { setShowForm(v); if (!v) setDraftFields([]) }}>
         <DialogContent>
           <form onSubmit={e => { e.preventDefault(); createMut.mutate() }}>
             <DialogHeader><DialogTitle>New Event Type</DialogTitle></DialogHeader>
@@ -109,10 +128,65 @@ export function EventTypesTab({ slug }: { slug: string }) {
                   <input type="color" value={color} onChange={e => setColor(e.target.value)} className="h-9 w-full cursor-pointer rounded-md border border-input" />
                 </div>
               </div>
+
+              <div className="space-y-2">
+                <div className="flex items-center justify-between">
+                  <Label className="text-xs uppercase tracking-wide text-muted-foreground">Fields</Label>
+                  <Button
+                    type="button" variant="ghost" size="sm" className="h-7 text-xs"
+                    onClick={() => setDraftFields(fs => [...fs, { name: '', display_name: '', field_type: 'string', is_required: false }])}
+                  >
+                    <Plus className="mr-1 h-3 w-3" />Add Field
+                  </Button>
+                </div>
+                {draftFields.length === 0 ? (
+                  <p className="text-xs text-muted-foreground">
+                    Add the fields the scan should populate. Field names must match the query columns
+                    (e.g. <span className="font-mono">event_name</span>), or the scan finds nothing.
+                  </p>
+                ) : (
+                  <div className="space-y-1.5">
+                    {draftFields.map((f, idx) => (
+                      <div key={idx} className="flex items-center gap-2">
+                        <Input
+                          value={f.name} placeholder="name (matches column)"
+                          className="h-8 flex-1 font-mono text-xs"
+                          onChange={e => setDraftFields(fs => fs.map((x, i) => i === idx ? { ...x, name: e.target.value } : x))}
+                        />
+                        <Input
+                          value={f.display_name} placeholder="display (optional)"
+                          className="h-8 flex-1 text-xs"
+                          onChange={e => setDraftFields(fs => fs.map((x, i) => i === idx ? { ...x, display_name: e.target.value } : x))}
+                        />
+                        <select
+                          value={f.field_type}
+                          className="h-8 w-24 rounded-md border border-input bg-transparent px-2 text-xs"
+                          onChange={e => setDraftFields(fs => fs.map((x, i) => i === idx ? { ...x, field_type: e.target.value } : x))}
+                        >
+                          {FIELD_TYPES.map(t => <option key={t}>{t}</option>)}
+                        </select>
+                        <div className="flex items-center gap-1" title="Required">
+                          <Checkbox
+                            checked={f.is_required}
+                            onCheckedChange={c => setDraftFields(fs => fs.map((x, i) => i === idx ? { ...x, is_required: !!c } : x))}
+                          />
+                          <span className="text-[10px] text-muted-foreground">Req</span>
+                        </div>
+                        <Button
+                          type="button" variant="ghost" size="icon" className="h-7 w-7 text-muted-foreground hover:text-destructive"
+                          onClick={() => setDraftFields(fs => fs.filter((_, i) => i !== idx))}
+                        >
+                          <Trash2 className="h-3.5 w-3.5" />
+                        </Button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
               {createMut.isError && <p className="text-sm text-destructive">{(createMut.error as Error).message}</p>}
             </div>
             <DialogFooter>
-              <Button type="button" variant="outline" onClick={() => setShowForm(false)}>Cancel</Button>
+              <Button type="button" variant="outline" onClick={() => { setShowForm(false); setDraftFields([]) }}>Cancel</Button>
               <Button type="submit" disabled={createMut.isPending}>Create</Button>
             </DialogFooter>
           </form>
@@ -291,7 +365,7 @@ function FieldsEditor({ slug, eventType, branchId }: { slug: string; eventType: 
     reorderMut.mutate(reordered.map(f => f.id))
   }
 
-  const fieldTypes = ['string', 'number', 'boolean', 'json', 'enum', 'url']
+  const fieldTypes = FIELD_TYPES
 
   return (
     <div className="border-t px-4 py-4 bg-muted/30 space-y-3">

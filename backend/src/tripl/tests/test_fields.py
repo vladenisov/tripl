@@ -131,6 +131,49 @@ async def test_field_sensitivity_round_trip(client: AsyncClient):
 
 
 @pytest.mark.asyncio
+async def test_create_event_type_with_fields(client: AsyncClient):
+    await client.post("/api/v1/projects", json={"name": "ETF", "slug": "etf-proj"})
+    resp = await client.post(
+        "/api/v1/projects/etf-proj/event-types",
+        json={
+            "name": "old",
+            "display_name": "Old events",
+            "field_definitions": [
+                {"name": "event_name", "display_name": "Event name", "field_type": "string"},
+                {"name": "event_property", "display_name": "Property", "field_type": "json"},
+            ],
+        },
+    )
+    assert resp.status_code == 201
+    fields = resp.json()["field_definitions"]
+    assert [f["name"] for f in fields] == ["event_name", "event_property"]
+    assert [f["order"] for f in fields] == [0, 1]
+
+
+@pytest.mark.asyncio
+async def test_bulk_create_fields_skips_existing(client: AsyncClient):
+    et_id = await _setup(client, "f-bulk")
+    await client.post(
+        f"/api/v1/projects/f-bulk/event-types/{et_id}/fields",
+        json={"name": "event_name", "display_name": "Event name", "field_type": "string"},
+    )
+    resp = await client.post(
+        f"/api/v1/projects/f-bulk/event-types/{et_id}/fields/bulk",
+        json={
+            "fields": [
+                {"name": "event_name", "display_name": "dup", "field_type": "string"},
+                {"name": "event_property", "display_name": "event_property", "field_type": "json"},
+            ]
+        },
+    )
+    assert resp.status_code == 201
+    names = [f["name"] for f in resp.json()]
+    assert names == ["event_name", "event_property"]
+    # Existing field was not duplicated or overwritten.
+    assert sum(1 for n in names if n == "event_name") == 1
+
+
+@pytest.mark.asyncio
 async def test_reorder_fields(client: AsyncClient):
     et_id = await _setup(client, "f-reorder")
     r1 = await client.post(

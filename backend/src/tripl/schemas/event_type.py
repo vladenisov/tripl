@@ -3,7 +3,7 @@ from datetime import datetime
 
 from pydantic import BaseModel, Field
 
-from tripl.schemas.field_definition import FieldDefinitionResponse
+from tripl.schemas.field_definition import FieldDefinitionCreate, FieldDefinitionResponse
 
 
 class EventTypeCreate(BaseModel):
@@ -12,6 +12,7 @@ class EventTypeCreate(BaseModel):
     description: str = ""
     color: str = Field(default="#6366f1", pattern=r"^#[0-9a-fA-F]{6}$")
     order: int = 0
+    field_definitions: list[FieldDefinitionCreate] = Field(default_factory=list)
 
 
 class EventTypeUpdate(BaseModel):
