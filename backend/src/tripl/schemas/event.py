@@ -2,7 +2,7 @@ import uuid
 from datetime import datetime
 from typing import Literal
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from tripl.schemas.event_type import EventTypeBrief
 
@@ -71,6 +71,19 @@ def _normalize_metric_breakdown_columns(value: list[str]) -> list[str]:
 
 class EventBulkDelete(BaseModel):
     event_ids: list[uuid.UUID] = Field(min_length=1)
+
+
+class EventBulkUpdate(BaseModel):
+    event_ids: list[uuid.UUID] = Field(min_length=1)
+    implemented: bool | None = None
+    reviewed: bool | None = None
+    archived: bool | None = None
+
+    @model_validator(mode="after")
+    def validate_has_update(self) -> "EventBulkUpdate":
+        if self.implemented is None and self.reviewed is None and self.archived is None:
+            raise ValueError("At least one event state field must be provided")
+        return self
 
 
 class EventMove(BaseModel):

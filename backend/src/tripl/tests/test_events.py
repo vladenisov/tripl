@@ -273,6 +273,80 @@ async def test_bulk_delete_events(client: AsyncClient):
 
 
 @pytest.mark.asyncio
+async def test_bulk_update_events_state(client: AsyncClient):
+    et_id, field_id, _ = await _setup_events(client, "ev-bulk-update")
+    first = await client.post(
+        "/api/v1/projects/ev-bulk-update/events",
+        json={
+            "event_type_id": et_id,
+            "name": "First",
+            "reviewed": True,
+            "archived": False,
+            "field_values": [{"field_definition_id": field_id, "value": "a"}],
+        },
+    )
+    second = await client.post(
+        "/api/v1/projects/ev-bulk-update/events",
+        json={
+            "event_type_id": et_id,
+            "name": "Second",
+            "reviewed": True,
+            "archived": False,
+            "field_values": [{"field_definition_id": field_id, "value": "b"}],
+        },
+    )
+
+    resp = await client.post(
+        "/api/v1/projects/ev-bulk-update/events/bulk-update",
+        json={
+            "event_ids": [first.json()["id"], second.json()["id"]],
+            "reviewed": False,
+            "archived": False,
+        },
+    )
+
+    assert resp.status_code == 204
+    review_resp = await client.get(
+        "/api/v1/projects/ev-bulk-update/events?reviewed=false&archived=false"
+    )
+    assert review_resp.status_code == 200
+    assert review_resp.json()["total"] == 2
+
+    archive_resp = await client.post(
+        "/api/v1/projects/ev-bulk-update/events/bulk-update",
+        json={
+            "event_ids": [first.json()["id"], second.json()["id"]],
+            "archived": True,
+        },
+    )
+
+    assert archive_resp.status_code == 204
+    archived_list = await client.get("/api/v1/projects/ev-bulk-update/events?archived=true")
+    assert archived_list.status_code == 200
+    assert archived_list.json()["total"] == 2
+
+
+@pytest.mark.asyncio
+async def test_bulk_update_events_requires_state_field(client: AsyncClient):
+    et_id, field_id, _ = await _setup_events(client, "ev-bulk-update-empty")
+    event = await client.post(
+        "/api/v1/projects/ev-bulk-update-empty/events",
+        json={
+            "event_type_id": et_id,
+            "name": "First",
+            "field_values": [{"field_definition_id": field_id, "value": "a"}],
+        },
+    )
+
+    resp = await client.post(
+        "/api/v1/projects/ev-bulk-update-empty/events/bulk-update",
+        json={"event_ids": [event.json()["id"]]},
+    )
+
+    assert resp.status_code == 422
+
+
+@pytest.mark.asyncio
 async def test_create_event_with_tags_and_implemented(client: AsyncClient):
     et_id, field_id, _ = await _setup_events(client, "ev-tags")
     resp = await client.post(

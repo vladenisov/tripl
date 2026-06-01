@@ -466,4 +466,127 @@ describe('EventsPage', () => {
       expect(bulkDeleteBodies).toContainEqual({ event_ids: ['event-1', 'event-2'] })
     })
   })
+
+  it('supports bulk state actions for selected events', async () => {
+    const bulkUpdateBodies: unknown[] = []
+
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const url = String(input)
+
+      if (url.endsWith('/api/v1/projects/demo/event-types')) {
+        return mockJsonResponse([
+          {
+            id: 'type-1',
+            project_id: 'project-1',
+            name: 'page',
+            display_name: 'Page',
+            description: '',
+            color: '#0ea5e9',
+            order: 0,
+            created_at: '2026-01-01T00:00:00Z',
+            updated_at: '2026-01-01T00:00:00Z',
+            field_definitions: [],
+          },
+        ])
+      }
+      if (url.endsWith('/api/v1/projects/demo/meta-fields')) return mockJsonResponse([])
+      if (url.endsWith('/api/v1/projects/demo/variables')) return mockJsonResponse([])
+      if (url.endsWith('/api/v1/projects/demo/events/tags')) return mockJsonResponse([])
+      if (url.includes('/api/v1/projects/demo/events?reviewed=false')) return mockJsonResponse({ items: [], total: 0 })
+      if (url.includes('/api/v1/projects/demo/events?archived=true')) return mockJsonResponse({ items: [], total: 0 })
+      if (url.includes('/api/v1/projects/demo/events-metrics')) {
+        return mockJsonResponse({
+          scope: 'events_total',
+          scan_config_id: null,
+          event_id: null,
+          event_type_id: null,
+          interval: '1h',
+          latest_signal: null,
+          data: [],
+        })
+      }
+      if (url.endsWith('/api/v1/projects/demo/events/window-metrics') && init?.method === 'POST') {
+        return mockJsonResponse([])
+      }
+      if (url.includes('/api/v1/projects/demo/anomalies/signals')) return mockJsonResponse([])
+      if (url.endsWith('/api/v1/projects/demo/events/bulk-update') && init?.method === 'POST') {
+        bulkUpdateBodies.push(JSON.parse(String(init.body)))
+        return new Response(null, { status: 204 })
+      }
+      if (url.includes('/api/v1/projects/demo/events')) {
+        return mockJsonResponse({
+          items: [
+            {
+              id: 'event-1',
+              project_id: 'project-1',
+              event_type_id: 'type-1',
+              event_type: {
+                id: 'type-1',
+                name: 'page',
+                display_name: 'Page',
+                color: '#0ea5e9',
+              },
+              name: 'Homepage View',
+              description: '',
+              order: 0,
+              implemented: true,
+              reviewed: true,
+              archived: false,
+              tags: [],
+              field_values: [],
+              meta_values: [],
+              created_at: '2026-01-01T00:00:00Z',
+              updated_at: '2026-01-01T00:00:00Z',
+            },
+            {
+              id: 'event-2',
+              project_id: 'project-1',
+              event_type_id: 'type-1',
+              event_type: {
+                id: 'type-1',
+                name: 'page',
+                display_name: 'Page',
+                color: '#0ea5e9',
+              },
+              name: 'Settings View',
+              description: '',
+              order: 1,
+              implemented: false,
+              reviewed: true,
+              archived: false,
+              tags: [],
+              field_values: [],
+              meta_values: [],
+              created_at: '2026-01-01T00:00:00Z',
+              updated_at: '2026-01-01T00:00:00Z',
+            },
+          ],
+          total: 2,
+        })
+      }
+
+      throw new Error(`Unhandled fetch: ${url}`)
+    })
+
+    renderEventsPage()
+
+    expect(await screen.findByText('Homepage View')).toBeInTheDocument()
+    fireEvent.click(screen.getByLabelText('Select Homepage View'))
+    fireEvent.click(screen.getByLabelText('Select Settings View'))
+
+    expect(screen.getByRole('button', { name: 'Mark reviewed' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Send to review' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Archive' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Restore' })).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Send to review' }))
+
+    await waitFor(() => {
+      expect(bulkUpdateBodies).toContainEqual({
+        event_ids: ['event-1', 'event-2'],
+        reviewed: false,
+        archived: false,
+      })
+    })
+  })
 })

@@ -6,6 +6,7 @@ from tripl.api.deps import BranchIdDep, SessionDep, get_editor_user
 from tripl.models.event import Event
 from tripl.schemas.event import (
     EventBulkDelete,
+    EventBulkUpdate,
     EventCreate,
     EventListResponse,
     EventMove,
@@ -89,6 +90,13 @@ async def bulk_delete_events(
     session: SessionDep, slug: str, data: EventBulkDelete, branch_id: BranchIdDep
 ) -> None:
     await event_service.bulk_delete_events(session, slug, data, branch_id)
+
+
+@router.post("/bulk-update", status_code=204, dependencies=_editor_required)
+async def bulk_update_events(
+    session: SessionDep, slug: str, data: EventBulkUpdate, branch_id: BranchIdDep
+) -> None:
+    await event_service.bulk_update_events(session, slug, data, branch_id)
 
 
 @router.patch(
