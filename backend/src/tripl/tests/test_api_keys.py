@@ -14,10 +14,13 @@ async def _issue_key(
     name: str = "agent",
     scope: str = "read",
     expires_in_days: int | None = None,
+    project_slug: str | None = None,
 ) -> tuple[str, str]:
     payload: dict[str, object] = {"name": name, "scope": scope}
     if expires_in_days is not None:
         payload["expires_in_days"] = expires_in_days
+    if project_slug is not None:
+        payload["project_slug"] = project_slug
     resp = await client.post("/api/v1/me/api-keys", json=payload)
     assert resp.status_code == 201, resp.text
     body = resp.json()
@@ -183,6 +186,72 @@ async def test_expires_in_days_validation(client: AsyncClient) -> None:
     )
     assert good.status_code == 201
     assert good.json()["expires_at"] is not None
+
+
+@pytest.mark.asyncio
+async def test_project_scoped_key_reaches_only_its_project(
+    anon_client: AsyncClient, client: AsyncClient
+) -> None:
+    """A key bound to one project authenticates that project's routes and is
+    rejected (403) on any other project."""
+    await client.post("/api/v1/projects", json={"name": "A", "slug": "scoped-a"})
+    await client.post("/api/v1/projects", json={"name": "B", "slug": "scoped-b"})
+    _key_id, token = await _issue_key(client, scope="read", project_slug="scoped-a")
+
+    ok = await anon_client.get("/api/v1/projects/scoped-a/event-types", headers=_bearer(token))
+    assert ok.status_code == 200
+
+    denied = await anon_client.get(
+        "/api/v1/projects/scoped-b/event-types", headers=_bearer(token)
+    )
+    assert denied.status_code == 403
+    assert "not authorized for this project" in denied.json()["detail"].lower()
+
+
+@pytest.mark.asyncio
+async def test_project_scoped_key_rejected_on_instance_routes(
+    anon_client: AsyncClient, client: AsyncClient
+) -> None:
+    """A project-bound key can't reach routes that lack a project slug (the
+    instance-wide surfaces like the project list or user directory)."""
+    await client.post("/api/v1/projects", json={"name": "A", "slug": "scoped-only"})
+    _key_id, token = await _issue_key(client, scope="read", project_slug="scoped-only")
+
+    listing = await anon_client.get("/api/v1/projects", headers=_bearer(token))
+    assert listing.status_code == 403
+    assert "scoped to a single project" in listing.json()["detail"].lower()
+
+
+@pytest.mark.asyncio
+async def test_create_key_with_unknown_project_is_rejected(client: AsyncClient) -> None:
+    resp = await client.post(
+        "/api/v1/me/api-keys",
+        json={"name": "k", "scope": "read", "project_slug": "does-not-exist"},
+    )
+    assert resp.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_unscoped_key_keeps_cross_project_access(
+    anon_client: AsyncClient, client: AsyncClient
+) -> None:
+    """Keys minted without a project_slug retain the legacy cross-project reach
+    and the response reports a null project_id."""
+    await client.post("/api/v1/projects", json={"name": "A", "slug": "unscoped-a"})
+    await client.post("/api/v1/projects", json={"name": "B", "slug": "unscoped-b"})
+    create = await client.post(
+        "/api/v1/me/api-keys", json={"name": "wide", "scope": "read"}
+    )
+    assert create.status_code == 201
+    body = create.json()
+    assert body["project_id"] is None
+    token = body["token"]
+
+    for slug in ("unscoped-a", "unscoped-b"):
+        resp = await anon_client.get(
+            f"/api/v1/projects/{slug}/event-types", headers=_bearer(token)
+        )
+        assert resp.status_code == 200
 
 
 @pytest.mark.asyncio

@@ -12,6 +12,7 @@ from tripl.models.project import Project
 from tripl.models.user import User
 from tripl.services import api_key_service
 from tripl.services.auth_service import get_user_by_session_token
+from tripl.services.project_service import get_project_id_by_slug
 
 SessionDep = Annotated[AsyncSession, Depends(get_session)]
 
@@ -38,13 +39,39 @@ async def _resolve_api_key_user(request: Request, session: AsyncSession) -> User
     # Stash on request.state so role/scope checks downstream can tell whether
     # the caller is a session user or an API-key client.
     request.state.api_key_scope = api_key.scope
+    request.state.api_key_project_id = api_key.project_id
     return await session.get(User, api_key.user_id)
+
+
+async def _enforce_project_scope(
+    request: Request, session: AsyncSession, project_id: uuid.UUID
+) -> None:
+    """A project-bound API key may only touch its own ``/projects/{slug}/...``.
+
+    Routes without a ``slug`` path param (``/me/...``, ``/users``, ...) are
+    off-limits to a project-scoped key — it exists to fence an agent into one
+    project, so anything instance-wide is rejected rather than silently allowed.
+    """
+    slug = request.path_params.get("slug")
+    if not slug:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="API key is scoped to a single project",
+        )
+    if await get_project_id_by_slug(session, slug) != project_id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="API key is not authorized for this project",
+        )
 
 
 async def get_current_user(request: Request, session: SessionDep) -> User:
     # Bearer first — agents shouldn't need to send cookies.
     api_user = await _resolve_api_key_user(request, session)
     if api_user is not None:
+        project_id = getattr(request.state, "api_key_project_id", None)
+        if project_id is not None:
+            await _enforce_project_scope(request, session, project_id)
         return api_user
 
     session_token = request.cookies.get(settings.session_cookie_name)

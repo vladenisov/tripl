@@ -56,6 +56,8 @@ async def list_events(
     offset: int = 0,
     limit: int = 200,
     silent_since_days: int | None = None,
+    field_value: str | None = None,
+    meta_value: str | None = None,
     branch_id: uuid.UUID | None = None,
 ) -> tuple[list[Event], int]:
     project_id = await get_project_id_by_slug(session, slug)
@@ -75,8 +77,14 @@ async def list_events(
         query = query.where(Event.event_type_id == event_type_id)
         count_query = count_query.where(Event.event_type_id == event_type_id)
     if search:
-        query = query.where(Event.name.ilike(f"%{search}%"))
-        count_query = count_query.where(Event.name.ilike(f"%{search}%"))
+        # Agents search the catalog by free text — match the human-readable
+        # name OR the longer description, not just the name.
+        search_clause = or_(
+            Event.name.ilike(f"%{search}%"),
+            Event.description.ilike(f"%{search}%"),
+        )
+        query = query.where(search_clause)
+        count_query = count_query.where(search_clause)
     if implemented is not None:
         query = query.where(Event.implemented == implemented)
         count_query = count_query.where(Event.implemented == implemented)
@@ -90,6 +98,22 @@ async def list_events(
         tag_filter = select(EventTag.event_id).where(EventTag.name == tag).correlate(None)
         query = query.where(Event.id.in_(tag_filter))
         count_query = count_query.where(Event.id.in_(tag_filter))
+    if field_value:
+        fv_filter = (
+            select(EventFieldValue.event_id)
+            .where(EventFieldValue.value.ilike(f"%{field_value}%"))
+            .correlate(None)
+        )
+        query = query.where(Event.id.in_(fv_filter))
+        count_query = count_query.where(Event.id.in_(fv_filter))
+    if meta_value:
+        mv_filter = (
+            select(EventMetaValue.event_id)
+            .where(EventMetaValue.value.ilike(f"%{meta_value}%"))
+            .correlate(None)
+        )
+        query = query.where(Event.id.in_(mv_filter))
+        count_query = count_query.where(Event.id.in_(mv_filter))
     if silent_since_days is not None and silent_since_days >= 0:
         cutoff = datetime.now(UTC) - timedelta(days=silent_since_days)
         silent_clause = or_(Event.last_seen_at.is_(None), Event.last_seen_at < cutoff)

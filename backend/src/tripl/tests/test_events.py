@@ -123,6 +123,88 @@ async def test_list_events_search(client: AsyncClient):
 
 
 @pytest.mark.asyncio
+async def test_list_events_search_matches_description(client: AsyncClient):
+    """``search`` covers the description, not only the name — so an agent can
+    find an event by a word that only appears in its prose."""
+    et_id, field_id, _ = await _setup_events(client, "ev-desc")
+    await client.post(
+        "/api/v1/projects/ev-desc/events",
+        json={
+            "event_type_id": et_id,
+            "name": "Generic Name",
+            "description": "Fires on successful checkout completion",
+            "field_values": [{"field_definition_id": field_id, "value": "s"}],
+        },
+    )
+    await client.post(
+        "/api/v1/projects/ev-desc/events",
+        json={
+            "event_type_id": et_id,
+            "name": "Another Name",
+            "description": "Unrelated prose",
+            "field_values": [{"field_definition_id": field_id, "value": "s"}],
+        },
+    )
+    resp = await client.get("/api/v1/projects/ev-desc/events?search=checkout")
+    body = resp.json()
+    assert body["total"] == 1
+    assert body["items"][0]["name"] == "Generic Name"
+
+
+@pytest.mark.asyncio
+async def test_list_events_filter_by_field_value(client: AsyncClient):
+    et_id, field_id, meta_id = await _setup_events(client, "ev-fv")
+    await client.post(
+        "/api/v1/projects/ev-fv/events",
+        json={
+            "event_type_id": et_id,
+            "name": "Home",
+            "field_values": [{"field_definition_id": field_id, "value": "home_screen"}],
+        },
+    )
+    await client.post(
+        "/api/v1/projects/ev-fv/events",
+        json={
+            "event_type_id": et_id,
+            "name": "Settings",
+            "field_values": [{"field_definition_id": field_id, "value": "settings_screen"}],
+        },
+    )
+    resp = await client.get("/api/v1/projects/ev-fv/events?field_value=home")
+    body = resp.json()
+    assert body["total"] == 1
+    assert body["items"][0]["name"] == "Home"
+
+
+@pytest.mark.asyncio
+async def test_list_events_filter_by_meta_value(client: AsyncClient):
+    et_id, field_id, meta_id = await _setup_events(client, "ev-mv")
+    await client.post(
+        "/api/v1/projects/ev-mv/events",
+        json={
+            "event_type_id": et_id,
+            "name": "Tracked",
+            "field_values": [{"field_definition_id": field_id, "value": "s"}],
+            "meta_values": [
+                {"meta_field_definition_id": meta_id, "value": "https://jira.example.com/TICK-42"}
+            ],
+        },
+    )
+    await client.post(
+        "/api/v1/projects/ev-mv/events",
+        json={
+            "event_type_id": et_id,
+            "name": "Untracked",
+            "field_values": [{"field_definition_id": field_id, "value": "s"}],
+        },
+    )
+    resp = await client.get("/api/v1/projects/ev-mv/events?meta_value=TICK-42")
+    body = resp.json()
+    assert body["total"] == 1
+    assert body["items"][0]["name"] == "Tracked"
+
+
+@pytest.mark.asyncio
 async def test_update_event(client: AsyncClient):
     et_id, field_id, _ = await _setup_events(client, "ev-upd")
     create = await client.post(

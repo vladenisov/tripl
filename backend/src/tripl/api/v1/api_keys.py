@@ -18,7 +18,7 @@ from tripl.schemas.api_key import (
     ApiKeyCreateResponse,
     ApiKeyResponse,
 )
-from tripl.services import api_key_service, audit_service
+from tripl.services import api_key_service, audit_service, project_service
 
 router = APIRouter(prefix="/me/api-keys", tags=["api-keys"])
 
@@ -35,12 +35,20 @@ async def create_api_key(
     current_user: WriteUserDep,
     data: ApiKeyCreate,
 ) -> ApiKeyCreateResponse:
+    # A project-bound key validates the slug up front so operators can't mint
+    # a key pointing at a project that doesn't exist.
+    project_id = (
+        await project_service.get_project_id_by_slug(session, data.project_slug)
+        if data.project_slug is not None
+        else None
+    )
     row, raw_token = await api_key_service.create_key(
         session,
         current_user.id,
         name=data.name,
         scope=data.scope,
         expires_in_days=data.expires_in_days,
+        project_id=project_id,
     )
     await audit_service.record(
         session,
@@ -49,14 +57,15 @@ async def create_api_key(
         target_type="api_key",
         target_id=row.id,
         target_name=row.name,
-        project_slug=None,
-        payload={"scope": row.scope},
+        project_slug=data.project_slug,
+        payload={"scope": row.scope, "project_id": str(project_id) if project_id else None},
     )
     return ApiKeyCreateResponse(
         id=row.id,
         name=row.name,
         key_prefix=row.key_prefix,
         scope=row.scope,
+        project_id=row.project_id,
         expires_at=row.expires_at,
         revoked_at=row.revoked_at,
         last_used_at=row.last_used_at,
