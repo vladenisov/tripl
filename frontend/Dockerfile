@@ -26,18 +26,19 @@ FROM base AS build
 RUN --mount=type=cache,id=pnpm,target=/pnpm/store \
     pnpm build
 
-FROM nginx:alpine AS runtime
+# Install nginx AND the brotli module from the same alpine repo so their
+# versions match. The official `nginx:*-alpine` image compiles nginx itself,
+# which diverges from the community `nginx-mod-http-brotli` build → nginx
+# fails at load with "module version X instead of Y". Pinning the alpine
+# release keeps nginx (1.28.3) and the brotli module in lockstep.
+FROM alpine:3.22 AS runtime
 
-# ngx_brotli isn't compiled into the upstream nginx image; pull it from the
-# Alpine community repo. The module file lives at /usr/lib/nginx/modules/
-# and is loaded explicitly in our nginx.conf.
-RUN apk add --no-cache nginx-mod-http-brotli
+RUN apk add --no-cache nginx nginx-mod-http-brotli
 
 COPY --from=build /app/dist /usr/share/nginx/html
-# Override the upstream main config (we need top-level load_module directives
-# for brotli; default.conf in conf.d would be too late).
+# Our nginx.conf has top-level load_module directives for brotli and fully
+# replaces the packaged config.
 COPY nginx.conf /etc/nginx/nginx.conf
-RUN rm -f /etc/nginx/conf.d/default.conf
 
 EXPOSE 5173
 
