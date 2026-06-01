@@ -186,6 +186,43 @@ class TestEventGeneration:
         )
         assert len(variables) >= 1
 
+    def test_event_name_column_enumerated_despite_high_cardinality(
+        self, sync_session: Session, project_and_type
+    ):
+        """A high-cardinality column used as the event name must enumerate one event per
+        distinct value instead of collapsing into a single ${col} template."""
+        project, et, fds = project_and_type
+        actions = [f"evt_{i}" for i in range(150)]
+        cardinality = {
+            "action": CardinalityResult(
+                column=ColumnInfo("action", "String"),
+                count=150,
+                is_low=False,
+                sample_values=actions,
+            ),
+        }
+        analysis = _make_analysis(cardinality)
+        result = generate_events(
+            sync_session,
+            project.id,
+            et.id,
+            analysis,
+            fds,
+            event_name_format="{action}",
+        )
+        sync_session.commit()
+
+        assert result.events_created == 150
+        events = (
+            sync_session.execute(select(Event).where(Event.project_id == project.id))
+            .scalars()
+            .all()
+        )
+        names = {e.name for e in events}
+        assert "${action}" not in names
+        assert "evt_0" in names
+        assert "evt_149" in names
+
     def test_dedup_skips_existing(self, sync_session: Session, project_and_type):
         project, et, fds = project_and_type
         cardinality = {
