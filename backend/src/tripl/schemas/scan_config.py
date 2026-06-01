@@ -24,9 +24,7 @@ def check_scalar_columns_unreserved(
     """
     reserved = {column for column in (event_type_column, time_column) if column}
     if set(metric_breakdown_columns) & reserved:
-        raise ValueError(
-            "metric_breakdown_columns cannot include event_type_column or time_column"
-        )
+        raise ValueError("metric_breakdown_columns cannot include event_type_column or time_column")
     if set(distribution_drift_fields) & reserved:
         raise ValueError(
             "distribution_drift_fields cannot include event_type_column or time_column"

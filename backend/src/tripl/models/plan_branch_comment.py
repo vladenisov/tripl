@@ -14,9 +14,7 @@ class PlanBranchComment(UUIDMixin, TimestampMixin, Base):
     __tablename__ = "plan_branch_comments"
     __table_args__ = (Index("ix_plan_branch_comment_branch", "branch_id"),)
 
-    branch_id: Mapped[uuid.UUID] = mapped_column(
-        ForeignKey("plan_branches.id", ondelete="CASCADE")
-    )
+    branch_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("plan_branches.id", ondelete="CASCADE"))
     # Self-FK for threaded replies. NULL = top-level comment.
     parent_id: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("plan_branch_comments.id", ondelete="CASCADE"), nullable=True

@@ -14,9 +14,7 @@ class PlanBranchApproval(UUIDMixin, Base):
     to draft/changes_requested so stale approvals don't gate a later merge."""
 
     __tablename__ = "plan_branch_approvals"
-    __table_args__ = (
-        UniqueConstraint("branch_id", "user_id", name="uq_plan_branch_approval"),
-    )
+    __table_args__ = (UniqueConstraint("branch_id", "user_id", name="uq_plan_branch_approval"),)
 
     branch_id: Mapped[uuid.UUID] = mapped_column(
         ForeignKey("plan_branches.id", ondelete="CASCADE"), index=True

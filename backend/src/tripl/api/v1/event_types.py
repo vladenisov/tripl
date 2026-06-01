@@ -59,9 +59,7 @@ async def update_event_type(
     current_user: EditorUserDep,
     branch_id: BranchIdDep,
 ) -> EventType:
-    et = await event_type_service.update_event_type(
-        session, slug, event_type_id, data, branch_id
-    )
+    et = await event_type_service.update_event_type(session, slug, event_type_id, data, branch_id)
     await audit_service.record(
         session,
         user=current_user,

@@ -709,8 +709,7 @@ def send_alert_delivery(self: object, delivery_id: str) -> dict[str, object]:
                 team_id = validate_linear_team_id(destination.linear_team_id)
             except ValueError as exc:
                 raise ValueError(
-                    "Linear destination configuration is invalid. Update the API key "
-                    "or team id."
+                    "Linear destination configuration is invalid. Update the API key or team id."
                 ) from exc
             label_ids = (
                 [lid for lid in destination.linear_label_ids.split(",") if lid]

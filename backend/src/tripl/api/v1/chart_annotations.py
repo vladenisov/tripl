@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime
+from typing import Annotated
 
 from fastapi import APIRouter, Query
 
@@ -16,6 +17,8 @@ router = APIRouter(
     tags=["chart-annotations"],
 )
 
+OptionalDateTimeQuery = Annotated[datetime | None, Query()]
+
 
 @router.get("", response_model=list[ChartAnnotationResponse])
 async def list_chart_annotations(
@@ -23,8 +26,8 @@ async def list_chart_annotations(
     slug: str,
     scope_type: str | None = Query(default=None),
     scope_ref: str | None = Query(default=None),
-    time_from: datetime | None = Query(default=None),
-    time_to: datetime | None = Query(default=None),
+    time_from: OptionalDateTimeQuery = None,
+    time_to: OptionalDateTimeQuery = None,
 ) -> list[ChartAnnotationResponse]:
     rows = await chart_annotation_service.list_annotations(
         session,

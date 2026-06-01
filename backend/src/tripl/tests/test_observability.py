@@ -66,14 +66,8 @@ def test_schema_drift_metric_records_per_drift_type() -> None:
             {"drift_type": "type_changed"},
         ]
     )
-    assert (
-        schema_drifts_detected_total.labels(drift_type="new_field")._value.get()
-        == before + 2
-    )
-    assert (
-        schema_drifts_detected_total.labels(drift_type="type_changed")._value.get()
-        >= 1
-    )
+    assert schema_drifts_detected_total.labels(drift_type="new_field")._value.get() == before + 2
+    assert schema_drifts_detected_total.labels(drift_type="type_changed")._value.get() >= 1
 
 
 def test_tracing_setup_is_noop_when_endpoint_blank() -> None:

@@ -62,9 +62,7 @@ async def test_add_list_remove_owner(client: AsyncClient) -> None:
     assert len(rows) == 1
     assert rows[0]["user_email"] == "other@example.com"
 
-    removed = await client.delete(
-        f"/api/v1/projects/{slug}/event-types/{et_id}/owners/{owner_id}"
-    )
+    removed = await client.delete(f"/api/v1/projects/{slug}/event-types/{et_id}/owners/{owner_id}")
     assert removed.status_code == 204
 
     after = await client.get(f"/api/v1/projects/{slug}/event-types/{et_id}/owners")
@@ -95,19 +93,13 @@ async def test_owners_rejected_on_branch_event_type(client: AsyncClient) -> None
     _et_id, slug = await _seed_project_with_type(client, "own-branch")
     second_user_id = await _seed_second_user()
 
-    branch_resp = await client.post(
-        f"/api/v1/projects/{slug}/branches", json={"name": "feature-x"}
-    )
+    branch_resp = await client.post(f"/api/v1/projects/{slug}/branches", json={"name": "feature-x"})
     assert branch_resp.status_code == 201
     branch_id = uuid.UUID(branch_resp.json()["id"])
 
     async with TestSessionLocal() as session:
         branch_et = (
-            (
-                await session.execute(
-                    select(EventType).where(EventType.branch_id == branch_id)
-                )
-            )
+            (await session.execute(select(EventType).where(EventType.branch_id == branch_id)))
             .scalars()
             .first()
         )
@@ -231,9 +223,7 @@ async def test_merge_passes_when_owner_is_the_approver(client: AsyncClient) -> N
 async def test_merge_passes_when_event_type_unowned(client: AsyncClient) -> None:
     """No owners on the touched event type ⇒ no gating ⇒ merge proceeds."""
     _et_id, slug = await _seed_project_with_type(client, "own-merge-skip")
-    branch_resp = await client.post(
-        f"/api/v1/projects/{slug}/branches", json={"name": "feature"}
-    )
+    branch_resp = await client.post(f"/api/v1/projects/{slug}/branches", json={"name": "feature"})
     branch_id = branch_resp.json()["id"]
 
     async with TestSessionLocal() as session:

@@ -1910,9 +1910,7 @@ def test_collect_metrics_splits_replay_into_interval_chunks(
         ]
         assert [m.count for m in login_metrics] == [8, 9, 10]
         type_metrics = (
-            session.execute(
-                select(EventMetric).where(EventMetric.event_type_id == event_type_id)
-            )
+            session.execute(select(EventMetric).where(EventMetric.event_type_id == event_type_id))
             .scalars()
             .all()
         )

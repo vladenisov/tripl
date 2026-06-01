@@ -154,9 +154,7 @@ def _replace_scope_anomalies(
                 direction=anomaly.direction,
             )
         )
-        anomalies_detected_total.labels(
-            scope=scope_type, direction=anomaly.direction
-        ).inc()
+        anomalies_detected_total.labels(scope=scope_type, direction=anomaly.direction).inc()
 
     return len(anomalies)
 

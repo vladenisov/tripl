@@ -18,9 +18,7 @@ class EventTypeOwner(UUIDMixin, TimestampMixin, Base):
     """
 
     __tablename__ = "event_type_owners"
-    __table_args__ = (
-        UniqueConstraint("event_type_id", "user_id", name="uq_event_type_owner"),
-    )
+    __table_args__ = (UniqueConstraint("event_type_id", "user_id", name="uq_event_type_owner"),)
 
     event_type_id: Mapped[uuid.UUID] = mapped_column(
         ForeignKey("event_types.id", ondelete="CASCADE"), index=True

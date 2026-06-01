@@ -11,9 +11,7 @@ router = APIRouter(prefix="/projects/{slug}/variables", tags=["variables"])
 
 
 @router.get("", response_model=list[VariableResponse])
-async def list_variables(
-    session: SessionDep, slug: str, branch_id: BranchIdDep
-) -> list[Variable]:
+async def list_variables(session: SessionDep, slug: str, branch_id: BranchIdDep) -> list[Variable]:
     return await variable_service.list_variables(session, slug, branch_id)
 
 
