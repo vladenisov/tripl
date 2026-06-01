@@ -22,10 +22,12 @@ export function useEventMutations({
   slug,
   branchId,
   onBulkDeleteOptimistic,
+  onBulkUpdateOptimistic,
 }: {
   slug: string | undefined
   branchId: string | null
   onBulkDeleteOptimistic?: () => void
+  onBulkUpdateOptimistic?: () => void
 }) {
   const qc = useQueryClient()
   // Mutations and cache patches scope to `['events', slug, branchId]` so editing
@@ -75,6 +77,29 @@ export function useEventMutations({
       const idSet = new Set(eventIds)
       const snapshots = applyToEventsCaches((items) => items.filter((e) => !idSet.has(e.id)))
       onBulkDeleteOptimistic?.()
+      return { snapshots }
+    },
+    onError: (_e, _v, ctx) => rollbackEventsCaches(ctx?.snapshots),
+    onSettled: () => qc.invalidateQueries({ queryKey: eventsKey }),
+  })
+
+  const bulkUpdateMut = useMutation({
+    mutationFn: ({
+      eventIds,
+      ...patch
+    }: {
+      eventIds: string[]
+      implemented?: boolean
+      reviewed?: boolean
+      archived?: boolean
+    }) => eventsApi.bulkUpdate(slug!, eventIds, patch, branchId),
+    onMutate: async ({ eventIds, ...patch }) => {
+      await qc.cancelQueries({ queryKey: eventsKey })
+      const idSet = new Set(eventIds)
+      const snapshots = applyToEventsCaches((items) =>
+        items.map((e) => (idSet.has(e.id) ? { ...e, ...patch } : e)),
+      )
+      onBulkUpdateOptimistic?.()
       return { snapshots }
     },
     onError: (_e, _v, ctx) => rollbackEventsCaches(ctx?.snapshots),
@@ -173,6 +198,7 @@ export function useEventMutations({
   return {
     deleteMut,
     bulkDeleteMut,
+    bulkUpdateMut,
     toggleImplementedMut,
     toggleReviewedMut,
     toggleArchivedMut,

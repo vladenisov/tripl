@@ -157,8 +157,9 @@ export default function EventsPage() {
     slug,
     branchId,
     onBulkDeleteOptimistic: clearSelection,
+    onBulkUpdateOptimistic: clearSelection,
   })
-  const { bulkDeleteMut } = mutations
+  const { bulkDeleteMut, bulkUpdateMut } = mutations
 
   const dndSensors = useEventsDndSensors()
 
@@ -189,6 +190,12 @@ export default function EventsPage() {
     bulkDeleteMut,
     confirm,
   })
+  const handleBulkUpdate = useCallback((
+    patch: { implemented?: boolean; reviewed?: boolean; archived?: boolean },
+  ) => {
+    if (!selectedVisibleEventIds.length) return
+    bulkUpdateMut.mutate({ eventIds: selectedVisibleEventIds, ...patch })
+  }, [bulkUpdateMut, selectedVisibleEventIds])
 
   const { eventWindowMetricsByEvent, eventRowSignals } = useEventRowMetrics({
     slug,
@@ -257,6 +264,11 @@ export default function EventsPage() {
           <BulkActionBar
             selectedCount={selectedVisibleEventIds.length}
             isDeleting={bulkDeleteMut.isPending}
+            isUpdating={bulkUpdateMut.isPending}
+            onMarkReviewed={() => handleBulkUpdate({ reviewed: true, archived: false })}
+            onSendToReview={() => handleBulkUpdate({ reviewed: false, archived: false })}
+            onArchive={() => handleBulkUpdate({ archived: true })}
+            onRestore={() => handleBulkUpdate({ archived: false })}
             onDelete={() => { void handleBulkDelete() }}
             onClear={clearSelection}
           />

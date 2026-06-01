@@ -3,6 +3,7 @@ from datetime import UTC, datetime, timedelta
 
 from fastapi import HTTPException
 from sqlalchemy import delete, func, or_, select
+from sqlalchemy import update as sql_update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import noload
 
@@ -14,6 +15,7 @@ from tripl.models.event_tag import EventTag
 from tripl.models.field_definition import FieldDefinition
 from tripl.schemas.event import (
     EventBulkDelete,
+    EventBulkUpdate,
     EventCreate,
     EventFieldValueIn,
     EventMove,
@@ -352,6 +354,45 @@ async def bulk_delete_events(
             Event.branch_id == branch_id,
             Event.id.in_(data.event_ids),
         )
+    )
+    await session.commit()
+    if is_main:
+        await cache.delete_prefix(cache.prefix_projects())
+
+
+async def bulk_update_events(
+    session: AsyncSession,
+    slug: str,
+    data: EventBulkUpdate,
+    branch_id: uuid.UUID | None = None,
+) -> None:
+    is_main = branch_id is None
+    project_id = await get_project_id_by_slug(session, slug)
+    branch_id = await resolve_branch_id(session, project_id, branch_id)
+    event_ids = set(data.event_ids)
+
+    present = await session.scalar(
+        select(func.count(Event.id)).where(
+            Event.project_id == project_id,
+            Event.branch_id == branch_id,
+            Event.id.in_(event_ids),
+        )
+    )
+    if (present or 0) != len(event_ids):
+        raise HTTPException(status_code=404, detail="One or more events were not found")
+
+    update_values = data.model_dump(
+        exclude={"event_ids"},
+        exclude_none=True,
+    )
+    await session.execute(
+        sql_update(Event)
+        .where(
+            Event.project_id == project_id,
+            Event.branch_id == branch_id,
+            Event.id.in_(event_ids),
+        )
+        .values(**update_values)
     )
     await session.commit()
     if is_main:

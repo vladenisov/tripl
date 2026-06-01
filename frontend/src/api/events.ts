@@ -79,6 +79,19 @@ export const eventsApi = {
   ) => api.post<Event[]>(withBranch(`/projects/${slug}/events/bulk`, branchId), data),
   bulkDelete: (slug: string, eventIds: string[], branchId?: string | null) =>
     api.post<void>(withBranch(`/projects/${slug}/events/bulk-delete`, branchId), { event_ids: eventIds }),
+  bulkUpdate: (
+    slug: string,
+    eventIds: string[],
+    data: {
+      implemented?: boolean
+      reviewed?: boolean
+      archived?: boolean
+    },
+    branchId?: string | null,
+  ) => api.post<void>(
+    withBranch(`/projects/${slug}/events/bulk-update`, branchId),
+    { event_ids: eventIds, ...data },
+  ),
   move: (
     slug: string,
     id: string,
