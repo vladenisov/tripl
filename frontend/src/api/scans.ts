@@ -29,6 +29,7 @@ export const scansApi = {
     data_source_id: string
     base_query: string
     limit?: number
+    json_value_paths?: string[]
   }) => api.post<ScanConfigPreview>(`/projects/${slug}/scans/preview`, data),
 
   update: (slug: string, scanId: string, data: {

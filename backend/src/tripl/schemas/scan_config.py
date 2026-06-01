@@ -203,6 +203,16 @@ class ScanConfigPreviewRequest(BaseModel):
     data_source_id: uuid.UUID
     base_query: str = Field(min_length=1)
     limit: int = Field(default=10, ge=1, le=50)
+    json_value_paths: list[str] = Field(default_factory=list)
+
+    @field_validator("json_value_paths")
+    @classmethod
+    def validate_json_value_paths(cls, value: list[str]) -> list[str]:
+        normalized = normalize_json_value_paths(value)
+        invalid = sorted(set(value) - set(normalized))
+        if invalid:
+            raise ValueError("json_value_paths must use <json_column>.<nested.path> format")
+        return normalized
 
 
 class ScanConfigPreviewResponse(BaseModel):

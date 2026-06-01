@@ -10,6 +10,7 @@ from tripl.json_paths import (
     decode_json_path_value,
     flatten_json_paths,
     format_json_path_value,
+    group_json_value_paths,
 )
 from tripl.models.data_source import DataSource
 from tripl.models.scan_config import ScanConfig
@@ -30,6 +31,10 @@ from tripl.services.project_lookup import get_project_id_by_slug
 from tripl.worker.adapters.base import BaseAdapter, ColumnInfo
 from tripl.worker.adapters.registry import build_adapter
 from tripl.worker.analyzers.cardinality import _is_json_type
+
+JSON_PATH_DISCOVERY_LIMIT = 1000
+JSON_PATH_SAMPLE_LIMIT = 3
+JSON_PATH_SAMPLE_ROW_LIMIT = 1000
 
 
 async def _verify_data_source(session: AsyncSession, ds_id: uuid.UUID) -> DataSource:
@@ -146,6 +151,79 @@ def _select_diverse_preview_rows(
         ordered_indices.append(row_index)
 
     return [raw_rows[row_index] for row_index in ordered_indices[:limit]]
+
+
+def _collect_json_path_samples_from_rows(
+    rows: list[dict[str, object]],
+    json_column_names: list[str],
+) -> dict[str, dict[str, list[object]]]:
+    samples_by_column: dict[str, dict[str, list[object]]] = {
+        column_name: {} for column_name in json_column_names
+    }
+    seen_by_column: dict[str, dict[str, set[str]]] = {
+        column_name: {} for column_name in json_column_names
+    }
+
+    for row in rows:
+        for column_name in json_column_names:
+            parsed_value = decode_json_path_value(row.get(column_name))
+            for path, sample_value in flatten_json_paths(parsed_value):
+                column_samples = samples_by_column.setdefault(column_name, {})
+                if path not in column_samples and len(column_samples) >= JSON_PATH_DISCOVERY_LIMIT:
+                    continue
+                sample_text = format_json_path_value(sample_value)
+                seen = seen_by_column.setdefault(column_name, {}).setdefault(path, set())
+                if sample_text in seen or len(seen) >= JSON_PATH_SAMPLE_LIMIT:
+                    continue
+                seen.add(sample_text)
+                column_samples.setdefault(path, []).append(sample_value)
+
+    return samples_by_column
+
+
+def _merge_json_path_samples(
+    discovered: dict[str, dict[str, list[object]]],
+    selected: dict[str, list[str]],
+    json_column_names: list[str],
+) -> dict[str, dict[str, list[object]]]:
+    merged = {
+        column_name: {
+            path: list(values[:JSON_PATH_SAMPLE_LIMIT])
+            for path, values in discovered.get(column_name, {}).items()
+        }
+        for column_name in json_column_names
+    }
+
+    for column_name in json_column_names:
+        selected_paths = selected.get(column_name, [])
+        if not selected_paths:
+            continue
+        column_samples = merged.setdefault(column_name, {})
+        for path in selected_paths:
+            column_samples.setdefault(path, [])
+
+    return merged
+
+
+def _get_json_path_samples(
+    adapter: BaseAdapter,
+    base_query: str,
+    json_column_names: list[str],
+    fallback_rows: list[dict[str, object]],
+) -> dict[str, dict[str, list[object]]]:
+    if not json_column_names:
+        return {}
+
+    try:
+        return adapter.get_json_path_samples(
+            base_query,
+            json_column_names,
+            path_limit=JSON_PATH_DISCOVERY_LIMIT,
+            sample_limit=JSON_PATH_SAMPLE_LIMIT,
+            sample_row_limit=JSON_PATH_SAMPLE_ROW_LIMIT,
+        )
+    except AttributeError:
+        return _collect_json_path_samples_from_rows(fallback_rows, json_column_names)
 
 
 async def list_scan_configs(session: AsyncSession, slug: str) -> list[ScanConfig]:
@@ -272,23 +350,24 @@ async def preview_scan_config(
             for row in raw_rows
         ]
 
+        json_column_names = [column.name for column in columns if _is_json_type(column.type_name)]
+        discovered_json_path_samples = _get_json_path_samples(
+            adapter,
+            data.base_query,
+            json_column_names,
+            sampled_rows,
+        )
+        json_path_samples = _merge_json_path_samples(
+            discovered_json_path_samples,
+            group_json_value_paths(data.json_value_paths),
+            json_column_names,
+        )
+
         json_columns: list[ScanPreviewJsonColumnResponse] = []
         for column in columns:
             if not _is_json_type(column.type_name):
                 continue
-
-            sample_values_by_path: dict[str, list[str]] = {}
-            seen_values_by_path: dict[str, set[str]] = {}
-            for row in raw_rows:
-                parsed_value = decode_json_path_value(row.get(column.name))
-                for path, sample_value in flatten_json_paths(parsed_value):
-                    sample_text = format_json_path_value(sample_value)
-                    seen = seen_values_by_path.setdefault(path, set())
-                    if sample_text in seen or len(seen) >= 3:
-                        continue
-                    seen.add(sample_text)
-                    sample_values_by_path.setdefault(path, []).append(sample_text)
-
+            sample_values_by_path = json_path_samples.get(column.name, {})
             json_columns.append(
                 ScanPreviewJsonColumnResponse(
                     column=column.name,
@@ -296,7 +375,10 @@ async def preview_scan_config(
                         ScanPreviewJsonPathResponse(
                             full_path=f"{column.name}.{path}",
                             path=path,
-                            sample_values=sample_values_by_path[path],
+                            sample_values=[
+                                format_json_path_value(sample_value)
+                                for sample_value in sample_values_by_path[path]
+                            ],
                         )
                         for path in sorted(sample_values_by_path)
                     ],

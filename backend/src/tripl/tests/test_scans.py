@@ -418,3 +418,167 @@ class TestScanConfigsCRUD:
         body = resp.json()
         assert len(body["rows"]) == 2
         assert {row["page"] for row in body["rows"]} == {"main", "pricing"}
+
+    async def test_preview_scan_config_discovers_json_paths_separately(
+        self,
+        client: AsyncClient,
+        project: dict,
+        data_source: dict,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        class FakeAdapter:
+            def test_connection(self) -> bool:
+                return True
+
+            def get_columns(self, base_query: str) -> list[ColumnInfo]:
+                return [
+                    ColumnInfo(name="event_name", type_name="String"),
+                    ColumnInfo(name="payload", type_name="JSON"),
+                ]
+
+            def get_preview_rows(
+                self,
+                base_query: str,
+                limit: int = 10,
+            ) -> tuple[list[str], list[tuple[object, ...]]]:
+                return (
+                    ["event_name", "payload"],
+                    [
+                        ("purchase", {"locale": "en"}),
+                    ],
+                )
+
+            def get_json_path_samples(
+                self,
+                base_query: str,
+                json_columns: list[str],
+                *,
+                path_limit: int,
+                sample_limit: int,
+                sample_row_limit: int,
+            ) -> dict[str, dict[str, list[object]]]:
+                assert json_columns == ["payload"]
+                assert path_limit > 10
+                assert sample_limit == 3
+                assert sample_row_limit > 10
+                return {
+                    "payload": {
+                        "extra.key": ['"TASK-999"'],
+                        "hidden.flag": [True],
+                        "locale": ['"en"'],
+                    }
+                }
+
+            def close(self) -> None:
+                return None
+
+        monkeypatch.setattr(scan_service, "_build_adapter", lambda ds: FakeAdapter())
+
+        resp = await client.post(
+            f"/api/v1/projects/{project['slug']}/scans/preview",
+            json={
+                "data_source_id": data_source["id"],
+                "base_query": "SELECT * FROM events",
+                "limit": 5,
+            },
+        )
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["rows"][0]["payload"] == {"locale": "en"}
+        assert body["json_columns"] == [
+            {
+                "column": "payload",
+                "paths": [
+                    {
+                        "full_path": "payload.extra.key",
+                        "path": "extra.key",
+                        "sample_values": ["TASK-999"],
+                    },
+                    {
+                        "full_path": "payload.hidden.flag",
+                        "path": "hidden.flag",
+                        "sample_values": ["true"],
+                    },
+                    {
+                        "full_path": "payload.locale",
+                        "path": "locale",
+                        "sample_values": ["en"],
+                    },
+                ],
+            }
+        ]
+
+    async def test_preview_scan_config_keeps_selected_json_paths_visible(
+        self,
+        client: AsyncClient,
+        project: dict,
+        data_source: dict,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        class FakeAdapter:
+            def test_connection(self) -> bool:
+                return True
+
+            def get_columns(self, base_query: str) -> list[ColumnInfo]:
+                return [
+                    ColumnInfo(name="event_name", type_name="String"),
+                    ColumnInfo(name="payload", type_name="JSON"),
+                ]
+
+            def get_preview_rows(
+                self,
+                base_query: str,
+                limit: int = 10,
+            ) -> tuple[list[str], list[tuple[object, ...]]]:
+                return (
+                    ["event_name", "payload"],
+                    [
+                        ("purchase", {"locale": "en"}),
+                    ],
+                )
+
+            def get_json_path_samples(
+                self,
+                base_query: str,
+                json_columns: list[str],
+                *,
+                path_limit: int,
+                sample_limit: int,
+                sample_row_limit: int,
+            ) -> dict[str, dict[str, list[object]]]:
+                return {"payload": {"locale": ["en"]}}
+
+            def close(self) -> None:
+                return None
+
+        monkeypatch.setattr(scan_service, "_build_adapter", lambda ds: FakeAdapter())
+
+        resp = await client.post(
+            f"/api/v1/projects/{project['slug']}/scans/preview",
+            json={
+                "data_source_id": data_source["id"],
+                "base_query": "SELECT * FROM events",
+                "limit": 5,
+                "json_value_paths": ["payload.saved.key"],
+            },
+        )
+
+        assert resp.status_code == 200
+        assert resp.json()["json_columns"] == [
+            {
+                "column": "payload",
+                "paths": [
+                    {
+                        "full_path": "payload.locale",
+                        "path": "locale",
+                        "sample_values": ["en"],
+                    },
+                    {
+                        "full_path": "payload.saved.key",
+                        "path": "saved.key",
+                        "sample_values": [],
+                    },
+                ],
+            }
+        ]

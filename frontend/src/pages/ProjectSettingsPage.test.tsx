@@ -818,4 +818,117 @@ describe('ProjectSettingsPage', () => {
       })
     })
   })
+
+  it('keeps saved JSON value paths visible when edit preview omits them', async () => {
+    const previewBodies: unknown[] = []
+
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const url = String(input)
+
+      if (url.endsWith('/api/v1/data-sources')) {
+        return mockJsonResponse([
+          {
+            id: 'ds-1',
+            name: 'Main DS',
+            db_type: 'clickhouse',
+            host: 'localhost',
+            port: 8123,
+            database_name: 'default',
+            username: 'default',
+            password_set: false,
+            extra_params: null,
+            created_at: '2026-01-01T00:00:00Z',
+            updated_at: '2026-01-01T00:00:00Z',
+          },
+        ])
+      }
+
+      if (url.endsWith('/api/v1/projects/demo/event-types')) {
+        return mockJsonResponse([])
+      }
+
+      if (url.endsWith('/api/v1/projects/demo/scans') && (!init || !init.method || init.method === 'GET')) {
+        return mockJsonResponse([
+          {
+            id: 'scan-1',
+            data_source_id: 'ds-1',
+            project_id: 'project-1',
+            event_type_id: null,
+            name: 'Main scan',
+            base_query: 'SELECT * FROM analytics.events',
+            event_type_column: null,
+            time_column: null,
+            event_name_format: null,
+            json_value_paths: ['payload.extra.key'],
+            metric_breakdown_columns: [],
+            metric_breakdown_values_limit: null,
+            distribution_drift_fields: [],
+            cardinality_threshold: 100,
+            interval: null,
+            replay_chunk_interval: null,
+            created_at: '2026-04-12T00:00:00Z',
+            updated_at: '2026-04-12T00:00:00Z',
+          },
+        ])
+      }
+
+      if (url.endsWith('/api/v1/projects/demo/scans/preview') && init?.method === 'POST') {
+        previewBodies.push(JSON.parse(String(init.body)))
+        return mockJsonResponse({
+          columns: [
+            { name: 'event_name', type_name: 'String', is_nullable: false },
+            { name: 'payload', type_name: 'JSON', is_nullable: true },
+          ],
+          rows: [
+            {
+              event_name: 'purchase',
+              payload: { locale: 'en' },
+            },
+          ],
+          json_columns: [
+            {
+              column: 'payload',
+              paths: [
+                { full_path: 'payload.locale', path: 'locale', sample_values: ['en'] },
+              ],
+            },
+          ],
+        })
+      }
+
+      throw new Error(`Unhandled fetch: ${url}`)
+    })
+
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    })
+    render(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter initialEntries={['/p/demo/settings/scans']}>
+          <Routes>
+            <Route path="/p/:slug/settings/:tab" element={<ProjectSettingsPage />} />
+            <Route path="/p/:slug/settings" element={<ProjectSettingsPage />} />
+          </Routes>
+        </MemoryRouter>
+      </QueryClientProvider>,
+    )
+
+    expect(await screen.findByText('JSON keep 1')).toBeInTheDocument()
+    fireEvent.click(screen.getByTitle('Edit scan config'))
+
+    const dialog = await screen.findByRole('dialog')
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Load Preview' }))
+
+    await waitFor(() => {
+      expect(previewBodies).toContainEqual({
+        data_source_id: 'ds-1',
+        base_query: 'SELECT * FROM analytics.events',
+        limit: 10,
+        json_value_paths: ['payload.extra.key'],
+      })
+    })
+
+    expect(await within(dialog).findByText('extra.key')).toBeInTheDocument()
+    expect(within(dialog).getByText('locale')).toBeInTheDocument()
+  })
 })
