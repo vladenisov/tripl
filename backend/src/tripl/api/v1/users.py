@@ -5,7 +5,7 @@ import uuid
 from fastapi import APIRouter, HTTPException, status
 from sqlalchemy import select
 
-from tripl.api.deps import CurrentUserDep, SessionDep, require_owner
+from tripl.api.deps import CurrentUserDep, OwnerUserDep, SessionDep
 from tripl.models.user import User
 from tripl.schemas.auth import UserListItem, UserRoleUpdate
 from tripl.services import audit_service
@@ -25,9 +25,8 @@ async def update_user_role(
     session: SessionDep,
     user_id: uuid.UUID,
     data: UserRoleUpdate,
-    current_user: CurrentUserDep,
+    current_user: OwnerUserDep,
 ) -> User:
-    require_owner(current_user)
     target = await session.scalar(select(User).where(User.id == user_id))
     if target is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")

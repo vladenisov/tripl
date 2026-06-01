@@ -1,8 +1,8 @@
 import uuid
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 
-from tripl.api.deps import BranchIdDep, EditorUserDep, SessionDep
+from tripl.api.deps import BranchIdDep, EditorUserDep, SessionDep, get_editor_user
 from tripl.models.field_definition import FieldDefinition
 from tripl.schemas.field_definition import (
     FieldDefinitionCreate,
@@ -13,6 +13,7 @@ from tripl.schemas.field_definition import (
 from tripl.services import audit_service, field_service
 
 router = APIRouter(prefix="/projects/{slug}/event-types/{event_type_id}/fields", tags=["fields"])
+_editor_required = [Depends(get_editor_user)]
 
 
 @router.get("", response_model=list[FieldDefinitionResponse])
@@ -48,7 +49,11 @@ async def create_field(
     return field
 
 
-@router.patch("/reorder", response_model=list[FieldDefinitionResponse])
+@router.patch(
+    "/reorder",
+    response_model=list[FieldDefinitionResponse],
+    dependencies=_editor_required,
+)
 async def reorder_fields(
     session: SessionDep,
     slug: str,

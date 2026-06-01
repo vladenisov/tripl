@@ -1,8 +1,8 @@
 import uuid
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 
-from tripl.api.deps import EditorUserDep, SessionDep
+from tripl.api.deps import EditorUserDep, SessionDep, get_editor_user
 from tripl.schemas.data_source import (
     DataSourceCreate,
     DataSourceResponse,
@@ -15,6 +15,7 @@ router = APIRouter(
     prefix="/data-sources",
     tags=["data-sources"],
 )
+_editor_required = [Depends(get_editor_user)]
 
 
 @router.get("", response_model=list[DataSourceResponse])
@@ -85,7 +86,11 @@ async def delete_data_source(
     )
 
 
-@router.post("/{ds_id}/test", response_model=DataSourceTestResponse)
+@router.post(
+    "/{ds_id}/test",
+    response_model=DataSourceTestResponse,
+    dependencies=_editor_required,
+)
 async def test_data_source_connection(
     session: SessionDep, ds_id: uuid.UUID
 ) -> DataSourceTestResponse:

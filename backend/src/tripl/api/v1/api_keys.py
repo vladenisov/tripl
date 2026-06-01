@@ -12,7 +12,7 @@ import uuid
 
 from fastapi import APIRouter
 
-from tripl.api.deps import CurrentUserDep, SessionDep
+from tripl.api.deps import CurrentUserDep, SessionDep, WriteUserDep
 from tripl.schemas.api_key import (
     ApiKeyCreate,
     ApiKeyCreateResponse,
@@ -24,9 +24,7 @@ router = APIRouter(prefix="/me/api-keys", tags=["api-keys"])
 
 
 @router.get("", response_model=list[ApiKeyResponse])
-async def list_api_keys(
-    session: SessionDep, current_user: CurrentUserDep
-) -> list[ApiKeyResponse]:
+async def list_api_keys(session: SessionDep, current_user: CurrentUserDep) -> list[ApiKeyResponse]:
     rows = await api_key_service.list_keys(session, current_user.id)
     return [ApiKeyResponse.model_validate(row) for row in rows]
 
@@ -34,7 +32,7 @@ async def list_api_keys(
 @router.post("", response_model=ApiKeyCreateResponse, status_code=201)
 async def create_api_key(
     session: SessionDep,
-    current_user: CurrentUserDep,
+    current_user: WriteUserDep,
     data: ApiKeyCreate,
 ) -> ApiKeyCreateResponse:
     row, raw_token = await api_key_service.create_key(
@@ -69,7 +67,7 @@ async def create_api_key(
 
 @router.delete("/{key_id}", status_code=204)
 async def revoke_api_key(
-    session: SessionDep, current_user: CurrentUserDep, key_id: uuid.UUID
+    session: SessionDep, current_user: WriteUserDep, key_id: uuid.UUID
 ) -> None:
     await api_key_service.revoke_key(session, current_user.id, key_id)
     await audit_service.record(

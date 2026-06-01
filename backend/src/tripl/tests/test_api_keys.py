@@ -59,9 +59,7 @@ async def test_read_key_can_call_get_endpoints(
     await client.post("/api/v1/projects", json={"name": "P", "slug": "agent-read"})
     _key_id, token = await _issue_key(client, scope="read")
 
-    resp = await anon_client.get(
-        "/api/v1/projects/agent-read/event-types", headers=_bearer(token)
-    )
+    resp = await anon_client.get("/api/v1/projects/agent-read/event-types", headers=_bearer(token))
     assert resp.status_code == 200
 
 
@@ -80,6 +78,57 @@ async def test_read_key_cannot_call_write_endpoints(
     )
     assert resp.status_code == 403
     assert "read-only" in resp.json()["detail"].lower()
+
+    event_resp = await anon_client.post(
+        "/api/v1/projects/agent-block/events",
+        json={
+            "event_type_id": "00000000-0000-0000-0000-000000000000",
+            "name": "Blocked event",
+        },
+        headers=_bearer(token),
+    )
+    assert event_resp.status_code == 403
+
+    scan_preview = await anon_client.post(
+        "/api/v1/projects/agent-block/scans/preview",
+        json={
+            "data_source_id": "00000000-0000-0000-0000-000000000000",
+            "base_query": "select 1",
+        },
+        headers=_bearer(token),
+    )
+    assert scan_preview.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_read_key_cannot_manage_api_keys(
+    anon_client: AsyncClient, client: AsyncClient
+) -> None:
+    _key_id, token = await _issue_key(client, scope="read")
+
+    create = await anon_client.post(
+        "/api/v1/me/api-keys",
+        json={"name": "escalate", "scope": "write"},
+        headers=_bearer(token),
+    )
+    assert create.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_owner_read_key_cannot_update_roles(
+    anon_client: AsyncClient, client: AsyncClient
+) -> None:
+    _key_id, token = await _issue_key(client, scope="read")
+    users = await anon_client.get("/api/v1/users", headers=_bearer(token))
+    assert users.status_code == 200
+    owner_id = users.json()[0]["id"]
+
+    update = await anon_client.patch(
+        f"/api/v1/users/{owner_id}",
+        json={"role": "editor"},
+        headers=_bearer(token),
+    )
+    assert update.status_code == 403
 
 
 @pytest.mark.asyncio
@@ -100,9 +149,7 @@ async def test_write_key_can_call_write_endpoints(
 
 
 @pytest.mark.asyncio
-async def test_revoked_key_is_rejected(
-    anon_client: AsyncClient, client: AsyncClient
-) -> None:
+async def test_revoked_key_is_rejected(anon_client: AsyncClient, client: AsyncClient) -> None:
     key_id, token = await _issue_key(client, scope="read")
     revoke = await client.delete(f"/api/v1/me/api-keys/{key_id}")
     assert revoke.status_code == 204

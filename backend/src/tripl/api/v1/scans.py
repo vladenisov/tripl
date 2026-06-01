@@ -1,8 +1,8 @@
 import uuid
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 
-from tripl.api.deps import EditorUserDep, SessionDep
+from tripl.api.deps import EditorUserDep, SessionDep, get_editor_user
 from tripl.schemas.scan_config import (
     ScanConfigCreate,
     ScanConfigPreviewRequest,
@@ -18,6 +18,7 @@ router = APIRouter(
     prefix="/projects/{slug}/scans",
     tags=["scans"],
 )
+_editor_required = [Depends(get_editor_user)]
 
 
 @router.get("", response_model=list[ScanConfigResponse])
@@ -46,7 +47,11 @@ async def create_scan_config(
     return cfg
 
 
-@router.post("/preview", response_model=ScanConfigPreviewResponse)
+@router.post(
+    "/preview",
+    response_model=ScanConfigPreviewResponse,
+    dependencies=_editor_required,
+)
 async def preview_scan_config(
     session: SessionDep,
     slug: str,
@@ -103,12 +108,22 @@ async def delete_scan_config(
     )
 
 
-@router.post("/{scan_id}/run", response_model=ScanJobResponse, status_code=201)
+@router.post(
+    "/{scan_id}/run",
+    response_model=ScanJobResponse,
+    status_code=201,
+    dependencies=_editor_required,
+)
 async def run_scan(session: SessionDep, slug: str, scan_id: uuid.UUID) -> object:
     return await scan_service.trigger_scan(session, slug, scan_id)
 
 
-@router.post("/{scan_id}/metrics/replay", response_model=ScanJobResponse, status_code=201)
+@router.post(
+    "/{scan_id}/metrics/replay",
+    response_model=ScanJobResponse,
+    status_code=201,
+    dependencies=_editor_required,
+)
 async def replay_scan_metrics(
     session: SessionDep,
     slug: str,
