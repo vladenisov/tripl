@@ -81,6 +81,7 @@ export interface ApiKey {
   name: string
   key_prefix: string
   scope: ApiKeyScope
+  project_id: string | null
   expires_at: string | null
   revoked_at: string | null
   last_used_at: string | null

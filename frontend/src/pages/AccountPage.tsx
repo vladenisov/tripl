@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Copy, Key, Plus, Trash2 } from 'lucide-react'
 
 import { apiKeysApi } from '@/api/apiKeys'
+import { projectsApi } from '@/api/projects'
 import { useAuth } from '@/components/auth-context'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -41,6 +42,7 @@ export default function AccountPage() {
   const [showForm, setShowForm] = useState(false)
   const [name, setName] = useState('')
   const [scope, setScope] = useState<ApiKeyScope>('read')
+  const [projectSlug, setProjectSlug] = useState<string>('')
   const [expiresInDays, setExpiresInDays] = useState<string>('')
   const [revealed, setRevealed] = useState<ApiKeyWithToken | null>(null)
 
@@ -49,12 +51,28 @@ export default function AccountPage() {
     queryFn: () => apiKeysApi.list(),
   })
 
+  const projectsQuery = useQuery({
+    queryKey: ['projects'],
+    queryFn: () => projectsApi.list(),
+  })
+
+  // Map a key's bound project_id back to a human name for the list. Falls back
+  // to the id if the project was deleted out from under the key.
+  const projectNameById = (projectsQuery.data ?? []).reduce<Record<string, string>>(
+    (acc, p) => {
+      acc[p.id] = p.name
+      return acc
+    },
+    {},
+  )
+
   const createMut = useMutation({
     mutationFn: () =>
       apiKeysApi.create({
         name: name.trim(),
         scope,
         expires_in_days: expiresInDays ? Number(expiresInDays) : null,
+        project_slug: projectSlug || null,
       }),
     onSuccess: (created) => {
       qc.invalidateQueries({ queryKey: ['api-keys'] })
@@ -62,6 +80,7 @@ export default function AccountPage() {
       setRevealed(created)
       setName('')
       setScope('read')
+      setProjectSlug('')
       setExpiresInDays('')
     },
   })
@@ -125,6 +144,7 @@ export default function AccountPage() {
                   <TableRow>
                     <TableHead>Name</TableHead>
                     <TableHead className="w-24">Scope</TableHead>
+                    <TableHead className="w-40">Project</TableHead>
                     <TableHead className="w-40">Prefix</TableHead>
                     <TableHead className="w-32">Last used</TableHead>
                     <TableHead className="w-32">Created</TableHead>
@@ -147,6 +167,13 @@ export default function AccountPage() {
                           >
                             {k.scope}
                           </span>
+                        </TableCell>
+                        <TableCell className="text-xs">
+                          {k.project_id ? (
+                            projectNameById[k.project_id] ?? k.project_id
+                          ) : (
+                            <span className="text-muted-foreground">All projects</span>
+                          )}
                         </TableCell>
                         <TableCell className="font-mono text-xs">{k.key_prefix}…</TableCell>
                         <TableCell className="text-xs tnum text-muted-foreground">
@@ -223,6 +250,25 @@ export default function AccountPage() {
                   <option value="read">read — GET endpoints only</option>
                   <option value="write">write — full editor access</option>
                 </select>
+              </div>
+              <div className="grid gap-2">
+                <Label>Project (optional)</Label>
+                <select
+                  value={projectSlug}
+                  onChange={(e) => setProjectSlug(e.target.value)}
+                  className="h-9 rounded-md border bg-background px-2 text-sm"
+                >
+                  <option value="">All projects — full account reach</option>
+                  {(projectsQuery.data ?? []).map((p) => (
+                    <option key={p.id} value={p.slug}>
+                      {p.name}
+                    </option>
+                  ))}
+                </select>
+                <p className="text-xs text-muted-foreground">
+                  Bind the key to one project to fence an agent in — it then only
+                  reaches that project's endpoints.
+                </p>
               </div>
               <div className="grid gap-2">
                 <Label>Expires in (days, optional)</Label>
