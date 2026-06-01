@@ -74,6 +74,12 @@ def generate_events(
     JSON columns use their actual path combo from the row.
     """
     result = GenerationResult()
+    # Columns referenced by the event-name format are the event's identity, so they must be
+    # enumerated (one event per distinct value) even when high-cardinality — otherwise they
+    # collapse into a single ${col} template and every row dedups to one event.
+    name_columns: set[str] = (
+        set(_FMT_PATTERN.findall(event_name_format)) if event_name_format else set()
+    )
     cardinality_results = analysis.results
     reg_index = {name: i for i, name in enumerate(analysis.reg_names)}
     json_index = {name: i for i, name in enumerate(analysis.json_names)}
@@ -123,8 +129,10 @@ def generate_events(
             )
         else:
             meta["is_json"] = False
-            meta["is_low"] = card_result.is_low
-            if not card_result.is_low:
+            # Force enumeration for event-name columns regardless of cardinality.
+            force_enumerate = col_name in name_columns
+            meta["is_low"] = card_result.is_low or force_enumerate
+            if not card_result.is_low and not force_enumerate:
                 pattern = detect_variables(
                     col_name, card_result.sample_values, cardinality_threshold
                 )
