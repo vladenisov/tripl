@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react'
-import { useNavigate, useParams } from 'react-router-dom'
+import { useLocation, useNavigate, useParams } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { chartAnnotationsApi } from '@/api/chartAnnotations'
 import { eventTypesApi } from '@/api/eventTypes'
@@ -58,6 +58,14 @@ export default function MonitoringDetailPage() {
     eventId?: string
   }>()
   const navigate = useNavigate()
+  const location = useLocation()
+  // Return to wherever the user came from (e.g. an event-type tab with its filters),
+  // not always the "all events" list. location.key is 'default' only when this page was
+  // opened directly (deep link / refresh) with no in-app history to pop back to.
+  const goBack = () => {
+    if (location.key !== 'default') navigate(-1)
+    else navigate(`/p/${slug}/events`)
+  }
   const [rangeDays, setRangeDays] = useState(30)
   const [granularity, setGranularity] = useState<MetricsGranularity>('hour')
   const [activeTab, setActiveTab] = useState<'volume' | 'distribution' | 'heatmap'>('volume')
@@ -256,7 +264,7 @@ export default function MonitoringDetailPage() {
 
   return (
     <div className="space-y-6 p-6 max-w-5xl mx-auto">
-      <Button variant="ghost" size="sm" onClick={() => navigate(`/p/${slug}/events`)}>
+      <Button variant="ghost" size="sm" onClick={goBack}>
         <ArrowLeft className="mr-2 h-4 w-4" /> Back to events
       </Button>
 
