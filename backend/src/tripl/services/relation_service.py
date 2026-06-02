@@ -8,6 +8,7 @@ from tripl.models.event_type_relation import EventTypeRelation
 from tripl.schemas.relation import RelationCreate
 from tripl.services.plan_branch_service import resolve_branch_id
 from tripl.services.project_service import get_project_id_by_slug
+from tripl.services.search_service import reindex_project_branch
 
 
 async def list_relations(
@@ -36,6 +37,7 @@ async def create_relation(
     session.add(relation)
     await session.commit()
     await session.refresh(relation)
+    await reindex_project_branch(session, project_id=project_id, branch_id=branch_id, slug=slug)
     return relation
 
 
@@ -59,3 +61,4 @@ async def delete_relation(
         raise HTTPException(status_code=404, detail="Relation not found")
     await session.delete(relation)
     await session.commit()
+    await reindex_project_branch(session, project_id=project_id, branch_id=branch_id, slug=slug)

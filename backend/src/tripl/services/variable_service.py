@@ -10,6 +10,7 @@ from tripl.models.variable import Variable
 from tripl.schemas.variable import VariableCreate, VariableUpdate
 from tripl.services.plan_branch_service import resolve_branch_id
 from tripl.services.project_service import get_project_id_by_slug
+from tripl.services.search_service import reindex_project_branch
 
 
 async def list_variables(
@@ -46,6 +47,7 @@ async def create_variable(
     session.add(var)
     await session.commit()
     await session.refresh(var)
+    await reindex_project_branch(session, project_id=project_id, branch_id=branch_id, slug=slug)
     return var
 
 
@@ -103,6 +105,7 @@ async def update_variable(
         setattr(var, key, value)
     await session.commit()
     await session.refresh(var)
+    await reindex_project_branch(session, project_id=project_id, branch_id=branch_id, slug=slug)
     return var
 
 
@@ -126,3 +129,4 @@ async def delete_variable(
         raise HTTPException(status_code=404, detail="Variable not found")
     await session.delete(var)
     await session.commit()
+    await reindex_project_branch(session, project_id=project_id, branch_id=branch_id, slug=slug)

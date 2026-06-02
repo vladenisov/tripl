@@ -281,6 +281,35 @@ export interface EventListResponse {
   total: number
 }
 
+export type SearchEntityType =
+  | 'event'
+  | 'event_type'
+  | 'field'
+  | 'meta_field'
+  | 'variable'
+  | 'relation'
+  | 'tag'
+
+export interface SearchResult {
+  id: string
+  entity_type: SearchEntityType
+  entity_id: string
+  parent_event_id: string | null
+  title: string
+  subtitle: string
+  snippet: string
+  route_path: string
+  score: number
+  highlights: string[]
+  semantic_used: boolean
+}
+
+export interface SearchResponse {
+  items: SearchResult[]
+  total: number
+  semantic_used: boolean
+}
+
 export type EventPhotoKind = 'photo' | 'figma'
 
 export interface EventPhoto {

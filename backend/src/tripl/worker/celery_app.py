@@ -59,3 +59,4 @@ import tripl.worker.tasks.alerts  # noqa: F401, E402
 import tripl.worker.tasks.maintenance  # noqa: F401, E402
 import tripl.worker.tasks.metrics  # noqa: F401, E402
 import tripl.worker.tasks.scan  # noqa: F401, E402
+import tripl.worker.tasks.search  # noqa: F401, E402

@@ -10,6 +10,7 @@ from tripl.models.field_definition import FieldDefinition
 from tripl.schemas.event_type import EventTypeCreate, EventTypeResponse, EventTypeUpdate
 from tripl.services.plan_branch_service import resolve_branch_id
 from tripl.services.project_service import get_project_id_by_slug
+from tripl.services.search_service import reindex_project_branch
 
 
 async def list_event_types(
@@ -97,6 +98,7 @@ async def create_event_type(
         fd_payload["order"] = fd.order or idx
         session.add(FieldDefinition(**fd_payload, event_type_id=et.id))
     await session.commit()
+    await reindex_project_branch(session, project_id=project_id, branch_id=branch_id, slug=slug)
     if is_main:
         await cache.delete_prefix(cache.prefix_event_types(slug))
         # Event types feed ProjectsPage summary counts; bust those too.
@@ -119,6 +121,12 @@ async def update_event_type(
         setattr(et, key, value)
     await session.commit()
     await session.refresh(et)
+    await reindex_project_branch(
+        session,
+        project_id=et.project_id,
+        branch_id=et.branch_id,
+        slug=slug,
+    )
     if is_main:
         await cache.delete_prefix(cache.prefix_event_types(slug))
     return et
@@ -132,8 +140,16 @@ async def delete_event_type(
 ) -> None:
     is_main = branch_id is None
     et = await get_event_type(session, slug, event_type_id, branch_id)
+    project_id = et.project_id
+    resolved_branch_id = et.branch_id
     await session.delete(et)
     await session.commit()
+    await reindex_project_branch(
+        session,
+        project_id=project_id,
+        branch_id=resolved_branch_id,
+        slug=slug,
+    )
     if is_main:
         await cache.delete_prefix(cache.prefix_event_types(slug))
         await cache.delete_prefix(cache.prefix_projects())

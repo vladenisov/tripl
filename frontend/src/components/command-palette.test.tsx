@@ -69,6 +69,7 @@ function renderHarness(initialEntry = '/p/demo/events') {
                 </CommandPaletteProvider>
               }
             />
+            <Route path="/p/:slug/events/detail/:eventId" element={<LocationBeacon />} />
             <Route path="/p/:slug/settings/:tab" element={<LocationBeacon />} />
             <Route path="/p/:slug/monitoring" element={<LocationBeacon />} />
             <Route path="/p/:slug/alerting" element={<LocationBeacon />} />
@@ -198,5 +199,73 @@ describe('CommandPalette', () => {
     fireEvent.keyDown(window, { key: 'k', metaKey: true })
 
     expect(await screen.findByPlaceholderText(/Search projects/i)).toBeInTheDocument()
+  })
+
+  it('shows typed knowledge search results and navigates to their route', async () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = String(input)
+      if (url.endsWith('/api/v1/projects')) {
+        return mockJsonResponse([
+          {
+            id: 'project-1',
+            name: 'Demo',
+            slug: 'demo',
+            description: '',
+            created_at: '2026-01-01T00:00:00Z',
+            updated_at: '2026-01-01T00:00:00Z',
+            summary: {
+              event_type_count: 0,
+              event_count: 0,
+              active_event_count: 0,
+              implemented_event_count: 0,
+              review_pending_event_count: 0,
+              archived_event_count: 0,
+              variable_count: 0,
+              scan_count: 0,
+              alert_destination_count: 0,
+              monitoring_signal_count: 0,
+              latest_scan_job: null,
+              latest_signal: null,
+            },
+          },
+        ])
+      }
+      if (url.endsWith('/api/v1/projects/demo/event-types')) return mockJsonResponse([])
+      if (url.includes('/api/v1/projects/demo/search?')) {
+        return mockJsonResponse({
+          items: [
+            {
+              id: 'doc-1',
+              entity_type: 'event',
+              entity_id: 'event-1',
+              parent_event_id: 'event-1',
+              title: 'Checkout Completed',
+              subtitle: 'Checkout',
+              snippet: 'завершение покупки',
+              route_path: '/p/demo/events/detail/event-1',
+              score: 8,
+              highlights: ['завершение покупки'],
+              semantic_used: false,
+            },
+          ],
+          total: 1,
+          semantic_used: false,
+        })
+      }
+      throw new Error(`Unhandled fetch: ${url}`)
+    })
+
+    renderHarness('/p/demo/events')
+
+    fireEvent.click(screen.getByTestId('open-palette'))
+    fireEvent.change(await screen.findByPlaceholderText(/Search projects/i), {
+      target: { value: 'покупки' },
+    })
+
+    fireEvent.click(await screen.findByText('Checkout Completed'))
+
+    await waitFor(() => {
+      expect(screen.getByTestId('location').textContent).toBe('/p/demo/events/detail/event-1')
+    })
   })
 })
