@@ -2,11 +2,13 @@ import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { projectsApi } from '@/api/projects'
+import { searchApi } from '@/api/search'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Textarea } from '@/components/ui/textarea'
+import { RefreshCw } from 'lucide-react'
 
 export function GeneralTab({ slug }: { slug: string }) {
   const qc = useQueryClient()
@@ -42,6 +44,12 @@ export function GeneralTab({ slug }: { slug: string }) {
       }
     },
   })
+  const reindexMut = useMutation({
+    mutationFn: () => searchApi.reindex(slug),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['commandPaletteSearch'] })
+    },
+  })
 
   const slugError = !/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(slugDraft)
     ? 'Slug must be lowercase letters, digits, and hyphens'
@@ -61,68 +69,104 @@ export function GeneralTab({ slug }: { slug: string }) {
         <p className="text-sm text-destructive">Failed to load project.</p>
       )}
       {projectQuery.data && (
-        <Card>
-          <CardContent className="p-4">
-            <form
-              onSubmit={(event) => {
-                event.preventDefault()
-                if (slugError) return
-                updateMut.mutate()
-              }}
-              className="space-y-3"
-            >
-              <div className="grid grid-cols-1 gap-3 sm:grid-cols-[minmax(0,2fr)_minmax(0,1fr)]">
+        <div className="space-y-4">
+          <Card>
+            <CardContent className="p-4">
+              <form
+                onSubmit={(event) => {
+                  event.preventDefault()
+                  if (slugError) return
+                  updateMut.mutate()
+                }}
+                className="space-y-3"
+              >
+                <div className="grid grid-cols-1 gap-3 sm:grid-cols-[minmax(0,2fr)_minmax(0,1fr)]">
+                  <div className="grid gap-1.5">
+                    <Label htmlFor="project-name">Name</Label>
+                    <Input
+                      id="project-name"
+                      value={name}
+                      onChange={(event) => setName(event.target.value)}
+                      required
+                    />
+                  </div>
+                  <div className="grid gap-1.5">
+                    <Label htmlFor="project-slug">Slug</Label>
+                    <Input
+                      id="project-slug"
+                      value={slugDraft}
+                      onChange={(event) => setSlugDraft(event.target.value)}
+                      className="font-mono"
+                      required
+                    />
+                  </div>
+                </div>
+                {slugError && slugDraft.length > 0 ? (
+                  <p className="text-xs text-destructive">{slugError}</p>
+                ) : (
+                  <p className="text-xs text-muted-foreground">
+                    Slug is used in URLs. Lowercase letters, digits, and hyphens. Changing it rewrites all project URLs.
+                  </p>
+                )}
                 <div className="grid gap-1.5">
-                  <Label htmlFor="project-name">Name</Label>
-                  <Input
-                    id="project-name"
-                    value={name}
-                    onChange={(event) => setName(event.target.value)}
-                    required
+                  <Label htmlFor="project-description">Description</Label>
+                  <Textarea
+                    id="project-description"
+                    value={description}
+                    onChange={(event) => setDescription(event.target.value)}
+                    rows={2}
                   />
                 </div>
-                <div className="grid gap-1.5">
-                  <Label htmlFor="project-slug">Slug</Label>
-                  <Input
-                    id="project-slug"
-                    value={slugDraft}
-                    onChange={(event) => setSlugDraft(event.target.value)}
-                    className="font-mono"
-                    required
-                  />
+                {updateMut.isError && (
+                  <p className="text-sm text-destructive">{(updateMut.error as Error).message}</p>
+                )}
+                <div className="flex justify-end">
+                  <Button
+                    type="submit"
+                    size="sm"
+                    disabled={updateMut.isPending || isPristine || !!slugError}
+                  >
+                    {updateMut.isPending ? 'Saving…' : 'Save'}
+                  </Button>
                 </div>
-              </div>
-              {slugError && slugDraft.length > 0 ? (
-                <p className="text-xs text-destructive">{slugError}</p>
-              ) : (
-                <p className="text-xs text-muted-foreground">
-                  Slug is used in URLs. Lowercase letters, digits, and hyphens. Changing it rewrites all project URLs.
+              </form>
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardContent className="flex flex-col gap-3 p-4 sm:flex-row sm:items-center sm:justify-between">
+              <div className="min-w-0">
+                <h2 className="text-sm font-semibold">Search index</h2>
+                <p className="mt-1 text-xs text-muted-foreground">
+                  Rebuild project search when existing events, descriptions, or fields do not appear in global search.
                 </p>
-              )}
-              <div className="grid gap-1.5">
-                <Label htmlFor="project-description">Description</Label>
-                <Textarea
-                  id="project-description"
-                  value={description}
-                  onChange={(event) => setDescription(event.target.value)}
-                  rows={2}
-                />
+                {reindexMut.isSuccess && (
+                  <p className="mt-2 text-xs text-emerald-600">
+                    Indexed {reindexMut.data.documents_indexed} documents
+                    {reindexMut.data.embeddings_scheduled ? '; embeddings queued.' : '.'}
+                  </p>
+                )}
+                {reindexMut.isError && (
+                  <p className="mt-2 text-xs text-destructive">
+                    {(reindexMut.error as Error).message}
+                  </p>
+                )}
               </div>
-              {updateMut.isError && (
-                <p className="text-sm text-destructive">{(updateMut.error as Error).message}</p>
-              )}
-              <div className="flex justify-end">
+              <div className="shrink-0">
                 <Button
-                  type="submit"
+                  type="button"
+                  variant="outline"
                   size="sm"
-                  disabled={updateMut.isPending || isPristine || !!slugError}
+                  onClick={() => reindexMut.mutate()}
+                  disabled={reindexMut.isPending}
                 >
-                  {updateMut.isPending ? 'Saving…' : 'Save'}
+                  <RefreshCw className={reindexMut.isPending ? 'mr-2 h-3.5 w-3.5 animate-spin' : 'mr-2 h-3.5 w-3.5'} />
+                  {reindexMut.isPending ? 'Rebuilding…' : 'Rebuild index'}
                 </Button>
               </div>
-            </form>
-          </CardContent>
-        </Card>
+            </CardContent>
+          </Card>
+        </div>
       )}
     </>
   )

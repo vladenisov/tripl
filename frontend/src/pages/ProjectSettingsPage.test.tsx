@@ -16,6 +16,63 @@ afterEach(() => {
 })
 
 describe('ProjectSettingsPage', () => {
+  it('rebuilds the search index from general settings', async () => {
+    const calls: string[] = []
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const url = String(input)
+      calls.push(`${init?.method ?? 'GET'} ${url}`)
+
+      if (url.endsWith('/api/v1/projects/demo')) {
+        return mockJsonResponse({
+          id: 'project-1',
+          name: 'Demo',
+          slug: 'demo',
+          description: '',
+          created_at: '2026-01-01T00:00:00Z',
+          updated_at: '2026-01-01T00:00:00Z',
+          summary: {
+            event_type_count: 0,
+            event_count: 0,
+            active_event_count: 0,
+            implemented_event_count: 0,
+            review_pending_event_count: 0,
+            archived_event_count: 0,
+            variable_count: 0,
+            scan_count: 0,
+            alert_destination_count: 0,
+            monitoring_signal_count: 0,
+            latest_scan_job: null,
+            latest_signal: null,
+          },
+        })
+      }
+      if (url.endsWith('/api/v1/projects/demo/search/reindex') && init?.method === 'POST') {
+        return mockJsonResponse({ documents_indexed: 42, embeddings_scheduled: false })
+      }
+
+      throw new Error(`Unhandled fetch: ${url}`)
+    })
+
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    })
+    render(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter initialEntries={['/p/demo/settings/general']}>
+          <Routes>
+            <Route path="/p/:slug/settings/:tab" element={<ProjectSettingsPage />} />
+            <Route path="/p/:slug/settings" element={<ProjectSettingsPage />} />
+          </Routes>
+        </MemoryRouter>
+      </QueryClientProvider>,
+    )
+
+    fireEvent.click(await screen.findByRole('button', { name: /Rebuild index/i }))
+
+    expect(await screen.findByText('Indexed 42 documents.')).toBeInTheDocument()
+    expect(calls).toContain('POST /api/v1/projects/demo/search/reindex')
+  })
+
   it('loads and updates shared monitoring settings on the monitoring tab', async () => {
     let settings = {
       id: 'settings-1',
