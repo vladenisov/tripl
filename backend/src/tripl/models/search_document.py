@@ -3,6 +3,8 @@ from __future__ import annotations
 import uuid
 
 from sqlalchemy import JSON, Boolean, ForeignKey, Index, String, Text, UniqueConstraint
+from sqlalchemy import text as sa_text
+from sqlalchemy.dialects import postgresql
 from sqlalchemy.orm import Mapped, mapped_column
 
 from tripl.models.base import Base, TimestampMixin, UUIDMixin
@@ -37,10 +39,12 @@ class SearchDocument(UUIDMixin, TimestampMixin, Base):
     keywords: Mapped[str] = mapped_column(Text, default="", server_default="")
     route_path: Mapped[str] = mapped_column(Text)
     archived: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
-    # Runtime Postgres migrations make this a TSVECTOR. The ORM keeps it as
-    # Text so SQLite tests can create the table and the app can set it with raw
-    # SQL only on PostgreSQL.
-    text_vector: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Runtime Postgres uses TSVECTOR; SQLite tests get a Text variant.
+    text_vector: Mapped[str | None] = mapped_column(
+        postgresql.TSVECTOR().with_variant(Text(), "sqlite"),
+        nullable=True,
+        server_default=sa_text("NULL"),
+    )
     # Runtime Postgres migrations make this vector(1536). SQLite tests use JSON.
     embedding: Mapped[list[float] | None] = mapped_column(JSON, nullable=True)
     content_hash: Mapped[str] = mapped_column(String(64))
