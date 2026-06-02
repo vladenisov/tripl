@@ -2,7 +2,7 @@ import uuid
 from datetime import UTC, datetime, timedelta
 
 from fastapi import HTTPException
-from sqlalchemy import delete, func, or_, select
+from sqlalchemy import delete, false, func, or_, select
 from sqlalchemy import update as sql_update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import noload
@@ -25,6 +25,7 @@ from tripl.schemas.event import (
 from tripl.services.plan_branch_service import resolve_branch_id
 from tripl.services.project_service import get_project_id_by_slug
 from tripl.services.schema_drift_service import get_drift_counts_by_event_type
+from tripl.services.search_service import reindex_project_branch, search_event_ids
 
 
 async def _validate_field_values(
@@ -79,12 +80,14 @@ async def list_events(
         query = query.where(Event.event_type_id == event_type_id)
         count_query = count_query.where(Event.event_type_id == event_type_id)
     if search:
-        # Agents search the catalog by free text — match the human-readable
-        # name OR the longer description, not just the name.
-        search_clause = or_(
-            Event.name.ilike(f"%{search}%"),
-            Event.description.ilike(f"%{search}%"),
+        matched_ids = await search_event_ids(
+            session,
+            slug,
+            search,
+            branch_id=branch_id,
+            include_archived=True,
         )
+        search_clause = Event.id.in_(matched_ids) if matched_ids else false()
         query = query.where(search_clause)
         count_query = count_query.where(search_clause)
     if implemented is not None:
@@ -238,6 +241,7 @@ async def create_event(
 
     await session.commit()
     await session.refresh(event)
+    await reindex_project_branch(session, project_id=project_id, branch_id=branch_id, slug=slug)
     if is_main:
         await cache.delete_prefix(cache.prefix_projects())
     return event
@@ -308,6 +312,12 @@ async def update_event(
 
     await session.commit()
     await session.refresh(event)
+    await reindex_project_branch(
+        session,
+        project_id=event.project_id,
+        branch_id=event.branch_id,
+        slug=slug,
+    )
     if is_main:
         await cache.delete_prefix(cache.prefix_projects())
     return event
@@ -321,8 +331,16 @@ async def delete_event(
 ) -> None:
     is_main = branch_id is None
     event = await get_event(session, slug, event_id, branch_id)
+    project_id = event.project_id
+    resolved_branch_id = event.branch_id
     await session.delete(event)
     await session.commit()
+    await reindex_project_branch(
+        session,
+        project_id=project_id,
+        branch_id=resolved_branch_id,
+        slug=slug,
+    )
     if is_main:
         await cache.delete_prefix(cache.prefix_projects())
 
@@ -356,6 +374,7 @@ async def bulk_delete_events(
         )
     )
     await session.commit()
+    await reindex_project_branch(session, project_id=project_id, branch_id=branch_id, slug=slug)
     if is_main:
         await cache.delete_prefix(cache.prefix_projects())
 
@@ -395,6 +414,7 @@ async def bulk_update_events(
         .values(**update_values)
     )
     await session.commit()
+    await reindex_project_branch(session, project_id=project_id, branch_id=branch_id, slug=slug)
     if is_main:
         await cache.delete_prefix(cache.prefix_projects())
 
@@ -556,6 +576,7 @@ async def bulk_create_events(
     event_ids = [event.id for event in events]
     refreshed = await session.execute(select(Event).where(Event.id.in_(event_ids)))
     by_id = {event.id: event for event in refreshed.scalars().all()}
+    await reindex_project_branch(session, project_id=project_id, branch_id=branch_id, slug=slug)
     if is_main:
         await cache.delete_prefix(cache.prefix_projects())
     return [by_id[event_id] for event_id in event_ids]

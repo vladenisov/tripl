@@ -21,6 +21,7 @@ from tripl.api.v1.project_anomaly_settings import router as project_anomaly_sett
 from tripl.api.v1.projects import router as projects_router
 from tripl.api.v1.relations import router as relations_router
 from tripl.api.v1.scans import router as scans_router
+from tripl.api.v1.search import router as search_router
 from tripl.api.v1.users import router as users_router
 from tripl.api.v1.variables import router as variables_router
 
@@ -42,6 +43,7 @@ router.include_router(event_photos_router, dependencies=protected_dependencies)
 router.include_router(variables_router, dependencies=protected_dependencies)
 router.include_router(data_sources_router, dependencies=protected_dependencies)
 router.include_router(scans_router, dependencies=protected_dependencies)
+router.include_router(search_router, dependencies=protected_dependencies)
 router.include_router(metrics_router, dependencies=protected_dependencies)
 router.include_router(chart_annotations_router, dependencies=protected_dependencies)
 router.include_router(plan_branches_router, dependencies=protected_dependencies)

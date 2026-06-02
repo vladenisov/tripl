@@ -65,6 +65,16 @@ class Settings(BaseSettings):
     # behind an internal-only ingress path.
     prometheus_metrics_enabled: bool = False
 
+    # Hybrid knowledge search. Lexical/fuzzy search is local to PostgreSQL;
+    # embeddings are opt-in because indexed text may include internal tracking
+    # plan content sent to the configured provider.
+    search_embeddings_enabled: bool = False
+    search_embedding_provider: str = "openai"
+    search_embedding_model: str = "text-embedding-3-small"
+    search_embedding_dimensions: int = 1536
+    search_embedding_api_key: str = ""
+    openai_api_key: str = ""
+
     # OpenTelemetry tracing. Setting `otel_exporter_otlp_endpoint` to a non-
     # empty string opts the API + worker into FastAPI/SQLAlchemy/Celery auto-
     # instrumentation with an OTLP exporter. No-op when the env is blank or
@@ -159,6 +169,9 @@ class Settings(BaseSettings):
 
         if problems:
             raise RuntimeError("Production startup checks failed:\n  - " + "\n  - ".join(problems))
+
+    def resolved_search_embedding_api_key(self) -> str:
+        return self.search_embedding_api_key or self.openai_api_key
 
 
 settings = Settings()

@@ -12,6 +12,7 @@ import {
   Activity,
   Bell,
   Database,
+  FileText,
   Folder,
   Layers,
   LayoutDashboard,
@@ -24,8 +25,8 @@ import {
   Variable,
 } from 'lucide-react'
 import { eventTypesApi } from '@/api/eventTypes'
-import { eventsApi } from '@/api/events'
 import { projectsApi } from '@/api/projects'
+import { searchApi } from '@/api/search'
 import { useAuth } from '@/components/auth-context'
 import {
   CommandPaletteContext,
@@ -33,6 +34,7 @@ import {
 } from '@/components/command-palette-context'
 import { Dialog, DialogContent, DialogTitle } from '@/components/ui/dialog'
 import { Kbd } from '@/components/primitives/kbd'
+import type { SearchEntityType, SearchResult } from '@/types'
 
 export function CommandPaletteProvider({ children }: { children: ReactNode }) {
   const [open, setOpen] = useState(false)
@@ -76,6 +78,32 @@ function useDebounced<T>(value: T, delayMs: number): T {
   return debounced
 }
 
+const SEARCH_TYPE_META: Record<
+  SearchEntityType,
+  {
+    heading: string
+    icon: React.ComponentType<{ className?: string; style?: React.CSSProperties }>
+  }
+> = {
+  event: { heading: 'Events', icon: Tag },
+  event_type: { heading: 'Event types', icon: Layers },
+  field: { heading: 'Fields', icon: List },
+  meta_field: { heading: 'Meta fields', icon: FileText },
+  variable: { heading: 'Variables', icon: Variable },
+  relation: { heading: 'Relations', icon: Link2 },
+  tag: { heading: 'Tags', icon: Tag },
+}
+
+function groupSearchResults(results: SearchResult[]) {
+  const groups = new Map<SearchEntityType, SearchResult[]>()
+  for (const result of results) {
+    const items = groups.get(result.entity_type) ?? []
+    items.push(result)
+    groups.set(result.entity_type, items)
+  }
+  return Array.from(groups.entries())
+}
+
 function CommandPalette() {
   const { open, setOpen } = useCommandPalette()
   const navigate = useNavigate()
@@ -108,16 +136,16 @@ function CommandPalette() {
   })
   const eventTypes = eventTypesQuery.data ?? []
 
-  const eventSearchSlug = activeProject?.slug ?? projects[0]?.slug ?? null
-  const eventsQuery = useQuery({
-    queryKey: ['commandPaletteEventSearch', eventSearchSlug, debouncedQuery],
+  const searchSlug = activeProject?.slug ?? projects[0]?.slug ?? null
+  const searchQuery = useQuery({
+    queryKey: ['commandPaletteSearch', searchSlug, debouncedQuery],
     queryFn: () =>
-      eventsApi.list(eventSearchSlug!, { search: debouncedQuery, limit: 8 }),
-    enabled: open && !!eventSearchSlug && debouncedQuery.length >= 2,
+      searchApi.search(searchSlug!, { q: debouncedQuery, limit: 12 }),
+    enabled: open && !!searchSlug && debouncedQuery.length >= 2,
     staleTime: 30_000,
   })
-  const eventResults = eventsQuery.data?.items ?? []
-  const eventSearchProjectSlug = eventSearchSlug
+  const searchResults = useMemo(() => searchQuery.data?.items ?? [], [searchQuery.data])
+  const searchGroups = useMemo(() => groupSearchResults(searchResults), [searchResults])
 
   const runCommand = useCallback(
     (action: () => void) => {
@@ -270,44 +298,59 @@ function CommandPalette() {
               </Group>
             )}
 
-            {eventSearchProjectSlug && debouncedQuery.length >= 2 && (
-              <Group
-                heading={
-                  eventsQuery.isFetching
-                    ? 'Searching events…'
-                    : `Events matching "${debouncedQuery}"`
-                }
-              >
-                {eventResults.length === 0 && !eventsQuery.isFetching ? (
-                  <div
-                    className="px-3.5 py-2 text-[11.5px]"
-                    style={{ color: 'var(--fg-subtle)' }}
-                  >
-                    No events match.
-                  </div>
+            {searchSlug && debouncedQuery.length >= 2 && (
+              <>
+                {searchQuery.isFetching ? (
+                  <Group heading="Searching knowledge…">
+                    <div
+                      className="px-3.5 py-2 text-[11.5px]"
+                      style={{ color: 'var(--fg-subtle)' }}
+                    >
+                      Searching.
+                    </div>
+                  </Group>
+                ) : searchResults.length === 0 ? (
+                  <Group heading={`Knowledge matching "${debouncedQuery}"`}>
+                    <div
+                      className="px-3.5 py-2 text-[11.5px]"
+                      style={{ color: 'var(--fg-subtle)' }}
+                    >
+                      No knowledge matches.
+                    </div>
+                  </Group>
                 ) : (
-                  eventResults.map(ev => {
-                    const et = eventTypes.find(item => item.id === ev.event_type_id)
+                  searchGroups.map(([entityType, results]) => {
+                    const meta = SEARCH_TYPE_META[entityType]
                     return (
-                      <Item
-                        key={ev.id}
-                        onSelect={() =>
-                          goTo(`/p/${eventSearchProjectSlug}/events/detail/${ev.id}`)
-                        }
-                        icon={Tag}
-                        iconColor={et?.color}
-                        label={ev.name}
-                        hint={et?.display_name}
-                        keywords={
-                          et
-                            ? [ev.name, et.display_name, et.name]
-                            : [ev.name]
-                        }
-                      />
+                      <Group key={entityType} heading={meta.heading}>
+                        {results.map(result => {
+                          const eventType =
+                            result.entity_type === 'event'
+                              ? eventTypes.find(item => item.display_name === result.subtitle)
+                              : undefined
+                          return (
+                            <Item
+                              key={result.id}
+                              onSelect={() => goTo(result.route_path)}
+                              icon={meta.icon}
+                              iconColor={eventType?.color}
+                              label={result.title}
+                              hint={result.subtitle || undefined}
+                              keywords={[
+                                debouncedQuery,
+                                result.title,
+                                result.subtitle,
+                                result.snippet,
+                                ...result.highlights,
+                              ]}
+                            />
+                          )
+                        })}
+                      </Group>
                     )
                   })
                 )}
-              </Group>
+              </>
             )}
 
             <Group heading="Account">
