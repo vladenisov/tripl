@@ -1,7 +1,30 @@
 from __future__ import annotations
 
+import uuid
+
 import pytest
 from httpx import AsyncClient
+from sqlalchemy import insert
+from sqlalchemy.dialects.postgresql.asyncpg import PGDialect_asyncpg
+
+from tripl.models.search_document import SearchDocument
+
+
+def test_search_document_insert_does_not_write_generated_text_vector() -> None:
+    statement = insert(SearchDocument).values(
+        project_id=uuid.uuid4(),
+        branch_id=uuid.uuid4(),
+        entity_type="event",
+        entity_id=uuid.uuid4(),
+        title="Checkout Completed",
+        route_path="/p/demo/events/detail/event-1",
+        content_hash="0" * 64,
+    )
+
+    compiled = str(statement.compile(dialect=PGDialect_asyncpg()))
+
+    columns = compiled.split(" VALUES ", maxsplit=1)[0]
+    assert "text_vector" not in columns
 
 
 async def _create_event_type(
