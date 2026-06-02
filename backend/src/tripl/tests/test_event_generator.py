@@ -245,6 +245,102 @@ class TestEventGeneration:
         assert result2.events_created == 0
         assert result2.events_skipped == 2
 
+    def test_rename_does_not_recreate_event(self, sync_session: Session, project_and_type):
+        """Renaming an event's display ``name`` must not make the next scan duplicate it:
+        dedup keys on the stable ``source_name`` identity, not ``name``."""
+        project, et, fds = project_and_type
+        cardinality = {
+            "screen": CardinalityResult(
+                column=ColumnInfo("screen", "String"),
+                count=2,
+                is_low=True,
+                sample_values=["/home", "/about"],
+            ),
+        }
+        analysis = _make_analysis(cardinality)
+        r1 = generate_events(
+            sync_session, project.id, et.id, analysis, fds, event_name_format="{screen}"
+        )
+        sync_session.commit()
+        assert r1.events_created == 2
+
+        # source_name is set to the scan identity on creation
+        home = sync_session.execute(
+            select(Event).where(Event.source_name == "/home")
+        ).scalar_one()
+        assert home.name == "/home"
+        # User renames the display name
+        home.name = "Home Page (renamed)"
+        sync_session.commit()
+
+        # Re-scan same data: must match by source_name, not recreate
+        r2 = generate_events(
+            sync_session, project.id, et.id, analysis, fds, event_name_format="{screen}"
+        )
+        sync_session.commit()
+        assert r2.events_created == 0
+        assert r2.events_skipped == 2
+
+        events = (
+            sync_session.execute(select(Event).where(Event.project_id == project.id))
+            .scalars()
+            .all()
+        )
+        assert len(events) == 2  # no duplicate
+        renamed = sync_session.execute(
+            select(Event).where(Event.source_name == "/home")
+        ).scalar_one()
+        assert renamed.name == "Home Page (renamed)"  # rename preserved across scan
+
+    def test_legacy_event_without_source_name_is_backfilled_not_duplicated(
+        self, sync_session: Session, project_and_type
+    ):
+        """An event predating source_name (NULL) is adopted on the next scan instead of
+        being recreated."""
+        project, et, fds = project_and_type
+        legacy = Event(
+            id=uuid.uuid4(),
+            project_id=project.id,
+            event_type_id=et.id,
+            name="/home",
+            source_name=None,
+            description="manually created",
+            order=0,
+            implemented=True,
+            reviewed=True,
+        )
+        sync_session.add(legacy)
+        sync_session.add(
+            EventFieldValue(
+                id=uuid.uuid4(),
+                event_id=legacy.id,
+                field_definition_id=fds["screen"].id,
+                value="/home",
+            )
+        )
+        sync_session.commit()
+
+        cardinality = {
+            "screen": CardinalityResult(
+                column=ColumnInfo("screen", "String"),
+                count=1,
+                is_low=True,
+                sample_values=["/home"],
+            ),
+        }
+        analysis = _make_analysis(cardinality)
+        result = generate_events(
+            sync_session, project.id, et.id, analysis, fds, event_name_format="{screen}"
+        )
+        sync_session.commit()
+
+        assert result.events_created == 0
+        assert result.events_skipped == 1
+        refreshed = sync_session.execute(
+            select(Event).where(Event.id == legacy.id)
+        ).scalar_one()
+        assert refreshed.source_name == "/home"  # backfilled
+
     def test_max_events_limit(self, sync_session: Session, project_and_type):
         project, et, fds = project_and_type
         cardinality = {
