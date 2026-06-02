@@ -154,7 +154,10 @@ def generate_events(
         result.details.append("No columns matched field definitions")
         return result
 
-    # Load existing events for dedup by name
+    # Load existing events for dedup. Key on the stable scan identity (``source_name``),
+    # NOT the display ``name`` — users may rename ``name`` freely, and matching on it would
+    # make the next scan recreate the renamed event as a duplicate. ``source_name`` is the
+    # name derived from the event-name columns at scan time; it never changes on rename.
     existing_events_list = (
         session.execute(
             select(Event).where(
@@ -165,12 +168,18 @@ def generate_events(
         .scalars()
         .all()
     )
-    existing_by_name: dict[str, Event] = {ev.name: ev for ev in existing_events_list}
+    existing_by_identity: dict[str, Event] = {}
+    for ev in existing_events_list:
+        if ev.source_name is None:
+            # Legacy / API-created rows: adopt the current name as the identity once,
+            # so subsequent scans match on it instead of re-creating duplicates.
+            ev.source_name = ev.name
+        existing_by_identity[ev.source_name] = ev
     next_event_order = session.execute(
         select(func.max(Event.order)).where(Event.project_id == project_id)
     ).scalar_one()
     next_event_order = 0 if next_event_order is None else int(next_event_order) + 1
-    logger.info(f"Loaded {len(existing_by_name)} existing events for dedup")
+    logger.info(f"Loaded {len(existing_by_identity)} existing events for dedup")
 
     # Iterate breakdown rows — each row is one event
     for row in analysis.rows:
@@ -248,7 +257,7 @@ def generate_events(
                 parts.append(f"{col_name}={display}")
             event_name = " | ".join(parts)
 
-        existing = existing_by_name.get(event_name)
+        existing = existing_by_identity.get(event_name)
         if existing is not None:
             # Update field values on existing event
             fv_by_fd = {fv.field_definition_id: fv for fv in existing.field_values}
@@ -272,6 +281,7 @@ def generate_events(
             project_id=project_id,
             event_type_id=event_type_id,
             name=event_name,
+            source_name=event_name,
             description="Auto-generated from data source scan",
             order=next_event_order,
             implemented=True,
@@ -290,14 +300,16 @@ def generate_events(
             )
             session.add(fv)
 
-        existing_by_name[event_name] = event
+        existing_by_identity[event_name] = event
         result.events_created += 1
 
     session.flush()
     if result.events_skipped:
         logger.info(f"Skipped {result.events_skipped} existing events (field values updated)")
     result.col_meta = col_meta
-    result.events_by_name = existing_by_name
+    # Keyed by scan identity (source_name == formatted event name); metric collection looks
+    # events up by the same row-derived name, so renamed events still match here.
+    result.events_by_name = existing_by_identity
     return result
 
 
