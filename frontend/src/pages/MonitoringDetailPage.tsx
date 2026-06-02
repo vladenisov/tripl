@@ -14,7 +14,7 @@ import { ErrorState } from '@/components/error-state'
 import EventPhotosSection from '@/components/event-photos-section'
 import { SeasonalityHeatmap } from '@/components/monitoring/seasonality-heatmap'
 import { TopMoversPanel } from '@/components/monitoring/top-movers-panel'
-import { MetricsChart } from '@/components/ui/chart'
+import { MetricsChart, MetricsMultiSeriesChart } from '@/components/ui/chart'
 import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from '@/components/ui/select'
@@ -29,7 +29,7 @@ import type {
   FieldDefinition,
   MetaFieldDefinition,
 } from '@/types'
-import { AlertTriangle, ArrowLeft, CalendarPlus, CircleCheck, Eye, GitCompareArrows, Tag, Trash2 } from 'lucide-react'
+import { AlertTriangle, ArrowLeft, CalendarPlus, CircleCheck, Eye, GitCompareArrows, Layers, Tag, Trash2 } from 'lucide-react'
 
 const RANGE_OPTIONS = [
   { label: '7d', days: 7 },
@@ -68,8 +68,9 @@ export default function MonitoringDetailPage() {
   }
   const [rangeDays, setRangeDays] = useState(30)
   const [granularity, setGranularity] = useState<MetricsGranularity>('hour')
-  const [activeTab, setActiveTab] = useState<'volume' | 'distribution' | 'heatmap'>('volume')
+  const [activeTab, setActiveTab] = useState<'volume' | 'distribution' | 'heatmap' | 'breakdowns'>('volume')
   const [distributionField, setDistributionField] = useState('')
+  const [breakdownColumn, setBreakdownColumn] = useState('')
 
   const scope = routeScopeToApiScope(scopeParam)
   const scopeId = id ?? eventId ?? ''
@@ -161,6 +162,30 @@ export default function MonitoringDetailPage() {
   const chartData = useMemo(
     () => aggregateMetricPoints(metrics?.data ?? [], granularity),
     [granularity, metrics?.data],
+  )
+
+  // Breakdowns: split this event's volume into a series per value of a chosen column
+  // (event-level only). Columns come from the event's configured breakdown columns plus
+  // scan-wide breakdown columns that have collected data.
+  const breakdownQuery = useQuery({
+    queryKey: ['eventMetricBreakdowns', slug, scopeId, breakdownColumn, rangeDays],
+    queryFn: () => metricsApi.getEventMetricBreakdowns(slug!, scopeId, {
+      column: breakdownColumn || undefined,
+      ...timeRange,
+    }),
+    enabled: scope === 'event' && activeTab === 'breakdowns' && !!slug && !!scopeId,
+    refetchInterval: 60000,
+  })
+  const breakdowns = breakdownQuery.data
+  const selectedBreakdownColumn = breakdownColumn || breakdowns?.selected_column || ''
+  const breakdownChartSeries = useMemo(
+    () => (breakdowns?.series ?? [])
+      .slice(0, 8)
+      .map(series => ({
+        label: series.is_other ? 'Other' : (series.breakdown_value || '(empty)'),
+        data: aggregateMetricPoints(series.data, granularity),
+      })),
+    [breakdowns?.series, granularity],
   )
 
   const queryClient = useQueryClient()
@@ -319,7 +344,7 @@ export default function MonitoringDetailPage() {
         <EventPhotosSection slug={slug!} eventId={scopeId} />
       )}
 
-      <Tabs value={activeTab} onValueChange={value => setActiveTab(value as 'volume' | 'distribution' | 'heatmap')}>
+      <Tabs value={activeTab} onValueChange={value => setActiveTab(value as 'volume' | 'distribution' | 'heatmap' | 'breakdowns')}>
         <TabsList>
           <TabsTrigger value="volume">Volume</TabsTrigger>
           <TabsTrigger value="heatmap">Heatmap</TabsTrigger>
@@ -327,6 +352,12 @@ export default function MonitoringDetailPage() {
             <GitCompareArrows className="h-3.5 w-3.5" />
             Distribution
           </TabsTrigger>
+          {scope === 'event' && (
+            <TabsTrigger value="breakdowns">
+              <Layers className="h-3.5 w-3.5" />
+              Breakdowns
+            </TabsTrigger>
+          )}
         </TabsList>
 
         <TabsContent value="volume" className="space-y-6">
@@ -535,6 +566,61 @@ export default function MonitoringDetailPage() {
             selectedField={distributionField}
             onSelectedFieldChange={setDistributionField}
           />
+        </TabsContent>
+
+        <TabsContent value="breakdowns">
+          <Card>
+            <CardContent className="p-6">
+              <div className="mb-4 flex items-center justify-between gap-3">
+                <div className="flex items-center gap-2">
+                  <Layers className="h-4 w-4 text-muted-foreground" />
+                  <h2 className="text-lg font-semibold">Breakdowns</h2>
+                </div>
+                <Select
+                  value={selectedBreakdownColumn}
+                  onValueChange={value => setBreakdownColumn(value)}
+                  disabled={!breakdowns?.columns.length}
+                >
+                  <SelectTrigger className="h-8 w-[200px]">
+                    <SelectValue placeholder="Column" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {breakdowns?.columns.map(column => (
+                      <SelectItem key={column} value={column}>
+                        {column}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+              {breakdownQuery.isLoading ? (
+                <div className="flex h-[280px] items-center justify-center text-sm text-muted-foreground">
+                  Loading breakdowns…
+                </div>
+              ) : !breakdowns?.columns.length ? (
+                <div className="flex h-[280px] flex-col items-center justify-center gap-1 text-center text-sm text-muted-foreground">
+                  <p>No breakdown groups yet.</p>
+                  <p className="text-xs">
+                    Edit this event and add a column under “Metric breakdowns”, then run a
+                    scan — its volume will split into a series per value of that column.
+                  </p>
+                </div>
+              ) : (
+                <>
+                  <MetricsMultiSeriesChart
+                    series={breakdownChartSeries}
+                    height={280}
+                    granularity={granularity}
+                  />
+                  {breakdowns?.interval && (
+                    <p className="mt-2 text-xs text-muted-foreground">
+                      Collection interval: {breakdowns.interval}
+                    </p>
+                  )}
+                </>
+              )}
+            </CardContent>
+          </Card>
         </TabsContent>
       </Tabs>
 
