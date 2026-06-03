@@ -377,12 +377,10 @@ function EventGroupRulesEditor({
   rules,
   columns,
   onChange,
-  idPrefix,
 }: {
   rules: EventGroupRule[]
   columns?: ScanConfigPreview['columns']
   onChange: (rules: EventGroupRule[]) => void
-  idPrefix: string
 }) {
   const fieldOptions = Array.from(
     new Set([
@@ -392,7 +390,6 @@ function EventGroupRulesEditor({
       ...rules.flatMap(rule => rule.conditions.map(condition => condition.field).filter(Boolean)),
     ]),
   )
-  const fieldListId = `${idPrefix}-group-fields`
 
   const updateRule = (index: number, patch: Partial<EventGroupRule>) => {
     onChange(rules.map((rule, ruleIndex) => (
@@ -418,11 +415,15 @@ function EventGroupRulesEditor({
 
   return (
     <div className="space-y-3 rounded-lg border bg-muted/20 p-4">
-      <datalist id={fieldListId}>
-        {fieldOptions.map(field => <option key={field} value={field} />)}
-      </datalist>
       <div className="flex flex-wrap items-center justify-between gap-3">
-        <div className="text-sm font-medium">Event groups</div>
+        <div>
+          <div className="text-sm font-medium">Event groups</div>
+          {!columns?.length && (
+            <p className="text-xs text-muted-foreground">
+              Load a preview to pick real columns; only event_name is available otherwise.
+            </p>
+          )}
+        </div>
         <Button
           type="button"
           variant="outline"
@@ -475,14 +476,17 @@ function EventGroupRulesEditor({
               <div key={conditionIndex} className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto]">
                 <div className="grid gap-1">
                   <Label>Field</Label>
-                  <Input
-                    list={fieldListId}
+                  <select
                     value={condition.field}
                     onChange={event => updateCondition(ruleIndex, conditionIndex, {
                       field: event.target.value,
                     })}
-                    placeholder="event_name"
-                  />
+                    className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm"
+                  >
+                    {fieldOptions.map(field => (
+                      <option key={field} value={field}>{field}</option>
+                    ))}
+                  </select>
                 </div>
                 <div className="grid gap-1">
                   <Label>Regex</Label>
@@ -943,7 +947,6 @@ export function ScansTab({ slug }: { slug: string }) {
                 rules={eventGroupRules}
                 columns={preview?.columns}
                 onChange={setEventGroupRules}
-                idPrefix="create"
               />
               <div className="grid grid-cols-2 gap-3">
                 <div className="grid gap-2"><Label>Cardinality Threshold</Label><Input type="number" value={cardinalityThreshold} onChange={e => setCardinalityThreshold(Number(e.target.value))} min={1} /></div>
@@ -1119,7 +1122,6 @@ export function ScansTab({ slug }: { slug: string }) {
                 rules={editEventGroupRules}
                 columns={editPreview?.columns}
                 onChange={setEditEventGroupRules}
-                idPrefix="edit"
               />
               <div className="grid grid-cols-2 gap-3">
                 <div className="grid gap-2"><Label>Cardinality Threshold</Label><Input type="number" value={editCardinalityThreshold} onChange={e => setEditCardinalityThreshold(Number(e.target.value))} min={1} /></div>

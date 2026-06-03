@@ -94,8 +94,16 @@ def apply_event_group_rules(
             if not field_name or not pattern:
                 continue
             try:
+                # DOTALL so ``.`` spans newlines: some event values carry multi-line
+                # free text (e.g. a pasted notification body), and ``^...$`` anchored
+                # patterns must still match those against the whole value.
                 matched = (
-                    re.search(pattern, _format_value(values_by_field.get(field_name))) is not None
+                    re.search(
+                        pattern,
+                        _format_value(values_by_field.get(field_name)),
+                        re.DOTALL,
+                    )
+                    is not None
                 )
             except re.error:
                 continue
