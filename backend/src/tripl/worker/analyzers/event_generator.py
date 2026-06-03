@@ -31,6 +31,7 @@ from tripl.models.event_photo import EventPhoto
 from tripl.models.field_definition import FieldDefinition
 from tripl.models.metric_anomaly import MetricAnomaly
 from tripl.models.metric_breakdown_anomaly import MetricBreakdownAnomaly
+from tripl.models.plan_branch import BranchKind, PlanBranch
 from tripl.models.variable import Variable
 from tripl.worker.analyzers.cardinality import BreakdownAnalysis
 from tripl.worker.analyzers.variable_detector import (
@@ -158,6 +159,10 @@ def generate_events(
     JSON columns use their actual path combo from the row.
     """
     result = GenerationResult()
+    # The scan writes to the project's main branch (Variable inserts default
+    # ``branch_id`` to it); resolve it once so variable existence checks are
+    # scoped to the same branch (see ``_ensure_variable``).
+    main_branch_id = _resolve_main_branch_id(session, project_id)
     # Columns referenced by the event-name format are the event's identity, so they must be
     # enumerated (one event per distinct value) even when high-cardinality — otherwise they
     # collapse into a single ${col} template and every row dedups to one event.
@@ -204,7 +209,7 @@ def generate_events(
                     continue
                 var_name = full_path
                 result.variables_created += _ensure_variable(
-                    session, project_id, var_name, "string"
+                    session, project_id, var_name, "string", branch_id=main_branch_id
                 )
             meta["json_passthrough_paths"] = passthrough_paths
             logger.info(
@@ -228,7 +233,7 @@ def generate_events(
                     )
                 for var in pattern.variables:
                     result.variables_created += _ensure_variable(
-                        session, project_id, var.name, var.inferred_type
+                        session, project_id, var.name, var.inferred_type, branch_id=main_branch_id
                     )
                 meta["template"] = pattern.template
 
@@ -823,34 +828,58 @@ def _apply_name_format(fmt: str, kwargs: dict[str, str]) -> str:
     return result
 
 
+def _resolve_main_branch_id(session: Session, project_id: uuid.UUID) -> uuid.UUID | None:
+    """Return the project's existing main-branch id, or ``None`` if not created yet.
+
+    Scans write plan entities to the main branch (see ``default_branch_id``).
+    Variable uniqueness is enforced per branch — ``(project_id, branch_id,
+    source_name)`` — so the working copies a project's plan branches hold can
+    legitimately share a ``source_name``. Scoping the scan's existence checks to
+    the main branch keeps that constraint meaningful and stops a same-name row on
+    another branch from making the lookup raise ``MultipleResultsFound``.
+    """
+    return session.execute(
+        select(PlanBranch.id).where(
+            PlanBranch.project_id == project_id,
+            PlanBranch.kind == BranchKind.main.value,
+        )
+    ).scalars().first()
+
+
 def _ensure_variable(
     session: Session,
     project_id: uuid.UUID,
     name: str,
     inferred_type: str,
+    branch_id: uuid.UUID | None = None,
 ) -> int:
     """Create a Variable if it doesn't exist. Returns 1 if created, 0 if already exists.
 
     Looks up by source_name (the original scan-detected name) so that
-    user renames of the display ``name`` don't cause duplicates.
+    user renames of the display ``name`` don't cause duplicates. Lookups are
+    scoped to ``branch_id`` (the scan's main branch) so a same-named variable on
+    another plan branch is not treated as an existing match — without that scope
+    the query spans branches and can match more than one row.
     """
-    existing = session.execute(
-        select(Variable).where(
-            Variable.project_id == project_id,
-            Variable.source_name == name,
-        )
-    ).scalar_one_or_none()
+    source_query = select(Variable).where(
+        Variable.project_id == project_id,
+        Variable.source_name == name,
+    )
+    if branch_id is not None:
+        source_query = source_query.where(Variable.branch_id == branch_id)
+    existing = session.execute(source_query).scalars().first()
 
     if existing is not None:
         return 0
 
     # Also check by name (covers manually created variables)
-    existing_by_name = session.execute(
-        select(Variable).where(
-            Variable.project_id == project_id,
-            Variable.name == name,
-        )
-    ).scalar_one_or_none()
+    name_query = select(Variable).where(
+        Variable.project_id == project_id,
+        Variable.name == name,
+    )
+    if branch_id is not None:
+        name_query = name_query.where(Variable.branch_id == branch_id)
+    existing_by_name = session.execute(name_query).scalars().first()
 
     if existing_by_name is not None:
         # Backfill source_name if missing
@@ -867,6 +896,8 @@ def _ensure_variable(
         variable_type=inferred_type,
         description="Auto-detected variable from data source scan",
     )
+    if branch_id is not None:
+        var.branch_id = branch_id
     session.add(var)
     session.flush()
     return 1
