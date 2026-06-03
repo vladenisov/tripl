@@ -14,11 +14,14 @@ from tripl.models.event_field_value import EventFieldValue
 from tripl.models.event_metric import EventMetric
 from tripl.models.event_type import EventType
 from tripl.models.field_definition import FieldDefinition
+from tripl.models.plan_branch import BranchKind, BranchStatus, PlanBranch
 from tripl.models.project import Project
 from tripl.models.variable import Variable
 from tripl.worker.adapters.base import ColumnInfo
 from tripl.worker.analyzers.cardinality import BreakdownAnalysis, CardinalityResult
 from tripl.worker.analyzers.event_generator import (
+    _ensure_variable,
+    _resolve_main_branch_id,
     generate_events,
     merge_existing_events_for_group_rules,
 )
@@ -479,6 +482,58 @@ class TestEventGeneration:
         assert {event.source_name for event in events} == {
             "page_select_sport_other_activity_*_chosen"
         }
+
+    def test_ensure_variable_tolerates_same_name_on_other_branch(
+        self, sync_session: Session, project_and_type
+    ):
+        # Variable uniqueness is per (project_id, branch_id, source_name), so a working
+        # plan branch can hold a same-named variable as main. An unscoped lookup spans
+        # branches and used to raise "Multiple rows were found"; scoping to the scan's
+        # main branch must find exactly the main-branch row (regression test).
+        project, _et, _fds = project_and_type
+        # The fixture's ORM inserts already auto-created the project's main branch.
+        main_branch_id = _resolve_main_branch_id(sync_session, project.id)
+        assert main_branch_id is not None
+        working_branch = PlanBranch(
+            id=uuid.uuid4(),
+            project_id=project.id,
+            name="feature",
+            kind=BranchKind.working.value,
+            status=BranchStatus.draft.value,
+            description="",
+        )
+        sync_session.add(working_branch)
+        sync_session.flush()
+        for branch_id in (main_branch_id, working_branch.id):
+            sync_session.add(
+                Variable(
+                    id=uuid.uuid4(),
+                    project_id=project.id,
+                    branch_id=branch_id,
+                    name="property.spot_id",
+                    source_name="property.spot_id",
+                    variable_type="string",
+                )
+            )
+        sync_session.commit()
+
+        resolved = _resolve_main_branch_id(sync_session, project.id)
+        assert resolved == main_branch_id
+
+        # Scoped lookup finds the existing main-branch variable without raising.
+        created = _ensure_variable(
+            sync_session, project.id, "property.spot_id", "string", branch_id=resolved
+        )
+        assert created == 0
+
+        variables = (
+            sync_session.execute(
+                select(Variable).where(Variable.source_name == "property.spot_id")
+            )
+            .scalars()
+            .all()
+        )
+        assert len(variables) == 2  # nothing new created
 
     def test_dedup_skips_existing(self, sync_session: Session, project_and_type):
         project, et, fds = project_and_type
