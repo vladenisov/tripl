@@ -415,6 +415,71 @@ class TestEventGeneration:
         ).scalar_one()
         assert action_value == "/^button:/"
 
+    def test_post_factum_group_rules_merge_multiline_values(
+        self, sync_session: Session, project_and_type
+    ):
+        # Free-text event values can be multi-line (e.g. a pasted notification body
+        # captured as the activity name). An anchored ``^...$`` rule must still match
+        # them against the whole value, so ``.`` has to span newlines.
+        project, et, fds = project_and_type
+        single_line = "page_select_sport_other_activity_running_chosen"
+        multi_line = (
+            "page_select_sport_other_activity_Gewitter (stark)\n"
+            "Kreis Emsland\n\n> 50% - Wahrscheinlich\n_chosen"
+        )
+        for index, action in enumerate([single_line, multi_line]):
+            event = Event(
+                id=uuid.uuid4(),
+                project_id=project.id,
+                event_type_id=et.id,
+                name=action,
+                source_name=action,
+                order=index,
+                implemented=True,
+                reviewed=True,
+            )
+            sync_session.add(event)
+            sync_session.flush()
+            sync_session.add(
+                EventFieldValue(
+                    id=uuid.uuid4(),
+                    event_id=event.id,
+                    field_definition_id=fds["action"].id,
+                    value=action,
+                )
+            )
+        sync_session.commit()
+
+        merged = merge_existing_events_for_group_rules(
+            sync_session,
+            project_id=project.id,
+            event_type_ids=[et.id],
+            event_group_rules=[
+                {
+                    "name": "page_select_sport_other_activity_*_chosen",
+                    "condition_logic": "all",
+                    "conditions": [
+                        {
+                            "field": "action",
+                            "pattern": "^page_select_sport_other_activity_.*_chosen$",
+                        }
+                    ],
+                }
+            ],
+        )
+        sync_session.commit()
+
+        # Both the single-line and the multi-line value collapse into one group.
+        assert merged == 2
+        events = (
+            sync_session.execute(select(Event).where(Event.project_id == project.id))
+            .scalars()
+            .all()
+        )
+        assert {event.source_name for event in events} == {
+            "page_select_sport_other_activity_*_chosen"
+        }
+
     def test_dedup_skips_existing(self, sync_session: Session, project_and_type):
         project, et, fds = project_and_type
         cardinality = {
