@@ -2,7 +2,7 @@ import uuid
 from datetime import UTC, datetime, timedelta
 
 from fastapi import HTTPException
-from sqlalchemy import delete, false, func, or_, select
+from sqlalchemy import delete, func, or_, select
 from sqlalchemy import update as sql_update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import noload
@@ -25,7 +25,7 @@ from tripl.schemas.event import (
 from tripl.services.plan_branch_service import resolve_branch_id
 from tripl.services.project_service import get_project_id_by_slug
 from tripl.services.schema_drift_service import get_drift_counts_by_event_type
-from tripl.services.search_service import reindex_project_branch, search_event_ids
+from tripl.services.search_service import reindex_project_branch
 
 
 async def _validate_field_values(
@@ -80,14 +80,16 @@ async def list_events(
         query = query.where(Event.event_type_id == event_type_id)
         count_query = count_query.where(Event.event_type_id == event_type_id)
     if search:
-        matched_ids = await search_event_ids(
-            session,
-            slug,
-            search,
-            branch_id=branch_id,
-            include_archived=True,
+        # Local list search is a plain substring filter across the visible
+        # text columns (name, description, and the legacy "old" source_name).
+        # The semantic/hybrid search lives in the global command palette only;
+        # wiring it in here broke exact-match filtering whenever the search
+        # index had not been (re)built for the project/branch yet.
+        search_clause = or_(
+            Event.name.ilike(f"%{search}%"),
+            Event.description.ilike(f"%{search}%"),
+            Event.source_name.ilike(f"%{search}%"),
         )
-        search_clause = Event.id.in_(matched_ids) if matched_ids else false()
         query = query.where(search_clause)
         count_query = count_query.where(search_clause)
     if implemented is not None:
