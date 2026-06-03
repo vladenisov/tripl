@@ -163,7 +163,10 @@ function CommandPalette() {
 
   return (
     <Dialog open={open} onOpenChange={handleOpenChange}>
-      <DialogContent className="overflow-hidden p-0 sm:max-w-[640px] gap-0">
+      <DialogContent
+        showCloseButton={false}
+        className="overflow-hidden p-0 sm:max-w-[640px] gap-0"
+      >
         <DialogTitle className="sr-only">Command palette</DialogTitle>
         <Command
           label="Command palette"
