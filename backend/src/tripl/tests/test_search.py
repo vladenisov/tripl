@@ -98,7 +98,11 @@ async def test_global_search_matches_multilingual_plan_content(client: AsyncClie
 
 
 @pytest.mark.asyncio
-async def test_event_list_search_uses_search_document_content(client: AsyncClient) -> None:
+async def test_event_list_search_is_plain_column_ilike(client: AsyncClient) -> None:
+    """The list ``search`` is a plain substring filter over the event's own text
+    columns (name/description/source_name) — NOT the semantic/hybrid search,
+    which lives only in the global command palette. Field-value content is
+    reachable via the dedicated ``field_value`` column filter instead."""
     await client.post("/api/v1/projects", json={"name": "Event Search", "slug": "search-events"})
     event_type_id, field_id = await _create_event_type(
         client,
@@ -123,11 +127,24 @@ async def test_event_list_search_uses_search_document_content(client: AsyncClien
         },
     )
 
-    resp = await client.get("/api/v1/projects/search-events/events?search=home_screen")
-    assert resp.status_code == 200
-    body = resp.json()
-    assert body["total"] == 1
-    assert body["items"][0]["name"] == "Generic Event"
+    # Free-text search matches the event name column...
+    by_name = await client.get("/api/v1/projects/search-events/events?search=Generic")
+    assert by_name.status_code == 200
+    assert by_name.json()["total"] == 1
+    assert by_name.json()["items"][0]["name"] == "Generic Event"
+
+    # ...but NOT a field value (that is not one of the event's text columns).
+    by_value = await client.get("/api/v1/projects/search-events/events?search=home_screen")
+    assert by_value.status_code == 200
+    assert by_value.json()["total"] == 0
+
+    # Field-value content is filtered through the dedicated field_value param.
+    by_field = await client.get(
+        "/api/v1/projects/search-events/events?field_value=home_screen"
+    )
+    assert by_field.status_code == 200
+    assert by_field.json()["total"] == 1
+    assert by_field.json()["items"][0]["name"] == "Generic Event"
 
 
 @pytest.mark.asyncio
