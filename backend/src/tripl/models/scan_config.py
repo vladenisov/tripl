@@ -44,6 +44,11 @@ class ScanConfig(UUIDMixin, TimestampMixin, Base):
     time_column: Mapped[str | None] = mapped_column(String(255), nullable=True)
     event_name_format: Mapped[str | None] = mapped_column(String(500), nullable=True)
     json_value_paths: Mapped[list[str]] = mapped_column(JSON, default=list, server_default="[]")
+    event_group_rules: Mapped[list[dict[str, object]]] = mapped_column(
+        JSON,
+        default=list,
+        server_default="[]",
+    )
     metric_breakdown_columns: Mapped[list[str]] = mapped_column(
         JSON,
         default=list,

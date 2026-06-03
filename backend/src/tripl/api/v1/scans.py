@@ -9,6 +9,7 @@ from tripl.schemas.scan_config import (
     ScanConfigPreviewResponse,
     ScanConfigResponse,
     ScanConfigUpdate,
+    ScanEventGroupsApplyResponse,
     ScanMetricsReplayRequest,
 )
 from tripl.schemas.scan_job import ScanJobResponse
@@ -116,6 +117,31 @@ async def delete_scan_config(
 )
 async def run_scan(session: SessionDep, slug: str, scan_id: uuid.UUID) -> object:
     return await scan_service.trigger_scan(session, slug, scan_id)
+
+
+@router.post(
+    "/{scan_id}/event-groups/apply",
+    response_model=ScanEventGroupsApplyResponse,
+)
+async def apply_scan_event_groups(
+    session: SessionDep,
+    slug: str,
+    scan_id: uuid.UUID,
+    current_user: EditorUserDep,
+) -> ScanEventGroupsApplyResponse:
+    result = await scan_service.apply_scan_event_groups(session, slug, scan_id)
+    cfg = await scan_service.get_scan_config(session, slug, scan_id)
+    await audit_service.record(
+        session,
+        user=current_user,
+        action="scan_config.event_groups.apply",
+        target_type="scan_config",
+        target_id=scan_id,
+        target_name=cfg.name,
+        project_slug=slug,
+        payload=result.model_dump(),
+    )
+    return result
 
 
 @router.post(

@@ -114,6 +114,7 @@ def run_scan(self: object, scan_config_id: str, job_id: str) -> dict[str, object
                 event_type_column=config.event_type_column,
                 time_column=config.time_column,
                 event_name_format=config.event_name_format,
+                event_group_rules=config.event_group_rules,
             )
         else:
             msg = "Either event_type_id or event_type_column must be specified"
@@ -127,6 +128,8 @@ def run_scan(self: object, scan_config_id: str, job_id: str) -> dict[str, object
         job.result_summary = {
             "events_created": result.events_created,
             "events_skipped": result.events_skipped,
+            "events_grouped": result.events_grouped,
+            "events_merged": result.events_merged,
             "variables_created": result.variables_created,
             "columns_analyzed": result.columns_analyzed,
             "details": result.details,
@@ -216,9 +219,12 @@ def _scan_with_grouping(
             event_type_column=col_name,
             time_column=config.time_column,
             event_name_format=config.event_name_format,
+            event_group_rules=config.event_group_rules,
         )
         combined.events_created += result.events_created
         combined.events_skipped += result.events_skipped
+        combined.events_grouped += result.events_grouped
+        combined.events_merged += result.events_merged
         combined.variables_created += result.variables_created
         combined.columns_analyzed = max(combined.columns_analyzed, result.columns_analyzed)
         combined.details.extend(result.details)

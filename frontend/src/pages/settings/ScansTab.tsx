@@ -7,6 +7,7 @@ import { fieldsApi } from "@/api/fields"
 import { scansApi } from "@/api/scans"
 import type {
   DataSource,
+  EventGroupRule,
   EventType,
   IntervalCode,
   ScanConfig,
@@ -86,6 +87,14 @@ function eligibleChunkIntervals(interval: string): IntervalCode[] {
   const idx = INTERVAL_ORDER.indexOf(interval as IntervalCode)
   if (idx < 0) return []
   return INTERVAL_ORDER.slice(idx)
+}
+
+function emptyGroupRule(): EventGroupRule {
+  return {
+    name: '',
+    condition_logic: 'all',
+    conditions: [{ field: 'event_name', pattern: '' }],
+  }
 }
 
 function ScanPreviewPanel({
@@ -364,6 +373,159 @@ function DistributionDriftPicker({
   )
 }
 
+function EventGroupRulesEditor({
+  rules,
+  columns,
+  onChange,
+  idPrefix,
+}: {
+  rules: EventGroupRule[]
+  columns?: ScanConfigPreview['columns']
+  onChange: (rules: EventGroupRule[]) => void
+  idPrefix: string
+}) {
+  const fieldOptions = Array.from(
+    new Set([
+      'event_name',
+      '__event_name',
+      ...(columns ?? []).map(column => column.name),
+      ...rules.flatMap(rule => rule.conditions.map(condition => condition.field).filter(Boolean)),
+    ]),
+  )
+  const fieldListId = `${idPrefix}-group-fields`
+
+  const updateRule = (index: number, patch: Partial<EventGroupRule>) => {
+    onChange(rules.map((rule, ruleIndex) => (
+      ruleIndex === index ? { ...rule, ...patch } : rule
+    )))
+  }
+
+  const updateCondition = (
+    ruleIndex: number,
+    conditionIndex: number,
+    patch: Partial<EventGroupRule['conditions'][number]>,
+  ) => {
+    onChange(rules.map((rule, currentRuleIndex) => {
+      if (currentRuleIndex !== ruleIndex) return rule
+      return {
+        ...rule,
+        conditions: rule.conditions.map((condition, currentConditionIndex) => (
+          currentConditionIndex === conditionIndex ? { ...condition, ...patch } : condition
+        )),
+      }
+    }))
+  }
+
+  return (
+    <div className="space-y-3 rounded-lg border bg-muted/20 p-4">
+      <datalist id={fieldListId}>
+        {fieldOptions.map(field => <option key={field} value={field} />)}
+      </datalist>
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div className="text-sm font-medium">Event groups</div>
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          onClick={() => onChange([...rules, emptyGroupRule()])}
+        >
+          <Plus className="mr-2 h-3 w-3" />Add Group Rule
+        </Button>
+      </div>
+      {rules.length === 0 && (
+        <p className="text-xs text-muted-foreground">No grouping rules.</p>
+      )}
+      {rules.map((rule, ruleIndex) => (
+        <div key={ruleIndex} className="space-y-3 rounded-md border bg-background p-3">
+          <div className="grid gap-3 sm:grid-cols-[minmax(0,1fr)_8rem_auto]">
+            <div className="grid gap-1">
+              <Label>Group name</Label>
+              <Input
+                value={rule.name}
+                onChange={event => updateRule(ruleIndex, { name: event.target.value })}
+                placeholder="button events"
+              />
+            </div>
+            <div className="grid gap-1">
+              <Label>Match</Label>
+              <select
+                value={rule.condition_logic}
+                onChange={event => updateRule(ruleIndex, {
+                  condition_logic: event.target.value as EventGroupRule['condition_logic'],
+                })}
+                className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm"
+              >
+                <option value="all">All</option>
+                <option value="any">Any</option>
+              </select>
+            </div>
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon"
+              className="self-end text-muted-foreground hover:text-destructive"
+              title="Remove group rule"
+              onClick={() => onChange(rules.filter((_, index) => index !== ruleIndex))}
+            >
+              <Trash2 className="h-4 w-4" />
+            </Button>
+          </div>
+          <div className="space-y-2">
+            {rule.conditions.map((condition, conditionIndex) => (
+              <div key={conditionIndex} className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto]">
+                <div className="grid gap-1">
+                  <Label>Field</Label>
+                  <Input
+                    list={fieldListId}
+                    value={condition.field}
+                    onChange={event => updateCondition(ruleIndex, conditionIndex, {
+                      field: event.target.value,
+                    })}
+                    placeholder="event_name"
+                  />
+                </div>
+                <div className="grid gap-1">
+                  <Label>Regex</Label>
+                  <Input
+                    value={condition.pattern}
+                    onChange={event => updateCondition(ruleIndex, conditionIndex, {
+                      pattern: event.target.value,
+                    })}
+                    placeholder="^button:"
+                  />
+                </div>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon"
+                  className="self-end text-muted-foreground hover:text-destructive"
+                  title="Remove condition"
+                  disabled={rule.conditions.length === 1}
+                  onClick={() => updateRule(ruleIndex, {
+                    conditions: rule.conditions.filter((_, index) => index !== conditionIndex),
+                  })}
+                >
+                  <Trash2 className="h-4 w-4" />
+                </Button>
+              </div>
+            ))}
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={() => updateRule(ruleIndex, {
+                conditions: [...rule.conditions, { field: 'event_name', pattern: '' }],
+              })}
+            >
+              <Plus className="mr-2 h-3 w-3" />Add Condition
+            </Button>
+          </div>
+        </div>
+      ))}
+    </div>
+  )
+}
+
 /* ─── Scans Tab ─── */
 export function ScansTab({ slug }: { slug: string }) {
   const qc = useQueryClient()
@@ -383,6 +545,7 @@ export function ScansTab({ slug }: { slug: string }) {
   const [timeColumn, setTimeColumn] = useState('')
   const [eventNameFormat, setEventNameFormat] = useState('')
   const [jsonValuePaths, setJsonValuePaths] = useState<string[]>([])
+  const [eventGroupRules, setEventGroupRules] = useState<EventGroupRule[]>([])
   const [metricBreakdownColumns, setMetricBreakdownColumns] = useState<string[]>([])
   const [metricBreakdownValuesLimit, setMetricBreakdownValuesLimit] = useState('')
   const [distributionDriftFields, setDistributionDriftFields] = useState<string[]>([])
@@ -398,6 +561,7 @@ export function ScansTab({ slug }: { slug: string }) {
   const [editTimeColumn, setEditTimeColumn] = useState('')
   const [editEventNameFormat, setEditEventNameFormat] = useState('')
   const [editJsonValuePaths, setEditJsonValuePaths] = useState<string[]>([])
+  const [editEventGroupRules, setEditEventGroupRules] = useState<EventGroupRule[]>([])
   const [editMetricBreakdownColumns, setEditMetricBreakdownColumns] = useState<string[]>([])
   const [editMetricBreakdownValuesLimit, setEditMetricBreakdownValuesLimit] = useState('')
   const [editDistributionDriftFields, setEditDistributionDriftFields] = useState<string[]>([])
@@ -433,6 +597,7 @@ export function ScansTab({ slug }: { slug: string }) {
         time_column: timeColumn || null,
         event_name_format: eventNameFormat || null,
         json_value_paths: jsonValuePaths,
+        event_group_rules: eventGroupRules,
         metric_breakdown_columns: metricBreakdownColumns,
         metric_breakdown_values_limit: metricBreakdownValuesLimit ? Number(metricBreakdownValuesLimit) : null,
         distribution_drift_fields: distributionDriftFields,
@@ -456,6 +621,7 @@ export function ScansTab({ slug }: { slug: string }) {
         time_column: editTimeColumn || null,
         event_name_format: editEventNameFormat || null,
         json_value_paths: editJsonValuePaths,
+        event_group_rules: editEventGroupRules,
         metric_breakdown_columns: editMetricBreakdownColumns,
         metric_breakdown_values_limit: editMetricBreakdownValuesLimit ? Number(editMetricBreakdownValuesLimit) : null,
         distribution_drift_fields: editDistributionDriftFields,
@@ -553,6 +719,7 @@ export function ScansTab({ slug }: { slug: string }) {
     setEditTimeColumn(sc.time_column ?? '')
     setEditEventNameFormat(sc.event_name_format ?? '')
     setEditJsonValuePaths(sc.json_value_paths ?? [])
+    setEditEventGroupRules(sc.event_group_rules ?? [])
     setEditMetricBreakdownColumns(sc.metric_breakdown_columns ?? [])
     setEditMetricBreakdownValuesLimit(sc.metric_breakdown_values_limit ? String(sc.metric_breakdown_values_limit) : '')
     setEditDistributionDriftFields(sc.distribution_drift_fields ?? [])
@@ -568,6 +735,7 @@ export function ScansTab({ slug }: { slug: string }) {
     setEventTypeId(''); setEventTypeColumn('')
     setTimeColumn(''); setEventNameFormat('')
     setJsonValuePaths([]); setMetricBreakdownColumns([])
+    setEventGroupRules([])
     setDistributionDriftFields([])
     setMetricBreakdownValuesLimit(''); setPreview(null)
     setCardinalityThreshold(100); setInterval(''); setChunkInterval('')
@@ -771,6 +939,12 @@ export function ScansTab({ slug }: { slug: string }) {
                   onToggleField={toggleDistributionDriftField}
                 />
               )}
+              <EventGroupRulesEditor
+                rules={eventGroupRules}
+                columns={preview?.columns}
+                onChange={setEventGroupRules}
+                idPrefix="create"
+              />
               <div className="grid grid-cols-2 gap-3">
                 <div className="grid gap-2"><Label>Cardinality Threshold</Label><Input type="number" value={cardinalityThreshold} onChange={e => setCardinalityThreshold(Number(e.target.value))} min={1} /></div>
                 <div className="grid gap-2">
@@ -941,6 +1115,12 @@ export function ScansTab({ slug }: { slug: string }) {
                   onToggleField={toggleEditDistributionDriftField}
                 />
               )}
+              <EventGroupRulesEditor
+                rules={editEventGroupRules}
+                columns={editPreview?.columns}
+                onChange={setEditEventGroupRules}
+                idPrefix="edit"
+              />
               <div className="grid grid-cols-2 gap-3">
                 <div className="grid gap-2"><Label>Cardinality Threshold</Label><Input type="number" value={editCardinalityThreshold} onChange={e => setEditCardinalityThreshold(Number(e.target.value))} min={1} /></div>
                 <div className="grid gap-2">
@@ -1006,6 +1186,9 @@ export function ScansTab({ slug }: { slug: string }) {
                   )}
                   {sc.distribution_drift_fields.length > 0 && (
                     <Badge variant="outline" className="text-xs">Distribution {sc.distribution_drift_fields.length}</Badge>
+                  )}
+                  {sc.event_group_rules.length > 0 && (
+                    <Badge variant="outline" className="text-xs">Groups {sc.event_group_rules.length}</Badge>
                   )}
                 </div>
                 <div className="flex items-center gap-2">

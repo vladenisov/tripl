@@ -1,6 +1,6 @@
 import { Fragment, useState } from "react"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
-import { ChevronDown, Play, RotateCcw } from "lucide-react"
+import { ChevronDown, GitMerge, Play, RotateCcw } from "lucide-react"
 import { scansApi } from "@/api/scans"
 import type { EventType, ScanConfig, ScanJob } from "@/types"
 import { Badge } from "@/components/ui/badge"
@@ -38,6 +38,7 @@ export function ScanDetail({ slug, scanConfig, eventTypes }: { slug: string; sca
   const [replayOpen, setReplayOpen] = useState(false)
   const [replayFrom, setReplayFrom] = useState('')
   const [replayTo, setReplayTo] = useState('')
+  const [applyGroupsMessage, setApplyGroupsMessage] = useState('')
 
   const etName = eventTypes.find((et: EventType) => et.id === scanConfig.event_type_id)?.display_name
   const canReplayMetrics = Boolean(scanConfig.time_column && scanConfig.interval)
@@ -51,6 +52,17 @@ export function ScanDetail({ slug, scanConfig, eventTypes }: { slug: string; sca
   const runMut = useMutation({
     mutationFn: () => scansApi.run(slug, scanConfig.id),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['scanJobs', slug, scanConfig.id] }),
+  })
+
+  const applyGroupsMut = useMutation({
+    mutationFn: () => scansApi.applyEventGroups(slug, scanConfig.id),
+    onMutate: () => setApplyGroupsMessage(''),
+    onSuccess: result => {
+      setApplyGroupsMessage(`${result.events_merged} existing events merged.`)
+      qc.invalidateQueries({ queryKey: ['scans', slug] })
+      qc.invalidateQueries({ queryKey: ['events', slug] })
+      qc.invalidateQueries({ queryKey: ['eventTypes', slug] })
+    },
   })
 
   const replayMut = useMutation({
@@ -166,6 +178,15 @@ export function ScanDetail({ slug, scanConfig, eventTypes }: { slug: string; sca
                 </strong>
               </span>
             )}
+            {scanConfig.event_group_rules.length > 0 && (
+              <span>
+                Groups:
+                <strong className="text-foreground">
+                  {' '}
+                  {scanConfig.event_group_rules.map(rule => rule.name).join(', ')}
+                </strong>
+              </span>
+            )}
             {etName && <span>Event Type: <strong className="text-foreground">{etName}</strong></span>}
             {scanConfig.interval && <span>Interval: <strong className="text-foreground">{scanConfig.interval}</strong></span>}
             {scanConfig.replay_chunk_interval && <span>Replay chunk: <strong className="text-foreground">{scanConfig.replay_chunk_interval}</strong></span>}
@@ -187,6 +208,20 @@ export function ScanDetail({ slug, scanConfig, eventTypes }: { slug: string; sca
           <Button
             size="sm"
             variant="outline"
+            onClick={() => applyGroupsMut.mutate()}
+            disabled={scanConfig.event_group_rules.length === 0 || applyGroupsMut.isPending}
+            title={
+              scanConfig.event_group_rules.length > 0
+                ? 'Apply saved group rules to existing events'
+                : 'Add event group rules first'
+            }
+          >
+            <GitMerge className="mr-1 h-3 w-3" />
+            {applyGroupsMut.isPending ? 'Applying…' : 'Apply Groups'}
+          </Button>
+          <Button
+            size="sm"
+            variant="outline"
             onClick={openReplayDialog}
             disabled={!canReplayMetrics || replayMut.isPending}
             title={canReplayMetrics ? 'Replay metrics for a past period' : 'Requires time column and interval'}
@@ -202,6 +237,8 @@ export function ScanDetail({ slug, scanConfig, eventTypes }: { slug: string; sca
       </div>
 
       {runMut.isError && <p className="text-sm text-destructive">{(runMut.error as Error).message}</p>}
+      {applyGroupsMut.isError && <p className="text-sm text-destructive">{(applyGroupsMut.error as Error).message}</p>}
+      {applyGroupsMessage && <p className="text-sm text-muted-foreground">{applyGroupsMessage}</p>}
 
       {isLoading && <p className="text-sm text-muted-foreground">Loading jobs…</p>}
 
@@ -250,6 +287,12 @@ export function ScanDetail({ slug, scanConfig, eventTypes }: { slug: string; sca
                           )}
                           {job.result_summary.events_skipped != null && job.result_summary.events_skipped > 0 && (
                             <Badge variant="outline" className="text-[10px]">{job.result_summary.events_skipped} skipped</Badge>
+                          )}
+                          {job.result_summary.events_grouped != null && job.result_summary.events_grouped > 0 && (
+                            <Badge variant="outline" className="text-[10px]">{job.result_summary.events_grouped} grouped</Badge>
+                          )}
+                          {job.result_summary.events_merged != null && job.result_summary.events_merged > 0 && (
+                            <Badge variant="outline" className="text-[10px]">{job.result_summary.events_merged} merged</Badge>
                           )}
                           {job.result_summary.signals_added != null && job.result_summary.signals_added > 0 && (
                             <Badge variant="outline" className="text-[10px] text-destructive">+{job.result_summary.signals_added} signals</Badge>
@@ -310,6 +353,18 @@ export function ScanDetail({ slug, scanConfig, eventTypes }: { slug: string; sca
                               <Card className="p-3 text-center"><div className="text-lg font-bold text-green-600">{job.result_summary.events_created ?? 0}</div><div className="text-muted-foreground">Events created</div></Card>
                               <Card className="p-3 text-center"><div className="text-lg font-bold text-blue-600">{job.result_summary.variables_created ?? 0}</div><div className="text-muted-foreground">Variables created</div></Card>
                               <Card className="p-3 text-center"><div className="text-lg font-bold text-foreground">{job.result_summary.events_skipped ?? 0}</div><div className="text-muted-foreground">Events skipped</div></Card>
+                              {job.result_summary.events_grouped != null && (
+                                <Card className="p-3 text-center">
+                                  <div className="text-lg font-bold text-foreground">{job.result_summary.events_grouped}</div>
+                                  <div className="text-muted-foreground">Events grouped</div>
+                                </Card>
+                              )}
+                              {job.result_summary.events_merged != null && (
+                                <Card className="p-3 text-center">
+                                  <div className="text-lg font-bold text-foreground">{job.result_summary.events_merged}</div>
+                                  <div className="text-muted-foreground">Events merged</div>
+                                </Card>
+                              )}
                               <Card className="p-3 text-center"><div className="text-lg font-bold text-primary">{job.result_summary.columns_analyzed ?? 0}</div><div className="text-muted-foreground">Columns analyzed</div></Card>
                               {job.result_summary.signals_added != null && (
                                 <Card className="p-3 text-center">
