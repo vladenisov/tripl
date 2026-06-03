@@ -90,7 +90,7 @@ export function SeasonalityHeatmap({
           </p>
         </div>
         <div className="overflow-x-auto">
-          <table className="w-full text-[10px]">
+          <table className="w-full table-fixed text-[10px]">
             <thead>
               <tr>
                 <th className="w-10" />
