@@ -6,9 +6,9 @@ import {
   Bell,
   CheckCircle2,
   ChevronRight,
-  Command,
   Loader2,
   Menu,
+  Search,
   Send,
   XCircle,
 } from 'lucide-react'
@@ -78,7 +78,7 @@ export function TopBar({
           className="flex h-7 items-center gap-1.5 rounded-md px-2 transition-colors hover:bg-[var(--surface-hover)]"
           style={{ color: 'var(--fg-muted)' }}
         >
-          <Command className="h-[13px] w-[13px]" />
+          <Search className="h-[13px] w-[13px]" />
           <span className="hidden sm:inline-flex">
             <Kbd>⌘K</Kbd>
           </span>
