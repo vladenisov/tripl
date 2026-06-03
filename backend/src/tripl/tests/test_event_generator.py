@@ -486,3 +486,85 @@ class TestEventGeneration:
         }
         assert "payload.locale" in variable_names
         assert "payload.extra.key" not in variable_names
+
+    def test_longest_event_name_truncated(
+        self,
+        sync_session: Session,
+        project_and_type,
+    ):
+        project, et, fds = project_and_type
+        longest_name = "a" * 600
+        analysis = BreakdownAnalysis(
+            results={
+                "screen": CardinalityResult(
+                    column=ColumnInfo("screen", "String"),
+                    count=1,
+                    is_low=True,
+                    sample_values=[longest_name],
+                ),
+            },
+            rows=[(longest_name,)],
+            reg_names=["screen"],
+            json_names=[],
+            json_value_names=[],
+        )
+
+        result = generate_events(
+            sync_session,
+            project.id,
+            et.id,
+            analysis,
+            fds,
+            event_name_format="{screen}",
+        )
+        sync_session.commit()
+
+        assert result.events_created == 1
+        events = sync_session.execute(
+            select(Event).where(Event.project_id == project.id)
+        ).scalars().all()
+        assert len(events) == 1
+        assert len(events[0].name) == 500
+        assert events[0].name.endswith("...")
+
+    def test_archived_event_not_in_events_by_name(
+        self,
+        sync_session: Session,
+        project_and_type,
+    ):
+        project, et, fds = project_and_type
+        analysis = BreakdownAnalysis(
+            results={
+                "screen": CardinalityResult(
+                    column=ColumnInfo("screen", "String"),
+                    count=1,
+                    is_low=True,
+                    sample_values=["/dashboard"],
+                ),
+            },
+            rows=[("/dashboard",)],
+            reg_names=["screen"],
+            json_names=[],
+            json_value_names=[],
+        )
+
+        # Create event and mark archived = True
+        event = Event(
+            id=uuid.uuid4(),
+            project_id=project.id,
+            event_type_id=et.id,
+            name="screen=/dashboard",
+            source_name="screen=/dashboard",
+            archived=True,
+            order=0,
+        )
+        sync_session.add(event)
+        sync_session.commit()
+
+        # Run generate_events
+        result = generate_events(sync_session, project.id, et.id, analysis, fds)
+        sync_session.commit()
+
+        assert result.events_created == 0
+        assert result.events_skipped == 1
+        assert "screen=/dashboard" not in result.events_by_name

@@ -22,6 +22,7 @@ from tripl.alerting_matching import (
     distribution_drift_scope_ref,
 )
 from tripl.models.distribution_drift import DistributionDrift
+from tripl.models.event import Event
 from tripl.models.event_metric import EventMetric
 from tripl.models.event_type import EventType
 from tripl.models.metric_anomaly import MetricAnomaly
@@ -104,9 +105,11 @@ def _get_latest_metric_buckets(
 
     for event_id, bucket in session.execute(
         select(EventMetric.event_id, sa_func.max(EventMetric.bucket))
+        .join(Event, EventMetric.event_id == Event.id)
         .where(
             EventMetric.scan_config_id == scan_config_id,
             EventMetric.event_id.is_not(None),
+            Event.archived.is_(False),
         )
         .group_by(EventMetric.event_id)
     ).all():
@@ -124,7 +127,11 @@ def _get_visible_signal_scope_keys(
     latest_anomalies: dict[tuple[str, str], MetricAnomaly] = {}
     for anomaly in session.execute(
         select(MetricAnomaly)
-        .where(MetricAnomaly.scan_config_id == scan_config_id)
+        .outerjoin(Event, MetricAnomaly.event_id == Event.id)
+        .where(
+            MetricAnomaly.scan_config_id == scan_config_id,
+            (MetricAnomaly.event_id.is_(None)) | (Event.archived.is_(False)),
+        )
         .order_by(MetricAnomaly.bucket.desc())
     ).scalars():
         key = (anomaly.scope_type, anomaly.scope_ref)
@@ -149,7 +156,11 @@ def _get_latest_active_anomalies(
     latest_anomalies: dict[tuple[str, str], MetricAnomaly] = {}
     for anomaly in session.execute(
         select(MetricAnomaly)
-        .where(MetricAnomaly.scan_config_id == config.id)
+        .outerjoin(Event, MetricAnomaly.event_id == Event.id)
+        .where(
+            MetricAnomaly.scan_config_id == config.id,
+            (MetricAnomaly.event_id.is_(None)) | (Event.archived.is_(False)),
+        )
         .order_by(MetricAnomaly.bucket.desc())
     ).scalars():
         key = (anomaly.scope_type, anomaly.scope_ref)

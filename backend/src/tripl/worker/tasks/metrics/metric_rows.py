@@ -103,13 +103,17 @@ def _build_event_name_from_row(
         return None
 
     if event_name_format:
-        return _apply_name_format(event_name_format, kwargs)
+        res = _apply_name_format(event_name_format, kwargs)
+    else:
+        parts = []
+        for k, v in kwargs.items():
+            display = v if len(v) <= 80 else v[:77] + "..."
+            parts.append(f"{k}={display}")
+        res = " | ".join(parts)
 
-    parts = []
-    for k, v in kwargs.items():
-        display = v if len(v) <= 80 else v[:77] + "..."
-        parts.append(f"{k}={display}")
-    return " | ".join(parts)
+    if res and len(res) > 500:
+        res = res[:497] + "..."
+    return res
 
 
 def _normalize_breakdown_value(value: object) -> str:
