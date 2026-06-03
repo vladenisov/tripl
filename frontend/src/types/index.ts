@@ -4,6 +4,8 @@ export interface ScanJobResultSummary {
   time_to?: string
   events_created?: number
   events_skipped?: number
+  events_grouped?: number
+  events_merged?: number
   variables_created?: number
   columns_analyzed?: number
   event_metrics?: number
@@ -21,6 +23,12 @@ export interface ScanJobResultSummary {
   signals_removed?: number
   alerts_queued?: number
   details?: string[]
+}
+
+export interface ScanEventGroupsApplyResult {
+  events_merged: number
+  event_types_processed: number
+  event_group_rules: number
 }
 
 export interface ProjectLatestScanJob {
@@ -388,6 +396,17 @@ export interface DataSourceTestResult {
 
 export type IntervalCode = '15m' | '1h' | '6h' | '1d' | '1w'
 
+export interface EventGroupCondition {
+  field: string
+  pattern: string
+}
+
+export interface EventGroupRule {
+  name: string
+  condition_logic: 'all' | 'any'
+  conditions: EventGroupCondition[]
+}
+
 export interface ScanConfig {
   id: string
   data_source_id: string
@@ -399,6 +418,7 @@ export interface ScanConfig {
   time_column: string | null
   event_name_format: string | null
   json_value_paths: string[]
+  event_group_rules: EventGroupRule[]
   metric_breakdown_columns: string[]
   metric_breakdown_values_limit: number | null
   distribution_drift_fields: string[]

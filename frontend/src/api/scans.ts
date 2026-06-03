@@ -1,5 +1,11 @@
 import { api } from './client'
-import type { ScanConfig, ScanConfigPreview, ScanJob } from '../types'
+import type {
+  EventGroupRule,
+  ScanConfig,
+  ScanConfigPreview,
+  ScanEventGroupsApplyResult,
+  ScanJob,
+} from '../types'
 
 export const scansApi = {
   list: (slug: string) =>
@@ -17,6 +23,7 @@ export const scansApi = {
     time_column?: string | null
     event_name_format?: string | null
     json_value_paths?: string[]
+    event_group_rules?: EventGroupRule[]
     metric_breakdown_columns?: string[]
     metric_breakdown_values_limit?: number | null
     distribution_drift_fields?: string[]
@@ -40,6 +47,7 @@ export const scansApi = {
     time_column?: string | null
     event_name_format?: string | null
     json_value_paths?: string[]
+    event_group_rules?: EventGroupRule[]
     metric_breakdown_columns?: string[]
     metric_breakdown_values_limit?: number | null
     distribution_drift_fields?: string[]
@@ -53,6 +61,12 @@ export const scansApi = {
 
   run: (slug: string, scanId: string) =>
     api.post<ScanJob>(`/projects/${slug}/scans/${scanId}/run`, {}),
+
+  applyEventGroups: (slug: string, scanId: string) =>
+    api.post<ScanEventGroupsApplyResult>(
+      `/projects/${slug}/scans/${scanId}/event-groups/apply`,
+      {},
+    ),
 
   replayMetrics: (slug: string, scanId: string, data: {
     time_from: string

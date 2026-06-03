@@ -359,7 +359,9 @@ def _load_existing_generation_result(
         # metrics still attach to events the user has renamed. Falls back to name for legacy
         # rows whose source_name has not been backfilled yet.
         # Exclude archived events so they are ignored during metrics collection.
-        events_by_name={(event.source_name or event.name): event for event in events if not event.archived},
+        events_by_name={
+            (event.source_name or event.name): event for event in events if not event.archived
+        },
     )
 
 
@@ -568,6 +570,7 @@ def collect_metrics(
                     event_type_column=config.event_type_column,
                     time_column=config.time_column,
                     event_name_format=config.event_name_format,
+                    event_group_rules=config.event_group_rules,
                 )
                 gen_results[et_name] = result
                 logger.info(
@@ -609,6 +612,7 @@ def collect_metrics(
                 event_type_column=config.event_type_column,
                 time_column=config.time_column,
                 event_name_format=config.event_name_format,
+                event_group_rules=config.event_group_rules,
             )
             logger.info(
                 f"Single scan: {single_result.events_created} created, "
@@ -653,18 +657,24 @@ def collect_metrics(
         total_created = 0
         total_skipped = 0
         total_vars = 0
+        total_grouped = 0
+        total_merged = 0
         total_cols = 0
         all_details: list[str] = []
         if single_result:
             total_created += single_result.events_created
             total_skipped += single_result.events_skipped
             total_vars += single_result.variables_created
+            total_grouped += single_result.events_grouped
+            total_merged += single_result.events_merged
             total_cols = max(total_cols, single_result.columns_analyzed)
             all_details.extend(single_result.details)
         for gr in gen_results.values():
             total_created += gr.events_created
             total_skipped += gr.events_skipped
             total_vars += gr.variables_created
+            total_grouped += gr.events_grouped
+            total_merged += gr.events_merged
             total_cols = max(total_cols, gr.columns_analyzed)
             all_details.extend(gr.details)
 
@@ -763,6 +773,7 @@ def collect_metrics(
                     n_reg,
                     json_value_names,
                     config.event_name_format,
+                    config.event_group_rules,
                 )
 
                 if event_name:
@@ -904,6 +915,8 @@ def collect_metrics(
             "catalog_sync_skipped": is_replay,
             "events_created": total_created,
             "events_skipped": total_skipped,
+            "events_grouped": total_grouped,
+            "events_merged": total_merged,
             "variables_created": total_vars,
             "columns_analyzed": total_cols,
             "event_metrics": n_ev,

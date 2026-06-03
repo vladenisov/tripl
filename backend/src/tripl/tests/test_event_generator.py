@@ -1,6 +1,7 @@
 """Unit tests for the event generator module."""
 
 import uuid
+from datetime import datetime
 from itertools import product
 
 import pytest
@@ -10,6 +11,7 @@ from sqlalchemy.orm import Session, sessionmaker
 from tripl.models import Base
 from tripl.models.event import Event
 from tripl.models.event_field_value import EventFieldValue
+from tripl.models.event_metric import EventMetric
 from tripl.models.event_type import EventType
 from tripl.models.field_definition import FieldDefinition
 from tripl.models.project import Project
@@ -223,6 +225,136 @@ class TestEventGeneration:
         assert "evt_0" in names
         assert "evt_149" in names
 
+    def test_group_rule_collapses_matching_generated_events(
+        self, sync_session: Session, project_and_type
+    ):
+        project, et, fds = project_and_type
+        cardinality = {
+            "action": CardinalityResult(
+                column=ColumnInfo("action", "String"),
+                count=3,
+                is_low=True,
+                sample_values=["button:primary", "button:secondary", "page:view"],
+            ),
+        }
+        analysis = _make_analysis(cardinality)
+        result = generate_events(
+            sync_session,
+            project.id,
+            et.id,
+            analysis,
+            fds,
+            event_name_format="{action}",
+            event_group_rules=[
+                {
+                    "name": "button events",
+                    "condition_logic": "all",
+                    "conditions": [{"field": "action", "pattern": "^button:"}],
+                }
+            ],
+        )
+        sync_session.commit()
+
+        assert result.events_created == 2
+        assert result.events_skipped == 1
+        assert result.events_grouped == 2
+
+        events = (
+            sync_session.execute(select(Event).where(Event.project_id == project.id))
+            .scalars()
+            .all()
+        )
+        assert {event.source_name for event in events} == {"button events", "page:view"}
+        grouped_event = next(event for event in events if event.source_name == "button events")
+        action_value = sync_session.execute(
+            select(EventFieldValue.value).where(
+                EventFieldValue.event_id == grouped_event.id,
+                EventFieldValue.field_definition_id == fds["action"].id,
+            )
+        ).scalar_one()
+        assert action_value == "/^button:/"
+
+    def test_group_rule_merges_existing_matching_events_and_metrics(
+        self, sync_session: Session, project_and_type
+    ):
+        project, et, fds = project_and_type
+        scan_config_id = uuid.uuid4()
+        bucket = datetime(2026, 4, 12, 10, 0)
+        old_events: list[Event] = []
+        for index, action in enumerate(["button:primary", "button:secondary"]):
+            event = Event(
+                id=uuid.uuid4(),
+                project_id=project.id,
+                event_type_id=et.id,
+                name=action,
+                source_name=action,
+                order=index,
+                implemented=True,
+                reviewed=True,
+            )
+            sync_session.add(event)
+            sync_session.flush()
+            sync_session.add(
+                EventFieldValue(
+                    id=uuid.uuid4(),
+                    event_id=event.id,
+                    field_definition_id=fds["action"].id,
+                    value=action,
+                )
+            )
+            sync_session.add(
+                EventMetric(
+                    id=uuid.uuid4(),
+                    scan_config_id=scan_config_id,
+                    event_id=event.id,
+                    event_type_id=None,
+                    bucket=bucket,
+                    count=5 + index,
+                )
+            )
+            old_events.append(event)
+        sync_session.commit()
+
+        cardinality = {
+            "action": CardinalityResult(
+                column=ColumnInfo("action", "String"),
+                count=2,
+                is_low=True,
+                sample_values=["button:primary", "button:secondary"],
+            ),
+        }
+        analysis = _make_analysis(cardinality)
+        result = generate_events(
+            sync_session,
+            project.id,
+            et.id,
+            analysis,
+            fds,
+            event_name_format="{action}",
+            event_group_rules=[
+                {
+                    "name": "button events",
+                    "condition_logic": "all",
+                    "conditions": [{"field": "action", "pattern": "^button:"}],
+                }
+            ],
+        )
+        sync_session.commit()
+
+        assert result.events_merged == 2
+        events = (
+            sync_session.execute(select(Event).where(Event.project_id == project.id))
+            .scalars()
+            .all()
+        )
+        assert {event.source_name for event in events} == {"button events"}
+        grouped_event = events[0]
+        metric = sync_session.execute(
+            select(EventMetric).where(EventMetric.event_id == grouped_event.id)
+        ).scalar_one()
+        assert metric.count == 11
+        assert all(sync_session.get(Event, event.id) is None for event in old_events)
+
     def test_dedup_skips_existing(self, sync_session: Session, project_and_type):
         project, et, fds = project_and_type
         cardinality = {
@@ -265,9 +397,7 @@ class TestEventGeneration:
         assert r1.events_created == 2
 
         # source_name is set to the scan identity on creation
-        home = sync_session.execute(
-            select(Event).where(Event.source_name == "/home")
-        ).scalar_one()
+        home = sync_session.execute(select(Event).where(Event.source_name == "/home")).scalar_one()
         assert home.name == "/home"
         # User renames the display name
         home.name = "Home Page (renamed)"
@@ -336,9 +466,7 @@ class TestEventGeneration:
 
         assert result.events_created == 0
         assert result.events_skipped == 1
-        refreshed = sync_session.execute(
-            select(Event).where(Event.id == legacy.id)
-        ).scalar_one()
+        refreshed = sync_session.execute(select(Event).where(Event.id == legacy.id)).scalar_one()
         assert refreshed.source_name == "/home"  # backfilled
 
     def test_max_events_limit(self, sync_session: Session, project_and_type):
@@ -520,9 +648,11 @@ class TestEventGeneration:
         sync_session.commit()
 
         assert result.events_created == 1
-        events = sync_session.execute(
-            select(Event).where(Event.project_id == project.id)
-        ).scalars().all()
+        events = (
+            sync_session.execute(select(Event).where(Event.project_id == project.id))
+            .scalars()
+            .all()
+        )
         assert len(events) == 1
         assert len(events[0].name) == 500
         assert events[0].name.endswith("...")

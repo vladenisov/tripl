@@ -190,6 +190,7 @@ describe('ProjectSettingsPage', () => {
             time_column: 'created_at',
             event_name_format: null,
             json_value_paths: [],
+            event_group_rules: [],
             metric_breakdown_columns: [],
             metric_breakdown_values_limit: null,
             distribution_drift_fields: [],
@@ -249,6 +250,116 @@ describe('ProjectSettingsPage', () => {
     expect(await screen.findByText('+1 alerts')).toBeInTheDocument()
   })
 
+  it('applies saved scan group rules to existing events', async () => {
+    const calls: string[] = []
+
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const url = String(input)
+      calls.push(`${init?.method ?? 'GET'} ${url}`)
+
+      if (url.endsWith('/api/v1/data-sources')) {
+        return mockJsonResponse([
+          {
+            id: 'ds-1',
+            name: 'Main DS',
+            db_type: 'clickhouse',
+            host: 'localhost',
+            port: 8123,
+            database_name: 'default',
+            username: 'default',
+            password_set: false,
+            extra_params: null,
+            created_at: '2026-01-01T00:00:00Z',
+            updated_at: '2026-01-01T00:00:00Z',
+          },
+        ])
+      }
+
+      if (url.endsWith('/api/v1/projects/demo/event-types')) {
+        return mockJsonResponse([
+          {
+            id: 'type-1',
+            project_id: 'project-1',
+            name: 'page',
+            display_name: 'Page',
+            description: '',
+            color: '#0ea5e9',
+            order: 0,
+            created_at: '2026-01-01T00:00:00Z',
+            updated_at: '2026-01-01T00:00:00Z',
+            field_definitions: [],
+          },
+        ])
+      }
+
+      if (url.endsWith('/api/v1/projects/demo/scans') && (!init || !init.method || init.method === 'GET')) {
+        return mockJsonResponse([
+          {
+            id: 'scan-1',
+            data_source_id: 'ds-1',
+            project_id: 'project-1',
+            event_type_id: 'type-1',
+            name: 'Main scan',
+            base_query: 'SELECT * FROM analytics.events',
+            event_type_column: null,
+            time_column: null,
+            event_name_format: null,
+            json_value_paths: [],
+            event_group_rules: [
+              {
+                name: 'button events',
+                condition_logic: 'all',
+                conditions: [{ field: 'event_name', pattern: '^button:' }],
+              },
+            ],
+            metric_breakdown_columns: [],
+            metric_breakdown_values_limit: null,
+            distribution_drift_fields: [],
+            cardinality_threshold: 100,
+            interval: null,
+            replay_chunk_interval: null,
+            created_at: '2026-01-01T00:00:00Z',
+            updated_at: '2026-01-01T00:00:00Z',
+          },
+        ])
+      }
+
+      if (url.endsWith('/api/v1/projects/demo/scans/scan-1/jobs')) {
+        return mockJsonResponse([])
+      }
+
+      if (url.endsWith('/api/v1/projects/demo/scans/scan-1/event-groups/apply') && init?.method === 'POST') {
+        return mockJsonResponse({
+          events_merged: 3,
+          event_types_processed: 1,
+          event_group_rules: 1,
+        })
+      }
+
+      throw new Error(`Unhandled fetch: ${url}`)
+    })
+
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    })
+    render(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter initialEntries={['/p/demo/settings/scans']}>
+          <Routes>
+            <Route path="/p/:slug/settings/:tab" element={<ProjectSettingsPage />} />
+            <Route path="/p/:slug/settings" element={<ProjectSettingsPage />} />
+          </Routes>
+        </MemoryRouter>
+      </QueryClientProvider>,
+    )
+
+    fireEvent.click(await screen.findByText('Main scan'))
+    fireEvent.click(await screen.findByRole('button', { name: 'Apply Groups' }))
+
+    expect(await screen.findByText('3 existing events merged.')).toBeInTheDocument()
+    expect(calls).toContain('POST /api/v1/projects/demo/scans/scan-1/event-groups/apply')
+  })
+
   it('starts metrics replay for a selected scan period', async () => {
     const replayBodies: unknown[] = []
 
@@ -303,6 +414,7 @@ describe('ProjectSettingsPage', () => {
             time_column: 'created_at',
             event_name_format: null,
             json_value_paths: [],
+            event_group_rules: [],
             metric_breakdown_columns: [],
             metric_breakdown_values_limit: null,
             distribution_drift_fields: [],
@@ -805,6 +917,7 @@ describe('ProjectSettingsPage', () => {
           time_column: body.time_column,
           event_name_format: body.event_name_format,
           json_value_paths: body.json_value_paths,
+          event_group_rules: body.event_group_rules,
           metric_breakdown_columns: body.metric_breakdown_columns,
           metric_breakdown_values_limit: body.metric_breakdown_values_limit,
           distribution_drift_fields: body.distribution_drift_fields,
@@ -854,6 +967,13 @@ describe('ProjectSettingsPage', () => {
     fireEvent.click(within(dialog).getByText('extra.key'))
     fireEvent.click(within(dialog).getByRole('checkbox', { name: 'event_name' }))
     fireEvent.change(within(dialog).getByPlaceholderText('Unlimited'), { target: { value: '2' } })
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Add Group Rule' }))
+    fireEvent.change(within(dialog).getByPlaceholderText('button events'), {
+      target: { value: 'product pages' },
+    })
+    fireEvent.change(within(dialog).getByPlaceholderText('^button:'), {
+      target: { value: '^product:' },
+    })
     fireEvent.click(within(dialog).getByRole('button', { name: 'Create' }))
 
     await waitFor(() => {
@@ -866,6 +986,13 @@ describe('ProjectSettingsPage', () => {
         time_column: 'created_at',
         event_name_format: null,
         json_value_paths: ['payload.extra.key'],
+        event_group_rules: [
+          {
+            name: 'product pages',
+            condition_logic: 'all',
+            conditions: [{ field: 'event_name', pattern: '^product:' }],
+          },
+        ],
         metric_breakdown_columns: ['event_name'],
         metric_breakdown_values_limit: 2,
         distribution_drift_fields: [],
@@ -917,6 +1044,7 @@ describe('ProjectSettingsPage', () => {
             time_column: null,
             event_name_format: null,
             json_value_paths: ['payload.extra.key'],
+            event_group_rules: [],
             metric_breakdown_columns: [],
             metric_breakdown_values_limit: null,
             distribution_drift_fields: [],

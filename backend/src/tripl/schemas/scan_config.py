@@ -1,5 +1,7 @@
+import re
 import uuid
 from datetime import UTC, datetime
+from typing import Literal
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
@@ -7,6 +9,42 @@ from tripl.json_paths import normalize_json_value_paths
 from tripl.worker.utils.intervals import get_interval
 
 VALID_INTERVALS = ("15m", "1h", "6h", "1d", "1w")
+
+
+class EventGroupCondition(BaseModel):
+    field: str = Field(min_length=1, max_length=255)
+    pattern: str = Field(min_length=1, max_length=500)
+
+    @field_validator("field", "pattern")
+    @classmethod
+    def strip_text(cls, value: str) -> str:
+        stripped = value.strip()
+        if not stripped:
+            raise ValueError("value cannot be blank")
+        return stripped
+
+    @field_validator("pattern")
+    @classmethod
+    def validate_regex(cls, value: str) -> str:
+        try:
+            re.compile(value)
+        except re.error as exc:
+            raise ValueError(f"invalid regex pattern: {exc}") from exc
+        return value
+
+
+class EventGroupRule(BaseModel):
+    name: str = Field(min_length=1, max_length=500)
+    condition_logic: Literal["all", "any"] = "all"
+    conditions: list[EventGroupCondition] = Field(min_length=1, max_length=20)
+
+    @field_validator("name")
+    @classmethod
+    def strip_name(cls, value: str) -> str:
+        stripped = value.strip()
+        if not stripped:
+            raise ValueError("name cannot be blank")
+        return stripped
 
 
 def check_scalar_columns_unreserved(
@@ -56,6 +94,7 @@ class ScanConfigCreate(BaseModel):
     time_column: str | None = None
     event_name_format: str | None = None
     json_value_paths: list[str] = Field(default_factory=list)
+    event_group_rules: list[EventGroupRule] = Field(default_factory=list)
     metric_breakdown_columns: list[str] = Field(default_factory=list)
     metric_breakdown_values_limit: int | None = Field(default=None, ge=1)
     distribution_drift_fields: list[str] = Field(default_factory=list)
@@ -126,6 +165,7 @@ class ScanConfigUpdate(BaseModel):
     time_column: str | None = None
     event_name_format: str | None = None
     json_value_paths: list[str] | None = None
+    event_group_rules: list[EventGroupRule] | None = None
     metric_breakdown_columns: list[str] | None = None
     metric_breakdown_values_limit: int | None = Field(default=None, ge=1)
     distribution_drift_fields: list[str] | None = None
@@ -170,6 +210,7 @@ class ScanConfigResponse(BaseModel):
     time_column: str | None
     event_name_format: str | None
     json_value_paths: list[str]
+    event_group_rules: list[EventGroupRule]
     metric_breakdown_columns: list[str]
     metric_breakdown_values_limit: int | None
     distribution_drift_fields: list[str]
@@ -180,6 +221,12 @@ class ScanConfigResponse(BaseModel):
     updated_at: datetime
 
     model_config = {"from_attributes": True}
+
+
+class ScanEventGroupsApplyResponse(BaseModel):
+    events_merged: int
+    event_types_processed: int
+    event_group_rules: int
 
 
 class ScanPreviewColumnResponse(BaseModel):

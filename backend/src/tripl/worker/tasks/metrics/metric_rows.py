@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 import uuid
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from datetime import datetime, timedelta
 from typing import cast
 
@@ -29,6 +29,7 @@ from tripl.worker.analyzers.event_generator import (
     GenerationResult,
     _apply_name_format,
     _format_value,
+    apply_event_group_rules,
 )
 from tripl.worker.tasks.metrics._helpers import MAX_BREAKDOWN_VALUE_LENGTH
 
@@ -43,9 +44,11 @@ def _build_event_name_from_row(
     n_reg: int,
     json_value_names: list[str],
     event_name_format: str | None,
+    event_group_rules: Sequence[Mapping[str, object]] | None = None,
 ) -> str | None:
     """Build event name from a CH row using col_meta (same logic as generate_events)."""
     kwargs: dict[str, str] = {}
+    raw_values_by_field: dict[str, str] = {}
     json_value_index = {
         name: n_reg + len(json_index) + idx for idx, name in enumerate(json_value_names)
     }
@@ -80,9 +83,13 @@ def _build_event_name_from_row(
             i = reg_index.get(col_name)
             if i is None:
                 continue
+            raw_values_by_field[col_name] = _format_value(data_row[i])
             value = _format_value(data_row[i])
         else:
             # High-cardinality: use template
+            i = reg_index.get(col_name)
+            if i is not None:
+                raw_values_by_field[col_name] = _format_value(data_row[i])
             template = meta.get("template")
             if not isinstance(template, str):
                 continue
@@ -93,6 +100,9 @@ def _build_event_name_from_row(
             for path in sorted_paths:
                 full_path = f"{col_name}.{path}"
                 if full_path in json_value_index:
+                    raw_values_by_field[full_path] = format_json_path_value(
+                        data_row[json_value_index[full_path]]
+                    )
                     kwargs[full_path] = format_json_path_value(
                         data_row[json_value_index[full_path]]
                     )
@@ -113,6 +123,10 @@ def _build_event_name_from_row(
 
     if res and len(res) > 500:
         res = res[:497] + "..."
+    raw_values_by_field["__event_name"] = res
+    raw_values_by_field.setdefault("event_name", res)
+    group_match = apply_event_group_rules(res, raw_values_by_field, event_group_rules)
+    res = group_match.event_name
     return res
 
 
@@ -409,6 +423,7 @@ def _collect_metric_breakdown_rows(
             n_reg,
             breakdown_json_value_names,
             config.event_name_format,
+            config.event_group_rules,
         )
 
         scan_wide_column = breakdown_column in scan_breakdown_column_set
