@@ -35,6 +35,9 @@ class SearchDocument(UUIDMixin, TimestampMixin, Base):
     )
     title: Mapped[str] = mapped_column(String(500))
     subtitle: Mapped[str] = mapped_column(String(500), default="", server_default="")
+    # The entity's own description, kept verbatim for display in search results
+    # (distinct from ``body``, which is a denormalized bag of searchable text).
+    description: Mapped[str] = mapped_column(Text, default="", server_default="")
     body: Mapped[str] = mapped_column(Text, default="", server_default="")
     keywords: Mapped[str] = mapped_column(Text, default="", server_default="")
     route_path: Mapped[str] = mapped_column(Text)

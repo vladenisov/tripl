@@ -23,9 +23,13 @@ class SearchResult(BaseModel):
     parent_event_id: uuid.UUID | None = None
     title: str
     subtitle: str = ""
+    description: str = ""
     snippet: str = ""
     route_path: str
     score: float
+    # Relevance normalized to the top result of this response, in [0, 1].
+    # Surfaced in the UI as a percentage / colored badge.
+    confidence: float = 0.0
     highlights: list[str] = []
     semantic_used: bool = False
 
