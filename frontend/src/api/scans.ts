@@ -3,7 +3,6 @@ import type {
   EventGroupRule,
   ScanConfig,
   ScanConfigPreview,
-  ScanEventGroupsApplyResult,
   ScanJob,
 } from '../types'
 
@@ -63,10 +62,7 @@ export const scansApi = {
     api.post<ScanJob>(`/projects/${slug}/scans/${scanId}/run`, {}),
 
   applyEventGroups: (slug: string, scanId: string) =>
-    api.post<ScanEventGroupsApplyResult>(
-      `/projects/${slug}/scans/${scanId}/event-groups/apply`,
-      {},
-    ),
+    api.post<ScanJob>(`/projects/${slug}/scans/${scanId}/event-groups/apply`, {}),
 
   replayMetrics: (slug: string, scanId: string, data: {
     time_from: string

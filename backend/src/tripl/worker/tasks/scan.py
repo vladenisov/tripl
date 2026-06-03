@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 
 from tripl.json_paths import group_json_value_paths
 from tripl.models.data_source import DataSource
+from tripl.models.event import Event
 from tripl.models.event_type import EventType
 from tripl.models.scan_config import ScanConfig
 from tripl.models.scan_job import ScanJob, ScanJobStatus
@@ -18,7 +19,11 @@ from tripl.observability.metrics import scan_runs_total
 from tripl.worker.adapters.base import BaseAdapter, ColumnInfo
 from tripl.worker.adapters.registry import build_adapter
 from tripl.worker.analyzers.cardinality import analyze_cardinality, analyze_cardinality_grouped
-from tripl.worker.analyzers.event_generator import GenerationResult, generate_events
+from tripl.worker.analyzers.event_generator import (
+    GenerationResult,
+    generate_events,
+    merge_existing_events_for_group_rules,
+)
 from tripl.worker.celery_app import celery_app
 from tripl.worker.db import SyncSessionLocal
 
@@ -230,6 +235,84 @@ def _scan_with_grouping(
         combined.details.extend(result.details)
 
     return combined
+
+
+@celery_app.task(  # type: ignore[untyped-decorator]
+    name="tripl.worker.tasks.scan.apply_event_groups",
+    bind=True,
+    max_retries=0,
+)
+def apply_event_groups(self: object, scan_config_id: str, job_id: str) -> dict[str, object]:
+    """Apply saved scan group rules to existing catalog events."""
+    session = _get_sync_session()
+    try:
+        job = session.get(ScanJob, uuid.UUID(job_id))
+        if job is None:
+            msg = f"ScanJob {job_id} not found"
+            raise ValueError(msg)
+
+        config = session.get(ScanConfig, uuid.UUID(scan_config_id))
+        if config is None:
+            msg = f"ScanConfig {scan_config_id} not found"
+            raise ValueError(msg)
+        if not config.event_group_rules:
+            msg = "Scan config has no event group rules"
+            raise ValueError(msg)
+
+        job.status = ScanJobStatus.running.value
+        job.started_at = datetime.now(UTC)
+        session.commit()
+
+        if config.event_type_id is not None:
+            event_type_ids = [config.event_type_id]
+        else:
+            event_type_ids = list(
+                session.execute(
+                    select(Event.event_type_id)
+                    .where(Event.project_id == config.project_id)
+                    .distinct()
+                ).scalars()
+            )
+
+        events_merged = merge_existing_events_for_group_rules(
+            session,
+            project_id=config.project_id,
+            event_type_ids=event_type_ids,
+            event_group_rules=config.event_group_rules,
+        )
+        session.commit()
+
+        job.status = ScanJobStatus.completed.value
+        job.completed_at = datetime.now(UTC)
+        job.result_summary = {
+            "mode": "event_groups_apply",
+            "events_merged": events_merged,
+            "event_types_processed": len(event_type_ids),
+            "event_group_rules": len(config.event_group_rules),
+            "details": [
+                (
+                    f"Applied {len(config.event_group_rules)} event group rule(s) "
+                    f"to {len(event_type_ids)} event type(s); merged {events_merged} event(s)"
+                )
+            ],
+        }
+        session.commit()
+        return job.result_summary
+    except Exception as e:
+        logger.exception(f"Apply event groups failed: {e}")
+        session.rollback()
+        try:
+            job = session.get(ScanJob, uuid.UUID(job_id))
+            if job:
+                job.status = ScanJobStatus.failed.value
+                job.completed_at = datetime.now(UTC)
+                job.error_message = str(e)
+                session.commit()
+        except Exception:
+            logger.exception("Failed to update event group apply job status after error")
+        raise
+    finally:
+        session.close()
 
 
 @celery_app.task(  # type: ignore[untyped-decorator]

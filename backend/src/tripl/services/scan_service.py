@@ -13,7 +13,6 @@ from tripl.json_paths import (
     group_json_value_paths,
 )
 from tripl.models.data_source import DataSource
-from tripl.models.event import Event
 from tripl.models.scan_config import ScanConfig
 from tripl.models.scan_job import ScanJob, ScanJobStatus
 from tripl.schemas.scan_config import (
@@ -21,7 +20,6 @@ from tripl.schemas.scan_config import (
     ScanConfigPreviewRequest,
     ScanConfigPreviewResponse,
     ScanConfigUpdate,
-    ScanEventGroupsApplyResponse,
     ScanMetricsReplayRequest,
     ScanPreviewColumnResponse,
     ScanPreviewJsonColumnResponse,
@@ -33,7 +31,6 @@ from tripl.services.project_lookup import get_project_id_by_slug
 from tripl.worker.adapters.base import BaseAdapter, ColumnInfo
 from tripl.worker.adapters.registry import build_adapter
 from tripl.worker.analyzers.cardinality import _is_json_type
-from tripl.worker.analyzers.event_generator import merge_existing_events_for_group_rules
 
 JSON_PATH_DISCOVERY_LIMIT = 1000
 JSON_PATH_SAMPLE_LIMIT = 3
@@ -315,38 +312,33 @@ async def update_scan_config(
     return config
 
 
-async def apply_scan_event_groups(
+async def trigger_event_groups_apply(
     session: AsyncSession,
     slug: str,
     scan_id: uuid.UUID,
-) -> ScanEventGroupsApplyResponse:
+) -> ScanJob:
     config = await get_scan_config(session, slug, scan_id)
     if not config.event_group_rules:
         raise HTTPException(status_code=400, detail="Scan config has no event group rules")
 
-    if config.event_type_id is not None:
-        event_type_ids = [config.event_type_id]
-    else:
-        result = await session.execute(
-            select(Event.event_type_id).where(Event.project_id == config.project_id).distinct()
-        )
-        event_type_ids = list(result.scalars().all())
-
-    events_merged = await session.run_sync(
-        lambda sync_session: merge_existing_events_for_group_rules(
-            sync_session,
-            project_id=config.project_id,
-            event_type_ids=event_type_ids,
-            event_group_rules=config.event_group_rules,
-        )
+    job = ScanJob(
+        scan_config_id=config.id,
+        status=ScanJobStatus.pending.value,
     )
+    session.add(job)
     await session.commit()
+    await session.refresh(job)
 
-    return ScanEventGroupsApplyResponse(
-        events_merged=events_merged,
-        event_types_processed=len(event_type_ids),
-        event_group_rules=len(config.event_group_rules),
-    )
+    from tripl.worker.tasks.scan import apply_event_groups
+
+    try:
+        apply_event_groups.delay(str(config.id), str(job.id))
+    except Exception:
+        job.status = ScanJobStatus.failed.value
+        job.error_message = "Failed to dispatch task to worker (broker unavailable)"
+        await session.commit()
+        await session.refresh(job)
+    return job
 
 
 async def preview_scan_config(

@@ -330,9 +330,15 @@ describe('ProjectSettingsPage', () => {
 
       if (url.endsWith('/api/v1/projects/demo/scans/scan-1/event-groups/apply') && init?.method === 'POST') {
         return mockJsonResponse({
-          events_merged: 3,
-          event_types_processed: 1,
-          event_group_rules: 1,
+          id: 'job-apply-1',
+          scan_config_id: 'scan-1',
+          status: 'pending',
+          started_at: null,
+          completed_at: null,
+          result_summary: null,
+          error_message: null,
+          created_at: '2026-01-01T00:00:00Z',
+          updated_at: '2026-01-01T00:00:00Z',
         })
       }
 
@@ -356,7 +362,7 @@ describe('ProjectSettingsPage', () => {
     fireEvent.click(await screen.findByText('Main scan'))
     fireEvent.click(await screen.findByRole('button', { name: 'Apply Groups' }))
 
-    expect(await screen.findByText('3 existing events merged.')).toBeInTheDocument()
+    expect(await screen.findByText('Group apply job queued.')).toBeInTheDocument()
     expect(calls).toContain('POST /api/v1/projects/demo/scans/scan-1/event-groups/apply')
   })
 

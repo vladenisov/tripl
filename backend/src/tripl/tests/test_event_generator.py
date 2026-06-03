@@ -18,7 +18,10 @@ from tripl.models.project import Project
 from tripl.models.variable import Variable
 from tripl.worker.adapters.base import ColumnInfo
 from tripl.worker.analyzers.cardinality import BreakdownAnalysis, CardinalityResult
-from tripl.worker.analyzers.event_generator import generate_events
+from tripl.worker.analyzers.event_generator import (
+    generate_events,
+    merge_existing_events_for_group_rules,
+)
 
 
 def _make_analysis(
@@ -354,6 +357,63 @@ class TestEventGeneration:
         ).scalar_one()
         assert metric.count == 11
         assert all(sync_session.get(Event, event.id) is None for event in old_events)
+
+    def test_post_factum_group_rules_merge_existing_events(
+        self, sync_session: Session, project_and_type
+    ):
+        project, et, fds = project_and_type
+        for index, action in enumerate(["button:primary", "button:secondary"]):
+            event = Event(
+                id=uuid.uuid4(),
+                project_id=project.id,
+                event_type_id=et.id,
+                name=action,
+                source_name=action,
+                order=index,
+                implemented=True,
+                reviewed=True,
+            )
+            sync_session.add(event)
+            sync_session.flush()
+            sync_session.add(
+                EventFieldValue(
+                    id=uuid.uuid4(),
+                    event_id=event.id,
+                    field_definition_id=fds["action"].id,
+                    value=action,
+                )
+            )
+        sync_session.commit()
+
+        merged = merge_existing_events_for_group_rules(
+            sync_session,
+            project_id=project.id,
+            event_type_ids=[et.id],
+            event_group_rules=[
+                {
+                    "name": "button events",
+                    "condition_logic": "all",
+                    "conditions": [{"field": "action", "pattern": "^button:"}],
+                }
+            ],
+        )
+        sync_session.commit()
+
+        assert merged == 2
+        events = (
+            sync_session.execute(select(Event).where(Event.project_id == project.id))
+            .scalars()
+            .all()
+        )
+        assert {event.source_name for event in events} == {"button events"}
+        grouped_event = events[0]
+        action_value = sync_session.execute(
+            select(EventFieldValue.value).where(
+                EventFieldValue.event_id == grouped_event.id,
+                EventFieldValue.field_definition_id == fds["action"].id,
+            )
+        ).scalar_one()
+        assert action_value == "/^button:/"
 
     def test_dedup_skips_existing(self, sync_session: Session, project_and_type):
         project, et, fds = project_and_type

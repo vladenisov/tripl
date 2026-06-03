@@ -223,12 +223,6 @@ class ScanConfigResponse(BaseModel):
     model_config = {"from_attributes": True}
 
 
-class ScanEventGroupsApplyResponse(BaseModel):
-    events_merged: int
-    event_types_processed: int
-    event_group_rules: int
-
-
 class ScanPreviewColumnResponse(BaseModel):
     name: str
     type_name: str
