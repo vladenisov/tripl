@@ -257,6 +257,10 @@ def generate_events(
                 parts.append(f"{col_name}={display}")
             event_name = " | ".join(parts)
 
+        # Truncate event_name to respect VARCHAR(500) database limit
+        if len(event_name) > 500:
+            event_name = event_name[:497] + "..."
+
         existing = existing_by_identity.get(event_name)
         if existing is not None:
             # Update field values on existing event
@@ -309,7 +313,8 @@ def generate_events(
     result.col_meta = col_meta
     # Keyed by scan identity (source_name == formatted event name); metric collection looks
     # events up by the same row-derived name, so renamed events still match here.
-    result.events_by_name = existing_by_identity
+    # Exclude archived events so we don't collect metrics/send alerts for them.
+    result.events_by_name = {k: v for k, v in existing_by_identity.items() if not v.archived}
     return result
 
 

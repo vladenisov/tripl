@@ -358,7 +358,8 @@ def _load_existing_generation_result(
         # Key on the stable scan identity (source_name), not the editable display name, so
         # metrics still attach to events the user has renamed. Falls back to name for legacy
         # rows whose source_name has not been backfilled yet.
-        events_by_name={(event.source_name or event.name): event for event in events},
+        # Exclude archived events so they are ignored during metrics collection.
+        events_by_name={(event.source_name or event.name): event for event in events if not event.archived},
     )
 
 

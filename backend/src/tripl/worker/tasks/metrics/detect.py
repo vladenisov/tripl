@@ -273,31 +273,64 @@ def _collect_scope_ids(
         MetricAnomaly.event_type_id if scope_type == SCOPE_EVENT_TYPE else MetricAnomaly.event_id
     )
 
-    ids = {
-        value
-        for value in session.execute(
-            select(metric_column).where(
-                EventMetric.scan_config_id == scan_config_id,
-                metric_column.is_not(None),
-                EventMetric.bucket >= history_from,
-                EventMetric.bucket < evaluation_end,
-            )
-        ).scalars()
-        if value is not None
-    }
-    ids.update(
-        value
-        for value in session.execute(
-            select(anomaly_column).where(
-                MetricAnomaly.scan_config_id == scan_config_id,
-                MetricAnomaly.scope_type == scope_type,
-                anomaly_column.is_not(None),
-                MetricAnomaly.bucket >= evaluation_start,
-                MetricAnomaly.bucket < evaluation_end,
-            )
-        ).scalars()
-        if value is not None
-    )
+    if scope_type == SCOPE_EVENT:
+        ids = {
+            value
+            for value in session.execute(
+                select(EventMetric.event_id)
+                .join(Event, EventMetric.event_id == Event.id)
+                .where(
+                    EventMetric.scan_config_id == scan_config_id,
+                    EventMetric.event_id.is_not(None),
+                    EventMetric.bucket >= history_from,
+                    EventMetric.bucket < evaluation_end,
+                    Event.archived.is_(False),
+                )
+            ).scalars()
+            if value is not None
+        }
+        ids.update(
+            value
+            for value in session.execute(
+                select(MetricAnomaly.event_id)
+                .join(Event, MetricAnomaly.event_id == Event.id)
+                .where(
+                    MetricAnomaly.scan_config_id == scan_config_id,
+                    MetricAnomaly.scope_type == scope_type,
+                    MetricAnomaly.event_id.is_not(None),
+                    MetricAnomaly.bucket >= evaluation_start,
+                    MetricAnomaly.bucket < evaluation_end,
+                    Event.archived.is_(False),
+                )
+            ).scalars()
+            if value is not None
+        )
+    else:
+        ids = {
+            value
+            for value in session.execute(
+                select(metric_column).where(
+                    EventMetric.scan_config_id == scan_config_id,
+                    metric_column.is_not(None),
+                    EventMetric.bucket >= history_from,
+                    EventMetric.bucket < evaluation_end,
+                )
+            ).scalars()
+            if value is not None
+        }
+        ids.update(
+            value
+            for value in session.execute(
+                select(anomaly_column).where(
+                    MetricAnomaly.scan_config_id == scan_config_id,
+                    MetricAnomaly.scope_type == scope_type,
+                    anomaly_column.is_not(None),
+                    MetricAnomaly.bucket >= evaluation_start,
+                    MetricAnomaly.bucket < evaluation_end,
+                )
+            ).scalars()
+            if value is not None
+        )
     return ids
 
 
@@ -349,6 +382,15 @@ def _collect_breakdown_scope_keys(
         metric_query = metric_query.where(
             EventMetricBreakdown.event_id.is_(None),
             EventMetricBreakdown.event_type_id.is_not(None),
+        )
+    elif scope_type == SCOPE_EVENT:
+        metric_query = metric_query.join(Event, EventMetricBreakdown.event_id == Event.id).where(
+            EventMetricBreakdown.event_id.is_not(None),
+            Event.archived.is_(False),
+        )
+        anomaly_query = anomaly_query.join(Event, MetricBreakdownAnomaly.event_id == Event.id).where(
+            MetricBreakdownAnomaly.event_id.is_not(None),
+            Event.archived.is_(False),
         )
     else:
         metric_query = metric_query.where(metric_id_column.is_not(None))
