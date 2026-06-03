@@ -6,6 +6,7 @@ from httpx import AsyncClient
 from tripl.services import scan_service
 from tripl.worker.adapters.base import ColumnInfo
 from tripl.worker.tasks import metrics
+from tripl.worker.tasks import scan as scan_tasks
 
 
 @pytest.fixture
@@ -110,20 +111,14 @@ class TestScanConfigsCRUD:
         )
         assert resp.status_code == 422
 
-    async def test_apply_group_rules_merges_existing_events(
-        self, client: AsyncClient, project: dict, data_source: dict, event_type: dict
+    async def test_apply_group_rules_dispatches_worker_job(
+        self,
+        client: AsyncClient,
+        project: dict,
+        data_source: dict,
+        event_type: dict,
+        monkeypatch: pytest.MonkeyPatch,
     ):
-        field_resp = await client.post(
-            f"/api/v1/projects/{project['slug']}/event-types/{event_type['id']}/fields",
-            json={
-                "name": "action",
-                "display_name": "Action",
-                "field_type": "string",
-            },
-        )
-        assert field_resp.status_code == 201
-        field_id = field_resp.json()["id"]
-
         create_scan_resp = await client.post(
             f"/api/v1/projects/{project['slug']}/scans",
             json={
@@ -142,36 +137,21 @@ class TestScanConfigsCRUD:
         )
         assert create_scan_resp.status_code == 201
         scan_id = create_scan_resp.json()["id"]
+        dispatched: list[tuple[str, str]] = []
 
-        for action in ["button:primary", "button:secondary"]:
-            event_resp = await client.post(
-                f"/api/v1/projects/{project['slug']}/events",
-                json={
-                    "event_type_id": event_type["id"],
-                    "name": action,
-                    "field_values": [{"field_definition_id": field_id, "value": action}],
-                },
-            )
-            assert event_resp.status_code == 201
+        def fake_delay(scan_config_id: str, scan_job_id: str) -> None:
+            dispatched.append((scan_config_id, scan_job_id))
+
+        monkeypatch.setattr(scan_tasks.apply_event_groups, "delay", fake_delay)
 
         apply_resp = await client.post(
             f"/api/v1/projects/{project['slug']}/scans/{scan_id}/event-groups/apply"
         )
-        assert apply_resp.status_code == 200
-        assert apply_resp.json() == {
-            "events_merged": 2,
-            "event_types_processed": 1,
-            "event_group_rules": 1,
-        }
-
-        events_resp = await client.get(f"/api/v1/projects/{project['slug']}/events")
-        assert events_resp.status_code == 200
-        events = events_resp.json()["items"]
-        assert len(events) == 1
-        assert events[0]["name"] == "button events"
-        assert len(events[0]["field_values"]) == 1
-        assert events[0]["field_values"][0]["field_definition_id"] == field_id
-        assert events[0]["field_values"][0]["value"] == "/^button:/"
+        assert apply_resp.status_code == 201
+        body = apply_resp.json()
+        assert body["scan_config_id"] == scan_id
+        assert body["status"] == "pending"
+        assert dispatched == [(scan_id, body["id"])]
 
     async def test_create_scan_config_with_replay_chunk_interval(
         self, client: AsyncClient, project: dict, data_source: dict, event_type: dict

@@ -25,12 +25,6 @@ export interface ScanJobResultSummary {
   details?: string[]
 }
 
-export interface ScanEventGroupsApplyResult {
-  events_merged: number
-  event_types_processed: number
-  event_group_rules: number
-}
-
 export interface ProjectLatestScanJob {
   id: string
   scan_config_id: string

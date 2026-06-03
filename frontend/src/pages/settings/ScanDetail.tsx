@@ -57,8 +57,9 @@ export function ScanDetail({ slug, scanConfig, eventTypes }: { slug: string; sca
   const applyGroupsMut = useMutation({
     mutationFn: () => scansApi.applyEventGroups(slug, scanConfig.id),
     onMutate: () => setApplyGroupsMessage(''),
-    onSuccess: result => {
-      setApplyGroupsMessage(`${result.events_merged} existing events merged.`)
+    onSuccess: () => {
+      setApplyGroupsMessage('Group apply job queued.')
+      qc.invalidateQueries({ queryKey: ['scanJobs', slug, scanConfig.id] })
       qc.invalidateQueries({ queryKey: ['scans', slug] })
       qc.invalidateQueries({ queryKey: ['events', slug] })
       qc.invalidateQueries({ queryKey: ['eventTypes', slug] })
