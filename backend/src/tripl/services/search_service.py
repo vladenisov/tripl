@@ -45,6 +45,7 @@ class BuiltDocument:
     body: str
     keywords: str
     route_path: str
+    description: str = ""
     archived: bool = False
 
     @property
@@ -55,6 +56,7 @@ class BuiltDocument:
                 str(self.entity_id),
                 self.title,
                 self.subtitle,
+                self.description,
                 self.body,
                 self.keywords,
                 self.route_path,
@@ -113,6 +115,7 @@ def _doc_to_model(
         parent_event_id=doc.parent_event_id,
         title=doc.title,
         subtitle=doc.subtitle,
+        description=doc.description,
         body=doc.body,
         keywords=doc.keywords,
         route_path=doc.route_path,
@@ -193,6 +196,13 @@ async def search_project(
     await _ensure_index_exists(session, slug, project_id, resolved_branch_id)
 
     capped_limit = _safe_limit(limit)
+    # Pull a few extra candidates for small interactive queries so the
+    # event-type boost has room to promote events of a matching type into the
+    # final window. Large/typed queries (e.g. bulk id lookups) are left as-is.
+    candidate_limit = capped_limit
+    if entity_types is None and capped_limit < 50:
+        candidate_limit = _safe_limit(capped_limit + 24)
+
     if _is_postgres(session):
         items, semantic_used = await _postgres_search(
             session,
@@ -201,7 +211,7 @@ async def search_project(
             query=normalized_query,
             entity_types=entity_types,
             include_archived=include_archived,
-            limit=capped_limit,
+            limit=candidate_limit,
         )
     else:
         items = await _sqlite_search(
@@ -211,10 +221,11 @@ async def search_project(
             query=normalized_query,
             entity_types=entity_types,
             include_archived=include_archived,
-            limit=capped_limit,
+            limit=candidate_limit,
         )
         semantic_used = False
 
+    items = _finalize_results(items, capped_limit)
     return SearchResponse(items=items, total=len(items), semantic_used=semantic_used)
 
 
@@ -404,6 +415,7 @@ def _event_type_document(event_type: EventType, slug: str) -> BuiltDocument:
         parent_event_id=None,
         title=event_type.display_name,
         subtitle=event_type.name,
+        description=_clean(event_type.description),
         body=_join([event_type.description, field_text]),
         keywords=_join([event_type.name, event_type.display_name]),
         route_path=f"/p/{slug}/events/{event_type.name}",
@@ -417,6 +429,7 @@ def _field_document(field: FieldDefinition, event_type: EventType, slug: str) ->
         parent_event_id=None,
         title=field.display_name or field.name,
         subtitle=f"{event_type.display_name} field",
+        description=_clean(field.description),
         body=_join(
             [
                 field.name,
@@ -480,6 +493,7 @@ def _event_document(event: Event, event_type: EventType | None, slug: str) -> Bu
         parent_event_id=event.id,
         title=event.name,
         subtitle=event_type.display_name if event_type is not None else "",
+        description=_clean(event.description),
         body=_join(
             [
                 event.description,
@@ -517,6 +531,7 @@ def _tag_document(
         parent_event_id=event.id,
         title=f"#{tag.name}",
         subtitle=event.name,
+        description=_clean(event.description),
         body=_join(
             [
                 tag.name,
@@ -538,6 +553,7 @@ def _variable_document(variable: Variable, slug: str) -> BuiltDocument:
         parent_event_id=None,
         title=f"${{{variable.name}}}",
         subtitle=variable.variable_type,
+        description=_clean(variable.description),
         body=_join([variable.name, variable.source_name, variable.description]),
         keywords=_join([variable.name, variable.source_name]),
         route_path=f"/p/{slug}/settings/variables",
@@ -555,6 +571,7 @@ def _relation_document(relation: EventTypeRelation, slug: str) -> BuiltDocument:
         parent_event_id=None,
         title=f"{source_type.display_name} -> {target_type.display_name}",
         subtitle=relation.relation_type,
+        description=_clean(relation.description),
         body=_join(
             [
                 relation.description,
@@ -672,6 +689,7 @@ async def _postgres_lexical_search(
                 d.parent_event_id,
                 d.title,
                 d.subtitle,
+                d.description,
                 d.body,
                 d.keywords,
                 d.route_path,
@@ -711,6 +729,7 @@ async def _postgres_lexical_search(
             parent_event_id,
             title,
             subtitle,
+            description,
             body,
             keywords,
             route_path,
@@ -757,6 +776,7 @@ async def _postgres_semantic_search(
             d.parent_event_id,
             d.title,
             d.subtitle,
+            d.description,
             d.body,
             d.keywords,
             d.route_path,
@@ -865,6 +885,51 @@ def _merge_results(
     return sorted(merged.values(), key=lambda item: (-item.score, item.title))[:limit]
 
 
+# How strongly a matching event type lifts the events that belong to it.
+_TYPE_BOOST_WEIGHT = 0.75
+
+
+def _finalize_results(items: list[SearchResult], limit: int) -> list[SearchResult]:
+    """Apply the cross-entity event-type boost, then rank, trim, and stamp each
+    returned result with a confidence normalized to the top hit (0..1)."""
+    boosted = _apply_event_type_boost(items)
+    boosted.sort(key=lambda item: (-item.score, item.title))
+    trimmed = boosted[:limit]
+    top_score = trimmed[0].score if trimmed else 0.0
+    if top_score > 0:
+        for item in trimmed:
+            item.confidence = round(min(1.0, max(0.0, item.score) / top_score), 4)
+    return trimmed
+
+
+def _apply_event_type_boost(items: list[SearchResult]) -> list[SearchResult]:
+    """Lift events whose event type matches the query.
+
+    When a descriptive query resolves to an event type (e.g. "экран спота"
+    matching the ``pageviews`` type), every event of that type gets a
+    multiplicative score boost proportional to how strongly the type matched.
+    Type relevance is derived from the candidate set itself (the ``event_type``
+    documents present in it), so this works for both the Postgres
+    (lexical + semantic) and SQLite paths without an extra query.
+    """
+    type_scores: dict[str, float] = {}
+    for item in items:
+        if item.entity_type == "event_type":
+            key = _normalize(item.title)
+            if key:
+                type_scores[key] = max(type_scores.get(key, 0.0), item.score)
+    top_type = max(type_scores.values(), default=0.0)
+    if top_type <= 0:
+        return items
+    for item in items:
+        if item.entity_type != "event" or not item.subtitle:
+            continue
+        relevance = type_scores.get(_normalize(item.subtitle), 0.0) / top_type
+        if relevance > 0:
+            item.score *= 1.0 + _TYPE_BOOST_WEIGHT * relevance
+    return items
+
+
 def _row_to_result(row: object, query: str, *, semantic_used: bool) -> SearchResult:
     mapping = cast(Mapping[str, object], row)
     score_raw = mapping["score"]
@@ -878,6 +943,7 @@ def _row_to_result(row: object, query: str, *, semantic_used: bool) -> SearchRes
         else None,
         title=str(mapping["title"]),
         subtitle=str(mapping["subtitle"] or ""),
+        description=str(mapping.get("description") or ""),
         snippet=_snippet(str(mapping["body"] or ""), query),
         route_path=str(mapping["route_path"]),
         score=score,
@@ -900,6 +966,7 @@ def _document_to_result(
         parent_event_id=document.parent_event_id,
         title=document.title,
         subtitle=document.subtitle,
+        description=document.description or "",
         snippet=_snippet(document.body, query),
         route_path=document.route_path,
         score=score,

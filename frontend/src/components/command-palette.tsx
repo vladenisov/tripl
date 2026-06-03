@@ -339,10 +339,13 @@ function CommandPalette() {
                               iconColor={eventType?.color}
                               label={result.title}
                               hint={result.subtitle || undefined}
+                              description={result.description || result.snippet || undefined}
+                              confidence={result.confidence}
                               keywords={[
                                 debouncedQuery,
                                 result.title,
                                 result.subtitle,
+                                result.description,
                                 result.snippet,
                                 ...result.highlights,
                               ]}
@@ -381,12 +384,34 @@ function Group({ heading, children }: { heading: string; children: ReactNode }) 
   )
 }
 
+function confidenceTier(confidence: number): { label: string; color: string } {
+  const pct = Math.round(confidence * 100)
+  if (confidence >= 0.8) return { label: `${pct}%`, color: 'var(--success)' }
+  if (confidence >= 0.5) return { label: `${pct}%`, color: 'var(--warning)' }
+  return { label: `${pct}%`, color: 'var(--fg-faint)' }
+}
+
+function ConfidenceBadge({ confidence }: { confidence: number }) {
+  const { label, color } = confidenceTier(confidence)
+  return (
+    <span
+      className="mono shrink-0 rounded-sm px-1 text-[9.5px] font-semibold tabular-nums"
+      style={{ color, backgroundColor: 'color-mix(in srgb, currentColor 12%, transparent)' }}
+      title={`Search confidence: ${label}`}
+    >
+      {label}
+    </span>
+  )
+}
+
 function Item({
   onSelect,
   icon: Icon,
   iconColor,
   label,
   hint,
+  description,
+  confidence,
   active,
   keywords,
 }: {
@@ -395,9 +420,12 @@ function Item({
   iconColor?: string
   label: string
   hint?: string
+  description?: string
+  confidence?: number
   active?: boolean
   keywords?: string[]
 }) {
+  const showConfidence = typeof confidence === 'number' && confidence > 0
   return (
     <Command.Item
       value={`${label} ${hint ?? ''} ${(keywords ?? []).join(' ')}`.trim()}
@@ -406,17 +434,25 @@ function Item({
       style={{ color: 'var(--fg)' }}
     >
       <Icon
-        className="h-3.5 w-3.5 shrink-0"
+        className="h-3.5 w-3.5 shrink-0 self-start mt-0.5"
         style={{ color: iconColor ?? 'var(--fg-subtle)' }}
       />
-      <span className="flex-1 truncate">{label}</span>
+      <span className="flex min-w-0 flex-1 flex-col gap-0.5">
+        <span className="truncate">{label}</span>
+        {description && (
+          <span className="truncate text-[10.5px]" style={{ color: 'var(--fg-faint)' }}>
+            {description}
+          </span>
+        )}
+      </span>
+      {showConfidence && <ConfidenceBadge confidence={confidence} />}
       {active && (
-        <span className="text-[10px] uppercase tracking-[0.08em]" style={{ color: 'var(--fg-faint)' }}>
+        <span className="shrink-0 text-[10px] uppercase tracking-[0.08em]" style={{ color: 'var(--fg-faint)' }}>
           current
         </span>
       )}
       {hint && (
-        <span className="mono truncate text-[10.5px]" style={{ color: 'var(--fg-faint)' }}>
+        <span className="mono shrink-0 truncate text-[10.5px]" style={{ color: 'var(--fg-faint)' }}>
           {hint}
         </span>
       )}

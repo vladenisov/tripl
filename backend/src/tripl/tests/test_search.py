@@ -8,6 +8,56 @@ from sqlalchemy import insert
 from sqlalchemy.dialects.postgresql.asyncpg import PGDialect_asyncpg
 
 from tripl.models.search_document import SearchDocument
+from tripl.schemas.search import SearchResult
+from tripl.services.search_service import _finalize_results
+
+
+def _result(
+    *,
+    entity_type: str,
+    title: str,
+    score: float,
+    subtitle: str = "",
+) -> SearchResult:
+    return SearchResult(
+        id=uuid.uuid4(),
+        entity_type=entity_type,  # type: ignore[arg-type]
+        entity_id=uuid.uuid4(),
+        title=title,
+        subtitle=subtitle,
+        route_path="/",
+        score=score,
+    )
+
+
+def test_event_type_match_boosts_member_events_above_unrelated_ones() -> None:
+    # A query that resolves to the "Pageviews" event type should lift events of
+    # that type above an event of a different type with a similar base score.
+    items = [
+        _result(entity_type="event_type", title="Pageviews", score=5.0),
+        _result(entity_type="event", title="Spot Screen", subtitle="Pageviews", score=2.0),
+        _result(entity_type="event", title="Order Placed", subtitle="Checkout", score=2.5),
+    ]
+
+    finalized = _finalize_results(items, limit=10)
+
+    titles = [item.title for item in finalized]
+    assert titles.index("Spot Screen") < titles.index("Order Placed")
+    # Confidence is normalized to the top hit and stays within [0, 1].
+    assert finalized[0].confidence == 1.0
+    assert all(0.0 <= item.confidence <= 1.0 for item in finalized)
+
+
+def test_finalize_assigns_confidence_without_event_type_match() -> None:
+    items = [
+        _result(entity_type="event", title="Alpha", score=8.0),
+        _result(entity_type="event", title="Beta", score=4.0),
+    ]
+
+    finalized = _finalize_results(items, limit=10)
+
+    assert finalized[0].confidence == 1.0
+    assert finalized[1].confidence == 0.5
 
 
 def test_search_document_insert_does_not_write_generated_text_vector() -> None:
@@ -83,10 +133,20 @@ async def test_global_search_matches_multilingual_plan_content(client: AsyncClie
     ru_resp = await client.get("/api/v1/projects/search-ml/search?q=завершение покупки")
     assert ru_resp.status_code == 200
     ru_items = ru_resp.json()["items"]
-    assert any(
-        item["entity_type"] == "event" and item["title"] == "Checkout Completed"
-        for item in ru_items
+    event_hit = next(
+        (
+            item
+            for item in ru_items
+            if item["entity_type"] == "event" and item["title"] == "Checkout Completed"
+        ),
+        None,
     )
+    assert event_hit is not None
+    # The event's own description is returned verbatim for display, and every
+    # result carries a confidence normalized to the top hit.
+    assert event_hit["description"] == "Fires when покупка успешно завершена"
+    assert 0.0 <= event_hit["confidence"] <= 1.0
+    assert ru_items[0]["confidence"] == 1.0
 
     en_resp = await client.get("/api/v1/projects/search-ml/search?q=checkout")
     assert en_resp.status_code == 200

@@ -297,9 +297,12 @@ export interface SearchResult {
   parent_event_id: string | null
   title: string
   subtitle: string
+  description: string
   snippet: string
   route_path: string
   score: number
+  /** Relevance normalized to the top result of the response, in [0, 1]. */
+  confidence: number
   highlights: string[]
   semantic_used: boolean
 }
