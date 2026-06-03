@@ -171,7 +171,7 @@ function CommandPalette() {
         <Command
           label="Command palette"
           shouldFilter={true}
-          className="flex max-h-[480px] flex-col"
+          className="flex max-h-[480px] w-full min-w-0 flex-col"
         >
           <div
             className="flex items-center gap-2 border-b px-3.5 py-3"
