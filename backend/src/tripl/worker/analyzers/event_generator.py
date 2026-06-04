@@ -375,19 +375,7 @@ def generate_events(
         existing = existing_by_identity.get(event_name)
         if existing is not None:
             # Update field values on existing event
-            fv_by_fd = {fv.field_definition_id: fv for fv in existing.field_values}
-            for fd_id, _, value in field_values:
-                if fd_id in fv_by_fd:
-                    fv_by_fd[fd_id].value = value
-                else:
-                    session.add(
-                        EventFieldValue(
-                            id=uuid.uuid4(),
-                            event_id=existing.id,
-                            field_definition_id=fd_id,
-                            value=value,
-                        )
-                    )
+            _upsert_field_values(existing, field_values)
             result.events_skipped += 1
             continue
 
@@ -406,14 +394,7 @@ def generate_events(
         session.flush()
         next_event_order += 1
 
-        for fd_id, _, value in field_values:
-            fv = EventFieldValue(
-                id=uuid.uuid4(),
-                event_id=event.id,
-                field_definition_id=fd_id,
-                value=value,
-            )
-            session.add(fv)
+        _upsert_field_values(event, field_values)
 
         existing_by_identity[event_name] = event
         result.events_created += 1
@@ -436,6 +417,35 @@ def generate_events(
     # Exclude archived events so we don't collect metrics/send alerts for them.
     result.events_by_name = {k: v for k, v in existing_by_identity.items() if not v.archived}
     return result
+
+
+def _upsert_field_values(
+    event: Event,
+    field_values: Sequence[tuple[uuid.UUID, str, str]],
+) -> None:
+    """Set field values on ``event``, deduplicating by ``field_definition_id``.
+
+    Writes through the ``field_values`` relationship (not a bare ``session.add``)
+    so that values queued during this scan are reflected in the in-memory
+    collection. Without this, multiple breakdown rows collapsing to the same
+    event (e.g. via scan group rules) re-queue the same
+    ``(event_id, field_definition_id)`` pair and violate
+    ``uq_event_field_value_event_field`` on flush.
+    """
+    fv_by_fd = {fv.field_definition_id: fv for fv in event.field_values}
+    for fd_id, _, value in field_values:
+        existing_fv = fv_by_fd.get(fd_id)
+        if existing_fv is not None:
+            existing_fv.value = value
+            continue
+        new_fv = EventFieldValue(
+            id=uuid.uuid4(),
+            event_id=event.id,
+            field_definition_id=fd_id,
+            value=value,
+        )
+        event.field_values.append(new_fv)
+        fv_by_fd[fd_id] = new_fv
 
 
 def _raw_values_from_row(

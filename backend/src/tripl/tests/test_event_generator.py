@@ -280,6 +280,81 @@ class TestEventGeneration:
         ).scalar_one()
         assert action_value == "/^button:/"
 
+    def test_group_collapse_into_existing_event_does_not_duplicate_field_values(
+        self, sync_session: Session, project_and_type
+    ):
+        """Regression: several scan rows collapsing (via a group rule) into one
+        pre-existing event must not re-insert the same
+        ``(event_id, field_definition_id)`` pair and violate
+        ``uq_event_field_value_event_field``.
+
+        The existing event is loaded at scan start with its ``field_values``
+        eagerly populated and *without* the action field. Each collapsing row
+        used to queue a fresh ``EventFieldValue`` because the queued value never
+        showed up in the already-loaded relationship — producing two inserts
+        for the same pair in a single flush.
+        """
+        project, et, fds = project_and_type
+        existing = Event(
+            id=uuid.uuid4(),
+            project_id=project.id,
+            event_type_id=et.id,
+            name="button events",
+            source_name="button events",
+            order=0,
+            implemented=True,
+            reviewed=True,
+        )
+        sync_session.add(existing)
+        sync_session.commit()
+
+        cardinality = {
+            "action": CardinalityResult(
+                column=ColumnInfo("action", "String"),
+                count=2,
+                is_low=True,
+                sample_values=["button:primary", "button:secondary"],
+            ),
+        }
+        analysis = _make_analysis(cardinality)
+        result = generate_events(
+            sync_session,
+            project.id,
+            et.id,
+            analysis,
+            fds,
+            event_name_format="{action}",
+            event_group_rules=[
+                {
+                    "name": "button events",
+                    "condition_logic": "all",
+                    "conditions": [{"field": "action", "pattern": "^button:"}],
+                }
+            ],
+        )
+        sync_session.commit()
+
+        assert result.events_created == 0
+        events = (
+            sync_session.execute(select(Event).where(Event.project_id == project.id))
+            .scalars()
+            .all()
+        )
+        assert {event.source_name for event in events} == {"button events"}
+
+        field_values = (
+            sync_session.execute(
+                select(EventFieldValue).where(EventFieldValue.event_id == existing.id)
+            )
+            .scalars()
+            .all()
+        )
+        # Exactly one row for (event_id, action) — not two.
+        action_values = [
+            fv for fv in field_values if fv.field_definition_id == fds["action"].id
+        ]
+        assert len(action_values) == 1
+
     def test_group_rule_merges_existing_matching_events_and_metrics(
         self, sync_session: Session, project_and_type
     ):
