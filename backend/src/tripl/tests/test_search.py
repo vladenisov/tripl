@@ -189,6 +189,16 @@ async def test_global_search_matches_multilingual_plan_content(client: AsyncClie
     assert value_resp.status_code == 200
     assert [item["title"] for item in value_resp.json()["items"]] == ["${user_id}"]
 
+    # Querying a concrete observed property/context value should also surface
+    # the owning event (not only the variable document).
+    event_value_resp = await client.get("/api/v1/projects/search-ml/search?q=vip_segment")
+    assert event_value_resp.status_code == 200
+    event_value_items = event_value_resp.json()["items"]
+    assert any(
+        item["entity_type"] == "event" and item["title"] == "Checkout Completed"
+        for item in event_value_items
+    )
+
 
 @pytest.mark.asyncio
 async def test_event_list_search_is_plain_column_ilike(client: AsyncClient) -> None:
@@ -286,3 +296,20 @@ async def test_search_filters_archived_and_excludes_sensitive_values(client: Asy
     )
     assert secret_resp.status_code == 200
     assert secret_resp.json()["items"] == []
+
+
+def test_finalize_confidence_prefers_exact_token_value_matches() -> None:
+    # Emulates the "ecmwf exists in property values" case:
+    # the event that contains an exact token value should rank above
+    # near/fuzzy matches when scores reflect exact-token boost.
+    items = [
+        _result(entity_type="event", title="spot:choose:models", score=6.5),
+        _result(entity_type="event", title="map_model_selected_ecmwf", score=5.9),
+        _result(entity_type="event", title="ecmwf_model_popup_shown", score=5.6),
+    ]
+
+    finalized = _finalize_results(items, limit=10)
+
+    assert finalized[0].title == "spot:choose:models"
+    assert finalized[0].confidence == 1.0
+    assert finalized[1].confidence < 1.0

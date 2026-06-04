@@ -554,6 +554,8 @@ def _event_document(
                 " ".join(event_type_names),
                 " ".join(tag_names),
                 " ".join(event.metric_breakdown_columns),
+                " ".join(safe_values),
+                " ".join(variable_context_text),
             ]
         ),
         route_path=f"/p/{slug}/events/detail/{event.id}",
@@ -594,6 +596,7 @@ def _variable_document(
     contexts: list[VariableValue],
 ) -> BuiltDocument:
     context_text = _variable_context_text(contexts, include_event_names=True)
+    value_keywords = _variable_value_keywords(contexts)
     return BuiltDocument(
         entity_type="variable",
         entity_id=variable.id,
@@ -602,9 +605,24 @@ def _variable_document(
         subtitle=variable.variable_type,
         description=_clean(variable.description),
         body=_join([variable.name, variable.source_name, variable.description, context_text]),
-        keywords=_join([variable.name, variable.source_name, context_text]),
+        keywords=_join([variable.name, variable.source_name, context_text, value_keywords]),
         route_path=f"/p/{slug}/settings/variables",
     )
+
+
+def _variable_value_keywords(contexts: list[VariableValue]) -> str:
+    values: list[str] = []
+    seen: set[str] = set()
+    for context in contexts:
+        field = context.field_definition
+        if _is_sensitive(field.sensitivity):
+            continue
+        for value in context.values or []:
+            if value in seen:
+                continue
+            seen.add(value)
+            values.append(value)
+    return " ".join(values)
 
 
 def _variable_context_text(
@@ -749,6 +767,8 @@ async def _postgres_lexical_search(
     include_archived: bool,
     limit: int,
 ) -> list[SearchResult]:
+    token_regex = _token_boundary_regex(query)
+    has_token_regex = bool(token_regex)
     type_clause = "AND d.entity_type IN :entity_types" if entity_types else ""
     statement = text(
         f"""
@@ -777,7 +797,10 @@ async def _postgres_lexical_search(
                 CASE
                     WHEN lower(d.title) = lower(:query) THEN 5.0
                     WHEN lower(d.keywords) = lower(:query) THEN 4.0
+                    WHEN :has_token_regex AND d.keywords ~* :token_regex THEN 3.5
+                    WHEN :has_token_regex AND d.body ~* :token_regex THEN 3.0
                     WHEN lower(d.title) LIKE lower(:prefix) THEN 3.0
+                    WHEN lower(d.body) LIKE lower(:contains) THEN 2.25
                     WHEN lower(d.keywords) LIKE lower(:contains) THEN 1.5
                     ELSE 0.0
                 END AS boost
@@ -819,6 +842,8 @@ async def _postgres_lexical_search(
         "query": query,
         "prefix": f"{query}%",
         "contains": f"%{query}%",
+        "token_regex": token_regex,
+        "has_token_regex": has_token_regex,
         "include_archived": include_archived,
         "limit": limit,
     }
@@ -930,6 +955,10 @@ def _fallback_score(
         return 9.0
     if title.startswith(query_norm):
         return 7.0
+    if _contains_exact_token(document.keywords or "", query_norm):
+        return 6.8
+    if _contains_exact_token(document.body or "", query_norm):
+        return 6.5
     if query_norm in title or query_norm in keywords:
         return 6.0
     if query_norm in haystack:
@@ -938,6 +967,22 @@ def _fallback_score(
         return 3.0
     similarity = SequenceMatcher(None, query_norm, title or haystack[:200]).ratio()
     return similarity * 2.0 if similarity >= 0.55 else 0.0
+
+
+def _token_boundary_regex(query: str) -> str | None:
+    normalized_query = _normalize(query)
+    # PostgreSQL word boundaries (\m ... \M) reliably work for token-like
+    # values such as "ecmwf" / "vip_segment". For phrase-like queries with
+    # spaces or punctuation we keep regular LIKE/fuzzy logic.
+    if not re.fullmatch(r"[a-z0-9_]+", normalized_query):
+        return None
+    return rf"\\m{re.escape(normalized_query)}\\M"
+
+
+def _contains_exact_token(source: str, query_norm: str) -> bool:
+    if not source or not query_norm:
+        return False
+    return re.search(rf"(^|[^\w]){re.escape(query_norm)}([^\w]|$)", _normalize(source)) is not None
 
 
 def _merge_results(
