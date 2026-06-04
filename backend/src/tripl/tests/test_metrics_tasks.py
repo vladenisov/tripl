@@ -2091,3 +2091,151 @@ def test_replay_greedily_adds_json_paths_from_variable_tokens() -> None:
     )
 
     assert out["payload"] == ["existing.path", "user.id", "user.name"]
+
+
+def test_replay_enriches_existing_high_context_values(
+    sync_session_factory: sessionmaker[Session],
+    monkeypatch: MonkeyPatch,
+) -> None:
+    with sync_session_factory() as session:
+        config = _create_scan_config(session, with_event_type=True)
+        assert config.event_type_id is not None
+
+        fd_event_name = FieldDefinition(
+            id=uuid.uuid4(),
+            event_type_id=config.event_type_id,
+            name="event_name",
+            display_name="Event name",
+            field_type="string",
+            is_required=False,
+            description="",
+        )
+        fd_payload = FieldDefinition(
+            id=uuid.uuid4(),
+            event_type_id=config.event_type_id,
+            name="payload",
+            display_name="Payload",
+            field_type="json",
+            is_required=False,
+            description="",
+        )
+        session.add_all([fd_event_name, fd_payload])
+
+        event = Event(
+            id=uuid.uuid4(),
+            project_id=config.project_id,
+            event_type_id=config.event_type_id,
+            name="event_name=Login | payload.user.id=${payload.user.id}",
+            source_name="event_name=Login | payload.user.id=${payload.user.id}",
+            description="",
+            implemented=True,
+            reviewed=True,
+            archived=False,
+        )
+        session.add(event)
+        session.flush()
+        session.add_all(
+            [
+                EventFieldValue(
+                    id=uuid.uuid4(),
+                    event_id=event.id,
+                    field_definition_id=fd_event_name.id,
+                    value="Login",
+                ),
+                EventFieldValue(
+                    id=uuid.uuid4(),
+                    event_id=event.id,
+                    field_definition_id=fd_payload.id,
+                    value='{"user": {"id": "${payload.user.id}"}}',
+                ),
+            ]
+        )
+
+        variable = Variable(
+            id=uuid.uuid4(),
+            project_id=config.project_id,
+            name="payload.user.id",
+            source_name="payload.user.id",
+            variable_type="string",
+            description="",
+        )
+        session.add(variable)
+        session.flush()
+
+        session.add(
+            VariableValue(
+                id=uuid.uuid4(),
+                project_id=config.project_id,
+                branch_id=event.branch_id,
+                variable_id=variable.id,
+                event_id=event.id,
+                field_definition_id=fd_payload.id,
+                source_column="payload.user.id",
+                value_kind=VariableValueKind.high.value,
+                observed_count=0,
+                values=[],
+            )
+        )
+        session.commit()
+        config_id = str(config.id)
+
+    class FakeAdapter:
+        def test_connection(self) -> bool:
+            return True
+
+        def get_columns(self, base_query: str) -> list[ColumnInfo]:
+            return [
+                ColumnInfo(name="time", type_name="DateTime"),
+                ColumnInfo(name="event_name", type_name="String"),
+                ColumnInfo(name="payload", type_name="JSON"),
+            ]
+
+        def get_time_bucketed_counts(
+            self,
+            base_query: str,
+            time_column: str,
+            ch_interval: str,
+            regular_columns: list[str],
+            json_columns: list[str],
+            json_value_paths: dict[str, list[str]] | None,
+            time_from: datetime,
+            time_to: datetime,
+            limit: int = 100000,
+        ) -> tuple[list[str], list[str], list[tuple[object, ...]]]:
+            return (
+                ["event_name", "payload"],
+                ["payload.user.id"],
+                [
+                    (datetime(2026, 1, 1, 8), "Login", ["user.id"], '"u77"', 5),
+                ],
+            )
+
+        def get_json_path_samples(
+            self,
+            base_query: str,
+            json_columns: list[str],
+            *,
+            path_limit: int = 1000,
+            sample_limit: int = 3,
+            sample_row_limit: int = 1000,
+        ) -> dict[str, dict[str, list[object]]]:
+            return {"payload": {"user.id": ["u77", "u88"]}}
+
+        def close(self) -> None:
+            return None
+
+    monkeypatch.setattr(metrics, "_get_sync_session", sync_session_factory)
+    monkeypatch.setattr(metrics, "_build_adapter", lambda ds: FakeAdapter())
+    monkeypatch.setattr(
+        metrics,
+        "_resolve_collection_window",
+        lambda *args, **kwargs: (datetime(2026, 1, 1, 8), datetime(2026, 1, 1, 9), True),
+    )
+
+    result = metrics.collect_metrics.run(config_id)
+    assert result["variable_values_touched"] == 1
+
+    with sync_session_factory() as session:
+        context = session.execute(select(VariableValue)).scalar_one()
+        assert context.value_kind == VariableValueKind.high.value
+        assert context.values == ['"u77"', '"u88"']

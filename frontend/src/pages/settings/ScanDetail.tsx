@@ -286,6 +286,9 @@ export function ScanDetail({ slug, scanConfig, eventTypes }: { slug: string; sca
                           {job.result_summary.variables_created != null && job.result_summary.variables_created > 0 && (
                             <Badge variant="outline" className="text-[10px] text-blue-600">+{job.result_summary.variables_created} vars</Badge>
                           )}
+                          {job.result_summary.variable_values_touched != null && job.result_summary.variable_values_touched > 0 && (
+                            <Badge variant="outline" className="text-[10px] text-indigo-600">+{job.result_summary.variable_values_touched} var values</Badge>
+                          )}
                           {job.result_summary.events_skipped != null && job.result_summary.events_skipped > 0 && (
                             <Badge variant="outline" className="text-[10px]">{job.result_summary.events_skipped} skipped</Badge>
                           )}
@@ -352,12 +355,15 @@ export function ScanDetail({ slug, scanConfig, eventTypes }: { slug: string; sca
                               )}
                               {job.result_summary.catalog_sync_skipped && (
                                 <div className="rounded-md border border-amber-300/60 bg-amber-50/80 p-3 text-xs text-amber-900">
-                                  Replay refreshed metrics only. Catalog entities (events and variable contexts) were not synchronized in this run.
+                                  Replay skipped event/variable catalog generation, but can still enrich observed variable values for existing templates.
                                 </div>
                               )}
                               <div className="grid grid-cols-2 gap-3 text-xs md:grid-cols-3 xl:grid-cols-5">
                               <Card className="p-3 text-center"><div className="text-lg font-bold text-green-600">{job.result_summary.events_created ?? 0}</div><div className="text-muted-foreground">Events created</div></Card>
                               <Card className="p-3 text-center"><div className="text-lg font-bold text-blue-600">{job.result_summary.variables_created ?? 0}</div><div className="text-muted-foreground">Variables created</div></Card>
+                              {job.result_summary.variable_values_touched != null && (
+                                <Card className="p-3 text-center"><div className="text-lg font-bold text-indigo-600">{job.result_summary.variable_values_touched}</div><div className="text-muted-foreground">Variable values touched</div></Card>
+                              )}
                               <Card className="p-3 text-center"><div className="text-lg font-bold text-foreground">{job.result_summary.events_skipped ?? 0}</div><div className="text-muted-foreground">Events skipped</div></Card>
                               {job.result_summary.events_grouped != null && (
                                 <Card className="p-3 text-center">

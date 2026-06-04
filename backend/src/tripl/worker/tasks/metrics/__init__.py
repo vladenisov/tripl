@@ -482,6 +482,14 @@ def _merge_replay_variable_samples(
                 current.values = merged
                 current.observed_count = max(current.observed_count, len(merged))
                 touched += 1
+        else:
+            # Existing high-cardinality contexts still benefit from sampled
+            # examples in replay results (bounded list for UI visibility).
+            merged = _extend_unique_values(current.values or [], values)[:20]
+            if merged != (current.values or []):
+                current.values = merged
+                current.observed_count = max(current.observed_count, len(merged))
+                touched += 1
 
     return touched
 
