@@ -393,13 +393,14 @@ def _collect_metric_breakdown_rows(
     json_value_path_map: dict[str, list[str]],
     time_from: datetime,
     time_to: datetime,
+    query_row_limit: int,
     reg_index: dict[str, int],
     json_index: dict[str, int],
     n_reg: int,
     gen_results: dict[str, GenerationResult],
     single_result: GenerationResult | None,
     et_by_name: dict[str, EventType],
-) -> tuple[list[dict[str, object]], list[dict[str, object]]]:
+) -> tuple[list[dict[str, object]], list[dict[str, object]], bool]:
     event_agg: dict[tuple[uuid.UUID, uuid.UUID, datetime, str, str, bool], int] = {}
     type_agg: dict[tuple[uuid.UUID, uuid.UUID, datetime, str, str, bool], int] = {}
     et_col_idx = reg_index.get(config.event_type_column) if config.event_type_column else None
@@ -450,7 +451,7 @@ def _collect_metric_breakdown_rows(
                 event_breakdown_columns_by_event_id[event.id] = event_columns
 
     if not breakdown_columns:
-        return [], []
+        return [], [], False
 
     _col_names, breakdown_json_value_names, rows = adapter.get_time_bucketed_breakdown_counts_multi(
         config.base_query,
@@ -463,7 +464,9 @@ def _collect_metric_breakdown_rows(
         time_from,
         time_to,
         values_limit=config.metric_breakdown_values_limit,
+        limit=query_row_limit,
     )
+    truncated = len(rows) >= query_row_limit
     logger.info(
         "Got %s bucketed breakdown rows for %s from ClickHouse",
         len(rows),
@@ -569,7 +572,7 @@ def _collect_metric_breakdown_rows(
         }
         for (sc_id, et_id, bucket, column, value, is_other), total in type_agg.items()
     ]
-    return event_rows, type_rows
+    return event_rows, type_rows, truncated
 
 
 def _collect_distribution_drift_rows(
@@ -583,9 +586,10 @@ def _collect_distribution_drift_rows(
     json_value_path_map: dict[str, list[str]],
     time_from: datetime,
     time_to: datetime,
+    query_row_limit: int,
     reg_index: dict[str, int],
     et_by_name: dict[str, EventType],
-) -> tuple[list[dict[str, object]], int]:
+) -> tuple[list[dict[str, object]], int, bool]:
     distribution_fields: list[str] = []
     seen_fields: set[str] = set()
     for configured_field in config.distribution_drift_fields or []:
@@ -606,7 +610,7 @@ def _collect_distribution_drift_rows(
         )
 
     if not distribution_fields:
-        return [], 0
+        return [], 0, False
 
     baseline_window_buckets = max(int(config.baseline_window_buckets or 1), 1)
     min_history_buckets = max(int(config.min_history_buckets or 1), 1)
@@ -623,7 +627,9 @@ def _collect_distribution_drift_rows(
         history_from,
         time_to,
         values_limit=None,
+        limit=query_row_limit,
     )
+    truncated = len(rows) >= query_row_limit
     logger.info(
         "Got %s bucketed distribution drift rows for %s from warehouse",
         len(rows),
@@ -723,4 +729,4 @@ def _collect_distribution_drift_rows(
                 }
             )
 
-    return output_rows, significant_count
+    return output_rows, significant_count, truncated

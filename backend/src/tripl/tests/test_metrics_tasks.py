@@ -2652,3 +2652,123 @@ def test_replay_enriches_existing_high_context_values(
         context = session.execute(select(VariableValue)).scalar_one()
         assert context.value_kind == VariableValueKind.high.value
         assert context.values == ["u77", "u88"]
+
+
+def test_collect_metrics_uses_configured_metrics_row_limit(
+    sync_session_factory: sessionmaker[Session],
+    monkeypatch: MonkeyPatch,
+) -> None:
+    with sync_session_factory() as session:
+        config = _create_scan_config(session, with_event_type=True)
+        config.metrics_row_limit = 123
+        session.commit()
+        config_id = str(config.id)
+
+    class FakeAdapter:
+        seen_limit: int | None = None
+
+        def test_connection(self) -> bool:
+            return True
+
+        def get_columns(self, base_query: str) -> list[ColumnInfo]:
+            return [
+                ColumnInfo(name="time", type_name="DateTime"),
+                ColumnInfo(name="event_name", type_name="String"),
+            ]
+
+        def get_time_bucketed_counts(
+            self,
+            base_query: str,
+            time_column: str,
+            ch_interval: str,
+            regular_columns: list[str],
+            json_columns: list[str],
+            json_value_paths: dict[str, list[str]] | None,
+            time_from: datetime,
+            time_to: datetime,
+            limit: int = 100000,
+        ) -> tuple[list[str], list[str], list[tuple[object, ...]]]:
+            self.seen_limit = limit
+            return (["event_name"], [], [])
+
+        def close(self) -> None:
+            return None
+
+    adapter = FakeAdapter()
+    monkeypatch.setattr(metrics, "_get_sync_session", sync_session_factory)
+    monkeypatch.setattr(metrics, "_build_adapter", lambda ds: adapter)
+    monkeypatch.setattr(metrics, "analyze_cardinality", lambda *args, **kwargs: object())
+    monkeypatch.setattr(metrics, "_prepare_alert_deliveries", lambda *args, **kwargs: [])
+
+    def fake_generate_events(*args: object, **kwargs: object) -> GenerationResult:
+        return GenerationResult(
+            columns_analyzed=1,
+            col_meta={"event_name": {"is_json": False, "is_low": True}},
+            events_by_name={},
+        )
+
+    monkeypatch.setattr(metrics, "generate_events", fake_generate_events)
+
+    result = metrics.collect_metrics.run(config_id)
+
+    assert adapter.seen_limit == 123
+    assert result["metrics_row_limit"] == 123
+    assert result["query_rows_scanned"] == 0
+
+
+def test_collect_metrics_fails_when_query_hits_row_limit(
+    sync_session_factory: sessionmaker[Session],
+    monkeypatch: MonkeyPatch,
+) -> None:
+    with sync_session_factory() as session:
+        config = _create_scan_config(session, with_event_type=True)
+        config.metrics_row_limit = 1
+        session.commit()
+        config_id = str(config.id)
+
+    class FakeAdapter:
+        def test_connection(self) -> bool:
+            return True
+
+        def get_columns(self, base_query: str) -> list[ColumnInfo]:
+            return [
+                ColumnInfo(name="time", type_name="DateTime"),
+                ColumnInfo(name="event_name", type_name="String"),
+            ]
+
+        def get_time_bucketed_counts(
+            self,
+            base_query: str,
+            time_column: str,
+            ch_interval: str,
+            regular_columns: list[str],
+            json_columns: list[str],
+            json_value_paths: dict[str, list[str]] | None,
+            time_from: datetime,
+            time_to: datetime,
+            limit: int = 100000,
+        ) -> tuple[list[str], list[str], list[tuple[object, ...]]]:
+            return (
+                ["event_name"],
+                [],
+                [(datetime(2026, 1, 1, 10), "event_name=Login", 1)],
+            )
+
+        def close(self) -> None:
+            return None
+
+    monkeypatch.setattr(metrics, "_get_sync_session", sync_session_factory)
+    monkeypatch.setattr(metrics, "_build_adapter", lambda ds: FakeAdapter())
+    monkeypatch.setattr(metrics, "analyze_cardinality", lambda *args, **kwargs: object())
+
+    def fake_generate_events(*args: object, **kwargs: object) -> GenerationResult:
+        return GenerationResult(
+            columns_analyzed=1,
+            col_meta={"event_name": {"is_json": False, "is_low": True}},
+            events_by_name={},
+        )
+
+    monkeypatch.setattr(metrics, "generate_events", fake_generate_events)
+
+    with pytest.raises(ValueError, match="Metrics query reached configured row limit"):
+        metrics.collect_metrics.run(config_id)

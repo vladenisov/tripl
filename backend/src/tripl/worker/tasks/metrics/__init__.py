@@ -19,6 +19,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
 
 from tripl import cache
+from tripl.config import settings
 from tripl.json_paths import format_json_path_value
 from tripl.models.data_source import DataSource
 from tripl.models.distribution_drift import DistributionDrift
@@ -881,6 +882,7 @@ def collect_metrics(
         if config.time_column:
             skip_cols.add(config.time_column)
         json_value_path_map = _get_scan_json_value_path_map(config)
+        metrics_row_limit = config.metrics_row_limit or settings.metrics_row_limit_default
 
         assert config.interval is not None
         interval_spec = get_interval(config.interval)
@@ -1148,6 +1150,7 @@ def collect_metrics(
         n_breakdown_tp = 0
         n_distribution_drifts = 0
         significant_distribution_drifts = 0
+        query_rows_scanned = 0
 
         for chunk_from, chunk_to in chunks:
             _col_names, json_value_names, rows = adapter.get_time_bucketed_counts(
@@ -1159,7 +1162,17 @@ def collect_metrics(
                 json_value_path_map,
                 chunk_from,
                 chunk_to,
+                limit=metrics_row_limit,
             )
+            query_rows_scanned += len(rows)
+            if len(rows) >= metrics_row_limit:
+                msg = (
+                    "Metrics query reached configured row limit "
+                    f"({metrics_row_limit}) for chunk "
+                    f"{chunk_from.isoformat()}..{chunk_to.isoformat()}; "
+                    "increase metrics_row_limit to avoid partial metrics"
+                )
+                raise ValueError(msg)
             logger.info(
                 "Got %s bucketed rows from warehouse for %s..%s",
                 len(rows),
@@ -1297,7 +1310,11 @@ def collect_metrics(
                 }
                 for (sc_id, et_id, bucket), total in type_agg.items()
             ]
-            breakdown_event_rows, breakdown_type_rows = _collect_metric_breakdown_rows(
+            (
+                breakdown_event_rows,
+                breakdown_type_rows,
+                breakdown_truncated,
+            ) = _collect_metric_breakdown_rows(
                 adapter=adapter,
                 config=config,
                 interval_ch_interval=interval_spec.ch_interval,
@@ -1306,6 +1323,7 @@ def collect_metrics(
                 json_value_path_map=json_value_path_map,
                 time_from=chunk_from,
                 time_to=chunk_to,
+                query_row_limit=metrics_row_limit,
                 reg_index=reg_index,
                 json_index=json_index,
                 n_reg=n_reg,
@@ -1313,7 +1331,20 @@ def collect_metrics(
                 single_result=single_result,
                 et_by_name=et_by_name,
             )
-            chunk_drift_rows, chunk_significant_drifts = _collect_distribution_drift_rows(
+            if breakdown_truncated:
+                msg = (
+                    "Metrics breakdown query reached configured row limit "
+                    f"({metrics_row_limit}) for chunk "
+                    f"{chunk_from.isoformat()}..{chunk_to.isoformat()}; "
+                    "increase metrics_row_limit to avoid partial breakdown metrics"
+                )
+                raise ValueError(msg)
+
+            (
+                chunk_drift_rows,
+                chunk_significant_drifts,
+                drifts_truncated,
+            ) = _collect_distribution_drift_rows(
                 adapter=adapter,
                 config=config,
                 interval_ch_interval=interval_spec.ch_interval,
@@ -1323,9 +1354,18 @@ def collect_metrics(
                 json_value_path_map=json_value_path_map,
                 time_from=chunk_from,
                 time_to=chunk_to,
+                query_row_limit=metrics_row_limit,
                 reg_index=reg_index,
                 et_by_name=et_by_name,
             )
+            if drifts_truncated:
+                msg = (
+                    "Distribution drift query reached configured row limit "
+                    f"({metrics_row_limit}) for chunk "
+                    f"{chunk_from.isoformat()}..{chunk_to.isoformat()}; "
+                    "increase metrics_row_limit to avoid partial drift detection"
+                )
+                raise ValueError(msg)
 
             if is_replay:
                 event_delete_keys: list[tuple[uuid.UUID, datetime]] = [
@@ -1497,6 +1537,8 @@ def collect_metrics(
             "signals_added": signals_added,
             "signals_removed": signals_removed,
             "alerts_queued": len(delivery_ids),
+            "metrics_row_limit": metrics_row_limit,
+            "query_rows_scanned": query_rows_scanned,
             "details": all_details,
         }
 

@@ -27,6 +27,8 @@ class BreakdownAnalysis:
     reg_names: list[str]
     json_names: list[str]
     json_value_names: list[str] = field(default_factory=list)
+    row_limit: int | None = None
+    row_limit_reached: bool = False
 
 
 _JSON_TYPE_MARKERS = ("JSON", "Object(", "Tuple(", "Map(")
@@ -113,6 +115,7 @@ def analyze_cardinality(
     columns: list[ColumnInfo],
     threshold: int = 100,
     json_value_paths: dict[str, list[str]] | None = None,
+    row_limit: int = 50000,
     **_kwargs: object,
 ) -> BreakdownAnalysis:
     """Analyze cardinality of all columns with a single GROUP BY ALL query."""
@@ -124,12 +127,16 @@ def analyze_cardinality(
         [c.name for c in regular_cols],
         [c.name for c in json_cols],
         json_value_paths=json_value_paths,
+        limit=row_limit,
     )
+    row_limit_reached = len(rows) >= row_limit
     logger.info(f"Breakdown: {len(rows)} unique combinations")
 
     col_map = {c.name: c for c in columns}
     analysis = _process_breakdown(rows, reg_names, json_names, col_map, threshold)
     analysis.json_value_names = json_value_names
+    analysis.row_limit = row_limit
+    analysis.row_limit_reached = len(rows) >= row_limit
     return analysis
 
 
@@ -140,6 +147,7 @@ def analyze_cardinality_grouped(
     group_column: str,
     threshold: int = 100,
     json_value_paths: dict[str, list[str]] | None = None,
+    row_limit: int = 50000,
     **_kwargs: object,
 ) -> tuple[list[str], dict[str, BreakdownAnalysis]]:
     """Analyze cardinality per group value with a single GROUP BY ALL query.
@@ -155,6 +163,7 @@ def analyze_cardinality_grouped(
         [c.name for c in regular_cols],
         [c.name for c in json_cols],
         json_value_paths=json_value_paths,
+        limit=row_limit,
     )
     logger.info(f"Breakdown: {len(rows)} unique combinations, grouping by {group_column!r}")
 
@@ -192,5 +201,7 @@ def analyze_cardinality_grouped(
             skip_column=group_column,
         )
         results[gval].json_value_names = json_value_names
+        results[gval].row_limit = row_limit
+        results[gval].row_limit_reached = row_limit_reached
 
     return group_values_ordered, results
