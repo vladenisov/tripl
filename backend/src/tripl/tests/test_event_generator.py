@@ -6,6 +6,7 @@ from itertools import product
 
 import pytest
 from sqlalchemy import create_engine, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, sessionmaker
 
 from tripl.models import Base
@@ -609,6 +610,41 @@ class TestEventGeneration:
             .all()
         )
         assert len(variables) == 2  # nothing new created
+
+    def test_ensure_variable_handles_integrity_race(
+        self,
+        sync_session: Session,
+        project_and_type,
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        """Concurrent inserts should be treated as 'already exists' (no exception)."""
+        project, _et, _fds = project_and_type
+        main_branch_id = _resolve_main_branch_id(sync_session, project.id)
+        assert main_branch_id is not None
+
+        original_flush = sync_session.flush
+        state = {"raised": False}
+
+        def _flush_once_fails(*args, **kwargs):
+            has_target_pending = any(
+                isinstance(obj, Variable) and obj.name == "property.concurrent"
+                for obj in sync_session.new
+            )
+            if has_target_pending and not state["raised"]:
+                state["raised"] = True
+                raise IntegrityError("insert into variables", {}, Exception("duplicate key"))
+            return original_flush(*args, **kwargs)
+
+        monkeypatch.setattr(sync_session, "flush", _flush_once_fails)
+
+        created = _ensure_variable(
+            sync_session,
+            project.id,
+            "property.concurrent",
+            "string",
+            branch_id=main_branch_id,
+        )
+        assert created == 0
 
     def test_dedup_skips_existing(self, sync_session: Session, project_and_type):
         project, et, fds = project_and_type
