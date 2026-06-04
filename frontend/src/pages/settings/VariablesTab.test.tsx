@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { variablesApi } from '@/api/variables'
@@ -70,5 +70,48 @@ describe('VariablesTab', () => {
     expect(await screen.findByText('Profile View')).toBeInTheDocument()
     expect(screen.getByText('u1')).toBeInTheDocument()
     expect(screen.getByText('u2')).toBeInTheDocument()
+  })
+
+  it('shows all observed values when editing a variable', async () => {
+    vi.mocked(variablesApi.list).mockResolvedValue([
+      {
+        id: 'var-1',
+        project_id: 'project-1',
+        name: 'user_id',
+        source_name: 'user_id',
+        variable_type: 'string',
+        description: 'User identifier',
+      },
+    ])
+    vi.mocked(variablesApi.values).mockResolvedValue([
+      {
+        id: 'ctx-1',
+        variable_id: 'var-1',
+        variable_name: 'user_id',
+        event_id: 'ev-1',
+        event_name: 'Profile View',
+        field_definition_id: 'fd-1',
+        field_name: 'user_id',
+        field_display_name: 'User ID',
+        source_column: 'user_id',
+        value_kind: 'low',
+        observed_count: 2,
+        values: ['u1', 'u2'],
+      },
+    ])
+
+    renderVariablesTab()
+
+    await waitFor(() => expect(variablesApi.values).toHaveBeenCalled())
+    const row = screen.getByText('Profile View').closest('tr')
+    expect(row).not.toBeNull()
+    fireEvent.click(within(row as HTMLElement).getAllByRole('button')[0])
+
+    const dialog = await screen.findByRole('dialog')
+    expect(within(dialog).getByText('Edit: user_id')).toBeInTheDocument()
+    expect(within(dialog).getByText('Observed values')).toBeInTheDocument()
+    expect(within(dialog).getByText('Profile View')).toBeInTheDocument()
+    expect(within(dialog).getByText('u1')).toBeInTheDocument()
+    expect(within(dialog).getByText('u2')).toBeInTheDocument()
   })
 })

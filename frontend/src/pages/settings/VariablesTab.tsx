@@ -109,6 +109,8 @@ export function VariablesTab({ slug }: { slug: string }) {
     }))
   })
 
+  const editingVarContexts = editingVar ? (contextsByVariableId.get(editingVar.id) ?? []) : []
+
   return (
     <div className="space-y-4">
       {dialog}
@@ -174,6 +176,36 @@ export function VariablesTab({ slug }: { slug: string }) {
                   <Input value={editDescription} onChange={e => setEditDescription(e.target.value)} />
                 </div>
               </div>
+              {editingVarContexts.length > 0 && (
+                <div className="rounded-md border bg-muted/30 p-3">
+                  <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                    Observed values
+                  </div>
+                  <div className="space-y-3 text-xs">
+                    {editingVarContexts.map((context) => (
+                      <div key={context.id} className="space-y-2 rounded border bg-background p-2">
+                        <div className="flex flex-wrap items-center justify-between gap-2">
+                          <div className="font-medium text-foreground">{context.event_name}</div>
+                          <div className="text-muted-foreground">
+                            {context.source_column} · {context.observed_count} observed
+                          </div>
+                        </div>
+                        <div className="flex flex-wrap gap-1">
+                          {context.values.length > 0 ? (
+                            context.values.map((value) => (
+                              <span key={value} className="rounded border px-1.5 py-0.5 font-mono text-[10px]" title={value}>
+                                {value}
+                              </span>
+                            ))
+                          ) : (
+                            <span className="text-muted-foreground">No examples stored</span>
+                          )}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
               {updateMut.isError && <p className="text-sm text-destructive">{(updateMut.error as Error).message}</p>}
             </div>
             <DialogFooter>
@@ -211,12 +243,9 @@ export function VariablesTab({ slug }: { slug: string }) {
                   <TableCell>
                     {row.values.length > 0 ? (
                       <div className="flex max-w-sm flex-wrap gap-1">
-                        {row.values.slice(0, 6).map(value => (
+                        {row.values.map(value => (
                           <span key={value} className="max-w-28 truncate rounded border px-1.5 py-0.5 font-mono text-[10px]" title={value}>{value}</span>
                         ))}
-                        {row.values.length > 6 && (
-                          <span className="text-[10px] text-muted-foreground">+{row.values.length - 6}</span>
-                        )}
                       </div>
                     ) : (
                       <span className="text-xs text-muted-foreground">—</span>
