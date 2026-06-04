@@ -6,7 +6,7 @@ import logging
 import math
 import re
 import uuid
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from difflib import SequenceMatcher
 from typing import cast
@@ -27,6 +27,7 @@ from tripl.models.meta_field_definition import MetaFieldDefinition
 from tripl.models.project import Project
 from tripl.models.search_document import SearchDocument
 from tripl.models.variable import Variable
+from tripl.models.variable_value import VariableValue
 from tripl.schemas.search import SearchEntityType, SearchResponse, SearchResult
 from tripl.services.embedding_service import embed_query
 from tripl.services.plan_branch_service import resolve_branch_id
@@ -80,7 +81,7 @@ def _clean(value: object | None) -> str:
     return str(value).strip()
 
 
-def _join(parts: list[object | None]) -> str:
+def _join(parts: Sequence[object | None]) -> str:
     values = [_clean(part) for part in parts]
     return " ".join(value for value in values if value)
 
@@ -349,6 +350,32 @@ async def _build_documents(
         .scalars()
         .all()
     )
+    variable_values = list(
+        (
+            await session.execute(
+                select(VariableValue)
+                .where(
+                    VariableValue.project_id == project_id,
+                    VariableValue.branch_id == branch_id,
+                )
+                .options(
+                    selectinload(VariableValue.variable),
+                    selectinload(VariableValue.event),
+                    selectinload(VariableValue.field_definition),
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    contexts_by_event_field: dict[tuple[uuid.UUID, uuid.UUID], list[VariableValue]] = {}
+    contexts_by_variable: dict[uuid.UUID, list[VariableValue]] = {}
+    for context in variable_values:
+        contexts_by_event_field.setdefault(
+            (context.event_id, context.field_definition_id),
+            [],
+        ).append(context)
+        contexts_by_variable.setdefault(context.variable_id, []).append(context)
     relations = list(
         (
             await session.execute(
@@ -380,12 +407,14 @@ async def _build_documents(
 
     for event in events:
         event_type = event_types_by_id.get(event.event_type_id, event.event_type)
-        documents.append(_event_document(event, event_type, slug))
+        documents.append(_event_document(event, event_type, slug, contexts_by_event_field))
         for tag in event.tags:
             documents.append(_tag_document(tag, event, event_type, slug))
 
     for variable in variables:
-        documents.append(_variable_document(variable, slug))
+        documents.append(
+            _variable_document(variable, slug, contexts_by_variable.get(variable.id, []))
+        )
 
     for relation in relations:
         documents.append(_relation_document(relation, slug))
@@ -465,14 +494,26 @@ def _meta_field_document(meta_field: MetaFieldDefinition, slug: str) -> BuiltDoc
     )
 
 
-def _event_document(event: Event, event_type: EventType | None, slug: str) -> BuiltDocument:
+def _event_document(
+    event: Event,
+    event_type: EventType | None,
+    slug: str,
+    contexts_by_event_field: Mapping[tuple[uuid.UUID, uuid.UUID], list[VariableValue]],
+) -> BuiltDocument:
     field_names: list[str] = []
     safe_values: list[str] = []
+    variable_context_text: list[str] = []
     for field_value in event.field_values:
         field = field_value.field_definition
         field_names.extend([field.name, field.display_name, field.description])
         if not _is_sensitive(field.sensitivity):
             safe_values.append(field_value.value)
+            variable_context_text.append(
+                _variable_context_text(
+                    contexts_by_event_field.get((event.id, field_value.field_definition_id), []),
+                    include_event_names=False,
+                )
+            )
 
     meta_names: list[str] = []
     safe_meta_values: list[str] = []
@@ -500,6 +541,7 @@ def _event_document(event: Event, event_type: EventType | None, slug: str) -> Bu
                 " ".join(event_type_names),
                 " ".join(field_names),
                 " ".join(safe_values),
+                " ".join(variable_context_text),
                 " ".join(meta_names),
                 " ".join(safe_meta_values),
                 " ".join(tag_names),
@@ -546,7 +588,12 @@ def _tag_document(
     )
 
 
-def _variable_document(variable: Variable, slug: str) -> BuiltDocument:
+def _variable_document(
+    variable: Variable,
+    slug: str,
+    contexts: list[VariableValue],
+) -> BuiltDocument:
+    context_text = _variable_context_text(contexts, include_event_names=True)
     return BuiltDocument(
         entity_type="variable",
         entity_id=variable.id,
@@ -554,10 +601,37 @@ def _variable_document(variable: Variable, slug: str) -> BuiltDocument:
         title=f"${{{variable.name}}}",
         subtitle=variable.variable_type,
         description=_clean(variable.description),
-        body=_join([variable.name, variable.source_name, variable.description]),
-        keywords=_join([variable.name, variable.source_name]),
+        body=_join([variable.name, variable.source_name, variable.description, context_text]),
+        keywords=_join([variable.name, variable.source_name, context_text]),
         route_path=f"/p/{slug}/settings/variables",
     )
+
+
+def _variable_context_text(
+    contexts: list[VariableValue],
+    *,
+    include_event_names: bool,
+) -> str:
+    parts: list[str] = []
+    for context in contexts:
+        field = context.field_definition
+        safe_values = "" if _is_sensitive(field.sensitivity) else " ".join(context.values or [])
+        parts.append(
+            _join(
+                [
+                    context.variable.name,
+                    context.variable.source_name,
+                    context.source_column,
+                    context.value_kind,
+                    str(context.observed_count),
+                    context.event.name if include_event_names else "",
+                    field.name,
+                    field.display_name,
+                    safe_values,
+                ]
+            )
+        )
+    return _join(parts)
 
 
 def _relation_document(relation: EventTypeRelation, slug: str) -> BuiltDocument:

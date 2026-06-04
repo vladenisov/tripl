@@ -16,6 +16,7 @@ import { TableCell, TableRow } from '@/components/ui/table'
 import { Chip } from '@/components/primitives/chip'
 import { Dot } from '@/components/primitives/dot'
 import { resolveMetaFieldHref } from '@/lib/metaFields'
+import { VariableValueContextTrigger } from '@/components/variable-value-contexts'
 import { EventDriftBadge } from './EventDriftBadge'
 import { EventRowActions } from './EventRowActions'
 import { EventWindowMetricsCell } from './EventWindowMetricsCell'
@@ -187,6 +188,7 @@ export const EventRow = memo(function EventRow({
         </TableCell>
       )}
       {fieldColumns.map((f) => {
+        const fieldValue = ev.field_values.find((fv) => fv.field_definition_id === f.id)
         let val = getFieldValue(ev, f)
         if (val && /^-?\d+\.0+$/.test(val)) val = String(parseInt(val, 10))
         const cellKey = `${ev.id}-${f.id}`
@@ -199,11 +201,17 @@ export const EventRow = memo(function EventRow({
             onClick={isLong ? () => onToggleExpanded(cellKey) : undefined}
           >
             {isExpanded ? (
-              <pre className="whitespace-pre-wrap break-all font-mono text-[11px] max-w-sm">{(() => {
-                try { return JSON.stringify(JSON.parse(val), null, 2) } catch { return val }
-              })()}</pre>
+              <div className="flex items-start gap-1.5">
+                <pre className="max-w-sm whitespace-pre-wrap break-all font-mono text-[11px]">{(() => {
+                  try { return JSON.stringify(JSON.parse(val), null, 2) } catch { return val }
+                })()}</pre>
+                <VariableValueContextTrigger contexts={fieldValue?.variable_values} />
+              </div>
             ) : (
-              <span className={isLong ? 'block truncate' : ''}>{val}</span>
+              <span className="flex min-w-0 items-center gap-1.5">
+                <span className={isLong ? 'block min-w-0 truncate' : 'min-w-0'}>{val}</span>
+                <VariableValueContextTrigger contexts={fieldValue?.variable_values} />
+              </span>
             )}
           </TableCell>
         )

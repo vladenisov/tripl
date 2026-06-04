@@ -95,10 +95,23 @@ class EventReorder(BaseModel):
     event_ids: list[uuid.UUID] = Field(min_length=1)
 
 
+class EventFieldVariableValueResponse(BaseModel):
+    id: uuid.UUID
+    variable_id: uuid.UUID
+    variable_name: str
+    source_column: str
+    value_kind: Literal["low", "high"]
+    observed_count: int
+    values: list[str] = []
+
+    model_config = {"from_attributes": True}
+
+
 class EventFieldValueResponse(BaseModel):
     id: uuid.UUID
     field_definition_id: uuid.UUID
     value: str
+    variable_values: list[EventFieldVariableValueResponse] = []
 
     model_config = {"from_attributes": True}
 

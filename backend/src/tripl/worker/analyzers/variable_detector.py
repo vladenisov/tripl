@@ -20,6 +20,8 @@ from dataclasses import dataclass, field
 class DetectedVariable:
     name: str
     inferred_type: str  # string, number, json, ...
+    distinct_count: int = 0
+    values: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -54,6 +56,10 @@ def _looks_like_json(val: str) -> bool:
     )
 
 
+def _distinct_values(values: list[str]) -> list[str]:
+    return sorted({value for value in values if value != ""})
+
+
 def detect_variables(
     column_name: str,
     values: list[str],
@@ -81,7 +87,14 @@ def detect_variables(
     if all(_is_numeric(v) for v in values if v):
         return DetectedPattern(
             template=f"${{{column_name}}}",
-            variables=[DetectedVariable(name=column_name, inferred_type="number")],
+            variables=[
+                DetectedVariable(
+                    name=column_name,
+                    inferred_type="number",
+                    distinct_count=len(_distinct_values(values)),
+                    values=_distinct_values(values),
+                )
+            ],
             coverage_pct=100.0,
         )
 
@@ -89,7 +102,14 @@ def detect_variables(
     if all(_is_uuid(v) for v in values if v):
         return DetectedPattern(
             template=f"${{{column_name}}}",
-            variables=[DetectedVariable(name=column_name, inferred_type="string")],
+            variables=[
+                DetectedVariable(
+                    name=column_name,
+                    inferred_type="string",
+                    distinct_count=len(_distinct_values(values)),
+                    values=_distinct_values(values),
+                )
+            ],
             coverage_pct=100.0,
         )
 
@@ -101,7 +121,14 @@ def detect_variables(
     # 6. Fallback: entire value is the variable
     return DetectedPattern(
         template=f"${{{column_name}}}",
-        variables=[DetectedVariable(name=column_name, inferred_type="string")],
+        variables=[
+            DetectedVariable(
+                name=column_name,
+                inferred_type="string",
+                distinct_count=len(_distinct_values(values)),
+                values=_distinct_values(values),
+            )
+        ],
         coverage_pct=100.0,
     )
 
@@ -152,7 +179,15 @@ def _detect_json_pattern(
             var_name = key
             inferred_type = "number" if all(_is_numeric(v) for v in vals) else "string"
             template_obj[key] = f"${{{var_name}}}"
-            variables.append(DetectedVariable(name=var_name, inferred_type=inferred_type))
+            distinct_values = _distinct_values(vals)
+            variables.append(
+                DetectedVariable(
+                    name=var_name,
+                    inferred_type=inferred_type,
+                    distinct_count=len(distinct_values),
+                    values=distinct_values,
+                )
+            )
 
     template = json.dumps(template_obj, ensure_ascii=False, sort_keys=True)
     return DetectedPattern(
@@ -217,7 +252,15 @@ def _detect_path_pattern(
                 var_name = f"{column_name}_segment_{i}"
                 inferred_type = "string"
             template_parts.append(f"${{{var_name}}}")
-            variables.append(DetectedVariable(name=var_name, inferred_type=inferred_type))
+            distinct_values = _distinct_values(position_values)
+            variables.append(
+                DetectedVariable(
+                    name=var_name,
+                    inferred_type=inferred_type,
+                    distinct_count=len(distinct_values),
+                    values=distinct_values,
+                )
+            )
 
     if not variables:
         return None
@@ -267,7 +310,15 @@ def _detect_generic_string_pattern(
                     var_name = f"{column_name}_part_{i}"
                     inferred_type = "string"
                 template_parts.append(f"${{{var_name}}}")
-                variables.append(DetectedVariable(name=var_name, inferred_type=inferred_type))
+                distinct_values = _distinct_values(position_values)
+                variables.append(
+                    DetectedVariable(
+                        name=var_name,
+                        inferred_type=inferred_type,
+                        distinct_count=len(distinct_values),
+                        values=distinct_values,
+                    )
+                )
 
         if has_variable:
             template = delimiter.join(template_parts)

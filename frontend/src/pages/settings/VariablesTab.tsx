@@ -75,6 +75,8 @@ export function VariablesTab({ slug }: { slug: string }) {
     setEditDescription(v.description)
   }
 
+  const valuePreview = (v: Variable) => v.sample_values ?? []
+
   return (
     <div className="space-y-4">
       {dialog}
@@ -159,16 +161,43 @@ export function VariablesTab({ slug }: { slug: string }) {
                 <TableHead className="w-24">Type</TableHead>
                 <TableHead>Description</TableHead>
                 <TableHead>Usage</TableHead>
+                <TableHead>Values</TableHead>
                 <TableHead className="w-24"></TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
               {variables.map((v: Variable) => (
                 <TableRow key={v.id}>
-                  <TableCell className="font-mono text-xs">{v.name}</TableCell>
+                  <TableCell className="font-mono text-xs">
+                    <code className="rounded bg-primary/10 px-1.5 py-0.5 text-primary">
+                      {`\${${v.name}}`}
+                    </code>
+                  </TableCell>
                   <TableCell><Badge variant="outline" className="text-[10px]">{typeLabels[v.variable_type]}</Badge></TableCell>
                   <TableCell className="text-xs text-muted-foreground">{v.description}</TableCell>
-                  <TableCell><code className="text-xs font-mono bg-primary/10 text-primary px-1.5 py-0.5 rounded">{`\${${v.name}}`}</code></TableCell>
+                  <TableCell>
+                    <div className="flex flex-wrap gap-1 text-[11px] text-muted-foreground">
+                      <Badge variant="outline" className="text-[10px]">{v.event_count ?? 0} events</Badge>
+                      <Badge variant="outline" className="text-[10px]">{v.context_count ?? 0} contexts</Badge>
+                      {(v.high_context_count ?? 0) > 0 && (
+                        <Badge variant="outline" className="text-[10px]">{v.high_context_count} sampled</Badge>
+                      )}
+                    </div>
+                  </TableCell>
+                  <TableCell>
+                    {valuePreview(v).length > 0 ? (
+                      <div className="flex max-w-sm flex-wrap gap-1">
+                        {valuePreview(v).slice(0, 6).map(value => (
+                          <span key={value} className="max-w-28 truncate rounded border px-1.5 py-0.5 font-mono text-[10px]" title={value}>{value}</span>
+                        ))}
+                        {valuePreview(v).length > 6 && (
+                          <span className="text-[10px] text-muted-foreground">+{valuePreview(v).length - 6}</span>
+                        )}
+                      </div>
+                    ) : (
+                      <span className="text-xs text-muted-foreground">—</span>
+                    )}
+                  </TableCell>
                   <TableCell>
                     <div className="flex gap-1 justify-end">
                       <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => startEdit(v)}><Pencil className="h-3 w-3" /></Button>

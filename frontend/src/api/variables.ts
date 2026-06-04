@@ -1,5 +1,5 @@
 import { api, withBranch } from './client'
-import type { Variable, VariableType } from '../types'
+import type { Variable, VariableType, VariableValueContext } from '../types'
 
 export const variablesApi = {
   list: (slug: string, branchId?: string | null) =>
@@ -15,6 +15,10 @@ export const variablesApi = {
     data: { name?: string; variable_type?: VariableType; description?: string },
     branchId?: string | null,
   ) => api.patch<Variable>(withBranch(`/projects/${slug}/variables/${id}`, branchId), data),
+  values: (slug: string, id: string, branchId?: string | null) =>
+    api.get<VariableValueContext[]>(
+      withBranch(`/projects/${slug}/variables/${id}/values`, branchId),
+    ),
   del: (slug: string, id: string, branchId?: string | null) =>
     api.del(withBranch(`/projects/${slug}/variables/${id}`, branchId)),
 }

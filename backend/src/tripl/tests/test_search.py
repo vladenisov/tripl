@@ -7,9 +7,13 @@ from httpx import AsyncClient
 from sqlalchemy import insert
 from sqlalchemy.dialects.postgresql.asyncpg import PGDialect_asyncpg
 
+from tripl.models.event import Event
 from tripl.models.search_document import SearchDocument
+from tripl.models.variable import Variable
+from tripl.models.variable_value import VariableValue
 from tripl.schemas.search import SearchResult
 from tripl.services.search_service import _finalize_results
+from tripl.tests.conftest import TestSessionLocal
 
 
 def _result(
@@ -114,10 +118,11 @@ async def test_global_search_matches_multilingual_plan_content(client: AsyncClie
         display_name="Checkout / Покупка",
         description="Финальные шаги оформления заказа",
     )
-    await client.post(
+    variable_create = await client.post(
         "/api/v1/projects/search-ml/variables",
         json={"name": "user_id", "description": "Идентификатор пользователя"},
     )
+    variable_id = uuid.UUID(variable_create.json()["id"])
     event_resp = await client.post(
         "/api/v1/projects/search-ml/events",
         json={
@@ -129,6 +134,30 @@ async def test_global_search_matches_multilingual_plan_content(client: AsyncClie
         },
     )
     assert event_resp.status_code == 201
+    event_id = uuid.UUID(event_resp.json()["id"])
+
+    async with TestSessionLocal() as session, session.begin():
+        variable = await session.get(Variable, variable_id)
+        event = await session.get(Event, event_id)
+        assert variable is not None
+        assert event is not None
+        session.add(
+            VariableValue(
+                project_id=variable.project_id,
+                branch_id=variable.branch_id,
+                variable_id=variable.id,
+                event_id=event.id,
+                field_definition_id=uuid.UUID(field_id),
+                source_column="user_id",
+                value_kind="low",
+                observed_count=1,
+                values=["vip_segment"],
+            )
+        )
+    await client.patch(
+        f"/api/v1/projects/search-ml/variables/{variable_id}",
+        json={"description": "Идентификатор пользователя с контекстом"},
+    )
 
     ru_resp = await client.get("/api/v1/projects/search-ml/search?q=завершение покупки")
     assert ru_resp.status_code == 200
@@ -155,6 +184,10 @@ async def test_global_search_matches_multilingual_plan_content(client: AsyncClie
     var_resp = await client.get("/api/v1/projects/search-ml/search?q=Идентификатор&types=variable")
     assert var_resp.status_code == 200
     assert [item["entity_type"] for item in var_resp.json()["items"]] == ["variable"]
+
+    value_resp = await client.get("/api/v1/projects/search-ml/search?q=vip_segment&types=variable")
+    assert value_resp.status_code == 200
+    assert [item["title"] for item in value_resp.json()["items"]] == ["${user_id}"]
 
 
 @pytest.mark.asyncio
@@ -199,9 +232,7 @@ async def test_event_list_search_is_plain_column_ilike(client: AsyncClient) -> N
     assert by_value.json()["total"] == 0
 
     # Field-value content is filtered through the dedicated field_value param.
-    by_field = await client.get(
-        "/api/v1/projects/search-events/events?field_value=home_screen"
-    )
+    by_field = await client.get("/api/v1/projects/search-events/events?field_value=home_screen")
     assert by_field.status_code == 200
     assert by_field.json()["total"] == 1
     assert by_field.json()["items"][0]["name"] == "Generic Event"

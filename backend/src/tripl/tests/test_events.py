@@ -5,6 +5,8 @@ import pytest
 from httpx import AsyncClient
 
 from tripl.models.event import Event
+from tripl.models.variable import Variable
+from tripl.models.variable_value import VariableValue
 from tripl.tests.conftest import TestSessionLocal
 
 
@@ -56,6 +58,57 @@ async def test_create_event(client: AsyncClient):
     assert data["metric_breakdown_columns"] == ["country", "platform"]
     assert len(data["field_values"]) == 1
     assert len(data["meta_values"]) == 1
+
+
+@pytest.mark.asyncio
+async def test_event_responses_include_variable_value_contexts(client: AsyncClient):
+    et_id, field_id, _ = await _setup_events(client, "ev-var-values")
+    variable_resp = await client.post(
+        "/api/v1/projects/ev-var-values/variables",
+        json={"name": "user_id", "variable_type": "string"},
+    )
+    event_resp = await client.post(
+        "/api/v1/projects/ev-var-values/events",
+        json={
+            "event_type_id": et_id,
+            "name": "Profile View",
+            "field_values": [{"field_definition_id": field_id, "value": "${user_id}"}],
+        },
+    )
+    assert event_resp.status_code == 201
+    variable_id = uuid.UUID(variable_resp.json()["id"])
+    event_id = uuid.UUID(event_resp.json()["id"])
+
+    async with TestSessionLocal() as session, session.begin():
+        variable = await session.get(Variable, variable_id)
+        event = await session.get(Event, event_id)
+        assert variable is not None
+        assert event is not None
+        session.add(
+            VariableValue(
+                project_id=variable.project_id,
+                branch_id=variable.branch_id,
+                variable_id=variable.id,
+                event_id=event.id,
+                field_definition_id=uuid.UUID(field_id),
+                source_column="user_id",
+                value_kind="low",
+                observed_count=2,
+                values=["u1", "u2"],
+            )
+        )
+
+    list_resp = await client.get("/api/v1/projects/ev-var-values/events")
+    assert list_resp.status_code == 200
+    field_contexts = list_resp.json()["items"][0]["field_values"][0]["variable_values"]
+    assert field_contexts[0]["variable_name"] == "user_id"
+    assert field_contexts[0]["value_kind"] == "low"
+    assert field_contexts[0]["values"] == ["u1", "u2"]
+
+    detail_resp = await client.get(f"/api/v1/projects/ev-var-values/events/{event_id}")
+    assert detail_resp.status_code == 200
+    detail_contexts = detail_resp.json()["field_values"][0]["variable_values"]
+    assert detail_contexts == field_contexts
 
 
 @pytest.mark.asyncio

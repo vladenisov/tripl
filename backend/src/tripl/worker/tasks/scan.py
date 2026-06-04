@@ -28,6 +28,7 @@ from tripl.worker.analyzers.event_generator import (
 from tripl.worker.analyzers.preview import build_preview_payload
 from tripl.worker.celery_app import celery_app
 from tripl.worker.db import SyncSessionLocal
+from tripl.worker.search_reindex import reindex_main_branch_from_worker
 
 logger = logging.getLogger(__name__)
 
@@ -128,6 +129,7 @@ def run_scan(self: object, scan_config_id: str, job_id: str) -> dict[str, object
             raise ValueError(msg)
 
         session.commit()
+        reindex_main_branch_from_worker(session, config.project_id)
 
         # Mark job as completed
         job.status = ScanJobStatus.completed.value

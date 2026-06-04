@@ -388,7 +388,10 @@ def _collect_breakdown_scope_keys(
             EventMetricBreakdown.event_id.is_not(None),
             Event.archived.is_(False),
         )
-        anomaly_query = anomaly_query.join(Event, MetricBreakdownAnomaly.event_id == Event.id).where(
+        anomaly_query = anomaly_query.join(
+            Event,
+            MetricBreakdownAnomaly.event_id == Event.id,
+        ).where(
             MetricBreakdownAnomaly.event_id.is_not(None),
             Event.archived.is_(False),
         )

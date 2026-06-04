@@ -12,6 +12,7 @@ from tripl.models.plan_branch import default_branch_id
 
 if TYPE_CHECKING:
     from tripl.models.project import Project
+    from tripl.models.variable_value import VariableValue
 
 
 class VariableType(enum.StrEnum):
@@ -44,3 +45,6 @@ class Variable(UUIDMixin, Base):
     description: Mapped[str] = mapped_column(Text, default="")
 
     project: Mapped[Project] = relationship(back_populates="variables")
+    value_contexts: Mapped[list[VariableValue]] = relationship(
+        back_populates="variable", cascade="all, delete-orphan", lazy="selectin"
+    )

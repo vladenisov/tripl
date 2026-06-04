@@ -38,6 +38,7 @@ from tripl.worker.analyzers.event_generator import (
     generate_events,
 )
 from tripl.worker.celery_app import celery_app
+from tripl.worker.search_reindex import reindex_main_branch_from_worker
 from tripl.worker.tasks.alerts import send_alert_delivery
 from tripl.worker.tasks.metrics._helpers import (
     ACTIVE_SCAN_JOB_STATUSES,
@@ -623,6 +624,8 @@ def collect_metrics(
             raise ValueError(msg)
 
         session.commit()
+        if not is_replay:
+            reindex_main_branch_from_worker(session, config.project_id)
 
         # ---- PHASE 2: Collect time-bucketed metrics ----
         logger.info(

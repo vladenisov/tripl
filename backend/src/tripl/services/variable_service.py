@@ -11,6 +11,7 @@ from tripl.schemas.variable import VariableCreate, VariableUpdate
 from tripl.services.plan_branch_service import resolve_branch_id
 from tripl.services.project_service import get_project_id_by_slug
 from tripl.services.search_service import reindex_project_branch
+from tripl.services.variable_value_service import attach_variable_summaries
 
 
 async def list_variables(
@@ -23,7 +24,9 @@ async def list_variables(
         .where(Variable.project_id == project_id, Variable.branch_id == branch_id)
         .order_by(Variable.name)
     )
-    return list(result.scalars().all())
+    variables = list(result.scalars().all())
+    await attach_variable_summaries(session, variables)
+    return variables
 
 
 async def create_variable(

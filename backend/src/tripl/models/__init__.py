@@ -41,6 +41,7 @@ from tripl.models.search_document import SearchDocument
 from tripl.models.user import User
 from tripl.models.user_session import UserSession
 from tripl.models.variable import Variable
+from tripl.models.variable_value import VariableValue
 
 __all__ = [
     "Base",
@@ -86,4 +87,5 @@ __all__ = [
     "SearchDocument",
     "User",
     "UserSession",
+    "VariableValue",
 ]

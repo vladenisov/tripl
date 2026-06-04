@@ -14,6 +14,7 @@ import { ErrorState } from '@/components/error-state'
 import EventPhotosSection from '@/components/event-photos-section'
 import { SeasonalityHeatmap } from '@/components/monitoring/seasonality-heatmap'
 import { TopMoversPanel } from '@/components/monitoring/top-movers-panel'
+import { VariableValueContextTrigger } from '@/components/variable-value-contexts'
 import { MetricsChart, MetricsMultiSeriesChart } from '@/components/ui/chart'
 import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
@@ -638,8 +639,9 @@ export default function MonitoringDetailPage() {
                         <span className="text-muted-foreground min-w-[140px] font-medium">
                           {fieldDefinition?.display_name ?? fieldDefinition?.name ?? 'Unknown'}
                         </span>
-                        <span className="font-mono text-foreground/80 break-all">
-                          {fieldValue.value || '—'}
+                        <span className="flex min-w-0 items-center gap-1.5 font-mono text-foreground/80">
+                          <span className="break-all">{fieldValue.value || '—'}</span>
+                          <VariableValueContextTrigger contexts={fieldValue.variable_values} />
                         </span>
                       </div>
                     )
