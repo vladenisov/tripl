@@ -4,8 +4,14 @@ from fastapi import APIRouter
 
 from tripl.api.deps import BranchIdDep, EditorUserDep, SessionDep
 from tripl.models.variable import Variable
-from tripl.schemas.variable import VariableCreate, VariableResponse, VariableUpdate
-from tripl.services import audit_service, variable_service
+from tripl.models.variable_value import VariableValue
+from tripl.schemas.variable import (
+    VariableCreate,
+    VariableResponse,
+    VariableUpdate,
+    VariableValueContextResponse,
+)
+from tripl.services import audit_service, variable_service, variable_value_service
 
 router = APIRouter(prefix="/projects/{slug}/variables", tags=["variables"])
 
@@ -35,6 +41,16 @@ async def create_variable(
         payload=data.model_dump(),
     )
     return v
+
+
+@router.get("/{variable_id}/values", response_model=list[VariableValueContextResponse])
+async def list_variable_values(
+    session: SessionDep,
+    slug: str,
+    variable_id: uuid.UUID,
+    branch_id: BranchIdDep,
+) -> list[VariableValue]:
+    return await variable_value_service.list_variable_values(session, slug, variable_id, branch_id)
 
 
 @router.patch("/{variable_id}", response_model=VariableResponse)

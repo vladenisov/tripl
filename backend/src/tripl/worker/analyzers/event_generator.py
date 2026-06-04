@@ -14,7 +14,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
-from sqlalchemy import delete, func, select, update
+from sqlalchemy import delete, func, or_, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -34,6 +34,7 @@ from tripl.models.metric_anomaly import MetricAnomaly
 from tripl.models.metric_breakdown_anomaly import MetricBreakdownAnomaly
 from tripl.models.plan_branch import BranchKind, PlanBranch
 from tripl.models.variable import Variable
+from tripl.models.variable_value import VariableValue, VariableValueKind
 from tripl.worker.analyzers.cardinality import BreakdownAnalysis
 from tripl.worker.analyzers.variable_detector import (
     DetectedPattern,
@@ -41,6 +42,8 @@ from tripl.worker.analyzers.variable_detector import (
 )
 
 logger = logging.getLogger(__name__)
+
+VARIABLE_VALUE_SAMPLE_LIMIT = 20
 
 
 def _format_value(raw_val: object) -> str:
@@ -63,6 +66,15 @@ class GenerationResult:
     details: list[str] = field(default_factory=list)
     col_meta: dict[str, dict[str, Any]] = field(default_factory=dict)
     events_by_name: dict[str, Event] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class VariableObservation:
+    name: str
+    source_column: str
+    value_kind: str
+    observed_count: int
+    values: list[str]
 
 
 @dataclass(frozen=True)
@@ -200,6 +212,7 @@ def generate_events(
             meta["is_json"] = True
             all_paths: set[str] = set()
             passthrough_paths: list[str] = []
+            variable_observations: list[VariableObservation] = []
             for combo in card_result.json_path_combos:
                 for path in combo:
                     all_paths.add(path)
@@ -212,7 +225,17 @@ def generate_events(
                 result.variables_created += _ensure_variable(
                     session, project_id, var_name, "string", branch_id=main_branch_id
                 )
+                variable_observations.append(
+                    VariableObservation(
+                        name=var_name,
+                        source_column=full_path,
+                        value_kind=VariableValueKind.high.value,
+                        observed_count=0,
+                        values=[],
+                    )
+                )
             meta["json_passthrough_paths"] = passthrough_paths
+            meta["variable_observations"] = variable_observations
             logger.info(
                 f"  {col_name}: JSON, {len(card_result.json_path_combos)} path combos, "
                 f"{len(all_paths) - len(passthrough_paths)} variables"
@@ -232,11 +255,28 @@ def generate_events(
                         variables=[],
                         coverage_pct=100.0,
                     )
+                regular_variable_observations: list[VariableObservation] = []
                 for var in pattern.variables:
                     result.variables_created += _ensure_variable(
                         session, project_id, var.name, var.inferred_type, branch_id=main_branch_id
                     )
+                    observed_count = var.distinct_count or len(var.values)
+                    value_kind = (
+                        VariableValueKind.low.value
+                        if observed_count > 0 and observed_count <= cardinality_threshold
+                        else VariableValueKind.high.value
+                    )
+                    regular_variable_observations.append(
+                        VariableObservation(
+                            name=var.name,
+                            source_column=col_name,
+                            value_kind=value_kind,
+                            observed_count=observed_count,
+                            values=_sample_variable_values(var.values, value_kind),
+                        )
+                    )
                 meta["template"] = pattern.template
+                meta["variable_observations"] = regular_variable_observations
 
         col_meta[col_name] = meta
 
@@ -244,20 +284,24 @@ def generate_events(
         result.details.append("No columns matched field definitions")
         return result
 
+    variable_by_token = _load_variables_for_contexts(
+        session,
+        project_id=project_id,
+        branch_id=main_branch_id,
+        col_meta=col_meta,
+    )
+
     # Load existing events for dedup. Key on the stable scan identity (``source_name``),
     # NOT the display ``name`` — users may rename ``name`` freely, and matching on it would
     # make the next scan recreate the renamed event as a duplicate. ``source_name`` is the
     # name derived from the event-name columns at scan time; it never changes on rename.
-    existing_events_list = (
-        session.execute(
-            select(Event).where(
-                Event.project_id == project_id,
-                Event.event_type_id == event_type_id,
-            )
-        )
-        .scalars()
-        .all()
+    existing_events_query = select(Event).where(
+        Event.project_id == project_id,
+        Event.event_type_id == event_type_id,
     )
+    if main_branch_id is not None:
+        existing_events_query = existing_events_query.where(Event.branch_id == main_branch_id)
+    existing_events_list = session.execute(existing_events_query).scalars().all()
     existing_by_identity: dict[str, Event] = {}
     for ev in existing_events_list:
         if ev.source_name is None:
@@ -270,6 +314,13 @@ def generate_events(
     ).scalar_one()
     next_event_order = 0 if next_event_order is None else int(next_event_order) + 1
     logger.info(f"Loaded {len(existing_by_identity)} existing events for dedup")
+    _delete_variable_contexts_for_event_type(
+        session,
+        project_id=project_id,
+        branch_id=main_branch_id,
+        event_type_id=event_type_id,
+    )
+    variable_contexts: dict[tuple[uuid.UUID, uuid.UUID, uuid.UUID], dict[str, Any]] = {}
 
     # Iterate breakdown rows — each row is one event
     for row in analysis.rows:
@@ -377,6 +428,13 @@ def generate_events(
         if existing is not None:
             # Update field values on existing event
             _upsert_field_values(existing, field_values)
+            _record_variable_contexts(
+                variable_contexts,
+                event=existing,
+                field_values=field_values,
+                col_meta=col_meta,
+                variable_by_token=variable_by_token,
+            )
             result.events_skipped += 1
             continue
 
@@ -396,6 +454,13 @@ def generate_events(
         next_event_order += 1
 
         _upsert_field_values(event, field_values)
+        _record_variable_contexts(
+            variable_contexts,
+            event=event,
+            field_values=field_values,
+            col_meta=col_meta,
+            variable_by_token=variable_by_token,
+        )
 
         existing_by_identity[event_name] = event
         result.events_created += 1
@@ -409,6 +474,12 @@ def generate_events(
         field_definitions=field_definitions,
         next_event_order=next_event_order,
     )
+    _insert_variable_contexts(
+        session,
+        project_id=project_id,
+        branch_id=main_branch_id,
+        contexts=variable_contexts,
+    )
     session.flush()
     if result.events_skipped:
         logger.info(f"Skipped {result.events_skipped} existing events (field values updated)")
@@ -418,6 +489,144 @@ def generate_events(
     # Exclude archived events so we don't collect metrics/send alerts for them.
     result.events_by_name = {k: v for k, v in existing_by_identity.items() if not v.archived}
     return result
+
+
+def _sample_variable_values(values: Sequence[str], value_kind: str) -> list[str]:
+    seen: set[str] = set()
+    unique_values: list[str] = []
+    for value in values:
+        if value in seen:
+            continue
+        seen.add(value)
+        unique_values.append(value)
+    if value_kind == VariableValueKind.low.value:
+        return unique_values
+    return unique_values[:VARIABLE_VALUE_SAMPLE_LIMIT]
+
+
+def _variable_observations(col_meta: dict[str, dict[str, Any]]) -> list[VariableObservation]:
+    observations: list[VariableObservation] = []
+    for meta in col_meta.values():
+        observations.extend(meta.get("variable_observations") or [])
+    return observations
+
+
+def _load_variables_for_contexts(
+    session: Session,
+    *,
+    project_id: uuid.UUID,
+    branch_id: uuid.UUID | None,
+    col_meta: dict[str, dict[str, Any]],
+) -> dict[str, Variable]:
+    names = {observation.name for observation in _variable_observations(col_meta)}
+    if not names:
+        return {}
+    query = select(Variable).where(
+        Variable.project_id == project_id,
+        or_(Variable.name.in_(names), Variable.source_name.in_(names)),
+    )
+    if branch_id is not None:
+        query = query.where(Variable.branch_id == branch_id)
+    variables = session.execute(query).scalars().all()
+    variable_by_token: dict[str, Variable] = {}
+    for variable in variables:
+        if variable.source_name in names:
+            variable_by_token.setdefault(variable.source_name, variable)
+        if variable.name in names:
+            variable_by_token.setdefault(variable.name, variable)
+    return variable_by_token
+
+
+def _delete_variable_contexts_for_event_type(
+    session: Session,
+    *,
+    project_id: uuid.UUID,
+    branch_id: uuid.UUID | None,
+    event_type_id: uuid.UUID,
+) -> None:
+    event_ids = select(Event.id).where(
+        Event.project_id == project_id,
+        Event.event_type_id == event_type_id,
+    )
+    if branch_id is not None:
+        event_ids = event_ids.where(Event.branch_id == branch_id)
+    delete_query = delete(VariableValue).where(
+        VariableValue.project_id == project_id,
+        VariableValue.event_id.in_(event_ids),
+    )
+    if branch_id is not None:
+        delete_query = delete_query.where(VariableValue.branch_id == branch_id)
+    session.execute(delete_query)
+
+
+def _record_variable_contexts(
+    contexts: dict[tuple[uuid.UUID, uuid.UUID, uuid.UUID], dict[str, Any]],
+    *,
+    event: Event,
+    field_values: Sequence[tuple[uuid.UUID, str, str]],
+    col_meta: dict[str, dict[str, Any]],
+    variable_by_token: dict[str, Variable],
+) -> None:
+    for field_definition_id, col_name, value in field_values:
+        observations: list[VariableObservation] = (
+            col_meta.get(col_name, {}).get("variable_observations") or []
+        )
+        if not observations:
+            continue
+        for observation in observations:
+            if f"${{{observation.name}}}" not in value:
+                continue
+            variable = variable_by_token.get(observation.name)
+            if variable is None:
+                continue
+            key = (variable.id, event.id, field_definition_id)
+            existing = contexts.get(key)
+            if existing is None:
+                contexts[key] = {
+                    "variable_id": variable.id,
+                    "event_id": event.id,
+                    "field_definition_id": field_definition_id,
+                    "source_column": observation.source_column,
+                    "value_kind": observation.value_kind,
+                    "observed_count": observation.observed_count,
+                    "values": list(observation.values),
+                }
+                continue
+
+            existing["observed_count"] = max(
+                int(existing["observed_count"]),
+                observation.observed_count,
+            )
+            if observation.value_kind == VariableValueKind.high.value:
+                existing["value_kind"] = VariableValueKind.high.value
+            existing["values"] = _sample_variable_values(
+                [*existing["values"], *observation.values],
+                existing["value_kind"],
+            )
+
+
+def _insert_variable_contexts(
+    session: Session,
+    *,
+    project_id: uuid.UUID,
+    branch_id: uuid.UUID | None,
+    contexts: dict[tuple[uuid.UUID, uuid.UUID, uuid.UUID], dict[str, Any]],
+) -> None:
+    for context in contexts.values():
+        payload = {
+            "id": uuid.uuid4(),
+            "project_id": project_id,
+            "variable_id": context["variable_id"],
+            "event_id": context["event_id"],
+            "field_definition_id": context["field_definition_id"],
+            "source_column": context["source_column"],
+            "value_kind": context["value_kind"],
+            "observed_count": context["observed_count"],
+            "values": context["values"],
+        }
+        if branch_id is not None:
+            payload["branch_id"] = branch_id
+        session.add(VariableValue(**payload))
 
 
 def _upsert_field_values(
@@ -849,12 +1058,16 @@ def _resolve_main_branch_id(session: Session, project_id: uuid.UUID) -> uuid.UUI
     the main branch keeps that constraint meaningful and stops a same-name row on
     another branch from making the lookup raise ``MultipleResultsFound``.
     """
-    return session.execute(
-        select(PlanBranch.id).where(
-            PlanBranch.project_id == project_id,
-            PlanBranch.kind == BranchKind.main.value,
+    return (
+        session.execute(
+            select(PlanBranch.id).where(
+                PlanBranch.project_id == project_id,
+                PlanBranch.kind == BranchKind.main.value,
+            )
         )
-    ).scalars().first()
+        .scalars()
+        .first()
+    )
 
 
 def _ensure_variable(

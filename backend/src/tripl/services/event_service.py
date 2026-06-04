@@ -13,6 +13,7 @@ from tripl.models.event_field_value import EventFieldValue
 from tripl.models.event_meta_value import EventMetaValue
 from tripl.models.event_tag import EventTag
 from tripl.models.field_definition import FieldDefinition
+from tripl.models.variable_value import VariableValue
 from tripl.schemas.event import (
     EventBulkDelete,
     EventBulkUpdate,
@@ -26,6 +27,7 @@ from tripl.services.plan_branch_service import resolve_branch_id
 from tripl.services.project_service import get_project_id_by_slug
 from tripl.services.schema_drift_service import get_drift_counts_by_event_type
 from tripl.services.search_service import reindex_project_branch
+from tripl.services.variable_value_service import attach_event_field_variable_values
 
 
 async def _validate_field_values(
@@ -146,6 +148,7 @@ async def list_events(
     for event in events:
         event.drift_count = drift_counts.get(event.event_type_id, 0)  # type: ignore[attr-defined]
 
+    await attach_event_field_variable_values(session, events)
     return events, total
 
 
@@ -193,6 +196,7 @@ async def get_event(
     event = result.scalar_one_or_none()
     if not event:
         raise HTTPException(status_code=404, detail="Event not found")
+    await attach_event_field_variable_values(session, [event])
     return event
 
 
@@ -243,6 +247,7 @@ async def create_event(
 
     await session.commit()
     await session.refresh(event)
+    await attach_event_field_variable_values(session, [event])
     await reindex_project_branch(session, project_id=project_id, branch_id=branch_id, slug=slug)
     if is_main:
         await cache.delete_prefix(cache.prefix_projects())
@@ -283,6 +288,7 @@ async def update_event(
 
     if data.field_values is not None:
         await _validate_field_values(session, event.event_type_id, data.field_values)
+        await session.execute(delete(VariableValue).where(VariableValue.event_id == event.id))
         await session.execute(delete(EventFieldValue).where(EventFieldValue.event_id == event.id))
         await session.flush()
         if data.field_values:
@@ -314,6 +320,7 @@ async def update_event(
 
     await session.commit()
     await session.refresh(event)
+    await attach_event_field_variable_values(session, [event])
     await reindex_project_branch(
         session,
         project_id=event.project_id,
@@ -453,6 +460,7 @@ async def move_event(
     event.order, target.order = target.order, event.order
     await session.commit()
     await session.refresh(event)
+    await attach_event_field_variable_values(session, [event])
     return event
 
 
@@ -486,7 +494,9 @@ async def reorder_events(
     # instead of N×refresh after commit.
     refreshed = await session.execute(select(Event).where(Event.id.in_(data.event_ids)))
     by_id = {event.id: event for event in refreshed.scalars().all()}
-    return [by_id[event_id] for event_id in data.event_ids]
+    ordered_events = [by_id[event_id] for event_id in data.event_ids]
+    await attach_event_field_variable_values(session, ordered_events)
+    return ordered_events
 
 
 async def bulk_create_events(
@@ -578,7 +588,9 @@ async def bulk_create_events(
     event_ids = [event.id for event in events]
     refreshed = await session.execute(select(Event).where(Event.id.in_(event_ids)))
     by_id = {event.id: event for event in refreshed.scalars().all()}
+    ordered_events = [by_id[event_id] for event_id in event_ids]
+    await attach_event_field_variable_values(session, ordered_events)
     await reindex_project_branch(session, project_id=project_id, branch_id=branch_id, slug=slug)
     if is_main:
         await cache.delete_prefix(cache.prefix_projects())
-    return [by_id[event_id] for event_id in event_ids]
+    return ordered_events

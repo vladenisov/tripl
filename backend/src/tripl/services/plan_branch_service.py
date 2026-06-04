@@ -35,6 +35,7 @@ from tripl.models.plan_revision import PlanRevision
 from tripl.models.project import Project
 from tripl.models.user import User
 from tripl.models.variable import Variable
+from tripl.models.variable_value import VariableValue
 from tripl.schemas.plan_branch import (
     BranchCommentCreate,
     BranchCommentResponse,
@@ -327,10 +328,13 @@ async def _deep_copy_plan(
         )
 
     variables = await _load_for_branch(session, Variable, project_id, source_branch_id)
+    var_map: dict[uuid.UUID, uuid.UUID] = {}
     for var in variables:
+        new_var_id = uuid.uuid4()
+        var_map[var.id] = new_var_id
         new_objs.append(
             Variable(
-                id=uuid.uuid4(),
+                id=new_var_id,
                 project_id=project_id,
                 branch_id=target_branch_id,
                 name=var.name,
@@ -395,6 +399,41 @@ async def _deep_copy_plan(
             )
         for tag in ev.tags:
             new_objs.append(EventTag(id=uuid.uuid4(), event_id=new_ev_id, name=tag.name))
+
+    if event_id_map and var_map:
+        variable_values = (
+            (
+                await session.execute(
+                    select(VariableValue).where(
+                        VariableValue.project_id == project_id,
+                        VariableValue.branch_id == source_branch_id,
+                        VariableValue.event_id.in_(list(event_id_map.keys())),
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        for value_context in variable_values:
+            variable_id = var_map.get(value_context.variable_id)
+            event_id = event_id_map.get(value_context.event_id)
+            field_definition_id = fd_map.get(value_context.field_definition_id)
+            if variable_id is None or event_id is None or field_definition_id is None:
+                continue
+            new_objs.append(
+                VariableValue(
+                    id=uuid.uuid4(),
+                    project_id=project_id,
+                    branch_id=target_branch_id,
+                    variable_id=variable_id,
+                    event_id=event_id,
+                    field_definition_id=field_definition_id,
+                    source_column=value_context.source_column,
+                    value_kind=value_context.value_kind,
+                    observed_count=value_context.observed_count,
+                    values=list(value_context.values or []),
+                )
+            )
 
     # Photos + threaded comments. Reuse storage_key/external_url so blobs aren't
     # duplicated: branch and main rows reference the same underlying object.

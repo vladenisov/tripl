@@ -18,6 +18,7 @@ from tripl.models.field_definition import FieldDefinition
 from tripl.models.plan_branch import BranchKind, BranchStatus, PlanBranch
 from tripl.models.project import Project
 from tripl.models.variable import Variable
+from tripl.models.variable_value import VariableValue
 from tripl.worker.adapters.base import ColumnInfo
 from tripl.worker.analyzers.cardinality import BreakdownAnalysis, CardinalityResult
 from tripl.worker.analyzers.event_generator import (
@@ -195,6 +196,80 @@ class TestEventGeneration:
         )
         assert len(variables) >= 1
 
+        contexts = (
+            sync_session.execute(
+                select(VariableValue).where(VariableValue.project_id == project.id)
+            )
+            .scalars()
+            .all()
+        )
+        assert len(contexts) == 2
+        assert {context.value_kind for context in contexts} == {"high"}
+        assert {context.observed_count for context in contexts} == {200}
+        assert all(len(context.values) == 20 for context in contexts)
+
+    def test_variable_context_keeps_all_low_cardinality_variable_values(
+        self, sync_session: Session, project_and_type
+    ):
+        project, et, fds = project_and_type
+        values = [f"group_cat{i % 12}_{i}" for i in range(120)]
+        cardinality = {
+            "screen": CardinalityResult(
+                column=ColumnInfo("screen", "String"),
+                count=120,
+                is_low=False,
+                sample_values=values,
+            ),
+        }
+        analysis = _make_analysis(cardinality)
+        generate_events(sync_session, project.id, et.id, analysis, fds, cardinality_threshold=100)
+        sync_session.commit()
+
+        contexts = (
+            sync_session.execute(
+                select(VariableValue).where(
+                    VariableValue.project_id == project.id,
+                    VariableValue.value_kind == "low",
+                )
+            )
+            .scalars()
+            .all()
+        )
+        assert len(contexts) == 1
+        assert contexts[0].observed_count == 12
+        assert contexts[0].values == sorted(f"cat{i}" for i in range(12))
+
+    def test_variable_contexts_are_replaced_on_rescan(
+        self, sync_session: Session, project_and_type
+    ):
+        project, et, fds = project_and_type
+
+        first = {
+            "screen": CardinalityResult(
+                column=ColumnInfo("screen", "String"),
+                count=150,
+                is_low=False,
+                sample_values=[f"firstvalue{i:03d}" for i in range(150)],
+            ),
+        }
+        generate_events(sync_session, project.id, et.id, _make_analysis(first), fds)
+        sync_session.commit()
+
+        second = {
+            "screen": CardinalityResult(
+                column=ColumnInfo("screen", "String"),
+                count=150,
+                is_low=False,
+                sample_values=[f"secondvalue{i:03d}" for i in range(150)],
+            ),
+        }
+        generate_events(sync_session, project.id, et.id, _make_analysis(second), fds)
+        sync_session.commit()
+
+        context = sync_session.execute(select(VariableValue)).scalar_one()
+        assert all(value.startswith("secondvalue") for value in context.values)
+        assert not any(value.startswith("firstvalue") for value in context.values)
+
     def test_event_name_column_enumerated_despite_high_cardinality(
         self, sync_session: Session, project_and_type
     ):
@@ -351,9 +426,7 @@ class TestEventGeneration:
             .all()
         )
         # Exactly one row for (event_id, action) — not two.
-        action_values = [
-            fv for fv in field_values if fv.field_definition_id == fds["action"].id
-        ]
+        action_values = [fv for fv in field_values if fv.field_definition_id == fds["action"].id]
         assert len(action_values) == 1
 
     def test_group_rule_merges_existing_matching_events_and_metrics(
@@ -603,9 +676,7 @@ class TestEventGeneration:
         assert created == 0
 
         variables = (
-            sync_session.execute(
-                select(Variable).where(Variable.source_name == "property.spot_id")
-            )
+            sync_session.execute(select(Variable).where(Variable.source_name == "property.spot_id"))
             .scalars()
             .all()
         )

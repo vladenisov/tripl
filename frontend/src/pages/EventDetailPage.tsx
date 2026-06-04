@@ -11,6 +11,7 @@ import { Badge } from '@/components/ui/badge'
 import { Card, CardContent } from '@/components/ui/card'
 import { ErrorState } from '@/components/error-state'
 import EventPhotosSection from '@/components/event-photos-section'
+import { VariableValueContextTrigger } from '@/components/variable-value-contexts'
 import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from '@/components/ui/select'
@@ -294,8 +295,9 @@ export default function EventDetailPage() {
                     <span className="text-muted-foreground min-w-[140px] font-medium">
                       {fd?.display_name ?? fd?.name ?? 'Unknown'}
                     </span>
-                    <span className="font-mono text-foreground/80 break-all">
-                      {fv.value || '—'}
+                    <span className="flex min-w-0 items-center gap-1.5 font-mono text-foreground/80">
+                      <span className="break-all">{fv.value || '—'}</span>
+                      <VariableValueContextTrigger contexts={fv.variable_values} />
                     </span>
                   </div>
                 )

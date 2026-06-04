@@ -217,10 +217,23 @@ export interface MetaFieldDefinition {
   sensitivity: Sensitivity
 }
 
+export type VariableValueKind = 'low' | 'high'
+
+export interface EventFieldVariableValue {
+  id: string
+  variable_id: string
+  variable_name: string
+  source_column: string
+  value_kind: VariableValueKind
+  observed_count: number
+  values: string[]
+}
+
 export interface EventFieldValue {
   id: string
   field_definition_id: string
   value: string
+  variable_values?: EventFieldVariableValue[]
 }
 
 export interface EventMetaValue {
@@ -352,6 +365,19 @@ export interface Variable {
   source_name: string | null
   variable_type: VariableType
   description: string
+  event_count?: number
+  context_count?: number
+  low_context_count?: number
+  high_context_count?: number
+  sample_values?: string[]
+}
+
+export interface VariableValueContext extends EventFieldVariableValue {
+  event_id: string
+  event_name: string
+  field_definition_id: string
+  field_name: string
+  field_display_name: string
 }
 
 export type DbType = 'clickhouse' | 'postgres' | 'bigquery'
