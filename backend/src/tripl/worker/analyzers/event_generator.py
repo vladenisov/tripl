@@ -316,12 +316,6 @@ def generate_events(
     ).scalar_one()
     next_event_order = 0 if next_event_order is None else int(next_event_order) + 1
     logger.info(f"Loaded {len(existing_by_identity)} existing events for dedup")
-    _delete_variable_contexts_for_event_type(
-        session,
-        project_id=project_id,
-        branch_id=main_branch_id,
-        event_type_id=event_type_id,
-    )
     variable_contexts: dict[tuple[uuid.UUID, uuid.UUID, uuid.UUID], dict[str, Any]] = {}
 
     # Iterate breakdown rows — each row is one event
@@ -476,6 +470,18 @@ def generate_events(
         field_definitions=field_definitions,
         next_event_order=next_event_order,
     )
+    _preserve_existing_variable_context_values(
+        session,
+        project_id=project_id,
+        branch_id=main_branch_id,
+        contexts=variable_contexts,
+    )
+    _delete_variable_contexts_for_event_type(
+        session,
+        project_id=project_id,
+        branch_id=main_branch_id,
+        event_type_id=event_type_id,
+    )
     _insert_variable_contexts(
         session,
         project_id=project_id,
@@ -560,6 +566,49 @@ def _delete_variable_contexts_for_event_type(
     if branch_id is not None:
         delete_query = delete_query.where(VariableValue.branch_id == branch_id)
     session.execute(delete_query)
+
+
+def _preserve_existing_variable_context_values(
+    session: Session,
+    *,
+    project_id: uuid.UUID,
+    branch_id: uuid.UUID | None,
+    contexts: dict[tuple[uuid.UUID, uuid.UUID, uuid.UUID], dict[str, Any]],
+) -> None:
+    if not contexts:
+        return
+
+    variable_ids = {variable_id for variable_id, _, _ in contexts}
+    event_ids = {event_id for _, event_id, _ in contexts}
+    field_definition_ids = {field_id for _, _, field_id in contexts}
+    query = select(VariableValue).where(
+        VariableValue.project_id == project_id,
+        VariableValue.variable_id.in_(variable_ids),
+        VariableValue.event_id.in_(event_ids),
+        VariableValue.field_definition_id.in_(field_definition_ids),
+    )
+    if branch_id is not None:
+        query = query.where(VariableValue.branch_id == branch_id)
+
+    existing_contexts = session.execute(query).scalars().all()
+    for existing in existing_contexts:
+        key = (existing.variable_id, existing.event_id, existing.field_definition_id)
+        context = contexts.get(key)
+        if context is None:
+            continue
+
+        context_values = list(context.get("values") or [])
+        existing_values = list(existing.values or [])
+        if not context_values and existing_values:
+            context["values"] = _sample_variable_values(existing_values, existing.value_kind)
+
+        context["observed_count"] = max(
+            int(context.get("observed_count") or 0),
+            existing.observed_count,
+            len(context.get("values") or []),
+        )
+        if existing.value_kind == VariableValueKind.high.value:
+            context["value_kind"] = VariableValueKind.high.value
 
 
 def _record_variable_contexts(
