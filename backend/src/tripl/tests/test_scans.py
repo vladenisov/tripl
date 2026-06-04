@@ -372,7 +372,6 @@ class TestScanConfigsCRUD:
 
         assert resp.status_code == 400
 
-
     def test_build_preview_payload(self) -> None:
         class FakeAdapter:
             def test_connection(self) -> bool:
@@ -634,9 +633,7 @@ class TestScanConfigsCRUD:
         assert poll.status_code == 200
         assert poll.json()["status"] == "pending"
 
-    async def test_preview_job_not_found(
-        self, client: AsyncClient, project: dict
-    ) -> None:
+    async def test_preview_job_not_found(self, client: AsyncClient, project: dict) -> None:
         resp = await client.get(
             f"/api/v1/projects/{project['slug']}/scans/preview-jobs/"
             "00000000-0000-0000-0000-000000000000"

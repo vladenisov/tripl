@@ -201,9 +201,7 @@ async def test_project_scoped_key_reaches_only_its_project(
     ok = await anon_client.get("/api/v1/projects/scoped-a/event-types", headers=_bearer(token))
     assert ok.status_code == 200
 
-    denied = await anon_client.get(
-        "/api/v1/projects/scoped-b/event-types", headers=_bearer(token)
-    )
+    denied = await anon_client.get("/api/v1/projects/scoped-b/event-types", headers=_bearer(token))
     assert denied.status_code == 403
     assert "not authorized for this project" in denied.json()["detail"].lower()
 
@@ -239,18 +237,14 @@ async def test_unscoped_key_keeps_cross_project_access(
     and the response reports a null project_id."""
     await client.post("/api/v1/projects", json={"name": "A", "slug": "unscoped-a"})
     await client.post("/api/v1/projects", json={"name": "B", "slug": "unscoped-b"})
-    create = await client.post(
-        "/api/v1/me/api-keys", json={"name": "wide", "scope": "read"}
-    )
+    create = await client.post("/api/v1/me/api-keys", json={"name": "wide", "scope": "read"})
     assert create.status_code == 201
     body = create.json()
     assert body["project_id"] is None
     token = body["token"]
 
     for slug in ("unscoped-a", "unscoped-b"):
-        resp = await anon_client.get(
-            f"/api/v1/projects/{slug}/event-types", headers=_bearer(token)
-        )
+        resp = await anon_client.get(f"/api/v1/projects/{slug}/event-types", headers=_bearer(token))
         assert resp.status_code == 200
 
 

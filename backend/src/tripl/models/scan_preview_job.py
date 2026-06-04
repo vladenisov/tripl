@@ -25,9 +25,7 @@ class ScanPreviewJob(UUIDMixin, TimestampMixin, Base):
     __tablename__ = "scan_preview_jobs"
     __table_args__ = (Index("ix_scan_preview_job_project", "project_id"),)
 
-    project_id: Mapped[uuid.UUID] = mapped_column(
-        ForeignKey("projects.id", ondelete="CASCADE")
-    )
+    project_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"))
     data_source_id: Mapped[uuid.UUID] = mapped_column(
         ForeignKey("data_sources.id", ondelete="CASCADE")
     )
