@@ -57,6 +57,7 @@ def _format_value(raw_val: object) -> str:
 
 @dataclass
 class GenerationResult:
+    event_type_id: uuid.UUID | None = None
     events_created: int = 0
     events_skipped: int = 0
     events_grouped: int = 0
@@ -66,6 +67,7 @@ class GenerationResult:
     details: list[str] = field(default_factory=list)
     col_meta: dict[str, dict[str, Any]] = field(default_factory=dict)
     events_by_name: dict[str, Event] = field(default_factory=dict)
+    snapshot: dict[str, Any] | None = None
 
 
 @dataclass(frozen=True)
@@ -484,6 +486,7 @@ def generate_events(
     if result.events_skipped:
         logger.info(f"Skipped {result.events_skipped} existing events (field values updated)")
     result.col_meta = col_meta
+    result.event_type_id = event_type_id
     # Keyed by scan identity (source_name == formatted event name); metric collection looks
     # events up by the same row-derived name, so renamed events still match here.
     # Exclude archived events so we don't collect metrics/send alerts for them.

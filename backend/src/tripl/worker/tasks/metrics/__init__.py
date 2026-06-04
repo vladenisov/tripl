@@ -23,6 +23,7 @@ from tripl.json_paths import format_json_path_value
 from tripl.models.data_source import DataSource
 from tripl.models.distribution_drift import DistributionDrift
 from tripl.models.event import Event
+from tripl.models.event_field_value import EventFieldValue
 from tripl.models.event_metric import EventMetric
 from tripl.models.event_type import EventType
 from tripl.models.field_definition import FieldDefinition
@@ -69,9 +70,13 @@ from tripl.worker.tasks.metrics.metric_rows import (
     _build_event_name_from_row,
     _collect_distribution_drift_rows,
     _collect_metric_breakdown_rows,
+    _delete_distribution_drifts_rows,
     _delete_distribution_drifts_window,
+    _delete_event_metric_breakdown_rows,
     _delete_event_metric_breakdowns_window,
+    _delete_event_metrics_rows,
     _delete_event_metrics_window,
+    _delete_event_type_metrics_rows,
     _get_scan_json_value_path_map,
     _is_supported_distribution_drift_field,
     _is_supported_metric_breakdown_column,
@@ -511,7 +516,9 @@ def _accumulate_replay_json_samples_from_events(
             formatted = [format_json_path_value(sample) for sample in samples]
             if not formatted:
                 continue
-            values_by_token[token] = _extend_unique_values(values_by_token.get(token, []), formatted)
+            values_by_token[token] = _extend_unique_values(
+                values_by_token.get(token, []), formatted
+            )
 
     if not values_by_token:
         return
@@ -541,6 +548,138 @@ def _accumulate_replay_json_samples_from_events(
                     cast(list[str], entry["values"]),
                     token_values,
                 )
+
+
+def _generation_result_from_snapshot(
+    snapshot: dict[str, object],
+    *,
+    project_id: uuid.UUID,
+    default_event_type_id: uuid.UUID | None = None,
+) -> tuple[GenerationResult, uuid.UUID | None]:
+    col_meta: dict[str, dict[str, object]] = {}
+    for column, meta_payload in cast(dict[str, object], snapshot.get("col_meta") or {}).items():
+        if not isinstance(meta_payload, dict):
+            continue
+        col_meta[column] = {
+            key: value
+            for key, value in meta_payload.items()
+            if key in {"is_json", "is_low", "template", "json_passthrough_paths"}
+        }
+
+    columns_analyzed_raw = snapshot.get("columns_analyzed")
+
+    result = GenerationResult(
+        columns_analyzed=int(cast(int | str | float, columns_analyzed_raw or 0)),
+        details=[str(item) for item in cast(list[object], snapshot.get("details") or [])],
+        col_meta=col_meta,
+    )
+    event_type_id = snapshot.get("event_type_id")
+    if event_type_id is not None:
+        result.event_type_id = uuid.UUID(str(event_type_id))
+    elif default_event_type_id is not None:
+        result.event_type_id = default_event_type_id
+
+    events_by_name: dict[str, Event] = {}
+    branch_id: uuid.UUID | None = None
+    for event_payload in cast(list[object], snapshot.get("events") or []):
+        if not isinstance(event_payload, dict):
+            continue
+        event_id = uuid.UUID(str(event_payload.get("event_id")))
+        event_branch_raw = event_payload.get("branch_id")
+        event_branch_id = uuid.UUID(str(event_branch_raw)) if event_branch_raw else None
+        if branch_id is None and event_branch_id is not None:
+            branch_id = event_branch_id
+        event = Event(
+            id=event_id,
+            project_id=project_id,
+            branch_id=event_branch_id or branch_id,
+            event_type_id=result.event_type_id or default_event_type_id,
+            name=str(event_payload.get("name") or ""),
+            source_name=(
+                str(event_payload.get("source_name"))
+                if event_payload.get("source_name") is not None
+                else None
+            ),
+            description="",
+            implemented=bool(event_payload.get("implemented", True)),
+            reviewed=bool(event_payload.get("reviewed", True)),
+            archived=bool(event_payload.get("archived", False)),
+            metric_breakdown_columns=list(event_payload.get("metric_breakdown_columns") or []),
+        )
+        event.field_values = []
+        for field_payload in cast(list[object], event_payload.get("field_values") or []):
+            if not isinstance(field_payload, dict):
+                continue
+            field_value = EventFieldValue(
+                id=uuid.uuid4(),
+                event_id=event.id,
+                field_definition_id=uuid.UUID(str(field_payload.get("field_definition_id"))),
+                value=str(field_payload.get("value") or ""),
+            )
+            event.field_values.append(field_value)
+        events_by_name[str(event_payload.get("identity") or event.name)] = event
+
+    result.events_by_name = events_by_name
+    return result, branch_id
+
+
+def _load_latest_generation_snapshot(
+    session: Session,
+    *,
+    config: ScanConfig,
+) -> tuple[dict[str, GenerationResult], GenerationResult | None, uuid.UUID | None]:
+    latest_job = (
+        session.execute(
+            select(ScanJob)
+            .where(
+                ScanJob.scan_config_id == config.id,
+                ScanJob.status == ScanJobStatus.completed.value,
+                ScanJob.result_summary.isnot(None),
+            )
+            .order_by(ScanJob.completed_at.desc())
+            .limit(1)
+        )
+        .scalars()
+        .first()
+    )
+    if latest_job is None or latest_job.result_summary is None:
+        return {}, None, None
+
+    snapshot = latest_job.result_summary.get("generation_snapshot")
+    if not isinstance(snapshot, dict):
+        return {}, None, None
+    if int(snapshot.get("version") or 0) != 1:
+        return {}, None, None
+
+    if config.event_type_column:
+        group_results_raw = snapshot.get("group_results")
+        if not isinstance(group_results_raw, dict):
+            return {}, None, None
+
+        group_results: dict[str, GenerationResult] = {}
+        replay_branch_id: uuid.UUID | None = None
+        for group_name, group_payload in group_results_raw.items():
+            if not isinstance(group_payload, dict):
+                continue
+            result, branch_id = _generation_result_from_snapshot(
+                group_payload,
+                project_id=config.project_id,
+            )
+            group_results[str(group_name)] = result
+            if replay_branch_id is None:
+                replay_branch_id = branch_id
+        return group_results, None, replay_branch_id
+
+    single_payload = snapshot.get("single_result")
+    if not isinstance(single_payload, dict):
+        return {}, None, None
+
+    result, branch_id = _generation_result_from_snapshot(
+        single_payload,
+        project_id=config.project_id,
+        default_event_type_id=config.event_type_id,
+    )
+    return {}, result, branch_id
 
 
 def _load_existing_generation_result(
@@ -768,15 +907,22 @@ def collect_metrics(
 
         replay_branch_id: uuid.UUID | None = None
         replay_variables_by_token: dict[str, Variable] = {}
-        replay_variable_samples: dict[tuple[uuid.UUID, uuid.UUID, uuid.UUID], dict[str, object]] = {}
+        replay_variable_samples: dict[
+            tuple[uuid.UUID, uuid.UUID, uuid.UUID], dict[str, object]
+        ] = {}
         replay_events: list[Event] = []
 
         if is_replay:
-            gen_results, single_result = _load_existing_generation_results(
+            gen_results, single_result, replay_branch_id = _load_latest_generation_snapshot(
                 session,
                 config=config,
-                columns=columns,
             )
+            if single_result is None and not gen_results:
+                gen_results, single_result = _load_existing_generation_results(
+                    session,
+                    config=config,
+                    columns=columns,
+                )
             replay_event_mappings = sum(
                 len(result.events_by_name) for result in gen_results.values()
             )
@@ -886,15 +1032,14 @@ def collect_metrics(
             raise ValueError(msg)
 
         if is_replay:
-            replay_branch_id = (
-                next(iter(single_result.events_by_name.values())).branch_id
-                if single_result and single_result.events_by_name
-                else None
-            )
+            if replay_branch_id is None and single_result and single_result.events_by_name:
+                replay_branch_id = next(iter(single_result.events_by_name.values())).branch_id
             if replay_branch_id is None:
                 for generation_result in gen_results.values():
                     if generation_result.events_by_name:
-                        replay_branch_id = next(iter(generation_result.events_by_name.values())).branch_id
+                        replay_branch_id = next(
+                            iter(generation_result.events_by_name.values())
+                        ).branch_id
                         break
             if single_result:
                 replay_events.extend(single_result.events_by_name.values())
@@ -1022,27 +1167,45 @@ def collect_metrics(
                 chunk_to.isoformat(),
             )
 
-            metrics_deleted += _delete_event_metrics_window(
-                session,
-                scan_config_id=config.id,
-                time_from=chunk_from,
-                time_to=chunk_to,
-            )
-            breakdown_metrics_deleted += _delete_event_metric_breakdowns_window(
-                session,
-                scan_config_id=config.id,
-                time_from=chunk_from,
-                time_to=chunk_to,
-            )
-            distribution_drifts_deleted += _delete_distribution_drifts_window(
-                session,
-                scan_config_id=config.id,
-                time_from=chunk_from,
-                time_to=chunk_to,
-            )
+            if not is_replay:
+                metrics_deleted += _delete_event_metrics_window(
+                    session,
+                    scan_config_id=config.id,
+                    time_from=chunk_from,
+                    time_to=chunk_to,
+                )
+                breakdown_metrics_deleted += _delete_event_metric_breakdowns_window(
+                    session,
+                    scan_config_id=config.id,
+                    time_from=chunk_from,
+                    time_to=chunk_to,
+                )
+                distribution_drifts_deleted += _delete_distribution_drifts_window(
+                    session,
+                    scan_config_id=config.id,
+                    time_from=chunk_from,
+                    time_to=chunk_to,
+                )
 
-            if not rows:
-                # Deletes above already cleared this sub-window; nothing to re-insert.
+            if is_replay and not rows:
+                metrics_deleted += _delete_event_metrics_window(
+                    session,
+                    scan_config_id=config.id,
+                    time_from=chunk_from,
+                    time_to=chunk_to,
+                )
+                breakdown_metrics_deleted += _delete_event_metric_breakdowns_window(
+                    session,
+                    scan_config_id=config.id,
+                    time_from=chunk_from,
+                    time_to=chunk_to,
+                )
+                distribution_drifts_deleted += _delete_distribution_drifts_window(
+                    session,
+                    scan_config_id=config.id,
+                    time_from=chunk_from,
+                    time_to=chunk_to,
+                )
                 session.commit()
                 continue
 
@@ -1163,6 +1326,70 @@ def collect_metrics(
                 reg_index=reg_index,
                 et_by_name=et_by_name,
             )
+
+            if is_replay:
+                event_delete_keys: list[tuple[uuid.UUID, datetime]] = [
+                    (cast(uuid.UUID, ev_id), bucket) for (_, ev_id, bucket) in event_agg
+                ]
+                type_delete_keys: list[tuple[uuid.UUID, datetime]] = [
+                    (cast(uuid.UUID, et_id), bucket) for (_, et_id, bucket) in type_agg
+                ]
+                breakdown_event_delete_keys: list[tuple[uuid.UUID, datetime, str, str, bool]] = [
+                    (
+                        cast(uuid.UUID, row["event_id"]),
+                        cast(datetime, row["bucket"]),
+                        cast(str, row["breakdown_column"]),
+                        cast(str, row["breakdown_value"]),
+                        cast(bool, row["is_other"]),
+                    )
+                    for row in breakdown_event_rows
+                ]
+                breakdown_type_delete_keys: list[tuple[uuid.UUID, datetime, str, str, bool]] = [
+                    (
+                        cast(uuid.UUID, row["event_type_id"]),
+                        cast(datetime, row["bucket"]),
+                        cast(str, row["breakdown_column"]),
+                        cast(str, row["breakdown_value"]),
+                        cast(bool, row["is_other"]),
+                    )
+                    for row in breakdown_type_rows
+                ]
+                drift_delete_keys: list[tuple[uuid.UUID | None, datetime, str]] = [
+                    (
+                        cast(uuid.UUID | None, row["event_type_id"]),
+                        cast(datetime, row["bucket"]),
+                        cast(str, row["field_name"]),
+                    )
+                    for row in chunk_drift_rows
+                ]
+
+                metrics_deleted += _delete_event_metrics_rows(
+                    session,
+                    scan_config_id=config.id,
+                    keys=event_delete_keys,
+                )
+                metrics_deleted += _delete_event_type_metrics_rows(
+                    session,
+                    scan_config_id=config.id,
+                    keys=type_delete_keys,
+                )
+                breakdown_metrics_deleted += _delete_event_metric_breakdown_rows(
+                    session,
+                    scan_config_id=config.id,
+                    keys=breakdown_event_delete_keys,
+                    constraint="event",
+                )
+                breakdown_metrics_deleted += _delete_event_metric_breakdown_rows(
+                    session,
+                    scan_config_id=config.id,
+                    keys=breakdown_type_delete_keys,
+                    constraint="type",
+                )
+                distribution_drifts_deleted += _delete_distribution_drifts_rows(
+                    session,
+                    scan_config_id=config.id,
+                    keys=drift_delete_keys,
+                )
 
             _upsert_event_metrics_rows(
                 session,

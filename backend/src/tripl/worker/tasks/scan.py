@@ -33,6 +33,68 @@ from tripl.worker.search_reindex import reindex_main_branch_from_worker
 logger = logging.getLogger(__name__)
 
 
+def _serialize_generation_result(result: GenerationResult) -> dict[str, object]:
+    branch_id = None
+    events: list[dict[str, object]] = []
+    for identity, event in result.events_by_name.items():
+        if branch_id is None and event.branch_id is not None:
+            branch_id = str(event.branch_id)
+        events.append(
+            {
+                "identity": identity,
+                "event_id": str(event.id),
+                "name": event.name,
+                "source_name": event.source_name,
+                "branch_id": str(event.branch_id) if event.branch_id is not None else None,
+                "archived": event.archived,
+                "implemented": event.implemented,
+                "reviewed": event.reviewed,
+                "metric_breakdown_columns": list(event.metric_breakdown_columns or []),
+                "field_values": [
+                    {
+                        "field_definition_id": str(field_value.field_definition_id),
+                        "value": field_value.value,
+                    }
+                    for field_value in event.field_values
+                ],
+            }
+        )
+
+    col_meta: dict[str, dict[str, object]] = {}
+    for column, meta in result.col_meta.items():
+        col_meta[column] = {
+            key: value
+            for key, value in meta.items()
+            if key in {"is_json", "is_low", "template", "json_passthrough_paths"}
+        }
+
+    return {
+        "columns_analyzed": result.columns_analyzed,
+        "details": list(result.details),
+        "event_type_id": str(result.event_type_id) if result.event_type_id is not None else None,
+        "branch_id": branch_id,
+        "col_meta": col_meta,
+        "events": events,
+    }
+
+
+def _serialize_generation_snapshot(
+    result: GenerationResult,
+    *,
+    group_results: dict[str, GenerationResult] | None = None,
+) -> dict[str, object]:
+    snapshot: dict[str, object] = {
+        "version": 1,
+        "single_result": _serialize_generation_result(result),
+    }
+    if group_results:
+        snapshot["group_results"] = {
+            group_name: _serialize_generation_result(group_result)
+            for group_name, group_result in group_results.items()
+        }
+    return snapshot
+
+
 def _get_sync_session() -> Session:
     return SyncSessionLocal()
 
@@ -95,7 +157,9 @@ def run_scan(self: object, scan_config_id: str, job_id: str) -> dict[str, object
             # Event type column groups rows into different event types.
             # Use GROUPING SETS to get per-group cardinalities in one query.
             logger.info("Using grouped scan with GROUPING SETS")
-            result = _scan_with_grouping(session, config.project_id, config, adapter, columns)
+            result, group_results = _scan_with_grouping(
+                session, config.project_id, config, adapter, columns
+            )
         elif event_type_id is not None:
             # Single event type scan — bulk cardinality (no grouping)
             analysis = analyze_cardinality(
@@ -124,6 +188,7 @@ def run_scan(self: object, scan_config_id: str, job_id: str) -> dict[str, object
                 event_name_format=config.event_name_format,
                 event_group_rules=config.event_group_rules,
             )
+            group_results = None
         else:
             msg = "Either event_type_id or event_type_column must be specified"
             raise ValueError(msg)
@@ -142,6 +207,10 @@ def run_scan(self: object, scan_config_id: str, job_id: str) -> dict[str, object
             "variables_created": result.variables_created,
             "columns_analyzed": result.columns_analyzed,
             "details": result.details,
+            "generation_snapshot": _serialize_generation_snapshot(
+                result,
+                group_results=group_results,
+            ),
         }
         session.commit()
 
@@ -178,7 +247,7 @@ def _scan_with_grouping(
     config: ScanConfig,
     adapter: BaseAdapter,
     columns: list[ColumnInfo],
-) -> GenerationResult:
+) -> tuple[GenerationResult, dict[str, GenerationResult]]:
     """Handle scans where event_type_column groups rows into different event types.
 
     Uses GROUPING SETS to compute per-group cardinalities in a single query,
@@ -201,6 +270,7 @@ def _scan_with_grouping(
     logger.info(f"Grouped scan: {len(group_values)} groups found for {col_name!r}")
 
     combined = GenerationResult()
+    per_group_results: dict[str, GenerationResult] = {}
 
     for et_value in group_values:
         # Find or skip event type by name
@@ -237,8 +307,9 @@ def _scan_with_grouping(
         combined.variables_created += result.variables_created
         combined.columns_analyzed = max(combined.columns_analyzed, result.columns_analyzed)
         combined.details.extend(result.details)
+        per_group_results[et_value] = result
 
-    return combined
+    return combined, per_group_results
 
 
 @celery_app.task(  # type: ignore[untyped-decorator]

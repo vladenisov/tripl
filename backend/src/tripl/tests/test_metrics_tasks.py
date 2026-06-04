@@ -2068,6 +2068,419 @@ def test_replay_appends_low_cardinality_variable_values(
         assert context.observed_count == 3
 
 
+def test_replay_does_not_drop_unmatched_metric_rows(
+    sync_session_factory: sessionmaker[Session],
+    monkeypatch: MonkeyPatch,
+) -> None:
+    with sync_session_factory() as session:
+        config = _create_scan_config(session, with_event_type=True)
+        assert config.event_type_id is not None
+
+        fd_event_name = FieldDefinition(
+            id=uuid.uuid4(),
+            event_type_id=config.event_type_id,
+            name="event_name",
+            display_name="Event name",
+            field_type="string",
+            is_required=False,
+            description="",
+        )
+        session.add(fd_event_name)
+
+        login_event = Event(
+            id=uuid.uuid4(),
+            project_id=config.project_id,
+            event_type_id=config.event_type_id,
+            name="event_name=Login",
+            source_name="event_name=Login",
+            description="",
+            implemented=True,
+            reviewed=True,
+            archived=False,
+        )
+        stale_event = Event(
+            id=uuid.uuid4(),
+            project_id=config.project_id,
+            event_type_id=config.event_type_id,
+            name="event_name=Legacy",
+            source_name="event_name=Legacy",
+            description="",
+            implemented=True,
+            reviewed=True,
+            archived=False,
+        )
+        session.add_all([login_event, stale_event])
+        session.flush()
+        session.add_all(
+            [
+                EventFieldValue(
+                    id=uuid.uuid4(),
+                    event_id=login_event.id,
+                    field_definition_id=fd_event_name.id,
+                    value="Login",
+                ),
+                EventMetric(
+                    id=uuid.uuid4(),
+                    scan_config_id=config.id,
+                    event_id=stale_event.id,
+                    event_type_id=None,
+                    bucket=datetime(2026, 1, 1, 8),
+                    count=99,
+                ),
+            ]
+        )
+        session.commit()
+        config_id = str(config.id)
+        login_event_id = login_event.id
+        stale_event_id = stale_event.id
+
+    class FakeAdapter:
+        def test_connection(self) -> bool:
+            return True
+
+        def get_columns(self, base_query: str) -> list[ColumnInfo]:
+            return [
+                ColumnInfo(name="time", type_name="DateTime"),
+                ColumnInfo(name="event_name", type_name="String"),
+            ]
+
+        def get_time_bucketed_counts(
+            self,
+            base_query: str,
+            time_column: str,
+            ch_interval: str,
+            regular_columns: list[str],
+            json_columns: list[str],
+            json_value_paths: dict[str, list[str]] | None,
+            time_from: datetime,
+            time_to: datetime,
+            limit: int = 100000,
+        ) -> tuple[list[str], list[str], list[tuple[object, ...]]]:
+            return (
+                ["event_name"],
+                [],
+                [(datetime(2026, 1, 1, 8), "Login", 3)],
+            )
+
+        def close(self) -> None:
+            return None
+
+    monkeypatch.setattr(metrics, "_get_sync_session", sync_session_factory)
+    monkeypatch.setattr(metrics, "_build_adapter", lambda ds: FakeAdapter())
+    monkeypatch.setattr(
+        metrics,
+        "_resolve_collection_window",
+        lambda *args, **kwargs: (datetime(2026, 1, 1, 8), datetime(2026, 1, 1, 9), True),
+    )
+    monkeypatch.setattr(metrics, "analyze_cardinality", lambda *args, **kwargs: object())
+
+    def fake_generate_events(*args: object, **kwargs: object) -> GenerationResult:
+        with sync_session_factory() as session:
+            persisted_event = session.get(Event, login_event_id)
+            assert persisted_event is not None
+            return GenerationResult(
+                columns_analyzed=1,
+                col_meta={"event_name": {"is_json": False, "is_low": True}},
+                events_by_name={"event_name=Login": persisted_event},
+            )
+
+    monkeypatch.setattr(metrics, "generate_events", fake_generate_events)
+
+    result = metrics.collect_metrics.run(config_id)
+
+    assert result["mode"] == "metrics_replay"
+    assert result["event_metrics"] == 1
+
+    with sync_session_factory() as session:
+        login_metric = session.execute(
+            select(EventMetric).where(EventMetric.event_id == login_event_id)
+        ).scalar_one()
+        assert login_metric.count == 3
+
+        stale_metric = session.execute(
+            select(EventMetric).where(EventMetric.event_id == stale_event_id)
+        ).scalar_one_or_none()
+        assert stale_metric is not None
+        assert stale_metric.count == 99
+
+
+def test_replay_uses_latest_scan_snapshot(
+    sync_session_factory: sessionmaker[Session],
+    monkeypatch: MonkeyPatch,
+) -> None:
+    with sync_session_factory() as session:
+        config = _create_scan_config(session, with_event_type=True)
+        assert config.event_type_id is not None
+
+        fd_event_name = FieldDefinition(
+            id=uuid.uuid4(),
+            event_type_id=config.event_type_id,
+            name="event_name",
+            display_name="Event name",
+            field_type="string",
+            is_required=False,
+            description="",
+        )
+        fd_user_id = FieldDefinition(
+            id=uuid.uuid4(),
+            event_type_id=config.event_type_id,
+            name="user_id",
+            display_name="User ID",
+            field_type="string",
+            is_required=False,
+            description="",
+        )
+        session.add_all([fd_event_name, fd_user_id])
+
+        event = Event(
+            id=uuid.uuid4(),
+            project_id=config.project_id,
+            event_type_id=config.event_type_id,
+            name="event_name=Login | user_id=${user_id}",
+            source_name="event_name=Login | user_id=${user_id}",
+            description="",
+            implemented=True,
+            reviewed=True,
+            archived=False,
+        )
+        session.add(event)
+        session.flush()
+        session.add_all(
+            [
+                EventFieldValue(
+                    id=uuid.uuid4(),
+                    event_id=event.id,
+                    field_definition_id=fd_event_name.id,
+                    value="Login",
+                ),
+                EventFieldValue(
+                    id=uuid.uuid4(),
+                    event_id=event.id,
+                    field_definition_id=fd_user_id.id,
+                    value="${user_id}",
+                ),
+            ]
+        )
+
+        snapshot = {
+            "version": 1,
+            "single_result": {
+                "columns_analyzed": 2,
+                "details": [],
+                "event_type_id": str(config.event_type_id),
+                "branch_id": str(event.branch_id) if event.branch_id is not None else None,
+                "col_meta": {
+                    "event_name": {"is_json": False, "is_low": True},
+                    "user_id": {
+                        "is_json": False,
+                        "is_low": False,
+                        "template": "${user_id}",
+                    },
+                },
+                "events": [
+                    {
+                        "identity": "event_name=Login | user_id=${user_id}",
+                        "event_id": str(event.id),
+                        "name": event.name,
+                        "source_name": event.source_name,
+                        "branch_id": str(event.branch_id) if event.branch_id is not None else None,
+                        "archived": False,
+                        "implemented": True,
+                        "reviewed": True,
+                        "metric_breakdown_columns": [],
+                        "field_values": [
+                            {
+                                "field_definition_id": str(fd_event_name.id),
+                                "value": "Login",
+                            },
+                            {
+                                "field_definition_id": str(fd_user_id.id),
+                                "value": "${user_id}",
+                            },
+                        ],
+                    }
+                ],
+            },
+        }
+
+        session.add(
+            ScanJob(
+                id=uuid.uuid4(),
+                scan_config_id=config.id,
+                status=ScanJobStatus.completed.value,
+                completed_at=datetime.now(UTC),
+                result_summary={"generation_snapshot": snapshot},
+            )
+        )
+        session.commit()
+        config_id = str(config.id)
+        event_id = event.id
+        user_field_value_id = fd_user_id.id
+
+    class FakeAdapter:
+        def test_connection(self) -> bool:
+            return True
+
+        def get_columns(self, base_query: str) -> list[ColumnInfo]:
+            return [
+                ColumnInfo(name="time", type_name="DateTime"),
+                ColumnInfo(name="event_name", type_name="String"),
+                ColumnInfo(name="user_id", type_name="String"),
+            ]
+
+        def get_time_bucketed_counts(
+            self,
+            base_query: str,
+            time_column: str,
+            ch_interval: str,
+            regular_columns: list[str],
+            json_columns: list[str],
+            json_value_paths: dict[str, list[str]] | None,
+            time_from: datetime,
+            time_to: datetime,
+            limit: int = 100000,
+        ) -> tuple[list[str], list[str], list[tuple[object, ...]]]:
+            return (
+                ["event_name", "user_id"],
+                [],
+                [(datetime(2026, 1, 1, 8), "Login", "u2", 3)],
+            )
+
+        def close(self) -> None:
+            return None
+
+    with sync_session_factory() as session:
+        current_event = session.get(Event, event_id)
+        assert current_event is not None
+        current_field = session.execute(
+            select(EventFieldValue).where(EventFieldValue.field_definition_id == user_field_value_id)
+        ).scalar_one_or_none()
+        assert current_field is not None
+        current_field.value = "u999"
+        session.commit()
+
+    monkeypatch.setattr(metrics, "_get_sync_session", sync_session_factory)
+    monkeypatch.setattr(metrics, "_build_adapter", lambda ds: FakeAdapter())
+    monkeypatch.setattr(
+        metrics,
+        "_resolve_collection_window",
+        lambda *args, **kwargs: (datetime(2026, 1, 1, 8), datetime(2026, 1, 1, 9), True),
+    )
+
+    result = metrics.collect_metrics.run(config_id)
+    assert result["mode"] == "metrics_replay"
+
+    with sync_session_factory() as session:
+        metric = session.execute(
+            select(EventMetric).where(EventMetric.event_id == event_id)
+        ).scalar_one()
+        assert metric.count == 3
+
+
+def test_replay_clears_empty_chunk(
+    sync_session_factory: sessionmaker[Session],
+    monkeypatch: MonkeyPatch,
+) -> None:
+    with sync_session_factory() as session:
+        config = _create_scan_config(session, with_event_type=True)
+        assert config.event_type_id is not None
+
+        fd_event_name = FieldDefinition(
+            id=uuid.uuid4(),
+            event_type_id=config.event_type_id,
+            name="event_name",
+            display_name="Event name",
+            field_type="string",
+            is_required=False,
+            description="",
+        )
+        session.add(fd_event_name)
+
+        stale_event = Event(
+            id=uuid.uuid4(),
+            project_id=config.project_id,
+            event_type_id=config.event_type_id,
+            name="event_name=Legacy",
+            source_name="event_name=Legacy",
+            description="",
+            implemented=True,
+            reviewed=True,
+            archived=False,
+        )
+        session.add(stale_event)
+        session.flush()
+        session.add(
+            EventMetric(
+                id=uuid.uuid4(),
+                scan_config_id=config.id,
+                event_id=stale_event.id,
+                event_type_id=None,
+                bucket=datetime(2026, 1, 1, 8),
+                count=99,
+            )
+        )
+        session.commit()
+        config_id = str(config.id)
+        stale_event_id = stale_event.id
+
+    class FakeAdapter:
+        def test_connection(self) -> bool:
+            return True
+
+        def get_columns(self, base_query: str) -> list[ColumnInfo]:
+            return [
+                ColumnInfo(name="time", type_name="DateTime"),
+                ColumnInfo(name="event_name", type_name="String"),
+            ]
+
+        def get_time_bucketed_counts(
+            self,
+            base_query: str,
+            time_column: str,
+            ch_interval: str,
+            regular_columns: list[str],
+            json_columns: list[str],
+            json_value_paths: dict[str, list[str]] | None,
+            time_from: datetime,
+            time_to: datetime,
+            limit: int = 100000,
+        ) -> tuple[list[str], list[str], list[tuple[object, ...]]]:
+            return (["event_name"], [], [])
+
+        def close(self) -> None:
+            return None
+
+    monkeypatch.setattr(metrics, "_get_sync_session", sync_session_factory)
+    monkeypatch.setattr(metrics, "_build_adapter", lambda ds: FakeAdapter())
+    monkeypatch.setattr(
+        metrics,
+        "_resolve_collection_window",
+        lambda *args, **kwargs: (datetime(2026, 1, 1, 8), datetime(2026, 1, 1, 9), True),
+    )
+    monkeypatch.setattr(metrics, "analyze_cardinality", lambda *args, **kwargs: object())
+
+    def fake_generate_events(*args: object, **kwargs: object) -> GenerationResult:
+        with sync_session_factory() as session:
+            return GenerationResult(
+                columns_analyzed=1,
+                col_meta={"event_name": {"is_json": False, "is_low": True}},
+                events_by_name={},
+            )
+
+    monkeypatch.setattr(metrics, "generate_events", fake_generate_events)
+
+    result = metrics.collect_metrics.run(config_id)
+
+    assert result["mode"] == "metrics_replay"
+    assert result["metrics_deleted"] == 1
+
+    with sync_session_factory() as session:
+        stale_metric = session.execute(
+            select(EventMetric).where(EventMetric.event_id == stale_event_id)
+        ).scalar_one_or_none()
+        assert stale_metric is None
+
+
 def test_replay_greedily_adds_json_paths_from_variable_tokens() -> None:
     event = Event(
         id=uuid.uuid4(),
@@ -2238,4 +2651,4 @@ def test_replay_enriches_existing_high_context_values(
     with sync_session_factory() as session:
         context = session.execute(select(VariableValue)).scalar_one()
         assert context.value_kind == VariableValueKind.high.value
-        assert context.values == ['"u77"', '"u88"']
+        assert context.values == ["u77", "u88"]

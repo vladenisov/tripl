@@ -6,7 +6,7 @@ from collections.abc import Mapping, Sequence
 from datetime import datetime, timedelta
 from typing import cast
 
-from sqlalchemy import delete
+from sqlalchemy import delete, tuple_
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.orm import Session
@@ -263,6 +263,44 @@ def _delete_event_metrics_window(
     return int(rowcount or 0)
 
 
+def _delete_event_metrics_rows(
+    session: Session,
+    *,
+    scan_config_id: uuid.UUID,
+    keys: Sequence[tuple[uuid.UUID, datetime]],
+) -> int:
+    if not keys:
+        return 0
+
+    result = session.execute(
+        delete(EventMetric).where(
+            EventMetric.scan_config_id == scan_config_id,
+            tuple_(EventMetric.event_id, EventMetric.bucket).in_(keys),
+        )
+    )
+    rowcount = getattr(result, "rowcount", 0)
+    return int(rowcount or 0)
+
+
+def _delete_event_type_metrics_rows(
+    session: Session,
+    *,
+    scan_config_id: uuid.UUID,
+    keys: Sequence[tuple[uuid.UUID, datetime]],
+) -> int:
+    if not keys:
+        return 0
+
+    result = session.execute(
+        delete(EventMetric).where(
+            EventMetric.scan_config_id == scan_config_id,
+            tuple_(EventMetric.event_type_id, EventMetric.bucket).in_(keys),
+        )
+    )
+    rowcount = getattr(result, "rowcount", 0)
+    return int(rowcount or 0)
+
+
 def _delete_event_metric_breakdowns_window(
     session: Session,
     *,
@@ -281,6 +319,31 @@ def _delete_event_metric_breakdowns_window(
     return int(rowcount or 0)
 
 
+def _delete_event_metric_breakdown_rows(
+    session: Session,
+    *,
+    scan_config_id: uuid.UUID,
+    keys: Sequence[tuple[uuid.UUID, datetime, str, str, bool]],
+    constraint: str,
+) -> int:
+    if not keys:
+        return 0
+
+    metric_key = (
+        tuple_(EventMetricBreakdown.event_id, EventMetricBreakdown.bucket, EventMetricBreakdown.breakdown_column, EventMetricBreakdown.breakdown_value, EventMetricBreakdown.is_other)
+        if constraint == "event"
+        else tuple_(EventMetricBreakdown.event_type_id, EventMetricBreakdown.bucket, EventMetricBreakdown.breakdown_column, EventMetricBreakdown.breakdown_value, EventMetricBreakdown.is_other)
+    )
+    result = session.execute(
+        delete(EventMetricBreakdown).where(
+            EventMetricBreakdown.scan_config_id == scan_config_id,
+            metric_key.in_(keys),
+        )
+    )
+    rowcount = getattr(result, "rowcount", 0)
+    return int(rowcount or 0)
+
+
 def _delete_distribution_drifts_window(
     session: Session,
     *,
@@ -293,6 +356,27 @@ def _delete_distribution_drifts_window(
             DistributionDrift.scan_config_id == scan_config_id,
             DistributionDrift.bucket >= time_from,
             DistributionDrift.bucket < time_to,
+        )
+    )
+    rowcount = getattr(result, "rowcount", 0)
+    return int(rowcount or 0)
+
+
+def _delete_distribution_drifts_rows(
+    session: Session,
+    *,
+    scan_config_id: uuid.UUID,
+    keys: Sequence[tuple[uuid.UUID | None, datetime, str]],
+) -> int:
+    if not keys:
+        return 0
+
+    result = session.execute(
+        delete(DistributionDrift).where(
+            DistributionDrift.scan_config_id == scan_config_id,
+            tuple_(DistributionDrift.event_type_id, DistributionDrift.bucket, DistributionDrift.field_name).in_(
+                keys
+            ),
         )
     )
     rowcount = getattr(result, "rowcount", 0)
