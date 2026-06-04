@@ -1,4 +1,4 @@
-import { render, screen } from '@testing-library/react'
+import { render, screen, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { variablesApi } from '@/api/variables'
@@ -30,7 +30,7 @@ afterEach(() => {
 })
 
 describe('VariablesTab', () => {
-  it('renders observed variable value summaries', async () => {
+  it('renders variable rows per attached event with possible values', async () => {
     vi.mocked(variablesApi.list).mockResolvedValue([
       {
         id: 'var-1',
@@ -46,13 +46,28 @@ describe('VariablesTab', () => {
         sample_values: ['u1', 'u2'],
       },
     ])
+    vi.mocked(variablesApi.values).mockResolvedValue([
+      {
+        id: 'ctx-1',
+        variable_id: 'var-1',
+        variable_name: 'user_id',
+        event_id: 'ev-1',
+        event_name: 'Profile View',
+        field_definition_id: 'fd-1',
+        field_name: 'user_id',
+        field_display_name: 'User ID',
+        source_column: 'user_id',
+        value_kind: 'low',
+        observed_count: 2,
+        values: ['u1', 'u2'],
+      },
+    ])
 
     renderVariablesTab()
 
-    expect(await screen.findByText('${user_id}')).toBeInTheDocument()
-    expect(screen.getByText('2 events')).toBeInTheDocument()
-    expect(screen.getByText('3 contexts')).toBeInTheDocument()
-    expect(screen.getByText('1 sampled')).toBeInTheDocument()
+    await waitFor(() => expect(variablesApi.list).toHaveBeenCalled())
+    await waitFor(() => expect(variablesApi.values).toHaveBeenCalledWith('demo', 'var-1', null))
+    expect(await screen.findByText('Profile View')).toBeInTheDocument()
     expect(screen.getByText('u1')).toBeInTheDocument()
     expect(screen.getByText('u2')).toBeInTheDocument()
   })

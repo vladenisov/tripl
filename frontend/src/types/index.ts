@@ -1,5 +1,6 @@
 export interface ScanJobResultSummary {
   mode?: 'metrics_collection' | 'metrics_replay'
+  catalog_sync_skipped?: boolean
   time_from?: string
   time_to?: string
   events_created?: number
