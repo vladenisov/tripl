@@ -290,15 +290,42 @@ export default function EventDetailPage() {
             <div className="grid gap-3">
               {event.field_values.map(fv => {
                 const fd = fieldDefMap.get(fv.field_definition_id)
+                const lowCardinalityContexts = (fv.variable_values ?? []).filter(
+                  context => context.value_kind === 'low' && context.values.length > 0,
+                )
                 return (
                   <div key={fv.id} className="flex gap-4 text-sm">
                     <span className="text-muted-foreground min-w-[140px] font-medium">
                       {fd?.display_name ?? fd?.name ?? 'Unknown'}
                     </span>
-                    <span className="flex min-w-0 items-center gap-1.5 font-mono text-foreground/80">
-                      <span className="break-all">{fv.value || '—'}</span>
-                      <VariableValueContextTrigger contexts={fv.variable_values} />
-                    </span>
+                    <div className="min-w-0">
+                      <span className="flex min-w-0 items-center gap-1.5 font-mono text-foreground/80">
+                        <span className="break-all">{fv.value || '—'}</span>
+                        <VariableValueContextTrigger contexts={fv.variable_values} />
+                      </span>
+                      {lowCardinalityContexts.length > 0 && (
+                        <div className="mt-1.5 space-y-1 text-xs">
+                          {lowCardinalityContexts.map((context) => (
+                            <div key={context.id} className="space-y-1">
+                              <div className="text-muted-foreground">
+                                {`\${${context.variable_name}}`} possible values
+                              </div>
+                              <div className="flex flex-wrap gap-1">
+                                {context.values.map((value) => (
+                                  <span
+                                    key={`${context.id}-${value}`}
+                                    className="rounded border bg-background px-1.5 py-0.5 font-mono text-[10px]"
+                                    title={value}
+                                  >
+                                    {value}
+                                  </span>
+                                ))}
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
                   </div>
                 )
               })}
