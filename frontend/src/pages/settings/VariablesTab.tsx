@@ -1,11 +1,10 @@
 import { useState } from "react"
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
+import { useMutation, useQueries, useQuery, useQueryClient } from "@tanstack/react-query"
 import { Pencil, Plus, Trash2, Variable as VariableIcon } from "lucide-react"
 import { variablesApi } from "@/api/variables"
 import { useActiveBranchId } from "@/hooks/useBranch"
 import type { Variable, VariableType } from "@/types"
 import { useConfirm } from "@/hooks/useConfirm"
-import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog"
 import { Input } from "@/components/ui/input"
@@ -35,6 +34,14 @@ export function VariablesTab({ slug }: { slug: string }) {
   const { data: variables = [] } = useQuery({
     queryKey: ['variables', slug, branchId],
     queryFn: () => variablesApi.list(slug, branchId),
+  })
+
+  const valueContextQueries = useQueries({
+    queries: variables.map((variable) => ({
+      queryKey: ['variable-values', slug, branchId, variable.id],
+      queryFn: () => variablesApi.values(slug, variable.id, branchId),
+      enabled: variables.length > 0,
+    })),
   })
 
   const createMut = useMutation({
@@ -75,7 +82,32 @@ export function VariablesTab({ slug }: { slug: string }) {
     setEditDescription(v.description)
   }
 
-  const valuePreview = (v: Variable) => v.sample_values ?? []
+  const contextsByVariableId = new Map(
+    variables.map((variable, index) => [
+      variable.id,
+      valueContextQueries[index]?.data ?? [],
+    ]),
+  )
+
+  const rows = variables.flatMap((variable) => {
+    const contexts = contextsByVariableId.get(variable.id) ?? []
+    if (contexts.length === 0) {
+      return [
+        {
+          id: `${variable.id}-empty`,
+          variable,
+          eventName: '—',
+          values: [] as string[],
+        },
+      ]
+    }
+    return contexts.map((context) => ({
+      id: context.id,
+      variable,
+      eventName: context.event_name,
+      values: context.values,
+    }))
+  })
 
   return (
     <div className="space-y-4">
@@ -152,46 +184,38 @@ export function VariablesTab({ slug }: { slug: string }) {
         </DialogContent>
       </Dialog>
 
-      {variables.length > 0 ? (
+      {rows.length > 0 ? (
         <div className="rounded-lg border">
           <Table>
             <TableHeader>
               <TableRow>
-                <TableHead>Name</TableHead>
-                <TableHead className="w-24">Type</TableHead>
+                <TableHead>Variable</TableHead>
+                <TableHead>Event</TableHead>
                 <TableHead>Description</TableHead>
-                <TableHead>Usage</TableHead>
-                <TableHead>Values</TableHead>
+                <TableHead>Possible values</TableHead>
                 <TableHead className="w-24"></TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
-              {variables.map((v: Variable) => (
-                <TableRow key={v.id}>
+              {rows.map((row) => {
+                const v = row.variable
+                return (
+                <TableRow key={row.id}>
                   <TableCell className="font-mono text-xs">
                     <code className="rounded bg-primary/10 px-1.5 py-0.5 text-primary">
                       {`\${${v.name}}`}
                     </code>
                   </TableCell>
-                  <TableCell><Badge variant="outline" className="text-[10px]">{typeLabels[v.variable_type]}</Badge></TableCell>
+                  <TableCell className="text-xs">{row.eventName}</TableCell>
                   <TableCell className="text-xs text-muted-foreground">{v.description}</TableCell>
                   <TableCell>
-                    <div className="flex flex-wrap gap-1 text-[11px] text-muted-foreground">
-                      <Badge variant="outline" className="text-[10px]">{v.event_count ?? 0} events</Badge>
-                      <Badge variant="outline" className="text-[10px]">{v.context_count ?? 0} contexts</Badge>
-                      {(v.high_context_count ?? 0) > 0 && (
-                        <Badge variant="outline" className="text-[10px]">{v.high_context_count} sampled</Badge>
-                      )}
-                    </div>
-                  </TableCell>
-                  <TableCell>
-                    {valuePreview(v).length > 0 ? (
+                    {row.values.length > 0 ? (
                       <div className="flex max-w-sm flex-wrap gap-1">
-                        {valuePreview(v).slice(0, 6).map(value => (
+                        {row.values.slice(0, 6).map(value => (
                           <span key={value} className="max-w-28 truncate rounded border px-1.5 py-0.5 font-mono text-[10px]" title={value}>{value}</span>
                         ))}
-                        {valuePreview(v).length > 6 && (
-                          <span className="text-[10px] text-muted-foreground">+{valuePreview(v).length - 6}</span>
+                        {row.values.length > 6 && (
+                          <span className="text-[10px] text-muted-foreground">+{row.values.length - 6}</span>
                         )}
                       </div>
                     ) : (
@@ -205,7 +229,7 @@ export function VariablesTab({ slug }: { slug: string }) {
                     </div>
                   </TableCell>
                 </TableRow>
-              ))}
+              )})}
             </TableBody>
           </Table>
         </div>

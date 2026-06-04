@@ -18,6 +18,7 @@ from tripl.models.distribution_drift import DistributionDrift
 from tripl.models.event import Event
 from tripl.models.event_metric import EventMetric
 from tripl.models.event_metric_breakdown import EventMetricBreakdown
+from tripl.models.event_field_value import EventFieldValue
 from tripl.models.event_type import EventType
 from tripl.models.field_definition import FieldDefinition
 from tripl.models.metric_anomaly import MetricAnomaly
@@ -27,6 +28,8 @@ from tripl.models.project_anomaly_settings import ProjectAnomalySettings
 from tripl.models.scan_config import ScanConfig
 from tripl.models.scan_job import ScanJob, ScanJobStatus
 from tripl.models.schema_drift import SchemaDrift
+from tripl.models.variable import Variable
+from tripl.models.variable_value import VariableValue, VariableValueKind
 from tripl.worker.adapters.base import ColumnInfo
 from tripl.worker.analyzers.event_generator import GenerationResult
 from tripl.worker.tasks import metrics
@@ -1925,3 +1928,166 @@ def test_collect_metrics_splits_replay_into_interval_chunks(
             .all()
         )
         assert len(type_metrics) == 3
+
+
+def test_replay_appends_low_cardinality_variable_values(
+    sync_session_factory: sessionmaker[Session],
+    monkeypatch: MonkeyPatch,
+) -> None:
+    with sync_session_factory() as session:
+        config = _create_scan_config(session, with_event_type=True)
+        assert config.event_type_id is not None
+
+        fd_event_name = FieldDefinition(
+            id=uuid.uuid4(),
+            event_type_id=config.event_type_id,
+            name="event_name",
+            display_name="Event name",
+            field_type="string",
+            is_required=False,
+            description="",
+        )
+        fd_user_id = FieldDefinition(
+            id=uuid.uuid4(),
+            event_type_id=config.event_type_id,
+            name="user_id",
+            display_name="User ID",
+            field_type="string",
+            is_required=False,
+            description="",
+        )
+        session.add_all([fd_event_name, fd_user_id])
+
+        event = Event(
+            id=uuid.uuid4(),
+            project_id=config.project_id,
+            event_type_id=config.event_type_id,
+            name="event_name=Login | user_id=${user_id}",
+            source_name="event_name=Login | user_id=${user_id}",
+            description="",
+            implemented=True,
+            reviewed=True,
+            archived=False,
+        )
+        session.add(event)
+        session.flush()
+        session.add_all(
+            [
+                EventFieldValue(
+                    id=uuid.uuid4(),
+                    event_id=event.id,
+                    field_definition_id=fd_event_name.id,
+                    value="Login",
+                ),
+                EventFieldValue(
+                    id=uuid.uuid4(),
+                    event_id=event.id,
+                    field_definition_id=fd_user_id.id,
+                    value="${user_id}",
+                ),
+            ]
+        )
+
+        variable = Variable(
+            id=uuid.uuid4(),
+            project_id=config.project_id,
+            name="user_id",
+            source_name="user_id",
+            variable_type="string",
+            description="",
+        )
+        session.add(variable)
+        session.flush()
+
+        session.add(
+            VariableValue(
+                id=uuid.uuid4(),
+                project_id=config.project_id,
+                branch_id=event.branch_id,
+                variable_id=variable.id,
+                event_id=event.id,
+                field_definition_id=fd_user_id.id,
+                source_column="user_id",
+                value_kind=VariableValueKind.low.value,
+                observed_count=1,
+                values=["u1"],
+            )
+        )
+        session.commit()
+        config_id = str(config.id)
+
+    class FakeAdapter:
+        def test_connection(self) -> bool:
+            return True
+
+        def get_columns(self, base_query: str) -> list[ColumnInfo]:
+            return [
+                ColumnInfo(name="time", type_name="DateTime"),
+                ColumnInfo(name="event_name", type_name="String"),
+                ColumnInfo(name="user_id", type_name="String"),
+            ]
+
+        def get_time_bucketed_counts(
+            self,
+            base_query: str,
+            time_column: str,
+            ch_interval: str,
+            regular_columns: list[str],
+            json_columns: list[str],
+            json_value_paths: dict[str, list[str]] | None,
+            time_from: datetime,
+            time_to: datetime,
+            limit: int = 100000,
+        ) -> tuple[list[str], list[str], list[tuple[object, ...]]]:
+            return (
+                ["event_name", "user_id"],
+                [],
+                [
+                    (datetime(2026, 1, 1, 8), "Login", "u2", 3),
+                    (datetime(2026, 1, 1, 9), "Login", "u3", 4),
+                ],
+            )
+
+        def close(self) -> None:
+            return None
+
+    monkeypatch.setattr(metrics, "_get_sync_session", sync_session_factory)
+    monkeypatch.setattr(metrics, "_build_adapter", lambda ds: FakeAdapter())
+    monkeypatch.setattr(
+        metrics,
+        "_resolve_collection_window",
+        lambda *args, **kwargs: (datetime(2026, 1, 1, 8), datetime(2026, 1, 1, 10), True),
+    )
+
+    metrics.collect_metrics.run(config_id)
+
+    with sync_session_factory() as session:
+        context = session.execute(select(VariableValue)).scalar_one()
+        assert context.value_kind == VariableValueKind.low.value
+        assert context.values == ["u1", "u2", "u3"]
+        assert context.observed_count == 3
+
+
+def test_replay_greedily_adds_json_paths_from_variable_tokens() -> None:
+    event = Event(
+        id=uuid.uuid4(),
+        project_id=uuid.uuid4(),
+        event_type_id=uuid.uuid4(),
+        name="demo",
+    )
+    event.field_values = [
+        EventFieldValue(
+            id=uuid.uuid4(),
+            event_id=event.id,
+            field_definition_id=uuid.uuid4(),
+            value='${payload.user.id} ${payload.user.name} ${flat_token} ${payload.bad-path}',
+        )
+    ]
+
+    out = metrics._augment_json_value_paths_for_replay_tokens(
+        json_value_path_map={"payload": ["existing.path"]},
+        json_columns=["payload"],
+        replay_events=[event],
+    )
+
+    assert out["payload"] == ["existing.path", "user.id", "user.name"]

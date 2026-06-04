@@ -350,6 +350,11 @@ export function ScanDetail({ slug, scanConfig, eventTypes }: { slug: string; sca
                                   )}
                                 </div>
                               )}
+                              {job.result_summary.catalog_sync_skipped && (
+                                <div className="rounded-md border border-amber-300/60 bg-amber-50/80 p-3 text-xs text-amber-900">
+                                  Replay refreshed metrics only. Catalog entities (events and variable contexts) were not synchronized in this run.
+                                </div>
+                              )}
                               <div className="grid grid-cols-2 gap-3 text-xs md:grid-cols-3 xl:grid-cols-5">
                               <Card className="p-3 text-center"><div className="text-lg font-bold text-green-600">{job.result_summary.events_created ?? 0}</div><div className="text-muted-foreground">Events created</div></Card>
                               <Card className="p-3 text-center"><div className="text-lg font-bold text-blue-600">{job.result_summary.variables_created ?? 0}</div><div className="text-muted-foreground">Variables created</div></Card>

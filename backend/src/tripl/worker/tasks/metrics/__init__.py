@@ -19,6 +19,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
 
 from tripl import cache
+from tripl.json_paths import format_json_path_value
 from tripl.models.data_source import DataSource
 from tripl.models.distribution_drift import DistributionDrift
 from tripl.models.event import Event
@@ -27,6 +28,8 @@ from tripl.models.event_type import EventType
 from tripl.models.field_definition import FieldDefinition
 from tripl.models.scan_config import ScanConfig
 from tripl.models.scan_job import ScanJob, ScanJobStatus
+from tripl.models.variable import Variable
+from tripl.models.variable_value import VariableValue, VariableValueKind
 from tripl.worker.adapters.base import ColumnInfo
 from tripl.worker.analyzers.cardinality import (
     _is_json_type,
@@ -141,6 +144,8 @@ __all__ = [
 logger = logging.getLogger(__name__)
 _FMT_PATTERN = re.compile(r"\{([^}]+)\}")
 _VARIABLE_TEMPLATE_PATTERN = re.compile(r"\$\{[^}]+\}")
+_VARIABLE_NAME_PATTERN = re.compile(r"\$\{([^}]+)\}")
+_JSON_PATH_PART_PATTERN = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*$")
 
 
 def _resolve_collection_window(
@@ -284,6 +289,250 @@ def _field_template(values: list[str]) -> str | None:
     """
     templates = sorted({value for value in values if _VARIABLE_TEMPLATE_PATTERN.search(value)})
     return templates[0] if len(templates) == 1 else None
+
+
+def _augment_json_value_paths_for_replay_tokens(
+    *,
+    json_value_path_map: dict[str, list[str]],
+    json_columns: list[str],
+    replay_events: list[Event],
+) -> dict[str, list[str]]:
+    """Greedy replay mode: include JSON paths referenced by ${json.path} tokens.
+
+    This lets replay collect concrete values for JSON-bound variables even if the
+    scan config's json_value_paths does not list those paths explicitly.
+    """
+    if not json_columns or not replay_events:
+        return json_value_path_map
+
+    json_cols = set(json_columns)
+    out: dict[str, list[str]] = {key: list(values) for key, values in json_value_path_map.items()}
+    seen_by_column: dict[str, set[str]] = {
+        column: set(values) for column, values in out.items()
+    }
+
+    for event in replay_events:
+        for field_value in event.field_values:
+            for token in _VARIABLE_NAME_PATTERN.findall(field_value.value):
+                if "." not in token:
+                    continue
+                column, path = token.split(".", 1)
+                if column not in json_cols or not path:
+                    continue
+                if any(not _JSON_PATH_PART_PATTERN.match(part) for part in path.split(".")):
+                    # Keep adapter-side JSON path expression safe.
+                    continue
+                seen = seen_by_column.setdefault(column, set())
+                if path in seen:
+                    continue
+                seen.add(path)
+                out.setdefault(column, []).append(path)
+
+    return out
+
+
+def _extend_unique_values(existing: list[str], incoming: list[str]) -> list[str]:
+    seen = set(existing)
+    out = list(existing)
+    for value in incoming:
+        if value in seen:
+            continue
+        seen.add(value)
+        out.append(value)
+    return out
+
+
+def _build_variable_lookup(
+    session: Session,
+    *,
+    project_id: uuid.UUID,
+    branch_id: uuid.UUID | None,
+) -> dict[str, Variable]:
+    query = select(Variable).where(Variable.project_id == project_id)
+    if branch_id is not None:
+        query = query.where(Variable.branch_id == branch_id)
+    variables = session.execute(query).scalars().all()
+    by_token: dict[str, Variable] = {}
+    for variable in variables:
+        by_token.setdefault(variable.name, variable)
+        if variable.source_name:
+            by_token.setdefault(variable.source_name, variable)
+    return by_token
+
+
+def _accumulate_replay_variable_samples(
+    accum: dict[tuple[uuid.UUID, uuid.UUID, uuid.UUID], dict[str, object]],
+    *,
+    event: Event,
+    data_row: tuple[object, ...],
+    reg_index: dict[str, int],
+    n_reg: int,
+    n_json: int,
+    json_value_names: list[str],
+    variable_by_token: dict[str, Variable],
+) -> None:
+    json_value_index = {
+        name: n_reg + n_json + idx
+        for idx, name in enumerate(json_value_names)
+    }
+    for field_value in event.field_values:
+        tokens = _VARIABLE_NAME_PATTERN.findall(field_value.value)
+        if not tokens:
+            continue
+        for token in tokens:
+            variable = variable_by_token.get(token)
+            if variable is None:
+                continue
+
+            raw_value: str | None = None
+            reg_idx = reg_index.get(token)
+            if reg_idx is not None and reg_idx < len(data_row):
+                raw_value = str(data_row[reg_idx]) if data_row[reg_idx] is not None else ""
+            else:
+                json_idx = json_value_index.get(token)
+                if json_idx is not None and json_idx < len(data_row):
+                    json_val = data_row[json_idx]
+                    if json_val is not None:
+                        raw_value = str(json_val)
+
+            if raw_value is None:
+                continue
+
+            key = (variable.id, event.id, field_value.field_definition_id)
+            entry = accum.setdefault(
+                key,
+                {
+                    "variable_id": variable.id,
+                    "event_id": event.id,
+                    "field_definition_id": field_value.field_definition_id,
+                    "source_column": token,
+                    "values": [],
+                },
+            )
+            entry["values"] = _extend_unique_values(
+                cast(list[str], entry["values"]),
+                [raw_value],
+            )
+
+
+def _merge_replay_variable_samples(
+    session: Session,
+    *,
+    project_id: uuid.UUID,
+    branch_id: uuid.UUID | None,
+    cardinality_threshold: int,
+    accumulated: dict[tuple[uuid.UUID, uuid.UUID, uuid.UUID], dict[str, object]],
+) -> int:
+    if not accumulated:
+        return 0
+
+    variable_ids = {cast(uuid.UUID, payload["variable_id"]) for payload in accumulated.values()}
+    event_ids = {cast(uuid.UUID, payload["event_id"]) for payload in accumulated.values()}
+    field_ids = {
+        cast(uuid.UUID, payload["field_definition_id"]) for payload in accumulated.values()
+    }
+
+    existing_query = select(VariableValue).where(
+        VariableValue.project_id == project_id,
+        VariableValue.variable_id.in_(variable_ids),
+        VariableValue.event_id.in_(event_ids),
+        VariableValue.field_definition_id.in_(field_ids),
+    )
+    if branch_id is not None:
+        existing_query = existing_query.where(VariableValue.branch_id == branch_id)
+    existing = session.execute(existing_query).scalars().all()
+    existing_by_key = {
+        (row.variable_id, row.event_id, row.field_definition_id): row
+        for row in existing
+    }
+
+    touched = 0
+    for key, payload in accumulated.items():
+        values = cast(list[str], payload["values"])
+        if not values:
+            continue
+
+        current = existing_by_key.get(key)
+        if current is None:
+            kind = (
+                VariableValueKind.low.value
+                if len(values) <= cardinality_threshold
+                else VariableValueKind.high.value
+            )
+            new_row = VariableValue(
+                id=uuid.uuid4(),
+                project_id=project_id,
+                variable_id=cast(uuid.UUID, payload["variable_id"]),
+                event_id=cast(uuid.UUID, payload["event_id"]),
+                field_definition_id=cast(uuid.UUID, payload["field_definition_id"]),
+                source_column=cast(str, payload["source_column"]),
+                value_kind=kind,
+                observed_count=len(values),
+                values=values if kind == VariableValueKind.low.value else values[:20],
+            )
+            if branch_id is not None:
+                new_row.branch_id = branch_id
+            session.add(new_row)
+            touched += 1
+            continue
+
+        if current.value_kind == VariableValueKind.low.value:
+            merged = _extend_unique_values(current.values or [], values)
+            if merged != (current.values or []):
+                current.values = merged
+                current.observed_count = max(current.observed_count, len(merged))
+                touched += 1
+
+    return touched
+
+
+def _accumulate_replay_json_samples_from_events(
+    accum: dict[tuple[uuid.UUID, uuid.UUID, uuid.UUID], dict[str, object]],
+    *,
+    events: list[Event],
+    json_path_samples: dict[str, dict[str, list[object]]],
+    variable_by_token: dict[str, Variable],
+) -> None:
+    if not json_path_samples:
+        return
+
+    values_by_token: dict[str, list[str]] = {}
+    for column, path_samples in json_path_samples.items():
+        for path, samples in path_samples.items():
+            token = f"{column}.{path}"
+            formatted = [format_json_path_value(sample) for sample in samples]
+            if not formatted:
+                continue
+            values_by_token[token] = _extend_unique_values(values_by_token.get(token, []), formatted)
+
+    if not values_by_token:
+        return
+
+    for event in events:
+        for field_value in event.field_values:
+            tokens = _VARIABLE_NAME_PATTERN.findall(field_value.value)
+            if not tokens:
+                continue
+            for token in tokens:
+                variable = variable_by_token.get(token)
+                token_values = values_by_token.get(token)
+                if variable is None or not token_values:
+                    continue
+                key = (variable.id, event.id, field_value.field_definition_id)
+                entry = accum.setdefault(
+                    key,
+                    {
+                        "variable_id": variable.id,
+                        "event_id": event.id,
+                        "field_definition_id": field_value.field_definition_id,
+                        "source_column": token,
+                        "values": [],
+                    },
+                )
+                entry["values"] = _extend_unique_values(
+                    cast(list[str], entry["values"]),
+                    token_values,
+                )
 
 
 def _load_existing_generation_result(
@@ -509,6 +758,11 @@ def collect_metrics(
         gen_results: dict[str, GenerationResult] = {}
         single_result: GenerationResult | None = None
 
+        replay_branch_id: uuid.UUID | None = None
+        replay_variables_by_token: dict[str, Variable] = {}
+        replay_variable_samples: dict[tuple[uuid.UUID, uuid.UUID, uuid.UUID], dict[str, object]] = {}
+        replay_events: list[Event] = []
+
         if is_replay:
             gen_results, single_result = _load_existing_generation_results(
                 session,
@@ -623,6 +877,27 @@ def collect_metrics(
             msg = "Either event_type_id or event_type_column must be specified"
             raise ValueError(msg)
 
+        if is_replay:
+            replay_branch_id = (
+                next(iter(single_result.events_by_name.values())).branch_id
+                if single_result and single_result.events_by_name
+                else None
+            )
+            if replay_branch_id is None:
+                for generation_result in gen_results.values():
+                    if generation_result.events_by_name:
+                        replay_branch_id = next(iter(generation_result.events_by_name.values())).branch_id
+                        break
+            if single_result:
+                replay_events.extend(single_result.events_by_name.values())
+            for generation_result in gen_results.values():
+                replay_events.extend(generation_result.events_by_name.values())
+            replay_variables_by_token = _build_variable_lookup(
+                session,
+                project_id=config.project_id,
+                branch_id=replay_branch_id,
+            )
+
         session.commit()
         if not is_replay:
             reindex_main_branch_from_worker(session, config.project_id)
@@ -638,6 +913,34 @@ def collect_metrics(
         # Split columns for the warehouse query (same split as cardinality.py uses)
         regular_cols = [c.name for c in columns if not _is_json_type(c.type_name)]
         json_cols = [c.name for c in columns if _is_json_type(c.type_name)]
+
+        if is_replay and replay_events and json_cols:
+            json_value_path_map = _augment_json_value_paths_for_replay_tokens(
+                json_value_path_map=json_value_path_map,
+                json_columns=json_cols,
+                replay_events=replay_events,
+            )
+
+        if (
+            is_replay
+            and replay_variables_by_token
+            and replay_events
+            and json_cols
+            and hasattr(adapter, "get_json_path_samples")
+        ):
+            replay_json_samples = adapter.get_json_path_samples(
+                config.base_query,
+                json_cols,
+                path_limit=2000,
+                sample_limit=20,
+                sample_row_limit=5000,
+            )
+            _accumulate_replay_json_samples_from_events(
+                replay_variable_samples,
+                events=replay_events,
+                json_path_samples=replay_json_samples,
+                variable_by_token=replay_variables_by_token,
+            )
 
         # Build indices for row navigation (same layout as BreakdownAnalysis).
         # These do not depend on the time window, so compute them once.
@@ -784,6 +1087,17 @@ def collect_metrics(
                     if isinstance(ev, Event):
                         key = (config.id, ev.id, bucket)
                         event_agg[key] = event_agg.get(key, 0) + cnt
+                        if is_replay and replay_variables_by_token:
+                            _accumulate_replay_variable_samples(
+                                replay_variable_samples,
+                                event=ev,
+                                data_row=cast(tuple[object, ...], data_row),
+                                reg_index=reg_index,
+                                n_reg=n_reg,
+                                n_json=len(json_cols),
+                                json_value_names=json_value_names,
+                                variable_by_token=replay_variables_by_token,
+                            )
 
                 if event_type_id:
                     key = (config.id, event_type_id, bucket)
@@ -875,6 +1189,17 @@ def collect_metrics(
             n_distribution_drifts += len(chunk_drift_rows)
             significant_distribution_drifts += chunk_significant_drifts
 
+        replay_values_touched = 0
+        if is_replay and replay_variable_samples:
+            replay_values_touched = _merge_replay_variable_samples(
+                session,
+                project_id=config.project_id,
+                branch_id=replay_branch_id,
+                cardinality_threshold=config.cardinality_threshold,
+                accumulated=replay_variable_samples,
+            )
+            session.commit()
+
         logger.info(
             "Upserted %s event metrics + %s type metrics + "
             "%s event breakdown metrics + %s type breakdown metrics + "
@@ -916,6 +1241,7 @@ def collect_metrics(
             "time_from": time_from_dt.isoformat(),
             "time_to": time_to_dt.isoformat(),
             "catalog_sync_skipped": is_replay,
+            "variable_values_touched": replay_values_touched,
             "events_created": total_created,
             "events_skipped": total_skipped,
             "events_grouped": total_grouped,
