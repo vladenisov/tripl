@@ -35,6 +35,8 @@ export const scansApi = {
     cardinality_threshold?: number
     interval?: string | null
     replay_chunk_interval?: string | null
+    scan_row_limit?: number | null
+    metrics_row_limit?: number | null
   }) => api.post<ScanConfig>(`/projects/${slug}/scans`, data),
 
   // Preview runs against the warehouse and can be slow, so the backend handles
@@ -86,6 +88,8 @@ export const scansApi = {
     cardinality_threshold?: number
     interval?: string | null
     replay_chunk_interval?: string | null
+    scan_row_limit?: number | null
+    metrics_row_limit?: number | null
   }) => api.patch<ScanConfig>(`/projects/${slug}/scans/${scanId}`, data),
 
   del: (slug: string, scanId: string) =>

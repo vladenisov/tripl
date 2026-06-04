@@ -71,6 +71,8 @@ class TestScanConfigsCRUD:
                     }
                 ],
                 "cardinality_threshold": 50,
+                "scan_row_limit": 60000,
+                "metrics_row_limit": 120000,
             },
         )
         assert resp.status_code == 201
@@ -85,6 +87,8 @@ class TestScanConfigsCRUD:
         assert data["metric_breakdown_columns"] == ["country", "platform"]
         assert data["metric_breakdown_values_limit"] == 20
         assert data["distribution_drift_fields"] == ["platform"]
+        assert data["scan_row_limit"] == 60000
+        assert data["metrics_row_limit"] == 120000
         assert data["event_group_rules"] == [
             {
                 "name": "product pages",
@@ -257,6 +261,8 @@ class TestScanConfigsCRUD:
                 "metric_breakdown_columns": ["country"],
                 "metric_breakdown_values_limit": None,
                 "distribution_drift_fields": ["country"],
+                "scan_row_limit": 70000,
+                "metrics_row_limit": 150000,
             },
         )
         assert resp.status_code == 200
@@ -265,6 +271,8 @@ class TestScanConfigsCRUD:
         assert resp.json()["metric_breakdown_columns"] == ["country"]
         assert resp.json()["metric_breakdown_values_limit"] is None
         assert resp.json()["distribution_drift_fields"] == ["country"]
+        assert resp.json()["scan_row_limit"] == 70000
+        assert resp.json()["metrics_row_limit"] == 150000
 
     async def test_delete_scan_config(self, client: AsyncClient, project: dict, data_source: dict):
         create_resp = await client.post(

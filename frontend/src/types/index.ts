@@ -24,6 +24,11 @@ export interface ScanJobResultSummary {
   signals_added?: number
   signals_removed?: number
   alerts_queued?: number
+  scan_row_limit?: number
+  scan_rows_processed?: number
+  scan_truncated?: boolean
+  metrics_row_limit?: number
+  query_rows_scanned?: number
   details?: string[]
 }
 
@@ -447,6 +452,8 @@ export interface ScanConfig {
   cardinality_threshold: number
   interval: IntervalCode | null
   replay_chunk_interval: IntervalCode | null
+  scan_row_limit: number | null
+  metrics_row_limit: number | null
   created_at: string
   updated_at: string
 }

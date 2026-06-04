@@ -95,6 +95,11 @@ class Settings(BaseSettings):
     # Default From: address used when a destination doesn't override it.
     smtp_from_address: str = ""
 
+    # Warehouse query row caps used by scan/replay when scan-config specific
+    # overrides are not set.
+    scan_row_limit_default: int = 50_000
+    metrics_row_limit_default: int = 100_000
+
     model_config = {"env_file": ".env", "extra": "ignore"}
 
     @field_validator("debug", mode="before")

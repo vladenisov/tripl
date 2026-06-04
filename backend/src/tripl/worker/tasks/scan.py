@@ -10,6 +10,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from tripl.json_paths import group_json_value_paths
+from tripl.config import settings
 from tripl.models.data_source import DataSource
 from tripl.models.event import Event
 from tripl.models.event_type import EventType
@@ -145,6 +146,7 @@ def run_scan(self: object, scan_config_id: str, job_id: str) -> dict[str, object
             columns = [c for c in columns if c.name != config.time_column]
         logger.info(f"Found {len(columns)} columns in base query")
         json_value_paths = group_json_value_paths(config.json_value_paths)
+        scan_row_limit = config.scan_row_limit or settings.scan_row_limit_default
 
         # Resolve event type: either from config or detect from event_type_column
         event_type_id = config.event_type_id
@@ -157,8 +159,13 @@ def run_scan(self: object, scan_config_id: str, job_id: str) -> dict[str, object
             # Event type column groups rows into different event types.
             # Use GROUPING SETS to get per-group cardinalities in one query.
             logger.info("Using grouped scan with GROUPING SETS")
-            result, group_results = _scan_with_grouping(
-                session, config.project_id, config, adapter, columns
+            result, group_results, scan_rows_processed, scan_truncated = _scan_with_grouping(
+                session,
+                config.project_id,
+                config,
+                adapter,
+                columns,
+                row_limit=scan_row_limit,
             )
         elif event_type_id is not None:
             # Single event type scan — bulk cardinality (no grouping)
@@ -168,7 +175,14 @@ def run_scan(self: object, scan_config_id: str, job_id: str) -> dict[str, object
                 columns,
                 threshold=config.cardinality_threshold,
                 json_value_paths=json_value_paths,
+                row_limit=scan_row_limit,
             )
+            if analysis.row_limit_reached:
+                msg = (
+                    "Scan query reached configured row limit "
+                    f"({scan_row_limit}); increase scan_row_limit to avoid partial generation"
+                )
+                raise ValueError(msg)
 
             event_type = session.get(EventType, event_type_id)
             if event_type is None:
@@ -189,6 +203,8 @@ def run_scan(self: object, scan_config_id: str, job_id: str) -> dict[str, object
                 event_group_rules=config.event_group_rules,
             )
             group_results = None
+            scan_rows_processed = len(analysis.rows)
+            scan_truncated = analysis.row_limit_reached
         else:
             msg = "Either event_type_id or event_type_column must be specified"
             raise ValueError(msg)
@@ -199,6 +215,10 @@ def run_scan(self: object, scan_config_id: str, job_id: str) -> dict[str, object
         # Mark job as completed
         job.status = ScanJobStatus.completed.value
         job.completed_at = datetime.now(UTC)
+        if scan_truncated:
+            result.details.append(
+                "Scan output may be truncated by row limit; increase scan_row_limit to avoid partial generation"
+            )
         job.result_summary = {
             "events_created": result.events_created,
             "events_skipped": result.events_skipped,
@@ -206,6 +226,9 @@ def run_scan(self: object, scan_config_id: str, job_id: str) -> dict[str, object
             "events_merged": result.events_merged,
             "variables_created": result.variables_created,
             "columns_analyzed": result.columns_analyzed,
+            "scan_row_limit": scan_row_limit,
+            "scan_rows_processed": scan_rows_processed,
+            "scan_truncated": scan_truncated,
             "details": result.details,
             "generation_snapshot": _serialize_generation_snapshot(
                 result,
@@ -247,7 +270,8 @@ def _scan_with_grouping(
     config: ScanConfig,
     adapter: BaseAdapter,
     columns: list[ColumnInfo],
-) -> tuple[GenerationResult, dict[str, GenerationResult]]:
+    row_limit: int,
+) -> tuple[GenerationResult, dict[str, GenerationResult], int, bool]:
     """Handle scans where event_type_column groups rows into different event types.
 
     Uses GROUPING SETS to compute per-group cardinalities in a single query,
@@ -266,8 +290,17 @@ def _scan_with_grouping(
         group_column=col_name,
         threshold=config.cardinality_threshold,
         json_value_paths=group_json_value_paths(config.json_value_paths),
+        row_limit=row_limit,
     )
+    if any(analysis.row_limit_reached for analysis in grouped_results.values()):
+        msg = (
+            "Grouped scan query reached configured row limit "
+            f"({row_limit}); increase scan_row_limit to avoid partial generation"
+        )
+        raise ValueError(msg)
     logger.info(f"Grouped scan: {len(group_values)} groups found for {col_name!r}")
+    scan_rows_processed = sum(len(analysis.rows) for analysis in grouped_results.values())
+    scan_truncated = any(analysis.row_limit_reached for analysis in grouped_results.values())
 
     combined = GenerationResult()
     per_group_results: dict[str, GenerationResult] = {}
@@ -309,7 +342,7 @@ def _scan_with_grouping(
         combined.details.extend(result.details)
         per_group_results[et_value] = result
 
-    return combined, per_group_results
+    return combined, per_group_results, scan_rows_processed, scan_truncated
 
 
 @celery_app.task(  # type: ignore[untyped-decorator]
