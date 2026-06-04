@@ -4,7 +4,13 @@ import type {
   ScanConfig,
   ScanConfigPreview,
   ScanJob,
+  ScanPreviewJob,
 } from '../types'
+
+const PREVIEW_POLL_INTERVAL_MS = 1500
+const PREVIEW_POLL_TIMEOUT_MS = 5 * 60 * 1000
+
+const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms))
 
 export const scansApi = {
   list: (slug: string) =>
@@ -31,12 +37,39 @@ export const scansApi = {
     replay_chunk_interval?: string | null
   }) => api.post<ScanConfig>(`/projects/${slug}/scans`, data),
 
-  preview: (slug: string, data: {
+  // Preview runs against the warehouse and can be slow, so the backend handles
+  // it as a worker job: POST enqueues, then we poll until it completes.
+  startPreview: (slug: string, data: {
     data_source_id: string
     base_query: string
     limit?: number
     json_value_paths?: string[]
-  }) => api.post<ScanConfigPreview>(`/projects/${slug}/scans/preview`, data),
+  }) => api.post<ScanPreviewJob>(`/projects/${slug}/scans/preview`, data),
+
+  getPreviewJob: (slug: string, jobId: string) =>
+    api.get<ScanPreviewJob>(`/projects/${slug}/scans/preview-jobs/${jobId}`),
+
+  // Enqueue a preview job and poll until it resolves, returning the preview
+  // payload. Rejects if the job fails or polling exceeds the timeout.
+  preview: async (slug: string, data: {
+    data_source_id: string
+    base_query: string
+    limit?: number
+    json_value_paths?: string[]
+  }): Promise<ScanConfigPreview> => {
+    const job = await scansApi.startPreview(slug, data)
+    const deadline = Date.now() + PREVIEW_POLL_TIMEOUT_MS
+    let current = job
+    while (current.status === 'pending' || current.status === 'running') {
+      if (Date.now() > deadline) throw new Error('Preview timed out')
+      await sleep(PREVIEW_POLL_INTERVAL_MS)
+      current = await scansApi.getPreviewJob(slug, job.id)
+    }
+    if (current.status === 'failed' || !current.result_summary) {
+      throw new Error(current.error_message || 'Preview failed')
+    }
+    return current.result_summary
+  },
 
   update: (slug: string, scanId: string, data: {
     name?: string

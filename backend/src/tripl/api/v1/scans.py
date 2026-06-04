@@ -6,12 +6,11 @@ from tripl.api.deps import EditorUserDep, SessionDep, get_editor_user
 from tripl.schemas.scan_config import (
     ScanConfigCreate,
     ScanConfigPreviewRequest,
-    ScanConfigPreviewResponse,
     ScanConfigResponse,
     ScanConfigUpdate,
     ScanMetricsReplayRequest,
 )
-from tripl.schemas.scan_job import ScanJobResponse
+from tripl.schemas.scan_job import ScanJobResponse, ScanPreviewJobResponse
 from tripl.services import audit_service, scan_service
 
 router = APIRouter(
@@ -49,7 +48,8 @@ async def create_scan_config(
 
 @router.post(
     "/preview",
-    response_model=ScanConfigPreviewResponse,
+    response_model=ScanPreviewJobResponse,
+    status_code=202,
     dependencies=_editor_required,
 )
 async def preview_scan_config(
@@ -57,7 +57,21 @@ async def preview_scan_config(
     slug: str,
     data: ScanConfigPreviewRequest,
 ) -> object:
-    return await scan_service.preview_scan_config(session, slug, data)
+    """Enqueue a preview job; poll GET /preview-jobs/{job_id} for the result."""
+    return await scan_service.trigger_preview(session, slug, data)
+
+
+@router.get(
+    "/preview-jobs/{job_id}",
+    response_model=ScanPreviewJobResponse,
+    dependencies=_editor_required,
+)
+async def get_scan_preview_job(
+    session: SessionDep,
+    slug: str,
+    job_id: uuid.UUID,
+) -> object:
+    return await scan_service.get_preview_job(session, slug, job_id)
 
 
 @router.get("/{scan_id}", response_model=ScanConfigResponse)

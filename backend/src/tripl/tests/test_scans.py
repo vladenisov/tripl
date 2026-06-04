@@ -1,10 +1,14 @@
+import uuid
 from datetime import datetime
 
 import pytest
 from httpx import AsyncClient
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
 
-from tripl.services import scan_service
+from tripl.models import Base, DataSource, Project, ScanPreviewJob
 from tripl.worker.adapters.base import ColumnInfo
+from tripl.worker.analyzers.preview import build_preview_payload
 from tripl.worker.tasks import metrics
 from tripl.worker.tasks import scan as scan_tasks
 
@@ -368,13 +372,8 @@ class TestScanConfigsCRUD:
 
         assert resp.status_code == 400
 
-    async def test_preview_scan_config(
-        self,
-        client: AsyncClient,
-        project: dict,
-        data_source: dict,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
+
+    def test_build_preview_payload(self) -> None:
         class FakeAdapter:
             def test_connection(self) -> bool:
                 return True
@@ -405,27 +404,16 @@ class TestScanConfigsCRUD:
             def close(self) -> None:
                 return None
 
-        monkeypatch.setattr(scan_service, "_build_adapter", lambda ds: FakeAdapter())
+        payload = build_preview_payload(FakeAdapter(), "SELECT * FROM events", [], 5)
 
-        resp = await client.post(
-            f"/api/v1/projects/{project['slug']}/scans/preview",
-            json={
-                "data_source_id": data_source["id"],
-                "base_query": "SELECT * FROM events",
-                "limit": 5,
-            },
-        )
-
-        assert resp.status_code == 200
-        body = resp.json()
-        assert [column["name"] for column in body["columns"]] == [
+        assert [column["name"] for column in payload["columns"]] == [
             "event_name",
             "created_at",
             "payload",
         ]
-        assert body["rows"][0]["event_name"] == "purchase"
-        assert body["rows"][0]["payload"]["extra"]["key"] == "TASK-123"
-        assert body["json_columns"] == [
+        assert payload["rows"][0]["event_name"] == "purchase"
+        assert payload["rows"][0]["payload"]["extra"]["key"] == "TASK-123"
+        assert payload["json_columns"] == [
             {
                 "column": "payload",
                 "paths": [
@@ -443,13 +431,7 @@ class TestScanConfigsCRUD:
             }
         ]
 
-    async def test_preview_scan_config_prefers_varied_rows(
-        self,
-        client: AsyncClient,
-        project: dict,
-        data_source: dict,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
+    def test_build_preview_payload_prefers_varied_rows(self) -> None:
         class FakeAdapter:
             def test_connection(self) -> bool:
                 return True
@@ -480,29 +462,12 @@ class TestScanConfigsCRUD:
             def close(self) -> None:
                 return None
 
-        monkeypatch.setattr(scan_service, "_build_adapter", lambda ds: FakeAdapter())
+        payload = build_preview_payload(FakeAdapter(), "SELECT * FROM events", [], 2)
 
-        resp = await client.post(
-            f"/api/v1/projects/{project['slug']}/scans/preview",
-            json={
-                "data_source_id": data_source["id"],
-                "base_query": "SELECT * FROM events",
-                "limit": 2,
-            },
-        )
+        assert len(payload["rows"]) == 2
+        assert {row["page"] for row in payload["rows"]} == {"main", "pricing"}
 
-        assert resp.status_code == 200
-        body = resp.json()
-        assert len(body["rows"]) == 2
-        assert {row["page"] for row in body["rows"]} == {"main", "pricing"}
-
-    async def test_preview_scan_config_discovers_json_paths_separately(
-        self,
-        client: AsyncClient,
-        project: dict,
-        data_source: dict,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
+    def test_build_preview_payload_discovers_json_paths_separately(self) -> None:
         class FakeAdapter:
             def test_connection(self) -> bool:
                 return True
@@ -549,21 +514,10 @@ class TestScanConfigsCRUD:
             def close(self) -> None:
                 return None
 
-        monkeypatch.setattr(scan_service, "_build_adapter", lambda ds: FakeAdapter())
+        payload = build_preview_payload(FakeAdapter(), "SELECT * FROM events", [], 5)
 
-        resp = await client.post(
-            f"/api/v1/projects/{project['slug']}/scans/preview",
-            json={
-                "data_source_id": data_source["id"],
-                "base_query": "SELECT * FROM events",
-                "limit": 5,
-            },
-        )
-
-        assert resp.status_code == 200
-        body = resp.json()
-        assert body["rows"][0]["payload"] == {"locale": "en"}
-        assert body["json_columns"] == [
+        assert payload["rows"][0]["payload"] == {"locale": "en"}
+        assert payload["json_columns"] == [
             {
                 "column": "payload",
                 "paths": [
@@ -586,13 +540,7 @@ class TestScanConfigsCRUD:
             }
         ]
 
-    async def test_preview_scan_config_keeps_selected_json_paths_visible(
-        self,
-        client: AsyncClient,
-        project: dict,
-        data_source: dict,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
+    def test_build_preview_payload_keeps_selected_json_paths_visible(self) -> None:
         class FakeAdapter:
             def test_connection(self) -> bool:
                 return True
@@ -624,25 +572,16 @@ class TestScanConfigsCRUD:
                 sample_limit: int,
                 sample_row_limit: int,
             ) -> dict[str, dict[str, list[object]]]:
-                return {"payload": {"locale": ["en"]}}
+                return {"payload": {"locale": ['"en"']}}
 
             def close(self) -> None:
                 return None
 
-        monkeypatch.setattr(scan_service, "_build_adapter", lambda ds: FakeAdapter())
-
-        resp = await client.post(
-            f"/api/v1/projects/{project['slug']}/scans/preview",
-            json={
-                "data_source_id": data_source["id"],
-                "base_query": "SELECT * FROM events",
-                "limit": 5,
-                "json_value_paths": ["payload.saved.key"],
-            },
+        payload = build_preview_payload(
+            FakeAdapter(), "SELECT * FROM events", ["payload.saved.key"], 5
         )
 
-        assert resp.status_code == 200
-        assert resp.json()["json_columns"] == [
+        assert payload["json_columns"] == [
             {
                 "column": "payload",
                 "paths": [
@@ -659,3 +598,199 @@ class TestScanConfigsCRUD:
                 ],
             }
         ]
+
+    async def test_preview_dispatches_worker_job(
+        self,
+        client: AsyncClient,
+        project: dict,
+        data_source: dict,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        dispatched: list[str] = []
+
+        def fake_delay(job_id: str) -> None:
+            dispatched.append(job_id)
+
+        monkeypatch.setattr(scan_tasks.preview_scan_config_async, "delay", fake_delay)
+
+        resp = await client.post(
+            f"/api/v1/projects/{project['slug']}/scans/preview",
+            json={
+                "data_source_id": data_source["id"],
+                "base_query": "SELECT * FROM events",
+                "limit": 5,
+            },
+        )
+
+        assert resp.status_code == 202
+        body = resp.json()
+        assert body["status"] == "pending"
+        assert body["result_summary"] is None
+        assert dispatched == [body["id"]]
+
+        poll = await client.get(
+            f"/api/v1/projects/{project['slug']}/scans/preview-jobs/{body['id']}"
+        )
+        assert poll.status_code == 200
+        assert poll.json()["status"] == "pending"
+
+    async def test_preview_job_not_found(
+        self, client: AsyncClient, project: dict
+    ) -> None:
+        resp = await client.get(
+            f"/api/v1/projects/{project['slug']}/scans/preview-jobs/"
+            "00000000-0000-0000-0000-000000000000"
+        )
+        assert resp.status_code == 404
+
+    def test_preview_scan_config_async_completes_job(self, tmp_path, monkeypatch) -> None:
+        engine = create_engine(f"sqlite:///{tmp_path / 'preview.db'}")
+        Base.metadata.create_all(engine)
+        sync_session_factory = sessionmaker(engine, expire_on_commit=False)
+
+        project_id = uuid.uuid4()
+        data_source_id = uuid.uuid4()
+        job_id = uuid.uuid4()
+        with sync_session_factory() as session:
+            session.add_all(
+                [
+                    Project(id=project_id, name="P", slug="p", description=""),
+                    DataSource(
+                        id=data_source_id,
+                        name="DS",
+                        db_type="clickhouse",
+                        host="localhost",
+                        port=8123,
+                        database_name="default",
+                        username="default",
+                        password_encrypted="",
+                    ),
+                    ScanPreviewJob(
+                        id=job_id,
+                        project_id=project_id,
+                        data_source_id=data_source_id,
+                        base_query="SELECT * FROM events",
+                        json_value_paths=[],
+                        row_limit=5,
+                        status="pending",
+                    ),
+                ]
+            )
+            session.commit()
+
+        class FakeAdapter:
+            def test_connection(self) -> bool:
+                return True
+
+            def get_columns(self, base_query: str) -> list[ColumnInfo]:
+                return [
+                    ColumnInfo(name="event_name", type_name="String"),
+                    ColumnInfo(name="payload", type_name="JSON"),
+                ]
+
+            def get_preview_rows(
+                self,
+                base_query: str,
+                limit: int = 10,
+            ) -> tuple[list[str], list[tuple[object, ...]]]:
+                return (["event_name", "payload"], [("purchase", {"locale": "en"})])
+
+            def get_json_path_samples(
+                self,
+                base_query: str,
+                json_columns: list[str],
+                *,
+                path_limit: int,
+                sample_limit: int,
+                sample_row_limit: int,
+            ) -> dict[str, dict[str, list[object]]]:
+                return {"payload": {"locale": ['"en"']}}
+
+            def close(self) -> None:
+                return None
+
+        monkeypatch.setitem(
+            scan_tasks.preview_scan_config_async.run.__globals__,
+            "_get_sync_session",
+            sync_session_factory,
+        )
+        monkeypatch.setitem(
+            scan_tasks.preview_scan_config_async.run.__globals__,
+            "_build_adapter",
+            lambda ds: FakeAdapter(),
+        )
+
+        result = scan_tasks.preview_scan_config_async.run(str(job_id))
+
+        assert [column["name"] for column in result["columns"]] == ["event_name", "payload"]
+        assert result["rows"][0]["payload"] == {"locale": "en"}
+
+        with sync_session_factory() as session:
+            job = session.get(ScanPreviewJob, job_id)
+            assert job.status == "completed"
+            assert job.started_at is not None
+            assert job.completed_at is not None
+            assert job.error_message is None
+            assert job.result_summary["rows"][0]["event_name"] == "purchase"
+
+    def test_preview_scan_config_async_marks_job_failed(self, tmp_path, monkeypatch) -> None:
+        engine = create_engine(f"sqlite:///{tmp_path / 'preview_fail.db'}")
+        Base.metadata.create_all(engine)
+        sync_session_factory = sessionmaker(engine, expire_on_commit=False)
+
+        project_id = uuid.uuid4()
+        data_source_id = uuid.uuid4()
+        job_id = uuid.uuid4()
+        with sync_session_factory() as session:
+            session.add_all(
+                [
+                    Project(id=project_id, name="P", slug="p", description=""),
+                    DataSource(
+                        id=data_source_id,
+                        name="DS",
+                        db_type="clickhouse",
+                        host="localhost",
+                        port=8123,
+                        database_name="default",
+                        username="default",
+                        password_encrypted="",
+                    ),
+                    ScanPreviewJob(
+                        id=job_id,
+                        project_id=project_id,
+                        data_source_id=data_source_id,
+                        base_query="SELECT * FROM events",
+                        json_value_paths=[],
+                        row_limit=5,
+                        status="pending",
+                    ),
+                ]
+            )
+            session.commit()
+
+        class BrokenAdapter:
+            def test_connection(self) -> bool:
+                raise RuntimeError("connection refused")
+
+            def close(self) -> None:
+                return None
+
+        monkeypatch.setitem(
+            scan_tasks.preview_scan_config_async.run.__globals__,
+            "_get_sync_session",
+            sync_session_factory,
+        )
+        monkeypatch.setitem(
+            scan_tasks.preview_scan_config_async.run.__globals__,
+            "_build_adapter",
+            lambda ds: BrokenAdapter(),
+        )
+
+        with pytest.raises(RuntimeError):
+            scan_tasks.preview_scan_config_async.run(str(job_id))
+
+        with sync_session_factory() as session:
+            job = session.get(ScanPreviewJob, job_id)
+            assert job.status == "failed"
+            assert "connection refused" in job.error_message
+            assert job.result_summary is None

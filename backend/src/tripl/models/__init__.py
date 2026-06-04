@@ -35,6 +35,7 @@ from tripl.models.project import Project
 from tripl.models.project_anomaly_settings import ProjectAnomalySettings
 from tripl.models.scan_config import ScanConfig
 from tripl.models.scan_job import ScanJob
+from tripl.models.scan_preview_job import ScanPreviewJob
 from tripl.models.schema_drift import SchemaDrift
 from tripl.models.search_document import SearchDocument
 from tripl.models.user import User
@@ -80,6 +81,7 @@ __all__ = [
     "DistributionDrift",
     "ScanConfig",
     "ScanJob",
+    "ScanPreviewJob",
     "SchemaDrift",
     "SearchDocument",
     "User",
