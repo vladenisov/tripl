@@ -15,6 +15,7 @@ from tripl.models.event import Event
 from tripl.models.event_type import EventType
 from tripl.models.scan_config import ScanConfig
 from tripl.models.scan_job import ScanJob, ScanJobStatus
+from tripl.models.scan_preview_job import ScanPreviewJob
 from tripl.observability.metrics import scan_runs_total
 from tripl.worker.adapters.base import BaseAdapter, ColumnInfo
 from tripl.worker.adapters.registry import build_adapter
@@ -24,6 +25,7 @@ from tripl.worker.analyzers.event_generator import (
     generate_events,
     merge_existing_events_for_group_rules,
 )
+from tripl.worker.analyzers.preview import build_preview_payload
 from tripl.worker.celery_app import celery_app
 from tripl.worker.db import SyncSessionLocal
 
@@ -334,6 +336,62 @@ def test_connection(self: object, data_source_id: str) -> dict[str, object]:
         return {"success": ok, "error": None}
     except Exception as e:
         return {"success": False, "error": str(e)}
+    finally:
+        if adapter is not None:
+            adapter.close()
+        session.close()
+
+
+@celery_app.task(  # type: ignore[untyped-decorator]
+    name="tripl.worker.tasks.scan.preview_scan_config_async",
+    bind=True,
+    max_retries=0,
+)
+def preview_scan_config_async(self: object, job_id: str) -> dict[str, object]:
+    """Compute a scan-config preview for an unsaved draft, off the request path."""
+    session = _get_sync_session()
+    adapter: BaseAdapter | None = None
+    try:
+        job = session.get(ScanPreviewJob, uuid.UUID(job_id))
+        if job is None:
+            msg = f"ScanPreviewJob {job_id} not found"
+            raise ValueError(msg)
+
+        ds = session.get(DataSource, job.data_source_id)
+        if ds is None:
+            msg = f"DataSource {job.data_source_id} not found"
+            raise ValueError(msg)
+
+        job.status = ScanJobStatus.running.value
+        job.started_at = datetime.now(UTC)
+        session.commit()
+
+        adapter = _build_adapter(ds)
+        payload = build_preview_payload(
+            adapter,
+            job.base_query,
+            list(job.json_value_paths or []),
+            job.row_limit,
+        )
+
+        job.status = ScanJobStatus.completed.value
+        job.completed_at = datetime.now(UTC)
+        job.result_summary = payload
+        session.commit()
+        return payload
+    except Exception as e:
+        logger.exception(f"Scan preview failed: {e}")
+        session.rollback()
+        try:
+            job = session.get(ScanPreviewJob, uuid.UUID(job_id))
+            if job:
+                job.status = ScanJobStatus.failed.value
+                job.completed_at = datetime.now(UTC)
+                job.error_message = str(e)
+                session.commit()
+        except Exception:
+            logger.exception("Failed to update scan preview job status after error")
+        raise
     finally:
         if adapter is not None:
             adapter.close()

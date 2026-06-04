@@ -446,6 +446,18 @@ export interface ScanConfigPreview {
   json_columns: ScanPreviewJsonColumn[]
 }
 
+export interface ScanPreviewJob {
+  id: string
+  status: 'pending' | 'running' | 'completed' | 'failed'
+  started_at: string | null
+  completed_at: string | null
+  // Holds a ScanConfigPreview when status === 'completed'; null otherwise.
+  result_summary: ScanConfigPreview | null
+  error_message: string | null
+  created_at: string
+  updated_at: string
+}
+
 export interface ProjectAnomalySettings {
   id: string
   project_id: string
