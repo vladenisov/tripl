@@ -15,6 +15,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from sqlalchemy import delete, func, select, update
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from tripl.json_paths import (
@@ -908,6 +909,18 @@ def _ensure_variable(
     )
     if branch_id is not None:
         var.branch_id = branch_id
-    session.add(var)
-    session.flush()
+    # Race-safe insert: two concurrent scan workers can discover the same
+    # variable in the same bucket and attempt to insert simultaneously.
+    # Keep this operation isolated in a SAVEPOINT so an IntegrityError does not
+    # poison the outer transaction.
+    try:
+        with session.begin_nested():
+            session.add(var)
+            session.flush()
+    except IntegrityError:
+        logger.info(
+            "Variable already inserted concurrently; skipping duplicate",
+            extra={"project_id": str(project_id), "name": name, "branch_id": str(branch_id)},
+        )
+        return 0
     return 1
