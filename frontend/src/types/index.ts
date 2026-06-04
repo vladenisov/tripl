@@ -8,6 +8,7 @@ export interface ScanJobResultSummary {
   events_grouped?: number
   events_merged?: number
   variables_created?: number
+  variable_values_touched?: number
   columns_analyzed?: number
   event_metrics?: number
   type_metrics?: number
