@@ -110,6 +110,16 @@ export function VariablesTab({ slug }: { slug: string }) {
   })
 
   const editingVarContexts = editingVar ? (contextsByVariableId.get(editingVar.id) ?? []) : []
+  const editingSummaryRows = editingVarContexts.length > 0
+    ? editingVarContexts.map((context) => ({
+      id: context.id,
+      eventName: context.event_name,
+      values: context.values,
+      valueKind: context.value_kind,
+    }))
+    : editingVar
+      ? [{ id: `${editingVar.id}-empty`, eventName: '—', values: [] as string[], valueKind: null }]
+      : []
 
   return (
     <div className="space-y-4">
@@ -176,33 +186,49 @@ export function VariablesTab({ slug }: { slug: string }) {
                   <Input value={editDescription} onChange={e => setEditDescription(e.target.value)} />
                 </div>
               </div>
-              {editingVarContexts.length > 0 && (
+              {editingVar && (
                 <div className="rounded-md border bg-muted/30 p-3">
                   <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
                     Observed values
                   </div>
-                  <div className="space-y-3 text-xs">
-                    {editingVarContexts.map((context) => (
-                      <div key={context.id} className="space-y-2 rounded border bg-background p-2">
-                        <div className="flex flex-wrap items-center justify-between gap-2">
-                          <div className="font-medium text-foreground">{context.event_name}</div>
-                          <div className="text-muted-foreground">
-                            {context.source_column} · {context.observed_count} observed
-                          </div>
-                        </div>
-                        <div className="flex flex-wrap gap-1">
-                          {context.values.length > 0 ? (
-                            context.values.map((value) => (
-                              <span key={value} className="rounded border px-1.5 py-0.5 font-mono text-[10px]" title={value}>
-                                {value}
-                              </span>
-                            ))
-                          ) : (
-                            <span className="text-muted-foreground">No examples stored</span>
-                          )}
-                        </div>
-                      </div>
-                    ))}
+                  <div className="rounded border bg-background">
+                    <Table>
+                      <TableHeader>
+                        <TableRow>
+                          <TableHead>Variable</TableHead>
+                          <TableHead>Type</TableHead>
+                          <TableHead>Event</TableHead>
+                          <TableHead>Description</TableHead>
+                          <TableHead>Possible values</TableHead>
+                        </TableRow>
+                      </TableHeader>
+                      <TableBody>
+                        {editingSummaryRows.map((row) => (
+                          <TableRow key={row.id}>
+                            <TableCell className="font-mono text-xs">{editVarName || '—'}</TableCell>
+                            <TableCell className="text-xs">{typeLabels[editVarType]}</TableCell>
+                            <TableCell className="text-xs">{row.eventName}</TableCell>
+                            <TableCell className="text-xs text-muted-foreground">{editDescription || '—'}</TableCell>
+                            <TableCell className="text-xs">
+                              {row.values.length > 0 ? (
+                                <div className="flex flex-wrap gap-1">
+                                  {row.values.map((value) => (
+                                    <span key={value} className="rounded border px-1.5 py-0.5 font-mono text-[10px]" title={value}>
+                                      {value}
+                                    </span>
+                                  ))}
+                                  {row.valueKind === 'high' && (
+                                    <span className="text-[10px] text-muted-foreground">(examples)</span>
+                                  )}
+                                </div>
+                              ) : (
+                                <span className="text-muted-foreground">—</span>
+                              )}
+                            </TableCell>
+                          </TableRow>
+                        ))}
+                      </TableBody>
+                    </Table>
                   </div>
                 </div>
               )}
@@ -234,9 +260,14 @@ export function VariablesTab({ slug }: { slug: string }) {
                 return (
                 <TableRow key={row.id}>
                   <TableCell className="font-mono text-xs">
-                    <code className="rounded bg-primary/10 px-1.5 py-0.5 text-primary">
-                      {`\${${v.name}}`}
-                    </code>
+                    <div className="flex items-center gap-2">
+                      <code className="rounded bg-primary/10 px-1.5 py-0.5 text-primary">
+                        {`\${${v.name}}`}
+                      </code>
+                      <span className="rounded border px-1.5 py-0.5 text-[10px] text-muted-foreground">
+                        {typeLabels[v.variable_type]}
+                      </span>
+                    </div>
                   </TableCell>
                   <TableCell className="text-xs">{row.eventName}</TableCell>
                   <TableCell className="text-xs text-muted-foreground">{v.description}</TableCell>
@@ -244,7 +275,7 @@ export function VariablesTab({ slug }: { slug: string }) {
                     {row.values.length > 0 ? (
                       <div className="flex max-w-sm flex-wrap gap-1">
                         {row.values.map(value => (
-                          <span key={value} className="max-w-28 truncate rounded border px-1.5 py-0.5 font-mono text-[10px]" title={value}>{value}</span>
+                          <span key={value} className="rounded border px-1.5 py-0.5 font-mono text-[10px]" title={value}>{value}</span>
                         ))}
                       </div>
                     ) : (
