@@ -270,6 +270,39 @@ class TestEventGeneration:
         assert all(value.startswith("secondvalue") for value in context.values)
         assert not any(value.startswith("firstvalue") for value in context.values)
 
+    def test_rescan_preserves_replay_enriched_empty_variable_context_values(
+        self, sync_session: Session, project_and_type
+    ):
+        project, et, fds = project_and_type
+        cardinality = {
+            "payload": CardinalityResult(
+                column=ColumnInfo("payload", "JSON"),
+                count=1,
+                is_low=False,
+                json_path_combos=[("user.id",)],
+            ),
+        }
+        analysis = _make_analysis(cardinality)
+        generate_events(sync_session, project.id, et.id, analysis, fds)
+        sync_session.commit()
+
+        context = sync_session.execute(select(VariableValue)).scalar_one()
+        assert context.source_column == "payload.user.id"
+        assert context.observed_count == 0
+        assert context.values == []
+
+        context.observed_count = 2
+        context.values = ["u1", "u2"]
+        sync_session.commit()
+
+        generate_events(sync_session, project.id, et.id, analysis, fds)
+        sync_session.commit()
+
+        context = sync_session.execute(select(VariableValue)).scalar_one()
+        assert context.value_kind == "high"
+        assert context.observed_count == 2
+        assert context.values == ["u1", "u2"]
+
     def test_event_name_column_enumerated_despite_high_cardinality(
         self, sync_session: Session, project_and_type
     ):
