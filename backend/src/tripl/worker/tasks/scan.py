@@ -9,8 +9,8 @@ from datetime import UTC, datetime
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from tripl.json_paths import group_json_value_paths
 from tripl.config import settings
+from tripl.json_paths import group_json_value_paths
 from tripl.models.data_source import DataSource
 from tripl.models.event import Event
 from tripl.models.event_type import EventType
@@ -217,7 +217,8 @@ def run_scan(self: object, scan_config_id: str, job_id: str) -> dict[str, object
         job.completed_at = datetime.now(UTC)
         if scan_truncated:
             result.details.append(
-                "Scan output may be truncated by row limit; increase scan_row_limit to avoid partial generation"
+                "Scan output may be truncated by row limit; "
+                "increase scan_row_limit to avoid partial generation"
             )
         job.result_summary = {
             "events_created": result.events_created,

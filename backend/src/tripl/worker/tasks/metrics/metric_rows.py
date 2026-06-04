@@ -330,9 +330,21 @@ def _delete_event_metric_breakdown_rows(
         return 0
 
     metric_key = (
-        tuple_(EventMetricBreakdown.event_id, EventMetricBreakdown.bucket, EventMetricBreakdown.breakdown_column, EventMetricBreakdown.breakdown_value, EventMetricBreakdown.is_other)
+        tuple_(
+            EventMetricBreakdown.event_id,
+            EventMetricBreakdown.bucket,
+            EventMetricBreakdown.breakdown_column,
+            EventMetricBreakdown.breakdown_value,
+            EventMetricBreakdown.is_other,
+        )
         if constraint == "event"
-        else tuple_(EventMetricBreakdown.event_type_id, EventMetricBreakdown.bucket, EventMetricBreakdown.breakdown_column, EventMetricBreakdown.breakdown_value, EventMetricBreakdown.is_other)
+        else tuple_(
+            EventMetricBreakdown.event_type_id,
+            EventMetricBreakdown.bucket,
+            EventMetricBreakdown.breakdown_column,
+            EventMetricBreakdown.breakdown_value,
+            EventMetricBreakdown.is_other,
+        )
     )
     result = session.execute(
         delete(EventMetricBreakdown).where(
@@ -374,9 +386,11 @@ def _delete_distribution_drifts_rows(
     result = session.execute(
         delete(DistributionDrift).where(
             DistributionDrift.scan_config_id == scan_config_id,
-            tuple_(DistributionDrift.event_type_id, DistributionDrift.bucket, DistributionDrift.field_name).in_(
-                keys
-            ),
+            tuple_(
+                DistributionDrift.event_type_id,
+                DistributionDrift.bucket,
+                DistributionDrift.field_name,
+            ).in_(keys),
         )
     )
     rowcount = getattr(result, "rowcount", 0)
@@ -453,7 +467,11 @@ def _collect_metric_breakdown_rows(
     if not breakdown_columns:
         return [], [], False
 
-    _col_names, breakdown_json_value_names, rows = adapter.get_time_bucketed_breakdown_counts_multi(
+    (
+        _col_names,
+        breakdown_json_value_names,
+        rows,
+    ) = adapter.get_time_bucketed_breakdown_counts_multi(
         config.base_query,
         config.time_column or "",
         interval_ch_interval,
@@ -464,9 +482,10 @@ def _collect_metric_breakdown_rows(
         time_from,
         time_to,
         values_limit=config.metric_breakdown_values_limit,
-        limit=query_row_limit,
+        limit=query_row_limit + 1,
     )
-    truncated = len(rows) >= query_row_limit
+    truncated = len(rows) > query_row_limit
+    rows = rows[:query_row_limit]
     logger.info(
         "Got %s bucketed breakdown rows for %s from ClickHouse",
         len(rows),
@@ -627,9 +646,10 @@ def _collect_distribution_drift_rows(
         history_from,
         time_to,
         values_limit=None,
-        limit=query_row_limit,
+        limit=query_row_limit + 1,
     )
-    truncated = len(rows) >= query_row_limit
+    truncated = len(rows) > query_row_limit
+    rows = rows[:query_row_limit]
     logger.info(
         "Got %s bucketed distribution drift rows for %s from warehouse",
         len(rows),

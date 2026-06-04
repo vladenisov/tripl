@@ -314,7 +314,7 @@ export default function EventDetailPage() {
                                 {context.values.map((value) => (
                                   <span
                                     key={`${context.id}-${value}`}
-                                    className="rounded border bg-background px-1.5 py-0.5 font-mono text-[10px]"
+                                    className="max-w-40 truncate rounded border bg-background px-1.5 py-0.5 font-mono text-[10px]"
                                     title={value}
                                   >
                                     {value}

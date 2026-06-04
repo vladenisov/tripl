@@ -122,21 +122,22 @@ def analyze_cardinality(
     regular_cols = [c for c in columns if not _is_json_type(c.type_name)]
     json_cols = [c for c in columns if _is_json_type(c.type_name)]
 
-    reg_names, json_names, json_value_names, rows = adapter.get_full_breakdown(
+    reg_names, json_names, json_value_names, fetched_rows = adapter.get_full_breakdown(
         base_query,
         [c.name for c in regular_cols],
         [c.name for c in json_cols],
         json_value_paths=json_value_paths,
-        limit=row_limit,
+        limit=row_limit + 1,
     )
-    row_limit_reached = len(rows) >= row_limit
+    row_limit_reached = len(fetched_rows) > row_limit
+    rows = fetched_rows[:row_limit]
     logger.info(f"Breakdown: {len(rows)} unique combinations")
 
     col_map = {c.name: c for c in columns}
     analysis = _process_breakdown(rows, reg_names, json_names, col_map, threshold)
     analysis.json_value_names = json_value_names
     analysis.row_limit = row_limit
-    analysis.row_limit_reached = len(rows) >= row_limit
+    analysis.row_limit_reached = row_limit_reached
     return analysis
 
 
@@ -158,13 +159,15 @@ def analyze_cardinality_grouped(
     regular_cols = [c for c in columns if not _is_json_type(c.type_name)]
     json_cols = [c for c in columns if _is_json_type(c.type_name)]
 
-    reg_names, json_names, json_value_names, rows = adapter.get_full_breakdown(
+    reg_names, json_names, json_value_names, fetched_rows = adapter.get_full_breakdown(
         base_query,
         [c.name for c in regular_cols],
         [c.name for c in json_cols],
         json_value_paths=json_value_paths,
-        limit=row_limit,
+        limit=row_limit + 1,
     )
+    row_limit_reached = len(fetched_rows) > row_limit
+    rows = fetched_rows[:row_limit]
     logger.info(f"Breakdown: {len(rows)} unique combinations, grouping by {group_column!r}")
 
     # Find group column index in regular columns

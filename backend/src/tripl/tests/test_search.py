@@ -12,7 +12,7 @@ from tripl.models.search_document import SearchDocument
 from tripl.models.variable import Variable
 from tripl.models.variable_value import VariableValue
 from tripl.schemas.search import SearchResult
-from tripl.services.search_service import _finalize_results
+from tripl.services.search_service import _finalize_results, _token_boundary_regex
 from tripl.tests.conftest import TestSessionLocal
 
 
@@ -79,6 +79,12 @@ def test_search_document_insert_does_not_write_generated_text_vector() -> None:
 
     columns = compiled.split(" VALUES ", maxsplit=1)[0]
     assert "text_vector" not in columns
+
+
+def test_token_boundary_regex_uses_single_postgres_escapes() -> None:
+    assert _token_boundary_regex("ecmwf") == r"\mecmwf\M"
+    assert _token_boundary_regex("vip_segment") == r"\mvip_segment\M"
+    assert _token_boundary_regex("ecmwf model") is None
 
 
 async def _create_event_type(
