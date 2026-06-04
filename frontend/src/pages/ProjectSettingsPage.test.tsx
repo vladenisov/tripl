@@ -885,27 +885,36 @@ describe('ProjectSettingsPage', () => {
 
       if (url.endsWith('/api/v1/projects/demo/scans/preview') && init?.method === 'POST') {
         return mockJsonResponse({
-          columns: [
-            { name: 'event_name', type_name: 'String', is_nullable: false },
-            { name: 'created_at', type_name: 'DateTime', is_nullable: false },
-            { name: 'payload', type_name: 'JSON', is_nullable: true },
-          ],
-          rows: [
-            {
-              event_name: 'purchase',
-              created_at: '2026-04-12T10:30:00',
-              payload: { extra: { key: 'TASK-123' }, locale: 'en' },
-            },
-          ],
-          json_columns: [
-            {
-              column: 'payload',
-              paths: [
-                { full_path: 'payload.extra.key', path: 'extra.key', sample_values: ['TASK-123'] },
-                { full_path: 'payload.locale', path: 'locale', sample_values: ['en'] },
-              ],
-            },
-          ],
+          id: 'preview-job-1',
+          scan_config_id: null,
+          status: 'completed',
+          error_message: null,
+          created_at: '2026-04-12T00:00:00Z',
+          started_at: '2026-04-12T00:00:00Z',
+          completed_at: '2026-04-12T00:00:00Z',
+          result_summary: {
+            columns: [
+              { name: 'event_name', type_name: 'String', is_nullable: false },
+              { name: 'created_at', type_name: 'DateTime', is_nullable: false },
+              { name: 'payload', type_name: 'JSON', is_nullable: true },
+            ],
+            rows: [
+              {
+                event_name: 'purchase',
+                created_at: '2026-04-12T10:30:00',
+                payload: { extra: { key: 'TASK-123' }, locale: 'en' },
+              },
+            ],
+            json_columns: [
+              {
+                column: 'payload',
+                paths: [
+                  { full_path: 'payload.extra.key', path: 'extra.key', sample_values: ['TASK-123'] },
+                  { full_path: 'payload.locale', path: 'locale', sample_values: ['en'] },
+                ],
+              },
+            ],
+          },
         })
       }
 
@@ -1009,6 +1018,196 @@ describe('ProjectSettingsPage', () => {
     })
   })
 
+  it('creates missing event type fields from scan preview columns', async () => {
+    const bulkBodies: unknown[] = []
+
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const url = String(input)
+
+      if (url.endsWith('/api/v1/data-sources')) {
+        return mockJsonResponse([
+          {
+            id: 'ds-1',
+            name: 'Main DS',
+            db_type: 'clickhouse',
+            host: 'localhost',
+            port: 8123,
+            database_name: 'default',
+            username: 'default',
+            password_set: false,
+            extra_params: null,
+            created_at: '2026-01-01T00:00:00Z',
+            updated_at: '2026-01-01T00:00:00Z',
+          },
+        ])
+      }
+
+      if (url.endsWith('/api/v1/projects/demo/event-types')) {
+        return mockJsonResponse([
+          {
+            id: 'type-1',
+            project_id: 'project-1',
+            name: 'purchase',
+            display_name: 'Purchase',
+            description: '',
+            color: '#0ea5e9',
+            order: 0,
+            created_at: '2026-01-01T00:00:00Z',
+            updated_at: '2026-01-01T00:00:00Z',
+            field_definitions: [
+              {
+                id: 'field-1',
+                event_type_id: 'type-1',
+                name: 'event_name',
+                display_name: 'Event name',
+                field_type: 'string',
+                is_required: false,
+                enum_options: null,
+                description: '',
+                order: 0,
+                sensitivity: 'none',
+              },
+            ],
+          },
+        ])
+      }
+
+      if (url.endsWith('/api/v1/projects/demo/scans') && (!init || !init.method || init.method === 'GET')) {
+        return mockJsonResponse([])
+      }
+
+      if (url.endsWith('/api/v1/projects/demo/scans/preview') && init?.method === 'POST') {
+        return mockJsonResponse({
+          id: 'preview-job-1',
+          scan_config_id: null,
+          status: 'completed',
+          error_message: null,
+          created_at: '2026-04-12T00:00:00Z',
+          started_at: '2026-04-12T00:00:00Z',
+          completed_at: '2026-04-12T00:00:00Z',
+          result_summary: {
+            columns: [
+              { name: 'event_name', type_name: 'String', is_nullable: false },
+              { name: 'created_at', type_name: 'DateTime', is_nullable: false },
+              { name: 'payload', type_name: 'JSON', is_nullable: true },
+            ],
+            rows: [
+              {
+                event_name: 'purchase',
+                created_at: '2026-04-12T10:30:00',
+                payload: { total: 42 },
+              },
+            ],
+            json_columns: [],
+          },
+        })
+      }
+
+      if (
+        url.endsWith('/api/v1/projects/demo/event-types/type-1/fields/bulk')
+        && init?.method === 'POST'
+      ) {
+        bulkBodies.push(JSON.parse(String(init.body)))
+        return mockJsonResponse([
+          {
+            id: 'field-1',
+            event_type_id: 'type-1',
+            name: 'event_name',
+            display_name: 'Event name',
+            field_type: 'string',
+            is_required: false,
+            enum_options: null,
+            description: '',
+            order: 0,
+            sensitivity: 'none',
+          },
+          {
+            id: 'field-2',
+            event_type_id: 'type-1',
+            name: 'created_at',
+            display_name: 'created_at',
+            field_type: 'string',
+            is_required: false,
+            enum_options: null,
+            description: '',
+            order: 1,
+            sensitivity: 'none',
+          },
+          {
+            id: 'field-3',
+            event_type_id: 'type-1',
+            name: 'payload',
+            display_name: 'payload',
+            field_type: 'json',
+            is_required: false,
+            enum_options: null,
+            description: '',
+            order: 2,
+            sensitivity: 'none',
+          },
+        ])
+      }
+
+      throw new Error(`Unhandled fetch: ${url}`)
+    })
+
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    })
+    render(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter initialEntries={['/p/demo/settings/scans']}>
+          <Routes>
+            <Route path="/p/:slug/settings/:tab" element={<ProjectSettingsPage />} />
+            <Route path="/p/:slug/settings" element={<ProjectSettingsPage />} />
+          </Routes>
+        </MemoryRouter>
+      </QueryClientProvider>,
+    )
+
+    const addScanButton = await screen.findByRole('button', { name: /Add Scan Config/i })
+    await waitFor(() => expect(addScanButton).not.toBeDisabled())
+    fireEvent.click(addScanButton)
+
+    const dialog = await screen.findByRole('dialog')
+    const textboxes = within(dialog).getAllByRole('textbox')
+    fireEvent.change(textboxes[0], { target: { value: 'Main scan' } })
+    fireEvent.change(textboxes[1], { target: { value: 'SELECT * FROM analytics.events' } })
+
+    const selects = within(dialog).getAllByRole('combobox')
+    fireEvent.change(selects[0], { target: { value: 'ds-1' } })
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Load Preview' }))
+
+    expect(
+      await within(dialog).findByText(
+        'Column pickers use the sample rows; JSON path options are discovered from the source query.',
+      ),
+    ).toBeInTheDocument()
+
+    const updatedSelects = within(dialog).getAllByRole('combobox')
+    fireEvent.change(updatedSelects[1], { target: { value: 'type-1' } })
+
+    expect(await within(dialog).findByText(/2 preview columns have no matching field/)).toBeInTheDocument()
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Create 2 fields' }))
+
+    await waitFor(() => {
+      expect(bulkBodies).toContainEqual({
+        fields: [
+          {
+            name: 'created_at',
+            display_name: 'created_at',
+            field_type: 'string',
+          },
+          {
+            name: 'payload',
+            display_name: 'payload',
+            field_type: 'json',
+          },
+        ],
+      })
+    })
+  })
+
   it('keeps saved JSON value paths visible when edit preview omits them', async () => {
     const previewBodies: unknown[] = []
 
@@ -1066,24 +1265,33 @@ describe('ProjectSettingsPage', () => {
       if (url.endsWith('/api/v1/projects/demo/scans/preview') && init?.method === 'POST') {
         previewBodies.push(JSON.parse(String(init.body)))
         return mockJsonResponse({
-          columns: [
-            { name: 'event_name', type_name: 'String', is_nullable: false },
-            { name: 'payload', type_name: 'JSON', is_nullable: true },
-          ],
-          rows: [
-            {
-              event_name: 'purchase',
-              payload: { locale: 'en' },
-            },
-          ],
-          json_columns: [
-            {
-              column: 'payload',
-              paths: [
-                { full_path: 'payload.locale', path: 'locale', sample_values: ['en'] },
-              ],
-            },
-          ],
+          id: 'preview-job-1',
+          scan_config_id: null,
+          status: 'completed',
+          error_message: null,
+          created_at: '2026-04-12T00:00:00Z',
+          started_at: '2026-04-12T00:00:00Z',
+          completed_at: '2026-04-12T00:00:00Z',
+          result_summary: {
+            columns: [
+              { name: 'event_name', type_name: 'String', is_nullable: false },
+              { name: 'payload', type_name: 'JSON', is_nullable: true },
+            ],
+            rows: [
+              {
+                event_name: 'purchase',
+                payload: { locale: 'en' },
+              },
+            ],
+            json_columns: [
+              {
+                column: 'payload',
+                paths: [
+                  { full_path: 'payload.locale', path: 'locale', sample_values: ['en'] },
+                ],
+              },
+            ],
+          },
         })
       }
 

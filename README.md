@@ -144,5 +144,6 @@ What reloads automatically:
 ## Documentation
 
 - [CONTRIBUTING.md](CONTRIBUTING.md): local setup, commands, and API overview
+- [docs/agent-api-guide.md](docs/agent-api-guide.md): OpenAPI + Bearer-key guide for external LLM agents and CLI scripts
 - [PLAN.md](PLAN.md): product scope, architecture map, and future roadmap
 - [AGENTS.md](AGENTS.md): repo navigation map for coding agents
