@@ -313,9 +313,7 @@ def _augment_json_value_paths_for_replay_tokens(
 
     json_cols = set(json_columns)
     out: dict[str, list[str]] = {key: list(values) for key, values in json_value_path_map.items()}
-    seen_by_column: dict[str, set[str]] = {
-        column: set(values) for column, values in out.items()
-    }
+    seen_by_column: dict[str, set[str]] = {column: set(values) for column, values in out.items()}
 
     for event in replay_events:
         for field_value in event.field_values:
@@ -377,10 +375,7 @@ def _accumulate_replay_variable_samples(
     json_value_names: list[str],
     variable_by_token: dict[str, Variable],
 ) -> None:
-    json_value_index = {
-        name: n_reg + n_json + idx
-        for idx, name in enumerate(json_value_names)
-    }
+    json_value_index = {name: n_reg + n_json + idx for idx, name in enumerate(json_value_names)}
     for field_value in event.field_values:
         tokens = _VARIABLE_NAME_PATTERN.findall(field_value.value)
         if not tokens:
@@ -448,8 +443,7 @@ def _merge_replay_variable_samples(
         existing_query = existing_query.where(VariableValue.branch_id == branch_id)
     existing = session.execute(existing_query).scalars().all()
     existing_by_key = {
-        (row.variable_id, row.event_id, row.field_definition_id): row
-        for row in existing
+        (row.variable_id, row.event_id, row.field_definition_id): row for row in existing
     }
 
     touched = 0
@@ -882,6 +876,7 @@ def collect_metrics(
         if config.time_column:
             skip_cols.add(config.time_column)
         json_value_path_map = _get_scan_json_value_path_map(config)
+        scan_row_limit = config.scan_row_limit or settings.scan_row_limit_default
         metrics_row_limit = config.metrics_row_limit or settings.metrics_row_limit_default
 
         assert config.interval is not None
@@ -943,7 +938,17 @@ def collect_metrics(
                 group_column=config.event_type_column,
                 threshold=config.cardinality_threshold,
                 json_value_paths=json_value_path_map,
+                row_limit=scan_row_limit,
             )
+            if any(
+                getattr(analysis, "row_limit_reached", False)
+                for analysis in grouped_analyses.values()
+            ):
+                msg = (
+                    "Grouped scan query reached configured row limit "
+                    f"({scan_row_limit}); increase scan_row_limit to avoid partial generation"
+                )
+                raise ValueError(msg)
             logger.info(
                 f"Grouped scan: {len(group_values)} groups for {config.event_type_column!r}"
             )
@@ -997,7 +1002,14 @@ def collect_metrics(
                 columns,
                 threshold=config.cardinality_threshold,
                 json_value_paths=json_value_path_map,
+                row_limit=scan_row_limit,
             )
+            if getattr(analysis, "row_limit_reached", False):
+                msg = (
+                    "Scan query reached configured row limit "
+                    f"({scan_row_limit}); increase scan_row_limit to avoid partial generation"
+                )
+                raise ValueError(msg)
 
             event_type = session.get(EventType, config.event_type_id)
             if event_type is None:
@@ -1162,10 +1174,12 @@ def collect_metrics(
                 json_value_path_map,
                 chunk_from,
                 chunk_to,
-                limit=metrics_row_limit,
+                limit=metrics_row_limit + 1,
             )
+            query_truncated = len(rows) > metrics_row_limit
+            rows = rows[:metrics_row_limit]
             query_rows_scanned += len(rows)
-            if len(rows) >= metrics_row_limit:
+            if query_truncated:
                 msg = (
                     "Metrics query reached configured row limit "
                     f"({metrics_row_limit}) for chunk "
@@ -1275,7 +1289,7 @@ def collect_metrics(
                             _accumulate_replay_variable_samples(
                                 replay_variable_samples,
                                 event=ev,
-                                data_row=cast(tuple[object, ...], data_row),
+                                data_row=data_row,
                                 reg_index=reg_index,
                                 n_reg=n_reg,
                                 n_json=len(json_cols),
@@ -1369,10 +1383,10 @@ def collect_metrics(
 
             if is_replay:
                 event_delete_keys: list[tuple[uuid.UUID, datetime]] = [
-                    (cast(uuid.UUID, ev_id), bucket) for (_, ev_id, bucket) in event_agg
+                    (ev_id, bucket) for (_, ev_id, bucket) in event_agg
                 ]
                 type_delete_keys: list[tuple[uuid.UUID, datetime]] = [
-                    (cast(uuid.UUID, et_id), bucket) for (_, et_id, bucket) in type_agg
+                    (et_id, bucket) for (_, et_id, bucket) in type_agg
                 ]
                 breakdown_event_delete_keys: list[tuple[uuid.UUID, datetime, str, str, bool]] = [
                     (
@@ -1523,6 +1537,8 @@ def collect_metrics(
             "events_merged": total_merged,
             "variables_created": total_vars,
             "columns_analyzed": total_cols,
+            "scan_row_limit": scan_row_limit,
+            "scan_truncated": False,
             "event_metrics": n_ev,
             "type_metrics": n_tp,
             "breakdown_event_metrics": n_breakdown_ev,

@@ -166,7 +166,7 @@ export function VariablesTab({ slug }: { slug: string }) {
 
       {/* Edit dialog */}
       <Dialog open={!!editingVar} onOpenChange={v => { if (!v) setEditingVar(null) }}>
-        <DialogContent>
+        <DialogContent className="max-w-4xl">
           <form onSubmit={e => { e.preventDefault(); if (editingVar) updateMut.mutate(editingVar.id) }}>
             <DialogHeader><DialogTitle>Edit: {editingVar?.name}</DialogTitle></DialogHeader>
             <div className="grid gap-4 py-4">
@@ -191,7 +191,7 @@ export function VariablesTab({ slug }: { slug: string }) {
                   <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
                     Observed values
                   </div>
-                  <div className="rounded border bg-background">
+                  <div className="max-h-72 overflow-auto rounded border bg-background">
                     <Table>
                       <TableHeader>
                         <TableRow>
@@ -213,7 +213,7 @@ export function VariablesTab({ slug }: { slug: string }) {
                               {row.values.length > 0 ? (
                                 <div className="flex flex-wrap gap-1">
                                   {row.values.map((value) => (
-                                    <span key={value} className="rounded border px-1.5 py-0.5 font-mono text-[10px]" title={value}>
+                                    <span key={value} className="max-w-40 truncate rounded border px-1.5 py-0.5 font-mono text-[10px]" title={value}>
                                       {value}
                                     </span>
                                   ))}
@@ -274,9 +274,12 @@ export function VariablesTab({ slug }: { slug: string }) {
                   <TableCell>
                     {row.values.length > 0 ? (
                       <div className="flex max-w-sm flex-wrap gap-1">
-                        {row.values.map(value => (
-                          <span key={value} className="rounded border px-1.5 py-0.5 font-mono text-[10px]" title={value}>{value}</span>
+                        {row.values.slice(0, 6).map(value => (
+                          <span key={value} className="max-w-28 truncate rounded border px-1.5 py-0.5 font-mono text-[10px]" title={value}>{value}</span>
                         ))}
+                        {row.values.length > 6 && (
+                          <span className="text-[10px] text-muted-foreground">+{row.values.length - 6}</span>
+                        )}
                       </div>
                     ) : (
                       <span className="text-xs text-muted-foreground">—</span>

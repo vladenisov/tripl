@@ -976,7 +976,7 @@ def _token_boundary_regex(query: str) -> str | None:
     # spaces or punctuation we keep regular LIKE/fuzzy logic.
     if not re.fullmatch(r"[a-z0-9_]+", normalized_query):
         return None
-    return rf"\\m{re.escape(normalized_query)}\\M"
+    return rf"\m{re.escape(normalized_query)}\M"
 
 
 def _contains_exact_token(source: str, query_norm: str) -> bool:
