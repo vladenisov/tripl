@@ -101,6 +101,7 @@ class ScanConfigCreate(BaseModel):
     cardinality_threshold: int = Field(default=100, ge=1)
     interval: str | None = Field(None, pattern=r"^(15m|1h|6h|1d|1w)$")
     replay_chunk_interval: str | None = Field(None, pattern=r"^(15m|1h|6h|1d|1w)$")
+    scan_lookback_hours: int | None = Field(default=None, ge=1)
     scan_row_limit: int | None = Field(default=None, ge=1)
     metrics_row_limit: int | None = Field(default=None, ge=1)
 
@@ -174,6 +175,7 @@ class ScanConfigUpdate(BaseModel):
     cardinality_threshold: int | None = Field(None, ge=1)
     interval: str | None = Field(None, pattern=r"^(15m|1h|6h|1d|1w)$")
     replay_chunk_interval: str | None = Field(None, pattern=r"^(15m|1h|6h|1d|1w)$")
+    scan_lookback_hours: int | None = Field(default=None, ge=1)
     scan_row_limit: int | None = Field(default=None, ge=1)
     metrics_row_limit: int | None = Field(default=None, ge=1)
 
@@ -221,6 +223,7 @@ class ScanConfigResponse(BaseModel):
     cardinality_threshold: int
     interval: str | None
     replay_chunk_interval: str | None
+    scan_lookback_hours: int | None
     scan_row_limit: int | None
     metrics_row_limit: int | None
     created_at: datetime
@@ -251,6 +254,8 @@ class ScanConfigPreviewRequest(BaseModel):
     base_query: str = Field(min_length=1)
     limit: int = Field(default=10, ge=1, le=50)
     json_value_paths: list[str] = Field(default_factory=list)
+    time_column: str | None = Field(default=None, min_length=1, max_length=255)
+    scan_lookback_hours: int | None = Field(default=None, ge=1)
 
     @field_validator("json_value_paths")
     @classmethod

@@ -184,6 +184,10 @@ def _get_json_path_samples(
     base_query: str,
     json_column_names: list[str],
     fallback_rows: list[dict[str, object]],
+    *,
+    time_column: str | None = None,
+    time_from: datetime | None = None,
+    time_to: datetime | None = None,
 ) -> dict[str, dict[str, list[object]]]:
     if not json_column_names:
         return {}
@@ -192,6 +196,9 @@ def _get_json_path_samples(
         return adapter.get_json_path_samples(
             base_query,
             json_column_names,
+            time_column=time_column,
+            time_from=time_from,
+            time_to=time_to,
             path_limit=JSON_PATH_DISCOVERY_LIMIT,
             sample_limit=JSON_PATH_SAMPLE_LIMIT,
             sample_row_limit=JSON_PATH_SAMPLE_ROW_LIMIT,
@@ -205,6 +212,10 @@ def build_preview_payload(
     base_query: str,
     json_value_paths: list[str],
     limit: int,
+    *,
+    time_column: str | None = None,
+    time_from: datetime | None = None,
+    time_to: datetime | None = None,
 ) -> dict[str, object]:
     """Connect, sample rows, discover JSON paths and return a preview payload.
 
@@ -216,7 +227,13 @@ def build_preview_payload(
     columns = adapter.get_columns(base_query)
     column_map = {column.name: column for column in columns}
     preview_fetch_limit = min(max(limit * 8, 50), 200)
-    row_column_names, row_values = adapter.get_preview_rows(base_query, limit=preview_fetch_limit)
+    row_column_names, row_values = adapter.get_preview_rows(
+        base_query,
+        limit=preview_fetch_limit,
+        time_column=time_column,
+        time_from=time_from,
+        time_to=time_to,
+    )
 
     sampled_rows = [
         {name: value for name, value in zip(row_column_names, row, strict=False)}
@@ -241,6 +258,9 @@ def build_preview_payload(
         base_query,
         json_column_names,
         sampled_rows,
+        time_column=time_column,
+        time_from=time_from,
+        time_to=time_to,
     )
     json_path_samples = _merge_json_path_samples(
         discovered_json_path_samples,

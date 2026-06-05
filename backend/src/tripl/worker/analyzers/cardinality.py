@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 from collections import defaultdict
 from dataclasses import dataclass, field
+from datetime import datetime
 
 from tripl.worker.adapters.base import BaseAdapter, ColumnInfo
 
@@ -115,6 +116,9 @@ def analyze_cardinality(
     columns: list[ColumnInfo],
     threshold: int = 100,
     json_value_paths: dict[str, list[str]] | None = None,
+    time_column: str | None = None,
+    time_from: datetime | None = None,
+    time_to: datetime | None = None,
     row_limit: int = 50000,
     **_kwargs: object,
 ) -> BreakdownAnalysis:
@@ -127,6 +131,9 @@ def analyze_cardinality(
         [c.name for c in regular_cols],
         [c.name for c in json_cols],
         json_value_paths=json_value_paths,
+        time_column=time_column,
+        time_from=time_from,
+        time_to=time_to,
         limit=row_limit + 1,
     )
     row_limit_reached = len(fetched_rows) > row_limit
@@ -148,6 +155,9 @@ def analyze_cardinality_grouped(
     group_column: str,
     threshold: int = 100,
     json_value_paths: dict[str, list[str]] | None = None,
+    time_column: str | None = None,
+    time_from: datetime | None = None,
+    time_to: datetime | None = None,
     row_limit: int = 50000,
     **_kwargs: object,
 ) -> tuple[list[str], dict[str, BreakdownAnalysis]]:
@@ -164,6 +174,9 @@ def analyze_cardinality_grouped(
         [c.name for c in regular_cols],
         [c.name for c in json_cols],
         json_value_paths=json_value_paths,
+        time_column=time_column,
+        time_from=time_from,
+        time_to=time_to,
         limit=row_limit + 1,
     )
     row_limit_reached = len(fetched_rows) > row_limit

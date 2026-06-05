@@ -66,6 +66,9 @@ class ScanConfig(UUIDMixin, TimestampMixin, Base):
     # replay runs several bounded warehouse queries instead of one that times out.
     # Must be >= ``interval``; NULL means "scan the whole window in one query".
     replay_chunk_interval: Mapped[str | None] = mapped_column(String(10), nullable=True)
+    # Optional lookback for manual scan/preview catalog sync. Scheduled metrics
+    # catalog sync uses the collection window when this is unset.
+    scan_lookback_hours: Mapped[int | None] = mapped_column(Integer, nullable=True)
     # Optional override for GROUP BY ALL scan query row cap.
     scan_row_limit: Mapped[int | None] = mapped_column(Integer, nullable=True)
     # Optional override for time-bucketed replay/metrics query row caps.

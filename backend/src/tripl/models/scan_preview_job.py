@@ -32,6 +32,8 @@ class ScanPreviewJob(UUIDMixin, TimestampMixin, Base):
     base_query: Mapped[str] = mapped_column(Text)
     json_value_paths: Mapped[list[str]] = mapped_column(sa.JSON, default=list)
     row_limit: Mapped[int] = mapped_column(Integer, default=10)
+    time_column: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    scan_lookback_hours: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
     status: Mapped[str] = mapped_column(String(20), default=ScanJobStatus.pending.value)
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

@@ -56,8 +56,13 @@ class ClickHouseAdapter(BaseAdapter):
         self,
         base_query: str,
         limit: int = 10,
+        *,
+        time_column: str | None = None,
+        time_from: datetime | None = None,
+        time_to: datetime | None = None,
     ) -> tuple[list[str], list[tuple[object, ...]]]:
-        sql = f"SELECT * FROM ({base_query}) AS _src LIMIT {int(limit)}"
+        where_clause = self._time_window_where_clause(time_column, time_from, time_to)
+        sql = f"SELECT * FROM ({base_query}) AS _src{where_clause} LIMIT {int(limit)}"
         logger.info("CH preview query: %s", sql)
         result = self._client.query(sql)
         return list(result.column_names), result.result_rows
@@ -67,6 +72,9 @@ class ClickHouseAdapter(BaseAdapter):
         base_query: str,
         json_columns: list[str],
         *,
+        time_column: str | None = None,
+        time_from: datetime | None = None,
+        time_to: datetime | None = None,
         path_limit: int = 1000,
         sample_limit: int = 3,
         sample_row_limit: int = 1000,
@@ -81,13 +89,14 @@ class ClickHouseAdapter(BaseAdapter):
             return {column: {} for column in json_columns}
 
         samples_by_column: dict[str, dict[str, list[object]]] = {}
+        where_clause = self._time_window_where_clause(time_column, time_from, time_to)
         for column in json_columns:
             c = self._validate_column(column)
             path_sql = (
                 "SELECT _path "
                 "FROM ("
                 f"SELECT arrayJoin(JSONAllPaths(`{c}`)) AS _path "
-                f"FROM ({base_query}) AS _src"
+                f"FROM ({base_query}) AS _src{where_clause}"
                 ") "
                 "WHERE _path != '' "
                 "GROUP BY _path "
@@ -123,7 +132,7 @@ class ClickHouseAdapter(BaseAdapter):
 
             sample_sql = (
                 f"SELECT {', '.join(select_parts)} "
-                f"FROM ({base_query}) AS _src "
+                f"FROM ({base_query}) AS _src{where_clause} "
                 f"LIMIT {int(sample_row_limit)}"
             )
             logger.info("CH JSON path sample query: %s", sample_sql)
@@ -179,6 +188,19 @@ class ClickHouseAdapter(BaseAdapter):
     def _quote_string(self, value: str) -> str:
         escaped = value.replace("\\", "\\\\").replace("'", "\\'")
         return f"'{escaped}'"
+
+    def _time_window_where_clause(
+        self,
+        time_column: str | None,
+        time_from: datetime | None,
+        time_to: datetime | None,
+    ) -> str:
+        if time_column is None or time_from is None or time_to is None:
+            return ""
+        tc = self._validate_column(time_column)
+        t_from = time_from.strftime("%Y-%m-%d %H:%M:%S")
+        t_to = time_to.strftime("%Y-%m-%d %H:%M:%S")
+        return f" WHERE `{tc}` >= '{t_from}' AND `{tc}` < '{t_to}'"
 
     def _top_breakdown_values_multi(
         self,
@@ -239,6 +261,9 @@ class ClickHouseAdapter(BaseAdapter):
         regular_columns: list[str],
         json_columns: list[str],
         json_value_paths: dict[str, list[str]] | None = None,
+        time_column: str | None = None,
+        time_from: datetime | None = None,
+        time_to: datetime | None = None,
         limit: int = 50000,
     ) -> tuple[list[str], list[str], list[str], list[tuple[object, ...]]]:
         """Single GROUP BY ALL query: regular cols + JSONAllPaths(json cols) + count().
@@ -263,10 +288,11 @@ class ClickHouseAdapter(BaseAdapter):
                 )
                 json_value_names.append(full_path)
         select_parts.append("count() AS _cnt")
+        where_clause = self._time_window_where_clause(time_column, time_from, time_to)
 
         sql = (
             f"SELECT {', '.join(select_parts)} "
-            f"FROM ({base_query}) AS _src "
+            f"FROM ({base_query}) AS _src{where_clause} "
             f"GROUP BY ALL "
             f"ORDER BY _cnt DESC "
             f"LIMIT {int(limit)}"

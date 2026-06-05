@@ -71,6 +71,7 @@ class TestScanConfigsCRUD:
                     }
                 ],
                 "cardinality_threshold": 50,
+                "scan_lookback_hours": 24,
                 "scan_row_limit": 60000,
                 "metrics_row_limit": 120000,
             },
@@ -87,6 +88,7 @@ class TestScanConfigsCRUD:
         assert data["metric_breakdown_columns"] == ["country", "platform"]
         assert data["metric_breakdown_values_limit"] == 20
         assert data["distribution_drift_fields"] == ["platform"]
+        assert data["scan_lookback_hours"] == 24
         assert data["scan_row_limit"] == 60000
         assert data["metrics_row_limit"] == 120000
         assert data["event_group_rules"] == [
@@ -261,6 +263,7 @@ class TestScanConfigsCRUD:
                 "metric_breakdown_columns": ["country"],
                 "metric_breakdown_values_limit": None,
                 "distribution_drift_fields": ["country"],
+                "scan_lookback_hours": 48,
                 "scan_row_limit": 70000,
                 "metrics_row_limit": 150000,
             },
@@ -271,6 +274,7 @@ class TestScanConfigsCRUD:
         assert resp.json()["metric_breakdown_columns"] == ["country"]
         assert resp.json()["metric_breakdown_values_limit"] is None
         assert resp.json()["distribution_drift_fields"] == ["country"]
+        assert resp.json()["scan_lookback_hours"] == 48
         assert resp.json()["scan_row_limit"] == 70000
         assert resp.json()["metrics_row_limit"] == 150000
 
@@ -396,6 +400,7 @@ class TestScanConfigsCRUD:
                 self,
                 base_query: str,
                 limit: int = 10,
+                **_kwargs: object,
             ) -> tuple[list[str], list[tuple[object, ...]]]:
                 return (
                     ["event_name", "created_at", "payload"],
@@ -454,6 +459,7 @@ class TestScanConfigsCRUD:
                 self,
                 base_query: str,
                 limit: int = 10,
+                **_kwargs: object,
             ) -> tuple[list[str], list[tuple[object, ...]]]:
                 assert limit >= 16
                 return (
@@ -489,6 +495,7 @@ class TestScanConfigsCRUD:
                 self,
                 base_query: str,
                 limit: int = 10,
+                **_kwargs: object,
             ) -> tuple[list[str], list[tuple[object, ...]]]:
                 return (
                     ["event_name", "payload"],
@@ -502,6 +509,9 @@ class TestScanConfigsCRUD:
                 base_query: str,
                 json_columns: list[str],
                 *,
+                time_column: str | None = None,
+                time_from: datetime | None = None,
+                time_to: datetime | None = None,
                 path_limit: int,
                 sample_limit: int,
                 sample_row_limit: int,
@@ -562,6 +572,7 @@ class TestScanConfigsCRUD:
                 self,
                 base_query: str,
                 limit: int = 10,
+                **_kwargs: object,
             ) -> tuple[list[str], list[tuple[object, ...]]]:
                 return (
                     ["event_name", "payload"],
@@ -575,6 +586,9 @@ class TestScanConfigsCRUD:
                 base_query: str,
                 json_columns: list[str],
                 *,
+                time_column: str | None = None,
+                time_from: datetime | None = None,
+                time_to: datetime | None = None,
                 path_limit: int,
                 sample_limit: int,
                 sample_row_limit: int,
@@ -677,11 +691,15 @@ class TestScanConfigsCRUD:
                         base_query="SELECT * FROM events",
                         json_value_paths=[],
                         row_limit=5,
+                        time_column="created_at",
+                        scan_lookback_hours=24,
                         status="pending",
                     ),
                 ]
             )
             session.commit()
+
+        preview_kwargs: dict[str, object] = {}
 
         class FakeAdapter:
             def test_connection(self) -> bool:
@@ -697,7 +715,9 @@ class TestScanConfigsCRUD:
                 self,
                 base_query: str,
                 limit: int = 10,
+                **_kwargs: object,
             ) -> tuple[list[str], list[tuple[object, ...]]]:
+                preview_kwargs.update(_kwargs)
                 return (["event_name", "payload"], [("purchase", {"locale": "en"})])
 
             def get_json_path_samples(
@@ -705,6 +725,9 @@ class TestScanConfigsCRUD:
                 base_query: str,
                 json_columns: list[str],
                 *,
+                time_column: str | None = None,
+                time_from: datetime | None = None,
+                time_to: datetime | None = None,
                 path_limit: int,
                 sample_limit: int,
                 sample_row_limit: int,
@@ -729,6 +752,9 @@ class TestScanConfigsCRUD:
 
         assert [column["name"] for column in result["columns"]] == ["event_name", "payload"]
         assert result["rows"][0]["payload"] == {"locale": "en"}
+        assert preview_kwargs["time_column"] == "created_at"
+        assert preview_kwargs["time_from"] is not None
+        assert preview_kwargs["time_to"] is not None
 
         with sync_session_factory() as session:
             job = session.get(ScanPreviewJob, job_id)

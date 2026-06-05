@@ -197,6 +197,9 @@ describe('ProjectSettingsPage', () => {
             cardinality_threshold: 100,
             interval: '1h',
             replay_chunk_interval: null,
+            scan_lookback_hours: null,
+            scan_row_limit: null,
+            metrics_row_limit: null,
             created_at: '2026-01-01T00:00:00Z',
             updated_at: '2026-01-01T00:00:00Z',
           },
@@ -318,6 +321,9 @@ describe('ProjectSettingsPage', () => {
             cardinality_threshold: 100,
             interval: null,
             replay_chunk_interval: null,
+            scan_lookback_hours: null,
+            scan_row_limit: null,
+            metrics_row_limit: null,
             created_at: '2026-01-01T00:00:00Z',
             updated_at: '2026-01-01T00:00:00Z',
           },
@@ -427,6 +433,9 @@ describe('ProjectSettingsPage', () => {
             cardinality_threshold: 100,
             interval: '1h',
             replay_chunk_interval: null,
+            scan_lookback_hours: null,
+            scan_row_limit: null,
+            metrics_row_limit: null,
             created_at: '2026-01-01T00:00:00Z',
             updated_at: '2026-01-01T00:00:00Z',
           },
@@ -939,6 +948,9 @@ describe('ProjectSettingsPage', () => {
           cardinality_threshold: body.cardinality_threshold,
           interval: body.interval,
           replay_chunk_interval: body.replay_chunk_interval,
+          scan_lookback_hours: body.scan_lookback_hours,
+          scan_row_limit: body.scan_row_limit,
+          metrics_row_limit: body.metrics_row_limit,
           created_at: '2026-04-12T00:00:00Z',
           updated_at: '2026-04-12T00:00:00Z',
         })
@@ -1014,6 +1026,9 @@ describe('ProjectSettingsPage', () => {
         cardinality_threshold: 100,
         interval: null,
         replay_chunk_interval: null,
+        scan_lookback_hours: 24,
+        scan_row_limit: null,
+        metrics_row_limit: null,
       })
     })
   })
@@ -1256,6 +1271,9 @@ describe('ProjectSettingsPage', () => {
             cardinality_threshold: 100,
             interval: null,
             replay_chunk_interval: null,
+            scan_lookback_hours: null,
+            scan_row_limit: null,
+            metrics_row_limit: null,
             created_at: '2026-04-12T00:00:00Z',
             updated_at: '2026-04-12T00:00:00Z',
           },
@@ -1324,6 +1342,8 @@ describe('ProjectSettingsPage', () => {
         base_query: 'SELECT * FROM analytics.events',
         limit: 10,
         json_value_paths: ['payload.extra.key'],
+        time_column: null,
+        scan_lookback_hours: null,
       })
     })
 

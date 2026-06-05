@@ -87,8 +87,13 @@ class PostgresAdapter(BaseAdapter):
         self,
         base_query: str,
         limit: int = 10,
+        *,
+        time_column: str | None = None,
+        time_from: datetime | None = None,
+        time_to: datetime | None = None,
     ) -> tuple[list[str], list[tuple[object, ...]]]:
-        sql = f"SELECT * FROM ({base_query}) AS _src LIMIT {int(limit)}"
+        where_clause = self._time_window_where_clause(time_column, time_from, time_to)
+        sql = f"SELECT * FROM ({base_query}) AS _src{where_clause} LIMIT {int(limit)}"
         logger.info("PG preview query: %s", sql)
         with self._conn.cursor() as cur:
             cur.execute(sql)
@@ -132,6 +137,20 @@ class PostgresAdapter(BaseAdapter):
     def _quote_string(self, value: str) -> str:
         return "'" + value.replace("'", "''") + "'"
 
+    def _time_window_where_clause(
+        self,
+        time_column: str | None,
+        time_from: datetime | None,
+        time_to: datetime | None,
+    ) -> str:
+        if time_column is None or time_from is None or time_to is None:
+            return ""
+        tc = self._validate_column(time_column)
+        t_from = time_from.strftime("%Y-%m-%d %H:%M:%S")
+        t_to = time_to.strftime("%Y-%m-%d %H:%M:%S")
+        quoted = _quote_ident(tc)
+        return f" WHERE {quoted} >= '{t_from}' AND {quoted} < '{t_to}'"
+
     def _json_paths_expression(self, column: str) -> str:
         # Top-level JSONB keys, sorted, returned as a text[] for parity with
         # ClickHouse's `arraySort(JSONAllPaths(col))` output shape.
@@ -147,6 +166,9 @@ class PostgresAdapter(BaseAdapter):
         regular_columns: list[str],
         json_columns: list[str],
         json_value_paths: dict[str, list[str]] | None = None,
+        time_column: str | None = None,
+        time_from: datetime | None = None,
+        time_to: datetime | None = None,
         limit: int = 50000,
     ) -> tuple[list[str], list[str], list[str], list[tuple[object, ...]]]:
         reg_cols = [self._validate_column(c) for c in regular_columns]
@@ -173,9 +195,10 @@ class PostgresAdapter(BaseAdapter):
         select_parts.append("count(*) AS _cnt")
 
         group_by = ", ".join(group_parts) if group_parts else "()"
+        where_clause = self._time_window_where_clause(time_column, time_from, time_to)
         sql = (
             f"SELECT {', '.join(select_parts)} "
-            f"FROM ({base_query}) AS _src "
+            f"FROM ({base_query}) AS _src{where_clause} "
             f"GROUP BY {group_by} "
             f"ORDER BY _cnt DESC "
             f"LIMIT {int(limit)}"
