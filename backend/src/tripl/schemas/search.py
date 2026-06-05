@@ -16,6 +16,19 @@ SearchEntityType = Literal[
 ]
 
 
+class SearchEventVariableValue(BaseModel):
+    id: uuid.UUID
+    variable_id: uuid.UUID
+    variable_name: str
+    field_definition_id: uuid.UUID
+    field_name: str
+    field_display_name: str
+    source_column: str
+    value_kind: Literal["low", "high"]
+    observed_count: int
+    values: list[str] = []
+
+
 class SearchResult(BaseModel):
     id: uuid.UUID
     entity_type: SearchEntityType
@@ -24,6 +37,7 @@ class SearchResult(BaseModel):
     event_id: uuid.UUID | None = None
     name: str | None = None
     implemented: bool | None = None
+    variable_values: list[SearchEventVariableValue] = []
     title: str
     subtitle: str = ""
     description: str = ""

@@ -312,6 +312,12 @@ export type SearchEntityType =
   | 'relation'
   | 'tag'
 
+export interface SearchEventVariableValue extends EventFieldVariableValue {
+  field_definition_id: string
+  field_name: string
+  field_display_name: string
+}
+
 export interface SearchResult {
   id: string
   entity_type: SearchEntityType
@@ -320,6 +326,7 @@ export interface SearchResult {
   event_id: string | null
   name: string | null
   implemented: boolean | null
+  variable_values: SearchEventVariableValue[]
   title: string
   subtitle: string
   description: string

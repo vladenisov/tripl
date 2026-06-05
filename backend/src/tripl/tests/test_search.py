@@ -124,11 +124,29 @@ async def test_global_search_matches_multilingual_plan_content(client: AsyncClie
         display_name="Checkout / Покупка",
         description="Финальные шаги оформления заказа",
     )
+    secret_field_resp = await client.post(
+        f"/api/v1/projects/search-ml/event-types/{event_type_id}/fields",
+        json={
+            "name": "api_token",
+            "display_name": "API Token",
+            "field_type": "string",
+            "sensitivity": "secret",
+        },
+    )
+    assert secret_field_resp.status_code == 201
+    secret_field_id = secret_field_resp.json()["id"]
     variable_create = await client.post(
         "/api/v1/projects/search-ml/variables",
         json={"name": "user_id", "description": "Идентификатор пользователя"},
     )
+    secret_variable_create = await client.post(
+        "/api/v1/projects/search-ml/variables",
+        json={"name": "api_token", "description": "Sensitive token"},
+    )
+    assert variable_create.status_code == 201
+    assert secret_variable_create.status_code == 201
     variable_id = uuid.UUID(variable_create.json()["id"])
+    secret_variable_id = uuid.UUID(secret_variable_create.json()["id"])
     event_resp = await client.post(
         "/api/v1/projects/search-ml/events",
         json={
@@ -136,7 +154,10 @@ async def test_global_search_matches_multilingual_plan_content(client: AsyncClie
             "name": "Checkout Completed",
             "description": "Fires when покупка успешно завершена",
             "tags": ["покупка"],
-            "field_values": [{"field_definition_id": field_id, "value": "завершение покупки"}],
+            "field_values": [
+                {"field_definition_id": field_id, "value": "завершение покупки"},
+                {"field_definition_id": secret_field_id, "value": "${api_token}"},
+            ],
         },
     )
     assert event_resp.status_code == 201
@@ -144,8 +165,10 @@ async def test_global_search_matches_multilingual_plan_content(client: AsyncClie
 
     async with TestSessionLocal() as session, session.begin():
         variable = await session.get(Variable, variable_id)
+        secret_variable = await session.get(Variable, secret_variable_id)
         event = await session.get(Event, event_id)
         assert variable is not None
+        assert secret_variable is not None
         assert event is not None
         session.add(
             VariableValue(
@@ -158,6 +181,19 @@ async def test_global_search_matches_multilingual_plan_content(client: AsyncClie
                 value_kind="low",
                 observed_count=1,
                 values=["vip_segment"],
+            )
+        )
+        session.add(
+            VariableValue(
+                project_id=secret_variable.project_id,
+                branch_id=secret_variable.branch_id,
+                variable_id=secret_variable.id,
+                event_id=event.id,
+                field_definition_id=uuid.UUID(secret_field_id),
+                source_column="api_token",
+                value_kind="low",
+                observed_count=1,
+                values=["sk_live_should_not_leak"],
             )
         )
     await client.patch(
@@ -182,6 +218,17 @@ async def test_global_search_matches_multilingual_plan_content(client: AsyncClie
     assert event_hit["event_id"] == str(event_id)
     assert event_hit["name"] == "Checkout Completed"
     assert event_hit["implemented"] is False
+    variable_contexts = event_hit["variable_values"]
+    assert len(variable_contexts) == 1
+    assert variable_contexts[0]["variable_id"] == str(variable_id)
+    assert variable_contexts[0]["variable_name"] == "user_id"
+    assert variable_contexts[0]["field_definition_id"] == field_id
+    assert variable_contexts[0]["field_name"] == "screen"
+    assert variable_contexts[0]["field_display_name"] == "Экран"
+    assert variable_contexts[0]["source_column"] == "user_id"
+    assert variable_contexts[0]["value_kind"] == "low"
+    assert variable_contexts[0]["observed_count"] == 1
+    assert variable_contexts[0]["values"] == ["vip_segment"]
     assert event_hit["description"] == "Fires when покупка успешно завершена"
     assert 0.0 <= event_hit["confidence"] <= 1.0
     assert ru_items[0]["confidence"] == 1.0
