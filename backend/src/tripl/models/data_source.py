@@ -36,6 +36,7 @@ class DataSource(UUIDMixin, TimestampMixin, Base):
     database_name: Mapped[str] = mapped_column(String(255))
     username: Mapped[str] = mapped_column(String(255), default="")
     password_encrypted: Mapped[str] = mapped_column(Text, default="")
+    timeout_seconds: Mapped[int | None] = mapped_column(Integer, nullable=True, default=None)
     extra_params: Mapped[dict[str, object] | None] = mapped_column(sa.JSON, nullable=True)
 
     last_test_at: Mapped[datetime | None] = mapped_column(

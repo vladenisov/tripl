@@ -406,6 +406,7 @@ export interface DataSource {
   database_name: string
   username: string
   password_set: boolean
+  timeout_seconds: number | null
   extra_params: Record<string, unknown> | null
   last_test_at: string | null
   last_test_status: DataSourceTestStatus | null

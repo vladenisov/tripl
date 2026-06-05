@@ -51,3 +51,24 @@ def test_register_adapter_can_inject_factory() -> None:
         from tripl.worker.adapters import registry as registry_module
 
         registry_module._REGISTRY.pop("__test_dummy__", None)
+
+
+def test_clickhouse_timeout_maps_to_send_receive_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
+    from tripl.worker.adapters import clickhouse as clickhouse_module
+
+    captured: dict[str, object] = {}
+
+    class FakeClickHouseAdapter:
+        def __init__(self, **kwargs: object) -> None:
+            captured.update(kwargs)
+
+    monkeypatch.setattr(clickhouse_module, "ClickHouseAdapter", FakeClickHouseAdapter)
+
+    ds = _make_ds("clickhouse")
+    ds.timeout_seconds = 75
+
+    result = build_adapter(ds)
+
+    assert isinstance(result, FakeClickHouseAdapter)
+    assert captured["send_receive_timeout"] == 75
+    assert "timeout_seconds" not in captured

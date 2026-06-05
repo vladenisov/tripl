@@ -31,12 +31,17 @@ def build_adapter(ds: DataSource) -> BaseAdapter:
 def _build_clickhouse(ds: DataSource, password: str) -> BaseAdapter:
     from tripl.worker.adapters.clickhouse import ClickHouseAdapter
 
+    kwargs: dict[str, object] = {}
+    if ds.timeout_seconds is not None:
+        kwargs["send_receive_timeout"] = ds.timeout_seconds
+
     return ClickHouseAdapter(
         host=ds.host,
         port=ds.port,
         database=ds.database_name,
         username=ds.username,
         password=password,
+        **kwargs,
     )
 
 

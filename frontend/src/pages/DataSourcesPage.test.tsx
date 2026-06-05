@@ -14,6 +14,7 @@ const DATA_SOURCE: DataSource = {
   database_name: 'analytics',
   username: 'default',
   password_set: false,
+  timeout_seconds: null,
   extra_params: null,
   last_test_at: null,
   last_test_status: null,
@@ -104,6 +105,8 @@ describe('DataSourcesPage', () => {
   })
 
   it('closes a directly opened edit dialog after save', async () => {
+    let patchPayload: Record<string, unknown> | undefined
+
     vi.spyOn(globalThis, 'fetch').mockImplementation((input: RequestInfo | URL, init?: RequestInit) => {
       const url =
         typeof input === 'string'
@@ -117,6 +120,7 @@ describe('DataSourcesPage', () => {
       }
 
       if (url.endsWith('/api/v1/data-sources/ds-1') && init?.method === 'PATCH') {
+        patchPayload = JSON.parse(String(init.body)) as Record<string, unknown>
         return Promise.resolve(jsonResponse(DATA_SOURCE))
       }
 
@@ -126,6 +130,7 @@ describe('DataSourcesPage', () => {
     renderDataSourcesPage()
 
     expect(await screen.findByRole('dialog', { name: 'Edit data source' })).toBeInTheDocument()
+    fireEvent.change(screen.getByPlaceholderText('Default'), { target: { value: '120' } })
 
     fireEvent.click(screen.getByRole('button', { name: 'Save' }))
 
@@ -133,5 +138,6 @@ describe('DataSourcesPage', () => {
       expect(screen.queryByRole('dialog', { name: 'Edit data source' })).not.toBeInTheDocument()
     })
     expect(screen.getByTestId('location')).toHaveTextContent('/data-sources')
+    expect(patchPayload?.timeout_seconds).toBe(120)
   })
 })
