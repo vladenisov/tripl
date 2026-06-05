@@ -179,6 +179,9 @@ async def test_global_search_matches_multilingual_plan_content(client: AsyncClie
     assert event_hit is not None
     # The event's own description is returned verbatim for display, and every
     # result carries a confidence normalized to the top hit.
+    assert event_hit["event_id"] == str(event_id)
+    assert event_hit["name"] == "Checkout Completed"
+    assert event_hit["implemented"] is False
     assert event_hit["description"] == "Fires when покупка успешно завершена"
     assert 0.0 <= event_hit["confidence"] <= 1.0
     assert ru_items[0]["confidence"] == 1.0

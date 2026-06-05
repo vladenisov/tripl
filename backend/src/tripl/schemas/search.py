@@ -21,6 +21,9 @@ class SearchResult(BaseModel):
     entity_type: SearchEntityType
     entity_id: uuid.UUID
     parent_event_id: uuid.UUID | None = None
+    event_id: uuid.UUID | None = None
+    name: str | None = None
+    implemented: bool | None = None
     title: str
     subtitle: str = ""
     description: str = ""

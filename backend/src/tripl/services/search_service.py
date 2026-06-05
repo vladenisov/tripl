@@ -227,6 +227,12 @@ async def search_project(
         semantic_used = False
 
     items = _finalize_results(items, capped_limit)
+    await _enrich_event_hits(
+        session,
+        items,
+        project_id=project_id,
+        branch_id=resolved_branch_id,
+    )
     return SearchResponse(items=items, total=len(items), semantic_used=semantic_used)
 
 
@@ -1047,6 +1053,44 @@ def _apply_event_type_boost(items: list[SearchResult]) -> list[SearchResult]:
         if relevance > 0:
             item.score *= 1.0 + _TYPE_BOOST_WEIGHT * relevance
     return items
+
+
+async def _enrich_event_hits(
+    session: AsyncSession,
+    items: list[SearchResult],
+    *,
+    project_id: uuid.UUID,
+    branch_id: uuid.UUID,
+) -> None:
+    event_ids: set[uuid.UUID] = set()
+    for item in items:
+        if item.parent_event_id is not None:
+            event_ids.add(item.parent_event_id)
+    if not event_ids:
+        return
+
+    rows = (
+        await session.execute(
+            select(Event.id, Event.name, Event.implemented).where(
+                Event.project_id == project_id,
+                Event.branch_id == branch_id,
+                Event.id.in_(event_ids),
+            )
+        )
+    ).all()
+    events_by_id: dict[uuid.UUID, tuple[str, bool]] = {
+        event_id: (name, implemented) for event_id, name, implemented in rows
+    }
+    for item in items:
+        if item.parent_event_id is None:
+            continue
+        event_state = events_by_id.get(item.parent_event_id)
+        if event_state is None:
+            continue
+        name, implemented = event_state
+        item.event_id = item.parent_event_id
+        item.name = name
+        item.implemented = implemented
 
 
 def _row_to_result(row: object, query: str, *, semantic_used: bool) -> SearchResult:
