@@ -2629,6 +2629,9 @@ def test_replay_enriches_existing_high_context_values(
             base_query: str,
             json_columns: list[str],
             *,
+            time_column: str | None = None,
+            time_from: datetime | None = None,
+            time_to: datetime | None = None,
             path_limit: int = 1000,
             sample_limit: int = 3,
             sample_row_limit: int = 1000,
@@ -2698,11 +2701,15 @@ def test_collect_metrics_uses_configured_metrics_row_limit(
 
     adapter = FakeAdapter()
     seen_scan_limits: list[object] = []
+    seen_scan_windows: list[tuple[object, object, object]] = []
     monkeypatch.setattr(metrics, "_get_sync_session", sync_session_factory)
     monkeypatch.setattr(metrics, "_build_adapter", lambda ds: adapter)
 
     def fake_analyze_cardinality(*args: object, **kwargs: object) -> object:
         seen_scan_limits.append(kwargs.get("row_limit"))
+        seen_scan_windows.append(
+            (kwargs.get("time_column"), kwargs.get("time_from"), kwargs.get("time_to"))
+        )
         return object()
 
     monkeypatch.setattr(metrics, "analyze_cardinality", fake_analyze_cardinality)
@@ -2720,6 +2727,9 @@ def test_collect_metrics_uses_configured_metrics_row_limit(
     result = metrics.collect_metrics.run(config_id)
 
     assert seen_scan_limits == [17]
+    assert seen_scan_windows[0][0] == "time"
+    assert seen_scan_windows[0][1] is not None
+    assert seen_scan_windows[0][2] is not None
     assert adapter.seen_limit == 124
     assert result["scan_row_limit"] == 17
     assert result["metrics_row_limit"] == 123

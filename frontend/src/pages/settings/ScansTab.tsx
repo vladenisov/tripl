@@ -89,6 +89,13 @@ function eligibleChunkIntervals(interval: string): IntervalCode[] {
   return INTERVAL_ORDER.slice(idx)
 }
 
+function parseOptionalPositiveInt(value: string): number | null {
+  const trimmed = value.trim()
+  if (!trimmed) return null
+  const parsed = Number(trimmed)
+  return Number.isFinite(parsed) ? Math.trunc(parsed) : null
+}
+
 function emptyGroupRule(): EventGroupRule {
   return {
     name: '',
@@ -556,6 +563,9 @@ export function ScansTab({ slug }: { slug: string }) {
   const [cardinalityThreshold, setCardinalityThreshold] = useState(100)
   const [interval, setInterval] = useState('')
   const [chunkInterval, setChunkInterval] = useState('')
+  const [scanLookbackHours, setScanLookbackHours] = useState('24')
+  const [scanRowLimit, setScanRowLimit] = useState('')
+  const [metricsRowLimit, setMetricsRowLimit] = useState('')
 
   // Edit state
   const [editName, setEditName] = useState('')
@@ -572,6 +582,9 @@ export function ScansTab({ slug }: { slug: string }) {
   const [editCardinalityThreshold, setEditCardinalityThreshold] = useState(100)
   const [editInterval, setEditInterval] = useState('')
   const [editChunkInterval, setEditChunkInterval] = useState('')
+  const [editScanLookbackHours, setEditScanLookbackHours] = useState('')
+  const [editScanRowLimit, setEditScanRowLimit] = useState('')
+  const [editMetricsRowLimit, setEditMetricsRowLimit] = useState('')
 
   const { data: dataSources = [] } = useQuery({
     queryKey: ['dataSources'],
@@ -608,6 +621,9 @@ export function ScansTab({ slug }: { slug: string }) {
         cardinality_threshold: cardinalityThreshold,
         interval: interval || null,
         replay_chunk_interval: chunkInterval || null,
+        scan_lookback_hours: parseOptionalPositiveInt(scanLookbackHours),
+        scan_row_limit: parseOptionalPositiveInt(scanRowLimit),
+        metrics_row_limit: parseOptionalPositiveInt(metricsRowLimit),
       }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['scans', slug] })
@@ -632,6 +648,9 @@ export function ScansTab({ slug }: { slug: string }) {
         cardinality_threshold: editCardinalityThreshold,
         interval: editInterval || null,
         replay_chunk_interval: editChunkInterval || null,
+        scan_lookback_hours: parseOptionalPositiveInt(editScanLookbackHours),
+        scan_row_limit: parseOptionalPositiveInt(editScanRowLimit),
+        metrics_row_limit: parseOptionalPositiveInt(editMetricsRowLimit),
       }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['scans', slug] })
@@ -645,6 +664,8 @@ export function ScansTab({ slug }: { slug: string }) {
       base_query: baseQuery,
       limit: 10,
       json_value_paths: jsonValuePaths,
+      time_column: timeColumn || null,
+      scan_lookback_hours: parseOptionalPositiveInt(scanLookbackHours),
     }),
     onSuccess: data => {
       setPreview(data)
@@ -676,6 +697,8 @@ export function ScansTab({ slug }: { slug: string }) {
         base_query: editBaseQuery,
         limit: 10,
         json_value_paths: editJsonValuePaths,
+        time_column: editTimeColumn || null,
+        scan_lookback_hours: parseOptionalPositiveInt(editScanLookbackHours),
       })
     },
     onSuccess: data => {
@@ -730,6 +753,9 @@ export function ScansTab({ slug }: { slug: string }) {
     setEditCardinalityThreshold(sc.cardinality_threshold)
     setEditInterval(sc.interval ?? '')
     setEditChunkInterval(sc.replay_chunk_interval ?? '')
+    setEditScanLookbackHours(sc.scan_lookback_hours == null ? '' : String(sc.scan_lookback_hours))
+    setEditScanRowLimit(sc.scan_row_limit == null ? '' : String(sc.scan_row_limit))
+    setEditMetricsRowLimit(sc.metrics_row_limit == null ? '' : String(sc.metrics_row_limit))
     setEditPreview(null)
   }
 
@@ -743,6 +769,7 @@ export function ScansTab({ slug }: { slug: string }) {
     setDistributionDriftFields([])
     setMetricBreakdownValuesLimit(''); setPreview(null)
     setCardinalityThreshold(100); setInterval(''); setChunkInterval('')
+    setScanLookbackHours('24'); setScanRowLimit(''); setMetricsRowLimit('')
   }
 
   const toggleJsonValuePath = (path: string) => {
@@ -972,6 +999,20 @@ export function ScansTab({ slug }: { slug: string }) {
                   </select>
                 </div>
               </div>
+              <div className="grid gap-3 sm:grid-cols-3">
+                <div className="grid gap-2">
+                  <Label>Scan Lookback, h</Label>
+                  <Input type="number" value={scanLookbackHours} onChange={e => setScanLookbackHours(e.target.value)} min={1} placeholder="Default" />
+                </div>
+                <div className="grid gap-2">
+                  <Label>Scan Row Cap</Label>
+                  <Input type="number" value={scanRowLimit} onChange={e => setScanRowLimit(e.target.value)} min={1} placeholder="Default" />
+                </div>
+                <div className="grid gap-2">
+                  <Label>Metrics Row Cap</Label>
+                  <Input type="number" value={metricsRowLimit} onChange={e => setMetricsRowLimit(e.target.value)} min={1} placeholder="Default" />
+                </div>
+              </div>
               {interval && (
                 <div className="grid gap-2">
                   <Label>Replay Chunk Size</Label>
@@ -1147,6 +1188,20 @@ export function ScansTab({ slug }: { slug: string }) {
                   </select>
                 </div>
               </div>
+              <div className="grid gap-3 sm:grid-cols-3">
+                <div className="grid gap-2">
+                  <Label>Scan Lookback, h</Label>
+                  <Input type="number" value={editScanLookbackHours} onChange={e => setEditScanLookbackHours(e.target.value)} min={1} placeholder="Default" />
+                </div>
+                <div className="grid gap-2">
+                  <Label>Scan Row Cap</Label>
+                  <Input type="number" value={editScanRowLimit} onChange={e => setEditScanRowLimit(e.target.value)} min={1} placeholder="Default" />
+                </div>
+                <div className="grid gap-2">
+                  <Label>Metrics Row Cap</Label>
+                  <Input type="number" value={editMetricsRowLimit} onChange={e => setEditMetricsRowLimit(e.target.value)} min={1} placeholder="Default" />
+                </div>
+              </div>
               {editInterval && (
                 <div className="grid gap-2">
                   <Label>Replay Chunk Size</Label>
@@ -1180,6 +1235,15 @@ export function ScansTab({ slug }: { slug: string }) {
                   <span className="font-semibold">{sc.name}</span>
                   <span className="text-muted-foreground text-sm">{dsMap.get(sc.data_source_id) ?? 'Unknown'}</span>
                   {sc.interval && <Badge variant="outline" className="text-xs">⏱ {sc.interval}</Badge>}
+                  {sc.scan_lookback_hours && (
+                    <Badge variant="outline" className="text-xs">Lookback {sc.scan_lookback_hours}h</Badge>
+                  )}
+                  {sc.scan_row_limit && (
+                    <Badge variant="outline" className="text-xs">Scan cap {sc.scan_row_limit}</Badge>
+                  )}
+                  {sc.metrics_row_limit && (
+                    <Badge variant="outline" className="text-xs">Metrics cap {sc.metrics_row_limit}</Badge>
+                  )}
                   {sc.json_value_paths.length > 0 && (
                     <Badge variant="outline" className="text-xs">JSON keep {sc.json_value_paths.length}</Badge>
                   )}

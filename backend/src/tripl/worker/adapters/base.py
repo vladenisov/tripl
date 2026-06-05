@@ -24,6 +24,10 @@ class BaseAdapter(abc.ABC):
         self,
         base_query: str,
         limit: int = 10,
+        *,
+        time_column: str | None = None,
+        time_from: datetime | None = None,
+        time_to: datetime | None = None,
     ) -> tuple[list[str], list[tuple[object, ...]]]: ...
 
     def get_json_path_samples(
@@ -31,6 +35,9 @@ class BaseAdapter(abc.ABC):
         base_query: str,
         json_columns: list[str],
         *,
+        time_column: str | None = None,
+        time_from: datetime | None = None,
+        time_to: datetime | None = None,
         path_limit: int = 1000,
         sample_limit: int = 3,
         sample_row_limit: int = 1000,
@@ -50,7 +57,13 @@ class BaseAdapter(abc.ABC):
             format_json_path_value,
         )
 
-        column_names, rows = self.get_preview_rows(base_query, limit=sample_row_limit)
+        column_names, rows = self.get_preview_rows(
+            base_query,
+            limit=sample_row_limit,
+            time_column=time_column,
+            time_from=time_from,
+            time_to=time_to,
+        )
         index_by_name = {name: index for index, name in enumerate(column_names)}
         samples_by_column: dict[str, dict[str, list[object]]] = {
             column: {} for column in json_columns
@@ -83,13 +96,17 @@ class BaseAdapter(abc.ABC):
         regular_columns: list[str],
         json_columns: list[str],
         json_value_paths: dict[str, list[str]] | None = None,
+        time_column: str | None = None,
+        time_from: datetime | None = None,
+        time_to: datetime | None = None,
         limit: int = 50000,
     ) -> tuple[list[str], list[str], list[str], list[tuple[object, ...]]]:
         """Single GROUP BY ALL query that returns everything.
 
         Builds: SELECT reg1, reg2, ..., JSONAllPaths(j1), ...,
                        keep_json_value1, ..., count() AS _cnt
-                FROM (base_query) GROUP BY ALL ORDER BY _cnt DESC LIMIT limit
+                FROM (base_query) [WHERE time_col >= ? AND time_col < ?]
+                GROUP BY ALL ORDER BY _cnt DESC LIMIT limit
 
         Returns (regular_col_names, json_col_names, json_value_names, rows).
         Row layout: (reg_val1, ..., json_paths_array1, ..., keep_json_value1, ..., count).

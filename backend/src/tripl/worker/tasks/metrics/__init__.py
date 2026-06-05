@@ -101,6 +101,7 @@ from tripl.worker.tasks.metrics.urls import (
     _trim_alert_text,
 )
 from tripl.worker.utils.intervals import get_interval
+from tripl.worker.utils.query_windows import TimeWindow, resolve_lookback_window
 
 # Re-exported from sibling modules so existing `tripl.worker.tasks.metrics.<name>`
 # attribute access keeps working after the split.
@@ -896,6 +897,13 @@ def collect_metrics(
             interval_delta=delta,
             chunk_interval_code=config.replay_chunk_interval,
         )
+        catalog_scan_window: TimeWindow | None = resolve_lookback_window(
+            time_column=config.time_column,
+            lookback_hours=config.scan_lookback_hours,
+            end=time_to_dt,
+        )
+        if catalog_scan_window is None and config.time_column:
+            catalog_scan_window = (time_from_dt, time_to_dt)
 
         # ---- PHASE 1: Sync events via exact scan pipeline ----
 
@@ -938,6 +946,9 @@ def collect_metrics(
                 group_column=config.event_type_column,
                 threshold=config.cardinality_threshold,
                 json_value_paths=json_value_path_map,
+                time_column=config.time_column if catalog_scan_window else None,
+                time_from=catalog_scan_window[0] if catalog_scan_window else None,
+                time_to=catalog_scan_window[1] if catalog_scan_window else None,
                 row_limit=scan_row_limit,
             )
             if any(
@@ -1002,6 +1013,9 @@ def collect_metrics(
                 columns,
                 threshold=config.cardinality_threshold,
                 json_value_paths=json_value_path_map,
+                time_column=config.time_column if catalog_scan_window else None,
+                time_from=catalog_scan_window[0] if catalog_scan_window else None,
+                time_to=catalog_scan_window[1] if catalog_scan_window else None,
                 row_limit=scan_row_limit,
             )
             if getattr(analysis, "row_limit_reached", False):
@@ -1098,6 +1112,9 @@ def collect_metrics(
             replay_json_samples = adapter.get_json_path_samples(
                 config.base_query,
                 json_cols,
+                time_column=config.time_column,
+                time_from=time_from_dt,
+                time_to=time_to_dt,
                 path_limit=2000,
                 sample_limit=20,
                 sample_row_limit=5000,
@@ -1538,6 +1555,13 @@ def collect_metrics(
             "variables_created": total_vars,
             "columns_analyzed": total_cols,
             "scan_row_limit": scan_row_limit,
+            "scan_lookback_hours": config.scan_lookback_hours,
+            "catalog_scan_window_from": (
+                catalog_scan_window[0].isoformat() if catalog_scan_window else None
+            ),
+            "catalog_scan_window_to": (
+                catalog_scan_window[1].isoformat() if catalog_scan_window else None
+            ),
             "scan_truncated": False,
             "event_metrics": n_ev,
             "type_metrics": n_tp,

@@ -35,6 +35,7 @@ export const scansApi = {
     cardinality_threshold?: number
     interval?: string | null
     replay_chunk_interval?: string | null
+    scan_lookback_hours?: number | null
     scan_row_limit?: number | null
     metrics_row_limit?: number | null
   }) => api.post<ScanConfig>(`/projects/${slug}/scans`, data),
@@ -46,6 +47,8 @@ export const scansApi = {
     base_query: string
     limit?: number
     json_value_paths?: string[]
+    time_column?: string | null
+    scan_lookback_hours?: number | null
   }) => api.post<ScanPreviewJob>(`/projects/${slug}/scans/preview`, data),
 
   getPreviewJob: (slug: string, jobId: string) =>
@@ -58,6 +61,8 @@ export const scansApi = {
     base_query: string
     limit?: number
     json_value_paths?: string[]
+    time_column?: string | null
+    scan_lookback_hours?: number | null
   }): Promise<ScanConfigPreview> => {
     const job = await scansApi.startPreview(slug, data)
     const deadline = Date.now() + PREVIEW_POLL_TIMEOUT_MS
@@ -88,6 +93,7 @@ export const scansApi = {
     cardinality_threshold?: number
     interval?: string | null
     replay_chunk_interval?: string | null
+    scan_lookback_hours?: number | null
     scan_row_limit?: number | null
     metrics_row_limit?: number | null
   }) => api.patch<ScanConfig>(`/projects/${slug}/scans/${scanId}`, data),

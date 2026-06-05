@@ -453,6 +453,7 @@ export interface ScanConfig {
   cardinality_threshold: number
   interval: IntervalCode | null
   replay_chunk_interval: IntervalCode | null
+  scan_lookback_hours: number | null
   scan_row_limit: number | null
   metrics_row_limit: number | null
   created_at: string

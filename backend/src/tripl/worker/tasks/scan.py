@@ -30,6 +30,7 @@ from tripl.worker.analyzers.preview import build_preview_payload
 from tripl.worker.celery_app import celery_app
 from tripl.worker.db import SyncSessionLocal
 from tripl.worker.search_reindex import reindex_main_branch_from_worker
+from tripl.worker.utils.query_windows import TimeWindow, resolve_lookback_window
 
 logger = logging.getLogger(__name__)
 
@@ -147,6 +148,10 @@ def run_scan(self: object, scan_config_id: str, job_id: str) -> dict[str, object
         logger.info(f"Found {len(columns)} columns in base query")
         json_value_paths = group_json_value_paths(config.json_value_paths)
         scan_row_limit = config.scan_row_limit or settings.scan_row_limit_default
+        scan_window = resolve_lookback_window(
+            time_column=config.time_column,
+            lookback_hours=config.scan_lookback_hours,
+        )
 
         # Resolve event type: either from config or detect from event_type_column
         event_type_id = config.event_type_id
@@ -165,6 +170,7 @@ def run_scan(self: object, scan_config_id: str, job_id: str) -> dict[str, object
                 config,
                 adapter,
                 columns,
+                scan_window=scan_window,
                 row_limit=scan_row_limit,
             )
         elif event_type_id is not None:
@@ -175,6 +181,9 @@ def run_scan(self: object, scan_config_id: str, job_id: str) -> dict[str, object
                 columns,
                 threshold=config.cardinality_threshold,
                 json_value_paths=json_value_paths,
+                time_column=config.time_column if scan_window else None,
+                time_from=scan_window[0] if scan_window else None,
+                time_to=scan_window[1] if scan_window else None,
                 row_limit=scan_row_limit,
             )
             if analysis.row_limit_reached:
@@ -228,6 +237,9 @@ def run_scan(self: object, scan_config_id: str, job_id: str) -> dict[str, object
             "variables_created": result.variables_created,
             "columns_analyzed": result.columns_analyzed,
             "scan_row_limit": scan_row_limit,
+            "scan_lookback_hours": config.scan_lookback_hours,
+            "scan_window_from": scan_window[0].isoformat() if scan_window else None,
+            "scan_window_to": scan_window[1].isoformat() if scan_window else None,
             "scan_rows_processed": scan_rows_processed,
             "scan_truncated": scan_truncated,
             "details": result.details,
@@ -271,6 +283,7 @@ def _scan_with_grouping(
     config: ScanConfig,
     adapter: BaseAdapter,
     columns: list[ColumnInfo],
+    scan_window: TimeWindow | None,
     row_limit: int,
 ) -> tuple[GenerationResult, dict[str, GenerationResult], int, bool]:
     """Handle scans where event_type_column groups rows into different event types.
@@ -291,6 +304,9 @@ def _scan_with_grouping(
         group_column=col_name,
         threshold=config.cardinality_threshold,
         json_value_paths=group_json_value_paths(config.json_value_paths),
+        time_column=config.time_column if scan_window else None,
+        time_from=scan_window[0] if scan_window else None,
+        time_to=scan_window[1] if scan_window else None,
         row_limit=row_limit,
     )
     if any(analysis.row_limit_reached for analysis in grouped_results.values()):
@@ -474,11 +490,18 @@ def preview_scan_config_async(self: object, job_id: str) -> dict[str, object]:
         session.commit()
 
         adapter = _build_adapter(ds)
+        preview_window = resolve_lookback_window(
+            time_column=job.time_column,
+            lookback_hours=job.scan_lookback_hours,
+        )
         payload = build_preview_payload(
             adapter,
             job.base_query,
             list(job.json_value_paths or []),
             job.row_limit,
+            time_column=job.time_column if preview_window else None,
+            time_from=preview_window[0] if preview_window else None,
+            time_to=preview_window[1] if preview_window else None,
         )
 
         job.status = ScanJobStatus.completed.value
