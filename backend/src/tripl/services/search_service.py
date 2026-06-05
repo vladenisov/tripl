@@ -28,7 +28,12 @@ from tripl.models.project import Project
 from tripl.models.search_document import SearchDocument
 from tripl.models.variable import Variable
 from tripl.models.variable_value import VariableValue
-from tripl.schemas.search import SearchEntityType, SearchResponse, SearchResult
+from tripl.schemas.search import (
+    SearchEntityType,
+    SearchEventVariableValue,
+    SearchResponse,
+    SearchResult,
+)
 from tripl.services.embedding_service import embed_query
 from tripl.services.plan_branch_service import resolve_branch_id
 from tripl.services.project_service import get_project_id_by_slug
@@ -1081,6 +1086,67 @@ async def _enrich_event_hits(
     events_by_id: dict[uuid.UUID, tuple[str, bool]] = {
         event_id: (name, implemented) for event_id, name, implemented in rows
     }
+
+    variable_rows = (
+        await session.execute(
+            select(
+                VariableValue.id,
+                VariableValue.event_id,
+                VariableValue.variable_id,
+                Variable.name,
+                VariableValue.field_definition_id,
+                FieldDefinition.name,
+                FieldDefinition.display_name,
+                VariableValue.source_column,
+                VariableValue.value_kind,
+                VariableValue.observed_count,
+                VariableValue.values,
+            )
+            .join(Variable, VariableValue.variable_id == Variable.id)
+            .join(FieldDefinition, VariableValue.field_definition_id == FieldDefinition.id)
+            .where(
+                VariableValue.project_id == project_id,
+                VariableValue.branch_id == branch_id,
+                VariableValue.event_id.in_(event_ids),
+                FieldDefinition.sensitivity == "none",
+            )
+            .order_by(
+                VariableValue.event_id.asc(),
+                FieldDefinition.order.asc(),
+                FieldDefinition.name.asc(),
+                Variable.name.asc(),
+            )
+        )
+    ).all()
+    variable_values_by_event: dict[uuid.UUID, list[SearchEventVariableValue]] = {}
+    for (
+        context_id,
+        event_id,
+        variable_id,
+        variable_name,
+        field_definition_id,
+        field_name,
+        field_display_name,
+        source_column,
+        value_kind,
+        observed_count,
+        values,
+    ) in variable_rows:
+        variable_values_by_event.setdefault(event_id, []).append(
+            SearchEventVariableValue(
+                id=context_id,
+                variable_id=variable_id,
+                variable_name=variable_name,
+                field_definition_id=field_definition_id,
+                field_name=field_name,
+                field_display_name=field_display_name,
+                source_column=source_column,
+                value_kind=value_kind,
+                observed_count=observed_count,
+                values=list(values or []),
+            )
+        )
+
     for item in items:
         if item.parent_event_id is None:
             continue
@@ -1091,6 +1157,7 @@ async def _enrich_event_hits(
         item.event_id = item.parent_event_id
         item.name = name
         item.implemented = implemented
+        item.variable_values = variable_values_by_event.get(item.parent_event_id, [])
 
 
 def _row_to_result(row: object, query: str, *, semantic_used: bool) -> SearchResult:
