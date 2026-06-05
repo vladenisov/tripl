@@ -317,6 +317,9 @@ export interface SearchResult {
   entity_type: SearchEntityType
   entity_id: string
   parent_event_id: string | null
+  event_id: string | null
+  name: string | null
+  implemented: boolean | null
   title: string
   subtitle: string
   description: string

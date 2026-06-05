@@ -91,7 +91,7 @@ Useful query parameters:
 - `limit`: 1 to 100, defaults to 20.
 - `branch`: optional branch id.
 
-Search results include `entity_type`, `entity_id`, `title`, `subtitle`, `description`, `snippet`, `route_path`, `score`, `confidence`, and `highlights`.
+Search results include `entity_type`, `entity_id`, `title`, `subtitle`, `description`, `snippet`, `route_path`, `score`, `confidence`, and `highlights`. Results linked to a concrete catalog event also include `event_id`, `name`, and `implemented`.
 
 Use entity-specific endpoints for full context after search:
 
