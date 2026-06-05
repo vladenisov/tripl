@@ -16,6 +16,7 @@ export const dataSourcesApi = {
     database_name: string
     username?: string
     password?: string
+    timeout_seconds?: number | null
   }) => api.post<DataSource>('/data-sources', data),
 
   update: (id: string, data: {
@@ -26,6 +27,7 @@ export const dataSourcesApi = {
     database_name?: string
     username?: string
     password?: string
+    timeout_seconds?: number | null
   }) => api.patch<DataSource>(`/data-sources/${id}`, data),
 
   del: (id: string) =>

@@ -12,6 +12,7 @@ class DataSourceCreate(BaseModel):
     database_name: str = Field(min_length=1, max_length=255)
     username: str = ""
     password: str = ""
+    timeout_seconds: int | None = Field(None, ge=1)
     extra_params: dict[str, object] | None = None
 
 
@@ -23,6 +24,7 @@ class DataSourceUpdate(BaseModel):
     database_name: str | None = Field(None, min_length=1, max_length=255)
     username: str | None = None
     password: str | None = None
+    timeout_seconds: int | None = Field(None, ge=1)
     extra_params: dict[str, object] | None = None
 
 
@@ -35,6 +37,7 @@ class DataSourceResponse(BaseModel):
     database_name: str
     username: str
     password_set: bool
+    timeout_seconds: int | None = None
     extra_params: dict[str, object] | None
     last_test_at: datetime | None
     last_test_status: str | None

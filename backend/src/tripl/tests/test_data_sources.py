@@ -16,6 +16,7 @@ class TestDataSourcesCRUD:
                 "database_name": "analytics",
                 "username": "default",
                 "password": "secret",
+                "timeout_seconds": 90,
             },
         )
         assert resp.status_code == 201
@@ -27,6 +28,7 @@ class TestDataSourcesCRUD:
         assert data["database_name"] == "analytics"
         assert data["username"] == "default"
         assert data["password_set"] is True
+        assert data["timeout_seconds"] == 90
         assert "password" not in data
         assert "password_encrypted" not in data
         assert "project_id" not in data
@@ -86,11 +88,33 @@ class TestDataSourcesCRUD:
         ds_id = create_resp.json()["id"]
         resp = await client.patch(
             f"/api/v1/data-sources/{ds_id}",
-            json={"name": "New", "host": "new-host"},
+            json={"name": "New", "host": "new-host", "timeout_seconds": 120},
         )
         assert resp.status_code == 200
         assert resp.json()["name"] == "New"
         assert resp.json()["host"] == "new-host"
+        assert resp.json()["timeout_seconds"] == 120
+
+        clear_resp = await client.patch(
+            f"/api/v1/data-sources/{ds_id}",
+            json={"timeout_seconds": None},
+        )
+        assert clear_resp.status_code == 200
+        assert clear_resp.json()["timeout_seconds"] is None
+
+    async def test_rejects_invalid_timeout(self, client: AsyncClient):
+        resp = await client.post(
+            "/api/v1/data-sources",
+            json={
+                "name": "BadTimeout",
+                "db_type": "clickhouse",
+                "host": "h",
+                "port": 8123,
+                "database_name": "d",
+                "timeout_seconds": 0,
+            },
+        )
+        assert resp.status_code == 422
 
     async def test_delete_data_source(self, client: AsyncClient):
         create_resp = await client.post(

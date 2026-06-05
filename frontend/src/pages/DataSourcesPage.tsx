@@ -64,6 +64,7 @@ function ConnectionsTab({ openDsId }: { openDsId?: string }) {
   const [databaseName, setDatabaseName] = useState('')
   const [username, setUsername] = useState('')
   const [password, setPassword] = useState('')
+  const [timeoutSeconds, setTimeoutSeconds] = useState('')
 
   const [editName, setEditName] = useState('')
   const [editHost, setEditHost] = useState('')
@@ -71,6 +72,7 @@ function ConnectionsTab({ openDsId }: { openDsId?: string }) {
   const [editDatabaseName, setEditDatabaseName] = useState('')
   const [editUsername, setEditUsername] = useState('')
   const [editPassword, setEditPassword] = useState('')
+  const [editTimeoutSeconds, setEditTimeoutSeconds] = useState('')
 
   const [testingId, setTestingId] = useState<string | null>(null)
 
@@ -85,6 +87,7 @@ function ConnectionsTab({ openDsId }: { openDsId?: string }) {
       dataSourcesApi.create({
         name, db_type: dbType, host, port,
         database_name: databaseName, username, password,
+        ...(dbType === 'clickhouse' ? { timeout_seconds: parseTimeoutSeconds(timeoutSeconds) } : {}),
       }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['dataSources'] })
@@ -98,6 +101,9 @@ function ConnectionsTab({ openDsId }: { openDsId?: string }) {
         name: editName, host: editHost, port: editPort,
         database_name: editDatabaseName, username: editUsername,
         ...(editPassword ? { password: editPassword } : {}),
+        ...(editingDs?.db_type === 'clickhouse'
+          ? { timeout_seconds: parseTimeoutSeconds(editTimeoutSeconds) }
+          : {}),
       }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['dataSources'] })
@@ -157,6 +163,7 @@ function ConnectionsTab({ openDsId }: { openDsId?: string }) {
     setEditDatabaseName(ds.database_name)
     setEditUsername(ds.username)
     setEditPassword('')
+    setEditTimeoutSeconds(ds.timeout_seconds == null ? '' : String(ds.timeout_seconds))
   }, [])
 
   const startEdit = useCallback((ds: DataSource) => {
@@ -194,6 +201,7 @@ function ConnectionsTab({ openDsId }: { openDsId?: string }) {
     setDatabaseName('')
     setUsername('')
     setPassword('')
+    setTimeoutSeconds('')
   }
 
   const healthyCount = dataSources.filter((ds) => ds.last_test_status === 'success').length
@@ -303,7 +311,7 @@ function ConnectionsTab({ openDsId }: { openDsId?: string }) {
                       <Input value={databaseName} onChange={(e) => setDatabaseName(e.target.value)} required placeholder="default" />
                     </div>
                   </div>
-                  <div className="grid grid-cols-2 gap-3">
+                  <div className={dbType === 'clickhouse' ? 'grid grid-cols-3 gap-3' : 'grid grid-cols-2 gap-3'}>
                     <div className="grid gap-2">
                       <Label>Username</Label>
                       <Input value={username} onChange={(e) => setUsername(e.target.value)} placeholder="default" />
@@ -312,6 +320,19 @@ function ConnectionsTab({ openDsId }: { openDsId?: string }) {
                       <Label>Password</Label>
                       <Input type="password" value={password} onChange={(e) => setPassword(e.target.value)} placeholder="••••••••" />
                     </div>
+                    {dbType === 'clickhouse' && (
+                      <div className="grid gap-2">
+                        <Label>Timeout, s</Label>
+                        <Input
+                          type="number"
+                          min={1}
+                          step={1}
+                          value={timeoutSeconds}
+                          onChange={(e) => setTimeoutSeconds(e.target.value)}
+                          placeholder="Default"
+                        />
+                      </div>
+                    )}
                   </div>
                 </>
               )}
@@ -353,7 +374,7 @@ function ConnectionsTab({ openDsId }: { openDsId?: string }) {
                   <Input value={editDatabaseName} onChange={(e) => setEditDatabaseName(e.target.value)} />
                 </div>
               </div>
-              <div className="grid grid-cols-2 gap-3">
+              <div className={editingDs?.db_type === 'clickhouse' ? 'grid grid-cols-3 gap-3' : 'grid grid-cols-2 gap-3'}>
                 <div className="grid gap-2">
                   <Label>Username</Label>
                   <Input value={editUsername} onChange={(e) => setEditUsername(e.target.value)} />
@@ -362,6 +383,19 @@ function ConnectionsTab({ openDsId }: { openDsId?: string }) {
                   <Label>Password</Label>
                   <Input type="password" value={editPassword} onChange={(e) => setEditPassword(e.target.value)} placeholder="Leave empty to keep" />
                 </div>
+                {editingDs?.db_type === 'clickhouse' && (
+                  <div className="grid gap-2">
+                    <Label>Timeout, s</Label>
+                    <Input
+                      type="number"
+                      min={1}
+                      step={1}
+                      value={editTimeoutSeconds}
+                      onChange={(e) => setEditTimeoutSeconds(e.target.value)}
+                      placeholder="Default"
+                    />
+                  </div>
+                )}
               </div>
               {updateMut.isError && (
                 <p className="text-sm text-destructive">{(updateMut.error as Error).message}</p>
@@ -484,6 +518,7 @@ function DataSourceCard({
         </Chip>
         <Chip size="xs">{ds.db_type}</Chip>
         {ds.username && <Chip size="xs">{ds.username}</Chip>}
+        {ds.timeout_seconds != null && <Chip size="xs">timeout {ds.timeout_seconds}s</Chip>}
         <div className="flex-1" />
         <span className="mono text-[10.5px]" style={{ color: 'var(--fg-faint)' }}>
           {formatRelative(ds.updated_at)}
@@ -541,6 +576,13 @@ function DataSourceCard({
       </div>
     </div>
   )
+}
+
+function parseTimeoutSeconds(value: string): number | null {
+  const trimmed = value.trim()
+  if (!trimmed) return null
+  const parsed = Number(trimmed)
+  return Number.isFinite(parsed) ? parsed : null
 }
 
 function formatRelative(iso: string): string {
