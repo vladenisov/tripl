@@ -22,7 +22,7 @@ import {
 import { Separator } from '@/components/ui/separator'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { useActiveBranchId } from '@/hooks/useBranch'
-import { aggregateMetricPoints, type MetricsGranularity } from '@/lib/metrics'
+import { GRANULARITY_OPTIONS, RANGE_OPTIONS, aggregateMetricPoints, type MetricsGranularity } from '@/lib/metrics'
 import { resolveMetaFieldHref } from '@/lib/metaFields'
 import { routeScopeToApiScope } from '@/lib/monitoring'
 import type {
@@ -33,19 +33,6 @@ import type {
   MetaFieldDefinition,
 } from '@/types'
 import { AlertTriangle, ArrowLeft, CalendarPlus, CircleCheck, Eye, GitCompareArrows, Layers, Tag, Trash2 } from 'lucide-react'
-
-const RANGE_OPTIONS = [
-  { label: '7d', days: 7 },
-  { label: '30d', days: 30 },
-  { label: '90d', days: 90 },
-] as const
-
-const GRANULARITY_OPTIONS: { value: MetricsGranularity; label: string }[] = [
-  { value: 'hour', label: 'Hours' },
-  { value: 'day', label: 'Days' },
-  { value: 'week', label: 'Weeks' },
-  { value: 'month', label: 'Months' },
-]
 
 export default function MonitoringDetailPage() {
   const { slug, scope: scopeParam, id, eventId } = useParams<{
