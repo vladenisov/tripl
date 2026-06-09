@@ -9,6 +9,7 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Textarea } from '@/components/ui/textarea'
 import { RefreshCw } from 'lucide-react'
+import { getErrorMessage } from '@/lib/utils'
 
 export function GeneralTab({ slug }: { slug: string }) {
   const qc = useQueryClient()
@@ -118,7 +119,7 @@ export function GeneralTab({ slug }: { slug: string }) {
                   />
                 </div>
                 {updateMut.isError && (
-                  <p className="text-sm text-destructive">{(updateMut.error as Error).message}</p>
+                  <p className="text-sm text-destructive">{getErrorMessage(updateMut.error)}</p>
                 )}
                 <div className="flex justify-end">
                   <Button
@@ -148,7 +149,7 @@ export function GeneralTab({ slug }: { slug: string }) {
                 )}
                 {reindexMut.isError && (
                   <p className="mt-2 text-xs text-destructive">
-                    {(reindexMut.error as Error).message}
+                    {getErrorMessage(reindexMut.error)}
                   </p>
                 )}
               </div>

@@ -6,6 +6,7 @@ import { Checkbox } from "@/components/ui/checkbox"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Switch } from "@/components/ui/switch"
+import { getErrorMessage } from '@/lib/utils'
 
 export function MonitoringTab({ slug }: { slug: string }) {
   const qc = useQueryClient()
@@ -126,7 +127,7 @@ export function MonitoringTab({ slug }: { slug: string }) {
           </div>
 
           {updateMut.isError && (
-            <p className="text-sm text-destructive">{(updateMut.error as Error).message}</p>
+            <p className="text-sm text-destructive">{getErrorMessage(updateMut.error)}</p>
           )}
         </CardContent>
       </Card>

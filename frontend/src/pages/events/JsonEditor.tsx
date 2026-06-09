@@ -1,16 +1,17 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Button } from '@/components/ui/button'
 import { Textarea } from '@/components/ui/textarea'
+import { getErrorMessage } from '@/lib/utils'
 
 function validateJsonWithVars(text: string): string | null {
   if (!text.trim()) return null
   if (!text.includes('${')) {
-    try { JSON.parse(text); return null } catch (e) { return (e as Error).message }
+    try { JSON.parse(text); return null } catch (e) { return getErrorMessage(e) }
   }
   // Replace ${var} placeholders with a sentinel string before validating, so
   // partially-templated JSON parses successfully.
   const safe = text.replace(/\$\{[^}]*\}/g, '"__var__"')
-  try { JSON.parse(safe); return null } catch (e) { return (e as Error).message }
+  try { JSON.parse(safe); return null } catch (e) { return getErrorMessage(e) }
 }
 
 export function JsonEditor({

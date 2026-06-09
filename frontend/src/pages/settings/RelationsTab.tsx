@@ -11,6 +11,7 @@ import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "
 import { Label } from "@/components/ui/label"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { EmptyState } from "@/components/empty-state"
+import { getErrorMessage } from '@/lib/utils'
 
 export function RelationsTab({ slug }: { slug: string }) {
   const qc = useQueryClient()
@@ -108,7 +109,7 @@ export function RelationsTab({ slug }: { slug: string }) {
                   </select>
                 </div>
               </div>
-              {createMut.isError && <p className="text-sm text-destructive">{(createMut.error as Error).message}</p>}
+              {createMut.isError && <p className="text-sm text-destructive">{getErrorMessage(createMut.error)}</p>}
             </div>
             <DialogFooter>
               <Button type="button" variant="outline" onClick={() => setShowForm(false)}>Cancel</Button>

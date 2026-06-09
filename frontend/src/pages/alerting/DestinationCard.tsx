@@ -36,6 +36,7 @@ import {
   scopeSummary,
   type RuleFormState,
 } from "./constants"
+import { getErrorMessage } from '@/lib/utils'
 
 export function DestinationCard({
   slug,
@@ -414,7 +415,7 @@ export function DestinationCard({
               />
 
               {ruleMutation.isError && (
-                <p className="text-sm text-destructive">{(ruleMutation.error as Error).message}</p>
+                <p className="text-sm text-destructive">{getErrorMessage(ruleMutation.error)}</p>
               )}
             </div>
             <DialogFooter>

@@ -20,6 +20,7 @@ import { Label } from '@/components/ui/label'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { EmptyState } from '@/components/empty-state'
 import { SensitivityChip } from '@/components/primitives/sensitivity-chip'
+import { getErrorMessage } from '@/lib/utils'
 
 const FIELD_TYPES = ['string', 'number', 'boolean', 'json', 'enum', 'url']
 
@@ -183,7 +184,7 @@ export function EventTypesTab({ slug }: { slug: string }) {
                   </div>
                 )}
               </div>
-              {createMut.isError && <p className="text-sm text-destructive">{(createMut.error as Error).message}</p>}
+              {createMut.isError && <p className="text-sm text-destructive">{getErrorMessage(createMut.error)}</p>}
             </div>
             <DialogFooter>
               <Button type="button" variant="outline" onClick={() => { setShowForm(false); setDraftFields([]) }}>Cancel</Button>
@@ -213,7 +214,7 @@ export function EventTypesTab({ slug }: { slug: string }) {
                   <input type="color" value={editColor} onChange={e => setEditColor(e.target.value)} className="h-9 w-full cursor-pointer rounded-md border border-input" />
                 </div>
               </div>
-              {updateMut.isError && <p className="text-sm text-destructive">{(updateMut.error as Error).message}</p>}
+              {updateMut.isError && <p className="text-sm text-destructive">{getErrorMessage(updateMut.error)}</p>}
             </div>
             <DialogFooter>
               <Button type="button" variant="outline" onClick={() => setEditingEt(null)}>Cancel</Button>
@@ -432,7 +433,7 @@ function FieldsEditor({ slug, eventType, branchId }: { slug: string; eventType: 
                   )}
                 </div>
               )}
-              {createMut.isError && <p className="text-sm text-destructive">{(createMut.error as Error).message}</p>}
+              {createMut.isError && <p className="text-sm text-destructive">{getErrorMessage(createMut.error)}</p>}
             </div>
             <DialogFooter>
               <Button type="button" variant="outline" onClick={() => setShowForm(false)}>Cancel</Button>
@@ -496,7 +497,7 @@ function FieldsEditor({ slug, eventType, branchId }: { slug: string; eventType: 
                   )}
                 </div>
               )}
-              {updateMut.isError && <p className="text-sm text-destructive">{(updateMut.error as Error).message}</p>}
+              {updateMut.isError && <p className="text-sm text-destructive">{getErrorMessage(updateMut.error)}</p>}
             </div>
             <DialogFooter>
               <Button type="button" variant="outline" onClick={() => setEditingField(null)}>Cancel</Button>

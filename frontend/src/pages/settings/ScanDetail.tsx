@@ -10,6 +10,7 @@ import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
+import { getErrorMessage } from '@/lib/utils'
 
 function toDatetimeLocalValue(date: Date) {
   const pad = (value: number) => String(value).padStart(2, '0')
@@ -136,7 +137,7 @@ export function ScanDetail({ slug, scanConfig, eventTypes, branchId }: { slug: s
                 />
               </div>
             </div>
-            {replayMut.isError && <p className="text-sm text-destructive">{(replayMut.error as Error).message}</p>}
+            {replayMut.isError && <p className="text-sm text-destructive">{getErrorMessage(replayMut.error)}</p>}
             <DialogFooter>
               <Button type="button" variant="outline" onClick={() => setReplayOpen(false)}>Cancel</Button>
               <Button type="submit" disabled={replayMut.isPending}>
@@ -237,8 +238,8 @@ export function ScanDetail({ slug, scanConfig, eventTypes, branchId }: { slug: s
         </div>
       </div>
 
-      {runMut.isError && <p className="text-sm text-destructive">{(runMut.error as Error).message}</p>}
-      {applyGroupsMut.isError && <p className="text-sm text-destructive">{(applyGroupsMut.error as Error).message}</p>}
+      {runMut.isError && <p className="text-sm text-destructive">{getErrorMessage(runMut.error)}</p>}
+      {applyGroupsMut.isError && <p className="text-sm text-destructive">{getErrorMessage(applyGroupsMut.error)}</p>}
       {applyGroupsMessage && <p className="text-sm text-muted-foreground">{applyGroupsMessage}</p>}
 
       {isLoading && <p className="text-sm text-muted-foreground">Loading jobs…</p>}

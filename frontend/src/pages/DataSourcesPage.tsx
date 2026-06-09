@@ -30,6 +30,7 @@ import {
   Trash2,
   XCircle,
 } from 'lucide-react'
+import { getErrorMessage } from '@/lib/utils'
 
 const EMPTY_DATA_SOURCES: DataSource[] = []
 
@@ -143,7 +144,7 @@ function ConnectionsTab({ openDsId }: { openDsId?: string }) {
                 ...ds,
                 last_test_at: new Date().toISOString(),
                 last_test_status: 'failed',
-                last_test_message: (err as Error).message,
+                last_test_message: getErrorMessage(err),
               }
             : ds,
         ),
@@ -337,7 +338,7 @@ function ConnectionsTab({ openDsId }: { openDsId?: string }) {
                 </>
               )}
               {createMut.isError && (
-                <p className="text-sm text-destructive">{(createMut.error as Error).message}</p>
+                <p className="text-sm text-destructive">{getErrorMessage(createMut.error)}</p>
               )}
             </div>
             <DialogFooter>
@@ -398,7 +399,7 @@ function ConnectionsTab({ openDsId }: { openDsId?: string }) {
                 )}
               </div>
               {updateMut.isError && (
-                <p className="text-sm text-destructive">{(updateMut.error as Error).message}</p>
+                <p className="text-sm text-destructive">{getErrorMessage(updateMut.error)}</p>
               )}
             </div>
             <DialogFooter>

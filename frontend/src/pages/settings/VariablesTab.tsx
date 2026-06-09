@@ -11,6 +11,7 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { EmptyState } from "@/components/empty-state"
+import { getErrorMessage } from '@/lib/utils'
 
 export function VariablesTab({ slug }: { slug: string }) {
   const qc = useQueryClient()
@@ -154,7 +155,7 @@ export function VariablesTab({ slug }: { slug: string }) {
                   <Input value={description} onChange={e => setDescription(e.target.value)} placeholder="Optional" />
                 </div>
               </div>
-              {createMut.isError && <p className="text-sm text-destructive">{(createMut.error as Error).message}</p>}
+              {createMut.isError && <p className="text-sm text-destructive">{getErrorMessage(createMut.error)}</p>}
             </div>
             <DialogFooter>
               <Button type="button" variant="outline" onClick={() => setShowForm(false)}>Cancel</Button>
@@ -232,7 +233,7 @@ export function VariablesTab({ slug }: { slug: string }) {
                   </div>
                 </div>
               )}
-              {updateMut.isError && <p className="text-sm text-destructive">{(updateMut.error as Error).message}</p>}
+              {updateMut.isError && <p className="text-sm text-destructive">{getErrorMessage(updateMut.error)}</p>}
             </div>
             <DialogFooter>
               <Button type="button" variant="outline" onClick={() => setEditingVar(null)}>Cancel</Button>

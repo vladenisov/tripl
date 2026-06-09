@@ -1,10 +1,6 @@
 import { AlertTriangle, RefreshCw } from 'lucide-react'
 import { Button } from '@/components/ui/button'
-import { cn } from '@/lib/utils'
-
-function getErrorMessage(error: unknown, fallback = 'Something went wrong.') {
-  return error instanceof Error && error.message ? error.message : fallback
-}
+import { cn, getErrorMessage } from '@/lib/utils'
 
 export function ErrorState({
   title,
