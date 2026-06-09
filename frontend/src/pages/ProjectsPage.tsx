@@ -26,6 +26,7 @@ import { Label } from '@/components/ui/label'
 import { Skeleton } from '@/components/ui/skeleton'
 import { Textarea } from '@/components/ui/textarea'
 import { useConfirm } from '@/hooks/useConfirm'
+import { formatDate, formatDateTime } from '@/lib/datetime'
 import { getMonitoringPath } from '@/lib/monitoring'
 import type {
   Project,
@@ -837,18 +838,3 @@ function describeScanJobTiming(job: ProjectLatestScanJob) {
   return `Queued ${formatDateTime(job.created_at)}`
 }
 
-function formatDate(value: string) {
-  const date = new Date(value)
-  return date.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })
-}
-
-function formatDateTime(value: string) {
-  const date = new Date(value)
-  return date.toLocaleString(undefined, {
-    month: 'short',
-    day: 'numeric',
-    year: 'numeric',
-    hour: 'numeric',
-    minute: '2-digit',
-  })
-}
