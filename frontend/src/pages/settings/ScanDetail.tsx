@@ -32,7 +32,7 @@ function createDefaultReplayWindow() {
 }
 
 /* ─── Scan Detail (jobs) ─── */
-export function ScanDetail({ slug, scanConfig, eventTypes }: { slug: string; scanConfig: ScanConfig; eventTypes: EventType[] }) {
+export function ScanDetail({ slug, scanConfig, eventTypes, branchId }: { slug: string; scanConfig: ScanConfig; eventTypes: EventType[]; branchId: string | null }) {
   const qc = useQueryClient()
   const [expandedJobId, setExpandedJobId] = useState<string | null>(null)
   const [replayOpen, setReplayOpen] = useState(false)
@@ -62,7 +62,7 @@ export function ScanDetail({ slug, scanConfig, eventTypes }: { slug: string; sca
       qc.invalidateQueries({ queryKey: ['scanJobs', slug, scanConfig.id] })
       qc.invalidateQueries({ queryKey: ['scans', slug] })
       qc.invalidateQueries({ queryKey: ['events', slug] })
-      qc.invalidateQueries({ queryKey: ['eventTypes', slug] })
+      qc.invalidateQueries({ queryKey: ['eventTypes', slug, branchId] })
     },
   })
 

@@ -32,6 +32,7 @@ import {
   CommandPaletteContext,
   useCommandPalette,
 } from '@/components/command-palette-context'
+import { useActiveBranchId } from '@/hooks/useBranch'
 import { Dialog, DialogContent, DialogTitle } from '@/components/ui/dialog'
 import { Kbd } from '@/components/primitives/kbd'
 import type { SearchEntityType, SearchResult } from '@/types'
@@ -109,6 +110,7 @@ function CommandPalette() {
   const navigate = useNavigate()
   const auth = useAuth()
   const { slug: routeSlug } = useParams()
+  const branchId = useActiveBranchId()
   const [query, setQuery] = useState('')
   const debouncedQuery = useDebounced(query.trim(), 200)
 
@@ -129,8 +131,8 @@ function CommandPalette() {
   const activeProject = projects.find(p => p.slug === routeSlug) ?? null
 
   const eventTypesQuery = useQuery({
-    queryKey: ['eventTypes', activeProject?.slug],
-    queryFn: () => eventTypesApi.list(activeProject!.slug),
+    queryKey: ['eventTypes', activeProject?.slug, branchId],
+    queryFn: () => eventTypesApi.list(activeProject!.slug, branchId),
     enabled: open && !!activeProject,
     staleTime: 60_000,
   })

@@ -5,6 +5,7 @@ import { eventsApi } from '@/api/events'
 import { metricsApi } from '@/api/metrics'
 import { eventTypesApi } from '@/api/eventTypes'
 import { metaFieldsApi } from '@/api/metaFields'
+import { useActiveBranchId } from '@/hooks/useBranch'
 import type { EventType, FieldDefinition, MetaFieldDefinition } from '@/types'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
@@ -37,27 +38,28 @@ const GRANULARITY_OPTIONS: { value: MetricsGranularity; label: string }[] = [
 export default function EventDetailPage() {
   const { slug, eventId } = useParams<{ slug: string; eventId: string }>()
   const navigate = useNavigate()
+  const branchId = useActiveBranchId()
   const [rangeDays, setRangeDays] = useState(30)
   const [granularity, setGranularity] = useState<MetricsGranularity>('hour')
   const [breakdownColumn, setBreakdownColumn] = useState('')
 
   const eventQuery = useQuery({
-    queryKey: ['event', slug, eventId],
-    queryFn: () => eventsApi.get(slug!, eventId!),
+    queryKey: ['event', slug, branchId, eventId],
+    queryFn: () => eventsApi.get(slug!, eventId!, branchId),
     enabled: !!slug && !!eventId,
   })
   const event = eventQuery.data
 
   const eventTypesQuery = useQuery({
-    queryKey: ['eventTypes', slug],
-    queryFn: () => eventTypesApi.list(slug!),
+    queryKey: ['eventTypes', slug, branchId],
+    queryFn: () => eventTypesApi.list(slug!, branchId),
     enabled: !!slug,
   })
   const eventTypes = eventTypesQuery.data ?? []
 
   const metaFieldsQuery = useQuery({
-    queryKey: ['metaFields', slug],
-    queryFn: () => metaFieldsApi.list(slug!),
+    queryKey: ['metaFields', slug, branchId],
+    queryFn: () => metaFieldsApi.list(slug!, branchId),
     enabled: !!slug,
   })
   const metaFields = metaFieldsQuery.data ?? []
