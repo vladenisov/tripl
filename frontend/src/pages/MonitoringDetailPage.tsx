@@ -21,6 +21,7 @@ import {
 } from '@/components/ui/select'
 import { Separator } from '@/components/ui/separator'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
+import { useActiveBranchId } from '@/hooks/useBranch'
 import { aggregateMetricPoints, type MetricsGranularity } from '@/lib/metrics'
 import { resolveMetaFieldHref } from '@/lib/metaFields'
 import type {
@@ -73,6 +74,7 @@ export default function MonitoringDetailPage() {
   const [distributionField, setDistributionField] = useState('')
   const [breakdownColumn, setBreakdownColumn] = useState('')
 
+  const branchId = useActiveBranchId()
   const scope = routeScopeToApiScope(scopeParam)
   const scopeId = id ?? eventId ?? ''
 
@@ -83,22 +85,22 @@ export default function MonitoringDetailPage() {
   }, [rangeDays])
 
   const eventQuery = useQuery({
-    queryKey: ['event', slug, scopeId],
-    queryFn: () => eventsApi.get(slug!, scopeId),
+    queryKey: ['event', slug, branchId, scopeId],
+    queryFn: () => eventsApi.get(slug!, scopeId, branchId),
     enabled: scope === 'event' && !!slug && !!scopeId,
   })
   const event = eventQuery.data
 
   const eventTypesQuery = useQuery({
-    queryKey: ['eventTypes', slug],
-    queryFn: () => eventTypesApi.list(slug!),
+    queryKey: ['eventTypes', slug, branchId],
+    queryFn: () => eventTypesApi.list(slug!, branchId),
     enabled: !!slug,
   })
   const eventTypes = eventTypesQuery.data ?? []
 
   const metaFieldsQuery = useQuery({
-    queryKey: ['metaFields', slug],
-    queryFn: () => metaFieldsApi.list(slug!),
+    queryKey: ['metaFields', slug, branchId],
+    queryFn: () => metaFieldsApi.list(slug!, branchId),
     enabled: scope === 'event' && !!slug,
   })
   const metaFields = metaFieldsQuery.data ?? []

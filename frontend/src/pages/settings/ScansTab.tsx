@@ -5,6 +5,7 @@ import { dataSourcesApi } from "@/api/dataSources"
 import { eventTypesApi } from "@/api/eventTypes"
 import { fieldsApi } from "@/api/fields"
 import { scansApi } from "@/api/scans"
+import { useActiveBranchId } from "@/hooks/useBranch"
 import type {
   DataSource,
   EventGroupRule,
@@ -205,18 +206,20 @@ function CreateMissingFieldsButton({
   preview,
   eventTypeColumn,
   timeColumn,
+  branchId,
 }: {
   slug: string
   eventType: EventType | undefined
   preview: ScanConfigPreview | null
   eventTypeColumn: string
   timeColumn: string
+  branchId: string | null
 }) {
   const qc = useQueryClient()
   const mutation = useMutation({
     mutationFn: (fields: { name: string; display_name: string; field_type: string }[]) =>
-      fieldsApi.bulkCreate(slug, eventType!.id, fields),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['eventTypes', slug] }),
+      fieldsApi.bulkCreate(slug, eventType!.id, fields, branchId),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['eventTypes', slug, branchId] }),
   })
 
   if (!eventType || !preview) return null
@@ -540,6 +543,7 @@ function EventGroupRulesEditor({
 /* ─── Scans Tab ─── */
 export function ScansTab({ slug }: { slug: string }) {
   const qc = useQueryClient()
+  const branchId = useActiveBranchId()
   const [showForm, setShowForm] = useState(false)
   const [expandedId, setExpandedId] = useState<string | null>(null)
   const [editingScanId, setEditingScanId] = useState<string | null>(null)
@@ -592,8 +596,8 @@ export function ScansTab({ slug }: { slug: string }) {
   })
 
   const { data: eventTypes = [] } = useQuery({
-    queryKey: ['eventTypes', slug],
-    queryFn: () => eventTypesApi.list(slug),
+    queryKey: ['eventTypes', slug, branchId],
+    queryFn: () => eventTypesApi.list(slug, branchId),
   })
 
   const { data: scanConfigs = [] } = useQuery({
@@ -941,6 +945,7 @@ export function ScansTab({ slug }: { slug: string }) {
                   preview={preview}
                   eventTypeColumn={eventTypeColumn}
                   timeColumn={timeColumn}
+                  branchId={branchId}
                 />
               )}
               {preview && (
@@ -1130,6 +1135,7 @@ export function ScansTab({ slug }: { slug: string }) {
                   preview={editPreview}
                   eventTypeColumn={editEventTypeColumn}
                   timeColumn={editTimeColumn}
+                  branchId={branchId}
                 />
               )}
               {editPreview && (
@@ -1265,7 +1271,7 @@ export function ScansTab({ slug }: { slug: string }) {
               </div>
             </CollapsibleTrigger>
             <CollapsibleContent>
-              <ScanDetail slug={slug} scanConfig={sc} eventTypes={eventTypes} />
+              <ScanDetail slug={slug} scanConfig={sc} eventTypes={eventTypes} branchId={branchId} />
             </CollapsibleContent>
           </Card>
         </Collapsible>
