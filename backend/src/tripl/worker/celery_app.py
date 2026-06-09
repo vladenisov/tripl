@@ -52,6 +52,13 @@ celery_app.conf.beat_schedule = {
         # out at read time anyway, the cleanup only reclaims storage.
         "schedule": 24 * 60 * 60.0,
     },
+    "requeue-stranded-alert-deliveries": {
+        "task": "tripl.worker.tasks.maintenance.requeue_stranded_alert_deliveries",
+        # Every 5 minutes — deliveries are only considered stranded after
+        # STRANDED_DELIVERY_MINUTES, so this just bounds detection latency for
+        # rows the worker/broker failed to dispatch.
+        "schedule": 300.0,
+    },
 }
 
 # Import tasks so they are registered with the celery app
