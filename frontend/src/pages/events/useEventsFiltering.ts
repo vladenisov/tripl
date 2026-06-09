@@ -8,6 +8,13 @@ import type {
   MetaFieldDefinition,
 } from '@/types'
 
+// Trim integer-valued floats ("5.0", "-3.00") down to their integer form
+// for display and filtering.
+function normalizeFieldValue(value: string): string {
+  if (value && /^-?\d+\.0+$/.test(value)) return String(parseInt(value, 10))
+  return value
+}
+
 /**
  * Derived data the events table renders on top of `rawEvents`: per-event
  * field/meta value lookups, the column set, enum options, and the final
@@ -105,13 +112,13 @@ export function useEventsFiltering({
     const fvMap = fieldValuesByEvent.get(ev.id)
     if (fvMap) {
       const direct = fvMap.get(col.id)
-      if (direct !== undefined) return direct
+      if (direct !== undefined) return normalizeFieldValue(direct)
     }
     // Fallback for when the row's field_values reference a different
     // FieldDefinition row (e.g., another event-type with the same `name`).
     for (const fv of ev.field_values) {
       const def = allFieldDefs.get(fv.field_definition_id)
-      if (def && def.name === col.name) return fv.value
+      if (def && def.name === col.name) return normalizeFieldValue(fv.value)
     }
     return ''
   }, [allFieldDefs, fieldValuesByEvent])
