@@ -20,6 +20,7 @@ import type {
   PlanDiffEntry,
   PlanRevisionSummary,
 } from '@/types'
+import { getErrorMessage } from '@/lib/utils'
 
 const KIND_TONE: Record<PlanDiffEntry['kind'], { label: string; chip: string }> = {
   added: { label: 'added', chip: 'bg-emerald-500/15 text-emerald-700' },
@@ -164,7 +165,7 @@ export function HistoryTab({ slug }: { slug: string }) {
             />
             {createMut.isError && (
               <p className="text-xs text-destructive">
-                Failed: {(createMut.error as Error).message}
+                Failed: {getErrorMessage(createMut.error)}
               </p>
             )}
           </div>

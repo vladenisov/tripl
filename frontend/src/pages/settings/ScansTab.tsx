@@ -27,6 +27,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Textarea } from "@/components/ui/textarea"
 import { EmptyState } from "@/components/empty-state"
 import { ScanDetail } from "./ScanDetail"
+import { getErrorMessage } from '@/lib/utils'
 
 function formatPreviewCell(value: unknown): string {
   if (value == null) return '—'
@@ -889,7 +890,7 @@ export function ScansTab({ slug }: { slug: string }) {
                 </Button>
               </div>
               {previewMut.isError && (
-                <p className="text-sm text-destructive">{(previewMut.error as Error).message}</p>
+                <p className="text-sm text-destructive">{getErrorMessage(previewMut.error)}</p>
               )}
               <div className="grid grid-cols-2 gap-3">
                 <div className="grid gap-2">
@@ -1035,7 +1036,7 @@ export function ScansTab({ slug }: { slug: string }) {
                   </p>
                 </div>
               )}
-              {createMut.isError && <p className="text-sm text-destructive">{(createMut.error as Error).message}</p>}
+              {createMut.isError && <p className="text-sm text-destructive">{getErrorMessage(createMut.error)}</p>}
             </div>
             <DialogFooter className="shrink-0 border-t bg-background px-6 py-4">
               <Button type="button" variant="outline" onClick={resetForm}>Cancel</Button>
@@ -1079,7 +1080,7 @@ export function ScansTab({ slug }: { slug: string }) {
                 </Button>
               </div>
               {editPreviewMut.isError && (
-                <p className="text-sm text-destructive">{(editPreviewMut.error as Error).message}</p>
+                <p className="text-sm text-destructive">{getErrorMessage(editPreviewMut.error)}</p>
               )}
               <div className="grid grid-cols-2 gap-3">
                 <div className="grid gap-2">
@@ -1225,7 +1226,7 @@ export function ScansTab({ slug }: { slug: string }) {
                   </p>
                 </div>
               )}
-              {updateMut.isError && <p className="text-sm text-destructive">{(updateMut.error as Error).message}</p>}
+              {updateMut.isError && <p className="text-sm text-destructive">{getErrorMessage(updateMut.error)}</p>}
             </div>
             <DialogFooter className="shrink-0 border-t bg-background px-6 py-4">
               <Button type="button" variant="outline" onClick={() => setEditingScanId(null)}>Cancel</Button>

@@ -16,6 +16,7 @@ import { Label } from "@/components/ui/label"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { EmptyState } from "@/components/empty-state"
 import { META_FIELD_LINK_PLACEHOLDER } from "@/lib/metaFields"
+import { getErrorMessage } from '@/lib/utils'
 
 export function MetaFieldsTab({ slug }: { slug: string }) {
   const qc = useQueryClient()
@@ -197,7 +198,7 @@ export function MetaFieldsTab({ slug }: { slug: string }) {
                 )}
               </div>
               <div className="grid gap-2"><Label>Default Value (optional)</Label><Input value={defaultValue} onChange={e => setDefaultValue(e.target.value)} placeholder="Optional default" /></div>
-              {createMut.isError && <p className="text-sm text-destructive">{(createMut.error as Error).message}</p>}
+              {createMut.isError && <p className="text-sm text-destructive">{getErrorMessage(createMut.error)}</p>}
             </div>
             <DialogFooter>
               <Button type="button" variant="outline" onClick={() => setShowForm(false)}>Cancel</Button>
@@ -275,7 +276,7 @@ export function MetaFieldsTab({ slug }: { slug: string }) {
                   </div>
                 )}
               </div>
-              {updateMut.isError && <p className="text-sm text-destructive">{(updateMut.error as Error).message}</p>}
+              {updateMut.isError && <p className="text-sm text-destructive">{getErrorMessage(updateMut.error)}</p>}
             </div>
             <DialogFooter>
               <Button type="button" variant="outline" onClick={() => setEditingMf(null)}>Cancel</Button>

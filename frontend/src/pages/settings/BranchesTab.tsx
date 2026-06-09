@@ -25,6 +25,7 @@ import type {
   PlanBranchTransitionAction,
   ResolutionChoice,
 } from '@/types'
+import { getErrorMessage } from '@/lib/utils'
 
 const STATUS_LABEL: Record<PlanBranchStatus, string> = {
   draft: 'Draft',
@@ -268,7 +269,7 @@ export function BranchesTab({ slug }: { slug: string }) {
               </div>
               {createMut.isError && (
                 <p className="text-sm text-destructive">
-                  {(createMut.error as Error).message}
+                  {getErrorMessage(createMut.error)}
                 </p>
               )}
             </div>

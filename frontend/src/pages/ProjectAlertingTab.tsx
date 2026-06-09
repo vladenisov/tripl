@@ -27,6 +27,7 @@ import {
   type DestinationChannel,
   type DestinationFormState,
 } from './alerting/constants'
+import { getErrorMessage } from '@/lib/utils'
 
 export default function ProjectAlertingTab({ slug }: { slug: string }) {
   const qc = useQueryClient()
@@ -664,7 +665,7 @@ export default function ProjectAlertingTab({ slug }: { slug: string }) {
               </label>
 
               {destinationMutation.isError && (
-                <p className="text-sm text-destructive">{(destinationMutation.error as Error).message}</p>
+                <p className="text-sm text-destructive">{getErrorMessage(destinationMutation.error)}</p>
               )}
             </div>
             <DialogFooter>

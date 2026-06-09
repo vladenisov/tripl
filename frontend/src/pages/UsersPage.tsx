@@ -6,6 +6,7 @@ import { useAuth } from '@/components/auth-context'
 import { Card, CardContent } from '@/components/ui/card'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { ROLE_OPTIONS, type Role, type UserListItem } from '@/types'
+import { getErrorMessage } from '@/lib/utils'
 
 function roleChip(role: Role) {
   return ROLE_OPTIONS.find((r) => r.value === role)?.chip ?? 'bg-muted text-muted-foreground'
@@ -94,7 +95,7 @@ export default function UsersPage() {
           )}
           {updateMut.isError && (
             <p className="p-3 text-xs text-destructive">
-              {(updateMut.error as Error).message}
+              {getErrorMessage(updateMut.error)}
             </p>
           )}
         </CardContent>

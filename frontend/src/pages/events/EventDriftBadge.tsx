@@ -4,6 +4,7 @@ import { AlertTriangle } from 'lucide-react'
 
 import { eventTypesApi } from '@/api/eventTypes'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
+import { getErrorMessage } from '@/lib/utils'
 
 const DRIFT_LABEL: Record<string, string> = {
   new_field: 'new',
@@ -64,7 +65,7 @@ export function EventDriftBadge({
         {driftsQuery.isLoading && <div className="text-muted-foreground">Loading…</div>}
         {driftsQuery.isError && (
           <div className="text-destructive">
-            Failed to load drifts: {(driftsQuery.error as Error).message}
+            Failed to load drifts: {getErrorMessage(driftsQuery.error)}
           </div>
         )}
         {driftsQuery.data && driftsQuery.data.items.length === 0 && (

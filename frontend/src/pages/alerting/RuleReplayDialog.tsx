@@ -21,6 +21,7 @@ import {
 } from '@/components/ui/select'
 import { Badge } from '@/components/ui/badge'
 import type { AlertRule, AlertRuleSimulateResponse } from '@/types'
+import { getErrorMessage } from '@/lib/utils'
 
 const DAYS_OPTIONS = [1, 3, 7, 14, 30] as const
 
@@ -196,7 +197,7 @@ export function RuleReplayDialog({
 
           {simulateMut.isError && (
             <div className="rounded-md border border-destructive/40 bg-destructive/5 p-3 text-sm text-destructive">
-              Replay failed: {(simulateMut.error as Error).message}
+              Replay failed: {getErrorMessage(simulateMut.error)}
             </div>
           )}
 

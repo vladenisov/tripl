@@ -27,6 +27,7 @@ import {
 } from '@/components/ui/table'
 import { useConfirm } from '@/hooks/useConfirm'
 import type { ApiKey, ApiKeyScope, ApiKeyWithToken } from '@/types'
+import { getErrorMessage } from '@/lib/utils'
 
 function scopeChip(scope: ApiKeyScope): string {
   return scope === 'write'
@@ -283,7 +284,7 @@ export default function AccountPage() {
               </div>
               {createMut.isError && (
                 <p className="text-xs text-destructive">
-                  {(createMut.error as Error).message}
+                  {getErrorMessage(createMut.error)}
                 </p>
               )}
             </div>
