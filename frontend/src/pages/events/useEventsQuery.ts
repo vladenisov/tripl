@@ -3,7 +3,7 @@ import { useSearchParams } from 'react-router-dom'
 import { useInfiniteQuery } from '@tanstack/react-query'
 
 import { eventsApi } from '@/api/events'
-import { useDebouncedValue } from '@/hooks/useDebouncedValue'
+import { SEARCH_DEBOUNCE_MS, useDebouncedValue } from '@/hooks/useDebouncedValue'
 import type { EventListItem, EventType } from '@/types'
 
 const SPECIAL_TABS = new Set(['all', 'review', 'archived'])
@@ -175,9 +175,9 @@ export function useEventsQuery({
   const deferredSearch = useDeferredValue(search)
   const deferredFieldFilters = useDeferredValue(fieldFilters)
   const deferredMetaFilters = useDeferredValue(metaFilters)
-  const debouncedSearch = useDebouncedValue(deferredSearch, 200)
-  const debouncedFieldFilters = useDebouncedValue(deferredFieldFilters, 200)
-  const debouncedMetaFilters = useDebouncedValue(deferredMetaFilters, 200)
+  const debouncedSearch = useDebouncedValue(deferredSearch, SEARCH_DEBOUNCE_MS)
+  const debouncedFieldFilters = useDebouncedValue(deferredFieldFilters, SEARCH_DEBOUNCE_MS)
+  const debouncedMetaFilters = useDebouncedValue(deferredMetaFilters, SEARCH_DEBOUNCE_MS)
   const isFilterPending =
     deferredSearch !== search ||
     deferredFieldFilters !== fieldFilters ||
