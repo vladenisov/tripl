@@ -2395,3 +2395,333 @@ def test_requeue_stranded_alert_deliveries_redispatches_and_bounds_attempts(
 
     Base.metadata.drop_all(engine)
     engine.dispose()
+
+
+# --- SSRF guard on destination URLs (tripl-3h1) ------------------------------
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://169.254.169.254/latest/meta-data/",  # cloud metadata
+        "https://127.0.0.1/hook",  # loopback
+        "https://10.0.0.5/hook",  # RFC1918
+        "https://192.168.1.10/hook",  # RFC1918
+        "https://172.16.0.1/hook",  # RFC1918
+        "https://[::1]/hook",  # IPv6 loopback
+    ],
+)
+def test_validate_webhook_target_url_rejects_internal_literal_ips(url: str) -> None:
+    from tripl.alerting_validation import validate_webhook_target_url
+
+    with pytest.raises(ValueError, match="private or internal"):
+        validate_webhook_target_url(url)
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://169.254.169.254/rest/api/3",
+        "https://127.0.0.1",
+        "https://10.0.0.5",
+        "https://[::1]",
+    ],
+)
+def test_validate_jira_base_url_rejects_internal_literal_ips(url: str) -> None:
+    from tripl.alerting_validation import validate_jira_base_url
+
+    with pytest.raises(ValueError, match="private or internal"):
+        validate_jira_base_url(url)
+
+
+def test_validate_webhook_target_url_rejects_hostname_resolving_to_private(monkeypatch) -> None:
+    import tripl.alerting_validation as av
+
+    def fake_getaddrinfo(host, *args, **kwargs):
+        # Simulate an attacker-controlled DNS name pointing at the metadata IP.
+        return [(2, 1, 6, "", ("169.254.169.254", 0))]
+
+    monkeypatch.setattr(av.socket, "getaddrinfo", fake_getaddrinfo)
+    with pytest.raises(ValueError, match="private or internal"):
+        av.validate_webhook_target_url("https://evil.example.com/hook")
+
+
+def test_validate_webhook_target_url_fails_closed_on_dns_error(monkeypatch) -> None:
+    import socket as socket_module
+
+    import tripl.alerting_validation as av
+
+    def fake_getaddrinfo(host, *args, **kwargs):
+        raise socket_module.gaierror("name does not resolve")
+
+    monkeypatch.setattr(av.socket, "getaddrinfo", fake_getaddrinfo)
+    with pytest.raises(ValueError, match="could not be resolved"):
+        av.validate_webhook_target_url("https://nope.invalid/hook")
+
+
+def test_validate_webhook_target_url_allows_public_host(monkeypatch) -> None:
+    import tripl.alerting_validation as av
+
+    def fake_getaddrinfo(host, *args, **kwargs):
+        return [(2, 1, 6, "", ("93.184.216.34", 0))]  # example.com (public)
+
+    monkeypatch.setattr(av.socket, "getaddrinfo", fake_getaddrinfo)
+    assert (
+        av.validate_webhook_target_url("https://hooks.example.com/abc")
+        == "https://hooks.example.com/abc"
+    )
+
+
+# --- idempotent re-delivery under acks_late (tripl-908) ----------------------
+
+
+def test_send_alert_delivery_is_idempotent_on_resend(monkeypatch, tmp_path) -> None:
+    """With task_acks_late a sent-then-crashed task gets re-queued. The second
+    run must be a no-op: no second outbound call, status stays sent."""
+    engine = create_engine(f"sqlite:///{tmp_path / 'alerting_idempotent_send.db'}")
+    Base.metadata.create_all(engine)
+    sync_session_factory = sessionmaker(engine, expire_on_commit=False)
+    call_count = {"n": 0}
+
+    with sync_session_factory() as session:
+        project = Project(
+            id=uuid.uuid4(), name="Alert Runtime", slug="alert-runtime", description=""
+        )
+        data_source = DataSource(
+            id=uuid.uuid4(),
+            name="Runtime DS",
+            db_type="clickhouse",
+            host="localhost",
+            port=8123,
+            database_name="default",
+            username="default",
+            password_encrypted="",
+        )
+        scan_config = ScanConfig(
+            id=uuid.uuid4(),
+            data_source_id=data_source.id,
+            project_id=project.id,
+            name="Runtime Scan",
+            base_query="SELECT * FROM events",
+            time_column="created_at",
+            cardinality_threshold=100,
+            interval="1h",
+        )
+        destination = AlertDestination(
+            id=uuid.uuid4(),
+            project_id=project.id,
+            type="jira",
+            name="Ops Jira",
+            enabled=True,
+            jira_base_url="https://example.atlassian.net",
+            jira_auth_email="alice@example.com",
+            jira_api_token_encrypted="api-token-1",
+            jira_project_key="ENG",
+            jira_issue_type="Task",
+        )
+        rule = AlertRule(
+            id=uuid.uuid4(),
+            destination_id=destination.id,
+            name="Main Rule",
+            enabled=True,
+            message_format="plain",
+        )
+        delivery = AlertDelivery(
+            id=uuid.uuid4(),
+            project_id=project.id,
+            scan_config_id=scan_config.id,
+            destination_id=destination.id,
+            rule_id=rule.id,
+            channel="jira",
+            status="pending",
+            matched_count=1,
+            payload_snapshot={"preview": "one alert"},
+        )
+        item = AlertDeliveryItem(
+            id=uuid.uuid4(),
+            delivery_id=delivery.id,
+            scope_type="event",
+            scope_ref="event-1",
+            scope_name="purchase:success",
+            bucket=datetime(2026, 4, 11, 9, tzinfo=UTC),
+            direction="drop",
+            actual_count=10,
+            expected_count=20,
+            absolute_delta=10,
+            percent_delta=50,
+            details_path=None,
+            monitoring_path=None,
+        )
+        session.add_all([project, data_source, scan_config, destination, rule, delivery, item])
+        session.commit()
+        delivery_id = str(delivery.id)
+
+    def counting_post_json(
+        url: str, body: dict[str, object], headers: dict[str, str] | None = None
+    ):
+        call_count["n"] += 1
+        return {"id": "10001", "key": "ENG-1"}
+
+    # No-op the SSRF send-time re-check so the test doesn't hit real DNS.
+    monkeypatch.setitem(
+        metrics.send_alert_delivery.run.__globals__,
+        "_reject_private_target",
+        lambda url, *, field: None,
+    )
+    monkeypatch.setitem(
+        metrics.send_alert_delivery.run.__globals__,
+        "_get_sync_session",
+        sync_session_factory,
+    )
+    monkeypatch.setitem(
+        metrics.send_alert_delivery.run.__globals__,
+        "_post_json",
+        counting_post_json,
+    )
+
+    first = metrics.send_alert_delivery.run(delivery_id)
+    assert first["status"] == "sent"
+    assert call_count["n"] == 1
+
+    # Re-run (simulating an acks_late re-queue) — must be a no-op.
+    second = metrics.send_alert_delivery.run(delivery_id)
+    assert second["status"] == "already_sent"
+    assert call_count["n"] == 1  # no second outbound HTTP call
+
+    with sync_session_factory() as session:
+        persisted = session.get(AlertDelivery, uuid.UUID(delivery_id))
+        assert persisted is not None
+        assert persisted.status == AlertDeliveryStatus.sent.value
+        assert persisted.payload_snapshot["external_issue_key"] == "ENG-1"
+        assert persisted.payload_snapshot["external_issue_id"] == "10001"
+
+    Base.metadata.drop_all(engine)
+    engine.dispose()
+
+
+def test_send_alert_delivery_skips_ticket_creation_when_external_id_present(
+    monkeypatch, tmp_path
+) -> None:
+    """Crash window: a prior attempt created the Jira ticket and committed its
+    external id into payload_snapshot, but was killed before status=sent. On
+    re-run the delivery is still `pending`, so the status guard does not fire —
+    the external-id guard must, skipping creation to avoid a duplicate ticket."""
+    engine = create_engine(f"sqlite:///{tmp_path / 'alerting_ticket_guard.db'}")
+    Base.metadata.create_all(engine)
+    sync_session_factory = sessionmaker(engine, expire_on_commit=False)
+    call_count = {"n": 0}
+
+    with sync_session_factory() as session:
+        project = Project(
+            id=uuid.uuid4(), name="Alert Runtime", slug="alert-runtime", description=""
+        )
+        data_source = DataSource(
+            id=uuid.uuid4(),
+            name="Runtime DS",
+            db_type="clickhouse",
+            host="localhost",
+            port=8123,
+            database_name="default",
+            username="default",
+            password_encrypted="",
+        )
+        scan_config = ScanConfig(
+            id=uuid.uuid4(),
+            data_source_id=data_source.id,
+            project_id=project.id,
+            name="Runtime Scan",
+            base_query="SELECT * FROM events",
+            time_column="created_at",
+            cardinality_threshold=100,
+            interval="1h",
+        )
+        destination = AlertDestination(
+            id=uuid.uuid4(),
+            project_id=project.id,
+            type="jira",
+            name="Ops Jira",
+            enabled=True,
+            jira_base_url="https://example.atlassian.net",
+            jira_auth_email="alice@example.com",
+            jira_api_token_encrypted="api-token-1",
+            jira_project_key="ENG",
+            jira_issue_type="Task",
+        )
+        rule = AlertRule(
+            id=uuid.uuid4(),
+            destination_id=destination.id,
+            name="Main Rule",
+            enabled=True,
+            message_format="plain",
+        )
+        # Still pending, but external id already recorded from the prior attempt.
+        delivery = AlertDelivery(
+            id=uuid.uuid4(),
+            project_id=project.id,
+            scan_config_id=scan_config.id,
+            destination_id=destination.id,
+            rule_id=rule.id,
+            channel="jira",
+            status="pending",
+            matched_count=1,
+            payload_snapshot={
+                "preview": "one alert",
+                "external_issue_id": "10001",
+                "external_issue_key": "ENG-1",
+            },
+        )
+        item = AlertDeliveryItem(
+            id=uuid.uuid4(),
+            delivery_id=delivery.id,
+            scope_type="event",
+            scope_ref="event-1",
+            scope_name="purchase:success",
+            bucket=datetime(2026, 4, 11, 9, tzinfo=UTC),
+            direction="drop",
+            actual_count=10,
+            expected_count=20,
+            absolute_delta=10,
+            percent_delta=50,
+            details_path=None,
+            monitoring_path=None,
+        )
+        session.add_all([project, data_source, scan_config, destination, rule, delivery, item])
+        session.commit()
+        delivery_id = str(delivery.id)
+
+    def counting_post_json(
+        url: str, body: dict[str, object], headers: dict[str, str] | None = None
+    ):
+        call_count["n"] += 1
+        return {"id": "20002", "key": "ENG-2"}
+
+    monkeypatch.setitem(
+        metrics.send_alert_delivery.run.__globals__,
+        "_reject_private_target",
+        lambda url, *, field: None,
+    )
+    monkeypatch.setitem(
+        metrics.send_alert_delivery.run.__globals__,
+        "_get_sync_session",
+        sync_session_factory,
+    )
+    monkeypatch.setitem(
+        metrics.send_alert_delivery.run.__globals__,
+        "_post_json",
+        counting_post_json,
+    )
+
+    result = metrics.send_alert_delivery.run(delivery_id)
+
+    assert result["status"] == "sent"
+    assert call_count["n"] == 0  # no ticket creation — guard skipped it
+
+    with sync_session_factory() as session:
+        persisted = session.get(AlertDelivery, uuid.UUID(delivery_id))
+        assert persisted is not None
+        assert persisted.status == AlertDeliveryStatus.sent.value
+        # Original id preserved, not overwritten by a new creation.
+        assert persisted.payload_snapshot["external_issue_key"] == "ENG-1"
+
+    Base.metadata.drop_all(engine)
+    engine.dispose()
