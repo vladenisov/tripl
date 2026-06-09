@@ -36,6 +36,56 @@ function isMetricBreakdownFieldType(fieldType: string) {
   return fieldType !== 'json'
 }
 
+const NATIVE_SELECT_CLASS =
+  'flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-xs'
+
+function BooleanSelect({
+  value,
+  onChange,
+  required,
+}: {
+  value: string
+  onChange: (value: string) => void
+  required?: boolean
+}) {
+  return (
+    <select
+      value={value}
+      onChange={e => onChange(e.target.value)}
+      className={NATIVE_SELECT_CLASS}
+      required={required}
+    >
+      <option value="">—</option>
+      <option value="true">true</option>
+      <option value="false">false</option>
+    </select>
+  )
+}
+
+function EnumSelect({
+  value,
+  onChange,
+  options,
+  required,
+}: {
+  value: string
+  onChange: (value: string) => void
+  options: string[]
+  required?: boolean
+}) {
+  return (
+    <select
+      value={value}
+      onChange={e => onChange(e.target.value)}
+      className={NATIVE_SELECT_CLASS}
+      required={required}
+    >
+      <option value="">—</option>
+      {options.map(opt => <option key={opt} value={opt}>{opt}</option>)}
+    </select>
+  )
+}
+
 export function EventForm({
   slug,
   eventTypes,
@@ -285,26 +335,18 @@ export function EventForm({
                         <span className="ml-1 text-muted-foreground font-normal">({f.field_type})</span>
                       </Label>
                       {f.field_type === 'boolean' ? (
-                        <select
+                        <BooleanSelect
                           value={fieldValues[f.id] ?? ''}
-                          onChange={e => setFieldValues({ ...fieldValues, [f.id]: e.target.value })}
-                          className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-xs"
+                          onChange={v => setFieldValues({ ...fieldValues, [f.id]: v })}
                           required={f.is_required}
-                        >
-                          <option value="">—</option>
-                          <option value="true">true</option>
-                          <option value="false">false</option>
-                        </select>
+                        />
                       ) : f.field_type === 'enum' && f.enum_options ? (
-                        <select
+                        <EnumSelect
                           value={fieldValues[f.id] ?? ''}
-                          onChange={e => setFieldValues({ ...fieldValues, [f.id]: e.target.value })}
-                          className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-xs"
+                          onChange={v => setFieldValues({ ...fieldValues, [f.id]: v })}
+                          options={f.enum_options}
                           required={f.is_required}
-                        >
-                          <option value="">—</option>
-                          {f.enum_options.map(opt => <option key={opt} value={opt}>{opt}</option>)}
-                        </select>
+                        />
                       ) : f.field_type === 'json' ? (
                         <JsonEditor
                           value={fieldValues[f.id] ?? ''}
@@ -340,24 +382,16 @@ export function EventForm({
                         {mf.is_required && <span className="text-destructive ml-0.5">*</span>}
                       </Label>
                       {mf.field_type === 'boolean' ? (
-                        <select
+                        <BooleanSelect
                           value={metaValues[mf.id] ?? ''}
-                          onChange={e => setMetaValues({ ...metaValues, [mf.id]: e.target.value })}
-                          className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-xs"
-                        >
-                          <option value="">—</option>
-                          <option value="true">true</option>
-                          <option value="false">false</option>
-                        </select>
+                          onChange={v => setMetaValues({ ...metaValues, [mf.id]: v })}
+                        />
                       ) : mf.field_type === 'enum' && mf.enum_options ? (
-                        <select
+                        <EnumSelect
                           value={metaValues[mf.id] ?? ''}
-                          onChange={e => setMetaValues({ ...metaValues, [mf.id]: e.target.value })}
-                          className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-xs"
-                        >
-                          <option value="">—</option>
-                          {mf.enum_options.map(opt => <option key={opt} value={opt}>{opt}</option>)}
-                        </select>
+                          onChange={v => setMetaValues({ ...metaValues, [mf.id]: v })}
+                          options={mf.enum_options}
+                        />
                       ) : (
                         <>
                           <VariableInput
