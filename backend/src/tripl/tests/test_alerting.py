@@ -1,7 +1,7 @@
 import base64
 import json
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -2266,6 +2266,132 @@ def test_send_alert_delivery_creates_linear_issue(monkeypatch, tmp_path) -> None
         persisted = session.get(AlertDelivery, uuid.UUID(delivery_id))
         assert persisted is not None
         assert persisted.status == AlertDeliveryStatus.sent.value
+
+    Base.metadata.drop_all(engine)
+    engine.dispose()
+
+
+def _seed_alert_delivery(
+    session,
+    *,
+    status: str,
+    created_at: datetime,
+    dispatch_attempts: int = 0,
+) -> uuid.UUID:
+    """Create the minimal Project/ScanConfig/Destination/Rule graph plus one
+    AlertDelivery, returning the delivery id. Used by the reaper tests."""
+    suffix = uuid.uuid4().hex[:8]
+    project = Project(
+        id=uuid.uuid4(), name=f"Reaper Project {suffix}", slug=f"reaper-{suffix}", description=""
+    )
+    data_source = DataSource(
+        id=uuid.uuid4(),
+        name=f"Reaper DS {suffix}",
+        db_type="clickhouse",
+        host="localhost",
+        port=8123,
+        database_name="default",
+        username="default",
+        password_encrypted="",
+    )
+    scan_config = ScanConfig(
+        id=uuid.uuid4(),
+        data_source_id=data_source.id,
+        project_id=project.id,
+        name="Reaper Scan",
+        base_query="SELECT * FROM events",
+        time_column="created_at",
+        cardinality_threshold=100,
+        interval="1h",
+    )
+    destination = AlertDestination(
+        id=uuid.uuid4(),
+        project_id=project.id,
+        type="webhook",
+        name="Reaper Hook",
+        enabled=True,
+        target_url_encrypted="https://example.com/hook",
+    )
+    rule = AlertRule(
+        id=uuid.uuid4(),
+        destination_id=destination.id,
+        name="Reaper Rule",
+        enabled=True,
+    )
+    delivery = AlertDelivery(
+        id=uuid.uuid4(),
+        project_id=project.id,
+        scan_config_id=scan_config.id,
+        destination_id=destination.id,
+        rule_id=rule.id,
+        channel="webhook",
+        status=status,
+        matched_count=1,
+        dispatch_attempts=dispatch_attempts,
+        created_at=created_at,
+    )
+    session.add_all([project, data_source, scan_config, destination, rule, delivery])
+    session.commit()
+    return delivery.id
+
+
+def test_requeue_stranded_alert_deliveries_redispatches_and_bounds_attempts(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    from tripl.worker.tasks import maintenance
+
+    engine = create_engine(f"sqlite:///{tmp_path / 'reaper.db'}")
+    Base.metadata.create_all(engine)
+    sync_session_factory = sessionmaker(engine, expire_on_commit=False)
+
+    now = datetime.now(UTC)
+    stale = timedelta(minutes=maintenance.STRANDED_DELIVERY_MINUTES + 5)
+    with sync_session_factory() as session:
+        # Stranded: pending, old, attempts left → should be re-enqueued.
+        stranded_id = _seed_alert_delivery(
+            session, status="pending", created_at=now - stale, dispatch_attempts=1
+        )
+        # Fresh pending (within horizon) → likely still in flight, skip.
+        _seed_alert_delivery(session, status="pending", created_at=now)
+        # Already sent → ignore.
+        _seed_alert_delivery(session, status="sent", created_at=now - stale)
+        # Exhausted: pending, old, attempts maxed → mark failed, do not requeue.
+        exhausted_id = _seed_alert_delivery(
+            session,
+            status="pending",
+            created_at=now - stale,
+            dispatch_attempts=maintenance.MAX_DISPATCH_ATTEMPTS,
+        )
+
+    monkeypatch.setattr(maintenance, "_get_sync_session", sync_session_factory)
+
+    enqueued: list[str] = []
+    from tripl.worker.tasks import alerts as alerts_module
+
+    monkeypatch.setattr(
+        alerts_module.send_alert_delivery,
+        "delay",
+        lambda delivery_id: enqueued.append(delivery_id),
+    )
+
+    result = maintenance.requeue_stranded_alert_deliveries.run()
+
+    assert result["requeued"] == 1
+    assert result["exhausted"] == 1
+    assert enqueued == [str(stranded_id)]
+
+    with sync_session_factory() as session:
+        stranded = session.get(AlertDelivery, stranded_id)
+        assert stranded is not None
+        assert stranded.status == AlertDeliveryStatus.pending.value
+        assert stranded.dispatch_attempts == 2
+
+        exhausted = session.get(AlertDelivery, exhausted_id)
+        assert exhausted is not None
+        assert exhausted.status == AlertDeliveryStatus.failed.value
+        assert exhausted.error_message is not None
+        assert "exhausted" in exhausted.error_message
 
     Base.metadata.drop_all(engine)
     engine.dispose()
