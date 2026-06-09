@@ -33,6 +33,7 @@ import {
   useCommandPalette,
 } from '@/components/command-palette-context'
 import { useActiveBranchId } from '@/hooks/useBranch'
+import { SEARCH_DEBOUNCE_MS, useDebouncedValue } from '@/hooks/useDebouncedValue'
 import { Dialog, DialogContent, DialogTitle } from '@/components/ui/dialog'
 import { Kbd } from '@/components/primitives/kbd'
 import type { SearchEntityType, SearchResult } from '@/types'
@@ -70,15 +71,6 @@ export function CommandPaletteProvider({ children }: { children: ReactNode }) {
   )
 }
 
-function useDebounced<T>(value: T, delayMs: number): T {
-  const [debounced, setDebounced] = useState(value)
-  useEffect(() => {
-    const id = window.setTimeout(() => setDebounced(value), delayMs)
-    return () => window.clearTimeout(id)
-  }, [value, delayMs])
-  return debounced
-}
-
 const SEARCH_TYPE_META: Record<
   SearchEntityType,
   {
@@ -112,7 +104,7 @@ function CommandPalette() {
   const { slug: routeSlug } = useParams()
   const branchId = useActiveBranchId()
   const [query, setQuery] = useState('')
-  const debouncedQuery = useDebounced(query.trim(), 200)
+  const debouncedQuery = useDebouncedValue(query.trim(), SEARCH_DEBOUNCE_MS)
 
   const handleOpenChange = useCallback(
     (next: boolean) => {
