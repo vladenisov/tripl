@@ -10,6 +10,7 @@ import urllib.request
 import uuid
 from datetime import UTC, datetime
 from email.message import EmailMessage
+from urllib.parse import urlparse
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
@@ -26,6 +27,7 @@ from tripl.alert_templates import (
     render_alert_template,
 )
 from tripl.alerting_validation import (
+    reject_private_host,
     validate_email_address,
     validate_email_recipients,
     validate_jira_api_token,
@@ -222,11 +224,26 @@ def _render_delivery_message(
     return render_alert_template(template, context).rstrip(), context.message_format
 
 
+def _reject_private_target(url: str, *, field: str) -> None:
+    """Re-validate the destination host immediately before the outbound request.
+
+    Config-time validation can be bypassed by DNS rebinding (a hostname that
+    resolved to a public IP at save time later resolving to 169.254.169.254 /
+    RFC1918), so we re-check the resolved host here to defend the send path.
+    """
+    hostname = urlparse(url).hostname
+    if hostname:
+        reject_private_host(hostname, field=field)
+
+
 def _post_json(
     url: str,
     body: dict[str, object],
     headers: dict[str, str] | None = None,
-) -> None:
+) -> dict[str, object] | None:
+    """POST a JSON body. Returns the parsed JSON response object when the
+    response is a JSON dict (used by ticket channels to read back the created
+    issue id), otherwise None."""
     request_headers = {"Content-Type": "application/json"}
     if headers:
         request_headers.update(headers)
@@ -238,7 +255,15 @@ def _post_json(
     )
     try:
         with urllib.request.urlopen(request, timeout=10) as response:  # noqa: S310
-            response.read()
+            raw = response.read()
+        if raw:
+            try:
+                parsed = json.loads(raw.decode("utf-8", errors="replace"))
+            except json.JSONDecodeError:
+                return None
+            if isinstance(parsed, dict):
+                return parsed
+        return None
     except urllib.error.HTTPError as exc:
         response_body = ""
         try:
@@ -439,7 +464,10 @@ def _send_jira_issue(
     issue_type: str,
     summary: str,
     body_text: str,
-) -> None:
+) -> tuple[str | None, str | None]:
+    """Create a Jira issue and return ``(issue_id, issue_key)`` from the
+    response so the caller can persist them for idempotency. Either may be None
+    if the response didn't include them."""
     credentials = base64.b64encode(f"{auth_email}:{api_token}".encode()).decode()
     url = f"{base_url}/rest/api/3/issue"
     payload: dict[str, object] = {
@@ -450,10 +478,16 @@ def _send_jira_issue(
             "description": _build_jira_adf_body(body_text),
         }
     }
-    _post_json(
+    response = _post_json(
         url,
         payload,
         headers={"Authorization": f"Basic {credentials}", "Accept": "application/json"},
+    )
+    issue_id = response.get("id") if isinstance(response, dict) else None
+    issue_key = response.get("key") if isinstance(response, dict) else None
+    return (
+        issue_id if isinstance(issue_id, str) else None,
+        issue_key if isinstance(issue_key, str) else None,
     )
 
 
@@ -465,7 +499,10 @@ def _send_linear_issue(
     body_text: str,
     state_id: str | None = None,
     label_ids: list[str] | None = None,
-) -> None:
+) -> tuple[str | None, str | None]:
+    """Create a Linear issue and return ``(issue_id, identifier)`` from the
+    GraphQL response so the caller can persist them for idempotency. Either may
+    be None if the response didn't include them."""
     input_payload: dict[str, object] = {
         "teamId": team_id,
         "title": title,
@@ -480,10 +517,23 @@ def _send_linear_issue(
         " issueCreate(input: $input) { success issue { id identifier } }"
         " }"
     )
-    _post_json(
+    response = _post_json(
         "https://api.linear.app/graphql",
         {"query": mutation, "variables": {"input": input_payload}},
         headers={"Authorization": api_key, "Accept": "application/json"},
+    )
+    issue: dict[str, object] = {}
+    if isinstance(response, dict):
+        data = response.get("data")
+        if isinstance(data, dict):
+            issue_create = data.get("issueCreate")
+            if isinstance(issue_create, dict) and isinstance(issue_create.get("issue"), dict):
+                issue = issue_create["issue"]
+    issue_id = issue.get("id")
+    identifier = issue.get("identifier")
+    return (
+        issue_id if isinstance(issue_id, str) else None,
+        identifier if isinstance(identifier, str) else None,
     )
 
 
@@ -520,6 +570,13 @@ def send_alert_delivery(self: object, delivery_id: str) -> dict[str, object]:
         ).scalar_one_or_none()
         if delivery is None:
             raise ValueError(f"AlertDelivery {delivery_id} not found")
+
+        # Idempotency: with task_acks_late a worker SIGKILLed after a successful
+        # send but before commit gets the task re-queued. If the delivery already
+        # committed as sent, treat the re-run as a no-op so we don't re-send the
+        # message or create a duplicate ticket.
+        if delivery.status == AlertDeliveryStatus.sent.value:
+            return {"status": "already_sent", "delivery_id": delivery_id}
 
         destination = session.get(AlertDestination, delivery.destination_id)
         rule = session.get(AlertRule, delivery.rule_id)
@@ -615,6 +672,8 @@ def send_alert_delivery(self: object, delivery_id: str) -> dict[str, object]:
                 if destination.webhook_header_value_encrypted
                 else None
             )
+            # SSRF re-check at send time (DNS-rebinding defense).
+            _reject_private_target(target_url, field="Webhook target_url")
             webhook_payload = _build_webhook_payload(
                 delivery,
                 destination=destination,
@@ -687,20 +746,44 @@ def send_alert_delivery(self: object, delivery_id: str) -> dict[str, object]:
                     "Jira destination configuration is invalid. Update the base URL, "
                     "credentials, project key, or issue type."
                 ) from exc
-            summary = _build_ticket_subject(
-                rule=rule,
-                project=project,
-                matched_count=delivery.matched_count,
-            )
-            _send_jira_issue(
-                base_url=base_url,
-                auth_email=auth_email,
-                api_token=api_token,
-                project_key=project_key,
-                issue_type=issue_type,
-                summary=summary,
-                body_text=text,
-            )
+            # SSRF re-check at send time (DNS-rebinding defense).
+            _reject_private_target(base_url, field="Jira base_url")
+            # Idempotency: if a previous attempt already created the ticket but
+            # crashed before committing status=sent, the external id is recorded
+            # in the snapshot — skip creation to avoid a duplicate ticket.
+            if payload_snapshot.get("external_issue_id") or payload_snapshot.get(
+                "external_issue_key"
+            ):
+                logger.info(
+                    "Skipping Jira issue creation for delivery %s: already created (%s)",
+                    delivery_id,
+                    payload_snapshot.get("external_issue_key"),
+                )
+            else:
+                summary = _build_ticket_subject(
+                    rule=rule,
+                    project=project,
+                    matched_count=delivery.matched_count,
+                )
+                issue_id, issue_key = _send_jira_issue(
+                    base_url=base_url,
+                    auth_email=auth_email,
+                    api_token=api_token,
+                    project_key=project_key,
+                    issue_type=issue_type,
+                    summary=summary,
+                    body_text=text,
+                )
+                if issue_id is not None:
+                    payload_snapshot["external_issue_id"] = issue_id
+                if issue_key is not None:
+                    payload_snapshot["external_issue_key"] = issue_key
+                delivery.payload_snapshot = payload_snapshot
+                # Persist the external id in its own commit, before the final
+                # status=sent commit. If the worker is killed in the window
+                # between ticket creation and that final commit, the recorded id
+                # survives so the guard above skips re-creation on re-run.
+                session.commit()
         elif destination.type == AlertDestinationType.linear:
             try:
                 api_key = validate_linear_api_key(
@@ -711,24 +794,44 @@ def send_alert_delivery(self: object, delivery_id: str) -> dict[str, object]:
                 raise ValueError(
                     "Linear destination configuration is invalid. Update the API key or team id."
                 ) from exc
-            label_ids = (
-                [lid for lid in destination.linear_label_ids.split(",") if lid]
-                if destination.linear_label_ids
-                else None
-            )
-            title = _build_ticket_subject(
-                rule=rule,
-                project=project,
-                matched_count=delivery.matched_count,
-            )
-            _send_linear_issue(
-                api_key=api_key,
-                team_id=team_id,
-                title=title,
-                body_text=text,
-                state_id=destination.linear_state_id,
-                label_ids=label_ids,
-            )
+            # Idempotency: skip creation if a prior attempt already created the
+            # ticket (id recorded in snapshot) but crashed before committing.
+            if payload_snapshot.get("external_issue_id") or payload_snapshot.get(
+                "external_issue_key"
+            ):
+                logger.info(
+                    "Skipping Linear issue creation for delivery %s: already created (%s)",
+                    delivery_id,
+                    payload_snapshot.get("external_issue_key"),
+                )
+            else:
+                label_ids = (
+                    [lid for lid in destination.linear_label_ids.split(",") if lid]
+                    if destination.linear_label_ids
+                    else None
+                )
+                title = _build_ticket_subject(
+                    rule=rule,
+                    project=project,
+                    matched_count=delivery.matched_count,
+                )
+                issue_id, identifier = _send_linear_issue(
+                    api_key=api_key,
+                    team_id=team_id,
+                    title=title,
+                    body_text=text,
+                    state_id=destination.linear_state_id,
+                    label_ids=label_ids,
+                )
+                if issue_id is not None:
+                    payload_snapshot["external_issue_id"] = issue_id
+                if identifier is not None:
+                    payload_snapshot["external_issue_key"] = identifier
+                delivery.payload_snapshot = payload_snapshot
+                # Persist the external id in its own commit, before the final
+                # status=sent commit, so a crash in between can't create a
+                # duplicate ticket on re-run (see the Jira branch above).
+                session.commit()
         else:
             raise ValueError(f"Unsupported destination type {destination.type}")
 

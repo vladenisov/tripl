@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import ipaddress
 import re
+import socket
 from collections.abc import Callable
 from urllib.parse import urlparse
 
@@ -50,12 +52,60 @@ def _require_clean(value: str | None, *, field: str) -> str:
     return normalized
 
 
+def _is_blocked_ip(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
+    """True for addresses an SSRF attacker would use to reach internal services:
+    loopback (127.0.0.1/::1), RFC1918 private ranges, link-local (incl. the
+    169.254.169.254 cloud-metadata endpoint), reserved, multicast, unspecified."""
+    return (
+        ip.is_private
+        or ip.is_loopback
+        or ip.is_link_local
+        or ip.is_reserved
+        or ip.is_multicast
+        or ip.is_unspecified
+    )
+
+
+def reject_private_host(hostname: str, *, field: str) -> None:
+    """SSRF guard: reject a destination host that is — or resolves to — a
+    private/internal address. Defends both validation time (config save) and
+    send time (DNS-rebinding re-check) against blind SSRF/exfiltration.
+
+    Fails closed: a literal internal IP, *any* resolved address being internal,
+    or a DNS lookup that errors out all raise ValueError.
+    """
+    # Literal IP (IPv4/IPv6, possibly bracketed) — no DNS needed.
+    try:
+        literal = ipaddress.ip_address(hostname.strip("[]"))
+    except ValueError:
+        literal = None
+    if literal is not None:
+        if _is_blocked_ip(literal):
+            raise ValueError(f"{field} must not point to a private or internal address")
+        return
+
+    # Hostname: reject if ANY resolved address is internal. Fail closed on errors.
+    try:
+        addrinfo = socket.getaddrinfo(hostname, None)
+    except socket.gaierror as exc:
+        raise ValueError(f"{field} host could not be resolved") from exc
+    for entry in addrinfo:
+        sockaddr = entry[4]
+        try:
+            resolved = ipaddress.ip_address(sockaddr[0])
+        except ValueError:
+            continue
+        if _is_blocked_ip(resolved):
+            raise ValueError(f"{field} must not point to a private or internal address")
+
+
 def _validate_https_url(
     value: str | None,
     *,
     field: str,
     allowed_hosts: set[str] | None = None,
     strip_trailing_slash: bool = False,
+    block_private_hosts: bool = False,
 ) -> str:
     """https-only URL validator shared by Slack/Webhook/Jira."""
     normalized = _require_clean(value, field=field)
@@ -64,6 +114,12 @@ def _validate_https_url(
         raise ValueError(f"{field} must be a valid https URL")
     if allowed_hosts is not None and parsed.hostname not in allowed_hosts:
         raise ValueError(f"{field} must point to {sorted(allowed_hosts)[0]}")
+    # SSRF guard for free-form destinations (webhook/Jira). Allowlisted channels
+    # (Slack) are already constrained to known public hosts.
+    if block_private_hosts:
+        if not parsed.hostname:
+            raise ValueError(f"{field} must be a valid https URL")
+        reject_private_host(parsed.hostname, field=field)
     if strip_trailing_slash:
         normalized = normalized.rstrip("/")
     return normalized
@@ -162,7 +218,7 @@ def validate_telegram_chat_id(value: str | None) -> str:
 
 
 def validate_webhook_target_url(value: str | None) -> str:
-    return _validate_https_url(value, field="Webhook target_url")
+    return _validate_https_url(value, field="Webhook target_url", block_private_hosts=True)
 
 
 def validate_webhook_header_name(value: str | None) -> str | None:
@@ -233,7 +289,9 @@ def validate_email_subject_template(value: str | None) -> str | None:
 
 
 def validate_jira_base_url(value: str | None) -> str:
-    return _validate_https_url(value, field="Jira base_url", strip_trailing_slash=True)
+    return _validate_https_url(
+        value, field="Jira base_url", strip_trailing_slash=True, block_private_hosts=True
+    )
 
 
 def validate_jira_auth_email(value: str | None) -> str:
