@@ -35,6 +35,10 @@ import type {
 } from '@/types'
 import { AlertTriangle, ArrowLeft, CalendarPlus, CircleCheck, Eye, GitCompareArrows, Layers, Tag, Trash2 } from 'lucide-react'
 
+// Stable empty reference so `metaFieldsQuery.data ?? EMPTY_META_FIELDS`
+// doesn't mint a new array each render and bust the memoized lookup map.
+const EMPTY_META_FIELDS: MetaFieldDefinition[] = []
+
 export default function MonitoringDetailPage() {
   const { slug, scope: scopeParam, id, eventId } = useParams<{
     slug: string
@@ -86,7 +90,7 @@ export default function MonitoringDetailPage() {
     queryFn: () => metaFieldsApi.list(slug!, branchId),
     enabled: scope === 'event' && !!slug,
   })
-  const metaFields = metaFieldsQuery.data ?? []
+  const metaFields = metaFieldsQuery.data ?? EMPTY_META_FIELDS
 
   const metricsQuery = useQuery({
     queryKey: ['monitoringMetrics', slug, scope, scopeId, rangeDays],
@@ -175,7 +179,10 @@ export default function MonitoringDetailPage() {
   )
 
   const queryClient = useQueryClient()
-  const annotationsKey = ['chartAnnotations', slug, scope, scopeId, timeRange.from, timeRange.to]
+  const annotationsKey = useMemo(
+    () => ['chartAnnotations', slug, scope, scopeId, timeRange.from, timeRange.to],
+    [slug, scope, scopeId, timeRange.from, timeRange.to],
+  )
   const annotationsQuery = useQuery({
     queryKey: annotationsKey,
     queryFn: () =>
@@ -217,11 +224,17 @@ export default function MonitoringDetailPage() {
       ? candidate.id === event?.event_type_id
       : scope === 'event_type' && candidate.id === scopeId
   ))
-  const fieldDefMap = new Map(
-    (eventType?.field_definitions ?? []).map((field: FieldDefinition) => [field.id, field]),
+  const fieldDefMap = useMemo(
+    () => new Map(
+      (eventType?.field_definitions ?? []).map((field: FieldDefinition) => [field.id, field]),
+    ),
+    [eventType?.field_definitions],
   )
-  const metaFieldMap = new Map(
-    metaFields.map((metaField: MetaFieldDefinition) => [metaField.id, metaField]),
+  const metaFieldMap = useMemo(
+    () => new Map(
+      metaFields.map((metaField: MetaFieldDefinition) => [metaField.id, metaField]),
+    ),
+    [metaFields],
   )
 
   const headerTitle = (() => {

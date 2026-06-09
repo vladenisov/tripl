@@ -189,8 +189,7 @@ export const EventRow = memo(function EventRow({
       )}
       {fieldColumns.map((f) => {
         const fieldValue = ev.field_values.find((fv) => fv.field_definition_id === f.id)
-        let val = getFieldValue(ev, f)
-        if (val && /^-?\d+\.0+$/.test(val)) val = String(parseInt(val, 10))
+        const val = getFieldValue(ev, f)
         const cellKey = `${ev.id}-${f.id}`
         const isExpanded = expandedFieldId === f.id
         const isLong = typeof val === 'string' && val.length > 30

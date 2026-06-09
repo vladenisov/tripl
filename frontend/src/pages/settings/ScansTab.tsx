@@ -1,4 +1,4 @@
-import { useState } from "react"
+import { useMemo, useState } from "react"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { ChevronDown, Pencil, Plus, Search, Trash2 } from "lucide-react"
 import { dataSourcesApi } from "@/api/dataSources"
@@ -605,7 +605,10 @@ export function ScansTab({ slug }: { slug: string }) {
     queryFn: () => scansApi.list(slug),
   })
 
-  const dsMap = new Map(dataSources.map((ds: DataSource) => [ds.id, ds.name]))
+  const dsMap = useMemo(
+    () => new Map(dataSources.map((ds: DataSource) => [ds.id, ds.name])),
+    [dataSources],
+  )
 
   const createMut = useMutation({
     mutationFn: () =>
