@@ -2,14 +2,30 @@ from __future__ import annotations
 
 import pytest
 from httpx import AsyncClient
+from starlette.datastructures import Headers
 
 from tripl.config import settings
 from tripl.middleware.rate_limit import (
     RateLimitExceeded,
     TokenBucketLimiter,
+    _client_key,
     login_rate_limiter,
     register_rate_limiter,
 )
+
+
+class _FakeClient:
+    def __init__(self, host: str) -> None:
+        self.host = host
+
+
+class _FakeRequest:
+    """Minimal stand-in exposing only what ``_client_key`` reads."""
+
+    def __init__(self, *, client_host: str, forwarded_for: str | None = None) -> None:
+        self.client = _FakeClient(client_host)
+        raw = {"x-forwarded-for": forwarded_for} if forwarded_for is not None else {}
+        self.headers = Headers(raw)
 
 
 @pytest.mark.asyncio
@@ -59,6 +75,44 @@ def test_token_bucket_separate_keys_have_separate_quota() -> None:
     bucket.acquire("b")
     with pytest.raises(RateLimitExceeded):
         bucket.acquire("a")
+
+
+def test_client_key_ignores_spoofed_forwarded_for_by_default() -> None:
+    # Default-deny: a caller rotating X-Forwarded-For must not escape the bucket.
+    # Every spoofed value has to collapse onto the real client.host key.
+    original = settings.rate_limit_trust_forwarded_for
+    settings.rate_limit_trust_forwarded_for = False
+    try:
+        keys = {
+            _client_key(
+                _FakeRequest(client_host="10.0.0.1", forwarded_for=spoofed),  # type: ignore[arg-type]
+                "login",
+            )
+            for spoofed in ("1.1.1.1", "2.2.2.2", "3.3.3.3, 4.4.4.4")
+        }
+        assert keys == {"login:10.0.0.1"}
+    finally:
+        settings.rate_limit_trust_forwarded_for = original
+
+
+def test_client_key_trusts_forwarded_for_when_enabled() -> None:
+    # When explicitly enabled (behind a trusted proxy), distinct XFF client IPs
+    # legitimately get distinct buckets.
+    original = settings.rate_limit_trust_forwarded_for
+    settings.rate_limit_trust_forwarded_for = True
+    try:
+        key_a = _client_key(
+            _FakeRequest(client_host="10.0.0.1", forwarded_for="1.1.1.1"),  # type: ignore[arg-type]
+            "login",
+        )
+        key_b = _client_key(
+            _FakeRequest(client_host="10.0.0.1", forwarded_for="2.2.2.2"),  # type: ignore[arg-type]
+            "login",
+        )
+        assert key_a == "login:1.1.1.1"
+        assert key_b == "login:2.2.2.2"
+    finally:
+        settings.rate_limit_trust_forwarded_for = original
 
 
 @pytest.mark.asyncio

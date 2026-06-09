@@ -37,6 +37,11 @@ class Settings(BaseSettings):
     rate_limit_enabled: bool = True
     rate_limit_login_per_minute: int = 5
     rate_limit_register_per_hour: int = 3
+    # Whether to derive the client IP from the X-Forwarded-For header. Default
+    # is False (deny): an unauthenticated attacker can rotate XFF per request to
+    # spray each request into a fresh bucket and bypass the limit entirely. Only
+    # enable this behind a trusted proxy/LB that *overwrites* the header.
+    rate_limit_trust_forwarded_for: bool = False
 
     # Event photo uploads. Backend can be "local" (filesystem) or "gcs"
     # (Google Cloud Storage). Local files are served through an authenticated
