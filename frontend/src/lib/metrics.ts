@@ -2,6 +2,19 @@ import type { EventMetricPoint } from '@/types'
 
 export type MetricsGranularity = 'hour' | 'day' | 'week' | 'month'
 
+export const RANGE_OPTIONS = [
+  { label: '7d', days: 7 },
+  { label: '30d', days: 30 },
+  { label: '90d', days: 90 },
+] as const
+
+export const GRANULARITY_OPTIONS: { value: MetricsGranularity; label: string }[] = [
+  { value: 'hour', label: 'Hours' },
+  { value: 'day', label: 'Days' },
+  { value: 'week', label: 'Weeks' },
+  { value: 'month', label: 'Months' },
+]
+
 function getBucketStart(dateStr: string, granularity: MetricsGranularity): string {
   const date = new Date(dateStr)
   let normalized: Date

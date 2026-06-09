@@ -5,24 +5,14 @@ import type {
   MonitoringSignal,
   Variable,
 } from '@/types'
-import type { MetricsGranularity } from '@/lib/metrics'
+import { GRANULARITY_OPTIONS, RANGE_OPTIONS } from '@/lib/metrics'
 
 export const TAB_METRICS_RANGE_DAYS_DEFAULT = 7
 export const ROW_METRICS_RANGE_HOURS = 48
 export const ROW_METRICS_LABEL = `${ROW_METRICS_RANGE_HOURS}h`
 
-export const TAB_METRICS_RANGE_OPTIONS = [
-  { label: '7d', days: 7 },
-  { label: '30d', days: 30 },
-  { label: '90d', days: 90 },
-] as const
-
-export const TAB_METRICS_GRANULARITY_OPTIONS: { value: MetricsGranularity; label: string }[] = [
-  { value: 'hour', label: 'Hours' },
-  { value: 'day', label: 'Days' },
-  { value: 'week', label: 'Weeks' },
-  { value: 'month', label: 'Months' },
-]
+export const TAB_METRICS_RANGE_OPTIONS = RANGE_OPTIONS
+export const TAB_METRICS_GRANULARITY_OPTIONS = GRANULARITY_OPTIONS
 
 // Stable empty references — lets the consumers feed through `??` without
 // minting a new array/object every render and busting React.memo.
