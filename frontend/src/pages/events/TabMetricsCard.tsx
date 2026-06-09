@@ -23,11 +23,11 @@ import { aggregateMetricPoints, type MetricsGranularity } from '@/lib/metrics'
 import { cn } from '@/lib/utils'
 import type { EventType, MonitoringSignal } from '@/types'
 
+import { getMonitoringPath } from '@/lib/monitoring'
 import {
   TAB_METRICS_GRANULARITY_OPTIONS,
   TAB_METRICS_RANGE_DAYS_DEFAULT,
   TAB_METRICS_RANGE_OPTIONS,
-  getMonitoringPath,
   getSignalTone,
 } from './utils'
 

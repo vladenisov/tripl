@@ -26,6 +26,7 @@ import { Label } from '@/components/ui/label'
 import { Skeleton } from '@/components/ui/skeleton'
 import { Textarea } from '@/components/ui/textarea'
 import { useConfirm } from '@/hooks/useConfirm'
+import { getMonitoringPath } from '@/lib/monitoring'
 import type {
   Project,
   ProjectLatestScanJob,
@@ -824,16 +825,6 @@ function getScanJobStatusVariant(
   if (status === 'failed') return 'destructive'
   if (status === 'running') return 'secondary'
   return 'outline'
-}
-
-function getMonitoringPath(slug: string, signal: ProjectLatestSignal) {
-  if (signal.scope_type === 'project_total') {
-    return `/p/${slug}/monitoring/project-total/${signal.scope_ref}`
-  }
-  if (signal.scope_type === 'event_type') {
-    return `/p/${slug}/monitoring/event-type/${signal.scope_ref}`
-  }
-  return `/p/${slug}/monitoring/event/${signal.scope_ref}`
 }
 
 function describeScanJobTiming(job: ProjectLatestScanJob) {

@@ -14,6 +14,7 @@ import {
 } from 'lucide-react'
 import { alertingApi } from '@/api/alerting'
 import { metricsApi } from '@/api/metrics'
+import { getMonitoringPath } from '@/lib/monitoring'
 import { useCommandPalette } from '@/components/command-palette-context'
 import { Kbd } from '@/components/primitives/kbd'
 import { Dot } from '@/components/primitives/dot'
@@ -323,16 +324,6 @@ function EmptySectionText({ children }: { children: ReactNode }) {
       {children}
     </div>
   )
-}
-
-function getMonitoringPath(slug: string, signal: MonitoringSignal) {
-  if (signal.scope_type === 'project_total') {
-    return `/p/${slug}/monitoring/project-total/${signal.scope_ref}`
-  }
-  if (signal.scope_type === 'event_type') {
-    return `/p/${slug}/monitoring/event-type/${signal.scope_ref}`
-  }
-  return `/p/${slug}/monitoring/event/${signal.scope_ref}`
 }
 
 function signalScopeLabel(signal: MonitoringSignal) {

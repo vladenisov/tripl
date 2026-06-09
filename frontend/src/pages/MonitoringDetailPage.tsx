@@ -24,6 +24,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { useActiveBranchId } from '@/hooks/useBranch'
 import { aggregateMetricPoints, type MetricsGranularity } from '@/lib/metrics'
 import { resolveMetaFieldHref } from '@/lib/metaFields'
+import { routeScopeToApiScope } from '@/lib/monitoring'
 import type {
   DistributionDriftBand,
   DistributionDriftPoint,
@@ -45,12 +46,6 @@ const GRANULARITY_OPTIONS: { value: MetricsGranularity; label: string }[] = [
   { value: 'week', label: 'Weeks' },
   { value: 'month', label: 'Months' },
 ]
-
-function routeScopeToApiScope(scope: string | undefined) {
-  if (scope === 'project-total') return 'project_total'
-  if (scope === 'event-type') return 'event_type'
-  return 'event'
-}
 
 export default function MonitoringDetailPage() {
   const { slug, scope: scopeParam, id, eventId } = useParams<{
