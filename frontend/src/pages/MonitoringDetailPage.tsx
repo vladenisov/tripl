@@ -22,6 +22,7 @@ import {
 import { Separator } from '@/components/ui/separator'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { useActiveBranchId } from '@/hooks/useBranch'
+import { formatTimestamp } from '@/lib/datetime'
 import { GRANULARITY_OPTIONS, RANGE_OPTIONS, aggregateMetricPoints, type MetricsGranularity } from '@/lib/metrics'
 import { resolveMetaFieldHref } from '@/lib/metaFields'
 import { routeScopeToApiScope } from '@/lib/monitoring'
@@ -351,7 +352,7 @@ export default function MonitoringDetailPage() {
               <CardContent className="grid gap-3 p-4 md:grid-cols-4">
                 <div>
                   <p className="text-xs uppercase tracking-wide text-muted-foreground">Bucket</p>
-                  <p className="text-sm font-medium">{new Date(latestSignal.bucket).toLocaleString()}</p>
+                  <p className="text-sm font-medium">{formatTimestamp(latestSignal.bucket)}</p>
                 </div>
                 <div>
                   <p className="text-xs uppercase tracking-wide text-muted-foreground">Actual</p>
@@ -498,7 +499,7 @@ export default function MonitoringDetailPage() {
                           style={{ backgroundColor: annotation.color }}
                         />
                         <span className="text-muted-foreground">
-                          {new Date(annotation.bucket).toLocaleString()}
+                          {formatTimestamp(annotation.bucket)}
                         </span>
                         <span className="font-medium">{annotation.label}</span>
                         {annotation.scope_type === null && (
@@ -786,7 +787,7 @@ function DistributionDriftPanel({
             <div className="grid gap-3 md:grid-cols-4">
               <div>
                 <p className="text-xs uppercase tracking-wide text-muted-foreground">Bucket</p>
-                <p className="text-sm font-medium">{new Date(latest.bucket).toLocaleString()}</p>
+                <p className="text-sm font-medium">{formatTimestamp(latest.bucket)}</p>
               </div>
               <div>
                 <p className="text-xs uppercase tracking-wide text-muted-foreground">PSI</p>
@@ -840,7 +841,7 @@ function DistributionDriftPanel({
                   return (
                     <tr key={row.id} className="border-b last:border-0">
                       <td className="px-4 py-3 text-muted-foreground">
-                        {new Date(row.bucket).toLocaleString()}
+                        {formatTimestamp(row.bucket)}
                       </td>
                       <td className="px-4 py-3 font-medium">{row.psi.toFixed(3)}</td>
                       <td className="px-4 py-3">
