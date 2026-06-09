@@ -1,7 +1,8 @@
 import { Link } from 'react-router-dom'
 import { AlertTriangle, ArrowDown, ArrowUp } from 'lucide-react'
 import type { MonitoringSignal } from '@/types'
-import { getMonitoringPath, getSignalTone } from './utils'
+import { getMonitoringPath } from '@/lib/monitoring'
+import { getSignalTone } from './utils'
 
 export function SignalLink({
   slug,

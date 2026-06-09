@@ -86,16 +86,6 @@ export function getSignalTone(signal: MonitoringSignal) {
   }
 }
 
-export function getMonitoringPath(slug: string, signal: MonitoringSignal) {
-  if (signal.scope_type === 'project_total') {
-    return `/p/${slug}/monitoring/project-total/${signal.scope_ref}`
-  }
-  if (signal.scope_type === 'event_type') {
-    return `/p/${slug}/monitoring/event-type/${signal.scope_ref}`
-  }
-  return `/p/${slug}/monitoring/event/${signal.scope_ref}`
-}
-
 export function pickLatestSignal(
   signals: MonitoringSignal[],
   scopeType: MonitoringSignal['scope_type'],
