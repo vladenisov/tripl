@@ -17,6 +17,7 @@ from sqlalchemy.orm import Session, selectinload
 
 from tripl.alert_templates import (
     ALERT_MESSAGE_FORMAT_PLAIN,
+    ALERT_MESSAGE_FORMAT_SLACK_MRKDWN,
     ALERT_MESSAGE_FORMAT_TELEGRAM_HTML,
     ALERT_MESSAGE_FORMAT_TELEGRAM_MARKDOWNV2,
     AlertTemplateContext,
@@ -70,6 +71,7 @@ def _build_item_template_context(
     message_format: str,
     session: Session | None = None,
     scan_config_id: uuid.UUID | None = None,
+    item_context_cache: dict[uuid.UUID, tuple[str, str]] | None = None,
 ) -> AlertTemplateContext:
     scope_label = {
         "project_total": "Project total",
@@ -88,11 +90,16 @@ def _build_item_template_context(
     drift_text = " ".join(part for part in drift_parts if part)
     drift_line = f"\n  drift: {drift_text}" if drift_text else ""
 
-    # Explainability context — sparkline + top movers. Lazy: only query when
-    # we have both a session and a scan_config_id (i.e., the live send path).
+    # Explainability context — sparkline + top movers. The (sparkline,
+    # top_movers) pair is format-independent and the only DB-touching part of
+    # the render, so we cache it per item: a re-render in a different format
+    # (e.g. the MarkdownV2→plain fallback) reuses it instead of re-querying.
     sparkline = ""
     top_movers = ""
-    if session is not None and scan_config_id is not None:
+    cached = item_context_cache.get(item.id) if item_context_cache is not None else None
+    if cached is not None:
+        sparkline, top_movers = cached
+    elif session is not None and scan_config_id is not None:
         try:
             sparkline, top_movers = build_alert_item_context(
                 session,
@@ -103,6 +110,8 @@ def _build_item_template_context(
             )
         except Exception:  # noqa: BLE001
             logger.warning("Failed to build alert item context", exc_info=True)
+        if item_context_cache is not None:
+            item_context_cache[item.id] = (sparkline, top_movers)
     sparkline_line = f"\n  trend: {sparkline}" if sparkline else ""
     top_movers_line = f"\n  movers: {top_movers}" if top_movers else ""
 
@@ -143,6 +152,7 @@ def _build_items_text(
     items_template: str,
     session: Session | None = None,
     scan_config_id: uuid.UUID | None = None,
+    item_context_cache: dict[uuid.UUID, tuple[str, str]] | None = None,
 ) -> str:
     lines: list[str] = []
     for item in items:
@@ -153,6 +163,7 @@ def _build_items_text(
                 message_format=message_format,
                 session=session,
                 scan_config_id=scan_config_id,
+                item_context_cache=item_context_cache,
             ),
         ).rstrip()
         if rendered_item:
@@ -169,6 +180,7 @@ def _build_template_context(
     project: Project | None,
     message_format_override: str | None = None,
     session: Session | None = None,
+    item_context_cache: dict[uuid.UUID, tuple[str, str]] | None = None,
 ) -> AlertTemplateContext:
     message_format = message_format_override or rule.message_format or ALERT_MESSAGE_FORMAT_PLAIN
     items_template = normalize_message_template(rule.items_template)
@@ -190,6 +202,7 @@ def _build_template_context(
             items_template=items_template,
             session=session,
             scan_config_id=delivery.scan_config_id,
+            item_context_cache=item_context_cache,
         ),
     }
     return AlertTemplateContext(variables=variables, message_format=message_format)
@@ -204,6 +217,7 @@ def _render_delivery_message(
     project: Project | None,
     message_format_override: str | None = None,
     session: Session | None = None,
+    item_context_cache: dict[uuid.UUID, tuple[str, str]] | None = None,
 ) -> tuple[str, str]:
     template = normalize_message_template(rule.message_template)
     context = _build_template_context(
@@ -214,6 +228,7 @@ def _render_delivery_message(
         project=project,
         message_format_override=message_format_override,
         session=session,
+        item_context_cache=item_context_cache,
     )
     if template is None:
         template = get_default_message_template(context.message_format)
@@ -286,7 +301,11 @@ def _post_json(
 
 
 def _send_slack_message(webhook_url: str, text: str, *, message_format: str) -> None:
-    _post_json(webhook_url, {"text": text})
+    # Slack only renders mrkdwn (bold/code/links) when ``mrkdwn`` is true; for
+    # the plain format we disable it so literal markup characters aren't
+    # interpreted.
+    mrkdwn = message_format == ALERT_MESSAGE_FORMAT_SLACK_MRKDWN
+    _post_json(webhook_url, {"text": text, "mrkdwn": mrkdwn})
 
 
 def _send_telegram_message(
@@ -581,6 +600,10 @@ def send_alert_delivery(self: object, delivery_id: str) -> dict[str, object]:
         if destination is None or rule is None or scan_config is None:
             raise ValueError(f"AlertDelivery {delivery_id} is missing related objects")
 
+        # Built once and reused across re-renders (e.g. the MarkdownV2→plain
+        # fallback) so the warehouse/DB queries behind sparkline + top-movers
+        # don't run a second time when something is already failing.
+        item_context_cache: dict[uuid.UUID, tuple[str, str]] = {}
         text, message_format = _render_delivery_message(
             delivery,
             destination=destination,
@@ -588,6 +611,7 @@ def send_alert_delivery(self: object, delivery_id: str) -> dict[str, object]:
             scan_name=scan_config.name,
             project=project,
             session=session,
+            item_context_cache=item_context_cache,
         )
         rendered_message = text
         payload_snapshot = (
@@ -630,6 +654,9 @@ def send_alert_delivery(self: object, delivery_id: str) -> dict[str, object]:
                     message_format == ALERT_MESSAGE_FORMAT_TELEGRAM_MARKDOWNV2
                     and _is_telegram_markdown_parse_error(exc)
                 ):
+                    # Reuse the already-built sparkline/top-movers context and
+                    # skip the session so the fallback only re-formats — no
+                    # second round of warehouse/DB queries.
                     fallback_text, fallback_format = _render_delivery_message(
                         delivery,
                         destination=destination,
@@ -637,7 +664,8 @@ def send_alert_delivery(self: object, delivery_id: str) -> dict[str, object]:
                         scan_name=scan_config.name,
                         project=project,
                         message_format_override=ALERT_MESSAGE_FORMAT_PLAIN,
-                        session=session,
+                        session=None,
+                        item_context_cache=item_context_cache,
                     )
                     _send_telegram_message(
                         bot_token,

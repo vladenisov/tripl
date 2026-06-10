@@ -21,6 +21,38 @@ from tripl.tests.conftest import TestSessionLocal
 from tripl.worker.tasks import metrics
 
 
+@pytest.mark.parametrize(
+    ("message_format", "expected_mrkdwn"),
+    [
+        ("plain", False),
+        ("slack_mrkdwn", True),
+    ],
+)
+def test_send_slack_message_sets_mrkdwn_per_format(
+    monkeypatch: pytest.MonkeyPatch, message_format: str, expected_mrkdwn: bool
+) -> None:
+    """The Slack payload must honor message_format via the ``mrkdwn`` flag:
+    plain disables Slack markup, slack_mrkdwn enables it."""
+    from tripl.worker.tasks import alerts
+
+    captured: dict[str, object] = {}
+
+    def capture_post_json(url: str, body: dict[str, object]) -> None:
+        captured["url"] = url
+        captured["body"] = body
+
+    monkeypatch.setattr(alerts, "_post_json", capture_post_json)
+    alerts._send_slack_message(
+        "https://hooks.slack.com/services/T/B/sim",
+        "hello",
+        message_format=message_format,
+    )
+    body = captured["body"]
+    assert isinstance(body, dict)
+    assert body["text"] == "hello"
+    assert body["mrkdwn"] is expected_mrkdwn
+
+
 @pytest.mark.asyncio
 async def test_alerting_destination_rule_crud_and_secret_masking(client: AsyncClient) -> None:
     project_resp = await client.post(
@@ -912,8 +944,24 @@ def test_send_alert_delivery_falls_back_from_telegram_markdownv2_to_plain(
         flaky_post_json,
     )
 
+    # The sparkline/top-movers DB build must run ONCE even though we render the
+    # message twice (MarkdownV2 then the plain fallback) — the fallback reuses
+    # the cached context instead of re-querying.
+    from tripl.worker.tasks import alerts as alerts_module
+
+    real_build_context = alerts_module.build_alert_item_context
+    build_context_calls = 0
+
+    def counting_build_context(*args: object, **kwargs: object) -> tuple[str, str]:
+        nonlocal build_context_calls
+        build_context_calls += 1
+        return real_build_context(*args, **kwargs)
+
+    monkeypatch.setattr(alerts_module, "build_alert_item_context", counting_build_context)
+
     result = metrics.send_alert_delivery.run(delivery_id)
 
+    assert build_context_calls == 1
     assert result["status"] == "sent"
     assert len(sent_payloads) == 2
     assert sent_payloads[0]["parse_mode"] == "MarkdownV2"
