@@ -21,6 +21,10 @@ def _quote_ident(name: str) -> str:
     return '"' + name.replace('"', '""') + '"'
 
 
+def _is_local_host(host: str) -> bool:
+    return host in {"localhost", "127.0.0.1", "::1", ""}
+
+
 class PostgresAdapter(BaseAdapter):
     """Postgres-backed warehouse adapter mirroring the ClickHouse semantics.
 
@@ -40,8 +44,23 @@ class PostgresAdapter(BaseAdapter):
         database: str,
         username: str = "",
         password: str = "",
+        timeout_seconds: int | None = None,
         **kwargs: object,
     ) -> None:
+        # connect_timeout bounds the TCP/handshake; statement_timeout (set
+        # server-side via libpq options) caps every query so a runaway
+        # base_query is cancelled by Postgres long before Celery's hard limit
+        # SIGKILLs the worker. statement_timeout is in milliseconds.
+        connect_timeout = timeout_seconds if timeout_seconds and timeout_seconds > 0 else None
+        options = (
+            f"-c statement_timeout={connect_timeout * 1000}"
+            if connect_timeout is not None
+            else None
+        )
+        # Default to TLS for non-local hosts; localhost connections (dev,
+        # docker) often have no TLS configured, so don't force it there.
+        sslmode = None if _is_local_host(host) else "prefer"
+
         self._conn = psycopg.connect(
             host=host,
             port=port,
@@ -49,6 +68,9 @@ class PostgresAdapter(BaseAdapter):
             user=username or "postgres",
             password=password or "",
             autocommit=True,
+            connect_timeout=connect_timeout,
+            options=options,
+            sslmode=sslmode,
         )
         self._allowed_columns: set[str] = set()
         self._type_names: dict[int, str] = {}

@@ -71,4 +71,83 @@ def test_clickhouse_timeout_maps_to_send_receive_timeout(monkeypatch: pytest.Mon
 
     assert isinstance(result, FakeClickHouseAdapter)
     assert captured["send_receive_timeout"] == 75
+    assert captured["connect_timeout"] == 75
     assert "timeout_seconds" not in captured
+
+
+def test_clickhouse_falls_back_to_default_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
+    from tripl.worker.adapters import clickhouse as clickhouse_module
+    from tripl.worker.adapters.registry import _DEFAULT_TIMEOUT_SECONDS
+
+    captured: dict[str, object] = {}
+
+    class FakeClickHouseAdapter:
+        def __init__(self, **kwargs: object) -> None:
+            captured.update(kwargs)
+
+    monkeypatch.setattr(clickhouse_module, "ClickHouseAdapter", FakeClickHouseAdapter)
+
+    ds = _make_ds("clickhouse")
+    ds.timeout_seconds = None
+
+    build_adapter(ds)
+
+    assert captured["send_receive_timeout"] == _DEFAULT_TIMEOUT_SECONDS
+    assert captured["connect_timeout"] == _DEFAULT_TIMEOUT_SECONDS
+
+
+def test_postgres_wires_timeout_and_tls(monkeypatch: pytest.MonkeyPatch) -> None:
+    from tripl.worker.adapters import postgres as postgres_module
+
+    captured: dict[str, object] = {}
+
+    class FakeConn:
+        def close(self) -> None:
+            return None
+
+    def fake_connect(**kwargs: object) -> FakeConn:
+        captured.update(kwargs)
+        return FakeConn()
+
+    monkeypatch.setattr(postgres_module.psycopg, "connect", fake_connect)
+
+    ds = _make_ds("postgres")
+    ds.host = "db.internal.example.com"
+    ds.timeout_seconds = 90
+
+    build_adapter(ds)
+
+    assert captured["connect_timeout"] == 90
+    assert captured["options"] == "-c statement_timeout=90000"
+    assert captured["sslmode"] == "prefer"
+    assert captured["autocommit"] is True
+
+
+def test_postgres_localhost_skips_tls_and_uses_default_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from tripl.worker.adapters import postgres as postgres_module
+    from tripl.worker.adapters.registry import _DEFAULT_TIMEOUT_SECONDS
+
+    captured: dict[str, object] = {}
+
+    class FakeConn:
+        def close(self) -> None:
+            return None
+
+    def fake_connect(**kwargs: object) -> FakeConn:
+        captured.update(kwargs)
+        return FakeConn()
+
+    monkeypatch.setattr(postgres_module.psycopg, "connect", fake_connect)
+
+    ds = _make_ds("postgres")
+    ds.host = "localhost"
+    ds.timeout_seconds = None
+
+    build_adapter(ds)
+
+    # Local hosts skip TLS (no cert configured in dev/docker).
+    assert captured["sslmode"] is None
+    assert captured["connect_timeout"] == _DEFAULT_TIMEOUT_SECONDS
+    assert captured["options"] == f"-c statement_timeout={_DEFAULT_TIMEOUT_SECONDS * 1000}"

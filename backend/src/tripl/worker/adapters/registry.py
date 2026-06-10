@@ -10,6 +10,18 @@ AdapterFactory = Callable[[DataSource, str], BaseAdapter]
 
 _REGISTRY: dict[str, AdapterFactory] = {}
 
+# Fallback connect/query budget when a data source leaves timeout_seconds unset.
+# Comfortably under Celery's 55/60-min hard limit so a runaway query is cut off
+# by the adapter long before the worker is SIGKILLed.
+_DEFAULT_TIMEOUT_SECONDS = 300
+
+
+def _effective_timeout_seconds(ds: DataSource) -> int:
+    timeout = ds.timeout_seconds
+    if timeout is None or timeout <= 0:
+        return _DEFAULT_TIMEOUT_SECONDS
+    return timeout
+
 
 def register_adapter(db_type: str, factory: AdapterFactory) -> None:
     _REGISTRY[db_type] = factory
@@ -31,9 +43,13 @@ def build_adapter(ds: DataSource) -> BaseAdapter:
 def _build_clickhouse(ds: DataSource, password: str) -> BaseAdapter:
     from tripl.worker.adapters.clickhouse import ClickHouseAdapter
 
-    kwargs: dict[str, object] = {}
-    if ds.timeout_seconds is not None:
-        kwargs["send_receive_timeout"] = ds.timeout_seconds
+    timeout = _effective_timeout_seconds(ds)
+    # connect_timeout bounds the TCP/handshake; send_receive_timeout bounds the
+    # query so a runaway base_query can't run until Celery's hard limit.
+    kwargs: dict[str, object] = {
+        "connect_timeout": timeout,
+        "send_receive_timeout": timeout,
+    }
 
     return ClickHouseAdapter(
         host=ds.host,
@@ -54,6 +70,7 @@ def _build_postgres(ds: DataSource, password: str) -> BaseAdapter:
         database=ds.database_name,
         username=ds.username,
         password=password,
+        timeout_seconds=_effective_timeout_seconds(ds),
     )
 
 
