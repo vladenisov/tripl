@@ -825,3 +825,62 @@ class TestScanConfigsCRUD:
             assert job.status == "failed"
             assert "connection refused" in job.error_message
             assert job.result_summary is None
+
+    def test_worker_test_connection_persists_and_invalidates_cache(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        engine = create_engine(f"sqlite:///{tmp_path / 'test_conn.db'}")
+        Base.metadata.create_all(engine)
+        sync_session_factory = sessionmaker(engine, expire_on_commit=False)
+
+        data_source_id = uuid.uuid4()
+        with sync_session_factory() as session:
+            session.add(
+                DataSource(
+                    id=data_source_id,
+                    name="DS",
+                    db_type="clickhouse",
+                    host="localhost",
+                    port=8123,
+                    database_name="default",
+                    username="default",
+                    password_encrypted="",
+                )
+            )
+            session.commit()
+
+        class FakeAdapter:
+            def test_connection(self) -> bool:
+                return True
+
+            def close(self) -> None:
+                return None
+
+        invalidated: list[str] = []
+        monkeypatch.setitem(
+            scan_tasks.test_connection.run.__globals__,
+            "_get_sync_session",
+            sync_session_factory,
+        )
+        monkeypatch.setitem(
+            scan_tasks.test_connection.run.__globals__,
+            "_build_adapter",
+            lambda ds: FakeAdapter(),
+        )
+        monkeypatch.setattr(
+            scan_tasks.cache,
+            "sync_delete_prefix",
+            lambda prefix: invalidated.append(prefix),
+        )
+
+        result = scan_tasks.test_connection.run(str(data_source_id))
+
+        assert result["success"] is True
+        assert result["error"] is None
+        assert invalidated == [scan_tasks.cache.prefix_data_sources()]
+
+        with sync_session_factory() as session:
+            ds = session.get(DataSource, data_source_id)
+            assert ds.last_test_status == "success"
+            assert ds.last_test_at is not None
+            assert ds.last_test_message == "Connection successful"

@@ -9,9 +9,10 @@ from datetime import UTC, datetime
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from tripl import cache
 from tripl.config import settings
 from tripl.json_paths import group_json_value_paths
-from tripl.models.data_source import DataSource
+from tripl.models.data_source import DataSource, TestStatus
 from tripl.models.event import Event
 from tripl.models.event_type import EventType
 from tripl.models.scan_config import ScanConfig
@@ -437,7 +438,7 @@ def apply_event_groups(self: object, scan_config_id: str, job_id: str) -> dict[s
     max_retries=0,
 )
 def test_connection(self: object, data_source_id: str) -> dict[str, object]:
-    """Test connectivity to a data source."""
+    """Test connectivity to a data source and persist the probe result."""
     session = _get_sync_session()
     adapter: BaseAdapter | None = None
     try:
@@ -445,11 +446,27 @@ def test_connection(self: object, data_source_id: str) -> dict[str, object]:
         if ds is None:
             return {"success": False, "error": f"DataSource {data_source_id} not found"}
 
-        adapter = _build_adapter(ds)
-        ok = adapter.test_connection()
-        return {"success": ok, "error": None}
-    except Exception as e:
-        return {"success": False, "error": str(e)}
+        ok = False
+        error: str | None = None
+        message = ""
+        try:
+            adapter = _build_adapter(ds)
+            ok = bool(adapter.test_connection())
+            message = "Connection successful" if ok else "Connection probe returned no rows"
+        except Exception as e:  # noqa: BLE001
+            error = str(e)
+            message = error
+
+        ds.last_test_at = datetime.now(UTC)
+        ds.last_test_status = TestStatus.success.value if ok else TestStatus.failed.value
+        ds.last_test_message = message
+        session.commit()
+        # The data-sources list is cached for 300s including these volatile
+        # last_test_* fields; invalidate the same prefix the API path uses so
+        # the list reflects the worker probe immediately (sync variant — don't
+        # bridge back to asyncio from a Celery worker).
+        cache.sync_delete_prefix(cache.prefix_data_sources())
+        return {"success": ok, "error": error}
     finally:
         if adapter is not None:
             adapter.close()
