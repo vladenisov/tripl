@@ -41,6 +41,9 @@ function resolveCrumbs(pathname: string, projectName?: string): Crumbs {
   if (pathname.startsWith('/data-sources')) {
     return { crumbs: [], title: 'Data sources' }
   }
+  if (pathname.startsWith('/settings')) {
+    return { crumbs: [], title: 'Service settings' }
+  }
   if (pathname.startsWith('/auth')) return { crumbs: [], title: 'Sign in' }
 
   const projectCrumb = projectName ?? 'project'

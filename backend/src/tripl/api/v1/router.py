@@ -5,6 +5,7 @@ from tripl.api.v1.activity import router as activity_router
 from tripl.api.v1.ai import router as ai_router
 from tripl.api.v1.alerting import router as alerting_router
 from tripl.api.v1.api_keys import router as api_keys_router
+from tripl.api.v1.app_settings import router as app_settings_router
 from tripl.api.v1.audit import router as audit_router
 from tripl.api.v1.auth import router as auth_router
 from tripl.api.v1.chart_annotations import router as chart_annotations_router
@@ -33,6 +34,7 @@ protected_dependencies = [Depends(get_current_user)]
 router.include_router(auth_router)
 router.include_router(activity_router, dependencies=protected_dependencies)
 router.include_router(ai_router, dependencies=protected_dependencies)
+router.include_router(app_settings_router, dependencies=protected_dependencies)
 router.include_router(projects_router, dependencies=protected_dependencies)
 router.include_router(project_anomaly_settings_router, dependencies=protected_dependencies)
 router.include_router(alerting_router, dependencies=protected_dependencies)

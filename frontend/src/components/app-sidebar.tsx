@@ -19,6 +19,7 @@ import {
   LogOut,
   Search,
   Settings,
+  SlidersHorizontal,
   Tag,
   Users,
   type LucideIcon,
@@ -135,6 +136,17 @@ export function AppSidebar() {
       icon: Key,
       match: (path) => path.startsWith('/account'),
     },
+    ...(auth.user?.role === 'owner'
+      ? [
+          {
+            id: 'service-settings',
+            label: 'Service Settings',
+            to: '/settings',
+            icon: SlidersHorizontal,
+            match: (path: string) => path.startsWith('/settings'),
+          },
+        ]
+      : []),
   ]
 
   const showProjectViews =

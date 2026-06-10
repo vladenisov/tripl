@@ -6,6 +6,7 @@ from tripl.models.alert_rule import AlertRule
 from tripl.models.alert_rule_filter import AlertRuleFilter
 from tripl.models.alert_rule_state import AlertRuleState
 from tripl.models.api_key import ApiKey
+from tripl.models.app_setting import AppSetting
 from tripl.models.audit_log import AuditLog
 from tripl.models.base import Base
 from tripl.models.chart_annotation import ChartAnnotation
@@ -56,6 +57,7 @@ __all__ = [
     "AlertDelivery",
     "AlertDeliveryItem",
     "ApiKey",
+    "AppSetting",
     "AuditLog",
     "ChartAnnotation",
     "CoverageMetric",

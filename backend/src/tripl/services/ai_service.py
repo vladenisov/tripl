@@ -13,28 +13,11 @@ from tripl.models.event import Event
 from tripl.models.event_type import EventType
 from tripl.models.field_definition import FieldDefinition
 from tripl.schemas.ai import AiAskResponse, AiAskSource, AiDescribeResponse, AiFieldSuggestion
-from tripl.services import llm_service, search_service
+from tripl.services import app_settings_service, llm_service, search_service
 from tripl.services.plan_branch_service import resolve_branch_id
 from tripl.services.project_service import get_project_id_by_slug
 
 logger = logging.getLogger(__name__)
-
-_DESCRIBE_SYSTEM_PROMPT = (
-    "You are a technical documentation assistant for a product analytics tracking plan. "
-    "Given event metadata, write clear, concise descriptions. "
-    "Respond ONLY with valid JSON matching this schema: "
-    '{"description": "<event description>", "field_suggestions": [{"field_name": "<name>", "description": "<desc>"}]}. '
-    "Only include fields in field_suggestions that have empty or missing descriptions. "
-    "Do not add markdown fences or any text outside the JSON object."
-)
-
-_ASK_SYSTEM_PROMPT = (
-    "You are a knowledgeable assistant for a product analytics tracking plan. "
-    "Answer questions concisely using ONLY the provided context. "
-    "Cite sources using [n] notation where n corresponds to the numbered item in the context. "
-    "If the context is insufficient, say so clearly. "
-    "Reply in the same language as the question."
-)
 
 
 def _strip_markdown_fences(text: str) -> str:
@@ -126,7 +109,10 @@ async def suggest_event_description(
             )
 
     user_prompt = "\n".join(lines)
-    raw = await asyncio.to_thread(llm_service.complete, _DESCRIBE_SYSTEM_PROMPT, user_prompt)
+    config = await app_settings_service.get_ai_config(session)
+    raw = await asyncio.to_thread(
+        llm_service.complete, config.describe_system_prompt, user_prompt, config=config
+    )
     if raw is None:
         return AiDescribeResponse(description="", field_suggestions=[])
     return _parse_describe_response(raw)
@@ -173,7 +159,10 @@ async def suggest_event_type_descriptions(
             )
 
     user_prompt = "\n".join(lines)
-    raw = await asyncio.to_thread(llm_service.complete, _DESCRIBE_SYSTEM_PROMPT, user_prompt)
+    config = await app_settings_service.get_ai_config(session)
+    raw = await asyncio.to_thread(
+        llm_service.complete, config.describe_system_prompt, user_prompt, config=config
+    )
     if raw is None:
         return AiDescribeResponse(description="", field_suggestions=[])
     return _parse_describe_response(raw)
@@ -213,7 +202,10 @@ async def ask_plan(
     context_text = "\n\n".join(context_lines)
     user_prompt = f"Context:\n{context_text}\n\nQuestion: {question}"
 
-    raw = await asyncio.to_thread(llm_service.complete, _ASK_SYSTEM_PROMPT, user_prompt)
+    config = await app_settings_service.get_ai_config(session)
+    raw = await asyncio.to_thread(
+        llm_service.complete, config.ask_system_prompt, user_prompt, config=config
+    )
     answer = raw.strip() if raw else "The AI service is unavailable or returned no answer."
 
     sources = [

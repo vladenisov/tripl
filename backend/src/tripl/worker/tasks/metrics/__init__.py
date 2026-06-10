@@ -18,16 +18,16 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from tripl import cache
-from tripl.config import settings
 from tripl.models.data_source import DataSource
 from tripl.models.distribution_drift import DistributionDrift
 from tripl.models.event import Event
 from tripl.models.event_metric import EventMetric
 from tripl.models.event_type import EventType
 from tripl.models.scan_config import ScanConfig
-from tripl.models.shadow_event_candidate import SHADOW_STATUS_NEW
 from tripl.models.scan_job import ScanJob, ScanJobStatus
+from tripl.models.shadow_event_candidate import SHADOW_STATUS_NEW
 from tripl.models.variable import Variable
+from tripl.services import app_settings_service
 from tripl.worker.analyzers.cardinality import (
     _is_json_type,
     analyze_cardinality,
@@ -282,8 +282,9 @@ def collect_metrics(
         if config.time_column:
             skip_cols.add(config.time_column)
         json_value_path_map = _get_scan_json_value_path_map(config)
-        scan_row_limit = config.scan_row_limit or settings.scan_row_limit_default
-        metrics_row_limit = config.metrics_row_limit or settings.metrics_row_limit_default
+        runtime_config = app_settings_service.get_runtime_config_sync(session)
+        scan_row_limit = config.scan_row_limit or runtime_config.scan_row_limit_default
+        metrics_row_limit = config.metrics_row_limit or runtime_config.metrics_row_limit_default
 
         assert config.interval is not None
         interval_spec = get_interval(config.interval)

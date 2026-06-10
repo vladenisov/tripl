@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, HTTPException
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from tripl.api.deps import BranchIdDep, EditorUserDep, SessionDep
 from tripl.schemas.ai import (
@@ -11,22 +12,27 @@ from tripl.schemas.ai import (
     AiDescribeResponse,
     AiStatusResponse,
 )
-from tripl.services import ai_service, llm_service
+from tripl.services import ai_service, app_settings_service, llm_service
 
 router = APIRouter(prefix="/projects/{slug}/ai", tags=["ai"])
 
 
-def _require_ai_enabled() -> None:
-    if not llm_service.is_enabled():
+async def _require_ai_enabled(session: AsyncSession) -> None:
+    config = await app_settings_service.get_ai_config(session)
+    if not llm_service.is_enabled(config):
         raise HTTPException(
             status_code=503,
-            detail="AI features are disabled. Set AI_ENABLED=true and configure an API key.",
+            detail=(
+                "AI features are disabled. Enable them in service settings "
+                "(Service settings / AI) or via AI_ENABLED env, and configure an API key."
+            ),
         )
 
 
 @router.get("/status", response_model=AiStatusResponse)
-async def ai_status(slug: str) -> AiStatusResponse:
-    return AiStatusResponse(enabled=llm_service.is_enabled())
+async def ai_status(session: SessionDep, slug: str) -> AiStatusResponse:
+    config = await app_settings_service.get_ai_config(session)
+    return AiStatusResponse(enabled=llm_service.is_enabled(config))
 
 
 @router.post("/describe-event", response_model=AiDescribeResponse)
@@ -37,7 +43,7 @@ async def describe_event(
     payload: AiDescribeEventRequest,
     _current_user: EditorUserDep,
 ) -> AiDescribeResponse:
-    _require_ai_enabled()
+    await _require_ai_enabled(session)
     return await ai_service.suggest_event_description(session, slug, payload.event_id, branch_id)
 
 
@@ -49,7 +55,7 @@ async def describe_event_type(
     payload: AiDescribeEventTypeRequest,
     _current_user: EditorUserDep,
 ) -> AiDescribeResponse:
-    _require_ai_enabled()
+    await _require_ai_enabled(session)
     return await ai_service.suggest_event_type_descriptions(
         session,
         slug,
@@ -65,5 +71,5 @@ async def ask_plan(
     branch_id: BranchIdDep,
     payload: AiAskRequest,
 ) -> AiAskResponse:
-    _require_ai_enabled()
+    await _require_ai_enabled(session)
     return await ai_service.ask_plan(session, slug, payload.question, branch_id)

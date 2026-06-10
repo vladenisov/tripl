@@ -5,9 +5,8 @@ from typing import Annotated
 from fastapi import APIRouter, Query
 
 from tripl.api.deps import BranchIdDep, EditorUserDep, SessionDep
-from tripl.config import settings
 from tripl.schemas.search import SearchEntityType, SearchReindexResponse, SearchResponse
-from tripl.services import search_service
+from tripl.services import app_settings_service, search_service
 
 router = APIRouter(prefix="/projects/{slug}/search", tags=["search"])
 
@@ -41,7 +40,8 @@ async def reindex_project_search(
     _current_user: EditorUserDep,
 ) -> SearchReindexResponse:
     documents_indexed = await search_service.reindex_branch(session, slug, branch_id)
+    ai_config = await app_settings_service.get_ai_config(session)
     return SearchReindexResponse(
         documents_indexed=documents_indexed,
-        embeddings_scheduled=settings.search_embeddings_enabled,
+        embeddings_scheduled=ai_config.search_embeddings_enabled,
     )
