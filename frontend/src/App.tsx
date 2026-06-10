@@ -128,6 +128,7 @@ export default function App() {
             <Route path="/p/:slug/events/:tab" element={withSuspense(<EventsPage />)} />
             <Route path="/p/:slug/events" element={withSuspense(<EventsPage />)} />
             <Route path="/p/:slug/reconciliation" element={withSuspense(<ReconciliationPage />)} />
+            <Route path="/p/:slug/settings/:tab/:itemId" element={withSuspense(<ProjectSettingsPage />)} />
             <Route path="/p/:slug/settings/:tab" element={withSuspense(<ProjectSettingsPage />)} />
             <Route path="/p/:slug/settings" element={withSuspense(<ProjectSettingsPage />)} />
             <Route path="/p/:slug" element={withSuspense(<EventsPage />)} />

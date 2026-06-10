@@ -1,6 +1,7 @@
 import { useState } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { ArrowDown, ArrowUp, ChevronDown, Layers, Pencil, Plus, Trash2 } from 'lucide-react'
+import { ArrowDown, ArrowUp, ChevronRight, Layers, Pencil, Plus, Trash2 } from 'lucide-react'
 import { eventTypeOwnersApi } from '@/api/eventTypeOwners'
 import { eventTypesApi } from '@/api/eventTypes'
 import { fieldsApi } from '@/api/fields'
@@ -13,7 +14,6 @@ import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
 import { Checkbox } from '@/components/ui/checkbox'
-import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible'
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
@@ -49,13 +49,13 @@ interface DraftField {
 
 export function EventTypesTab({ slug }: { slug: string }) {
   const qc = useQueryClient()
+  const navigate = useNavigate()
   const branchId = useActiveBranchId()
   const [showForm, setShowForm] = useState(false)
   const [name, setName] = useState('')
   const [displayName, setDisplayName] = useState('')
   const [color, setColor] = useState('#6366f1')
   const [draftFields, setDraftFields] = useState<DraftField[]>([])
-  const [expandedId, setExpandedId] = useState<string | null>(null)
   const [editingEt, setEditingEt] = useState<EventType | null>(null)
   const [editDisplayName, setEditDisplayName] = useState('')
   const [editColor, setEditColor] = useState('')
@@ -245,39 +245,34 @@ export function EventTypesTab({ slug }: { slug: string }) {
       )}
 
       {eventTypes.map((et: EventType) => (
-        <Collapsible key={et.id} open={expandedId === et.id} onOpenChange={v => setExpandedId(v ? et.id : null)}>
-          <Card>
-            <CollapsibleTrigger asChild>
-              <CardContent className="flex items-center justify-between p-4 cursor-pointer hover:bg-muted/50 transition-colors">
-                <div className="flex items-center gap-3">
-                  <span className="h-3.5 w-3.5 rounded-full shrink-0" style={{ backgroundColor: et.color }} />
-                  <span className="font-mono text-sm font-semibold">{et.name}</span>
-                  <span className="text-muted-foreground text-sm">{et.display_name}</span>
-                  <Badge variant="secondary" className="text-[10px]">{et.field_definitions.length} fields</Badge>
-                </div>
-                <div className="flex items-center gap-2">
-                  <Button variant="ghost" size="icon" className="h-7 w-7" onClick={e => { e.stopPropagation(); startEdit(et) }}>
-                    <Pencil className="h-3.5 w-3.5" />
-                  </Button>
-                  <Button variant="ghost" size="icon" className="h-7 w-7 text-muted-foreground hover:text-destructive" onClick={e => { e.stopPropagation(); handleDelete(et) }}>
-                    <Trash2 className="h-3.5 w-3.5" />
-                  </Button>
-                  <ChevronDown className={`h-4 w-4 text-muted-foreground transition-transform ${expandedId === et.id ? 'rotate-180' : ''}`} />
-                </div>
-              </CardContent>
-            </CollapsibleTrigger>
-            <CollapsibleContent>
-              <FieldsEditor slug={slug} eventType={et} branchId={branchId} />
-              {branchId === null && <OwnersEditor slug={slug} eventType={et} />}
-            </CollapsibleContent>
-          </Card>
-        </Collapsible>
+        <Card key={et.id}>
+          <CardContent
+            className="flex items-center justify-between p-4 cursor-pointer hover:bg-muted/50 transition-colors"
+            onClick={() => navigate(`/p/${slug}/settings/event-types/${et.id}`)}
+          >
+            <div className="flex items-center gap-3">
+              <span className="h-3.5 w-3.5 rounded-full shrink-0" style={{ backgroundColor: et.color }} />
+              <span className="font-mono text-sm font-semibold">{et.name}</span>
+              <span className="text-muted-foreground text-sm">{et.display_name}</span>
+              <Badge variant="secondary" className="text-[10px]">{et.field_definitions.length} fields</Badge>
+            </div>
+            <div className="flex items-center gap-2">
+              <Button variant="ghost" size="icon" className="h-7 w-7" onClick={e => { e.stopPropagation(); startEdit(et) }}>
+                <Pencil className="h-3.5 w-3.5" />
+              </Button>
+              <Button variant="ghost" size="icon" className="h-7 w-7 text-muted-foreground hover:text-destructive" onClick={e => { e.stopPropagation(); handleDelete(et) }}>
+                <Trash2 className="h-3.5 w-3.5" />
+              </Button>
+              <ChevronRight className="h-4 w-4 text-muted-foreground" />
+            </div>
+          </CardContent>
+        </Card>
       ))}
     </div>
   )
 }
 
-function FieldsEditor({ slug, eventType, branchId }: { slug: string; eventType: EventType; branchId: string | null }) {
+export function FieldsEditor({ slug, eventType, branchId }: { slug: string; eventType: EventType; branchId: string | null }) {
   const qc = useQueryClient()
   const [showForm, setShowForm] = useState(false)
   const [name, setName] = useState('')
@@ -694,7 +689,7 @@ function FieldsEditor({ slug, eventType, branchId }: { slug: string; eventType: 
   )
 }
 
-function OwnersEditor({ slug, eventType }: { slug: string; eventType: EventType }) {
+export function OwnersEditor({ slug, eventType }: { slug: string; eventType: EventType }) {
   const qc = useQueryClient()
   const [selectedUserId, setSelectedUserId] = useState('')
 

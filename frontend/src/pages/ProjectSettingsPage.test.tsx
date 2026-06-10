@@ -60,6 +60,7 @@ describe('ProjectSettingsPage', () => {
       <QueryClientProvider client={queryClient}>
         <MemoryRouter initialEntries={['/p/demo/settings/general']}>
           <Routes>
+            <Route path="/p/:slug/settings/:tab/:itemId" element={<ProjectSettingsPage />} />
             <Route path="/p/:slug/settings/:tab" element={<ProjectSettingsPage />} />
             <Route path="/p/:slug/settings" element={<ProjectSettingsPage />} />
           </Routes>
@@ -114,6 +115,7 @@ describe('ProjectSettingsPage', () => {
       <QueryClientProvider client={queryClient}>
         <MemoryRouter initialEntries={['/p/demo/settings/monitoring']}>
           <Routes>
+            <Route path="/p/:slug/settings/:tab/:itemId" element={<ProjectSettingsPage />} />
             <Route path="/p/:slug/settings/:tab" element={<ProjectSettingsPage />} />
             <Route path="/p/:slug/settings" element={<ProjectSettingsPage />} />
           </Routes>
@@ -240,6 +242,8 @@ describe('ProjectSettingsPage', () => {
       <QueryClientProvider client={queryClient}>
         <MemoryRouter initialEntries={['/p/demo/settings/scans']}>
           <Routes>
+            <Route path="/p/:slug/settings/:tab/:itemId" element={<ProjectSettingsPage />} />
+            <Route path="/p/:slug/settings/:tab/:itemId" element={<ProjectSettingsPage />} />
             <Route path="/p/:slug/settings/:tab" element={<ProjectSettingsPage />} />
             <Route path="/p/:slug/settings" element={<ProjectSettingsPage />} />
           </Routes>
@@ -358,6 +362,7 @@ describe('ProjectSettingsPage', () => {
       <QueryClientProvider client={queryClient}>
         <MemoryRouter initialEntries={['/p/demo/settings/scans']}>
           <Routes>
+            <Route path="/p/:slug/settings/:tab/:itemId" element={<ProjectSettingsPage />} />
             <Route path="/p/:slug/settings/:tab" element={<ProjectSettingsPage />} />
             <Route path="/p/:slug/settings" element={<ProjectSettingsPage />} />
           </Routes>
@@ -471,6 +476,7 @@ describe('ProjectSettingsPage', () => {
       <QueryClientProvider client={queryClient}>
         <MemoryRouter initialEntries={['/p/demo/settings/scans']}>
           <Routes>
+            <Route path="/p/:slug/settings/:tab/:itemId" element={<ProjectSettingsPage />} />
             <Route path="/p/:slug/settings/:tab" element={<ProjectSettingsPage />} />
             <Route path="/p/:slug/settings" element={<ProjectSettingsPage />} />
           </Routes>
@@ -548,6 +554,7 @@ describe('ProjectSettingsPage', () => {
       <QueryClientProvider client={queryClient}>
         <MemoryRouter initialEntries={['/p/demo/settings/alerting']}>
           <Routes>
+            <Route path="/p/:slug/settings/:tab/:itemId" element={<ProjectSettingsPage />} />
             <Route path="/p/:slug/settings/:tab" element={<ProjectSettingsPage />} />
             <Route path="/p/:slug/settings" element={<ProjectSettingsPage />} />
           </Routes>
@@ -594,6 +601,7 @@ describe('ProjectSettingsPage', () => {
       <QueryClientProvider client={queryClient}>
         <MemoryRouter initialEntries={['/p/demo/settings/alerting']}>
           <Routes>
+            <Route path="/p/:slug/settings/:tab/:itemId" element={<ProjectSettingsPage />} />
             <Route path="/p/:slug/settings/:tab" element={<ProjectSettingsPage />} />
             <Route path="/p/:slug/settings" element={<ProjectSettingsPage />} />
           </Routes>
@@ -678,6 +686,7 @@ describe('ProjectSettingsPage', () => {
       <QueryClientProvider client={queryClient}>
         <MemoryRouter initialEntries={['/p/demo/settings/alerting']}>
           <Routes>
+            <Route path="/p/:slug/settings/:tab/:itemId" element={<ProjectSettingsPage />} />
             <Route path="/p/:slug/settings/:tab" element={<ProjectSettingsPage />} />
             <Route path="/p/:slug/settings" element={<ProjectSettingsPage />} />
           </Routes>
@@ -773,6 +782,7 @@ describe('ProjectSettingsPage', () => {
       <QueryClientProvider client={queryClient}>
         <MemoryRouter initialEntries={['/p/demo/settings/alerting']}>
           <Routes>
+            <Route path="/p/:slug/settings/:tab/:itemId" element={<ProjectSettingsPage />} />
             <Route path="/p/:slug/settings/:tab" element={<ProjectSettingsPage />} />
             <Route path="/p/:slug/settings" element={<ProjectSettingsPage />} />
           </Routes>
@@ -827,6 +837,7 @@ describe('ProjectSettingsPage', () => {
       <QueryClientProvider client={queryClient}>
         <MemoryRouter initialEntries={['/p/demo/settings/meta-fields']}>
           <Routes>
+            <Route path="/p/:slug/settings/:tab/:itemId" element={<ProjectSettingsPage />} />
             <Route path="/p/:slug/settings/:tab" element={<ProjectSettingsPage />} />
             <Route path="/p/:slug/settings" element={<ProjectSettingsPage />} />
           </Routes>
@@ -966,6 +977,7 @@ describe('ProjectSettingsPage', () => {
       <QueryClientProvider client={queryClient}>
         <MemoryRouter initialEntries={['/p/demo/settings/scans']}>
           <Routes>
+            <Route path="/p/:slug/settings/:tab/:itemId" element={<ProjectSettingsPage />} />
             <Route path="/p/:slug/settings/:tab" element={<ProjectSettingsPage />} />
             <Route path="/p/:slug/settings" element={<ProjectSettingsPage />} />
           </Routes>
@@ -1173,6 +1185,7 @@ describe('ProjectSettingsPage', () => {
       <QueryClientProvider client={queryClient}>
         <MemoryRouter initialEntries={['/p/demo/settings/scans']}>
           <Routes>
+            <Route path="/p/:slug/settings/:tab/:itemId" element={<ProjectSettingsPage />} />
             <Route path="/p/:slug/settings/:tab" element={<ProjectSettingsPage />} />
             <Route path="/p/:slug/settings" element={<ProjectSettingsPage />} />
           </Routes>
@@ -1323,6 +1336,7 @@ describe('ProjectSettingsPage', () => {
       <QueryClientProvider client={queryClient}>
         <MemoryRouter initialEntries={['/p/demo/settings/scans']}>
           <Routes>
+            <Route path="/p/:slug/settings/:tab/:itemId" element={<ProjectSettingsPage />} />
             <Route path="/p/:slug/settings/:tab" element={<ProjectSettingsPage />} />
             <Route path="/p/:slug/settings" element={<ProjectSettingsPage />} />
           </Routes>
