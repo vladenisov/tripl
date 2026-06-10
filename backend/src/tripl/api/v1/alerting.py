@@ -12,6 +12,9 @@ from tripl.schemas.alerting import (
     AlertDestinationCreate,
     AlertDestinationResponse,
     AlertDestinationUpdate,
+    AlertInboxActionRequest,
+    AlertInboxGroupResponse,
+    AlertInboxListResponse,
     AlertRuleCreate,
     AlertRuleResponse,
     AlertRuleSimulateResponse,
@@ -232,3 +235,48 @@ async def get_alert_delivery(
     session: SessionDep, slug: str, delivery_id: uuid.UUID
 ) -> AlertDeliveryDetailResponse:
     return await alerting_service.get_delivery(session, slug, delivery_id)
+
+
+@router.get("/alert-inbox", response_model=AlertInboxListResponse)
+async def list_alert_inbox(
+    session: SessionDep,
+    slug: str,
+    status: str | None = None,
+    offset: int = Query(0, ge=0),
+    limit: int = Query(50, ge=1, le=200),
+) -> AlertInboxListResponse:
+    return await alerting_service.list_alert_inbox(
+        session,
+        slug,
+        status=status,
+        offset=offset,
+        limit=limit,
+    )
+
+
+@router.post("/alert-inbox/{correlation_group_id}/actions", response_model=AlertInboxGroupResponse)
+async def apply_alert_inbox_action(
+    session: SessionDep,
+    slug: str,
+    correlation_group_id: uuid.UUID,
+    data: AlertInboxActionRequest,
+    current_user: EditorUserDep,
+) -> AlertInboxGroupResponse:
+    group = await alerting_service.apply_alert_inbox_action(
+        session,
+        slug,
+        correlation_group_id,
+        data,
+        current_user.id,
+    )
+    await audit_service.record(
+        session,
+        user=current_user,
+        action=f"alert_inbox.{data.action}",
+        target_type="alert_correlation_group",
+        target_id=correlation_group_id,
+        target_name=str(correlation_group_id),
+        project_slug=slug,
+        payload=data.model_dump(),
+    )
+    return group

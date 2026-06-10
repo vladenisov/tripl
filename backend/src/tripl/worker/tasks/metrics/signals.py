@@ -190,6 +190,10 @@ def _get_active_schema_drift_candidates(
             EventType.project_id == config.project_id,
             SchemaDrift.scan_config_id == config.id,
             SchemaDrift.detected_at >= retention_cutoff,
+            SchemaDrift.status.in_(("open", "snoozed")),
+            (SchemaDrift.status != "snoozed")
+            | (SchemaDrift.snoozed_until.is_(None))
+            | (SchemaDrift.snoozed_until <= datetime.now(UTC)),
         )
         .order_by(SchemaDrift.detected_at.desc())
     ).scalars():

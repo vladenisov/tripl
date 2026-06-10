@@ -1,8 +1,9 @@
 import { useState } from 'react'
-import { useQuery } from '@tanstack/react-query'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { AlertTriangle } from 'lucide-react'
 
 import { eventTypesApi } from '@/api/eventTypes'
+import { Button } from '@/components/ui/button'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { getErrorMessage } from '@/lib/utils'
 
@@ -38,12 +39,33 @@ export function EventDriftBadge({
   count: number
 }) {
   const [open, setOpen] = useState(false)
+  const qc = useQueryClient()
 
   const driftsQuery = useQuery({
     queryKey: ['eventTypeDrifts', slug, eventTypeId],
     queryFn: () => eventTypesApi.listDrifts(slug, eventTypeId),
     enabled: open,
     staleTime: 30_000,
+  })
+  const actionMut = useMutation({
+    mutationFn: ({
+      driftId,
+      action,
+    }: {
+      driftId: string
+      action: 'accept' | 'snooze' | 'false_positive' | 'reopen'
+    }) => {
+      const snoozedUntil = new Date(Date.now() + 7 * 86_400_000).toISOString()
+      return eventTypesApi.applyDriftAction(slug, driftId, {
+        action,
+        ...(action === 'snooze' ? { snoozed_until: snoozedUntil } : {}),
+      })
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['eventTypeDrifts', slug, eventTypeId] })
+      qc.invalidateQueries({ queryKey: ['eventTypes', slug] })
+      qc.invalidateQueries({ queryKey: ['events', slug] })
+    },
   })
 
   if (count <= 0) return null
@@ -105,6 +127,49 @@ export function EventDriftBadge({
                       e.g. {drift.sample_value}
                     </div>
                   )}
+                  <div className="mt-1 flex flex-wrap gap-1">
+                    {drift.status === 'open' || drift.status === 'snoozed' ? (
+                      <>
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          className="h-6 px-1.5 text-[10px]"
+                          disabled={actionMut.isPending}
+                          onClick={() => actionMut.mutate({ driftId: drift.id, action: 'accept' })}
+                        >
+                          Accept
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          className="h-6 px-1.5 text-[10px]"
+                          disabled={actionMut.isPending}
+                          onClick={() => actionMut.mutate({ driftId: drift.id, action: 'snooze' })}
+                        >
+                          Snooze
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          className="h-6 px-1.5 text-[10px]"
+                          disabled={actionMut.isPending}
+                          onClick={() => actionMut.mutate({ driftId: drift.id, action: 'false_positive' })}
+                        >
+                          False positive
+                        </Button>
+                      </>
+                    ) : (
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        className="h-6 px-1.5 text-[10px]"
+                        disabled={actionMut.isPending}
+                        onClick={() => actionMut.mutate({ driftId: drift.id, action: 'reopen' })}
+                      >
+                        Reopen
+                      </Button>
+                    )}
+                  </div>
                 </div>
                 <span
                   className="shrink-0 text-[10px] tnum"

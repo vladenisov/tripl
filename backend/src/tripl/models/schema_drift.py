@@ -16,6 +16,11 @@ from sqlalchemy.orm import Mapped, mapped_column
 
 from tripl.models.base import Base, UUIDMixin
 
+SCHEMA_DRIFT_STATUS_OPEN = "open"
+SCHEMA_DRIFT_STATUS_ACCEPTED = "accepted"
+SCHEMA_DRIFT_STATUS_SNOOZED = "snoozed"
+SCHEMA_DRIFT_STATUS_FALSE_POSITIVE = "false_positive"
+
 
 class SchemaDrift(UUIDMixin, Base):
     __tablename__ = "schema_drifts"
@@ -45,6 +50,18 @@ class SchemaDrift(UUIDMixin, Base):
     observed_type: Mapped[str | None] = mapped_column(String(128), nullable=True)
     declared_type: Mapped[str | None] = mapped_column(String(64), nullable=True)
     sample_value: Mapped[str | None] = mapped_column(Text, nullable=True)
+    status: Mapped[str] = mapped_column(
+        String(32),
+        default=SCHEMA_DRIFT_STATUS_OPEN,
+        server_default=SCHEMA_DRIFT_STATUS_OPEN,
+    )
+    resolution_note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    snoozed_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    resolved_by: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
+    )
     detected_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         server_default=func.now(),

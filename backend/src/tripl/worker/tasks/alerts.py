@@ -8,11 +8,11 @@ import smtplib
 import urllib.error
 import urllib.request
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from email.message import EmailMessage
 from urllib.parse import urlparse
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session, selectinload
 
 from tripl.alert_templates import (
@@ -51,14 +51,21 @@ from tripl.models.alert_delivery_item import AlertDeliveryItem
 from tripl.models.alert_destination import AlertDestination, AlertDestinationType
 from tripl.models.alert_rule import AlertRule
 from tripl.models.alert_rule_state import AlertRuleState
+from tripl.models.distribution_drift import DistributionDrift
+from tripl.models.event import Event
+from tripl.models.event_type import EventType
+from tripl.models.metric_anomaly import MetricAnomaly
 from tripl.models.project import Project
 from tripl.models.scan_config import ScanConfig
+from tripl.models.schema_drift import SchemaDrift
 from tripl.observability.metrics import alert_deliveries_total
 from tripl.worker.celery_app import celery_app
 from tripl.worker.db import _get_sync_session
 
 logger = logging.getLogger(__name__)
 _TELEGRAM_BOT_URL_TOKEN_RE = re.compile(r"(/bot)([^/]+)(/)")
+DIGEST_WINDOW_DAYS = 7
+DEAD_EVENT_DAYS = 30
 
 
 def _decrypt_secret(encrypted: str | None) -> str:
@@ -445,6 +452,169 @@ def _send_email_message(
         if smtp_username:
             conn.login(smtp_username, smtp_password)
         conn.send_message(msg)
+
+
+def _build_plan_digest_message(
+    session: Session,
+    *,
+    project: Project,
+    now: datetime,
+) -> str:
+    window_from = now - timedelta(days=DIGEST_WINDOW_DAYS)
+    dead_cutoff = now - timedelta(days=DEAD_EVENT_DAYS)
+
+    schema_drifts = session.execute(
+        select(func.count(SchemaDrift.id))
+        .join(EventType, EventType.id == SchemaDrift.event_type_id)
+        .where(
+            EventType.project_id == project.id,
+            SchemaDrift.detected_at >= window_from,
+            SchemaDrift.status.in_(("open", "snoozed")),
+            (SchemaDrift.status != "snoozed")
+            | (SchemaDrift.snoozed_until.is_(None))
+            | (SchemaDrift.snoozed_until <= now),
+        )
+    ).scalar_one()
+    metric_anomalies = session.execute(
+        select(func.count(MetricAnomaly.id))
+        .join(ScanConfig, ScanConfig.id == MetricAnomaly.scan_config_id)
+        .where(ScanConfig.project_id == project.id, MetricAnomaly.created_at >= window_from)
+    ).scalar_one()
+    distribution_drifts = session.execute(
+        select(func.count(DistributionDrift.id))
+        .join(ScanConfig, ScanConfig.id == DistributionDrift.scan_config_id)
+        .where(
+            ScanConfig.project_id == project.id,
+            DistributionDrift.bucket >= window_from,
+            DistributionDrift.band == "significant",
+        )
+    ).scalar_one()
+    total_events = session.execute(
+        select(func.count(Event.id)).where(
+            Event.project_id == project.id,
+            Event.archived.is_(False),
+        )
+    ).scalar_one()
+    live_events = session.execute(
+        select(func.count(Event.id)).where(
+            Event.project_id == project.id,
+            Event.archived.is_(False),
+            Event.last_seen_at.is_not(None),
+        )
+    ).scalar_one()
+    dead_events = session.execute(
+        select(func.count(Event.id)).where(
+            Event.project_id == project.id,
+            Event.archived.is_(False),
+            Event.implemented.is_(True),
+            (Event.last_seen_at.is_(None)) | (Event.last_seen_at < dead_cutoff),
+        )
+    ).scalar_one()
+
+    top_rows = session.execute(
+        select(MetricAnomaly, ScanConfig.name)
+        .join(ScanConfig, ScanConfig.id == MetricAnomaly.scan_config_id)
+        .where(ScanConfig.project_id == project.id, MetricAnomaly.created_at >= window_from)
+        .order_by(MetricAnomaly.bucket.desc(), func.abs(MetricAnomaly.z_score).desc())
+        .limit(5)
+    ).all()
+    top_lines = []
+    for anomaly, scan_name in top_rows:
+        top_lines.append(
+            f"- {scan_name} {anomaly.scope_type}:{anomaly.scope_ref} "
+            f"{anomaly.direction} actual={anomaly.actual_count} "
+            f"expected={anomaly.expected_count:.1f} z={anomaly.z_score:.1f}"
+        )
+
+    coverage = (live_events / total_events * 100) if total_events else 0.0
+    lines = [
+        f"Weekly tripl digest for {project.name}",
+        f"Window: last {DIGEST_WINDOW_DAYS} days",
+        "",
+        f"- Active schema drifts: {schema_drifts}",
+        f"- Metric anomalies: {metric_anomalies}",
+        f"- Significant distribution drifts: {distribution_drifts}",
+        f"- Live coverage: {live_events}/{total_events} events ({coverage:.1f}%)",
+        f"- Dead implemented events: {dead_events}",
+    ]
+    if top_lines:
+        lines.extend(["", "Top anomalies:", *top_lines])
+    return "\n".join(lines)
+
+
+def _send_digest_to_destination(
+    *,
+    destination: AlertDestination,
+    message: str,
+    project: Project,
+) -> None:
+    if destination.type == AlertDestinationType.slack.value:
+        webhook_url = _decrypt_secret(destination.webhook_url_encrypted)
+        validate_slack_webhook_url(webhook_url)
+        _reject_private_target(webhook_url, field="Slack webhook URL")
+        _send_slack_message(
+            webhook_url,
+            message,
+            message_format=ALERT_MESSAGE_FORMAT_PLAIN,
+        )
+        return
+    if destination.type == AlertDestinationType.email.value:
+        recipients = _parse_email_recipients(destination.email_recipients)
+        validate_email_recipients(destination.email_recipients)
+        from_address = destination.email_from_address or app_settings.smtp_from_address
+        if not from_address:
+            raise ValueError("Email from address is required for weekly digest")
+        validate_email_address(from_address)
+        _send_email_message(
+            smtp_host=app_settings.smtp_host,
+            smtp_port=app_settings.smtp_port,
+            smtp_username=app_settings.smtp_username,
+            smtp_password=app_settings.smtp_password,
+            smtp_use_tls=app_settings.smtp_use_tls,
+            from_address=from_address,
+            recipients=recipients,
+            subject=f"[{project.name}] Weekly tripl digest",
+            body=message,
+        )
+
+
+@celery_app.task(name="tripl.worker.tasks.alerts.send_weekly_plan_digest")  # type: ignore[untyped-decorator]
+def send_weekly_plan_digest() -> dict[str, int]:
+    session = _get_sync_session()
+    sent = 0
+    failed = 0
+    try:
+        rows = session.execute(
+            select(Project, AlertDestination)
+            .join(AlertDestination, AlertDestination.project_id == Project.id)
+            .where(
+                AlertDestination.enabled.is_(True),
+                AlertDestination.type.in_(
+                    [AlertDestinationType.slack.value, AlertDestinationType.email.value]
+                ),
+            )
+            .order_by(Project.name, AlertDestination.name)
+        ).all()
+        now = datetime.now(UTC)
+        for project, destination in rows:
+            message = _build_plan_digest_message(session, project=project, now=now)
+            try:
+                _send_digest_to_destination(
+                    destination=destination,
+                    message=message,
+                    project=project,
+                )
+                sent += 1
+            except Exception:  # noqa: BLE001
+                failed += 1
+                logger.warning(
+                    "Failed to send weekly digest to destination %s",
+                    destination.id,
+                    exc_info=True,
+                )
+        return {"destinations_checked": len(rows), "sent": sent, "failed": failed}
+    finally:
+        session.close()
 
 
 def _build_jira_adf_body(text: str) -> dict[str, object]:

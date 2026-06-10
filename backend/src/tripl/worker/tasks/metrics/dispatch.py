@@ -7,6 +7,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from tripl.alerting_matching import AlertMatchCandidate, rule_matches_anomaly
+from tripl.models.alert_correlation_state import AlertCorrelationState
 from tripl.models.alert_delivery import AlertDelivery, AlertDeliveryStatus
 from tripl.models.alert_delivery_item import AlertDeliveryItem
 from tripl.models.alert_rule_state import AlertRuleState
@@ -31,6 +32,68 @@ from tripl.worker.tasks.metrics.urls import (
 # simulator and the live pipeline use a single source of truth. Kept as an
 # alias here because this module references it via the private name.
 _rule_matches_anomaly = rule_matches_anomaly
+_CORRELATION_NAMESPACE = uuid.uuid5(uuid.NAMESPACE_URL, "tripl-alert-correlation")
+
+
+def _correlation_group_id(
+    *,
+    scan_config_id: uuid.UUID,
+    rule_id: uuid.UUID,
+    bucket: datetime,
+    direction: str,
+) -> uuid.UUID:
+    return uuid.uuid5(
+        _CORRELATION_NAMESPACE,
+        f"{scan_config_id}:{rule_id}:{bucket.isoformat()}:{direction}",
+    )
+
+
+def _suppressed_correlation_group_ids(
+    session: Session,
+    *,
+    project_id: uuid.UUID,
+) -> set[uuid.UUID]:
+    now = datetime.now(UTC)
+    rows = session.execute(
+        select(AlertCorrelationState).where(
+            AlertCorrelationState.project_id == project_id,
+            AlertCorrelationState.status.in_(("resolved", "false_positive", "muted")),
+        )
+    ).scalars()
+    suppressed: set[uuid.UUID] = set()
+    for state in rows:
+        if state.status == "muted" and state.muted_until is not None and state.muted_until <= now:
+            state.status = "open"
+            state.muted_until = None
+            continue
+        suppressed.add(state.correlation_group_id)
+    return suppressed
+
+
+def _touch_correlation_state(
+    session: Session,
+    *,
+    project_id: uuid.UUID,
+    correlation_group_id: uuid.UUID,
+    seen_at: datetime,
+) -> None:
+    state = session.execute(
+        select(AlertCorrelationState).where(
+            AlertCorrelationState.project_id == project_id,
+            AlertCorrelationState.correlation_group_id == correlation_group_id,
+        )
+    ).scalar_one_or_none()
+    if state is None:
+        session.add(
+            AlertCorrelationState(
+                project_id=project_id,
+                correlation_group_id=correlation_group_id,
+                status="open",
+                last_seen_at=seen_at,
+            )
+        )
+        return
+    state.last_seen_at = max(state.last_seen_at or seen_at, seen_at)
 
 
 def _prepare_alert_deliveries(
@@ -51,6 +114,10 @@ def _prepare_alert_deliveries(
     project_slug = _get_project_slug(session, config.project_id)
     scope_names = _build_alert_scope_names(session, list(active_candidates.values()))
     delivery_ids: list[uuid.UUID] = []
+    suppressed_group_ids = _suppressed_correlation_group_ids(
+        session,
+        project_id=config.project_id,
+    )
 
     for destination in destinations:
         enabled_rules = [rule for rule in destination.rules if rule.enabled]
@@ -136,12 +203,26 @@ def _prepare_alert_deliveries(
                     anomaly
                 )
             correlation_by_anomaly: dict[int, uuid.UUID] = {}
-            for peers in correlation_groups.values():
+            for (bucket, direction), peers in correlation_groups.items():
                 if len(peers) < 2:
                     continue
-                group_id = uuid.uuid4()
+                group_id = _correlation_group_id(
+                    scan_config_id=config.id,
+                    rule_id=rule.id,
+                    bucket=bucket,
+                    direction=direction,
+                )
                 for peer in peers:
                     correlation_by_anomaly[id(peer)] = group_id
+
+            if suppressed_group_ids:
+                anomalies_to_send = [
+                    anomaly
+                    for anomaly in anomalies_to_send
+                    if correlation_by_anomaly.get(id(anomaly)) not in suppressed_group_ids
+                ]
+            if not anomalies_to_send:
+                continue
 
             payload_snapshot = _build_delivery_snapshot(
                 config,
@@ -201,6 +282,14 @@ def _prepare_alert_deliveries(
                         correlation_group_id=correlation_by_anomaly.get(id(anomaly)),
                     )
                 )
+                item_group_id = correlation_by_anomaly.get(id(anomaly))
+                if item_group_id is not None:
+                    _touch_correlation_state(
+                        session,
+                        project_id=config.project_id,
+                        correlation_group_id=item_group_id,
+                        seen_at=anomaly.bucket,
+                    )
             delivery_ids.append(delivery.id)
 
     return delivery_ids
