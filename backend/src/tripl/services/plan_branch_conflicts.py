@@ -44,6 +44,11 @@ _FD_CHANGE_KEYS = (
     "description",
     "order",
     "sensitivity",
+    "contract_required_max_null_rate",
+    "contract_regex",
+    "contract_min_value",
+    "contract_max_value",
+    "contract_max_bad_rate",
 )
 _EV_CHANGE_KEYS = ("description", "implemented", "reviewed", "archived", "order")
 _VAR_CHANGE_KEYS = ("source_name", "variable_type", "description")

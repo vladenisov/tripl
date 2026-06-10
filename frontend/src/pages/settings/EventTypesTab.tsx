@@ -24,6 +24,22 @@ import { getErrorMessage } from '@/lib/utils'
 
 const FIELD_TYPES = ['string', 'number', 'boolean', 'json', 'enum', 'url']
 
+function parseOptionalNumberInput(value: string): number | null {
+  const trimmed = value.trim()
+  if (!trimmed) return null
+  const parsed = Number(trimmed)
+  return Number.isFinite(parsed) ? parsed : null
+}
+
+function fieldContractRuleCount(field: FieldDefinition) {
+  return [
+    field.is_required,
+    field.field_type === 'enum' && (field.enum_options?.length ?? 0) > 0,
+    !!field.contract_regex,
+    field.contract_min_value != null || field.contract_max_value != null,
+  ].filter(Boolean).length
+}
+
 interface DraftField {
   name: string
   display_name: string
@@ -271,6 +287,11 @@ function FieldsEditor({ slug, eventType, branchId }: { slug: string; eventType: 
   const [enumOptions, setEnumOptions] = useState<string[]>([])
   const [enumInput, setEnumInput] = useState('')
   const [sensitivity, setSensitivity] = useState<Sensitivity>('none')
+  const [requiredNullRate, setRequiredNullRate] = useState('')
+  const [contractRegex, setContractRegex] = useState('')
+  const [contractMinValue, setContractMinValue] = useState('')
+  const [contractMaxValue, setContractMaxValue] = useState('')
+  const [contractBadRate, setContractBadRate] = useState('0')
   const [editingField, setEditingField] = useState<FieldDefinition | null>(null)
   const [editDisplayName, setEditDisplayName] = useState('')
   const [editFieldType, setEditFieldType] = useState('')
@@ -279,6 +300,11 @@ function FieldsEditor({ slug, eventType, branchId }: { slug: string; eventType: 
   const [editEnumOptions, setEditEnumOptions] = useState<string[]>([])
   const [editEnumInput, setEditEnumInput] = useState('')
   const [editSensitivity, setEditSensitivity] = useState<Sensitivity>('none')
+  const [editRequiredNullRate, setEditRequiredNullRate] = useState('')
+  const [editContractRegex, setEditContractRegex] = useState('')
+  const [editContractMinValue, setEditContractMinValue] = useState('')
+  const [editContractMaxValue, setEditContractMaxValue] = useState('')
+  const [editContractBadRate, setEditContractBadRate] = useState('0')
   const { confirm, dialog } = useConfirm()
 
   const sortedFields = [...eventType.field_definitions].sort((a, b) => a.order - b.order)
@@ -289,11 +315,17 @@ function FieldsEditor({ slug, eventType, branchId }: { slug: string; eventType: 
       ...(fieldType === 'enum' && enumOptions.length > 0 ? { enum_options: enumOptions } : {}),
       order: sortedFields.length,
       sensitivity,
+      contract_required_max_null_rate: parseOptionalNumberInput(requiredNullRate),
+      contract_regex: contractRegex.trim() || null,
+      contract_min_value: parseOptionalNumberInput(contractMinValue),
+      contract_max_value: parseOptionalNumberInput(contractMaxValue),
+      contract_max_bad_rate: parseOptionalNumberInput(contractBadRate) ?? 0,
     }, branchId),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['eventTypes', slug, branchId] })
       setShowForm(false); setName(''); setDisplayName(''); setFieldType('string'); setIsRequired(false)
       setEnumOptions([]); setEnumInput(''); setSensitivity('none')
+      setRequiredNullRate(''); setContractRegex(''); setContractMinValue(''); setContractMaxValue(''); setContractBadRate('0')
     },
   })
 
@@ -334,6 +366,11 @@ function FieldsEditor({ slug, eventType, branchId }: { slug: string; eventType: 
     setEditEnumOptions(f.enum_options ?? [])
     setEditEnumInput('')
     setEditSensitivity(f.sensitivity)
+    setEditRequiredNullRate(f.contract_required_max_null_rate == null ? '' : String(f.contract_required_max_null_rate))
+    setEditContractRegex(f.contract_regex ?? '')
+    setEditContractMinValue(f.contract_min_value == null ? '' : String(f.contract_min_value))
+    setEditContractMaxValue(f.contract_max_value == null ? '' : String(f.contract_max_value))
+    setEditContractBadRate(String(f.contract_max_bad_rate ?? 0))
   }
 
   const addEnumOption = (option: string, target: 'create' | 'edit') => {
@@ -354,6 +391,11 @@ function FieldsEditor({ slug, eventType, branchId }: { slug: string; eventType: 
       is_required: editIsRequired, description: editDescription,
       ...(editFieldType === 'enum' ? { enum_options: editEnumOptions } : { enum_options: null }),
       sensitivity: editSensitivity,
+      contract_required_max_null_rate: parseOptionalNumberInput(editRequiredNullRate),
+      contract_regex: editContractRegex.trim() || null,
+      contract_min_value: parseOptionalNumberInput(editContractMinValue),
+      contract_max_value: parseOptionalNumberInput(editContractMaxValue),
+      contract_max_bad_rate: parseOptionalNumberInput(editContractBadRate) ?? 0,
     } })
   }
 
@@ -433,6 +475,47 @@ function FieldsEditor({ slug, eventType, branchId }: { slug: string; eventType: 
                   )}
                 </div>
               )}
+              <div className="grid gap-3 rounded-md border p-3">
+                <div className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Data contract</div>
+                <div className="grid grid-cols-2 gap-3">
+                  <div className="grid gap-2">
+                    <Label>Bad share</Label>
+                    <Input
+                      value={contractBadRate}
+                      onChange={e => setContractBadRate(e.target.value)}
+                      type="number"
+                      min="0"
+                      max="1"
+                      step="0.01"
+                    />
+                  </div>
+                  <div className="grid gap-2">
+                    <Label>Null share</Label>
+                    <Input
+                      value={requiredNullRate}
+                      onChange={e => setRequiredNullRate(e.target.value)}
+                      type="number"
+                      min="0"
+                      max="1"
+                      step="0.01"
+                    />
+                  </div>
+                </div>
+                <div className="grid gap-2">
+                  <Label>Regex</Label>
+                  <Input value={contractRegex} onChange={e => setContractRegex(e.target.value)} />
+                </div>
+                <div className="grid grid-cols-2 gap-3">
+                  <div className="grid gap-2">
+                    <Label>Min</Label>
+                    <Input value={contractMinValue} onChange={e => setContractMinValue(e.target.value)} type="number" />
+                  </div>
+                  <div className="grid gap-2">
+                    <Label>Max</Label>
+                    <Input value={contractMaxValue} onChange={e => setContractMaxValue(e.target.value)} type="number" />
+                  </div>
+                </div>
+              </div>
               {createMut.isError && <p className="text-sm text-destructive">{getErrorMessage(createMut.error)}</p>}
             </div>
             <DialogFooter>
@@ -497,6 +580,47 @@ function FieldsEditor({ slug, eventType, branchId }: { slug: string; eventType: 
                   )}
                 </div>
               )}
+              <div className="grid gap-3 rounded-md border p-3">
+                <div className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Data contract</div>
+                <div className="grid grid-cols-2 gap-3">
+                  <div className="grid gap-2">
+                    <Label>Bad share</Label>
+                    <Input
+                      value={editContractBadRate}
+                      onChange={e => setEditContractBadRate(e.target.value)}
+                      type="number"
+                      min="0"
+                      max="1"
+                      step="0.01"
+                    />
+                  </div>
+                  <div className="grid gap-2">
+                    <Label>Null share</Label>
+                    <Input
+                      value={editRequiredNullRate}
+                      onChange={e => setEditRequiredNullRate(e.target.value)}
+                      type="number"
+                      min="0"
+                      max="1"
+                      step="0.01"
+                    />
+                  </div>
+                </div>
+                <div className="grid gap-2">
+                  <Label>Regex</Label>
+                  <Input value={editContractRegex} onChange={e => setEditContractRegex(e.target.value)} />
+                </div>
+                <div className="grid grid-cols-2 gap-3">
+                  <div className="grid gap-2">
+                    <Label>Min</Label>
+                    <Input value={editContractMinValue} onChange={e => setEditContractMinValue(e.target.value)} type="number" />
+                  </div>
+                  <div className="grid gap-2">
+                    <Label>Max</Label>
+                    <Input value={editContractMaxValue} onChange={e => setEditContractMaxValue(e.target.value)} type="number" />
+                  </div>
+                </div>
+              </div>
               {updateMut.isError && <p className="text-sm text-destructive">{getErrorMessage(updateMut.error)}</p>}
             </div>
             <DialogFooter>
@@ -518,6 +642,7 @@ function FieldsEditor({ slug, eventType, branchId }: { slug: string; eventType: 
                 <TableHead className="w-20">Type</TableHead>
                 <TableHead className="w-24">PII</TableHead>
                 <TableHead className="w-16">Req</TableHead>
+                <TableHead className="w-24">Contract</TableHead>
                 <TableHead className="w-24"></TableHead>
               </TableRow>
             </TableHeader>
@@ -544,6 +669,13 @@ function FieldsEditor({ slug, eventType, branchId }: { slug: string; eventType: 
                     <SensitivityChip value={f.sensitivity} />
                   </TableCell>
                   <TableCell>{f.is_required ? <span className="text-green-600 font-medium text-xs">✓</span> : <span className="text-muted-foreground">—</span>}</TableCell>
+                  <TableCell>
+                    {fieldContractRuleCount(f) > 0 ? (
+                      <Badge variant="outline" className="text-[10px]">{fieldContractRuleCount(f)}</Badge>
+                    ) : (
+                      <span className="text-muted-foreground">—</span>
+                    )}
+                  </TableCell>
                   <TableCell>
                     <div className="flex gap-1 justify-end">
                       <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => startEdit(f)}><Pencil className="h-3 w-3" /></Button>

@@ -7,7 +7,12 @@ from datetime import datetime
 
 import clickhouse_connect  # type: ignore[import-untyped]
 
-from tripl.worker.adapters.base import BaseAdapter, ColumnInfo
+from tripl.worker.adapters.base import (
+    BaseAdapter,
+    ColumnInfo,
+    FieldContractExpectation,
+    FieldContractViolation,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -201,6 +206,157 @@ class ClickHouseAdapter(BaseAdapter):
         t_from = time_from.strftime("%Y-%m-%d %H:%M:%S")
         t_to = time_to.strftime("%Y-%m-%d %H:%M:%S")
         return f" WHERE `{tc}` >= '{t_from}' AND `{tc}` < '{t_to}'"
+
+    def _contract_where_clause(
+        self,
+        time_column: str | None,
+        time_from: datetime | None,
+        time_to: datetime | None,
+        group_column: str | None,
+        group_value: str | None,
+    ) -> str:
+        conditions: list[str] = []
+        if time_column is not None and time_from is not None and time_to is not None:
+            tc = self._validate_column(time_column)
+            t_from = time_from.strftime("%Y-%m-%d %H:%M:%S")
+            t_to = time_to.strftime("%Y-%m-%d %H:%M:%S")
+            conditions.append(f"`{tc}` >= '{t_from}' AND `{tc}` < '{t_to}'")
+        if group_column is not None:
+            gc = self._validate_column(group_column)
+            expected = self._quote_string(group_value or "")
+            conditions.append(f"ifNull(toString(`{gc}`), '') = {expected}")
+        if not conditions:
+            return ""
+        return " WHERE " + " AND ".join(conditions)
+
+    def _contract_select_sql(
+        self,
+        expectation: FieldContractExpectation,
+        *,
+        base_query: str,
+        where_clause: str,
+        index: int,
+    ) -> str | None:
+        column = self._validate_column(expectation.field_name)
+        value_expr = f"ifNull(toString(`{column}`), '')"
+        threshold = max(0.0, min(1.0, expectation.threshold))
+        drift_type = self._quote_string(expectation.drift_type)
+        field_name = self._quote_string(expectation.field_name)
+
+        if expectation.drift_type == "required_null_violation":
+            bad_condition = f"isNull(`{column}`)"
+            total_expr = "count()"
+            sample_expr = f"anyIf('<NULL>', {bad_condition})"
+        elif expectation.drift_type == "enum_violation":
+            if not expectation.enum_options:
+                return None
+            options = ", ".join(self._quote_string(option) for option in expectation.enum_options)
+            present_condition = f"NOT isNull(`{column}`)"
+            bad_condition = f"{present_condition} AND {value_expr} NOT IN ({options})"
+            total_expr = f"countIf({present_condition})"
+            sample_expr = f"anyIf({value_expr}, {bad_condition})"
+        elif expectation.drift_type == "regex_violation":
+            if not expectation.regex:
+                return None
+            present_condition = f"NOT isNull(`{column}`)"
+            pattern = self._quote_string(expectation.regex)
+            bad_condition = f"{present_condition} AND NOT match({value_expr}, {pattern})"
+            total_expr = f"countIf({present_condition})"
+            sample_expr = f"anyIf({value_expr}, {bad_condition})"
+        elif expectation.drift_type == "range_violation":
+            if expectation.min_value is None and expectation.max_value is None:
+                return None
+            present_condition = f"NOT isNull(`{column}`)"
+            numeric_expr = f"toFloat64OrNull({value_expr})"
+            range_conditions = [f"isNull({numeric_expr})"]
+            if expectation.min_value is not None:
+                range_conditions.append(f"{numeric_expr} < {float(expectation.min_value)}")
+            if expectation.max_value is not None:
+                range_conditions.append(f"{numeric_expr} > {float(expectation.max_value)}")
+            bad_condition = f"{present_condition} AND ({' OR '.join(range_conditions)})"
+            total_expr = f"countIf({present_condition})"
+            sample_expr = f"anyIf({value_expr}, {bad_condition})"
+        else:
+            return None
+
+        alias = f"_contract_{index}"
+        return (
+            "SELECT "
+            f"{field_name} AS field_name, "
+            f"{drift_type} AS drift_type, "
+            "bad_count, "
+            "total_count, "
+            f"{threshold:.12g} AS threshold, "
+            "if(total_count = 0, 0., bad_count / total_count) AS bad_rate, "
+            "sample_value "
+            "FROM ("
+            "SELECT "
+            f"countIf({bad_condition}) AS bad_count, "
+            f"{total_expr} AS total_count, "
+            f"{sample_expr} AS sample_value "
+            f"FROM ({base_query}) AS _src{where_clause}"
+            f") AS {alias} "
+            "WHERE total_count > 0 "
+            "AND bad_count > 0 "
+            f"AND (bad_count / total_count) > {threshold:.12g}"
+        )
+
+    def validate_field_contracts(
+        self,
+        base_query: str,
+        expectations: list[FieldContractExpectation],
+        *,
+        time_column: str | None = None,
+        time_from: datetime | None = None,
+        time_to: datetime | None = None,
+        group_column: str | None = None,
+        group_value: str | None = None,
+        limit: int = 50000,
+    ) -> list[FieldContractViolation]:
+        if not expectations:
+            return []
+
+        where_clause = self._contract_where_clause(
+            time_column,
+            time_from,
+            time_to,
+            group_column,
+            group_value,
+        )
+        selects = [
+            sql
+            for index, expectation in enumerate(expectations)
+            if (
+                sql := self._contract_select_sql(
+                    expectation,
+                    base_query=base_query,
+                    where_clause=where_clause,
+                    index=index,
+                )
+            )
+            is not None
+        ]
+        if not selects:
+            return []
+
+        sql = " UNION ALL ".join(selects) + f" LIMIT {int(limit)}"
+        logger.info("CH field contract query: %s", sql)
+        result = self._client.query(sql)
+
+        violations: list[FieldContractViolation] = []
+        for row in result.result_rows:
+            violations.append(
+                FieldContractViolation(
+                    field_name=str(row[0]),
+                    drift_type=str(row[1]),
+                    bad_count=int(row[2]),
+                    total_count=int(row[3]),
+                    threshold=float(row[4]),
+                    bad_rate=float(row[5]),
+                    sample_value=None if row[6] is None else str(row[6]),
+                )
+            )
+        return violations
 
     def _top_breakdown_values_multi(
         self,

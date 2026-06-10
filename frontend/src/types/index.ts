@@ -19,6 +19,7 @@ export interface ScanJobResultSummary {
   distribution_drifts?: number
   significant_distribution_drifts?: number
   distribution_drifts_deleted?: number
+  contract_violations_detected?: number
   anomalies_detected?: number
   breakdown_anomalies_detected?: number
   signals_added?: number
@@ -183,6 +184,11 @@ export interface FieldDefinition {
   description: string
   order: number
   sensitivity: Sensitivity
+  contract_required_max_null_rate?: number | null
+  contract_regex?: string | null
+  contract_min_value?: number | null
+  contract_max_value?: number | null
+  contract_max_bad_rate?: number
 }
 
 export type Sensitivity = 'none' | 'pii' | 'phi' | 'financial' | 'secret'
@@ -275,7 +281,14 @@ export interface Event {
   updated_at: string
 }
 
-export type SchemaDriftType = 'new_field' | 'missing_field' | 'type_changed'
+export type SchemaDriftType =
+  | 'new_field'
+  | 'missing_field'
+  | 'type_changed'
+  | 'enum_violation'
+  | 'required_null_violation'
+  | 'regex_violation'
+  | 'range_violation'
 
 export interface SchemaDrift {
   id: string

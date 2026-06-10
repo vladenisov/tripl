@@ -172,6 +172,11 @@ async def _apply_merge(
                     description=b_fd.description,
                     order=b_fd.order,
                     sensitivity=b_fd.sensitivity,
+                    contract_required_max_null_rate=b_fd.contract_required_max_null_rate,
+                    contract_regex=b_fd.contract_regex,
+                    contract_min_value=b_fd.contract_min_value,
+                    contract_max_value=b_fd.contract_max_value,
+                    contract_max_bad_rate=b_fd.contract_max_bad_rate or 0.0,
                 )
             )
             main_field_by_key[(et_name, b_fd.name)] = fid

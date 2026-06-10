@@ -314,6 +314,9 @@ export function ScanDetail({ slug, scanConfig, eventTypes, branchId }: { slug: s
                           {job.result_summary.distribution_drifts != null && job.result_summary.distribution_drifts > 0 && (
                             <Badge variant="outline" className="text-[10px]">{job.result_summary.distribution_drifts} drift rows</Badge>
                           )}
+                          {job.result_summary.contract_violations_detected != null && job.result_summary.contract_violations_detected > 0 && (
+                            <Badge variant="outline" className="text-[10px] text-destructive">{job.result_summary.contract_violations_detected} contracts</Badge>
+                          )}
                           {job.result_summary.alerts_queued != null && job.result_summary.alerts_queued > 0 && (
                             <Badge variant="outline" className="text-[10px] text-amber-600">+{job.result_summary.alerts_queued} alerts</Badge>
                           )}
@@ -419,6 +422,12 @@ export function ScanDetail({ slug, scanConfig, eventTypes, branchId }: { slug: s
                                 <Card className="p-3 text-center">
                                   <div className="text-lg font-bold text-destructive">{job.result_summary.significant_distribution_drifts}</div>
                                   <div className="text-muted-foreground">Distribution signals</div>
+                                </Card>
+                              )}
+                              {job.result_summary.contract_violations_detected != null && (
+                                <Card className="p-3 text-center">
+                                  <div className="text-lg font-bold text-destructive">{job.result_summary.contract_violations_detected}</div>
+                                  <div className="text-muted-foreground">Contract violations</div>
                                 </Card>
                               )}
                               {job.result_summary.alerts_queued != null && (
