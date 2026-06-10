@@ -38,13 +38,6 @@ async def _get_user_by_email(session: AsyncSession, email: str) -> User | None:
     return cast(User | None, await session.scalar(statement))
 
 
-def _current_time_for(expires_at: datetime) -> datetime:
-    current_time = datetime.now(UTC)
-    if expires_at.tzinfo is None:
-        return current_time.replace(tzinfo=None)
-    return current_time
-
-
 async def _create_user_session(session: AsyncSession, user_id: uuid.UUID) -> str:
     session_token = new_session_token()
     session.add(
@@ -120,7 +113,7 @@ async def get_user_by_session_token(session: AsyncSession, session_token: str) -
     if db_session is None:
         return None
 
-    if db_session.expires_at <= _current_time_for(db_session.expires_at):
+    if db_session.expires_at <= datetime.now(UTC):
         await session.delete(db_session)
         await session.commit()
         return None

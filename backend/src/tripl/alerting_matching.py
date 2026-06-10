@@ -34,7 +34,14 @@ class AlertMatchCandidate(Protocol):
 
 
 @dataclass
-class SchemaDriftAlertCandidate:
+class DriftAlertCandidate:
+    """Anomaly candidate carrying drift metadata (schema or distribution).
+
+    Schema drift and distribution drift produce structurally identical candidate
+    rows, so they share this one dataclass. The aliases below preserve the two
+    domain-specific names used at call sites.
+    """
+
     id: uuid.UUID
     scope_type: str
     scope_ref: str
@@ -49,20 +56,9 @@ class SchemaDriftAlertCandidate:
     sample_value: str | None
 
 
-@dataclass
-class DistributionDriftAlertCandidate:
-    id: uuid.UUID
-    scope_type: str
-    scope_ref: str
-    event_id: uuid.UUID | None
-    event_type_id: uuid.UUID | None
-    bucket: datetime
-    direction: str
-    actual_count: int
-    expected_count: float
-    drift_field: str | None
-    drift_type: str | None
-    sample_value: str | None
+# Same shape, distinct domain names kept for call-site readability.
+SchemaDriftAlertCandidate = DriftAlertCandidate
+DistributionDriftAlertCandidate = DriftAlertCandidate
 
 
 def distribution_drift_scope_ref(owner_id: uuid.UUID, field_name: str) -> str:

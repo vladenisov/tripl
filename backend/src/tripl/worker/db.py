@@ -10,10 +10,16 @@ Tests do not touch this module directly — they monkey-patch the
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 from sqlalchemy import Engine, create_engine
 from sqlalchemy.orm import Session, sessionmaker
 
 from tripl.config import settings
+
+if TYPE_CHECKING:
+    from tripl.models.data_source import DataSource
+    from tripl.worker.adapters.base import BaseAdapter
 
 _engine: Engine | None = None
 _session_local: sessionmaker[Session] | None = None
@@ -37,3 +43,19 @@ def _ensure_initialized() -> sessionmaker[Session]:
 def SyncSessionLocal() -> Session:  # noqa: N802  — emulates sessionmaker() call shape
     """Return a new sync Session from the shared engine pool."""
     return _ensure_initialized()()
+
+
+def _get_sync_session() -> Session:
+    """Canonical sync-session factory shared by every Celery task module.
+
+    Task modules import this under the same ``_get_sync_session`` name so tests
+    can keep monkey-patching it via each module's globals.
+    """
+    return SyncSessionLocal()
+
+
+def _build_adapter(ds: DataSource) -> BaseAdapter:
+    """Canonical warehouse-adapter builder shared by Celery task modules."""
+    from tripl.worker.adapters.registry import build_adapter
+
+    return build_adapter(ds)
