@@ -16,6 +16,11 @@ export const fieldsApi = {
       description?: string
       order?: number
       sensitivity?: Sensitivity
+      contract_required_max_null_rate?: number | null
+      contract_regex?: string | null
+      contract_min_value?: number | null
+      contract_max_value?: number | null
+      contract_max_bad_rate?: number
     },
     branchId?: string | null,
   ) =>
@@ -32,6 +37,11 @@ export const fieldsApi = {
       field_type: string
       is_required?: boolean
       sensitivity?: Sensitivity
+      contract_required_max_null_rate?: number | null
+      contract_regex?: string | null
+      contract_min_value?: number | null
+      contract_max_value?: number | null
+      contract_max_bad_rate?: number
     }>,
     branchId?: string | null,
   ) =>

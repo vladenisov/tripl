@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import abc
+import re
 from dataclasses import dataclass
 from datetime import datetime
 
@@ -10,6 +11,28 @@ class ColumnInfo:
     name: str
     type_name: str
     is_nullable: bool = False
+
+
+@dataclass(frozen=True)
+class FieldContractExpectation:
+    field_name: str
+    drift_type: str
+    threshold: float
+    enum_options: tuple[str, ...] = ()
+    regex: str | None = None
+    min_value: float | None = None
+    max_value: float | None = None
+
+
+@dataclass(frozen=True)
+class FieldContractViolation:
+    field_name: str
+    drift_type: str
+    bad_count: int
+    total_count: int
+    bad_rate: float
+    threshold: float
+    sample_value: str | None = None
 
 
 class BaseAdapter(abc.ABC):
@@ -88,6 +111,108 @@ class BaseAdapter(abc.ABC):
                     column_samples.setdefault(path, []).append(raw_value)
 
         return samples_by_column
+
+    def validate_field_contracts(
+        self,
+        base_query: str,
+        expectations: list[FieldContractExpectation],
+        *,
+        time_column: str | None = None,
+        time_from: datetime | None = None,
+        time_to: datetime | None = None,
+        group_column: str | None = None,
+        group_value: str | None = None,
+        limit: int = 50000,
+    ) -> list[FieldContractViolation]:
+        """Fallback field-contract validation from sampled rows.
+
+        Native adapters should override this with aggregate warehouse queries.
+        The fallback preserves behavior for adapters without a custom
+        implementation and is intentionally bounded by ``limit``.
+        """
+        if not expectations:
+            return []
+
+        column_names, rows = self.get_preview_rows(
+            base_query,
+            limit=limit,
+            time_column=time_column,
+            time_from=time_from,
+            time_to=time_to,
+        )
+        index_by_name = {name: index for index, name in enumerate(column_names)}
+        group_index = index_by_name.get(group_column) if group_column else None
+        if group_column and group_index is None:
+            msg = f"Group column {group_column!r} not found in query result"
+            raise ValueError(msg)
+
+        violations: list[FieldContractViolation] = []
+        for expectation in expectations:
+            field_index = index_by_name.get(expectation.field_name)
+            if field_index is None:
+                continue
+            bad_count = 0
+            total_count = 0
+            sample_value: str | None = None
+            regex = re.compile(expectation.regex) if expectation.regex else None
+
+            for row in rows:
+                if group_index is not None:
+                    raw_group = row[group_index]
+                    if ("" if raw_group is None else str(raw_group)) != group_value:
+                        continue
+
+                raw_value = row[field_index]
+                is_bad = False
+                if expectation.drift_type == "required_null_violation":
+                    total_count += 1
+                    is_bad = raw_value is None
+                else:
+                    if raw_value is None:
+                        continue
+                    total_count += 1
+                    text = str(raw_value)
+                    if expectation.drift_type == "enum_violation":
+                        is_bad = text not in expectation.enum_options
+                    elif expectation.drift_type == "regex_violation" and regex is not None:
+                        is_bad = regex.search(text) is None
+                    elif expectation.drift_type == "range_violation":
+                        try:
+                            numeric = float(text)
+                        except (TypeError, ValueError):
+                            is_bad = True
+                        else:
+                            is_bad = (
+                                expectation.min_value is not None
+                                and numeric < expectation.min_value
+                            ) or (
+                                expectation.max_value is not None
+                                and numeric > expectation.max_value
+                            )
+
+                if is_bad:
+                    bad_count += 1
+                    if sample_value is None:
+                        sample_value = "<NULL>" if raw_value is None else str(raw_value)
+
+            if total_count <= 0 or bad_count <= 0:
+                continue
+            bad_rate = bad_count / total_count
+            if bad_rate <= expectation.threshold:
+                continue
+            violations.append(
+                FieldContractViolation(
+                    field_name=expectation.field_name,
+                    drift_type=expectation.drift_type,
+                    bad_count=bad_count,
+                    total_count=total_count,
+                    bad_rate=bad_rate,
+                    threshold=expectation.threshold,
+                    sample_value=sample_value,
+                )
+            )
+
+        return violations
 
     @abc.abstractmethod
     def get_full_breakdown(

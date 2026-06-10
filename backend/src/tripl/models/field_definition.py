@@ -4,7 +4,7 @@ import uuid
 from typing import TYPE_CHECKING
 
 import sqlalchemy as sa
-from sqlalchemy import Boolean, ForeignKey, Integer, String, Text, UniqueConstraint
+from sqlalchemy import Boolean, Float, ForeignKey, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from tripl.models.base import Base, UUIDMixin
@@ -30,5 +30,17 @@ class FieldDefinition(UUIDMixin, Base):
     description: Mapped[str] = mapped_column(Text, default="")
     order: Mapped[int] = mapped_column(Integer, default=0)
     sensitivity: Mapped[str] = mapped_column(String(20), default="none", server_default="none")
+    contract_required_max_null_rate: Mapped[float | None] = mapped_column(
+        Float,
+        nullable=True,
+    )
+    contract_regex: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    contract_min_value: Mapped[float | None] = mapped_column(Float, nullable=True)
+    contract_max_value: Mapped[float | None] = mapped_column(Float, nullable=True)
+    contract_max_bad_rate: Mapped[float] = mapped_column(
+        Float,
+        default=0.0,
+        server_default="0",
+    )
 
     event_type: Mapped[EventType] = relationship(back_populates="field_definitions")

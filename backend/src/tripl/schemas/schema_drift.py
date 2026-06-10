@@ -10,7 +10,15 @@ class SchemaDriftResponse(BaseModel):
     event_type_id: uuid.UUID
     scan_config_id: uuid.UUID | None
     field_name: str
-    drift_type: Literal["new_field", "missing_field", "type_changed"]
+    drift_type: Literal[
+        "new_field",
+        "missing_field",
+        "type_changed",
+        "enum_violation",
+        "required_null_violation",
+        "regex_violation",
+        "range_violation",
+    ]
     observed_type: str | None
     declared_type: str | None
     sample_value: str | None

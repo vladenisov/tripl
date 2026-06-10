@@ -124,6 +124,19 @@ async def update_field(
     if not field:
         raise HTTPException(status_code=404, detail="Field not found")
     update_data = data.model_dump(exclude_unset=True)
+    if "contract_max_bad_rate" in update_data and update_data["contract_max_bad_rate"] is None:
+        update_data["contract_max_bad_rate"] = 0.0
+    contract_min_value = update_data.get("contract_min_value", field.contract_min_value)
+    contract_max_value = update_data.get("contract_max_value", field.contract_max_value)
+    if (
+        contract_min_value is not None
+        and contract_max_value is not None
+        and contract_min_value > contract_max_value
+    ):
+        raise HTTPException(
+            status_code=422,
+            detail="contract_min_value must be <= contract_max_value",
+        )
     for key, value in update_data.items():
         setattr(field, key, value)
     await session.commit()

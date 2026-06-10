@@ -46,6 +46,11 @@ _FIELD_DEFINITION_CHANGE_KEYS = (
     "enum_options",
     "description",
     "sensitivity",
+    "contract_required_max_null_rate",
+    "contract_regex",
+    "contract_min_value",
+    "contract_max_value",
+    "contract_max_bad_rate",
 )
 _EVENT_TYPE_CHANGE_KEYS = ("display_name", "description", "color")
 _EVENT_CHANGE_KEYS = (
@@ -127,6 +132,11 @@ async def build_plan_snapshot(
                         "description": fd.description,
                         "order": fd.order,
                         "sensitivity": fd.sensitivity,
+                        "contract_required_max_null_rate": fd.contract_required_max_null_rate,
+                        "contract_regex": fd.contract_regex,
+                        "contract_min_value": fd.contract_min_value,
+                        "contract_max_value": fd.contract_max_value,
+                        "contract_max_bad_rate": fd.contract_max_bad_rate or 0.0,
                     }
                     for fd in fds
                 ],

@@ -302,6 +302,11 @@ async def _deep_copy_plan(
                     description=fd.description,
                     order=fd.order,
                     sensitivity=fd.sensitivity,
+                    contract_required_max_null_rate=fd.contract_required_max_null_rate,
+                    contract_regex=fd.contract_regex,
+                    contract_min_value=fd.contract_min_value,
+                    contract_max_value=fd.contract_max_value,
+                    contract_max_bad_rate=fd.contract_max_bad_rate or 0.0,
                 )
             )
 

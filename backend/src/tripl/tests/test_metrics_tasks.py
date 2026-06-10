@@ -30,7 +30,7 @@ from tripl.models.scan_job import ScanJob, ScanJobStatus
 from tripl.models.schema_drift import SchemaDrift
 from tripl.models.variable import Variable
 from tripl.models.variable_value import VariableValue, VariableValueKind
-from tripl.worker.adapters.base import ColumnInfo
+from tripl.worker.adapters.base import ColumnInfo, FieldContractViolation
 from tripl.worker.analyzers.event_generator import GenerationResult
 from tripl.worker.tasks import metrics
 from tripl.worker.tasks.metrics import collect as metrics_collect
@@ -1705,6 +1705,124 @@ def test_diff_event_type_schema_attaches_sample_value(
         by_persisted_kind = {(d.field_name, d.drift_type): d for d in persisted}
         assert by_persisted_kind[("device_id", "new_field")].sample_value == "ios-42"
         assert by_persisted_kind[("payload", "type_changed")].sample_value == '{"k": 1}'
+
+
+def test_field_contract_violations_are_upserted_as_schema_drifts(
+    sync_session_factory: sessionmaker[Session],
+) -> None:
+    class FakeContractAdapter:
+        def __init__(self) -> None:
+            self.expectation_types: list[str] = []
+            self.group_value: str | None = None
+
+        def validate_field_contracts(self, base_query, expectations, **kwargs):
+            self.expectation_types = [item.drift_type for item in expectations]
+            self.group_value = kwargs["group_value"]
+            return [
+                FieldContractViolation(
+                    field_name="status",
+                    drift_type="enum_violation",
+                    bad_count=2,
+                    total_count=10,
+                    bad_rate=0.2,
+                    threshold=0.0,
+                    sample_value="beta",
+                ),
+                FieldContractViolation(
+                    field_name="user_id",
+                    drift_type="required_null_violation",
+                    bad_count=3,
+                    total_count=10,
+                    bad_rate=0.3,
+                    threshold=0.1,
+                    sample_value="<NULL>",
+                ),
+                FieldContractViolation(
+                    field_name="sku",
+                    drift_type="regex_violation",
+                    bad_count=1,
+                    total_count=10,
+                    bad_rate=0.1,
+                    threshold=0.0,
+                    sample_value="bad",
+                ),
+                FieldContractViolation(
+                    field_name="amount",
+                    drift_type="range_violation",
+                    bad_count=1,
+                    total_count=10,
+                    bad_rate=0.1,
+                    threshold=0.05,
+                    sample_value="999",
+                ),
+            ]
+
+    with sync_session_factory() as session:
+        config = _create_scan_config(session)
+        et = _make_event_type_with_fields(
+            session,
+            config,
+            fields=[
+                ("status", "enum"),
+                ("user_id", "string"),
+                ("sku", "string"),
+                ("amount", "number"),
+                ("ignored", "string"),
+            ],
+        )
+        by_name = {field.name: field for field in et.field_definitions}
+        by_name["status"].enum_options = ["active"]
+        by_name["user_id"].is_required = True
+        by_name["user_id"].contract_required_max_null_rate = 0.1
+        by_name["sku"].contract_regex = r"^sku-\d+$"
+        by_name["amount"].contract_min_value = 0
+        by_name["amount"].contract_max_value = 100
+        by_name["amount"].contract_max_bad_rate = 0.05
+        session.commit()
+
+        adapter = FakeContractAdapter()
+        count = metrics_schema_drift._detect_field_contract_violations(
+            session,
+            adapter=adapter,
+            event_type=et,
+            base_query=config.base_query,
+            columns=[
+                ColumnInfo(name="status", type_name="String"),
+                ColumnInfo(name="user_id", type_name="String"),
+                ColumnInfo(name="sku", type_name="String"),
+                ColumnInfo(name="amount", type_name="Float64"),
+                ColumnInfo(name="time", type_name="DateTime"),
+            ],
+            skip_columns={"time"},
+            scan_config_id=config.id,
+            time_column="time",
+            time_from=datetime(2026, 1, 1, tzinfo=UTC),
+            time_to=datetime(2026, 1, 2, tzinfo=UTC),
+            group_column="event_type",
+            group_value="purchase",
+        )
+        session.commit()
+
+        assert count == 4
+        assert adapter.group_value == "purchase"
+        assert sorted(adapter.expectation_types) == [
+            "enum_violation",
+            "range_violation",
+            "regex_violation",
+            "required_null_violation",
+        ]
+
+        rows = (
+            session.execute(select(SchemaDrift).where(SchemaDrift.event_type_id == et.id))
+            .scalars()
+            .all()
+        )
+        by_kind = {(row.field_name, row.drift_type): row for row in rows}
+        assert by_kind[("status", "enum_violation")].declared_type == "enum"
+        assert "bad_rate=20.00%" in by_kind[("status", "enum_violation")].observed_type
+        assert by_kind[("user_id", "required_null_violation")].sample_value == "<NULL>"
+        assert by_kind[("sku", "regex_violation")].sample_value == "bad"
+        assert by_kind[("amount", "range_violation")].sample_value == "999"
 
 
 def test_cleanup_schema_drifts_prunes_only_expired_rows(

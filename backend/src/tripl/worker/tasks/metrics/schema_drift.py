@@ -10,7 +10,12 @@ from sqlalchemy.orm import Session
 from tripl.models.event_type import EventType
 from tripl.models.schema_drift import SchemaDrift
 from tripl.observability.metrics import schema_drifts_detected_total
-from tripl.worker.adapters.base import ColumnInfo
+from tripl.worker.adapters.base import (
+    BaseAdapter,
+    ColumnInfo,
+    FieldContractExpectation,
+    FieldContractViolation,
+)
 from tripl.worker.analyzers.cardinality import CardinalityResult, _is_json_type
 
 # Logical FieldDefinition.field_type values that `_ensure_event_type_with_fields`
@@ -20,6 +25,12 @@ from tripl.worker.analyzers.cardinality import CardinalityResult, _is_json_type
 # choosing them is an intentional schema decision, not drift.
 _AUTO_FIELD_TYPES = {"string", "json"}
 _SAMPLE_VALUE_MAX_LEN = 255
+_CONTRACT_DECLARED_TYPES = {
+    "required_null_violation": "required",
+    "enum_violation": "enum",
+    "regex_violation": "regex",
+    "range_violation": "range",
+}
 
 
 def _infer_logical_field_type(col: ColumnInfo) -> str:
@@ -40,6 +51,15 @@ def _pick_sample_value(result: CardinalityResult | None) -> str | None:
             return text[: _SAMPLE_VALUE_MAX_LEN - 1] + "…"
         return text
     return None
+
+
+def _truncate_sample_value(value: object | None) -> str | None:
+    if value is None:
+        return None
+    text = str(value)
+    if len(text) > _SAMPLE_VALUE_MAX_LEN:
+        return text[: _SAMPLE_VALUE_MAX_LEN - 1] + "…"
+    return text
 
 
 def _diff_event_type_schema(
@@ -105,6 +125,90 @@ def _diff_event_type_schema(
             )
 
     return drift_items
+
+
+def _field_contract_expectations(
+    event_type: EventType,
+    columns: list[ColumnInfo],
+    skip_columns: set[str],
+) -> list[FieldContractExpectation]:
+    observed = {col.name for col in columns if col.name not in skip_columns}
+    expectations: list[FieldContractExpectation] = []
+    for field in event_type.field_definitions:
+        if field.name not in observed:
+            continue
+
+        bad_rate = float(field.contract_max_bad_rate or 0.0)
+        if field.is_required:
+            threshold = (
+                float(field.contract_required_max_null_rate)
+                if field.contract_required_max_null_rate is not None
+                else bad_rate
+            )
+            expectations.append(
+                FieldContractExpectation(
+                    field_name=field.name,
+                    drift_type="required_null_violation",
+                    threshold=threshold,
+                )
+            )
+
+        enum_options = tuple(str(option) for option in field.enum_options or [])
+        if field.field_type == "enum" and enum_options:
+            expectations.append(
+                FieldContractExpectation(
+                    field_name=field.name,
+                    drift_type="enum_violation",
+                    threshold=bad_rate,
+                    enum_options=enum_options,
+                )
+            )
+
+        if field.contract_regex:
+            expectations.append(
+                FieldContractExpectation(
+                    field_name=field.name,
+                    drift_type="regex_violation",
+                    threshold=bad_rate,
+                    regex=field.contract_regex,
+                )
+            )
+
+        if field.contract_min_value is not None or field.contract_max_value is not None:
+            expectations.append(
+                FieldContractExpectation(
+                    field_name=field.name,
+                    drift_type="range_violation",
+                    threshold=bad_rate,
+                    min_value=field.contract_min_value,
+                    max_value=field.contract_max_value,
+                )
+            )
+
+    return expectations
+
+
+def _contract_observed_type(violation: FieldContractViolation) -> str:
+    return (
+        f"bad_rate={violation.bad_rate:.2%}; "
+        f"max={violation.threshold:.2%}; "
+        f"bad={violation.bad_count}; total={violation.total_count}"
+    )
+
+
+def _contract_violation_drift_items(
+    violations: list[FieldContractViolation],
+) -> list[dict[str, object]]:
+    return [
+        {
+            "field_name": violation.field_name,
+            "drift_type": violation.drift_type,
+            "observed_type": _contract_observed_type(violation),
+            "declared_type": _CONTRACT_DECLARED_TYPES.get(violation.drift_type, "contract"),
+            "sample_value": _truncate_sample_value(violation.sample_value),
+        }
+        for violation in violations
+    ]
 
 
 def _record_drift_metrics(rows: list[dict[str, object]]) -> None:
@@ -199,3 +303,47 @@ def _detect_event_type_drift(
         scan_config_id=scan_config_id,
         drift_items=drift_items,
     )
+
+
+def _detect_field_contract_violations(
+    session: Session,
+    *,
+    adapter: BaseAdapter,
+    event_type: EventType | None,
+    base_query: str,
+    columns: list[ColumnInfo],
+    skip_columns: set[str],
+    scan_config_id: uuid.UUID,
+    time_column: str | None,
+    time_from: datetime,
+    time_to: datetime,
+    group_column: str | None = None,
+    group_value: str | None = None,
+    limit: int = 50000,
+) -> int:
+    """Validate declared field contracts against warehouse data, write drifts."""
+    if event_type is None:
+        return 0
+
+    expectations = _field_contract_expectations(event_type, columns, skip_columns)
+    if not expectations:
+        return 0
+
+    violations = adapter.validate_field_contracts(
+        base_query,
+        expectations,
+        time_column=time_column,
+        time_from=time_from,
+        time_to=time_to,
+        group_column=group_column,
+        group_value=group_value,
+        limit=limit,
+    )
+    drift_items = _contract_violation_drift_items(violations)
+    _upsert_schema_drifts(
+        session,
+        event_type_id=event_type.id,
+        scan_config_id=scan_config_id,
+        drift_items=drift_items,
+    )
+    return len(drift_items)

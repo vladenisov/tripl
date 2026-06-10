@@ -93,6 +93,7 @@ from tripl.worker.tasks.metrics.metric_rows import (
 )
 from tripl.worker.tasks.metrics.schema_drift import (
     _detect_event_type_drift,
+    _detect_field_contract_violations,
     _diff_event_type_schema,
     _upsert_schema_drifts,
 )
@@ -128,6 +129,7 @@ __all__ = [
     "_delete_event_metric_breakdowns_window",
     "_delete_event_metrics_window",
     "_diff_event_type_schema",
+    "_detect_field_contract_violations",
     "_fail_stale_active_scan_job",
     "_floor_to_interval",
     "_get_active_scan_job",
@@ -308,6 +310,7 @@ def collect_metrics(
 
         gen_results: dict[str, GenerationResult] = {}
         single_result: GenerationResult | None = None
+        contract_violations_detected = 0
 
         replay_branch_id: uuid.UUID | None = None
         replay_variables_by_token: dict[str, Variable] = {}
@@ -378,6 +381,21 @@ def collect_metrics(
                     scan_config_id=config.id,
                     cardinality_results=getattr(grouped_analyses[et_name], "results", None),
                 )
+                contract_violations_detected += _detect_field_contract_violations(
+                    session,
+                    adapter=adapter,
+                    event_type=existing_et,
+                    base_query=config.base_query,
+                    columns=columns,
+                    skip_columns=skip_cols,
+                    scan_config_id=config.id,
+                    time_column=config.time_column,
+                    time_from=time_from_dt,
+                    time_to=time_to_dt,
+                    group_column=config.event_type_column,
+                    group_value=et_name,
+                    limit=metrics_row_limit,
+                )
                 et = _ensure_event_type_with_fields(
                     session,
                     config.project_id,
@@ -436,6 +454,19 @@ def collect_metrics(
                 skip_columns=skip_cols,
                 scan_config_id=config.id,
                 cardinality_results=getattr(analysis, "results", None),
+            )
+            contract_violations_detected += _detect_field_contract_violations(
+                session,
+                adapter=adapter,
+                event_type=event_type,
+                base_query=config.base_query,
+                columns=columns,
+                skip_columns=skip_cols,
+                scan_config_id=config.id,
+                time_column=config.time_column,
+                time_from=time_from_dt,
+                time_to=time_to_dt,
+                limit=metrics_row_limit,
             )
             field_defs = {fd.name: fd for fd in event_type.field_definitions}
             single_result = generate_events(
@@ -971,6 +1002,7 @@ def collect_metrics(
             "distribution_drifts": n_distribution_drifts,
             "significant_distribution_drifts": significant_distribution_drifts,
             "distribution_drifts_deleted": distribution_drifts_deleted,
+            "contract_violations_detected": contract_violations_detected,
             "anomalies_detected": anomalies_detected,
             "breakdown_anomalies_detected": breakdown_anomalies_detected,
             "signals_added": signals_added,

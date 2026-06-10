@@ -10,6 +10,10 @@ const DRIFT_LABEL: Record<string, string> = {
   new_field: 'new',
   missing_field: 'missing',
   type_changed: 'type',
+  enum_violation: 'enum',
+  required_null_violation: 'required',
+  regex_violation: 'regex',
+  range_violation: 'range',
 }
 
 function formatRelative(iso: string) {

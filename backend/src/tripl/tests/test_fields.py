@@ -131,6 +131,67 @@ async def test_field_sensitivity_round_trip(client: AsyncClient):
 
 
 @pytest.mark.asyncio
+async def test_field_contract_rules_round_trip(client: AsyncClient):
+    et_id = await _setup(client, "f-contract")
+    create = await client.post(
+        f"/api/v1/projects/f-contract/event-types/{et_id}/fields",
+        json={
+            "name": "amount",
+            "display_name": "Amount",
+            "field_type": "number",
+            "is_required": True,
+            "contract_required_max_null_rate": 0.02,
+            "contract_min_value": 0,
+            "contract_max_value": 100,
+            "contract_max_bad_rate": 0.01,
+        },
+    )
+    assert create.status_code == 201
+    body = create.json()
+    field_id = body["id"]
+    assert body["contract_required_max_null_rate"] == 0.02
+    assert body["contract_min_value"] == 0
+    assert body["contract_max_value"] == 100
+    assert body["contract_max_bad_rate"] == 0.01
+
+    update = await client.patch(
+        f"/api/v1/projects/f-contract/event-types/{et_id}/fields/{field_id}",
+        json={
+            "contract_regex": r"^\d+(\.\d+)?$",
+            "contract_min_value": None,
+            "contract_max_bad_rate": 0.05,
+        },
+    )
+    assert update.status_code == 200
+    updated = update.json()
+    assert updated["contract_regex"] == r"^\d+(\.\d+)?$"
+    assert updated["contract_min_value"] is None
+    assert updated["contract_max_bad_rate"] == 0.05
+
+    bad_rate = await client.post(
+        f"/api/v1/projects/f-contract/event-types/{et_id}/fields",
+        json={
+            "name": "bad_rate",
+            "display_name": "Bad rate",
+            "field_type": "string",
+            "contract_max_bad_rate": 1.2,
+        },
+    )
+    assert bad_rate.status_code == 422
+
+    bad_regex = await client.post(
+        f"/api/v1/projects/f-contract/event-types/{et_id}/fields",
+        json={
+            "name": "bad_regex",
+            "display_name": "Bad regex",
+            "field_type": "string",
+            "contract_regex": "[",
+        },
+    )
+    assert bad_regex.status_code == 422
+
+
+@pytest.mark.asyncio
 async def test_create_event_type_with_fields(client: AsyncClient):
     await client.post("/api/v1/projects", json={"name": "ETF", "slug": "etf-proj"})
     resp = await client.post(
