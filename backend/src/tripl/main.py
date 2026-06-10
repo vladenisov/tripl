@@ -6,7 +6,7 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
 from brotli_asgi import BrotliMiddleware
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response
 from sqlalchemy import text
@@ -16,6 +16,7 @@ from tripl.config import settings
 from tripl.database import engine
 from tripl.logging_config import configure_logging
 from tripl.middleware import RequestIDMiddleware, SecurityHeadersMiddleware
+from tripl.middleware.request_id import current_request_id
 from tripl.observability.metrics import render_metrics
 
 logger = logging.getLogger(__name__)
@@ -80,6 +81,27 @@ app.add_middleware(
 )
 
 app.include_router(v1_router)
+
+
+@app.exception_handler(Exception)
+async def unhandled_exception_handler(request: Request, exc: Exception) -> JSONResponse:
+    """Catch-all for unhandled exceptions: log with the request id and return a
+    generic 500 so internal details never leak to the client.
+
+    FastAPI handles ``HTTPException`` and validation errors before this; only
+    truly unexpected errors reach here. The request id (set by
+    ``RequestIDMiddleware``) is attached to the structured log line and echoed
+    in the body so an operator can correlate the report with the logs.
+    """
+    request_id = current_request_id() or "-"
+    logger.exception(
+        "unhandled exception",
+        extra={"method": request.method, "path": request.url.path},
+    )
+    return JSONResponse(
+        status_code=500,
+        content={"detail": "Internal server error", "request_id": request_id},
+    )
 
 
 @app.get("/health", include_in_schema=False)
