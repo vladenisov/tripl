@@ -15,6 +15,7 @@ const ProjectSettingsPage = lazy(() => import('./pages/ProjectSettingsPage'))
 const DataSourcesPage = lazy(() => import('./pages/DataSourcesPage'))
 const UsersPage = lazy(() => import('./pages/UsersPage'))
 const AccountPage = lazy(() => import('./pages/AccountPage'))
+const ReconciliationPage = lazy(() => import('./pages/ReconciliationPage'))
 
 function RouteFallback() {
   return (
@@ -120,6 +121,7 @@ export default function App() {
             <Route path="/p/:slug/events/:tab/:eventId" element={withSuspense(<EventsPage />)} />
             <Route path="/p/:slug/events/:tab" element={withSuspense(<EventsPage />)} />
             <Route path="/p/:slug/events" element={withSuspense(<EventsPage />)} />
+            <Route path="/p/:slug/reconciliation" element={withSuspense(<ReconciliationPage />)} />
             <Route path="/p/:slug/settings/:tab" element={withSuspense(<ProjectSettingsPage />)} />
             <Route path="/p/:slug/settings" element={withSuspense(<ProjectSettingsPage />)} />
             <Route path="/p/:slug" element={withSuspense(<EventsPage />)} />
