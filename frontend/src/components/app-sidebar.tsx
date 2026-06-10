@@ -12,6 +12,7 @@ import {
   Database,
   Eye,
   Folder,
+  GitCompare,
   Grid3x3,
   Key,
   LayoutDashboard,
@@ -349,6 +350,13 @@ function buildEventViews(project: Project, eventTypes: EventType[]): SavedView[]
       icon: Archive,
       to: `${base}/archived`,
       match: (path) => path === `${base}/archived`,
+    },
+    {
+      id: 'reconciliation',
+      name: 'Reconciliation',
+      icon: GitCompare,
+      to: `/p/${project.slug}/reconciliation`,
+      match: (path) => path === `/p/${project.slug}/reconciliation`,
     },
   ]
 

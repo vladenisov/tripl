@@ -7,6 +7,7 @@ from datetime import datetime, timedelta
 from typing import cast
 
 from sqlalchemy import delete, tuple_
+from sqlalchemy import func as sa_func
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.orm import Session
@@ -17,12 +18,14 @@ from tripl.json_paths import (
     format_json_path_value,
     group_json_value_paths,
 )
+from tripl.models.coverage_metric import CoverageMetric
 from tripl.models.distribution_drift import DistributionDrift
 from tripl.models.event import Event
 from tripl.models.event_metric import EventMetric
 from tripl.models.event_metric_breakdown import EventMetricBreakdown
 from tripl.models.event_type import EventType
 from tripl.models.scan_config import ScanConfig
+from tripl.models.shadow_event_candidate import ShadowEventCandidate
 from tripl.worker.adapters.base import BaseAdapter
 from tripl.worker.analyzers.distribution_drift import TopShift, compute_psi
 from tripl.worker.analyzers.event_generator import (
@@ -241,6 +244,101 @@ def _upsert_event_metric_breakdown_rows(
     pg_stmt = pg_stmt.on_conflict_do_update(
         constraint=pg_constraint,
         set_={"count": pg_stmt.excluded.count, "is_other": pg_stmt.excluded.is_other},
+    )
+    session.execute(pg_stmt)
+
+
+def _upsert_coverage_rows(
+    session: Session,
+    *,
+    rows: list[dict[str, object]],
+) -> None:
+    if not rows:
+        return
+
+    if session.bind is not None and session.bind.dialect.name == "sqlite":
+        sqlite_stmt = sqlite_insert(CoverageMetric).values(rows)
+        sqlite_stmt = sqlite_stmt.on_conflict_do_update(
+            index_elements=["scan_config_id", "bucket"],
+            set_={
+                "total_count": sqlite_stmt.excluded.total_count,
+                "matched_count": sqlite_stmt.excluded.matched_count,
+            },
+        )
+        session.execute(sqlite_stmt)
+        return
+
+    pg_stmt = pg_insert(CoverageMetric).values(rows)
+    pg_stmt = pg_stmt.on_conflict_do_update(
+        constraint="uq_coverage_metric_config_bucket",
+        set_={
+            "total_count": pg_stmt.excluded.total_count,
+            "matched_count": pg_stmt.excluded.matched_count,
+        },
+    )
+    session.execute(pg_stmt)
+
+
+def _delete_coverage_metrics_window(
+    session: Session,
+    *,
+    scan_config_id: uuid.UUID,
+    time_from: datetime,
+    time_to: datetime,
+) -> int:
+    result = session.execute(
+        delete(CoverageMetric).where(
+            CoverageMetric.scan_config_id == scan_config_id,
+            CoverageMetric.bucket >= time_from,
+            CoverageMetric.bucket < time_to,
+        )
+    )
+    rowcount = getattr(result, "rowcount", 0)
+    return int(rowcount or 0)
+
+
+def _upsert_shadow_event_candidates(
+    session: Session,
+    *,
+    rows: list[dict[str, object]],
+) -> None:
+    """Insert-or-refresh shadow candidates.
+
+    On conflict only the observation columns move: ``observed_count`` is the
+    latest window's count, ``last_seen_at`` never rewinds. ``status`` and the
+    resolution columns are user-owned and left untouched so an accepted or
+    dismissed candidate is not resurrected by the collector.
+    """
+    if not rows:
+        return
+
+    if session.bind is not None and session.bind.dialect.name == "sqlite":
+        sqlite_stmt = sqlite_insert(ShadowEventCandidate).values(rows)
+        sqlite_stmt = sqlite_stmt.on_conflict_do_update(
+            index_elements=["scan_config_id", "event_name"],
+            set_={
+                "observed_count": sqlite_stmt.excluded.observed_count,
+                "event_type_id": sqlite_stmt.excluded.event_type_id,
+                "last_seen_at": sa_func.max(
+                    ShadowEventCandidate.last_seen_at,
+                    sqlite_stmt.excluded.last_seen_at,
+                ),
+            },
+        )
+        session.execute(sqlite_stmt)
+        return
+
+    pg_stmt = pg_insert(ShadowEventCandidate).values(rows)
+    pg_stmt = pg_stmt.on_conflict_do_update(
+        constraint="uq_shadow_candidate_config_name",
+        set_={
+            "observed_count": pg_stmt.excluded.observed_count,
+            "event_type_id": pg_stmt.excluded.event_type_id,
+            "last_seen_at": sa_func.greatest(
+                ShadowEventCandidate.last_seen_at,
+                pg_stmt.excluded.last_seen_at,
+            ),
+        },
     )
     session.execute(pg_stmt)
 

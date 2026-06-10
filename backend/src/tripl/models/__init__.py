@@ -9,6 +9,7 @@ from tripl.models.api_key import ApiKey
 from tripl.models.audit_log import AuditLog
 from tripl.models.base import Base
 from tripl.models.chart_annotation import ChartAnnotation
+from tripl.models.coverage_metric import CoverageMetric
 from tripl.models.data_source import DataSource
 from tripl.models.distribution_drift import DistributionDrift
 from tripl.models.event import Event
@@ -39,6 +40,7 @@ from tripl.models.scan_job import ScanJob
 from tripl.models.scan_preview_job import ScanPreviewJob
 from tripl.models.schema_drift import SchemaDrift
 from tripl.models.search_document import SearchDocument
+from tripl.models.shadow_event_candidate import ShadowEventCandidate
 from tripl.models.user import User
 from tripl.models.user_session import UserSession
 from tripl.models.variable import Variable
@@ -56,6 +58,7 @@ __all__ = [
     "ApiKey",
     "AuditLog",
     "ChartAnnotation",
+    "CoverageMetric",
     "Project",
     "EventType",
     "EventTypeOwner",
@@ -87,6 +90,7 @@ __all__ = [
     "ScanPreviewJob",
     "SchemaDrift",
     "SearchDocument",
+    "ShadowEventCandidate",
     "User",
     "UserSession",
     "VariableValue",

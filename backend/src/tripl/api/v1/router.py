@@ -20,6 +20,7 @@ from tripl.api.v1.plan_branches import router as plan_branches_router
 from tripl.api.v1.plan_revisions import router as plan_revisions_router
 from tripl.api.v1.project_anomaly_settings import router as project_anomaly_settings_router
 from tripl.api.v1.projects import router as projects_router
+from tripl.api.v1.reconciliation import router as reconciliation_router
 from tripl.api.v1.relations import router as relations_router
 from tripl.api.v1.scans import router as scans_router
 from tripl.api.v1.search import router as search_router
@@ -50,6 +51,7 @@ router.include_router(metrics_router, dependencies=protected_dependencies)
 router.include_router(chart_annotations_router, dependencies=protected_dependencies)
 router.include_router(plan_branches_router, dependencies=protected_dependencies)
 router.include_router(plan_revisions_router, dependencies=protected_dependencies)
+router.include_router(reconciliation_router, dependencies=protected_dependencies)
 router.include_router(audit_router, dependencies=protected_dependencies)
 router.include_router(users_router, dependencies=protected_dependencies)
 router.include_router(api_keys_router, dependencies=protected_dependencies)

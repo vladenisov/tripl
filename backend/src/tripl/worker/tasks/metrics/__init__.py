@@ -25,6 +25,7 @@ from tripl.models.event import Event
 from tripl.models.event_metric import EventMetric
 from tripl.models.event_type import EventType
 from tripl.models.scan_config import ScanConfig
+from tripl.models.shadow_event_candidate import SHADOW_STATUS_NEW
 from tripl.models.scan_job import ScanJob, ScanJobStatus
 from tripl.models.variable import Variable
 from tripl.worker.analyzers.cardinality import (
@@ -76,6 +77,7 @@ from tripl.worker.tasks.metrics.metric_rows import (
     _build_event_name_from_row,
     _collect_distribution_drift_rows,
     _collect_metric_breakdown_rows,
+    _delete_coverage_metrics_window,
     _delete_distribution_drifts_rows,
     _delete_distribution_drifts_window,
     _delete_event_metric_breakdown_rows,
@@ -88,8 +90,10 @@ from tripl.worker.tasks.metrics.metric_rows import (
     _is_supported_metric_breakdown_column,
     _normalize_breakdown_value,
     _serialize_distribution_top_movers,
+    _upsert_coverage_rows,
     _upsert_event_metric_breakdown_rows,
     _upsert_event_metrics_rows,
+    _upsert_shadow_event_candidates,
 )
 from tripl.worker.tasks.metrics.schema_drift import (
     _detect_event_type_drift,
@@ -660,6 +664,12 @@ def collect_metrics(
                     time_from=chunk_from,
                     time_to=chunk_to,
                 )
+                _delete_coverage_metrics_window(
+                    session,
+                    scan_config_id=config.id,
+                    time_from=chunk_from,
+                    time_to=chunk_to,
+                )
 
             if is_replay and not rows:
                 metrics_deleted += _delete_event_metrics_window(
@@ -680,6 +690,12 @@ def collect_metrics(
                     time_from=chunk_from,
                     time_to=chunk_to,
                 )
+                _delete_coverage_metrics_window(
+                    session,
+                    scan_config_id=config.id,
+                    time_from=chunk_from,
+                    time_to=chunk_to,
+                )
                 session.commit()
                 continue
 
@@ -687,6 +703,10 @@ def collect_metrics(
             event_agg: dict[tuple[uuid.UUID, uuid.UUID, datetime], int] = {}
             # (scan_config_id, event_type_id, bucket) -> count
             type_agg: dict[tuple[uuid.UUID, uuid.UUID, datetime], int] = {}
+            # Reconciliation: bucket -> [total_count, matched_count]
+            coverage_agg: dict[datetime, list[int]] = {}
+            # (event_type_id | None, event_name) -> [count, first_bucket, last_bucket]
+            shadow_agg: dict[tuple[uuid.UUID | None, str], list[object]] = {}
 
             for row in rows:
                 bucket = cast(datetime, row[0])
@@ -695,6 +715,12 @@ def collect_metrics(
                 col_meta: dict[str, dict[str, object]]
                 events_by_name: dict[str, Event]
                 event_type_id: uuid.UUID | None
+
+                # Coverage denominator counts every returned row — including
+                # rows dropped below for an unknown event type, which are by
+                # definition unmatched plan volume.
+                coverage_entry = coverage_agg.setdefault(bucket, [0, 0])
+                coverage_entry[0] += cnt
 
                 # Determine event type and get the matching gen result
                 if config.event_type_column and et_col_idx is not None:
@@ -729,7 +755,19 @@ def collect_metrics(
 
                 if event_name:
                     ev = events_by_name.get(event_name)
+                    if not isinstance(ev, Event):
+                        # Shadow candidate: warehouse identity with no plan
+                        # event. Tracked per (event_type, identity).
+                        shadow_key = (event_type_id, event_name)
+                        shadow_entry = shadow_agg.get(shadow_key)
+                        if shadow_entry is None:
+                            shadow_agg[shadow_key] = [cnt, bucket, bucket]
+                        else:
+                            shadow_entry[0] = cast(int, shadow_entry[0]) + cnt
+                            shadow_entry[1] = min(cast(datetime, shadow_entry[1]), bucket)
+                            shadow_entry[2] = max(cast(datetime, shadow_entry[2]), bucket)
                     if isinstance(ev, Event):
+                        coverage_entry[1] += cnt
                         key = (config.id, ev.id, bucket)
                         event_agg[key] = event_agg.get(key, 0) + cnt
                         if is_replay and replay_variables_by_token:
@@ -903,6 +941,36 @@ def collect_metrics(
                 constraint="uq_event_metric_config_type_bucket",
             )
             _bump_event_last_seen(session, event_agg=event_agg)
+            _upsert_coverage_rows(
+                session,
+                rows=[
+                    {
+                        "id": uuid.uuid4(),
+                        "scan_config_id": config.id,
+                        "bucket": bucket,
+                        "total_count": totals[0],
+                        "matched_count": totals[1],
+                    }
+                    for bucket, totals in coverage_agg.items()
+                ],
+            )
+            _upsert_shadow_event_candidates(
+                session,
+                rows=[
+                    {
+                        "id": uuid.uuid4(),
+                        "project_id": config.project_id,
+                        "scan_config_id": config.id,
+                        "event_type_id": event_type_id_key,
+                        "event_name": event_name_key,
+                        "observed_count": cast(int, entry[0]),
+                        "first_seen_at": cast(datetime, entry[1]),
+                        "last_seen_at": cast(datetime, entry[2]),
+                        "status": SHADOW_STATUS_NEW,
+                    }
+                    for (event_type_id_key, event_name_key), entry in shadow_agg.items()
+                ],
+            )
             _upsert_event_metric_breakdown_rows(
                 session,
                 rows=breakdown_event_rows,
