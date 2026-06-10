@@ -23,6 +23,11 @@ ALLOWED_SCOPES = ("read", "write")
 _PREFIX = "tk_"
 _RANDOM_LEN = 24
 
+# Throttle ``last_used_at`` writes on the auth hot path: every authenticated
+# request would otherwise issue a commit just to bump this column. We only
+# refresh it once the recorded value is older than this interval.
+API_KEY_TOUCH_INTERVAL_SECONDS = 60
+
 
 def _hash_token(raw: str) -> str:
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
@@ -118,6 +123,16 @@ async def verify_and_touch(session: AsyncSession, raw_token: str) -> ApiKey | No
         return None
     if row.expires_at is not None and row.expires_at <= datetime.now(UTC):
         return None
-    row.last_used_at = datetime.now(UTC)
-    await session.commit()
+    now = datetime.now(UTC)
+    # Skip the write (and its commit) on the hot path unless the recorded
+    # timestamp is missing or has gone stale, avoiding write amplification
+    # from every authenticated request.
+    last_used = row.last_used_at
+    if last_used is not None and last_used.tzinfo is None:
+        last_used = last_used.replace(tzinfo=UTC)
+    if last_used is None or (now - last_used) >= timedelta(
+        seconds=API_KEY_TOUCH_INTERVAL_SECONDS
+    ):
+        row.last_used_at = now
+        await session.commit()
     return row

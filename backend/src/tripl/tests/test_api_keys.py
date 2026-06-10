@@ -4,8 +4,15 @@ The fixture-authenticated client is the session-cookie path; once an API key
 is issued, requests use ``Authorization: Bearer <token>`` and bypass cookies.
 """
 
+from datetime import UTC, datetime, timedelta
+
 import pytest
 from httpx import AsyncClient
+from sqlalchemy import select
+
+from tripl.models.api_key import ApiKey
+from tripl.services import api_key_service
+from tripl.services.api_key_service import API_KEY_TOUCH_INTERVAL_SECONDS, _hash_token
 
 
 async def _issue_key(
@@ -29,6 +36,10 @@ async def _issue_key(
 
 def _bearer(token: str) -> dict[str, str]:
     return {"Authorization": f"Bearer {token}"}
+
+
+def _as_utc(value: datetime) -> datetime:
+    return value if value.tzinfo is not None else value.replace(tzinfo=UTC)
 
 
 @pytest.mark.asyncio
@@ -246,6 +257,65 @@ async def test_unscoped_key_keeps_cross_project_access(
     for slug in ("unscoped-a", "unscoped-b"):
         resp = await anon_client.get(f"/api/v1/projects/{slug}/event-types", headers=_bearer(token))
         assert resp.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_verify_and_touch_throttles_last_used_writes(client: AsyncClient) -> None:
+    """A second auth within the touch interval must NOT issue a new commit/update:
+    ``last_used_at`` is left unchanged to avoid write amplification on the hot path."""
+    from tripl.tests.conftest import TestSessionLocal
+
+    _key_id, token = await _issue_key(client, scope="read")
+
+    async with TestSessionLocal() as session:
+        row = await api_key_service.verify_and_touch(session, token)
+        assert row is not None
+        first_used = row.last_used_at
+        assert first_used is not None
+
+    # Second auth well within the interval: no write, timestamp preserved.
+    async with TestSessionLocal() as session:
+        commits = 0
+        real_commit = session.commit
+
+        async def counting_commit() -> None:
+            nonlocal commits
+            commits += 1
+            await real_commit()
+
+        session.commit = counting_commit  # type: ignore[method-assign]
+        row = await api_key_service.verify_and_touch(session, token)
+        assert row is not None
+        assert commits == 0
+        # Unchanged within the interval (the plain DateTime column may drop
+        # tzinfo on the SQLite round-trip, so compare on UTC-normalized values).
+        assert _as_utc(row.last_used_at) == first_used
+
+    # Backdate beyond the interval: the next auth refreshes the timestamp.
+    async with TestSessionLocal() as session:
+        row = await session.scalar(
+            select(ApiKey).where(ApiKey.key_hash == _hash_token(token))
+        )
+        assert row is not None
+        row.last_used_at = datetime.now(UTC) - timedelta(
+            seconds=API_KEY_TOUCH_INTERVAL_SECONDS + 5
+        )
+        await session.commit()
+
+    async with TestSessionLocal() as session:
+        commits = 0
+        real_commit = session.commit
+
+        async def counting_commit2() -> None:
+            nonlocal commits
+            commits += 1
+            await real_commit()
+
+        session.commit = counting_commit2  # type: ignore[method-assign]
+        row = await api_key_service.verify_and_touch(session, token)
+        assert row is not None
+        assert commits == 1
+        assert _as_utc(row.last_used_at) > first_used
 
 
 @pytest.mark.asyncio
