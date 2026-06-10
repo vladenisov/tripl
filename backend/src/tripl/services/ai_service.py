@@ -114,7 +114,13 @@ async def suggest_event_description(
         llm_service.complete, config.describe_system_prompt, user_prompt, config=config
     )
     if raw is None:
-        return AiDescribeResponse(description="", field_suggestions=[])
+        raise HTTPException(
+            status_code=502,
+            detail=(
+                "AI provider request failed. Check the model and base URL in "
+                "service AI settings, and see backend logs for the provider error."
+            ),
+        )
     return _parse_describe_response(raw)
 
 
@@ -164,7 +170,13 @@ async def suggest_event_type_descriptions(
         llm_service.complete, config.describe_system_prompt, user_prompt, config=config
     )
     if raw is None:
-        return AiDescribeResponse(description="", field_suggestions=[])
+        raise HTTPException(
+            status_code=502,
+            detail=(
+                "AI provider request failed. Check the model and base URL in "
+                "service AI settings, and see backend logs for the provider error."
+            ),
+        )
     return _parse_describe_response(raw)
 
 

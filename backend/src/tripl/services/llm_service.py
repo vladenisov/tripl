@@ -60,7 +60,18 @@ def complete(
         with urllib.request.urlopen(request, timeout=cfg.ai_timeout_seconds) as response:  # noqa: S310
             body = response.read().decode("utf-8")
     except urllib.error.HTTPError as exc:
-        logger.warning("AI completion request failed with HTTP %s: %s", exc.code, exc.reason)
+        try:
+            error_body = exc.read().decode("utf-8", errors="replace")[:2000]
+        except OSError:
+            error_body = "<unreadable>"
+        logger.warning(
+            "AI completion request failed with HTTP %s: %s; model=%s url=%s body=%s",
+            exc.code,
+            exc.reason,
+            cfg.ai_model,
+            url,
+            error_body,
+        )
         return None
     except (urllib.error.URLError, TimeoutError):
         logger.exception("AI completion request failed")
