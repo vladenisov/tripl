@@ -98,12 +98,49 @@ function parseOptionalPositiveInt(value: string): number | null {
   return Number.isFinite(parsed) ? Math.trunc(parsed) : null
 }
 
-function emptyGroupRule(): EventGroupRule {
+// Client-only UI state: each rule/condition carries a stable `_uid` so React keys
+// don't reattach controlled-input state to the wrong row when a middle item is
+// removed. The `_uid` is stripped before the payload reaches the API.
+type UiEventGroupCondition = EventGroupRule['conditions'][number] & { _uid: string }
+type UiEventGroupRule = Omit<EventGroupRule, 'conditions'> & {
+  _uid: string
+  conditions: UiEventGroupCondition[]
+}
+
+function newUid(): string {
+  return crypto.randomUUID()
+}
+
+function emptyGroupCondition(): UiEventGroupCondition {
+  return { _uid: newUid(), field: 'event_name', pattern: '' }
+}
+
+function emptyGroupRule(): UiEventGroupRule {
   return {
+    _uid: newUid(),
     name: '',
     condition_logic: 'all',
-    conditions: [{ field: 'event_name', pattern: '' }],
+    conditions: [emptyGroupCondition()],
   }
+}
+
+function withUiIds(rules: EventGroupRule[]): UiEventGroupRule[] {
+  return rules.map(rule => ({
+    ...rule,
+    _uid: newUid(),
+    conditions: rule.conditions.map(condition => ({ ...condition, _uid: newUid() })),
+  }))
+}
+
+function stripUiIds(rules: UiEventGroupRule[]): EventGroupRule[] {
+  return rules.map(rule => ({
+    name: rule.name,
+    condition_logic: rule.condition_logic,
+    conditions: rule.conditions.map(condition => ({
+      field: condition.field,
+      pattern: condition.pattern,
+    })),
+  }))
 }
 
 function ScanPreviewPanel({
@@ -389,9 +426,9 @@ function EventGroupRulesEditor({
   columns,
   onChange,
 }: {
-  rules: EventGroupRule[]
+  rules: UiEventGroupRule[]
   columns?: ScanConfigPreview['columns']
-  onChange: (rules: EventGroupRule[]) => void
+  onChange: (rules: UiEventGroupRule[]) => void
 }) {
   const fieldOptions = Array.from(
     new Set([
@@ -402,7 +439,7 @@ function EventGroupRulesEditor({
     ]),
   )
 
-  const updateRule = (index: number, patch: Partial<EventGroupRule>) => {
+  const updateRule = (index: number, patch: Partial<UiEventGroupRule>) => {
     onChange(rules.map((rule, ruleIndex) => (
       ruleIndex === index ? { ...rule, ...patch } : rule
     )))
@@ -411,7 +448,7 @@ function EventGroupRulesEditor({
   const updateCondition = (
     ruleIndex: number,
     conditionIndex: number,
-    patch: Partial<EventGroupRule['conditions'][number]>,
+    patch: Partial<UiEventGroupCondition>,
   ) => {
     onChange(rules.map((rule, currentRuleIndex) => {
       if (currentRuleIndex !== ruleIndex) return rule
@@ -448,7 +485,7 @@ function EventGroupRulesEditor({
         <p className="text-xs text-muted-foreground">No grouping rules.</p>
       )}
       {rules.map((rule, ruleIndex) => (
-        <div key={ruleIndex} className="space-y-3 rounded-md border bg-background p-3">
+        <div key={rule._uid} className="space-y-3 rounded-md border bg-background p-3">
           <div className="grid gap-3 sm:grid-cols-[minmax(0,1fr)_8rem_auto]">
             <div className="grid gap-1">
               <Label>Group name</Label>
@@ -484,7 +521,7 @@ function EventGroupRulesEditor({
           </div>
           <div className="space-y-2">
             {rule.conditions.map((condition, conditionIndex) => (
-              <div key={conditionIndex} className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto]">
+              <div key={condition._uid} className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto]">
                 <div className="grid gap-1">
                   <Label>Field</Label>
                   <select
@@ -529,7 +566,7 @@ function EventGroupRulesEditor({
               variant="outline"
               size="sm"
               onClick={() => updateRule(ruleIndex, {
-                conditions: [...rule.conditions, { field: 'event_name', pattern: '' }],
+                conditions: [...rule.conditions, emptyGroupCondition()],
               })}
             >
               <Plus className="mr-2 h-3 w-3" />Add Condition
@@ -561,7 +598,7 @@ export function ScansTab({ slug }: { slug: string }) {
   const [timeColumn, setTimeColumn] = useState('')
   const [eventNameFormat, setEventNameFormat] = useState('')
   const [jsonValuePaths, setJsonValuePaths] = useState<string[]>([])
-  const [eventGroupRules, setEventGroupRules] = useState<EventGroupRule[]>([])
+  const [eventGroupRules, setEventGroupRules] = useState<UiEventGroupRule[]>([])
   const [metricBreakdownColumns, setMetricBreakdownColumns] = useState<string[]>([])
   const [metricBreakdownValuesLimit, setMetricBreakdownValuesLimit] = useState('')
   const [distributionDriftFields, setDistributionDriftFields] = useState<string[]>([])
@@ -580,7 +617,7 @@ export function ScansTab({ slug }: { slug: string }) {
   const [editTimeColumn, setEditTimeColumn] = useState('')
   const [editEventNameFormat, setEditEventNameFormat] = useState('')
   const [editJsonValuePaths, setEditJsonValuePaths] = useState<string[]>([])
-  const [editEventGroupRules, setEditEventGroupRules] = useState<EventGroupRule[]>([])
+  const [editEventGroupRules, setEditEventGroupRules] = useState<UiEventGroupRule[]>([])
   const [editMetricBreakdownColumns, setEditMetricBreakdownColumns] = useState<string[]>([])
   const [editMetricBreakdownValuesLimit, setEditMetricBreakdownValuesLimit] = useState('')
   const [editDistributionDriftFields, setEditDistributionDriftFields] = useState<string[]>([])
@@ -622,7 +659,7 @@ export function ScansTab({ slug }: { slug: string }) {
         time_column: timeColumn || null,
         event_name_format: eventNameFormat || null,
         json_value_paths: jsonValuePaths,
-        event_group_rules: eventGroupRules,
+        event_group_rules: stripUiIds(eventGroupRules),
         metric_breakdown_columns: metricBreakdownColumns,
         metric_breakdown_values_limit: metricBreakdownValuesLimit ? Number(metricBreakdownValuesLimit) : null,
         distribution_drift_fields: distributionDriftFields,
@@ -649,7 +686,7 @@ export function ScansTab({ slug }: { slug: string }) {
         time_column: editTimeColumn || null,
         event_name_format: editEventNameFormat || null,
         json_value_paths: editJsonValuePaths,
-        event_group_rules: editEventGroupRules,
+        event_group_rules: stripUiIds(editEventGroupRules),
         metric_breakdown_columns: editMetricBreakdownColumns,
         metric_breakdown_values_limit: editMetricBreakdownValuesLimit ? Number(editMetricBreakdownValuesLimit) : null,
         distribution_drift_fields: editDistributionDriftFields,
@@ -754,7 +791,7 @@ export function ScansTab({ slug }: { slug: string }) {
     setEditTimeColumn(sc.time_column ?? '')
     setEditEventNameFormat(sc.event_name_format ?? '')
     setEditJsonValuePaths(sc.json_value_paths ?? [])
-    setEditEventGroupRules(sc.event_group_rules ?? [])
+    setEditEventGroupRules(withUiIds(sc.event_group_rules ?? []))
     setEditMetricBreakdownColumns(sc.metric_breakdown_columns ?? [])
     setEditMetricBreakdownValuesLimit(sc.metric_breakdown_values_limit ? String(sc.metric_breakdown_values_limit) : '')
     setEditDistributionDriftFields(sc.distribution_drift_fields ?? [])
