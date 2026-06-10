@@ -358,8 +358,69 @@ export default function MonitoringDetailPage() {
 
       <Separator />
 
-      {scope === 'event' && scopeId && (
-        <EventPhotosSection slug={slug!} eventId={scopeId} />
+      {scope === 'event' && event && (
+        <>
+          {event.field_values.length > 0 && (
+            <Card>
+              <CardContent className="p-6">
+                <h2 className="text-lg font-semibold mb-4">Field Values</h2>
+                <div className="grid gap-3">
+                  {event.field_values.map(fieldValue => {
+                    const fieldDefinition = fieldDefMap.get(fieldValue.field_definition_id)
+                    return (
+                      <div key={fieldValue.id} className="flex gap-4 text-sm">
+                        <span className="text-muted-foreground min-w-[140px] font-medium">
+                          {fieldDefinition?.display_name ?? fieldDefinition?.name ?? 'Unknown'}
+                        </span>
+                        <span className="flex min-w-0 items-center gap-1.5 font-mono text-foreground/80">
+                          <span className="break-all">{fieldValue.value || '—'}</span>
+                          <VariableValueContextTrigger contexts={fieldValue.variable_values} />
+                        </span>
+                      </div>
+                    )
+                  })}
+                </div>
+              </CardContent>
+            </Card>
+          )}
+
+          {event.meta_values.length > 0 && (
+            <Card>
+              <CardContent className="p-6">
+                <h2 className="text-lg font-semibold mb-4">Meta Fields</h2>
+                <div className="grid gap-3">
+                  {event.meta_values.map(metaValue => {
+                    const metaField = metaFieldMap.get(metaValue.meta_field_definition_id)
+                    const href = metaField ? resolveMetaFieldHref(metaField, metaValue.value) : null
+                    return (
+                      <div key={metaValue.id} className="flex gap-4 text-sm">
+                        <span className="text-muted-foreground min-w-[140px] font-medium">
+                          {metaField?.display_name ?? metaField?.name ?? 'Unknown'}
+                        </span>
+                        <span className="font-mono text-foreground/80 break-all">
+                          {href ? (
+                            <a
+                              href={href}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="text-primary underline"
+                            >
+                              {metaValue.value}
+                            </a>
+                          ) : metaField?.field_type === 'boolean' ? (
+                            metaValue.value === 'true' ? '✓' : '✗'
+                          ) : (
+                            metaValue.value || '—'
+                          )}
+                        </span>
+                      </div>
+                    )
+                  })}
+                </div>
+              </CardContent>
+            </Card>
+          )}
+        </>
       )}
 
       <Tabs value={activeTab} onValueChange={value => setActiveTab(value as 'volume' | 'distribution' | 'heatmap' | 'breakdowns')}>
@@ -653,69 +714,8 @@ export default function MonitoringDetailPage() {
         />
       )}
 
-      {scope === 'event' && event && (
-        <>
-          {event.field_values.length > 0 && (
-            <Card>
-              <CardContent className="p-6">
-                <h2 className="text-lg font-semibold mb-4">Field Values</h2>
-                <div className="grid gap-3">
-                  {event.field_values.map(fieldValue => {
-                    const fieldDefinition = fieldDefMap.get(fieldValue.field_definition_id)
-                    return (
-                      <div key={fieldValue.id} className="flex gap-4 text-sm">
-                        <span className="text-muted-foreground min-w-[140px] font-medium">
-                          {fieldDefinition?.display_name ?? fieldDefinition?.name ?? 'Unknown'}
-                        </span>
-                        <span className="flex min-w-0 items-center gap-1.5 font-mono text-foreground/80">
-                          <span className="break-all">{fieldValue.value || '—'}</span>
-                          <VariableValueContextTrigger contexts={fieldValue.variable_values} />
-                        </span>
-                      </div>
-                    )
-                  })}
-                </div>
-              </CardContent>
-            </Card>
-          )}
-
-          {event.meta_values.length > 0 && (
-            <Card>
-              <CardContent className="p-6">
-                <h2 className="text-lg font-semibold mb-4">Meta Fields</h2>
-                <div className="grid gap-3">
-                  {event.meta_values.map(metaValue => {
-                    const metaField = metaFieldMap.get(metaValue.meta_field_definition_id)
-                    const href = metaField ? resolveMetaFieldHref(metaField, metaValue.value) : null
-                    return (
-                      <div key={metaValue.id} className="flex gap-4 text-sm">
-                        <span className="text-muted-foreground min-w-[140px] font-medium">
-                          {metaField?.display_name ?? metaField?.name ?? 'Unknown'}
-                        </span>
-                        <span className="font-mono text-foreground/80 break-all">
-                          {href ? (
-                            <a
-                              href={href}
-                              target="_blank"
-                              rel="noopener noreferrer"
-                              className="text-primary underline"
-                            >
-                              {metaValue.value}
-                            </a>
-                          ) : metaField?.field_type === 'boolean' ? (
-                            metaValue.value === 'true' ? '✓' : '✗'
-                          ) : (
-                            metaValue.value || '—'
-                          )}
-                        </span>
-                      </div>
-                    )
-                  })}
-                </div>
-              </CardContent>
-            </Card>
-          )}
-        </>
+      {scope === 'event' && scopeId && (
+        <EventPhotosSection slug={slug!} eventId={scopeId} />
       )}
     </div>
   )
