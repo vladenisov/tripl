@@ -20,7 +20,7 @@ import { META_FIELD_LINK_PLACEHOLDER } from '@/lib/metaFields'
 import { JsonEditor } from './JsonEditor'
 import { VariableInput } from './VariableInput'
 import { Plus, X } from 'lucide-react'
-import { getErrorMessage } from '@/lib/utils'
+import { ErrorState } from '@/components/error-state'
 
 function normalizeMetricBreakdownColumns(columns: string[]): string[] {
   const seen = new Set<string>()
@@ -414,7 +414,9 @@ export function EventForm({
               </div>
             )}
 
-            {createMut.isError && <p className="text-sm text-destructive">{getErrorMessage(createMut.error)}</p>}
+            {createMut.isError && (
+              <ErrorState compact title="Could not save event" error={createMut.error} />
+            )}
           </div>
 
           <SheetFooter className="px-6 pb-6">
