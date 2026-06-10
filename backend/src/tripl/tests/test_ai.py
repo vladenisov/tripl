@@ -1,3 +1,4 @@
+# ruff: noqa: I001
 import json
 import uuid
 from datetime import UTC, datetime
@@ -9,12 +10,12 @@ from tripl.models.alert_delivery import AlertDelivery
 from tripl.models.alert_delivery_item import AlertDeliveryItem
 from tripl.services import llm_service
 from tripl.services.ai_service import _parse_describe_response, _strip_markdown_fences
-from tripl.worker.tasks import alerts as alerts_task
 
 # Importing metrics first initializes the worker task graph in dependency
 # order; importing alerts directly would hit the celery_app ↔ metrics ↔ alerts
 # import cycle (same pattern as test_alerting.py).
 from tripl.worker.tasks import metrics as _metrics  # noqa: F401
+from tripl.worker.tasks import alerts as alerts_task
 
 
 async def _setup_event(client: AsyncClient, slug: str = "ai-proj") -> tuple[str, str]:
