@@ -10,4 +10,12 @@ async_session = async_sessionmaker(engine, expire_on_commit=False)
 
 async def get_session() -> AsyncGenerator[AsyncSession]:
     async with async_session() as session:
-        yield session
+        try:
+            yield session
+        except Exception:
+            # A handler that raised after a partial flush would otherwise return
+            # the connection to the pool with an aborted transaction; roll back
+            # so the next checkout starts clean. Re-raise so error handling
+            # (e.g. the global exception handler) still runs.
+            await session.rollback()
+            raise
