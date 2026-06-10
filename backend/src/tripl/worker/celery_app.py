@@ -59,6 +59,10 @@ celery_app.conf.beat_schedule = {
         # rows the worker/broker failed to dispatch.
         "schedule": 300.0,
     },
+    "send-weekly-plan-digest": {
+        "task": "tripl.worker.tasks.alerts.send_weekly_plan_digest",
+        "schedule": 7 * 24 * 60 * 60.0,
+    },
 }
 
 # Import tasks so they are registered with the celery app

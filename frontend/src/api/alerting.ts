@@ -1,6 +1,8 @@
 import { api } from './client'
 import type {
   AlertDeliveryDetail,
+  AlertInboxGroup,
+  AlertInboxListResponse,
   AlertDeliveryListResponse,
   AlertDestination,
   AlertRule,
@@ -164,4 +166,26 @@ export const alertingApi = {
 
   getDelivery: (slug: string, deliveryId: string) =>
     api.get<AlertDeliveryDetail>(`/projects/${slug}/alert-deliveries/${deliveryId}`),
+
+  listInbox: (
+    slug: string,
+    params?: { status?: string; offset?: number; limit?: number },
+  ) => {
+    const sp = new URLSearchParams()
+    if (params?.status) sp.set('status', params.status)
+    if (params?.offset !== undefined) sp.set('offset', String(params.offset))
+    if (params?.limit !== undefined) sp.set('limit', String(params.limit))
+    const qs = sp.toString()
+    return api.get<AlertInboxListResponse>(`/projects/${slug}/alert-inbox${qs ? `?${qs}` : ''}`)
+  },
+
+  applyInboxAction: (
+    slug: string,
+    correlationGroupId: string,
+    data: {
+      action: 'acknowledge' | 'resolve' | 'mute' | 'reopen' | 'false_positive'
+      note?: string | null
+      muted_until?: string | null
+    },
+  ) => api.post<AlertInboxGroup>(`/projects/${slug}/alert-inbox/${correlationGroupId}/actions`, data),
 }

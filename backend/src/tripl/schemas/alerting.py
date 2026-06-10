@@ -29,6 +29,8 @@ from tripl.alerting_validation import (
 
 AlertRuleFilterField = Literal["event_type", "event", "direction"]
 AlertRuleFilterOperator = Literal["eq", "ne", "in", "not_in"]
+AlertInboxStatus = Literal["open", "acknowledged", "resolved", "muted", "false_positive"]
+AlertInboxAction = Literal["acknowledge", "resolve", "mute", "reopen", "false_positive"]
 
 
 class AlertRuleFilterPayload(BaseModel):
@@ -460,6 +462,42 @@ class AlertDeliveryDetailResponse(AlertDeliveryResponse):
 class AlertDeliveryListResponse(BaseModel):
     items: list[AlertDeliveryResponse]
     total: int
+
+
+class AlertInboxGroupResponse(BaseModel):
+    correlation_group_id: uuid.UUID
+    status: AlertInboxStatus
+    muted_until: datetime | None = None
+    note: str | None = None
+    false_positive_count: int = 0
+    item_count: int
+    delivery_count: int
+    latest_bucket: datetime
+    latest_delivery_at: datetime
+    direction: str
+    scope_names: list[str]
+    destination_names: list[str]
+    rule_names: list[str]
+    scan_names: list[str]
+    acted_at: datetime | None = None
+    acted_by: uuid.UUID | None = None
+
+
+class AlertInboxListResponse(BaseModel):
+    items: list[AlertInboxGroupResponse]
+    total: int
+
+
+class AlertInboxActionRequest(BaseModel):
+    action: AlertInboxAction
+    note: str | None = Field(None, max_length=2000)
+    muted_until: datetime | None = None
+
+    @model_validator(mode="after")
+    def validate_action(self) -> "AlertInboxActionRequest":
+        if self.action == "mute" and self.muted_until is None:
+            raise ValueError("muted_until is required when action is mute")
+        return self
 
 
 class SimulatedRuleFiring(BaseModel):

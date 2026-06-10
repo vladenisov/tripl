@@ -1,5 +1,6 @@
 from tripl.models.alert_delivery import AlertDelivery
 from tripl.models.alert_delivery_item import AlertDeliveryItem
+from tripl.models.alert_correlation_state import AlertCorrelationState
 from tripl.models.alert_destination import AlertDestination
 from tripl.models.alert_rule import AlertRule
 from tripl.models.alert_rule_filter import AlertRuleFilter
@@ -46,6 +47,7 @@ from tripl.models.variable_value import VariableValue
 __all__ = [
     "Base",
     "AlertDestination",
+    "AlertCorrelationState",
     "AlertRule",
     "AlertRuleFilter",
     "AlertRuleState",

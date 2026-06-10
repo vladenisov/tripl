@@ -38,4 +38,13 @@ export const eventTypesApi = {
     api.del(withBranch(`/projects/${slug}/event-types/${id}`, branchId)),
   listDrifts: (slug: string, eventTypeId: string) =>
     api.get<SchemaDriftList>(`/projects/${slug}/event-types/${eventTypeId}/drifts`),
+  applyDriftAction: (
+    slug: string,
+    driftId: string,
+    data: {
+      action: 'accept' | 'snooze' | 'false_positive' | 'reopen'
+      note?: string | null
+      snoozed_until?: string | null
+    },
+  ) => api.post(`/projects/${slug}/event-types/drifts/${driftId}/actions`, data),
 }

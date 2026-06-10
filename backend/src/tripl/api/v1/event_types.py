@@ -5,7 +5,11 @@ from fastapi import APIRouter
 from tripl.api.deps import BranchIdDep, EditorUserDep, SessionDep
 from tripl.models.event_type import EventType
 from tripl.schemas.event_type import EventTypeCreate, EventTypeResponse, EventTypeUpdate
-from tripl.schemas.schema_drift import SchemaDriftListResponse
+from tripl.schemas.schema_drift import (
+    SchemaDriftActionRequest,
+    SchemaDriftListResponse,
+    SchemaDriftResponse,
+)
 from tripl.services import audit_service, event_type_service, schema_drift_service
 
 router = APIRouter(prefix="/projects/{slug}/event-types", tags=["event-types"])
@@ -100,3 +104,31 @@ async def list_event_type_drifts(
     session: SessionDep, slug: str, event_type_id: uuid.UUID
 ) -> SchemaDriftListResponse:
     return await schema_drift_service.list_drifts_for_event_type(session, slug, event_type_id)
+
+
+@router.post("/drifts/{drift_id}/actions", response_model=SchemaDriftResponse)
+async def apply_schema_drift_action(
+    session: SessionDep,
+    slug: str,
+    drift_id: uuid.UUID,
+    data: SchemaDriftActionRequest,
+    current_user: EditorUserDep,
+) -> SchemaDriftResponse:
+    drift = await schema_drift_service.apply_drift_action(
+        session,
+        slug,
+        drift_id,
+        data,
+        current_user,
+    )
+    await audit_service.record(
+        session,
+        user=current_user,
+        action=f"schema_drift.{data.action}",
+        target_type="schema_drift",
+        target_id=drift_id,
+        target_name=drift.field_name,
+        project_slug=slug,
+        payload=data.model_dump(),
+    )
+    return drift

@@ -18,7 +18,7 @@ import { Label } from '@/components/ui/label'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Table, TableBody, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { useConfirm } from '@/hooks/useConfirm'
-import type { AlertDestination } from '@/types'
+import type { AlertDestination, AlertInboxGroup } from '@/types'
 
 import { AlertDeliveryRow } from './alerting/AlertDeliveryRow'
 import { DestinationCard } from './alerting/DestinationCard'
@@ -77,6 +77,10 @@ export default function ProjectAlertingTab({ slug }: { slug: string }) {
       limit: 50,
       offset: 0,
     }),
+  })
+  const { data: inbox } = useQuery({
+    queryKey: ['alertInbox', slug],
+    queryFn: () => alertingApi.listInbox(slug, { limit: 20 }),
   })
 
   const events = eventsResp?.items ?? []
@@ -194,6 +198,27 @@ export default function ProjectAlertingTab({ slug }: { slug: string }) {
   }
 
   const destinationMutation = editingDestination ? updateDestinationMut : createDestinationMut
+
+  const inboxActionMut = useMutation({
+    mutationFn: ({
+      group,
+      action,
+    }: {
+      group: AlertInboxGroup
+      action: 'acknowledge' | 'resolve' | 'mute' | 'reopen' | 'false_positive'
+    }) => {
+      const mutedUntil = new Date(Date.now() + 7 * 86_400_000).toISOString()
+      return alertingApi.applyInboxAction(slug, group.correlation_group_id, {
+        action,
+        ...(action === 'mute' ? { muted_until: mutedUntil } : {}),
+      })
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['alertInbox', slug] })
+      qc.invalidateQueries({ queryKey: ['alertDeliveries', slug] })
+      qc.invalidateQueries({ queryKey: ['scans', slug] })
+    },
+  })
   const activeDestinationType = editingDestination?.type ?? createType ?? destinationForm.type
 
   return (
@@ -286,6 +311,85 @@ export default function ProjectAlertingTab({ slug }: { slug: string }) {
         </div>
 
         <div className="min-w-0 space-y-4">
+          <div className="flex items-center justify-between">
+            <h3 className="text-sm font-semibold">Inbox</h3>
+            <Badge variant="outline" className="text-[10px]">
+              {inbox?.total ?? 0} groups
+            </Badge>
+          </div>
+          <Card className="min-w-0">
+            <CardContent className="space-y-3 p-4">
+              {!inbox || inbox.items.length === 0 ? (
+                <div className="rounded-lg border border-dashed p-4 text-sm text-muted-foreground">
+                  No correlated alert groups.
+                </div>
+              ) : (
+                <div className="space-y-2">
+                  {inbox.items.map(group => (
+                    <div key={group.correlation_group_id} className="rounded-md border p-3 text-xs">
+                      <div className="flex items-start justify-between gap-3">
+                        <div className="min-w-0">
+                          <div className="flex flex-wrap items-center gap-2">
+                            <Badge variant={group.status === 'false_positive' ? 'destructive' : group.status === 'resolved' ? 'secondary' : 'outline'} className="text-[10px]">
+                              {group.status}
+                            </Badge>
+                            <span className="font-medium">{group.item_count} items</span>
+                            <span className="text-muted-foreground">
+                              {new Date(group.latest_delivery_at).toLocaleString()}
+                            </span>
+                          </div>
+                          <div className="mt-1 truncate text-muted-foreground" title={group.scope_names.join(', ')}>
+                            {group.scope_names.join(', ')}
+                          </div>
+                          <div className="mt-1 truncate text-[10px] text-muted-foreground">
+                            {group.rule_names.join(', ')} · {group.scan_names.join(', ')}
+                          </div>
+                        </div>
+                        <div className="flex shrink-0 flex-wrap justify-end gap-1">
+                          {group.status === 'resolved' || group.status === 'false_positive' ? (
+                            <Button size="sm" variant="outline" className="h-7 px-2 text-[10px]" disabled={inboxActionMut.isPending} onClick={() => inboxActionMut.mutate({ group, action: 'reopen' })}>
+                              Reopen
+                            </Button>
+                          ) : (
+                            <>
+                              {group.status === 'open' && (
+                                <Button size="sm" variant="outline" className="h-7 px-2 text-[10px]" disabled={inboxActionMut.isPending} onClick={() => inboxActionMut.mutate({ group, action: 'acknowledge' })}>
+                                  Ack
+                                </Button>
+                              )}
+                              <Button size="sm" variant="outline" className="h-7 px-2 text-[10px]" disabled={inboxActionMut.isPending} onClick={() => inboxActionMut.mutate({ group, action: 'resolve' })}>
+                                Resolve
+                              </Button>
+                              <Button size="sm" variant="outline" className="h-7 px-2 text-[10px]" disabled={inboxActionMut.isPending} onClick={() => inboxActionMut.mutate({ group, action: 'mute' })}>
+                                Mute
+                              </Button>
+                              <Button size="sm" variant="outline" className="h-7 px-2 text-[10px]" disabled={inboxActionMut.isPending} onClick={() => inboxActionMut.mutate({ group, action: 'false_positive' })}>
+                                False positive
+                              </Button>
+                              {group.status !== 'open' && (
+                                <Button size="sm" variant="outline" className="h-7 px-2 text-[10px]" disabled={inboxActionMut.isPending} onClick={() => inboxActionMut.mutate({ group, action: 'reopen' })}>
+                                  Reopen
+                                </Button>
+                              )}
+                            </>
+                          )}
+                        </div>
+                      </div>
+                      {group.muted_until && (
+                        <div className="mt-2 text-[10px] text-muted-foreground">
+                          muted until {new Date(group.muted_until).toLocaleString()}
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              )}
+              {inboxActionMut.isError && (
+                <p className="text-xs text-destructive">{getErrorMessage(inboxActionMut.error)}</p>
+              )}
+            </CardContent>
+          </Card>
+
           <div className="flex items-center justify-between">
             <h3 className="text-sm font-semibold">Audit</h3>
             <Badge variant="outline" className="text-[10px]">

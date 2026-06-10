@@ -299,6 +299,11 @@ export interface SchemaDrift {
   observed_type: string | null
   declared_type: string | null
   sample_value: string | null
+  status: 'open' | 'accepted' | 'snoozed' | 'false_positive'
+  resolution_note: string | null
+  snoozed_until: string | null
+  resolved_at: string | null
+  resolved_by: string | null
   detected_at: string
 }
 
@@ -855,6 +860,37 @@ export interface AlertDeliveryDetail extends AlertDelivery {
 
 export interface AlertDeliveryListResponse {
   items: AlertDelivery[]
+  total: number
+}
+
+export type AlertInboxStatus =
+  | 'open'
+  | 'acknowledged'
+  | 'resolved'
+  | 'muted'
+  | 'false_positive'
+
+export interface AlertInboxGroup {
+  correlation_group_id: string
+  status: AlertInboxStatus
+  muted_until: string | null
+  note: string | null
+  false_positive_count: number
+  item_count: number
+  delivery_count: number
+  latest_bucket: string
+  latest_delivery_at: string
+  direction: string
+  scope_names: string[]
+  destination_names: string[]
+  rule_names: string[]
+  scan_names: string[]
+  acted_at: string | null
+  acted_by: string | null
+}
+
+export interface AlertInboxListResponse {
+  items: AlertInboxGroup[]
   total: number
 }
 

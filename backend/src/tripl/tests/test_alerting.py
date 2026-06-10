@@ -6,17 +6,22 @@ from pathlib import Path
 
 import pytest
 from httpx import AsyncClient
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, select
 from sqlalchemy.orm import sessionmaker
 
 from tripl.models import Base
+from tripl.models.alert_correlation_state import AlertCorrelationState
 from tripl.models.alert_delivery import AlertDelivery, AlertDeliveryStatus
 from tripl.models.alert_delivery_item import AlertDeliveryItem
 from tripl.models.alert_destination import AlertDestination
 from tripl.models.alert_rule import AlertRule
 from tripl.models.data_source import DataSource
+from tripl.models.event_type import EventType
+from tripl.models.field_definition import FieldDefinition
 from tripl.models.project import Project
+from tripl.models.project_anomaly_settings import ProjectAnomalySettings
 from tripl.models.scan_config import ScanConfig
+from tripl.models.schema_drift import SchemaDrift
 from tripl.tests.conftest import TestSessionLocal
 from tripl.worker.tasks import metrics
 
@@ -51,6 +56,176 @@ def test_send_slack_message_sets_mrkdwn_per_format(
     assert isinstance(body, dict)
     assert body["text"] == "hello"
     assert body["mrkdwn"] is expected_mrkdwn
+
+
+@pytest.mark.asyncio
+async def test_schema_drift_accept_action_updates_plan(client: AsyncClient) -> None:
+    await client.post(
+        "/api/v1/projects",
+        json={"name": "Drift Workflow", "slug": "drift-workflow", "description": ""},
+    )
+    event_type_resp = await client.post(
+        "/api/v1/projects/drift-workflow/event-types",
+        json={"name": "track", "display_name": "Track"},
+    )
+    event_type_id = event_type_resp.json()["id"]
+    async with TestSessionLocal() as session:
+        drift = SchemaDrift(
+            event_type_id=uuid.UUID(event_type_id),
+            scan_config_id=None,
+            field_name="payload",
+            drift_type="new_field",
+            observed_type="JSON",
+            declared_type=None,
+            sample_value='{"x":1}',
+        )
+        session.add(drift)
+        await session.commit()
+        drift_id = drift.id
+
+    resp = await client.post(
+        f"/api/v1/projects/drift-workflow/event-types/drifts/{drift_id}/actions",
+        json={"action": "accept", "note": "Looks expected"},
+    )
+
+    assert resp.status_code == 200
+    assert resp.json()["status"] == "accepted"
+    async with TestSessionLocal() as session:
+        field = await session.scalar(
+            select(FieldDefinition).where(
+                FieldDefinition.event_type_id == uuid.UUID(event_type_id),
+                FieldDefinition.name == "payload",
+            )
+        )
+        assert field is not None
+        assert field.field_type == "json"
+
+
+@pytest.mark.asyncio
+async def test_alert_inbox_false_positive_updates_state_and_thresholds(
+    client: AsyncClient,
+) -> None:
+    project_resp = await client.post(
+        "/api/v1/projects",
+        json={"name": "Inbox Workflow", "slug": "inbox-workflow", "description": ""},
+    )
+    project_id = uuid.UUID(project_resp.json()["id"])
+    group_id = uuid.uuid4()
+    async with TestSessionLocal() as session:
+        event_type = EventType(
+            project_id=project_id,
+            name="track",
+            display_name="Track",
+            description="",
+        )
+        data_source = DataSource(
+            name="Warehouse",
+            db_type="clickhouse",
+            host="localhost",
+            port=8123,
+            database_name="default",
+            username="default",
+            password_encrypted="",
+        )
+        session.add_all([event_type, data_source])
+        await session.flush()
+        config = ScanConfig(
+            project_id=project_id,
+            data_source_id=data_source.id,
+            event_type_id=event_type.id,
+            name="Events",
+            base_query="SELECT * FROM events",
+            time_column="time",
+            interval="1h",
+            sigma_threshold=3.0,
+            min_expected_count=10,
+        )
+        destination = AlertDestination(
+            project_id=project_id,
+            type="slack",
+            name="Slack",
+            enabled=True,
+            webhook_url_encrypted="secret",
+        )
+        session.add_all([config, destination])
+        await session.flush()
+        rule = AlertRule(
+            destination_id=destination.id,
+            name="Rule",
+            enabled=True,
+            include_project_total=True,
+            include_event_types=True,
+            include_events=True,
+            notify_on_spike=True,
+            notify_on_drop=True,
+            min_percent_delta=0,
+            min_absolute_delta=0,
+            min_expected_count=0,
+            cooldown_minutes=60,
+        )
+        settings = ProjectAnomalySettings(
+            project_id=project_id,
+            anomaly_detection_enabled=True,
+            sigma_threshold=3.0,
+            min_expected_count=10,
+        )
+        session.add_all([rule, settings])
+        await session.flush()
+        delivery = AlertDelivery(
+            project_id=project_id,
+            scan_config_id=config.id,
+            destination_id=destination.id,
+            rule_id=rule.id,
+            status="sent",
+            channel="slack",
+            matched_count=2,
+        )
+        session.add(delivery)
+        await session.flush()
+        for name in ("purchase", "refund"):
+            session.add(
+                AlertDeliveryItem(
+                    delivery_id=delivery.id,
+                    scope_type="event_type",
+                    scope_ref=str(event_type.id),
+                    scope_name=name,
+                    event_type_id=event_type.id,
+                    event_id=None,
+                    bucket=datetime(2026, 1, 1, tzinfo=UTC),
+                    direction="spike",
+                    actual_count=20,
+                    expected_count=10,
+                    absolute_delta=10,
+                    percent_delta=100.0,
+                    correlation_group_id=group_id,
+                )
+            )
+        await session.commit()
+        config_id = config.id
+
+    list_resp = await client.get("/api/v1/projects/inbox-workflow/alert-inbox")
+    assert list_resp.status_code == 200
+    assert list_resp.json()["total"] == 1
+
+    action_resp = await client.post(
+        f"/api/v1/projects/inbox-workflow/alert-inbox/{group_id}/actions",
+        json={"action": "false_positive", "note": "Noisy deploy window"},
+    )
+
+    assert action_resp.status_code == 200
+    assert action_resp.json()["status"] == "false_positive"
+    async with TestSessionLocal() as session:
+        state = await session.scalar(
+            select(AlertCorrelationState).where(
+                AlertCorrelationState.correlation_group_id == group_id
+            )
+        )
+        assert state is not None
+        assert state.false_positive_count == 1
+        config = await session.get(ScanConfig, config_id)
+        assert config is not None
+        assert config.sigma_threshold == 3.5
+        assert config.min_expected_count == 15
 
 
 @pytest.mark.asyncio

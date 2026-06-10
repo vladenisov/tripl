@@ -25,6 +25,7 @@ from tripl.alerting_validation import (
     validate_telegram_chat_id,
 )
 from tripl.crypto import encrypt_value
+from tripl.models.alert_correlation_state import AlertCorrelationState
 from tripl.models.alert_delivery import AlertDelivery
 from tripl.models.alert_delivery_item import AlertDeliveryItem
 from tripl.models.alert_destination import AlertDestination, AlertDestinationType
@@ -35,6 +36,7 @@ from tripl.models.distribution_drift import DistributionDrift
 from tripl.models.event import Event
 from tripl.models.event_type import EventType
 from tripl.models.metric_anomaly import MetricAnomaly
+from tripl.models.project_anomaly_settings import ProjectAnomalySettings
 from tripl.models.scan_config import ScanConfig
 from tripl.models.schema_drift import SchemaDrift
 from tripl.schemas.alerting import (
@@ -44,6 +46,9 @@ from tripl.schemas.alerting import (
     AlertDestinationCreate,
     AlertDestinationResponse,
     AlertDestinationUpdate,
+    AlertInboxActionRequest,
+    AlertInboxGroupResponse,
+    AlertInboxListResponse,
     AlertRuleCreate,
     AlertRuleFilterPayload,
     AlertRuleFilterResponse,
@@ -68,6 +73,8 @@ from tripl.services.project_lookup import get_project_by_slug as _get_project
 
 SIMULATE_NOISY_THRESHOLD = 50
 SIMULATE_MAX_DAYS = 90
+INBOX_LOOKBACK_DAYS = 30
+INBOX_MAX_SOURCE_ITEMS = 2000
 
 
 def _encrypt_secret(value: str | None) -> str | None:
@@ -707,6 +714,231 @@ async def get_delivery(
     )
 
 
+def _effective_inbox_status(state: AlertCorrelationState | None, now: datetime) -> str:
+    if state is None:
+        return "open"
+    if state.status == "muted" and state.muted_until is not None and state.muted_until <= now:
+        return "open"
+    return state.status
+
+
+def _build_inbox_group_response(
+    *,
+    correlation_group_id: uuid.UUID,
+    state: AlertCorrelationState | None,
+    rows: list[tuple[AlertDeliveryItem, AlertDelivery, AlertDestination, AlertRule, ScanConfig]],
+    now: datetime,
+) -> AlertInboxGroupResponse:
+    latest_item = max(rows, key=lambda row: row[0].bucket)[0]
+    latest_delivery = max(rows, key=lambda row: row[1].created_at)[1]
+    scope_names = sorted({row[0].scope_name for row in rows})
+    destination_names = sorted({row[2].name for row in rows})
+    rule_names = sorted({row[3].name for row in rows})
+    scan_names = sorted({row[4].name for row in rows})
+    delivery_ids = {row[1].id for row in rows}
+    return AlertInboxGroupResponse(
+        correlation_group_id=correlation_group_id,
+        status=_effective_inbox_status(state, now),
+        muted_until=state.muted_until if state else None,
+        note=state.note if state else None,
+        false_positive_count=state.false_positive_count if state else 0,
+        item_count=len(rows),
+        delivery_count=len(delivery_ids),
+        latest_bucket=latest_item.bucket,
+        latest_delivery_at=latest_delivery.created_at,
+        direction=latest_item.direction,
+        scope_names=scope_names[:8],
+        destination_names=destination_names,
+        rule_names=rule_names,
+        scan_names=scan_names,
+        acted_at=state.acted_at if state else None,
+        acted_by=state.acted_by if state else None,
+    )
+
+
+async def list_alert_inbox(
+    session: AsyncSession,
+    slug: str,
+    *,
+    status: str | None = None,
+    limit: int = 50,
+    offset: int = 0,
+) -> AlertInboxListResponse:
+    project = await _get_project(session, slug)
+    now = datetime.now(UTC)
+    cutoff = now - timedelta(days=INBOX_LOOKBACK_DAYS)
+    rows = (
+        await session.execute(
+            select(AlertDeliveryItem, AlertDelivery, AlertDestination, AlertRule, ScanConfig)
+            .join(AlertDelivery, AlertDelivery.id == AlertDeliveryItem.delivery_id)
+            .join(AlertDestination, AlertDestination.id == AlertDelivery.destination_id)
+            .join(AlertRule, AlertRule.id == AlertDelivery.rule_id)
+            .join(ScanConfig, ScanConfig.id == AlertDelivery.scan_config_id)
+            .where(
+                AlertDelivery.project_id == project.id,
+                AlertDeliveryItem.correlation_group_id.is_not(None),
+                AlertDelivery.created_at >= cutoff,
+            )
+            .order_by(AlertDelivery.created_at.desc())
+            .limit(INBOX_MAX_SOURCE_ITEMS)
+        )
+    ).all()
+    states = {
+        state.correlation_group_id: state
+        for state in (
+            await session.execute(
+                select(AlertCorrelationState).where(AlertCorrelationState.project_id == project.id)
+            )
+        ).scalars()
+    }
+    groups: dict[
+        uuid.UUID,
+        list[tuple[AlertDeliveryItem, AlertDelivery, AlertDestination, AlertRule, ScanConfig]],
+    ] = {}
+    for item, delivery, destination, rule, scan in rows:
+        if item.correlation_group_id is None:
+            continue
+        groups.setdefault(item.correlation_group_id, []).append(
+            (item, delivery, destination, rule, scan)
+        )
+
+    responses = [
+        _build_inbox_group_response(
+            correlation_group_id=group_id,
+            state=states.get(group_id),
+            rows=group_rows,
+            now=now,
+        )
+        for group_id, group_rows in groups.items()
+    ]
+    if status is not None:
+        responses = [group for group in responses if group.status == status]
+    responses.sort(key=lambda group: group.latest_delivery_at, reverse=True)
+    total = len(responses)
+    return AlertInboxListResponse(items=responses[offset : offset + limit], total=total)
+
+
+async def _get_or_create_correlation_state(
+    session: AsyncSession,
+    *,
+    project_id: uuid.UUID,
+    correlation_group_id: uuid.UUID,
+) -> AlertCorrelationState:
+    exists = await session.scalar(
+        select(AlertDeliveryItem.id)
+        .join(AlertDelivery, AlertDelivery.id == AlertDeliveryItem.delivery_id)
+        .where(
+            AlertDelivery.project_id == project_id,
+            AlertDeliveryItem.correlation_group_id == correlation_group_id,
+        )
+        .limit(1)
+    )
+    if exists is None:
+        raise HTTPException(status_code=404, detail="Alert correlation group not found")
+
+    state = await session.scalar(
+        select(AlertCorrelationState).where(
+            AlertCorrelationState.project_id == project_id,
+            AlertCorrelationState.correlation_group_id == correlation_group_id,
+        )
+    )
+    if state is None:
+        state = AlertCorrelationState(
+            project_id=project_id,
+            correlation_group_id=correlation_group_id,
+            status="open",
+        )
+        session.add(state)
+        await session.flush()
+    return state
+
+
+async def _tune_false_positive_thresholds(
+    session: AsyncSession,
+    *,
+    project_id: uuid.UUID,
+    correlation_group_id: uuid.UUID,
+) -> None:
+    scan_configs = (
+        await session.execute(
+            select(ScanConfig)
+            .join(AlertDelivery, AlertDelivery.scan_config_id == ScanConfig.id)
+            .join(AlertDeliveryItem, AlertDeliveryItem.delivery_id == AlertDelivery.id)
+            .where(
+                AlertDelivery.project_id == project_id,
+                AlertDeliveryItem.correlation_group_id == correlation_group_id,
+            )
+            .distinct()
+        )
+    ).scalars()
+    for config in scan_configs:
+        config.sigma_threshold = min(max(float(config.sigma_threshold or 3.0), 3.0) + 0.5, 10.0)
+        config.min_expected_count = min(max(int(config.min_expected_count or 0) + 5, 10), 1000)
+
+    settings = await session.scalar(
+        select(ProjectAnomalySettings).where(ProjectAnomalySettings.project_id == project_id)
+    )
+    if settings is not None:
+        settings.sigma_threshold = min(
+            max(float(settings.sigma_threshold or 3.0), 3.0) + 0.5,
+            10.0,
+        )
+        settings.min_expected_count = min(
+            max(int(settings.min_expected_count or 0) + 5, 10),
+            1000,
+        )
+
+
+async def apply_alert_inbox_action(
+    session: AsyncSession,
+    slug: str,
+    correlation_group_id: uuid.UUID,
+    data: AlertInboxActionRequest,
+    user_id: uuid.UUID,
+) -> AlertInboxGroupResponse:
+    project = await _get_project(session, slug)
+    state = await _get_or_create_correlation_state(
+        session,
+        project_id=project.id,
+        correlation_group_id=correlation_group_id,
+    )
+    now = datetime.now(UTC)
+    if data.action == "acknowledge":
+        state.status = "acknowledged"
+        state.muted_until = None
+    elif data.action == "resolve":
+        state.status = "resolved"
+        state.muted_until = None
+    elif data.action == "mute":
+        state.status = "muted"
+        state.muted_until = data.muted_until
+    elif data.action == "reopen":
+        state.status = "open"
+        state.muted_until = None
+    elif data.action == "false_positive":
+        state.status = "false_positive"
+        state.muted_until = None
+        state.false_positive_count = (state.false_positive_count or 0) + 1
+        await _tune_false_positive_thresholds(
+            session,
+            project_id=project.id,
+            correlation_group_id=correlation_group_id,
+        )
+    else:
+        raise HTTPException(status_code=422, detail="Unsupported alert inbox action")
+
+    state.note = data.note
+    state.acted_at = now
+    state.acted_by = user_id
+    await session.commit()
+
+    response = await list_alert_inbox(session, slug, limit=INBOX_MAX_SOURCE_ITEMS, offset=0)
+    for group in response.items:
+        if group.correlation_group_id == correlation_group_id:
+            return group
+    raise HTTPException(status_code=404, detail="Alert correlation group not found")
+
+
 async def _build_scope_name_map(
     session: AsyncSession,
     anomalies: list[AlertMatchCandidate],
@@ -764,6 +996,10 @@ async def _load_schema_drift_candidates(
                     EventType.project_id == project_id,
                     SchemaDrift.detected_at >= window_from,
                     SchemaDrift.detected_at < window_to,
+                    SchemaDrift.status.in_(("open", "snoozed")),
+                    (SchemaDrift.status != "snoozed")
+                    | (SchemaDrift.snoozed_until.is_(None))
+                    | (SchemaDrift.snoozed_until <= datetime.now(UTC)),
                 )
                 .order_by(SchemaDrift.detected_at)
             )
