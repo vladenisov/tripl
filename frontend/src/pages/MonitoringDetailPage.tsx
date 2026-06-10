@@ -15,7 +15,7 @@ import EventPhotosSection from '@/components/event-photos-section'
 import { SeasonalityHeatmap } from '@/components/monitoring/seasonality-heatmap'
 import { TopMoversPanel } from '@/components/monitoring/top-movers-panel'
 import { VariableValueContextTrigger } from '@/components/variable-value-contexts'
-import { MetricsChart, MetricsMultiSeriesChart } from '@/components/ui/chart'
+import { MetricsChart, MetricsMultiSeriesChart } from '@/components/ui/chart-lazy'
 import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from '@/components/ui/select'

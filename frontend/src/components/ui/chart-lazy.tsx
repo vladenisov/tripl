@@ -14,9 +14,13 @@ const MetricsChartImpl = lazy(() =>
 const MiniMetricsChartImpl = lazy(() =>
   loadChartModule().then(module_ => ({ default: module_.MiniMetricsChart })),
 )
+const MetricsMultiSeriesChartImpl = lazy(() =>
+  loadChartModule().then(module_ => ({ default: module_.MetricsMultiSeriesChart })),
+)
 
 type MetricsChartProps = ComponentProps<typeof ChartLib.MetricsChart>
 type MiniMetricsChartProps = ComponentProps<typeof ChartLib.MiniMetricsChart>
+type MetricsMultiSeriesChartProps = ComponentProps<typeof ChartLib.MetricsMultiSeriesChart>
 
 function ChartFallback({
   className,
@@ -51,6 +55,14 @@ export function MiniMetricsChart(props: MiniMetricsChartProps) {
   return (
     <Suspense fallback={<ChartFallback className={props.className} height={props.height ?? 72} />}>
       <MiniMetricsChartImpl {...props} />
+    </Suspense>
+  )
+}
+
+export function MetricsMultiSeriesChart(props: MetricsMultiSeriesChartProps) {
+  return (
+    <Suspense fallback={<ChartFallback className={props.className} height={props.height ?? 300} />}>
+      <MetricsMultiSeriesChartImpl {...props} />
     </Suspense>
   )
 }
