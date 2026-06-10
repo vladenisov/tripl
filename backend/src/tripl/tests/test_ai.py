@@ -88,6 +88,45 @@ def test_llm_is_enabled_requires_api_key(monkeypatch: pytest.MonkeyPatch):
     assert llm_service.is_enabled() is True
 
 
+def _success_body(text: str = "ok") -> str:
+    return json.dumps({"choices": [{"message": {"content": text}}]})
+
+
+def test_llm_complete_retries_with_max_completion_tokens(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setattr(llm_service.settings, "ai_enabled", True)
+    monkeypatch.setattr(llm_service.settings, "ai_api_key", "sk-test")
+    sent_payloads = []
+
+    def fake_post(url, payload, api_key, timeout):
+        sent_payloads.append(json.loads(json.dumps(payload)))
+        if "max_tokens" in payload:
+            return None, {"code": "unsupported_parameter", "param": "max_tokens"}
+        if "temperature" in payload:
+            return None, {"code": "unsupported_value", "param": "temperature"}
+        return _success_body("described"), None
+
+    monkeypatch.setattr(llm_service, "_post_chat_completions", fake_post)
+    assert llm_service.complete("system", "user", max_tokens=50) == "described"
+    assert len(sent_payloads) == 3
+    assert "max_tokens" not in sent_payloads[1]
+    assert sent_payloads[1]["max_completion_tokens"] == 50
+    assert "temperature" not in sent_payloads[2]
+
+
+def test_llm_complete_returns_none_on_non_retryable_error(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setattr(llm_service.settings, "ai_enabled", True)
+    monkeypatch.setattr(llm_service.settings, "ai_api_key", "sk-test")
+    calls = []
+
+    def fake_post(url, payload, api_key, timeout):
+        calls.append(payload)
+        return None, {"code": "invalid_api_key", "param": None}
+
+    monkeypatch.setattr(llm_service, "_post_chat_completions", fake_post)
+    assert llm_service.complete("system", "user") is None
+    assert len(calls) == 1
+
+
 # --- describe response parsing ---
 
 
@@ -160,9 +199,7 @@ async def test_describe_event_returns_suggestion(
     assert resp.status_code == 200
     data = resp.json()
     assert data["description"] == "Home page render event."
-    assert data["field_suggestions"] == [
-        {"field_name": "screen", "description": "Screen slug."}
-    ]
+    assert data["field_suggestions"] == [{"field_name": "screen", "description": "Screen slug."}]
     # The prompt carries the event identity and its fields.
     assert "Home Page View" in captured["user_prompt"]
     assert "screen" in captured["user_prompt"]
