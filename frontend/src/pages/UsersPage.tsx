@@ -1,5 +1,4 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Users } from 'lucide-react'
 
 import { usersApi } from '@/api/users'
 import { useAuth } from '@/components/auth-context'
@@ -32,17 +31,11 @@ export default function UsersPage() {
 
   return (
     <div className="space-y-5">
-      <div>
-        <h1 className="text-2xl font-bold tracking-tight flex items-center gap-2">
-          <Users className="h-5 w-5" />
-          Users
-        </h1>
-        <p className="text-sm text-muted-foreground mt-1">
-          {isOwner
-            ? 'Manage roles for everyone with access to this tripl instance.'
-            : 'Roster of users with access to this tripl instance. Only owners can change roles.'}
-        </p>
-      </div>
+      <p className="text-sm text-muted-foreground">
+        {isOwner
+          ? 'Manage roles for everyone with access to this tripl instance.'
+          : 'Roster of users with access to this tripl instance. Only owners can change roles.'}
+      </p>
 
       <Card>
         <CardContent className="p-0">

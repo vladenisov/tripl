@@ -169,13 +169,13 @@ function ConnectionsTab({ openDsId }: { openDsId?: string }) {
 
   const startEdit = useCallback((ds: DataSource) => {
     populateEditForm(ds)
-    navigate(`/data-sources/${ds.id}`, { replace: true })
+    navigate(`/settings/data-sources/${ds.id}`, { replace: true })
   }, [navigate, populateEditForm])
 
   const closeEdit = () => {
     editingDsIdRef.current = null
     setEditingDs(null)
-    navigate('/data-sources', { replace: true })
+    navigate('/settings/data-sources', { replace: true })
   }
 
   useEffect(() => {
@@ -212,14 +212,8 @@ function ConnectionsTab({ openDsId }: { openDsId?: string }) {
     <div className="space-y-5">
       {dialog}
 
-      {/* Compact page header */}
-      <div className="flex items-end justify-between gap-6">
-        <div className="flex items-baseline gap-2.5">
-          <h1 className="m-0 text-[20px] font-semibold tracking-[-0.01em]">Data sources</h1>
-          <span className="mono text-[13px]" style={{ color: 'var(--fg-subtle)' }}>
-            {dataSources.length}
-          </span>
-        </div>
+      {/* Compact stats header (page title comes from the Settings tab bar) */}
+      <div className="flex items-end justify-end gap-6">
         <div className="flex items-center gap-4">
           <MiniStat label="Connections" value={String(dataSources.length)} />
           <MiniStatDivider />
