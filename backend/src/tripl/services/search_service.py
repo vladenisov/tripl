@@ -34,6 +34,8 @@ from tripl.schemas.search import (
     SearchResponse,
     SearchResult,
 )
+from tripl.services import app_settings_service
+from tripl.services.app_settings_service import AiConfig
 from tripl.services.embedding_service import embed_query
 from tripl.services.plan_branch_service import resolve_branch_id
 from tripl.services.project_service import get_project_id_by_slug
@@ -112,6 +114,7 @@ def _doc_to_model(
     *,
     project_id: uuid.UUID,
     branch_id: uuid.UUID,
+    ai_config: AiConfig,
 ) -> SearchDocument:
     return SearchDocument(
         project_id=project_id,
@@ -127,9 +130,9 @@ def _doc_to_model(
         route_path=doc.route_path,
         archived=doc.archived,
         content_hash=doc.content_hash,
-        embedding_status="pending" if settings.search_embeddings_enabled else "disabled",
-        embedding_model=settings.search_embedding_model
-        if settings.search_embeddings_enabled
+        embedding_status="pending" if ai_config.search_embeddings_enabled else "disabled",
+        embedding_model=ai_config.search_embedding_model
+        if ai_config.search_embeddings_enabled
         else None,
     )
 
@@ -162,6 +165,7 @@ async def reindex_project_branch(
 ) -> int:
     project_slug = slug or await _project_slug(session, project_id)
     documents = await _build_documents(session, project_id, branch_id, project_slug)
+    ai_config = await app_settings_service.get_ai_config(session)
 
     await session.execute(
         delete(SearchDocument).where(
@@ -171,7 +175,15 @@ async def reindex_project_branch(
     )
     if documents:
         session.add_all(
-            [_doc_to_model(doc, project_id=project_id, branch_id=branch_id) for doc in documents]
+            [
+                _doc_to_model(
+                    doc,
+                    project_id=project_id,
+                    branch_id=branch_id,
+                    ai_config=ai_config,
+                )
+                for doc in documents
+            ]
         )
     await session.flush()
     if _is_postgres(session):
@@ -179,7 +191,7 @@ async def reindex_project_branch(
     await session.commit()
 
     if schedule_embeddings:
-        _queue_embedding_refresh(project_id, branch_id)
+        _queue_embedding_refresh(project_id, branch_id, ai_config=ai_config)
     return len(documents)
 
 
@@ -713,8 +725,13 @@ async def _refresh_text_vectors(
     )
 
 
-def _queue_embedding_refresh(project_id: uuid.UUID, branch_id: uuid.UUID) -> bool:
-    if not settings.search_embeddings_enabled:
+def _queue_embedding_refresh(
+    project_id: uuid.UUID,
+    branch_id: uuid.UUID,
+    *,
+    ai_config: AiConfig,
+) -> bool:
+    if not ai_config.search_embeddings_enabled:
         return False
     try:
         from tripl.worker.celery_app import celery_app
@@ -750,8 +767,9 @@ async def _postgres_search(
     )
     semantic_used = False
     semantic_results: list[SearchResult] = []
-    if settings.search_embeddings_enabled and len(query) >= 3:
-        query_embedding = await asyncio.to_thread(embed_query, query)
+    ai_config = await app_settings_service.get_ai_config(session)
+    if ai_config.search_embeddings_enabled and len(query) >= 3:
+        query_embedding = await asyncio.to_thread(embed_query, query, config=ai_config)
         if query_embedding:
             semantic_used = True
             semantic_results = await _postgres_semantic_search(

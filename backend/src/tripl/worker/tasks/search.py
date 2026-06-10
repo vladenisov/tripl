@@ -5,8 +5,8 @@ import uuid
 
 from sqlalchemy import select, text
 
-from tripl.config import settings
 from tripl.models.search_document import SearchDocument
+from tripl.services import app_settings_service
 from tripl.services.embedding_service import embed_texts
 from tripl.services.search_service import sanitize_embedding
 from tripl.worker.celery_app import celery_app
@@ -26,13 +26,13 @@ def embed_search_documents(
     branch_id: str,
     limit: int = 100,
 ) -> dict[str, int]:
-    if not settings.search_embeddings_enabled:
-        return {"embedded": 0, "failed": 0}
-
     session = _get_sync_session()
     embedded = 0
     failed = 0
     try:
+        ai_config = app_settings_service.get_ai_config_sync(session)
+        if not ai_config.search_embeddings_enabled:
+            return {"embedded": 0, "failed": 0}
         if session.get_bind().dialect.name != "postgresql":
             return {"embedded": 0, "failed": 0}
 
@@ -56,7 +56,7 @@ def embed_search_documents(
         texts = [
             "\n".join([doc.title, doc.subtitle, doc.body, doc.keywords]).strip() for doc in docs
         ]
-        embeddings = embed_texts(texts)
+        embeddings = embed_texts(texts, config=ai_config)
         for doc, raw_embedding in zip(docs, embeddings, strict=False):
             embedding = sanitize_embedding(raw_embedding)
             if not embedding:
@@ -77,7 +77,7 @@ def embed_search_documents(
                 ),
                 {
                     "embedding": vector,
-                    "embedding_model": settings.search_embedding_model,
+                    "embedding_model": ai_config.search_embedding_model,
                     "document_id": doc.id,
                 },
             )

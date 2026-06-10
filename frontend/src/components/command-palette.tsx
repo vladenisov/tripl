@@ -22,6 +22,7 @@ import {
   LogOut,
   Search,
   Settings,
+  SlidersHorizontal,
   Sparkles,
   Tag,
   Variable,
@@ -301,6 +302,14 @@ function CommandPalette() {
                 label="Data sources"
                 hint="/data-sources"
               />
+              {auth.user?.role === 'owner' && (
+                <Item
+                  onSelect={() => goTo('/settings')}
+                  icon={SlidersHorizontal}
+                  label="Service settings"
+                  hint="/settings"
+                />
+              )}
             </Group>
 
             {activeProject && (

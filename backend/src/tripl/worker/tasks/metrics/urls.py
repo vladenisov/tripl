@@ -1,9 +1,4 @@
-"""URL builders + small text helpers used by alert payloads.
-
-Pure functions over `settings.app_base_url`; pulled out of the main task
-module so the alert preparation code can find them without contributing to
-the 2K-line metrics.py blob.
-"""
+"""URL builders + small text helpers used by alert payloads."""
 
 from __future__ import annotations
 
@@ -13,8 +8,8 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from tripl.alerting_matching import SCOPE_DISTRIBUTION_DRIFT
-from tripl.config import settings
 from tripl.models.project import Project
+from tripl.services import app_settings_service
 from tripl.worker.analyzers.anomaly_detector import (
     SCOPE_EVENT_TYPE,
     SCOPE_PROJECT_TOTAL,
@@ -29,9 +24,10 @@ def _build_monitoring_url(
     scope_type: str,
     scope_ref: str,
 ) -> str | None:
-    if not settings.app_base_url:
+    app_base_url = app_settings_service.get_runtime_config_sync().app_base_url
+    if not app_base_url:
         return None
-    base = settings.app_base_url.rstrip("/")
+    base = app_base_url.rstrip("/")
     if scope_type == SCOPE_PROJECT_TOTAL:
         return f"{base}/p/{project_slug}/monitoring/project-total/{scope_ref}"
     if scope_type == SCOPE_EVENT_TYPE:
@@ -42,9 +38,10 @@ def _build_monitoring_url(
 
 
 def _build_event_details_url(project_slug: str, event_id: uuid.UUID | None) -> str | None:
-    if not settings.app_base_url or event_id is None:
+    app_base_url = app_settings_service.get_runtime_config_sync().app_base_url
+    if not app_base_url or event_id is None:
         return None
-    base = settings.app_base_url.rstrip("/")
+    base = app_base_url.rstrip("/")
     return f"{base}/p/{project_slug}/events/detail/{event_id}"
 
 

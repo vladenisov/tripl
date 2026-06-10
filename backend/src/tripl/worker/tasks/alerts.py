@@ -44,7 +44,6 @@ from tripl.alerting_validation import (
     validate_webhook_target_url,
 )
 from tripl.anomaly_context import build_alert_item_context
-from tripl.config import settings as app_settings
 from tripl.crypto import decrypt_value
 from tripl.models.alert_delivery import AlertDelivery, AlertDeliveryStatus
 from tripl.models.alert_delivery_item import AlertDeliveryItem
@@ -59,7 +58,7 @@ from tripl.models.project import Project
 from tripl.models.scan_config import ScanConfig
 from tripl.models.schema_drift import SchemaDrift
 from tripl.observability.metrics import alert_deliveries_total
-from tripl.services import llm_service
+from tripl.services import app_settings_service, llm_service
 from tripl.worker.celery_app import celery_app
 from tripl.worker.db import _get_sync_session
 
@@ -243,15 +242,6 @@ def _render_delivery_message(
     return render_alert_template(template, context).rstrip(), context.message_format
 
 
-_AI_EXPLANATION_SYSTEM_PROMPT = (
-    "You are an analytics monitoring assistant. Given alert items from a "
-    "product analytics tracking plan (volume anomalies, schema drifts, "
-    "distribution drifts), write a short explanation: what likely happened "
-    "and whether the items look related (e.g. same release, same platform, "
-    "shared root cause). 2-4 plain sentences, no markdown, no preamble. "
-    "Be concrete; if the data is insufficient for a hypothesis, say what "
-    "to check next instead of speculating."
-)
 _AI_EXPLANATION_MAX_ITEMS = 10
 _AI_EXPLANATION_MAX_TOKENS = 250
 
@@ -269,8 +259,7 @@ def _build_ai_explanation(
     rendering — no extra DB queries. Failure here must never block the alert,
     so any error degrades to None.
     """
-    if not llm_service.is_enabled():
-        return None
+    ai_config = app_settings_service.get_ai_config_sync()
     lines: list[str] = [f"Project: {project_name}", f"Scan: {scan_name}", "Alert items:"]
     for item in delivery.items[:_AI_EXPLANATION_MAX_ITEMS]:
         sparkline, top_movers = item_context_cache.get(item.id, ("", ""))
@@ -300,10 +289,11 @@ def _build_ai_explanation(
         lines.append(line)
     try:
         raw = llm_service.complete(
-            _AI_EXPLANATION_SYSTEM_PROMPT,
+            ai_config.alert_explanation_system_prompt,
             "\n".join(lines),
             max_tokens=_AI_EXPLANATION_MAX_TOKENS,
             temperature=0.3,
+            config=ai_config,
         )
     except Exception:  # noqa: BLE001
         logger.warning("AI explanation generation failed", exc_info=True)
@@ -623,6 +613,7 @@ def _send_digest_to_destination(
     destination: AlertDestination,
     message: str,
     project: Project,
+    email_config: app_settings_service.EmailConfig,
 ) -> None:
     if destination.type == AlertDestinationType.slack.value:
         webhook_url = _decrypt_secret(destination.webhook_url_encrypted)
@@ -637,16 +628,16 @@ def _send_digest_to_destination(
     if destination.type == AlertDestinationType.email.value:
         recipients = _parse_email_recipients(destination.email_recipients)
         validate_email_recipients(destination.email_recipients)
-        from_address = destination.email_from_address or app_settings.smtp_from_address
+        from_address = destination.email_from_address or email_config.smtp_from_address
         if not from_address:
             raise ValueError("Email from address is required for weekly digest")
         validate_email_address(from_address)
         _send_email_message(
-            smtp_host=app_settings.smtp_host,
-            smtp_port=app_settings.smtp_port,
-            smtp_username=app_settings.smtp_username,
-            smtp_password=app_settings.smtp_password,
-            smtp_use_tls=app_settings.smtp_use_tls,
+            smtp_host=email_config.smtp_host,
+            smtp_port=email_config.smtp_port,
+            smtp_username=email_config.smtp_username,
+            smtp_password=email_config.smtp_password,
+            smtp_use_tls=email_config.smtp_use_tls,
             from_address=from_address,
             recipients=recipients,
             subject=f"[{project.name}] Weekly tripl digest",
@@ -660,6 +651,7 @@ def send_weekly_plan_digest() -> dict[str, int]:
     sent = 0
     failed = 0
     try:
+        email_config = app_settings_service.get_email_config_sync(session)
         rows = session.execute(
             select(Project, AlertDestination)
             .join(AlertDestination, AlertDestination.project_id == Project.id)
@@ -679,6 +671,7 @@ def send_weekly_plan_digest() -> dict[str, int]:
                     destination=destination,
                     message=message,
                     project=project,
+                    email_config=email_config,
                 )
                 sent += 1
             except Exception:  # noqa: BLE001
@@ -981,7 +974,8 @@ def send_alert_delivery(self: object, delivery_id: str) -> dict[str, object]:
                 header_value=header_value,
             )
         elif destination.type == AlertDestinationType.email:
-            if not app_settings.smtp_host:
+            email_config = app_settings_service.get_email_config_sync(session)
+            if not email_config.smtp_host:
                 raise ValueError(
                     "Email destination is configured but SMTP is not — set SMTP_HOST "
                     "(and SMTP_USERNAME/SMTP_PASSWORD if your relay requires auth)."
@@ -993,7 +987,7 @@ def send_alert_delivery(self: object, delivery_id: str) -> dict[str, object]:
                     "Email destination configuration is invalid. Update the recipients list."
                 ) from exc
             recipients = _parse_email_recipients(recipients_csv)
-            from_address = destination.email_from_address or app_settings.smtp_from_address
+            from_address = destination.email_from_address or email_config.smtp_from_address
             if not from_address:
                 raise ValueError(
                     "Email destination has no From: address and SMTP_FROM_ADDRESS is unset."
@@ -1014,11 +1008,11 @@ def send_alert_delivery(self: object, delivery_id: str) -> dict[str, object]:
                 message_format=message_format,
             )
             _send_email_message(
-                smtp_host=app_settings.smtp_host,
-                smtp_port=app_settings.smtp_port,
-                smtp_username=app_settings.smtp_username,
-                smtp_password=app_settings.smtp_password,
-                smtp_use_tls=app_settings.smtp_use_tls,
+                smtp_host=email_config.smtp_host,
+                smtp_port=email_config.smtp_port,
+                smtp_username=email_config.smtp_username,
+                smtp_password=email_config.smtp_password,
+                smtp_use_tls=email_config.smtp_use_tls,
                 from_address=from_address,
                 recipients=recipients,
                 subject=subject,

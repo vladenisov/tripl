@@ -16,6 +16,7 @@ const DataSourcesPage = lazy(() => import('./pages/DataSourcesPage'))
 const UsersPage = lazy(() => import('./pages/UsersPage'))
 const AccountPage = lazy(() => import('./pages/AccountPage'))
 const ReconciliationPage = lazy(() => import('./pages/ReconciliationPage'))
+const ServiceSettingsPage = lazy(() => import('./pages/ServiceSettingsPage'))
 
 function RouteFallback() {
   return (
@@ -113,6 +114,7 @@ export default function App() {
             <Route path="/data-sources" element={withSuspense(<DataSourcesPage />)} />
               <Route path="/users" element={withSuspense(<UsersPage />)} />
             <Route path="/account" element={withSuspense(<AccountPage />)} />
+            <Route path="/settings" element={withSuspense(<ServiceSettingsPage />)} />
             <Route path="/data-sources/:dsId" element={withSuspense(<DataSourcesPage />)} />
             <Route path="/p/:slug/monitoring" element={<ProjectSettingsRedirect tab="monitoring" />} />
             <Route path="/p/:slug/alerting" element={<ProjectSettingsRedirect tab="alerting" />} />

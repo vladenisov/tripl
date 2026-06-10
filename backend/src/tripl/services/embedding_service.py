@@ -7,35 +7,39 @@ import urllib.request
 from typing import Any, cast
 
 from tripl.config import settings
+from tripl.services.app_settings_service import AiConfig, env_ai_config
 
 logger = logging.getLogger(__name__)
 
 OPENAI_EMBEDDINGS_URL = "https://api.openai.com/v1/embeddings"
 
 
-def embed_query(text: str) -> list[float]:
-    embeddings = embed_texts([text])
+def embed_query(text: str, *, config: AiConfig | None = None) -> list[float]:
+    embeddings = embed_texts([text], config=config)
     return embeddings[0] if embeddings else []
 
 
-def embed_texts(texts: list[str]) -> list[list[float]]:
-    if not settings.search_embeddings_enabled:
+def embed_texts(texts: list[str], *, config: AiConfig | None = None) -> list[list[float]]:
+    cfg = config if config is not None else env_ai_config()
+    if not cfg.search_embeddings_enabled:
         return []
-    if settings.search_embedding_provider != "openai":
+    if cfg.search_embedding_provider != "openai":
         logger.warning(
             "Unsupported search embedding provider: %s",
-            settings.search_embedding_provider,
+            cfg.search_embedding_provider,
         )
         return []
-    api_key = settings.resolved_search_embedding_api_key()
+    api_key = cfg.search_embedding_api_key
     if not api_key:
         logger.warning("Search embeddings enabled but no API key is configured")
         return []
 
     payload: dict[str, object] = {
-        "model": settings.search_embedding_model,
+        "model": cfg.search_embedding_model,
         "input": [text[:16_000] for text in texts],
     }
+    # Dimensions stay env-only: the pgvector column is sized at migration
+    # time, so a runtime override would silently corrupt the index.
     if settings.search_embedding_dimensions > 0:
         payload["dimensions"] = settings.search_embedding_dimensions
 

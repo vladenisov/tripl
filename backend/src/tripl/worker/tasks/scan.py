@@ -10,7 +10,6 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from tripl import cache
-from tripl.config import settings
 from tripl.json_paths import group_json_value_paths
 from tripl.models.data_source import DataSource, TestStatus
 from tripl.models.event import Event
@@ -19,6 +18,7 @@ from tripl.models.scan_config import ScanConfig
 from tripl.models.scan_job import ScanJob, ScanJobStatus
 from tripl.models.scan_preview_job import ScanPreviewJob
 from tripl.observability.metrics import scan_runs_total
+from tripl.services import app_settings_service
 from tripl.worker.adapters.base import BaseAdapter, ColumnInfo
 from tripl.worker.analyzers.cardinality import analyze_cardinality, analyze_cardinality_grouped
 from tripl.worker.analyzers.event_generator import (
@@ -139,7 +139,8 @@ def run_scan(self: object, scan_config_id: str, job_id: str) -> dict[str, object
             columns = [c for c in columns if c.name != config.time_column]
         logger.info(f"Found {len(columns)} columns in base query")
         json_value_paths = group_json_value_paths(config.json_value_paths)
-        scan_row_limit = config.scan_row_limit or settings.scan_row_limit_default
+        runtime_config = app_settings_service.get_runtime_config_sync(session)
+        scan_row_limit = config.scan_row_limit or runtime_config.scan_row_limit_default
         scan_window = resolve_lookback_window(
             time_column=config.time_column,
             lookback_hours=config.scan_lookback_hours,

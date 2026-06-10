@@ -9,11 +9,12 @@ from tripl.models.alert_delivery import AlertDelivery
 from tripl.models.alert_delivery_item import AlertDeliveryItem
 from tripl.services import llm_service
 from tripl.services.ai_service import _parse_describe_response, _strip_markdown_fences
+from tripl.worker.tasks import alerts as alerts_task
+
 # Importing metrics first initializes the worker task graph in dependency
 # order; importing alerts directly would hit the celery_app ↔ metrics ↔ alerts
 # import cycle (same pattern as test_alerting.py).
 from tripl.worker.tasks import metrics as _metrics  # noqa: F401
-from tripl.worker.tasks import alerts as alerts_task
 
 
 async def _setup_event(client: AsyncClient, slug: str = "ai-proj") -> tuple[str, str]:
@@ -126,6 +127,12 @@ def test_parse_describe_response_skips_malformed_suggestions():
 # --- enabled API paths (LLM mocked) ---
 
 
+def _enable_env_ai(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(llm_service.settings, "ai_enabled", True)
+    monkeypatch.setattr(llm_service.settings, "ai_api_key", "sk-test")
+    monkeypatch.setattr(llm_service.settings, "openai_api_key", "")
+
+
 @pytest.mark.asyncio
 async def test_describe_event_returns_suggestion(
     client: AsyncClient, monkeypatch: pytest.MonkeyPatch
@@ -142,7 +149,7 @@ async def test_describe_event_returns_suggestion(
             }
         )
 
-    monkeypatch.setattr("tripl.services.llm_service.is_enabled", lambda: True)
+    _enable_env_ai(monkeypatch)
     monkeypatch.setattr("tripl.services.llm_service.complete", fake_complete)
 
     resp = await client.post(
@@ -165,7 +172,7 @@ async def test_describe_event_404_for_unknown_event(
     client: AsyncClient, monkeypatch: pytest.MonkeyPatch
 ):
     await _setup_event(client, "ai-404")
-    monkeypatch.setattr("tripl.services.llm_service.is_enabled", lambda: True)
+    _enable_env_ai(monkeypatch)
     resp = await client.post(
         "/api/v1/projects/ai-404/ai/describe-event",
         json={"event_id": str(uuid.uuid4())},
@@ -178,7 +185,7 @@ async def test_describe_event_type_returns_suggestion(
     client: AsyncClient, monkeypatch: pytest.MonkeyPatch
 ):
     et_id, _ = await _setup_event(client, "ai-describe-et")
-    monkeypatch.setattr("tripl.services.llm_service.is_enabled", lambda: True)
+    _enable_env_ai(monkeypatch)
     monkeypatch.setattr(
         "tripl.services.llm_service.complete",
         lambda *a, **k: json.dumps({"description": "Page view family.", "field_suggestions": []}),
@@ -198,7 +205,7 @@ async def test_ask_returns_answer_with_sources(
     await _setup_event(client, "ai-ask")
     # Reindex so the search context has documents to cite.
     await client.post("/api/v1/projects/ai-ask/search/reindex")
-    monkeypatch.setattr("tripl.services.llm_service.is_enabled", lambda: True)
+    _enable_env_ai(monkeypatch)
     monkeypatch.setattr(
         "tripl.services.llm_service.complete",
         lambda *a, **k: "Home Page View fires on home render [1].",
@@ -219,7 +226,7 @@ async def test_ask_degrades_gracefully_when_llm_returns_none(
     client: AsyncClient, monkeypatch: pytest.MonkeyPatch
 ):
     await _setup_event(client, "ai-ask-degrade")
-    monkeypatch.setattr("tripl.services.llm_service.is_enabled", lambda: True)
+    _enable_env_ai(monkeypatch)
     monkeypatch.setattr("tripl.services.llm_service.complete", lambda *a, **k: None)
     resp = await client.post(
         "/api/v1/projects/ai-ask-degrade/ai/ask",
