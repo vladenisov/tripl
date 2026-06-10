@@ -14,10 +14,25 @@ from datetime import UTC, datetime, timedelta
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from tripl.models.data_source import DataSource
 from tripl.models.scan_job import ScanJob, ScanJobStatus
-from tripl.worker.adapters.base import BaseAdapter
-from tripl.worker.db import SyncSessionLocal
+from tripl.worker.db import _build_adapter, _get_sync_session
+
+__all__ = [
+    "ACTIVE_SCAN_JOB_STATUSES",
+    "MAX_BREAKDOWN_VALUE_LENGTH",
+    "RECENT_SIGNAL_WINDOW",
+    "SCOPE_SCHEMA_DRIFT",
+    "STALE_ACTIVE_SCAN_JOB_TIMEOUT",
+    "_build_adapter",
+    "_ceil_to_interval",
+    "_fail_stale_active_scan_job",
+    "_floor_to_interval",
+    "_get_active_scan_job",
+    "_get_scan_job_activity_at",
+    "_get_sync_session",
+    "_normalize_job_timestamp",
+    "_parse_task_datetime",
+]
 
 logger = logging.getLogger(__name__)
 
@@ -29,16 +44,6 @@ STALE_ACTIVE_SCAN_JOB_TIMEOUT = timedelta(minutes=30)
 RECENT_SIGNAL_WINDOW = timedelta(hours=24)
 MAX_BREAKDOWN_VALUE_LENGTH = 500
 SCOPE_SCHEMA_DRIFT = "schema"
-
-
-def _get_sync_session() -> Session:
-    return SyncSessionLocal()
-
-
-def _build_adapter(ds: DataSource) -> BaseAdapter:
-    from tripl.worker.adapters.registry import build_adapter
-
-    return build_adapter(ds)
 
 
 def _floor_to_interval(dt: datetime, delta: timedelta) -> datetime:
