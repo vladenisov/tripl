@@ -11,6 +11,16 @@ from tripl.worker.adapters.base import BaseAdapter, ColumnInfo
 
 logger = logging.getLogger(__name__)
 
+# Cap on how much user-supplied SQL (which may embed warehouse credentials or
+# PII column names) we ever emit to logs. Query logs go to DEBUG so the full
+# statement never lands at INFO.
+_SQL_LOG_MAX_CHARS = 300
+
+
+def _truncate_sql(sql: str) -> str:
+    return sql[:_SQL_LOG_MAX_CHARS] + ("..." if len(sql) > _SQL_LOG_MAX_CHARS else "")
+
+
 _IDENTIFIER_RE = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_.]*$")
 _IDENTIFIER_PART_RE = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*$")
 _INTERVAL_RE = re.compile(r"^\d+\s+(second|minute|hour|day|week|month)s?$", re.IGNORECASE)
@@ -116,7 +126,7 @@ class PostgresAdapter(BaseAdapter):
     ) -> tuple[list[str], list[tuple[object, ...]]]:
         where_clause = self._time_window_where_clause(time_column, time_from, time_to)
         sql = f"SELECT * FROM ({base_query}) AS _src{where_clause} LIMIT {int(limit)}"
-        logger.info("PG preview query: %s", sql)
+        logger.debug("PG preview query: %s", _truncate_sql(sql))
         with self._conn.cursor() as cur:
             cur.execute(sql)
             names = [d.name for d in cur.description or []]
@@ -226,8 +236,7 @@ class PostgresAdapter(BaseAdapter):
             f"LIMIT {int(limit)}"
         )
 
-        short = sql[:300] + ("..." if len(sql) > 300 else "")
-        logger.info("PG breakdown query: %s", short)
+        logger.debug("PG breakdown query: %s", _truncate_sql(sql))
         t0 = time.monotonic()
         with self._conn.cursor() as cur:
             cur.execute(sql)
@@ -289,7 +298,7 @@ class PostgresAdapter(BaseAdapter):
             f"LIMIT {int(limit)}"
         )
 
-        logger.info("PG bucketed query: %s", sql)
+        logger.debug("PG bucketed query: %s", _truncate_sql(sql))
         t0 = time.monotonic()
         with self._conn.cursor() as cur:
             cur.execute(sql)
@@ -378,7 +387,7 @@ class PostgresAdapter(BaseAdapter):
             ") AS _ranked "
             f"WHERE rn <= {int(limit)}"
         )
-        logger.info("PG breakdown top-values query: %s", sql)
+        logger.debug("PG breakdown top-values query: %s", _truncate_sql(sql))
         top: dict[str, list[str]] = {c: [] for c in cols}
         with self._conn.cursor() as cur:
             cur.execute(sql)
@@ -513,10 +522,10 @@ class PostgresAdapter(BaseAdapter):
             f"LIMIT {int(limit)}"
         )
 
-        logger.info(
+        logger.debug(
             "PG bucketed breakdown GROUPING SETS query for %s: %s",
             ", ".join(breakdown_cols),
-            sql,
+            _truncate_sql(sql),
         )
         t0 = time.monotonic()
         with self._conn.cursor() as cur:
