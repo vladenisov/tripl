@@ -184,6 +184,7 @@ export function EventForm({
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['events', slug, branchId] })
       qc.invalidateQueries({ queryKey: ['eventTags', slug, branchId] })
+      if (event) qc.invalidateQueries({ queryKey: ['event', slug] })
       onClose()
     },
   })
