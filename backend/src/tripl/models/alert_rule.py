@@ -43,6 +43,14 @@ class AlertRule(UUIDMixin, TimestampMixin, Base):
         default=False,
         server_default="false",
     )
+    # Append an LLM-generated explanation paragraph to delivered alert
+    # messages. Off by default; a no-op unless AI features are enabled in
+    # instance settings.
+    ai_explanation_enabled: Mapped[bool] = mapped_column(
+        Boolean,
+        default=False,
+        server_default="false",
+    )
     notify_on_spike: Mapped[bool] = mapped_column(Boolean, default=True, server_default="true")
     notify_on_drop: Mapped[bool] = mapped_column(Boolean, default=True, server_default="true")
     min_percent_delta: Mapped[float] = mapped_column(Float, default=0.0, server_default="0")

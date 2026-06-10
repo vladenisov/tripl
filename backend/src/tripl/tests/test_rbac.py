@@ -42,6 +42,8 @@ def test_mutating_routes_require_write_gate() -> None:
         "/api/v1/projects/{slug}/events/window-metrics",
         "/api/v1/projects/{slug}/anomalies/signals/query",
         "/api/v1/projects/{slug}/alert-destinations/{destination_id}/rules/{rule_id}/simulate",
+        # Read-like: NL question over the plan; POST only to carry the body.
+        "/api/v1/projects/{slug}/ai/ask",
     }
     write_gates = {get_write_user, get_editor_user, get_owner_user}
     offenders: list[str] = []

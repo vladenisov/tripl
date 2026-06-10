@@ -59,6 +59,7 @@ from tripl.models.project import Project
 from tripl.models.scan_config import ScanConfig
 from tripl.models.schema_drift import SchemaDrift
 from tripl.observability.metrics import alert_deliveries_total
+from tripl.services import llm_service
 from tripl.worker.celery_app import celery_app
 from tripl.worker.db import _get_sync_session
 
@@ -240,6 +241,81 @@ def _render_delivery_message(
     if template is None:
         template = get_default_message_template(context.message_format)
     return render_alert_template(template, context).rstrip(), context.message_format
+
+
+_AI_EXPLANATION_SYSTEM_PROMPT = (
+    "You are an analytics monitoring assistant. Given alert items from a "
+    "product analytics tracking plan (volume anomalies, schema drifts, "
+    "distribution drifts), write a short explanation: what likely happened "
+    "and whether the items look related (e.g. same release, same platform, "
+    "shared root cause). 2-4 plain sentences, no markdown, no preamble. "
+    "Be concrete; if the data is insufficient for a hypothesis, say what "
+    "to check next instead of speculating."
+)
+_AI_EXPLANATION_MAX_ITEMS = 10
+_AI_EXPLANATION_MAX_TOKENS = 250
+
+
+def _build_ai_explanation(
+    delivery: AlertDelivery,
+    *,
+    scan_name: str,
+    project_name: str,
+    item_context_cache: dict[uuid.UUID, tuple[str, str]],
+) -> str | None:
+    """LLM summary of the delivery's items, or None when AI is off or fails.
+
+    Reuses the (sparkline, top_movers) pairs already built for template
+    rendering — no extra DB queries. Failure here must never block the alert,
+    so any error degrades to None.
+    """
+    if not llm_service.is_enabled():
+        return None
+    lines: list[str] = [f"Project: {project_name}", f"Scan: {scan_name}", "Alert items:"]
+    for item in delivery.items[:_AI_EXPLANATION_MAX_ITEMS]:
+        sparkline, top_movers = item_context_cache.get(item.id, ("", ""))
+        if item.scope_type in {"schema", "distribution"}:
+            drift_bits = " ".join(
+                part
+                for part in (
+                    item.drift_type or "",
+                    f"field={item.drift_field}" if item.drift_field else "",
+                    f"sample={item.sample_value}" if item.sample_value else "",
+                )
+                if part
+            )
+            lines.append(f"- [{item.scope_type} drift] {item.scope_name}: {drift_bits}")
+            continue
+        line = (
+            f"- [{item.scope_type}] {item.scope_name}: {item.direction}, "
+            f"actual {item.actual_count} vs expected {item.expected_count} "
+            f"({item.percent_delta:+.0f}%), bucket {item.bucket:%Y-%m-%d %H:%M}"
+        )
+        if sparkline:
+            line += f", recent trend (old→new): {sparkline}"
+        if top_movers:
+            line += f", top movers: {top_movers}"
+        if item.correlation_group_id is not None:
+            line += " [co-fired with other items]"
+        lines.append(line)
+    try:
+        raw = llm_service.complete(
+            _AI_EXPLANATION_SYSTEM_PROMPT,
+            "\n".join(lines),
+            max_tokens=_AI_EXPLANATION_MAX_TOKENS,
+            temperature=0.3,
+        )
+    except Exception:  # noqa: BLE001
+        logger.warning("AI explanation generation failed", exc_info=True)
+        return None
+    if raw is None:
+        return None
+    explanation = raw.strip()
+    return explanation or None
+
+
+def _append_ai_explanation(text: str, explanation: str, message_format: str) -> str:
+    return f"{text}\n\nAI: {escape_alert_value(explanation, message_format)}"
 
 
 def _reject_private_target(url: str, *, field: str) -> None:
@@ -783,12 +859,28 @@ def send_alert_delivery(self: object, delivery_id: str) -> dict[str, object]:
             session=session,
             item_context_cache=item_context_cache,
         )
+        # AI explanation is generated once (LLM round-trip) and appended after
+        # template rendering so custom templates stay untouched; the Telegram
+        # plain-format fallback below re-appends the same cached string.
+        ai_explanation: str | None = None
+        if rule.ai_explanation_enabled:
+            ai_explanation = _build_ai_explanation(
+                delivery,
+                scan_name=scan_config.name,
+                project_name=project.name if project else "",
+                item_context_cache=item_context_cache,
+            )
+        if ai_explanation:
+            text = _append_ai_explanation(text, ai_explanation, message_format)
+
         rendered_message = text
         payload_snapshot = (
             dict(delivery.payload_snapshot) if isinstance(delivery.payload_snapshot, dict) else {}
         )
         payload_snapshot["message_format"] = message_format
         payload_snapshot["rendered_message"] = text
+        if ai_explanation:
+            payload_snapshot["ai_explanation"] = ai_explanation
         delivery.payload_snapshot = payload_snapshot
 
         if destination.type == AlertDestinationType.slack:
@@ -837,6 +929,12 @@ def send_alert_delivery(self: object, delivery_id: str) -> dict[str, object]:
                         session=None,
                         item_context_cache=item_context_cache,
                     )
+                    if ai_explanation:
+                        fallback_text = _append_ai_explanation(
+                            fallback_text,
+                            ai_explanation,
+                            fallback_format,
+                        )
                     _send_telegram_message(
                         bot_token,
                         chat_id,

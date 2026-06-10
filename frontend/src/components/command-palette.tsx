@@ -6,7 +6,7 @@ import {
   type ReactNode,
 } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
-import { useQuery } from '@tanstack/react-query'
+import { useMutation, useQuery } from '@tanstack/react-query'
 import { Command } from 'cmdk'
 import {
   Activity,
@@ -18,12 +18,15 @@ import {
   LayoutDashboard,
   Link2,
   List,
+  Loader2,
   LogOut,
   Search,
   Settings,
+  Sparkles,
   Tag,
   Variable,
 } from 'lucide-react'
+import { aiApi } from '@/api/ai'
 import { eventTypesApi } from '@/api/eventTypes'
 import { projectsApi } from '@/api/projects'
 import { searchApi } from '@/api/search'
@@ -33,9 +36,11 @@ import {
   useCommandPalette,
 } from '@/components/command-palette-context'
 import { useActiveBranchId } from '@/hooks/useBranch'
+import { useAiStatus } from '@/hooks/useAiStatus'
 import { SEARCH_DEBOUNCE_MS, useDebouncedValue } from '@/hooks/useDebouncedValue'
 import { Dialog, DialogContent, DialogTitle } from '@/components/ui/dialog'
 import { Kbd } from '@/components/primitives/kbd'
+import type { AiAskResponse } from '@/api/ai'
 import type { SearchEntityType, SearchResult } from '@/types'
 
 export function CommandPaletteProvider({ children }: { children: ReactNode }) {
@@ -105,10 +110,16 @@ function CommandPalette() {
   const branchId = useActiveBranchId()
   const [query, setQuery] = useState('')
   const debouncedQuery = useDebouncedValue(query.trim(), SEARCH_DEBOUNCE_MS)
+  const [aiQuestion, setAiQuestion] = useState<string | null>(null)
+  const [aiResult, setAiResult] = useState<AiAskResponse | null>(null)
 
   const handleOpenChange = useCallback(
     (next: boolean) => {
-      if (!next) setQuery('')
+      if (!next) {
+        setQuery('')
+        setAiQuestion(null)
+        setAiResult(null)
+      }
       setOpen(next)
     },
     [setOpen],
@@ -141,6 +152,30 @@ function CommandPalette() {
   const searchResults = useMemo(() => searchQuery.data?.items ?? [], [searchQuery.data])
   const searchGroups = useMemo(() => groupSearchResults(searchResults), [searchResults])
 
+  const aiEnabled = useAiStatus(searchSlug)
+
+  const askMutation = useMutation({
+    mutationFn: (question: string) =>
+      aiApi.ask(searchSlug!, question, branchId),
+    onSuccess: data => setAiResult(data),
+  })
+
+  const handleAskAi = useCallback(
+    (question: string) => {
+      setAiQuestion(question)
+      setAiResult(null)
+      askMutation.mutate(question)
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [searchSlug, branchId],
+  )
+
+  const handleBackFromAi = useCallback(() => {
+    setAiQuestion(null)
+    setAiResult(null)
+    askMutation.reset()
+  }, [askMutation])
+
   const runCommand = useCallback(
     (action: () => void) => {
       setQuery('')
@@ -155,6 +190,8 @@ function CommandPalette() {
     [navigate, runCommand],
   )
 
+  const showAskAiAction = aiEnabled && searchSlug && debouncedQuery.length >= 8
+
   return (
     <Dialog open={open} onOpenChange={handleOpenChange}>
       <DialogContent
@@ -164,24 +201,88 @@ function CommandPalette() {
         <DialogTitle className="sr-only">Command palette</DialogTitle>
         <Command
           label="Command palette"
-          shouldFilter={true}
+          shouldFilter={!aiQuestion}
           className="flex max-h-[480px] w-full min-w-0 flex-col"
         >
           <div
             className="flex items-center gap-2 border-b px-3.5 py-3"
             style={{ borderColor: 'var(--border-subtle)' }}
           >
-            <Search className="h-3.5 w-3.5" style={{ color: 'var(--fg-subtle)' }} />
-            <Command.Input
-              autoFocus
-              value={query}
-              onValueChange={setQuery}
-              placeholder="Search projects, event types, events…"
-              className="flex-1 bg-transparent text-[13px] outline-none placeholder:text-[var(--fg-subtle)]"
-            />
-            <Kbd>esc</Kbd>
+            {aiQuestion ? (
+              <>
+                <Sparkles className="h-3.5 w-3.5 shrink-0" style={{ color: 'var(--fg-subtle)' }} />
+                <span className="flex-1 truncate text-[13px]" style={{ color: 'var(--fg)' }}>{aiQuestion}</span>
+                <button
+                  type="button"
+                  onClick={handleBackFromAi}
+                  className="shrink-0 text-[11px] px-1.5 py-0.5 rounded"
+                  style={{ color: 'var(--fg-subtle)' }}
+                >
+                  ← back
+                </button>
+                <Kbd>esc</Kbd>
+              </>
+            ) : (
+              <>
+                <Search className="h-3.5 w-3.5" style={{ color: 'var(--fg-subtle)' }} />
+                <Command.Input
+                  autoFocus
+                  value={query}
+                  onValueChange={setQuery}
+                  placeholder="Search projects, event types, events…"
+                  className="flex-1 bg-transparent text-[13px] outline-none placeholder:text-[var(--fg-subtle)]"
+                />
+                <Kbd>esc</Kbd>
+              </>
+            )}
           </div>
 
+          {aiQuestion ? (
+            <div className="flex-1 overflow-y-auto py-2 px-3.5">
+              {askMutation.isPending && (
+                <div className="flex items-center gap-2 py-2 text-[12px]" style={{ color: 'var(--fg-subtle)' }}>
+                  <Loader2 className="h-3 w-3 animate-spin" />
+                  Asking AI…
+                </div>
+              )}
+              {askMutation.isError && (
+                <p className="py-2 text-[12px]" style={{ color: 'var(--destructive)' }}>
+                  Error: {askMutation.error instanceof Error ? askMutation.error.message : 'Something went wrong'}
+                </p>
+              )}
+              {aiResult && (
+                <div className="space-y-3">
+                  <p className="whitespace-pre-wrap text-[12.5px] leading-relaxed" style={{ color: 'var(--fg)' }}>
+                    {aiResult.answer}
+                  </p>
+                  {aiResult.sources.length > 0 && (
+                    <div className="space-y-1">
+                      <p className="text-[10px] font-semibold uppercase tracking-[0.08em]" style={{ color: 'var(--fg-faint)' }}>
+                        Sources
+                      </p>
+                      {aiResult.sources.map((source, index) => (
+                        <button
+                          key={index}
+                          type="button"
+                          onClick={() => runCommand(() => navigate(source.route_path))}
+                          className="flex w-full items-center gap-2 rounded-md px-2 py-1 text-left text-[12px] hover:bg-[var(--surface-hover)]"
+                          style={{ color: 'var(--fg)' }}
+                        >
+                          <span className="shrink-0 text-[10px] tabular-nums" style={{ color: 'var(--fg-faint)' }}>
+                            [{index + 1}]
+                          </span>
+                          <span className="flex-1 truncate">{source.title}</span>
+                          <span className="shrink-0 text-[10px]" style={{ color: 'var(--fg-faint)' }}>
+                            {source.entity_type}
+                          </span>
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          ) : (
           <Command.List className="flex-1 overflow-y-auto py-1.5">
             <Command.Empty className="px-3.5 py-8 text-center text-[12px]" style={{ color: 'var(--fg-subtle)' }}>
               No matches.
@@ -360,7 +461,19 @@ function CommandPalette() {
                 label="Sign out"
               />
             </Group>
+
+            {showAskAiAction && (
+              <Group heading="AI">
+                <Item
+                  onSelect={() => handleAskAi(debouncedQuery)}
+                  icon={Sparkles}
+                  label={`Ask AI: «${debouncedQuery}»`}
+                  keywords={[debouncedQuery]}
+                />
+              </Group>
+            )}
           </Command.List>
+          )}
         </Command>
       </DialogContent>
     </Dialog>

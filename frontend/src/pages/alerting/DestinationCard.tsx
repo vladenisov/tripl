@@ -330,6 +330,19 @@ export function DestinationCard({
                 </label>
               </div>
 
+              <div className="grid grid-cols-1 gap-2">
+                <label className="flex items-center gap-2 text-sm">
+                  <Checkbox
+                    checked={ruleForm.ai_explanation_enabled}
+                    onCheckedChange={checked => setRuleForm(current => ({ ...current, ai_explanation_enabled: !!checked }))}
+                  />
+                  AI explanation
+                </label>
+                <p className="text-xs text-muted-foreground">
+                  LLM summary appended to alert messages (requires AI enabled on server)
+                </p>
+              </div>
+
               <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
                 <div className="grid gap-2">
                   <Label>Min Percent Delta</Label>

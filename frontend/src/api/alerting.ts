@@ -84,6 +84,7 @@ export const alertingApi = {
       include_distribution_drifts?: boolean
       notify_on_spike?: boolean
       notify_on_drop?: boolean
+      ai_explanation_enabled?: boolean
       min_percent_delta?: number
       min_absolute_delta?: number
       min_expected_count?: number
@@ -109,6 +110,7 @@ export const alertingApi = {
       include_distribution_drifts?: boolean
       notify_on_spike?: boolean
       notify_on_drop?: boolean
+      ai_explanation_enabled?: boolean
       min_percent_delta?: number
       min_absolute_delta?: number
       min_expected_count?: number

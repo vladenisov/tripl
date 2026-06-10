@@ -6,8 +6,10 @@ import type {
   MetaFieldDefinition,
   Variable,
 } from '@/types'
+import { aiApi } from '@/api/ai'
 import { eventsApi } from '@/api/events'
 import { useActiveBranchId } from '@/hooks/useBranch'
+import { useAiStatus } from '@/hooks/useAiStatus'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Checkbox } from '@/components/ui/checkbox'
@@ -19,7 +21,7 @@ import { Textarea } from '@/components/ui/textarea'
 import { META_FIELD_LINK_PLACEHOLDER } from '@/lib/metaFields'
 import { JsonEditor } from './JsonEditor'
 import { VariableInput } from './VariableInput'
-import { Plus, X } from 'lucide-react'
+import { Loader2, Plus, Sparkles, X } from 'lucide-react'
 import { ErrorState } from '@/components/error-state'
 
 function normalizeMetricBreakdownColumns(columns: string[]): string[] {
@@ -106,6 +108,7 @@ export function EventForm({
 }) {
   const qc = useQueryClient()
   const branchId = useActiveBranchId()
+  const aiEnabled = useAiStatus(slug)
   const [etId, setEtId] = useState(event?.event_type_id ?? defaultEventTypeId ?? '')
   const [name, setName] = useState(event?.name ?? '')
   const [description, setDescription] = useState(event?.description ?? '')
@@ -152,6 +155,11 @@ export function EventForm({
     setMetricBreakdownColumns(current => normalizeMetricBreakdownColumns([...current, next]))
     setMetricBreakdownInput('')
   }
+
+  const aiDescribeMut = useMutation({
+    mutationFn: () => aiApi.describeEvent(slug, event!.id, branchId),
+    onSuccess: data => setDescription(data.description),
+  })
 
   const createMut = useMutation({
     mutationFn: () => {
@@ -210,8 +218,33 @@ export function EventForm({
             </div>
 
             <div className="grid gap-2">
-              <Label>Description</Label>
+              <div className="flex items-center justify-between">
+                <Label>Description</Label>
+                {event && aiEnabled && (
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    className="h-6 gap-1 px-1.5 text-[11px] text-muted-foreground hover:text-foreground"
+                    onClick={() => aiDescribeMut.mutate()}
+                    disabled={aiDescribeMut.isPending}
+                    aria-label="Suggest description with AI"
+                  >
+                    {aiDescribeMut.isPending ? (
+                      <Loader2 className="h-3 w-3 animate-spin" />
+                    ) : (
+                      <Sparkles className="h-3 w-3" />
+                    )}
+                    Suggest
+                  </Button>
+                )}
+              </div>
               <Textarea value={description} onChange={e => setDescription(e.target.value)} rows={2} />
+              {aiDescribeMut.isError && (
+                <p className="text-[11px] text-destructive">
+                  {aiDescribeMut.error instanceof Error ? aiDescribeMut.error.message : 'AI unavailable'}
+                </p>
+              )}
             </div>
 
             <div className="flex items-center gap-2">

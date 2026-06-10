@@ -49,6 +49,7 @@ export type RuleFormState = {
   include_distribution_drifts: boolean
   notify_on_spike: boolean
   notify_on_drop: boolean
+  ai_explanation_enabled: boolean
   min_percent_delta: number
   min_absolute_delta: number
   min_expected_count: number
@@ -274,6 +275,7 @@ export function defaultRuleForm(): RuleFormState {
     include_distribution_drifts: false,
     notify_on_spike: true,
     notify_on_drop: true,
+    ai_explanation_enabled: false,
     min_percent_delta: 0,
     min_absolute_delta: 0,
     min_expected_count: 0,
@@ -296,6 +298,7 @@ export function ruleToForm(rule: AlertRule): RuleFormState {
     include_distribution_drifts: rule.include_distribution_drifts,
     notify_on_spike: rule.notify_on_spike,
     notify_on_drop: rule.notify_on_drop,
+    ai_explanation_enabled: rule.ai_explanation_enabled,
     min_percent_delta: rule.min_percent_delta,
     min_absolute_delta: rule.min_absolute_delta,
     min_expected_count: rule.min_expected_count,
