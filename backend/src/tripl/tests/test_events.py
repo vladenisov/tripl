@@ -112,6 +112,61 @@ async def test_event_responses_include_variable_value_contexts(client: AsyncClie
 
 
 @pytest.mark.asyncio
+async def test_update_event_preserves_variable_value_contexts(client: AsyncClient):
+    et_id, field_id, _ = await _setup_events(client, "ev-var-keep")
+    variable_resp = await client.post(
+        "/api/v1/projects/ev-var-keep/variables",
+        json={"name": "user_id", "variable_type": "string"},
+    )
+    event_resp = await client.post(
+        "/api/v1/projects/ev-var-keep/events",
+        json={
+            "event_type_id": et_id,
+            "name": "Profile View",
+            "field_values": [{"field_definition_id": field_id, "value": "${user_id}"}],
+        },
+    )
+    assert event_resp.status_code == 201
+    variable_id = uuid.UUID(variable_resp.json()["id"])
+    event_id = uuid.UUID(event_resp.json()["id"])
+
+    async with TestSessionLocal() as session, session.begin():
+        variable = await session.get(Variable, variable_id)
+        event = await session.get(Event, event_id)
+        assert variable is not None
+        assert event is not None
+        session.add(
+            VariableValue(
+                project_id=variable.project_id,
+                branch_id=variable.branch_id,
+                variable_id=variable.id,
+                event_id=event.id,
+                field_definition_id=uuid.UUID(field_id),
+                source_column="user_id",
+                value_kind="low",
+                observed_count=2,
+                values=["u1", "u2"],
+            )
+        )
+
+    update_resp = await client.patch(
+        f"/api/v1/projects/ev-var-keep/events/{event_id}",
+        json={
+            "name": "Profile View Edited",
+            "field_values": [{"field_definition_id": field_id, "value": "${user_id} v2"}],
+        },
+    )
+    assert update_resp.status_code == 200
+    contexts = update_resp.json()["field_values"][0]["variable_values"]
+    assert contexts[0]["variable_name"] == "user_id"
+    assert contexts[0]["values"] == ["u1", "u2"]
+
+    detail_resp = await client.get(f"/api/v1/projects/ev-var-keep/events/{event_id}")
+    assert detail_resp.status_code == 200
+    assert detail_resp.json()["field_values"][0]["variable_values"] == contexts
+
+
+@pytest.mark.asyncio
 async def test_create_event_missing_required_field(client: AsyncClient):
     et_id, field_id, meta_id = await _setup_events(client, "ev-req")
     resp = await client.post(

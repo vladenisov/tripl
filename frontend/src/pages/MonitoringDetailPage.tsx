@@ -6,6 +6,7 @@ import { eventTypesApi } from '@/api/eventTypes'
 import { eventsApi } from '@/api/events'
 import { metaFieldsApi } from '@/api/metaFields'
 import { metricsApi } from '@/api/metrics'
+import { variablesApi } from '@/api/variables'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
@@ -32,12 +33,15 @@ import type {
   EventType,
   FieldDefinition,
   MetaFieldDefinition,
+  Variable,
 } from '@/types'
-import { AlertTriangle, ArrowLeft, CalendarPlus, CircleCheck, Eye, GitCompareArrows, Layers, Tag, Trash2 } from 'lucide-react'
+import { EventForm } from './events/EventForm'
+import { AlertTriangle, ArrowLeft, CalendarPlus, CircleCheck, Eye, GitCompareArrows, Layers, Pencil, Tag, Trash2 } from 'lucide-react'
 
 // Stable empty reference so `metaFieldsQuery.data ?? EMPTY_META_FIELDS`
 // doesn't mint a new array each render and bust the memoized lookup map.
 const EMPTY_META_FIELDS: MetaFieldDefinition[] = []
+const EMPTY_VARIABLES: Variable[] = []
 
 export default function MonitoringDetailPage() {
   const { slug, scope: scopeParam, id, eventId } = useParams<{
@@ -60,6 +64,7 @@ export default function MonitoringDetailPage() {
   const [activeTab, setActiveTab] = useState<'volume' | 'distribution' | 'heatmap' | 'breakdowns'>('volume')
   const [distributionField, setDistributionField] = useState('')
   const [breakdownColumn, setBreakdownColumn] = useState('')
+  const [isEditOpen, setIsEditOpen] = useState(false)
 
   const branchId = useActiveBranchId()
   const scope = routeScopeToApiScope(scopeParam)
@@ -91,6 +96,13 @@ export default function MonitoringDetailPage() {
     enabled: scope === 'event' && !!slug,
   })
   const metaFields = metaFieldsQuery.data ?? EMPTY_META_FIELDS
+
+  const variablesQuery = useQuery({
+    queryKey: ['variables', slug, branchId],
+    queryFn: () => variablesApi.list(slug!, branchId),
+    enabled: scope === 'event' && !!slug,
+  })
+  const projectVariables = variablesQuery.data ?? EMPTY_VARIABLES
 
   const metricsQuery = useQuery({
     queryKey: ['monitoringMetrics', slug, scope, scopeId, rangeDays],
@@ -288,9 +300,16 @@ export default function MonitoringDetailPage() {
 
   return (
     <div className="space-y-6 p-6 max-w-5xl mx-auto">
-      <Button variant="ghost" size="sm" onClick={goBack}>
-        <ArrowLeft className="mr-2 h-4 w-4" /> Back to events
-      </Button>
+      <div className="flex items-center justify-between gap-2">
+        <Button variant="ghost" size="sm" onClick={goBack}>
+          <ArrowLeft className="mr-2 h-4 w-4" /> Back to events
+        </Button>
+        {scope === 'event' && event && (
+          <Button variant="outline" size="sm" onClick={() => setIsEditOpen(true)}>
+            <Pencil className="mr-2 h-3.5 w-3.5" /> Edit
+          </Button>
+        )}
+      </div>
 
       <div className="space-y-3">
         <div className="flex items-center gap-3 flex-wrap">
@@ -622,6 +641,17 @@ export default function MonitoringDetailPage() {
           </Card>
         </TabsContent>
       </Tabs>
+
+      {scope === 'event' && event && isEditOpen && slug && (
+        <EventForm
+          slug={slug}
+          eventTypes={eventTypes}
+          metaFields={metaFields}
+          projectVariables={projectVariables}
+          event={event}
+          onClose={() => setIsEditOpen(false)}
+        />
+      )}
 
       {scope === 'event' && event && (
         <>

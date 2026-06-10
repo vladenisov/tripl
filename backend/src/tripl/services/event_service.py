@@ -13,7 +13,6 @@ from tripl.models.event_field_value import EventFieldValue
 from tripl.models.event_meta_value import EventMetaValue
 from tripl.models.event_tag import EventTag
 from tripl.models.field_definition import FieldDefinition
-from tripl.models.variable_value import VariableValue
 from tripl.schemas.event import (
     EventBulkDelete,
     EventBulkUpdate,
@@ -288,7 +287,8 @@ async def update_event(
 
     if data.field_values is not None:
         await _validate_field_values(session, event.event_type_id, data.field_values)
-        await session.execute(delete(VariableValue).where(VariableValue.event_id == event.id))
+        # VariableValue rows are scan-observed contexts keyed by field_definition_id,
+        # not by EventFieldValue rows — manual edits must not wipe them.
         await session.execute(delete(EventFieldValue).where(EventFieldValue.event_id == event.id))
         await session.flush()
         if data.field_values:
