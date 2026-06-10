@@ -130,6 +130,43 @@ async def test_only_owner_can_change_roles(fresh_anon_client: AsyncClient) -> No
 
 
 @pytest.mark.asyncio
+async def test_role_change_invalidates_existing_sessions(
+    fresh_anon_client: AsyncClient,
+) -> None:
+    # Owner registers, then an editor registers and stays signed in.
+    await _register(fresh_anon_client, "owner3@example.com")
+    await fresh_anon_client.post("/api/v1/auth/logout")
+    await _register(fresh_anon_client, "demoted@example.com")
+
+    # The editor's active session can mutate before the downgrade.
+    create = await fresh_anon_client.post(
+        "/api/v1/projects", json={"name": "Before", "slug": "before-demote"}
+    )
+    assert create.status_code == 201, create.text
+
+    # Capture the editor's still-active session cookie before the owner acts.
+    editor_cookies = dict(fresh_anon_client.cookies)
+
+    # Owner demotes the editor to viewer in a separate client.
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as owner_client:
+        await owner_client.post(
+            "/api/v1/auth/login",
+            json={"email": "owner3@example.com", "password": "Password123!"},
+        )
+        await _set_role(owner_client, "demoted@example.com", "viewer")
+
+    # The previously captured editor session must no longer authenticate,
+    # proving the session rows were deleted on role change.
+    transport2 = ASGITransport(app=app)
+    async with AsyncClient(
+        transport=transport2, base_url="http://test", cookies=editor_cookies
+    ) as stale_client:
+        me = await stale_client.get("/api/v1/auth/me")
+        assert me.status_code == 401, me.text
+
+
+@pytest.mark.asyncio
 async def test_cannot_demote_last_owner(fresh_anon_client: AsyncClient) -> None:
     await _register(fresh_anon_client, "lone-owner@example.com")
     me = (await fresh_anon_client.get("/api/v1/auth/me")).json()

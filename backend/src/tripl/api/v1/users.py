@@ -3,10 +3,11 @@ from __future__ import annotations
 import uuid
 
 from fastapi import APIRouter, HTTPException, status
-from sqlalchemy import select
+from sqlalchemy import delete, select
 
 from tripl.api.deps import CurrentUserDep, OwnerUserDep, SessionDep
 from tripl.models.user import User
+from tripl.models.user_session import UserSession
 from tripl.schemas.auth import UserListItem, UserRoleUpdate
 from tripl.services import audit_service
 
@@ -42,6 +43,20 @@ async def update_user_role(
             )
     old_role = target.role
     target.role = data.role
+    if data.role != old_role:
+        # A role change must take effect immediately, so drop every active
+        # session for this user: auth dependencies read user.role off the
+        # session-loaded instance, and a stale (e.g. demoted) session would
+        # otherwise keep the old permissions until it expired. Deleting in the
+        # same transaction forces the next request to re-authenticate with the
+        # fresh role.
+        #
+        # Residual staleness window: an in-flight request that already passed
+        # the auth dependency still completes with the old role; only the next
+        # request is affected.
+        await session.execute(
+            delete(UserSession).where(UserSession.user_id == target.id)
+        )
     await session.commit()
     await session.refresh(target)
     await audit_service.record(
