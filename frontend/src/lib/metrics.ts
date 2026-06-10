@@ -15,7 +15,7 @@ export const GRANULARITY_OPTIONS: { value: MetricsGranularity; label: string }[]
   { value: 'month', label: 'Months' },
 ]
 
-function getBucketStart(dateStr: string, granularity: MetricsGranularity): string {
+export function getBucketStart(dateStr: string, granularity: MetricsGranularity): string {
   const date = new Date(dateStr)
   let normalized: Date
 
