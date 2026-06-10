@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends
 
 from tripl.api.deps import SessionDep, get_editor_user
 from tripl.schemas.project import ProjectCreate, ProjectResponse, ProjectUpdate
-from tripl.services import project_service
+from tripl.services import demo_service, project_service
 
 router = APIRouter(prefix="/projects", tags=["projects"])
 
@@ -22,6 +22,16 @@ async def list_projects(session: SessionDep) -> list[ProjectResponse]:
 )
 async def create_project(session: SessionDep, data: ProjectCreate) -> ProjectResponse:
     return await project_service.create_project(session, data)
+
+
+@router.post(
+    "/demo",
+    response_model=ProjectResponse,
+    status_code=201,
+    dependencies=_editor_required,
+)
+async def create_demo_project(session: SessionDep) -> ProjectResponse:
+    return await demo_service.create_demo_project(session)
 
 
 @router.get("/{slug}", response_model=ProjectResponse)

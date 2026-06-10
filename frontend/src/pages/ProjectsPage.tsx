@@ -1,6 +1,6 @@
 import { type ElementType, type ReactNode, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Link } from 'react-router-dom'
+import { Link, useNavigate } from 'react-router-dom'
 import { dataSourcesApi } from '@/api/dataSources'
 import { projectsApi } from '@/api/projects'
 import { EmptyState } from '@/components/empty-state'
@@ -44,11 +44,13 @@ import {
   PlayCircle,
   Plus,
   Settings2,
+  Sparkles,
   Trash2,
 } from 'lucide-react'
 
 export default function MainPage() {
   const queryClient = useQueryClient()
+  const navigate = useNavigate()
   const [showForm, setShowForm] = useState(false)
   const [name, setName] = useState('')
   const [slug, setSlug] = useState('')
@@ -136,6 +138,14 @@ export default function MainPage() {
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['projects'] }),
   })
 
+  const demoMut = useMutation({
+    mutationFn: () => projectsApi.createDemo(),
+    onSuccess: (project) => {
+      void queryClient.invalidateQueries({ queryKey: ['projects'] })
+      void navigate(`/p/${project.slug}/events`)
+    },
+  })
+
   const handleDelete = async (project: Project) => {
     const ok = await confirm({
       title: 'Delete project',
@@ -195,6 +205,15 @@ export default function MainPage() {
             value={dataSourceValue}
             tone={dataSourcesQuery.isError ? 'danger' : 'neutral'}
           />
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={() => demoMut.mutate()}
+            disabled={demoMut.isPending}
+          >
+            <Sparkles className="h-3.5 w-3.5" />
+            {demoMut.isPending ? 'Generating…' : 'Generate demo project'}
+          </Button>
           <Button size="sm" onClick={() => setShowForm(true)}>
             <Plus className="h-3.5 w-3.5" />
             New project
@@ -367,10 +386,20 @@ export default function MainPage() {
               title="No projects yet"
               description="Create your first project to start building a richer tracking-plan workspace with event coverage, scans, and monitoring."
               action={
-                <Button onClick={() => setShowForm(true)}>
-                  <Plus className="h-3.5 w-3.5" />
-                  New project
-                </Button>
+                <div className="flex gap-2">
+                  <Button
+                    variant="outline"
+                    onClick={() => demoMut.mutate()}
+                    disabled={demoMut.isPending}
+                  >
+                    <Sparkles className="h-3.5 w-3.5" />
+                    {demoMut.isPending ? 'Generating…' : 'Generate demo project'}
+                  </Button>
+                  <Button onClick={() => setShowForm(true)}>
+                    <Plus className="h-3.5 w-3.5" />
+                    New project
+                  </Button>
+                </div>
               }
             />
           )}
