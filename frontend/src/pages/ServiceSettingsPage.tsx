@@ -11,11 +11,11 @@ import {
   Save,
   ServerCog,
   Shield,
-  SlidersHorizontal,
   XCircle,
 } from 'lucide-react'
 
 import { serviceSettingsApi } from '@/api/serviceSettings'
+import type { ServiceSettingsSectionKey } from './serviceSettingsTabs'
 import { useAuth } from '@/components/auth-context'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -293,7 +293,11 @@ function FieldRow({
   )
 }
 
-export default function ServiceSettingsPage() {
+export default function ServiceSettingsSection({
+  section,
+}: {
+  section: ServiceSettingsSectionKey
+}) {
   const { user } = useAuth()
   const qc = useQueryClient()
   const [form, setForm] = useState<EditableSettings | null>(null)
@@ -383,34 +387,30 @@ export default function ServiceSettingsPage() {
   const settings = settingsQuery.data
 
   return (
-    <div className="min-w-0 space-y-5">
-      <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
-        <div>
-          <h1 className="flex items-center gap-2 text-2xl font-bold tracking-tight">
-            <SlidersHorizontal className="h-5 w-5" />
-            Service settings
-          </h1>
-          <p className="mt-1 text-sm text-muted-foreground">
+    <div className="min-w-0 max-w-3xl space-y-5">
+      {section !== 'system' && (
+        <div className="flex items-center justify-between gap-3">
+          <p className="text-sm text-muted-foreground">
             Runtime overrides for the tripl instance. Unset fields fall back to environment
             variables.
           </p>
+          <div className="flex shrink-0 items-center gap-2">
+            {saveMut.isError && (
+              <span className="text-xs text-destructive">{getErrorMessage(saveMut.error)}</span>
+            )}
+            <Button
+              type="button"
+              onClick={() => saveMut.mutate(update)}
+              disabled={!dirty || saveMut.isPending}
+            >
+              <Save className="h-3.5 w-3.5" />
+              {saveMut.isPending ? 'Saving...' : 'Save changes'}
+            </Button>
+          </div>
         </div>
-        <div className="flex shrink-0 items-center gap-2">
-          {saveMut.isError && (
-            <span className="text-xs text-destructive">{getErrorMessage(saveMut.error)}</span>
-          )}
-          <Button
-            type="button"
-            onClick={() => saveMut.mutate(update)}
-            disabled={!dirty || saveMut.isPending}
-          >
-            <Save className="h-3.5 w-3.5" />
-            {saveMut.isPending ? 'Saving...' : 'Save changes'}
-          </Button>
-        </div>
-      </div>
+      )}
 
-      <div className="grid gap-5 xl:grid-cols-2">
+      {section === 'runtime' && (
         <SectionCard
           title="Runtime"
           icon={ServerCog}
@@ -456,7 +456,9 @@ export default function ServiceSettingsPage() {
             </FieldRow>
           </div>
         </SectionCard>
+      )}
 
+      {section === 'email' && (
         <SectionCard
           title="Email"
           icon={Mail}
@@ -532,7 +534,9 @@ export default function ServiceSettingsPage() {
             </FieldRow>
           </div>
         </SectionCard>
+      )}
 
+      {section === 'ai' && (
         <SectionCard
           title="AI and embeddings"
           icon={Bot}
@@ -709,7 +713,9 @@ export default function ServiceSettingsPage() {
             </div>
           </FieldRow>
         </SectionCard>
+      )}
 
+      {section === 'security' && (
         <SectionCard
           title="Security"
           icon={Shield}
@@ -834,7 +840,9 @@ export default function ServiceSettingsPage() {
             />
           </div>
         </SectionCard>
+      )}
 
+      {section === 'storage' && (
         <SectionCard
           title="Storage"
           icon={HardDrive}
@@ -927,7 +935,9 @@ export default function ServiceSettingsPage() {
             </FieldRow>
           </div>
         </SectionCard>
+      )}
 
+      {section === 'observability' && (
         <SectionCard
           title="Observability"
           icon={Activity}
@@ -992,9 +1002,9 @@ export default function ServiceSettingsPage() {
             </FieldRow>
           </div>
         </SectionCard>
+      )}
 
-        <SystemCard system={settings.system} />
-      </div>
+      {section === 'system' && <SystemCard system={settings.system} />}
     </div>
   )
 }

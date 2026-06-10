@@ -12,11 +12,8 @@ const MainPage = lazy(() => import('./pages/ProjectsPage'))
 const EventsPage = lazy(() => import('./pages/EventsPage'))
 const MonitoringDetailPage = lazy(() => import('./pages/MonitoringDetailPage'))
 const ProjectSettingsPage = lazy(() => import('./pages/ProjectSettingsPage'))
-const DataSourcesPage = lazy(() => import('./pages/DataSourcesPage'))
-const UsersPage = lazy(() => import('./pages/UsersPage'))
-const AccountPage = lazy(() => import('./pages/AccountPage'))
 const ReconciliationPage = lazy(() => import('./pages/ReconciliationPage'))
-const ServiceSettingsPage = lazy(() => import('./pages/ServiceSettingsPage'))
+const SettingsPage = lazy(() => import('./pages/SettingsPage'))
 
 function RouteFallback() {
   return (
@@ -100,6 +97,11 @@ function ProjectSettingsRedirect({ tab }: { tab: string }) {
   return <Navigate to={`/p/${slug}/settings/${tab}`} replace />
 }
 
+function DataSourceRedirect() {
+  const { dsId } = useParams<{ dsId: string }>()
+  return <Navigate to={`/settings/data-sources/${dsId}`} replace />
+}
+
 export default function App() {
   return (
     <ThemeProvider defaultTheme="dark" storageKey="tripl-ui-theme">
@@ -111,11 +113,13 @@ export default function App() {
           />
           <Route element={<RequireAuth><Layout /></RequireAuth>}>
             <Route path="/" element={withSuspense(<MainPage />)} />
-            <Route path="/data-sources" element={withSuspense(<DataSourcesPage />)} />
-              <Route path="/users" element={withSuspense(<UsersPage />)} />
-            <Route path="/account" element={withSuspense(<AccountPage />)} />
-            <Route path="/settings" element={withSuspense(<ServiceSettingsPage />)} />
-            <Route path="/data-sources/:dsId" element={withSuspense(<DataSourcesPage />)} />
+            <Route path="/settings" element={<Navigate to="/settings/data-sources" replace />} />
+            <Route path="/settings/data-sources/:dsId" element={withSuspense(<SettingsPage />)} />
+            <Route path="/settings/:tab" element={withSuspense(<SettingsPage />)} />
+            <Route path="/data-sources" element={<Navigate to="/settings/data-sources" replace />} />
+            <Route path="/data-sources/:dsId" element={<DataSourceRedirect />} />
+            <Route path="/users" element={<Navigate to="/settings/users" replace />} />
+            <Route path="/account" element={<Navigate to="/settings/account" replace />} />
             <Route path="/p/:slug/monitoring" element={<ProjectSettingsRedirect tab="monitoring" />} />
             <Route path="/p/:slug/alerting" element={<ProjectSettingsRedirect tab="alerting" />} />
             <Route path="/p/:slug/events/detail/:eventId" element={withSuspense(<MonitoringDetailPage />)} />

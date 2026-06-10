@@ -297,17 +297,29 @@ function CommandPalette() {
                 hint="/"
               />
               <Item
-                onSelect={() => goTo('/data-sources')}
+                onSelect={() => goTo('/settings/data-sources')}
                 icon={Database}
                 label="Data sources"
-                hint="/data-sources"
+                hint="/settings/data-sources"
+              />
+              <Item
+                onSelect={() => goTo('/settings/users')}
+                icon={SlidersHorizontal}
+                label="Users"
+                hint="/settings/users"
+              />
+              <Item
+                onSelect={() => goTo('/settings/account')}
+                icon={SlidersHorizontal}
+                label="Account"
+                hint="/settings/account"
               />
               {auth.user?.role === 'owner' && (
                 <Item
-                  onSelect={() => goTo('/settings')}
+                  onSelect={() => goTo('/settings/runtime')}
                   icon={SlidersHorizontal}
                   label="Service settings"
-                  hint="/settings"
+                  hint="/settings/runtime"
                 />
               )}
             </Group>

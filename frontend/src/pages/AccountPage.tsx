@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Copy, Key, Plus, Trash2 } from 'lucide-react'
+import { Copy, Plus, Trash2 } from 'lucide-react'
 
 import { apiKeysApi } from '@/api/apiKeys'
 import { projectsApi } from '@/api/projects'
@@ -107,15 +107,9 @@ export default function AccountPage() {
     <div className="space-y-5">
       {dialog}
 
-      <div>
-        <h1 className="text-2xl font-bold tracking-tight flex items-center gap-2">
-          <Key className="h-5 w-5" />
-          Account
-        </h1>
-        <p className="text-sm text-muted-foreground mt-1">
-          Signed in as <span className="font-mono">{user?.email}</span>
-        </p>
-      </div>
+      <p className="text-sm text-muted-foreground">
+        Signed in as <span className="font-mono">{user?.email}</span>
+      </p>
 
       <div>
         <div className="flex items-center justify-between mb-2">

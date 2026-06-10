@@ -35,7 +35,7 @@ function LocationProbe() {
   return <span data-testid="location">{location.pathname}</span>
 }
 
-function renderDataSourcesPage(path = '/data-sources/ds-1') {
+function renderDataSourcesPage(path = '/settings/data-sources/ds-1') {
   const queryClient = new QueryClient({
     defaultOptions: {
       queries: { retry: false },
@@ -48,7 +48,7 @@ function renderDataSourcesPage(path = '/data-sources/ds-1') {
       <MemoryRouter initialEntries={[path]}>
         <Routes>
           <Route
-            path="/data-sources"
+            path="/settings/data-sources"
             element={(
               <>
                 <DataSourcesPage />
@@ -57,7 +57,7 @@ function renderDataSourcesPage(path = '/data-sources/ds-1') {
             )}
           />
           <Route
-            path="/data-sources/:dsId"
+            path="/settings/data-sources/:dsId"
             element={(
               <>
                 <DataSourcesPage />
@@ -101,7 +101,7 @@ describe('DataSourcesPage', () => {
     await waitFor(() => {
       expect(screen.queryByRole('dialog', { name: 'Edit data source' })).not.toBeInTheDocument()
     })
-    expect(screen.getByTestId('location')).toHaveTextContent('/data-sources')
+    expect(screen.getByTestId('location')).toHaveTextContent('/settings/data-sources')
   })
 
   it('closes a directly opened edit dialog after save', async () => {
@@ -137,7 +137,7 @@ describe('DataSourcesPage', () => {
     await waitFor(() => {
       expect(screen.queryByRole('dialog', { name: 'Edit data source' })).not.toBeInTheDocument()
     })
-    expect(screen.getByTestId('location')).toHaveTextContent('/data-sources')
+    expect(screen.getByTestId('location')).toHaveTextContent('/settings/data-sources')
     expect(patchPayload?.timeout_seconds).toBe(120)
   })
 })

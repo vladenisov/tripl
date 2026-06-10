@@ -9,19 +9,16 @@ import {
   ChevronRight,
   ChevronsUpDown,
   CircleCheck,
-  Database,
   Eye,
   Folder,
   GitCompare,
   Grid3x3,
-  Key,
   LayoutDashboard,
   LogOut,
   Search,
   Settings,
   SlidersHorizontal,
   Tag,
-  Users,
   type LucideIcon,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
@@ -29,7 +26,6 @@ import { eventTypesApi } from '@/api/eventTypes'
 import { projectsApi } from '@/api/projects'
 import { useAuth } from '@/components/auth-context'
 import { useCommandPalette } from '@/components/command-palette-context'
-import { useTweaksPanel } from '@/components/tweaks-panel-context'
 import { ErrorState } from '@/components/error-state'
 import { Kbd } from '@/components/primitives/kbd'
 import { Button } from '@/components/ui/button'
@@ -90,7 +86,6 @@ export function AppSidebar() {
   const navigate = useNavigate()
   const auth = useAuth()
   const palette = useCommandPalette()
-  const tweaks = useTweaksPanel()
   const [collapsed, setCollapsed] = useSidebarCollapsed()
 
   const projectsQuery = useQuery({
@@ -116,37 +111,16 @@ export function AppSidebar() {
       match: (path) => path === '/',
     },
     {
-      id: 'data-sources',
-      label: 'Data Sources',
-      to: '/data-sources',
-      icon: Database,
-      match: (path) => path.startsWith('/data-sources'),
+      id: 'settings',
+      label: 'Settings',
+      to: '/settings',
+      icon: SlidersHorizontal,
+      match: (path) =>
+        path.startsWith('/settings')
+        || path.startsWith('/data-sources')
+        || path.startsWith('/users')
+        || path.startsWith('/account'),
     },
-    {
-      id: 'users',
-      label: 'Users',
-      to: '/users',
-      icon: Users,
-      match: (path) => path.startsWith('/users'),
-    },
-    {
-      id: 'account',
-      label: 'Account',
-      to: '/account',
-      icon: Key,
-      match: (path) => path.startsWith('/account'),
-    },
-    ...(auth.user?.role === 'owner'
-      ? [
-          {
-            id: 'service-settings',
-            label: 'Service Settings',
-            to: '/settings',
-            icon: SlidersHorizontal,
-            match: (path: string) => path.startsWith('/settings'),
-          },
-        ]
-      : []),
   ]
 
   const showProjectViews =
@@ -286,15 +260,6 @@ export function AppSidebar() {
               {auth.user?.name ? auth.user.email : 'Signed in'}
             </div>
           </div>
-          <button
-            type="button"
-            title="Appearance · density · chart style"
-            onClick={() => tweaks.setOpen(true)}
-            className="rounded-md p-1 transition-colors hover:bg-[var(--surface-hover)]"
-            style={{ color: 'var(--fg-subtle)' }}
-          >
-            <Settings className="h-3.5 w-3.5" />
-          </button>
         </div>
         <Button
           type="button"
