@@ -4,20 +4,15 @@ import logging
 import uuid
 
 from sqlalchemy import select, text
-from sqlalchemy.orm import Session
 
 from tripl.config import settings
 from tripl.models.search_document import SearchDocument
 from tripl.services.embedding_service import embed_texts
 from tripl.services.search_service import sanitize_embedding
 from tripl.worker.celery_app import celery_app
-from tripl.worker.db import SyncSessionLocal
+from tripl.worker.db import _get_sync_session
 
 logger = logging.getLogger(__name__)
-
-
-def _get_sync_session() -> Session:
-    return SyncSessionLocal()
 
 
 @celery_app.task(  # type: ignore[untyped-decorator]
