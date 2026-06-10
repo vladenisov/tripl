@@ -105,6 +105,16 @@ class Settings(BaseSettings):
     scan_row_limit_default: int = 50_000
     metrics_row_limit_default: int = 100_000
 
+    # AI features (LLM-powered descriptions, Q&A). Disabled by default because
+    # plan content — event names, descriptions, field names — is sent to the
+    # configured provider when enabled.
+    ai_enabled: bool = False
+    ai_base_url: str = "https://api.openai.com/v1"
+    ai_model: str = "gpt-4o-mini"
+    ai_api_key: str = ""
+    ai_timeout_seconds: int = 30
+    ai_max_output_tokens: int = 700
+
     model_config = {"env_file": ".env", "extra": "ignore"}
 
     @field_validator("debug", mode="before")
@@ -182,6 +192,9 @@ class Settings(BaseSettings):
 
     def resolved_search_embedding_api_key(self) -> str:
         return self.search_embedding_api_key or self.openai_api_key
+
+    def resolved_ai_api_key(self) -> str:
+        return self.ai_api_key or self.openai_api_key
 
 
 settings = Settings()

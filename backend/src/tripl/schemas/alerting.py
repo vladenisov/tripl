@@ -76,6 +76,7 @@ class AlertRuleBase(BaseModel):
     include_distribution_drifts: bool | None = None
     notify_on_spike: bool | None = None
     notify_on_drop: bool | None = None
+    ai_explanation_enabled: bool | None = None
     min_percent_delta: float | None = Field(None, ge=0)
     min_absolute_delta: float | None = Field(None, ge=0)
     min_expected_count: float | None = Field(None, ge=0)
@@ -104,6 +105,7 @@ class AlertRuleCreate(AlertRuleBase):
     include_distribution_drifts: bool = False
     notify_on_spike: bool = True
     notify_on_drop: bool = True
+    ai_explanation_enabled: bool = False
     min_percent_delta: float = Field(0, ge=0)
     min_absolute_delta: float = Field(0, ge=0)
     min_expected_count: float = Field(0, ge=0)
@@ -130,6 +132,7 @@ class AlertRuleResponse(BaseModel):
     include_distribution_drifts: bool
     notify_on_spike: bool
     notify_on_drop: bool
+    ai_explanation_enabled: bool
     min_percent_delta: float
     min_absolute_delta: float
     min_expected_count: float
