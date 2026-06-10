@@ -1,6 +1,7 @@
 import { useMemo, useState } from "react"
+import { useNavigate } from "react-router-dom"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
-import { ChevronDown, Pencil, Plus, Search, Trash2 } from "lucide-react"
+import { ChevronRight, Pencil, Plus, Search, Trash2 } from "lucide-react"
 import { dataSourcesApi } from "@/api/dataSources"
 import { eventTypesApi } from "@/api/eventTypes"
 import { fieldsApi } from "@/api/fields"
@@ -19,7 +20,6 @@ import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Card } from "@/components/ui/card"
 import { Checkbox } from "@/components/ui/checkbox"
-import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible"
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
@@ -27,7 +27,6 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Textarea } from "@/components/ui/textarea"
 import { EmptyState } from "@/components/empty-state"
 import { ErrorState } from "@/components/error-state"
-import { ScanDetail } from "./ScanDetail"
 
 function formatPreviewCell(value: unknown): string {
   if (value == null) return '—'
@@ -581,9 +580,9 @@ function EventGroupRulesEditor({
 /* ─── Scans Tab ─── */
 export function ScansTab({ slug }: { slug: string }) {
   const qc = useQueryClient()
+  const navigate = useNavigate()
   const branchId = useActiveBranchId()
   const [showForm, setShowForm] = useState(false)
-  const [expandedId, setExpandedId] = useState<string | null>(null)
   const [editingScanId, setEditingScanId] = useState<string | null>(null)
   const [preview, setPreview] = useState<ScanConfigPreview | null>(null)
   const [editPreview, setEditPreview] = useState<ScanConfigPreview | null>(null)
@@ -1278,48 +1277,44 @@ export function ScansTab({ slug }: { slug: string }) {
       </Dialog>
 
       {scanConfigs.map((sc: ScanConfig) => (
-        <Collapsible key={sc.id} open={expandedId === sc.id} onOpenChange={open => setExpandedId(open ? sc.id : null)}>
-          <Card>
-            <CollapsibleTrigger asChild>
-              <div className="flex items-center justify-between p-4 cursor-pointer hover:bg-muted/50 transition-colors">
-                <div className="flex items-center gap-3">
-                  <span className="font-semibold">{sc.name}</span>
-                  <span className="text-muted-foreground text-sm">{dsMap.get(sc.data_source_id) ?? 'Unknown'}</span>
-                  {sc.interval && <Badge variant="outline" className="text-xs">⏱ {sc.interval}</Badge>}
-                  {sc.scan_lookback_hours && (
-                    <Badge variant="outline" className="text-xs">Lookback {sc.scan_lookback_hours}h</Badge>
-                  )}
-                  {sc.scan_row_limit && (
-                    <Badge variant="outline" className="text-xs">Scan cap {sc.scan_row_limit}</Badge>
-                  )}
-                  {sc.metrics_row_limit && (
-                    <Badge variant="outline" className="text-xs">Metrics cap {sc.metrics_row_limit}</Badge>
-                  )}
-                  {sc.json_value_paths.length > 0 && (
-                    <Badge variant="outline" className="text-xs">JSON keep {sc.json_value_paths.length}</Badge>
-                  )}
-                  {sc.metric_breakdown_columns.length > 0 && (
-                    <Badge variant="outline" className="text-xs">Breakdowns {sc.metric_breakdown_columns.length}</Badge>
-                  )}
-                  {sc.distribution_drift_fields.length > 0 && (
-                    <Badge variant="outline" className="text-xs">Distribution {sc.distribution_drift_fields.length}</Badge>
-                  )}
-                  {sc.event_group_rules.length > 0 && (
-                    <Badge variant="outline" className="text-xs">Groups {sc.event_group_rules.length}</Badge>
-                  )}
-                </div>
-                <div className="flex items-center gap-2">
-                  <Button variant="ghost" size="icon" className="h-7 w-7" title="Edit scan config" onClick={e => { e.stopPropagation(); startEditScan(sc) }}><Pencil className="h-3 w-3" /></Button>
-                  <Button variant="ghost" size="icon" className="h-7 w-7 text-muted-foreground hover:text-destructive" onClick={e => { e.stopPropagation(); handleDelete(sc) }}><Trash2 className="h-3 w-3" /></Button>
-                  <ChevronDown className={`h-4 w-4 text-muted-foreground transition-transform ${expandedId === sc.id ? 'rotate-180' : ''}`} />
-                </div>
-              </div>
-            </CollapsibleTrigger>
-            <CollapsibleContent>
-              <ScanDetail slug={slug} scanConfig={sc} eventTypes={eventTypes} branchId={branchId} />
-            </CollapsibleContent>
-          </Card>
-        </Collapsible>
+        <Card key={sc.id}>
+          <div
+            className="flex items-center justify-between p-4 cursor-pointer hover:bg-muted/50 transition-colors"
+            onClick={() => navigate(`/p/${slug}/settings/scans/${sc.id}`)}
+          >
+            <div className="flex items-center gap-3">
+              <span className="font-semibold">{sc.name}</span>
+              <span className="text-muted-foreground text-sm">{dsMap.get(sc.data_source_id) ?? 'Unknown'}</span>
+              {sc.interval && <Badge variant="outline" className="text-xs">⏱ {sc.interval}</Badge>}
+              {sc.scan_lookback_hours && (
+                <Badge variant="outline" className="text-xs">Lookback {sc.scan_lookback_hours}h</Badge>
+              )}
+              {sc.scan_row_limit && (
+                <Badge variant="outline" className="text-xs">Scan cap {sc.scan_row_limit}</Badge>
+              )}
+              {sc.metrics_row_limit && (
+                <Badge variant="outline" className="text-xs">Metrics cap {sc.metrics_row_limit}</Badge>
+              )}
+              {sc.json_value_paths.length > 0 && (
+                <Badge variant="outline" className="text-xs">JSON keep {sc.json_value_paths.length}</Badge>
+              )}
+              {sc.metric_breakdown_columns.length > 0 && (
+                <Badge variant="outline" className="text-xs">Breakdowns {sc.metric_breakdown_columns.length}</Badge>
+              )}
+              {sc.distribution_drift_fields.length > 0 && (
+                <Badge variant="outline" className="text-xs">Distribution {sc.distribution_drift_fields.length}</Badge>
+              )}
+              {sc.event_group_rules.length > 0 && (
+                <Badge variant="outline" className="text-xs">Groups {sc.event_group_rules.length}</Badge>
+              )}
+            </div>
+            <div className="flex items-center gap-2">
+              <Button variant="ghost" size="icon" className="h-7 w-7" title="Edit scan config" onClick={e => { e.stopPropagation(); startEditScan(sc) }}><Pencil className="h-3 w-3" /></Button>
+              <Button variant="ghost" size="icon" className="h-7 w-7 text-muted-foreground hover:text-destructive" onClick={e => { e.stopPropagation(); handleDelete(sc) }}><Trash2 className="h-3 w-3" /></Button>
+              <ChevronRight className="h-4 w-4 text-muted-foreground" />
+            </div>
+          </div>
+        </Card>
       ))}
     </div>
   )
