@@ -46,7 +46,6 @@ import {
   Settings2,
   Trash2,
 } from 'lucide-react'
-import { getErrorMessage } from '@/lib/utils'
 
 export default function MainPage() {
   const queryClient = useQueryClient()
@@ -254,7 +253,7 @@ export default function MainPage() {
                 />
               </div>
               {createMut.isError && (
-                <p className="text-sm text-destructive">{getErrorMessage(createMut.error)}</p>
+                <ErrorState compact title="Could not create project" error={createMut.error} />
               )}
             </div>
             <DialogFooter>

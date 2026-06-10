@@ -26,8 +26,8 @@ import { Label } from "@/components/ui/label"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { Textarea } from "@/components/ui/textarea"
 import { EmptyState } from "@/components/empty-state"
+import { ErrorState } from "@/components/error-state"
 import { ScanDetail } from "./ScanDetail"
-import { getErrorMessage } from '@/lib/utils'
 
 function formatPreviewCell(value: unknown): string {
   if (value == null) return '—'
@@ -927,7 +927,7 @@ export function ScansTab({ slug }: { slug: string }) {
                 </Button>
               </div>
               {previewMut.isError && (
-                <p className="text-sm text-destructive">{getErrorMessage(previewMut.error)}</p>
+                <ErrorState compact title="Preview failed" error={previewMut.error} />
               )}
               <div className="grid grid-cols-2 gap-3">
                 <div className="grid gap-2">
@@ -1073,7 +1073,9 @@ export function ScansTab({ slug }: { slug: string }) {
                   </p>
                 </div>
               )}
-              {createMut.isError && <p className="text-sm text-destructive">{getErrorMessage(createMut.error)}</p>}
+              {createMut.isError && (
+                <ErrorState compact title="Could not create scan config" error={createMut.error} />
+              )}
             </div>
             <DialogFooter className="shrink-0 border-t bg-background px-6 py-4">
               <Button type="button" variant="outline" onClick={resetForm}>Cancel</Button>
@@ -1117,7 +1119,7 @@ export function ScansTab({ slug }: { slug: string }) {
                 </Button>
               </div>
               {editPreviewMut.isError && (
-                <p className="text-sm text-destructive">{getErrorMessage(editPreviewMut.error)}</p>
+                <ErrorState compact title="Preview failed" error={editPreviewMut.error} />
               )}
               <div className="grid grid-cols-2 gap-3">
                 <div className="grid gap-2">
@@ -1263,7 +1265,9 @@ export function ScansTab({ slug }: { slug: string }) {
                   </p>
                 </div>
               )}
-              {updateMut.isError && <p className="text-sm text-destructive">{getErrorMessage(updateMut.error)}</p>}
+              {updateMut.isError && (
+                <ErrorState compact title="Could not save scan config" error={updateMut.error} />
+              )}
             </div>
             <DialogFooter className="shrink-0 border-t bg-background px-6 py-4">
               <Button type="button" variant="outline" onClick={() => setEditingScanId(null)}>Cancel</Button>
