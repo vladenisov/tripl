@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type ComponentType, type ReactNode } from 'react'
+import { useMemo, useState, type ComponentType, type ReactNode } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   Activity,
@@ -154,8 +154,8 @@ function buildSectionDiff(
   saved: ServiceSettings,
 ): Record<string, string | number | boolean> {
   const changes: Record<string, string | number | boolean> = {}
-  const currentSection = current[section] as Record<string, string | number | boolean>
-  const savedSection = saved[section] as Record<string, string | number | boolean>
+  const currentSection = current[section] as unknown as Record<string, string | number | boolean>
+  const savedSection = saved[section] as unknown as Record<string, string | number | boolean>
   for (const field of fields) {
     if (currentSection[field] !== savedSection[field]) {
       changes[field] = currentSection[field]
@@ -298,6 +298,7 @@ export default function ServiceSettingsPage() {
   const qc = useQueryClient()
   const [form, setForm] = useState<EditableSettings | null>(null)
   const [secretDrafts, setSecretDrafts] = useState<SecretDrafts>(EMPTY_SECRET_DRAFTS)
+  const [hydratedSettings, setHydratedSettings] = useState<ServiceSettings | null>(null)
 
   const settingsQuery = useQuery({
     queryKey: ['serviceSettings'],
@@ -305,17 +306,17 @@ export default function ServiceSettingsPage() {
     enabled: user?.role === 'owner',
   })
 
-  useEffect(() => {
-    if (settingsQuery.data) {
-      setForm(editableFromSettings(settingsQuery.data))
-      setSecretDrafts(EMPTY_SECRET_DRAFTS)
-    }
-  }, [settingsQuery.data])
+  if (settingsQuery.data && hydratedSettings !== settingsQuery.data) {
+    setHydratedSettings(settingsQuery.data)
+    setForm(editableFromSettings(settingsQuery.data))
+    setSecretDrafts(EMPTY_SECRET_DRAFTS)
+  }
 
   const saveMut = useMutation({
     mutationFn: (data: ServiceSettingsUpdate) => serviceSettingsApi.update(data),
     onSuccess: data => {
       qc.setQueryData(['serviceSettings'], data)
+      setHydratedSettings(data)
       setForm(editableFromSettings(data))
       setSecretDrafts(EMPTY_SECRET_DRAFTS)
     },
