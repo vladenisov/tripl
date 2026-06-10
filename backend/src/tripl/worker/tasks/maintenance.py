@@ -17,13 +17,12 @@ import logging
 from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import delete, select
-from sqlalchemy.orm import Session
 
 from tripl.models.alert_delivery import AlertDelivery, AlertDeliveryStatus
 from tripl.models.schema_drift import SchemaDrift
 from tripl.services.schema_drift_service import DRIFT_RETENTION_DAYS
 from tripl.worker.celery_app import celery_app
-from tripl.worker.db import SyncSessionLocal
+from tripl.worker.db import _get_sync_session
 
 logger = logging.getLogger(__name__)
 
@@ -35,10 +34,6 @@ STRANDED_DELIVERY_MINUTES = 15
 # permanently unreachable broker target) is eventually marked failed instead
 # of being requeued forever.
 MAX_DISPATCH_ATTEMPTS = 5
-
-
-def _get_sync_session() -> Session:
-    return SyncSessionLocal()
 
 
 @celery_app.task(  # type: ignore[untyped-decorator]

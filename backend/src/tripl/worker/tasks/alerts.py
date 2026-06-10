@@ -54,14 +54,10 @@ from tripl.models.project import Project
 from tripl.models.scan_config import ScanConfig
 from tripl.observability.metrics import alert_deliveries_total
 from tripl.worker.celery_app import celery_app
-from tripl.worker.db import SyncSessionLocal
+from tripl.worker.db import _get_sync_session
 
 logger = logging.getLogger(__name__)
 _TELEGRAM_BOT_URL_TOKEN_RE = re.compile(r"(/bot)([^/]+)(/)")
-
-
-def _get_sync_session() -> Session:
-    return SyncSessionLocal()
 
 
 def _decrypt_secret(encrypted: str | None) -> str:

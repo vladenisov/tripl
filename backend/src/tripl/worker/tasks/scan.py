@@ -19,7 +19,6 @@ from tripl.models.scan_job import ScanJob, ScanJobStatus
 from tripl.models.scan_preview_job import ScanPreviewJob
 from tripl.observability.metrics import scan_runs_total
 from tripl.worker.adapters.base import BaseAdapter, ColumnInfo
-from tripl.worker.adapters.registry import build_adapter
 from tripl.worker.analyzers.cardinality import analyze_cardinality, analyze_cardinality_grouped
 from tripl.worker.analyzers.event_generator import (
     GenerationResult,
@@ -28,7 +27,7 @@ from tripl.worker.analyzers.event_generator import (
 )
 from tripl.worker.analyzers.preview import build_preview_payload
 from tripl.worker.celery_app import celery_app
-from tripl.worker.db import SyncSessionLocal
+from tripl.worker.db import _build_adapter, _get_sync_session
 from tripl.worker.search_reindex import reindex_main_branch_from_worker
 from tripl.worker.utils.query_windows import TimeWindow, resolve_lookback_window
 
@@ -95,14 +94,6 @@ def _serialize_generation_snapshot(
             for group_name, group_result in group_results.items()
         }
     return snapshot
-
-
-def _get_sync_session() -> Session:
-    return SyncSessionLocal()
-
-
-def _build_adapter(ds: DataSource) -> BaseAdapter:
-    return build_adapter(ds)
 
 
 @celery_app.task(  # type: ignore[untyped-decorator]
