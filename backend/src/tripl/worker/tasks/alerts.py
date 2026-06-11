@@ -51,7 +51,7 @@ from tripl.models.alert_destination import AlertDestination, AlertDestinationTyp
 from tripl.models.alert_rule import AlertRule
 from tripl.models.alert_rule_state import AlertRuleState
 from tripl.models.distribution_drift import DistributionDrift
-from tripl.models.event import Event
+from tripl.models.event import Event, EventStatus
 from tripl.models.event_type import EventType
 from tripl.models.metric_anomaly import MetricAnomaly
 from tripl.models.project import Project
@@ -576,6 +576,16 @@ def _build_plan_digest_message(
             (Event.last_seen_at.is_(None)) | (Event.last_seen_at < dead_cutoff),
         )
     ).scalar_one()
+    sunset_overdue = session.execute(
+        select(func.count(Event.id)).where(
+            Event.project_id == project.id,
+            Event.status == EventStatus.deprecated,
+            Event.sunset_at.is_not(None),
+            Event.sunset_at < now,
+            Event.last_seen_at.is_not(None),
+            Event.last_seen_at > Event.sunset_at,
+        )
+    ).scalar_one()
 
     top_rows = session.execute(
         select(MetricAnomaly, ScanConfig.name)
@@ -602,6 +612,7 @@ def _build_plan_digest_message(
         f"- Significant distribution drifts: {distribution_drifts}",
         f"- Live coverage: {live_events}/{total_events} events ({coverage:.1f}%)",
         f"- Dead implemented events: {dead_events}",
+        f"- Deprecated events still receiving data: {sunset_overdue}",
     ]
     if top_lines:
         lines.extend(["", "Top anomalies:", *top_lines])
@@ -682,6 +693,94 @@ def send_weekly_plan_digest() -> dict[str, int]:
                     exc_info=True,
                 )
         return {"destinations_checked": len(rows), "sent": sent, "failed": failed}
+    finally:
+        session.close()
+
+
+def _build_sunset_alert_message(
+    session: Session,
+    *,
+    project: Project,
+    now: datetime,
+) -> str | None:
+    """Return a plaintext alert message when deprecated events are still
+    receiving data past their sunset_at, or None when there are none."""
+    overdue_events = session.execute(
+        select(Event.id, Event.name, Event.sunset_at, Event.last_seen_at)
+        .where(
+            Event.project_id == project.id,
+            Event.status == EventStatus.deprecated,
+            Event.sunset_at.is_not(None),
+            Event.sunset_at < now,
+            Event.last_seen_at.is_not(None),
+            Event.last_seen_at > Event.sunset_at,
+        )
+        .order_by(Event.name)
+    ).all()
+
+    if not overdue_events:
+        return None
+
+    lines = [
+        f"Deprecated events still receiving data after sunset — {project.name}",
+        f"Count: {len(overdue_events)}",
+        "",
+    ]
+    for _eid, name, sunset_at, last_seen_at in overdue_events:
+        lines.append(
+            f"- {name} (sunset {sunset_at:%Y-%m-%d}, last seen {last_seen_at:%Y-%m-%d})"
+        )
+    return "\n".join(lines)
+
+
+@celery_app.task(name="tripl.worker.tasks.alerts.check_deprecated_sunset_events")  # type: ignore[untyped-decorator]
+def check_deprecated_sunset_events() -> dict[str, int]:
+    """Alert on deprecated events that keep receiving data past their sunset_at.
+
+    Mirrors the weekly-digest delivery pattern: queries all projects with
+    enabled Slack/email destinations and sends a plaintext message per project
+    that has at least one offending event.  Idempotent — running twice sends
+    again (callers should use appropriate scheduling/cooldown at the task level).
+    """
+    session = _get_sync_session()
+    checked = 0
+    sent = 0
+    failed = 0
+    try:
+        email_config = app_settings_service.get_email_config_sync(session)
+        rows = session.execute(
+            select(Project, AlertDestination)
+            .join(AlertDestination, AlertDestination.project_id == Project.id)
+            .where(
+                AlertDestination.enabled.is_(True),
+                AlertDestination.type.in_(
+                    [AlertDestinationType.slack.value, AlertDestinationType.email.value]
+                ),
+            )
+            .order_by(Project.name, AlertDestination.name)
+        ).all()
+        now = datetime.now(UTC)
+        for project, destination in rows:
+            checked += 1
+            message = _build_sunset_alert_message(session, project=project, now=now)
+            if message is None:
+                continue
+            try:
+                _send_digest_to_destination(
+                    destination=destination,
+                    message=message,
+                    project=project,
+                    email_config=email_config,
+                )
+                sent += 1
+            except Exception:  # noqa: BLE001
+                failed += 1
+                logger.warning(
+                    "Failed to send sunset alert to destination %s",
+                    destination.id,
+                    exc_info=True,
+                )
+        return {"destinations_checked": checked, "sent": sent, "failed": failed}
     finally:
         session.close()
 

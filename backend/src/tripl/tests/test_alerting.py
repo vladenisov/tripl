@@ -16,6 +16,7 @@ from tripl.models.alert_delivery_item import AlertDeliveryItem
 from tripl.models.alert_destination import AlertDestination
 from tripl.models.alert_rule import AlertRule
 from tripl.models.data_source import DataSource
+from tripl.models.event import Event, EventStatus
 from tripl.models.event_type import EventType
 from tripl.models.field_definition import FieldDefinition
 from tripl.models.project import Project
@@ -24,6 +25,7 @@ from tripl.models.scan_config import ScanConfig
 from tripl.models.schema_drift import SchemaDrift
 from tripl.tests.conftest import TestSessionLocal
 from tripl.worker.tasks import metrics
+from tripl.worker.tasks.alerts import check_deprecated_sunset_events
 
 
 @pytest.mark.parametrize(
@@ -2945,6 +2947,153 @@ def test_send_alert_delivery_skips_ticket_creation_when_external_id_present(
         assert persisted.status == AlertDeliveryStatus.sent.value
         # Original id preserved, not overwritten by a new creation.
         assert persisted.payload_snapshot["external_issue_key"] == "ENG-1"
+
+    Base.metadata.drop_all(engine)
+    engine.dispose()
+
+
+# --- Deprecated sunset alert ------------------------------------------------
+
+
+def _make_sunset_project(
+    session,  # type: ignore[no-untyped-def]
+) -> tuple:
+    """Return (project, destination) seeded in *session*."""
+    project = Project(
+        id=uuid.uuid4(), name="Sunset Project", slug="sunset-proj", description=""
+    )
+    data_source = DataSource(
+        id=uuid.uuid4(),
+        name="DS",
+        db_type="clickhouse",
+        host="localhost",
+        port=8123,
+        database_name="default",
+        username="default",
+        password_encrypted="",
+    )
+    destination = AlertDestination(
+        id=uuid.uuid4(),
+        project_id=project.id,
+        type="slack",
+        name="Ops Slack",
+        enabled=True,
+        webhook_url_encrypted="fake-secret",
+    )
+    session.add_all([project, data_source, destination])
+    session.commit()
+    return project, destination
+
+
+def test_check_deprecated_sunset_events_fires_when_event_alive_past_sunset(
+    monkeypatch, tmp_path
+) -> None:
+    """A deprecated event with sunset_at in the past and last_seen_at > sunset_at
+    triggers a Slack message."""
+    engine = create_engine(f"sqlite:///{tmp_path / 'sunset_alert_fires.db'}")
+    Base.metadata.create_all(engine)
+    sync_session_factory = sessionmaker(engine, expire_on_commit=False)
+    sent_messages: list[str] = []
+
+    with sync_session_factory() as session:
+        project, _destination = _make_sunset_project(session)
+        sunset = datetime(2026, 1, 1, tzinfo=UTC)
+        last_seen = datetime(2026, 3, 1, tzinfo=UTC)
+        event = Event(
+            id=uuid.uuid4(),
+            project_id=project.id,
+            event_type_id=uuid.uuid4(),  # FK not enforced in SQLite
+            name="app:old_purchase",
+            description="",
+            status=EventStatus.deprecated,
+            sunset_at=sunset,
+            last_seen_at=last_seen,
+        )
+        session.add(event)
+        session.commit()
+
+    def fake_send_digest(
+        *,
+        destination,  # type: ignore[no-untyped-def]
+        message: str,
+        project,  # type: ignore[no-untyped-def]
+        email_config,  # type: ignore[no-untyped-def]
+    ) -> None:
+        sent_messages.append(message)
+
+    monkeypatch.setitem(
+        check_deprecated_sunset_events.run.__globals__,
+        "_get_sync_session",
+        sync_session_factory,
+    )
+    monkeypatch.setitem(
+        check_deprecated_sunset_events.run.__globals__,
+        "_send_digest_to_destination",
+        fake_send_digest,
+    )
+
+    result = check_deprecated_sunset_events.run()
+
+    assert result["sent"] == 1
+    assert len(sent_messages) == 1
+    assert "app:old_purchase" in sent_messages[0]
+    assert "deprecated" in sent_messages[0].lower() or "sunset" in sent_messages[0].lower()
+
+    Base.metadata.drop_all(engine)
+    engine.dispose()
+
+
+def test_check_deprecated_sunset_events_silent_when_no_recent_data(
+    monkeypatch, tmp_path
+) -> None:
+    """A deprecated event whose last_seen_at is before sunset_at does NOT fire."""
+    engine = create_engine(f"sqlite:///{tmp_path / 'sunset_alert_silent.db'}")
+    Base.metadata.create_all(engine)
+    sync_session_factory = sessionmaker(engine, expire_on_commit=False)
+    sent_messages: list[str] = []
+
+    with sync_session_factory() as session:
+        project, _destination = _make_sunset_project(session)
+        sunset = datetime(2026, 3, 1, tzinfo=UTC)
+        # last_seen before sunset — not overdue
+        last_seen = datetime(2026, 2, 1, tzinfo=UTC)
+        event = Event(
+            id=uuid.uuid4(),
+            project_id=project.id,
+            event_type_id=uuid.uuid4(),
+            name="app:retired_event",
+            description="",
+            status=EventStatus.deprecated,
+            sunset_at=sunset,
+            last_seen_at=last_seen,
+        )
+        session.add(event)
+        session.commit()
+
+    def fake_send_digest(
+        *,
+        destination,  # type: ignore[no-untyped-def]
+        message: str,
+        project,  # type: ignore[no-untyped-def]
+        email_config,  # type: ignore[no-untyped-def]
+    ) -> None:
+        sent_messages.append(message)
+
+    monkeypatch.setitem(
+        check_deprecated_sunset_events.run.__globals__,
+        "_get_sync_session",
+        sync_session_factory,
+    )
+    monkeypatch.setitem(
+        check_deprecated_sunset_events.run.__globals__,
+        "_send_digest_to_destination",
+        fake_send_digest,
+    )
+
+    result = check_deprecated_sunset_events.run()
+
+    assert result["sent"] == 0
+    assert sent_messages == []
 
     Base.metadata.drop_all(engine)
     engine.dispose()
