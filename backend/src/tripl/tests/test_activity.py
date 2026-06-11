@@ -26,8 +26,7 @@ async def test_project_activity_feed_uses_real_backend_records(client: AsyncClie
         json={
             "event_type_id": event_type_id,
             "name": "Landing Viewed",
-            "implemented": False,
-            "reviewed": False,
+            "status": "in_review",
         },
     )
 

@@ -589,10 +589,8 @@ async def get_events_metrics(
     slug: str,
     event_type_id: uuid.UUID | None = None,
     search: str | None = None,
-    implemented: bool | None = None,
     tag: str | None = None,
-    reviewed: bool | None = None,
-    archived: bool | None = None,
+    status: list[str] | None = None,
     time_from: datetime | None = None,
     time_to: datetime | None = None,
 ) -> EventMetricsResponse:
@@ -611,12 +609,8 @@ async def get_events_metrics(
         query = query.where(Event.event_type_id == event_type_id)
     if search:
         query = query.where(Event.name.ilike(f"%{search}%"))
-    if implemented is not None:
-        query = query.where(Event.implemented == implemented)
-    if reviewed is not None:
-        query = query.where(Event.reviewed == reviewed)
-    if archived is not None:
-        query = query.where(Event.archived == archived)
+    if status:
+        query = query.where(Event.status.in_(status))
     if tag:
         tagged_event_ids = select(EventTag.event_id).where(EventTag.name == tag).correlate(None)
         query = query.where(Event.id.in_(tagged_event_ids))

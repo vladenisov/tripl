@@ -367,8 +367,7 @@ async def test_get_events_metrics_aggregates_matching_events(client: AsyncClient
         json={
             "event_type_id": setup["page_type_id"],
             "name": "Alpha Viewed",
-            "implemented": True,
-            "reviewed": True,
+            "status": "implemented",
             "tags": ["mobile"],
             "field_values": [{"field_definition_id": setup["page_field_id"], "value": "home"}],
         },
@@ -378,8 +377,7 @@ async def test_get_events_metrics_aggregates_matching_events(client: AsyncClient
         json={
             "event_type_id": setup["page_type_id"],
             "name": "Beta Review",
-            "implemented": False,
-            "reviewed": False,
+            "status": "in_review",
             "tags": ["web"],
             "field_values": [{"field_definition_id": setup["page_field_id"], "value": "pricing"}],
         },
@@ -389,9 +387,7 @@ async def test_get_events_metrics_aggregates_matching_events(client: AsyncClient
         json={
             "event_type_id": setup["track_type_id"],
             "name": "Gamma Archived",
-            "implemented": True,
-            "reviewed": True,
-            "archived": True,
+            "status": "archived",
             "tags": ["mobile"],
             "field_values": [{"field_definition_id": setup["track_field_id"], "value": "checkout"}],
         },
@@ -426,8 +422,7 @@ async def test_get_events_metrics_applies_event_filters(client: AsyncClient) -> 
         json={
             "event_type_id": setup["page_type_id"],
             "name": "Alpha Viewed",
-            "implemented": True,
-            "reviewed": True,
+            "status": "implemented",
             "tags": ["mobile"],
             "field_values": [{"field_definition_id": setup["page_field_id"], "value": "home"}],
         },
@@ -437,8 +432,7 @@ async def test_get_events_metrics_applies_event_filters(client: AsyncClient) -> 
         json={
             "event_type_id": setup["page_type_id"],
             "name": "Beta Review",
-            "implemented": False,
-            "reviewed": False,
+            "status": "in_review",
             "tags": ["web"],
             "field_values": [{"field_definition_id": setup["page_field_id"], "value": "pricing"}],
         },
@@ -448,9 +442,7 @@ async def test_get_events_metrics_applies_event_filters(client: AsyncClient) -> 
         json={
             "event_type_id": setup["track_type_id"],
             "name": "Gamma Archived",
-            "implemented": True,
-            "reviewed": True,
-            "archived": True,
+            "status": "archived",
             "tags": ["mobile"],
             "field_values": [{"field_definition_id": setup["track_field_id"], "value": "checkout"}],
         },
@@ -466,7 +458,7 @@ async def test_get_events_metrics_applies_event_filters(client: AsyncClient) -> 
     )
 
     reviewed_resp = await client.get(
-        "/api/v1/projects/metrics-filters/events-metrics?reviewed=false"
+        "/api/v1/projects/metrics-filters/events-metrics?status=in_review"
     )
     assert reviewed_resp.status_code == 200
     assert reviewed_resp.json()["data"] == [
@@ -475,7 +467,7 @@ async def test_get_events_metrics_applies_event_filters(client: AsyncClient) -> 
     ]
 
     archived_resp = await client.get(
-        "/api/v1/projects/metrics-filters/events-metrics?archived=true"
+        "/api/v1/projects/metrics-filters/events-metrics?status=archived"
     )
     assert archived_resp.status_code == 200
     assert archived_resp.json()["data"] == [
@@ -504,8 +496,7 @@ async def test_get_events_window_metrics_returns_last_day_counts_per_event(
         json={
             "event_type_id": setup["page_type_id"],
             "name": "Alpha Viewed",
-            "implemented": True,
-            "reviewed": True,
+            "status": "implemented",
             "tags": ["mobile"],
             "field_values": [{"field_definition_id": setup["page_field_id"], "value": "home"}],
         },
@@ -515,8 +506,7 @@ async def test_get_events_window_metrics_returns_last_day_counts_per_event(
         json={
             "event_type_id": setup["page_type_id"],
             "name": "Beta Review",
-            "implemented": False,
-            "reviewed": False,
+            "status": "in_review",
             "tags": ["web"],
             "field_values": [{"field_definition_id": setup["page_field_id"], "value": "pricing"}],
         },
@@ -560,8 +550,7 @@ async def test_get_event_metrics_returns_enriched_monitoring_series(client: Asyn
         json={
             "event_type_id": setup["page_type_id"],
             "name": "event_name=Login",
-            "implemented": True,
-            "reviewed": True,
+            "status": "implemented",
             "field_values": [{"field_definition_id": setup["page_field_id"], "value": "home"}],
         },
     )
@@ -611,8 +600,7 @@ async def test_get_event_metric_breakdowns_returns_series(client: AsyncClient) -
         json={
             "event_type_id": setup["page_type_id"],
             "name": "event_name=Login",
-            "implemented": True,
-            "reviewed": True,
+            "status": "implemented",
             "metric_breakdown_columns": ["country"],
             "field_values": [{"field_definition_id": setup["page_field_id"], "value": "home"}],
         },
@@ -717,8 +705,7 @@ async def test_get_project_total_metrics_and_active_signals(client: AsyncClient)
         json={
             "event_type_id": setup["page_type_id"],
             "name": "event_name=Checkout",
-            "implemented": True,
-            "reviewed": True,
+            "status": "implemented",
             "field_values": [{"field_definition_id": setup["page_field_id"], "value": "pricing"}],
         },
     )
@@ -769,8 +756,7 @@ async def test_get_recent_signals_when_anomaly_is_within_last_24_hours(client: A
         json={
             "event_type_id": setup["page_type_id"],
             "name": "event_name=Signup",
-            "implemented": True,
-            "reviewed": True,
+            "status": "implemented",
             "field_values": [{"field_definition_id": setup["page_field_id"], "value": "signup"}],
         },
     )
@@ -815,8 +801,7 @@ async def test_get_top_movers_ranks_breakdown_anomalies_by_abs_z(
         json={
             "event_type_id": setup["page_type_id"],
             "name": "event_name=Login",
-            "implemented": True,
-            "reviewed": True,
+            "status": "implemented",
             "field_values": [{"field_definition_id": setup["page_field_id"], "value": "home"}],
         },
     )

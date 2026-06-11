@@ -1,7 +1,7 @@
 import uuid
 
 from fastapi import HTTPException
-from sqlalchemy import String, and_, case, cast, func, literal, select, union_all
+from sqlalchemy import String, case, cast, func, literal, select, union_all
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from tripl import cache
@@ -56,20 +56,15 @@ async def _get_project_summaries(
         select(
             Event.project_id,
             func.count(Event.id),
-            func.sum(case((Event.archived.is_(False), 1), else_=0)),
+            func.sum(case((Event.status != "archived", 1), else_=0)),
             func.sum(
                 case(
-                    (and_(Event.archived.is_(False), Event.implemented.is_(True)), 1),
+                    (Event.status.in_(["implemented", "live"]), 1),
                     else_=0,
                 )
             ),
-            func.sum(
-                case(
-                    (and_(Event.archived.is_(False), Event.reviewed.is_(False)), 1),
-                    else_=0,
-                )
-            ),
-            func.sum(case((Event.archived.is_(True), 1), else_=0)),
+            func.sum(case((Event.status == "in_review", 1), else_=0)),
+            func.sum(case((Event.status == "archived", 1), else_=0)),
         )
         .where(Event.project_id.in_(project_ids))
         .group_by(Event.project_id)
@@ -451,6 +446,11 @@ async def update_project(session: AsyncSession, slug: str, data: ProjectUpdate) 
     await session.refresh(project)
     await cache.delete_prefix(cache.prefix_projects())
     return await _serialize_project(session, project)
+
+
+def demo_data_source_name(slug: str) -> str:
+    """Return the canonical DataSource name used by the demo project for *slug*."""
+    return f"Demo warehouse {slug}"
 
 
 async def delete_project(session: AsyncSession, slug: str) -> None:

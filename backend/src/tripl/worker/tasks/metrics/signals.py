@@ -109,7 +109,7 @@ def _get_latest_metric_buckets(
         .where(
             EventMetric.scan_config_id == scan_config_id,
             EventMetric.event_id.is_not(None),
-            Event.archived.is_(False),
+            Event.status != "archived",
         )
         .group_by(EventMetric.event_id)
     ).all():
@@ -130,7 +130,7 @@ def _get_visible_signal_scope_keys(
         .outerjoin(Event, MetricAnomaly.event_id == Event.id)
         .where(
             MetricAnomaly.scan_config_id == scan_config_id,
-            (MetricAnomaly.event_id.is_(None)) | (Event.archived.is_(False)),
+            (MetricAnomaly.event_id.is_(None)) | (Event.status != "archived"),
         )
         .order_by(MetricAnomaly.bucket.desc())
     ).scalars():
@@ -159,7 +159,7 @@ def _get_latest_active_anomalies(
         .outerjoin(Event, MetricAnomaly.event_id == Event.id)
         .where(
             MetricAnomaly.scan_config_id == config.id,
-            (MetricAnomaly.event_id.is_(None)) | (Event.archived.is_(False)),
+            (MetricAnomaly.event_id.is_(None)) | (Event.status != "archived"),
         )
         .order_by(MetricAnomaly.bucket.desc())
     ).scalars():

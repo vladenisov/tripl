@@ -97,10 +97,10 @@ async def test_diff_reports_added_removed_and_changed_entities(
         json={"is_required": False, "sensitivity": "pii"},
     )
     assert patch.status_code == 200
-    # Toggle implemented on the event to drive an event-level change.
+    # Move the event through the lifecycle to drive an event-level change.
     ev_patch = await client.patch(
         f"/api/v1/projects/rev-diff/events/{event_id}",
-        json={"implemented": True},
+        json={"status": "implemented"},
     )
     assert ev_patch.status_code == 200
 
@@ -126,7 +126,7 @@ async def test_diff_reports_added_removed_and_changed_entities(
     )
     assert kinds_by_name[("event", "Home View")]["kind"] == "changed"
     assert any(
-        "implemented" in change for change in kinds_by_name[("event", "Home View")]["changes"]
+        "status" in change for change in kinds_by_name[("event", "Home View")]["changes"]
     )
     assert diff["summary"]["added"] >= 1
     assert diff["summary"]["changed"] >= 2

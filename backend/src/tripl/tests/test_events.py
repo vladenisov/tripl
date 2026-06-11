@@ -167,6 +167,38 @@ async def test_update_event_preserves_variable_value_contexts(client: AsyncClien
 
 
 @pytest.mark.asyncio
+async def test_event_history_records_tracked_changes(client: AsyncClient):
+    et_id, field_id, _ = await _setup_events(client, "ev-history")
+    event_resp = await client.post(
+        "/api/v1/projects/ev-history/events",
+        json={
+            "event_type_id": et_id,
+            "name": "History Event",
+            "field_values": [{"field_definition_id": field_id, "value": "home"}],
+        },
+    )
+    assert event_resp.status_code == 201
+    event_id = event_resp.json()["id"]
+
+    update_resp = await client.patch(
+        f"/api/v1/projects/ev-history/events/{event_id}",
+        json={"name": "History Event Renamed", "status": "implemented"},
+    )
+    assert update_resp.status_code == 200
+
+    history_resp = await client.get(f"/api/v1/projects/ev-history/events/{event_id}/history")
+    assert history_resp.status_code == 200
+    entries = history_resp.json()
+    by_field = {entry["field"]: entry for entry in entries}
+
+    assert by_field["name"]["old_value"] == "History Event"
+    assert by_field["name"]["new_value"] == "History Event Renamed"
+    assert by_field["status"]["new_value"] == "implemented"
+    # Manual edits are attributed to the acting user.
+    assert by_field["status"]["user_email"] == "test@example.com"
+
+
+@pytest.mark.asyncio
 async def test_create_event_missing_required_field(client: AsyncClient):
     et_id, field_id, meta_id = await _setup_events(client, "ev-req")
     resp = await client.post(
@@ -388,8 +420,7 @@ async def test_bulk_update_events_state(client: AsyncClient):
         json={
             "event_type_id": et_id,
             "name": "First",
-            "reviewed": True,
-            "archived": False,
+            "status": "ready_for_dev",
             "field_values": [{"field_definition_id": field_id, "value": "a"}],
         },
     )
@@ -398,8 +429,7 @@ async def test_bulk_update_events_state(client: AsyncClient):
         json={
             "event_type_id": et_id,
             "name": "Second",
-            "reviewed": True,
-            "archived": False,
+            "status": "ready_for_dev",
             "field_values": [{"field_definition_id": field_id, "value": "b"}],
         },
     )
@@ -408,14 +438,13 @@ async def test_bulk_update_events_state(client: AsyncClient):
         "/api/v1/projects/ev-bulk-update/events/bulk-update",
         json={
             "event_ids": [first.json()["id"], second.json()["id"]],
-            "reviewed": False,
-            "archived": False,
+            "status": "in_review",
         },
     )
 
     assert resp.status_code == 204
     review_resp = await client.get(
-        "/api/v1/projects/ev-bulk-update/events?reviewed=false&archived=false"
+        "/api/v1/projects/ev-bulk-update/events?status=in_review"
     )
     assert review_resp.status_code == 200
     assert review_resp.json()["total"] == 2
@@ -424,12 +453,12 @@ async def test_bulk_update_events_state(client: AsyncClient):
         "/api/v1/projects/ev-bulk-update/events/bulk-update",
         json={
             "event_ids": [first.json()["id"], second.json()["id"]],
-            "archived": True,
+            "status": "archived",
         },
     )
 
     assert archive_resp.status_code == 204
-    archived_list = await client.get("/api/v1/projects/ev-bulk-update/events?archived=true")
+    archived_list = await client.get("/api/v1/projects/ev-bulk-update/events?status=archived")
     assert archived_list.status_code == 200
     assert archived_list.json()["total"] == 2
 
@@ -455,33 +484,33 @@ async def test_bulk_update_events_requires_state_field(client: AsyncClient):
 
 
 @pytest.mark.asyncio
-async def test_create_event_with_tags_and_implemented(client: AsyncClient):
+async def test_create_event_with_tags_and_status(client: AsyncClient):
     et_id, field_id, _ = await _setup_events(client, "ev-tags")
     resp = await client.post(
         "/api/v1/projects/ev-tags/events",
         json={
             "event_type_id": et_id,
             "name": "Tagged Event",
-            "implemented": True,
+            "status": "implemented",
             "tags": ["mobile", "v2"],
             "field_values": [{"field_definition_id": field_id, "value": "home"}],
         },
     )
     assert resp.status_code == 201
     data = resp.json()
-    assert data["implemented"] is True
+    assert data["status"] == "implemented"
     assert sorted([t["name"] for t in data["tags"]]) == ["mobile", "v2"]
 
 
 @pytest.mark.asyncio
-async def test_filter_by_implemented(client: AsyncClient):
+async def test_filter_by_status(client: AsyncClient):
     et_id, field_id, _ = await _setup_events(client, "ev-impl")
     await client.post(
         "/api/v1/projects/ev-impl/events",
         json={
             "event_type_id": et_id,
             "name": "Done",
-            "implemented": True,
+            "status": "implemented",
             "field_values": [{"field_definition_id": field_id, "value": "s"}],
         },
     )
@@ -490,14 +519,15 @@ async def test_filter_by_implemented(client: AsyncClient):
         json={
             "event_type_id": et_id,
             "name": "Not Done",
+            "status": "draft",
             "field_values": [{"field_definition_id": field_id, "value": "s"}],
         },
     )
-    resp = await client.get("/api/v1/projects/ev-impl/events?implemented=true")
+    resp = await client.get("/api/v1/projects/ev-impl/events?status=implemented")
     assert resp.json()["total"] == 1
     assert resp.json()["items"][0]["name"] == "Done"
 
-    resp = await client.get("/api/v1/projects/ev-impl/events?implemented=false")
+    resp = await client.get("/api/v1/projects/ev-impl/events?status=draft")
     assert resp.json()["total"] == 1
     assert resp.json()["items"][0]["name"] == "Not Done"
 
@@ -555,7 +585,7 @@ async def test_list_tags(client: AsyncClient):
 
 
 @pytest.mark.asyncio
-async def test_update_tags_and_implemented(client: AsyncClient):
+async def test_update_tags_and_status(client: AsyncClient):
     et_id, field_id, _ = await _setup_events(client, "ev-utag")
     create = await client.post(
         "/api/v1/projects/ev-utag/events",
@@ -569,11 +599,11 @@ async def test_update_tags_and_implemented(client: AsyncClient):
     event_id = create.json()["id"]
     resp = await client.patch(
         f"/api/v1/projects/ev-utag/events/{event_id}",
-        json={"implemented": True, "tags": ["new1", "new2"]},
+        json={"status": "implemented", "tags": ["new1", "new2"]},
     )
     assert resp.status_code == 200
     data = resp.json()
-    assert data["implemented"] is True
+    assert data["status"] == "implemented"
     assert sorted([t["name"] for t in data["tags"]]) == ["new1", "new2"]
 
 

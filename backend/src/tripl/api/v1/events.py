@@ -1,12 +1,14 @@
 import uuid
+from typing import Annotated
 
 from fastapi import APIRouter, Depends, Query
 
-from tripl.api.deps import BranchIdDep, SessionDep, get_editor_user
+from tripl.api.deps import BranchIdDep, EditorUserDep, SessionDep, get_editor_user
 from tripl.models.event import Event
 from tripl.schemas.event import (
     EventBulkDelete,
     EventBulkUpdate,
+    EventChangeResponse,
     EventCreate,
     EventListResponse,
     EventMove,
@@ -27,10 +29,8 @@ async def list_events(
     branch_id: BranchIdDep,
     event_type_id: uuid.UUID | None = None,
     search: str | None = None,
-    implemented: bool | None = None,
+    status: Annotated[list[str] | None, Query()] = None,
     tag: str | None = None,
-    reviewed: bool | None = None,
-    archived: bool | None = None,
     silent_since_days: int | None = Query(None, ge=0, le=3650),
     field_value: str | None = None,
     meta_value: str | None = None,
@@ -42,10 +42,8 @@ async def list_events(
         slug,
         event_type_id,
         search,
-        implemented,
+        status,
         tag,
-        reviewed,
-        archived,
         offset,
         limit,
         silent_since_days=silent_since_days,
@@ -92,11 +90,17 @@ async def bulk_delete_events(
     await event_service.bulk_delete_events(session, slug, data, branch_id)
 
 
-@router.post("/bulk-update", status_code=204, dependencies=_editor_required)
+@router.post("/bulk-update", status_code=204)
 async def bulk_update_events(
-    session: SessionDep, slug: str, data: EventBulkUpdate, branch_id: BranchIdDep
+    session: SessionDep,
+    slug: str,
+    data: EventBulkUpdate,
+    branch_id: BranchIdDep,
+    current_user: EditorUserDep,
 ) -> None:
-    await event_service.bulk_update_events(session, slug, data, branch_id)
+    await event_service.bulk_update_events(
+        session, slug, data, branch_id, user_id=current_user.id
+    )
 
 
 @router.patch(
@@ -117,10 +121,16 @@ async def get_event(
     return await event_service.get_event(session, slug, event_id, branch_id)
 
 
+@router.get("/{event_id}/history", response_model=list[EventChangeResponse])
+async def get_event_history(
+    session: SessionDep, slug: str, event_id: uuid.UUID, branch_id: BranchIdDep
+) -> list[dict]:
+    return await event_service.get_event_history(session, slug, event_id, branch_id)
+
+
 @router.patch(
     "/{event_id}",
     response_model=EventResponse,
-    dependencies=_editor_required,
 )
 async def update_event(
     session: SessionDep,
@@ -128,8 +138,11 @@ async def update_event(
     event_id: uuid.UUID,
     data: EventUpdate,
     branch_id: BranchIdDep,
+    current_user: EditorUserDep,
 ) -> Event:
-    return await event_service.update_event(session, slug, event_id, data, branch_id)
+    return await event_service.update_event(
+        session, slug, event_id, data, branch_id, user_id=current_user.id
+    )
 
 
 @router.patch(

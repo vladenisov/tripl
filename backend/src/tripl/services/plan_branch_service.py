@@ -377,9 +377,8 @@ async def _deep_copy_plan(
                 name=ev.name,
                 description=ev.description,
                 order=ev.order,
-                implemented=ev.implemented,
-                reviewed=ev.reviewed,
-                archived=ev.archived,
+                status=ev.status,
+                sunset_at=ev.sunset_at,
                 last_seen_at=ev.last_seen_at,
                 metric_breakdown_columns=list(ev.metric_breakdown_columns or []),
             )

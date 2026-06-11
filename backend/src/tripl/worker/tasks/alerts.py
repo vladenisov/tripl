@@ -558,21 +558,21 @@ def _build_plan_digest_message(
     total_events = session.execute(
         select(func.count(Event.id)).where(
             Event.project_id == project.id,
-            Event.archived.is_(False),
+            Event.status != "archived",
         )
     ).scalar_one()
     live_events = session.execute(
         select(func.count(Event.id)).where(
             Event.project_id == project.id,
-            Event.archived.is_(False),
+            Event.status != "archived",
             Event.last_seen_at.is_not(None),
         )
     ).scalar_one()
     dead_events = session.execute(
         select(func.count(Event.id)).where(
             Event.project_id == project.id,
-            Event.archived.is_(False),
-            Event.implemented.is_(True),
+            Event.status != "archived",
+            Event.status.in_(["implemented", "live"]),
             (Event.last_seen_at.is_(None)) | (Event.last_seen_at < dead_cutoff),
         )
     ).scalar_one()

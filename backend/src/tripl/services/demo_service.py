@@ -30,6 +30,7 @@ from tripl.models.variable import Variable
 from tripl.models.variable_value import VariableValue
 from tripl.schemas.project import ProjectCreate, ProjectResponse
 from tripl.services import plan_branch_service, project_service
+from tripl.services.project_service import demo_data_source_name
 from tripl.services.search_service import reindex_project_branch
 from tripl.worker.analyzers.anomaly_detector import (
     SCOPE_EVENT,
@@ -92,7 +93,7 @@ async def create_demo_project(session: AsyncSession) -> ProjectResponse:
 
     # 2. DataSource (never actually queried)
     data_source = DataSource(
-        name=f"Demo warehouse {slug}",
+        name=demo_data_source_name(slug),
         db_type="clickhouse",
         host="demo.internal",
         port=8123,
@@ -272,6 +273,13 @@ async def create_demo_project(session: AsyncSession) -> ProjectResponse:
     two_days_ago = now - timedelta(days=2)
     one_day_ago = now - timedelta(days=1)
 
+    # Status guide:
+    #   live          — high-volume, implemented, recent last_seen_at
+    #   implemented   — implemented but no warehouse data yet
+    #   in_review     — new/scanned event (reviewed=False in old schema)
+    #   ready_for_dev — reviewed and planned, not yet built (reviewed=True, implemented=False)
+    #   archived      — Legacy CTA Click
+    #   deprecated    — Promo Applied (sunset showcase)
     event_specs = [
         # screen_view events
         dict(
@@ -279,9 +287,7 @@ async def create_demo_project(session: AsyncSession) -> ProjectResponse:
             name="Home Screen View",
             description="User lands on the home screen.",
             base=1800,
-            implemented=True,
-            reviewed=True,
-            archived=False,
+            status="live",
             tags=["core", "onboarding"],
             fvs={fd_sv_screen_name.id: "home", fd_sv_platform.id: "${platform}"},
             last_seen_at=now - timedelta(minutes=15),
@@ -292,9 +298,7 @@ async def create_demo_project(session: AsyncSession) -> ProjectResponse:
             name="Paywall View",
             description="User sees the paywall / subscription upsell screen.",
             base=600,
-            implemented=True,
-            reviewed=True,
-            archived=False,
+            status="live",
             tags=["core", "checkout"],
             fvs={fd_sv_screen_name.id: "paywall", fd_sv_platform.id: "${platform}"},
             last_seen_at=now - timedelta(hours=1),
@@ -305,9 +309,7 @@ async def create_demo_project(session: AsyncSession) -> ProjectResponse:
             name="Onboarding Step 1 View",
             description="First step of the onboarding flow.",
             base=900,
-            implemented=True,
-            reviewed=True,
-            archived=False,
+            status="live",
             tags=["onboarding"],
             fvs={fd_sv_screen_name.id: "onboarding_step1", fd_sv_platform.id: "${platform}"},
             last_seen_at=now - timedelta(hours=2),
@@ -318,9 +320,7 @@ async def create_demo_project(session: AsyncSession) -> ProjectResponse:
             name="Onboarding Step 2 View",
             description="Second step of the onboarding flow.",
             base=700,
-            implemented=True,
-            reviewed=False,
-            archived=False,
+            status="in_review",
             tags=["onboarding"],
             fvs={fd_sv_screen_name.id: "onboarding_step2", fd_sv_platform.id: "${platform}"},
             last_seen_at=now - timedelta(hours=3),
@@ -331,9 +331,7 @@ async def create_demo_project(session: AsyncSession) -> ProjectResponse:
             name="Profile Screen View",
             description="User opens their profile.",
             base=400,
-            implemented=True,
-            reviewed=True,
-            archived=False,
+            status="live",
             tags=["core"],
             fvs={fd_sv_screen_name.id: "profile", fd_sv_platform.id: "${platform}"},
             last_seen_at=now - timedelta(hours=4),
@@ -344,9 +342,7 @@ async def create_demo_project(session: AsyncSession) -> ProjectResponse:
             name="Settings Screen View",
             description="User opens app settings.",
             base=200,
-            implemented=False,
-            reviewed=False,
-            archived=False,
+            status="in_review",
             tags=[],
             fvs={fd_sv_screen_name.id: "settings"},
             last_seen_at=None,
@@ -358,9 +354,7 @@ async def create_demo_project(session: AsyncSession) -> ProjectResponse:
             name="Buy Button Click",
             description="User taps the primary CTA on the paywall.",
             base=300,
-            implemented=True,
-            reviewed=True,
-            archived=False,
+            status="live",
             tags=["core", "checkout"],
             fvs={
                 fd_cl_button_id.id: "buy_now",
@@ -375,9 +369,7 @@ async def create_demo_project(session: AsyncSession) -> ProjectResponse:
             name="Skip Onboarding Click",
             description="User skips onboarding.",
             base=180,
-            implemented=True,
-            reviewed=True,
-            archived=False,
+            status="live",
             tags=["onboarding"],
             fvs={
                 fd_cl_button_id.id: "skip_onboarding",
@@ -392,9 +384,7 @@ async def create_demo_project(session: AsyncSession) -> ProjectResponse:
             name="Restore Purchase Click",
             description="User taps restore purchase.",
             base=40,
-            implemented=True,
-            reviewed=False,
-            archived=False,
+            status="in_review",
             tags=["checkout"],
             fvs={fd_cl_button_id.id: "restore_purchase", fd_cl_screen_name.id: "paywall"},
             last_seen_at=now - timedelta(hours=8),
@@ -405,9 +395,7 @@ async def create_demo_project(session: AsyncSession) -> ProjectResponse:
             name="Share Button Click",
             description="User shares content.",
             base=120,
-            implemented=False,
-            reviewed=False,
-            archived=False,
+            status="in_review",
             tags=[],
             fvs={fd_cl_button_id.id: "share"},
             last_seen_at=None,
@@ -418,9 +406,7 @@ async def create_demo_project(session: AsyncSession) -> ProjectResponse:
             name="Legacy CTA Click",
             description="Old primary CTA, replaced by buy_now.",
             base=20,
-            implemented=True,
-            reviewed=True,
-            archived=True,
+            status="archived",
             tags=["checkout"],
             fvs={fd_cl_button_id.id: "old_cta"},
             last_seen_at=seven_days_ago,
@@ -432,9 +418,7 @@ async def create_demo_project(session: AsyncSession) -> ProjectResponse:
             name="Purchase Completed",
             description="User successfully completes an in-app purchase.",
             base=120,
-            implemented=True,
-            reviewed=True,
-            archived=False,
+            status="live",
             tags=["core", "checkout"],
             fvs={
                 fd_pu_product_id.id: "${product_id}",
@@ -450,9 +434,7 @@ async def create_demo_project(session: AsyncSession) -> ProjectResponse:
             name="Purchase Failed",
             description="An in-app purchase was attempted but failed.",
             base=15,
-            implemented=True,
-            reviewed=True,
-            archived=False,
+            status="live",
             tags=["checkout"],
             fvs={
                 fd_pu_product_id.id: "${product_id}",
@@ -467,9 +449,7 @@ async def create_demo_project(session: AsyncSession) -> ProjectResponse:
             name="Trial Started",
             description="User starts a free trial.",
             base=250,
-            implemented=True,
-            reviewed=True,
-            archived=False,
+            status="live",
             tags=["checkout", "onboarding"],
             fvs={fd_pu_product_id.id: "${product_id}", fd_pu_platform.id: "${platform}"},
             last_seen_at=now - timedelta(hours=1),
@@ -480,9 +460,7 @@ async def create_demo_project(session: AsyncSession) -> ProjectResponse:
             name="Subscription Renewed",
             description="Recurring subscription renewal processed.",
             base=80,
-            implemented=True,
-            reviewed=False,
-            archived=False,
+            status="in_review",
             tags=["checkout"],
             fvs={
                 fd_pu_product_id.id: "${product_id}",
@@ -497,9 +475,7 @@ async def create_demo_project(session: AsyncSession) -> ProjectResponse:
             name="Refund Processed",
             description="A refund was issued to the user.",
             base=8,
-            implemented=False,
-            reviewed=False,
-            archived=False,
+            status="in_review",
             tags=[],
             fvs={fd_pu_product_id.id: "${product_id}", fd_pu_amount.id: "9.99"},
             last_seen_at=None,
@@ -510,9 +486,8 @@ async def create_demo_project(session: AsyncSession) -> ProjectResponse:
             name="Promo Applied",
             description="User redeemed a promotional code.",
             base=35,
-            implemented=True,
-            reviewed=True,
-            archived=False,
+            status="deprecated",
+            sunset_at=now - timedelta(days=1),
             tags=["checkout", "onboarding"],
             fvs={fd_pu_product_id.id: "${product_id}", fd_pu_platform.id: "${platform}"},
             last_seen_at=two_days_ago,
@@ -523,9 +498,7 @@ async def create_demo_project(session: AsyncSession) -> ProjectResponse:
             name="Subscription Cancelled",
             description="User cancels their subscription.",
             base=22,
-            implemented=True,
-            reviewed=True,
-            archived=False,
+            status="implemented",
             tags=["checkout"],
             fvs={fd_pu_product_id.id: "${product_id}", fd_pu_platform.id: "${platform}"},
             last_seen_at=one_day_ago,
@@ -542,9 +515,8 @@ async def create_demo_project(session: AsyncSession) -> ProjectResponse:
             name=spec["name"],
             description=spec["description"],
             order=order,
-            implemented=spec["implemented"],
-            reviewed=spec["reviewed"],
-            archived=spec["archived"],
+            status=spec["status"],
+            sunset_at=spec.get("sunset_at"),
             last_seen_at=spec.get("last_seen_at"),
             metric_breakdown_columns=spec.get("metric_breakdown_columns", []),
         )

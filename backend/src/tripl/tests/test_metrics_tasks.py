@@ -113,9 +113,7 @@ def _seed_anomaly_scan_state(session: Session) -> tuple[ScanConfig, EventType, E
         event_type_id=event_type.id,
         name="event_name=Login",
         description="",
-        implemented=True,
-        reviewed=True,
-        archived=False,
+        status="implemented",
     )
     session.add(event)
 
@@ -378,9 +376,7 @@ def test_collect_metrics_replaces_metric_rows_in_window(
             event_type_id=config.event_type_id,
             name="event_name=Login",
             description="",
-            implemented=True,
-            reviewed=True,
-            archived=False,
+            status="implemented",
         )
         stale_event = Event(
             id=uuid.uuid4(),
@@ -388,9 +384,7 @@ def test_collect_metrics_replaces_metric_rows_in_window(
             event_type_id=config.event_type_id,
             name="event_name=Old",
             description="",
-            implemented=True,
-            reviewed=True,
-            archived=False,
+            status="implemented",
         )
         bucket = datetime(2026, 1, 1, 10)
         session.add_all(
@@ -513,9 +507,7 @@ def test_collect_metrics_uses_database_grouped_breakdown_rows(
             event_type_id=config.event_type_id,
             name="event_name=Login",
             description="",
-            implemented=True,
-            reviewed=True,
-            archived=False,
+            status="implemented",
         )
         stale_metric = EventMetricBreakdown(
             id=uuid.uuid4(),
@@ -712,9 +704,7 @@ def test_collect_metrics_uses_event_level_breakdown_columns(
             event_type_id=config.event_type_id,
             name="event_name=Login",
             description="",
-            implemented=True,
-            reviewed=True,
-            archived=False,
+            status="implemented",
             metric_breakdown_columns=["country"],
         )
         signup_event = Event(
@@ -723,9 +713,7 @@ def test_collect_metrics_uses_event_level_breakdown_columns(
             event_type_id=config.event_type_id,
             name="event_name=Signup",
             description="",
-            implemented=True,
-            reviewed=True,
-            archived=False,
+            status="implemented",
         )
         session.add_all([login_event, signup_event])
         session.commit()
@@ -852,9 +840,7 @@ def test_collect_metrics_writes_distribution_drift_rows(
             event_type_id=config.event_type_id,
             name="event_name=Login",
             description="",
-            implemented=True,
-            reviewed=True,
-            archived=False,
+            status="implemented",
         )
         stale_drift = DistributionDrift(
             id=uuid.uuid4(),
@@ -1018,9 +1004,7 @@ def test_collect_metrics_rolls_back_metric_delete_when_job_fails(
             event_type_id=config.event_type_id,
             name="event_name=Login",
             description="",
-            implemented=True,
-            reviewed=True,
-            archived=False,
+            status="implemented",
         )
         metric = EventMetric(
             id=uuid.uuid4(),
@@ -1940,9 +1924,7 @@ def test_collect_metrics_splits_replay_into_interval_chunks(
             event_type_id=config.event_type_id,
             name="event_name=Login",
             description="",
-            implemented=True,
-            reviewed=True,
-            archived=False,
+            status="implemented",
         )
         session.add(login_event)
         session.commit()
@@ -2083,9 +2065,7 @@ def test_replay_appends_low_cardinality_variable_values(
             name="event_name=Login | user_id=${user_id}",
             source_name="event_name=Login | user_id=${user_id}",
             description="",
-            implemented=True,
-            reviewed=True,
-            archived=False,
+            status="implemented",
         )
         session.add(event)
         session.flush()
@@ -2212,9 +2192,7 @@ def test_replay_does_not_drop_unmatched_metric_rows(
             name="event_name=Login",
             source_name="event_name=Login",
             description="",
-            implemented=True,
-            reviewed=True,
-            archived=False,
+            status="implemented",
         )
         stale_event = Event(
             id=uuid.uuid4(),
@@ -2223,9 +2201,7 @@ def test_replay_does_not_drop_unmatched_metric_rows(
             name="event_name=Legacy",
             source_name="event_name=Legacy",
             description="",
-            implemented=True,
-            reviewed=True,
-            archived=False,
+            status="implemented",
         )
         session.add_all([login_event, stale_event])
         session.flush()
@@ -2357,9 +2333,7 @@ def test_replay_uses_latest_scan_snapshot(
             name="event_name=Login | user_id=${user_id}",
             source_name="event_name=Login | user_id=${user_id}",
             description="",
-            implemented=True,
-            reviewed=True,
-            archived=False,
+            status="implemented",
         )
         session.add(event)
         session.flush()
@@ -2523,9 +2497,7 @@ def test_replay_clears_empty_chunk(
             name="event_name=Legacy",
             source_name="event_name=Legacy",
             description="",
-            implemented=True,
-            reviewed=True,
-            archived=False,
+            status="implemented",
         )
         session.add(stale_event)
         session.flush()
@@ -2660,9 +2632,7 @@ def test_replay_enriches_existing_high_context_values(
             name="event_name=Login | payload.user.id=${payload.user.id}",
             source_name="event_name=Login | payload.user.id=${payload.user.id}",
             description="",
-            implemented=True,
-            reviewed=True,
-            archived=False,
+            status="implemented",
         )
         session.add(event)
         session.flush()

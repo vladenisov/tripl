@@ -436,9 +436,7 @@ def _generation_result_from_snapshot(
                 else None
             ),
             description="",
-            implemented=bool(event_payload.get("implemented", True)),
-            reviewed=bool(event_payload.get("reviewed", True)),
-            archived=bool(event_payload.get("archived", False)),
+            status=str(event_payload.get("status", "live")),
             metric_breakdown_columns=list(event_payload.get("metric_breakdown_columns") or []),
         )
         event.field_values = []
@@ -592,7 +590,9 @@ def _load_existing_generation_result(
         # rows whose source_name has not been backfilled yet.
         # Exclude archived events so they are ignored during metrics collection.
         events_by_name={
-            (event.source_name or event.name): event for event in events if not event.archived
+            (event.source_name or event.name): event
+            for event in events
+            if event.status != "archived"
         },
     )
 

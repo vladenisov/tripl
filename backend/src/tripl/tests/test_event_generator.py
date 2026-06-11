@@ -411,8 +411,7 @@ class TestEventGeneration:
             name="button events",
             source_name="button events",
             order=0,
-            implemented=True,
-            reviewed=True,
+            status="live",
         )
         sync_session.add(existing)
         sync_session.commit()
@@ -477,8 +476,7 @@ class TestEventGeneration:
                 name=action,
                 source_name=action,
                 order=index,
-                implemented=True,
-                reviewed=True,
+                status="implemented",
             )
             sync_session.add(event)
             sync_session.flush()
@@ -555,8 +553,7 @@ class TestEventGeneration:
                 name=action,
                 source_name=action,
                 order=index,
-                implemented=True,
-                reviewed=True,
+                status="implemented",
             )
             sync_session.add(event)
             sync_session.flush()
@@ -620,8 +617,7 @@ class TestEventGeneration:
                 name=action,
                 source_name=action,
                 order=index,
-                implemented=True,
-                reviewed=True,
+                status="implemented",
             )
             sync_session.add(event)
             sync_session.flush()
@@ -831,8 +827,7 @@ class TestEventGeneration:
             source_name=None,
             description="manually created",
             order=0,
-            implemented=True,
-            reviewed=True,
+            status="live",
         )
         sync_session.add(legacy)
         sync_session.add(
@@ -1080,7 +1075,7 @@ class TestEventGeneration:
             event_type_id=et.id,
             name="screen=/dashboard",
             source_name="screen=/dashboard",
-            archived=True,
+            status="archived",
             order=0,
         )
         sync_session.add(event)

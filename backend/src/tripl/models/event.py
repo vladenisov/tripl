@@ -1,10 +1,11 @@
 from __future__ import annotations
 
+import enum
 import uuid
 from datetime import datetime
 from typing import TYPE_CHECKING
 
-from sqlalchemy import JSON, Boolean, DateTime, ForeignKey, Index, Integer, String, Text
+from sqlalchemy import JSON, DateTime, ForeignKey, Index, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from tripl.models.base import Base, TimestampMixin, UUIDMixin
@@ -17,6 +18,31 @@ if TYPE_CHECKING:
     from tripl.models.event_type import EventType
 
 
+class EventStatus(enum.StrEnum):
+    draft = "draft"
+    in_review = "in_review"
+    ready_for_dev = "ready_for_dev"
+    implemented = "implemented"
+    live = "live"
+    deprecated = "deprecated"
+    archived = "archived"
+
+
+_STATUS_RANK: dict[EventStatus, int] = {
+    EventStatus.draft: 0,
+    EventStatus.in_review: 1,
+    EventStatus.ready_for_dev: 2,
+    EventStatus.implemented: 3,
+    EventStatus.live: 4,
+    EventStatus.deprecated: 5,
+    EventStatus.archived: 6,
+}
+
+
+def event_status_rank(status: EventStatus) -> int:
+    return _STATUS_RANK.get(status, 0)
+
+
 class Event(UUIDMixin, TimestampMixin, Base):
     __tablename__ = "events"
     __table_args__ = (
@@ -24,6 +50,7 @@ class Event(UUIDMixin, TimestampMixin, Base):
         Index("ix_event_event_type", "event_type_id"),
         Index("ix_events_last_seen_at", "last_seen_at"),
         Index("ix_events_source_identity", "project_id", "event_type_id", "source_name"),
+        Index("ix_events_project_branch_status", "project_id", "branch_id", "status"),
     )
 
     project_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"))
@@ -41,9 +68,10 @@ class Event(UUIDMixin, TimestampMixin, Base):
     source_name: Mapped[str | None] = mapped_column(String(500), nullable=True)
     description: Mapped[str] = mapped_column(Text, default="")
     order: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
-    implemented: Mapped[bool] = mapped_column(Boolean, default=False)
-    reviewed: Mapped[bool] = mapped_column(Boolean, default=True, server_default="true")
-    archived: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
+    status: Mapped[str] = mapped_column(
+        String(20), default=EventStatus.draft, server_default="draft", nullable=False
+    )
+    sunset_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     last_seen_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     metric_breakdown_columns: Mapped[list[str]] = mapped_column(
         JSON,

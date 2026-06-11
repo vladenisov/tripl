@@ -10,6 +10,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from tripl.models.event import Event
+from tripl.models.event import EventStatus as _ES
+from tripl.models.event import event_status_rank as _rank
 from tripl.models.event_field_value import EventFieldValue
 from tripl.models.event_meta_value import EventMetaValue
 from tripl.models.event_photo import EventPhoto
@@ -308,9 +310,13 @@ async def _apply_merge(
         if key in main_event_by_key:
             m_ev = main_event_by_key[key]
             m_ev.description = b_ev.description
-            m_ev.implemented = b_ev.implemented
-            m_ev.reviewed = b_ev.reviewed
-            m_ev.archived = b_ev.archived
+            b_status = _ES(b_ev.status)
+            m_status = _ES(m_ev.status)
+            if b_status == _ES.archived:
+                m_ev.status = m_status
+            else:
+                m_ev.status = b_status if _rank(b_status) >= _rank(m_status) else m_status
+            m_ev.sunset_at = b_ev.sunset_at
             m_ev.order = b_ev.order
             m_ev.metric_breakdown_columns = list(b_ev.metric_breakdown_columns or [])
             # Rebuild children
@@ -353,9 +359,8 @@ async def _apply_merge(
                     name=b_ev.name,
                     description=b_ev.description,
                     order=b_ev.order,
-                    implemented=b_ev.implemented,
-                    reviewed=b_ev.reviewed,
-                    archived=b_ev.archived,
+                    status=b_ev.status,
+                    sunset_at=b_ev.sunset_at,
                     last_seen_at=b_ev.last_seen_at,
                     metric_breakdown_columns=list(b_ev.metric_breakdown_columns or []),
                 )

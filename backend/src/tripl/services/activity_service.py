@@ -220,9 +220,7 @@ async def _event_items(
         select(
             Event.id,
             Event.name,
-            Event.implemented,
-            Event.reviewed,
-            Event.archived,
+            Event.status,
             Event.created_at,
             Event.updated_at,
             Project.id.label("project_id"),
@@ -244,9 +242,7 @@ async def _event_items(
         title, detail, severity = _event_copy(
             name=row.name,
             event_type_name=row.event_type_name,
-            implemented=bool(row.implemented),
-            reviewed=bool(row.reviewed),
-            archived=bool(row.archived),
+            status=str(row.status),
             created_at=row.created_at,
             updated_at=row.updated_at,
         )
@@ -352,17 +348,15 @@ def _event_copy(
     *,
     name: str,
     event_type_name: str,
-    implemented: bool,
-    reviewed: bool,
-    archived: bool,
+    status: str,
     created_at: datetime,
     updated_at: datetime,
 ) -> tuple[str, str, str]:
-    if archived:
+    if status == "archived":
         return f"Event archived: {name}", event_type_name, "low"
-    if not reviewed:
+    if status == "in_review":
         return f"Event needs review: {name}", event_type_name, "medium"
-    if implemented:
+    if status in ("implemented", "live"):
         return f"Event implemented: {name}", event_type_name, "low"
     if updated_at != created_at:
         return f"Event updated: {name}", event_type_name, "low"
