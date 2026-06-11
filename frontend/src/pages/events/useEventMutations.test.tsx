@@ -24,7 +24,7 @@ const INFINITE_KEY = ['events', SLUG, BRANCH, 'infinite'] as const
 const FLAT_KEY = ['events', SLUG, BRANCH, 'flat'] as const
 
 function makeItem(id: string, overrides: Partial<EventListItem> = {}): EventListItem {
-  return { id, implemented: false, reviewed: false, archived: false, ...overrides } as unknown as EventListItem
+  return { id, status: 'draft', sunset_at: null, ...overrides } as unknown as EventListItem
 }
 
 let queryClient: QueryClient
@@ -67,21 +67,21 @@ afterEach(() => {
 })
 
 describe('useEventMutations optimistic apply/rollback', () => {
-  it('bulkUpdate optimistically patches both cache shapes', async () => {
+  it('bulkUpdate optimistically patches status in both cache shapes', async () => {
     vi.mocked(eventsApi.bulkUpdate).mockResolvedValue(undefined as never)
     seedCaches([makeItem('a'), makeItem('b'), makeItem('c')])
     const { result } = renderMutations()
 
-    result.current.bulkUpdateMut.mutate({ eventIds: ['a', 'c'], reviewed: true })
+    result.current.bulkUpdateMut.mutate({ eventIds: ['a', 'c'], status: 'in_review' })
 
     await waitFor(() => {
-      expect(infiniteItems().find(e => e.id === 'a')?.reviewed).toBe(true)
+      expect(infiniteItems().find(e => e.id === 'a')?.status).toBe('in_review')
     })
-    expect(infiniteItems().find(e => e.id === 'c')?.reviewed).toBe(true)
-    expect(infiniteItems().find(e => e.id === 'b')?.reviewed).toBe(false)
-    expect(flatItems().find(e => e.id === 'a')?.reviewed).toBe(true)
-    expect(flatItems().find(e => e.id === 'c')?.reviewed).toBe(true)
-    expect(flatItems().find(e => e.id === 'b')?.reviewed).toBe(false)
+    expect(infiniteItems().find(e => e.id === 'c')?.status).toBe('in_review')
+    expect(infiniteItems().find(e => e.id === 'b')?.status).toBe('draft')
+    expect(flatItems().find(e => e.id === 'a')?.status).toBe('in_review')
+    expect(flatItems().find(e => e.id === 'c')?.status).toBe('in_review')
+    expect(flatItems().find(e => e.id === 'b')?.status).toBe('draft')
   })
 
   it('bulkUpdate rolls both cache shapes back on error', async () => {
@@ -89,13 +89,13 @@ describe('useEventMutations optimistic apply/rollback', () => {
     seedCaches([makeItem('a'), makeItem('b')])
     const { result } = renderMutations()
 
-    result.current.bulkUpdateMut.mutate({ eventIds: ['a'], implemented: true })
+    result.current.bulkUpdateMut.mutate({ eventIds: ['a'], status: 'implemented' })
 
     await waitFor(() => {
       expect(result.current.bulkUpdateMut.isError).toBe(true)
     })
-    expect(infiniteItems().find(e => e.id === 'a')?.implemented).toBe(false)
-    expect(flatItems().find(e => e.id === 'a')?.implemented).toBe(false)
+    expect(infiniteItems().find(e => e.id === 'a')?.status).toBe('draft')
+    expect(flatItems().find(e => e.id === 'a')?.status).toBe('draft')
   })
 
   it('bulkDelete optimistically removes from both cache shapes', async () => {
@@ -130,31 +130,31 @@ describe('useEventMutations optimistic apply/rollback', () => {
     expect(flatItems().map(e => e.id)).toEqual(['a', 'b', 'c'])
   })
 
-  it('toggleImplemented optimistically flips both cache shapes', async () => {
+  it('setStatus optimistically patches status in both cache shapes', async () => {
     vi.mocked(eventsApi.update).mockResolvedValue(undefined as never)
     seedCaches([makeItem('a'), makeItem('b')])
     const { result } = renderMutations()
 
-    result.current.toggleImplementedMut.mutate({ id: 'a', implemented: true })
+    result.current.setStatusMut.mutate({ id: 'a', status: 'implemented' })
 
     await waitFor(() => {
-      expect(infiniteItems().find(e => e.id === 'a')?.implemented).toBe(true)
+      expect(infiniteItems().find(e => e.id === 'a')?.status).toBe('implemented')
     })
-    expect(flatItems().find(e => e.id === 'a')?.implemented).toBe(true)
-    expect(infiniteItems().find(e => e.id === 'b')?.implemented).toBe(false)
+    expect(flatItems().find(e => e.id === 'a')?.status).toBe('implemented')
+    expect(infiniteItems().find(e => e.id === 'b')?.status).toBe('draft')
   })
 
-  it('toggleArchived rolls both cache shapes back on error', async () => {
+  it('setStatus rolls both cache shapes back on error', async () => {
     vi.mocked(eventsApi.update).mockRejectedValue(new Error('boom'))
-    seedCaches([makeItem('a', { archived: false })])
+    seedCaches([makeItem('a', { status: 'draft' })])
     const { result } = renderMutations()
 
-    result.current.toggleArchivedMut.mutate({ id: 'a', archived: true })
+    result.current.setStatusMut.mutate({ id: 'a', status: 'archived' })
 
     await waitFor(() => {
-      expect(result.current.toggleArchivedMut.isError).toBe(true)
+      expect(result.current.setStatusMut.isError).toBe(true)
     })
-    expect(infiniteItems().find(e => e.id === 'a')?.archived).toBe(false)
-    expect(flatItems().find(e => e.id === 'a')?.archived).toBe(false)
+    expect(infiniteItems().find(e => e.id === 'a')?.status).toBe('draft')
+    expect(flatItems().find(e => e.id === 'a')?.status).toBe('draft')
   })
 })

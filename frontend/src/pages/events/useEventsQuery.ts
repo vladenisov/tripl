@@ -4,21 +4,23 @@ import { useInfiniteQuery } from '@tanstack/react-query'
 
 import { eventsApi } from '@/api/events'
 import { SEARCH_DEBOUNCE_MS, useDebouncedValue } from '@/hooks/useDebouncedValue'
+import { EVENT_STATUSES, type EventStatus } from '@/lib/eventStatus'
 import type { EventListItem, EventType } from '@/types'
 
 const SPECIAL_TABS = new Set(['all', 'review', 'archived'])
 const EVENTS_PAGE_SIZE = 200
 
+// Statuses shown by default (all tab) — excludes archived to preserve
+// the existing UX where archived events are hidden unless explicitly selected.
+const DEFAULT_ACTIVE_STATUSES: EventStatus[] = EVENT_STATUSES.filter(s => s !== 'archived')
+
 export type EventsQueryFilters = {
   search: string
   setSearch: (value: string) => void
-  filterImplemented: boolean | undefined
-  setFilterImplemented: (value: boolean | undefined) => void
+  filterStatuses: EventStatus[]
+  setFilterStatuses: (value: EventStatus[]) => void
   filterTag: string
   setFilterTag: (value: string) => void
-  filterReviewed: boolean | undefined
-  filterReviewedForQuery: boolean | undefined
-  filterArchivedForQuery: boolean
   filterSilentDays: number | undefined
   setFilterSilentDays: (value: number | undefined) => void
   fieldFilters: Record<string, string>
@@ -30,6 +32,8 @@ export type EventsQueryFilters = {
   debouncedMetaFilters: Record<string, string>
   isFilterPending: boolean
   filterEtId: string | undefined
+  /** The status values actually sent to the server query (tab-driven) */
+  queryStatuses: string[] | undefined
 }
 
 /**
@@ -66,16 +70,20 @@ export function useEventsQuery({
     [setSearchParams],
   )
 
-  const filterImplemented = searchParams.has('implemented')
-    ? searchParams.get('implemented') === 'true'
-    : undefined
-  const setFilterImplemented = useCallback(
-    (v: boolean | undefined) => {
+  // Status filter: comma-separated or repeatable `status` param
+  const filterStatuses = useMemo((): EventStatus[] => {
+    const raw = searchParams.getAll('status').flatMap(s => s.split(','))
+    const valid = raw.filter((s): s is EventStatus => (EVENT_STATUSES as string[]).includes(s))
+    return valid.length > 0 ? valid : []
+  }, [searchParams])
+
+  const setFilterStatuses = useCallback(
+    (v: EventStatus[]) => {
       setSearchParams(
         (prev) => {
           const next = new URLSearchParams(prev)
-          if (v !== undefined) next.set('implemented', String(v))
-          else next.delete('implemented')
+          next.delete('status')
+          for (const s of v) next.append('status', s)
           return next
         },
         { replace: true },
@@ -99,10 +107,6 @@ export function useEventsQuery({
     },
     [setSearchParams],
   )
-
-  const filterReviewed = searchParams.has('reviewed')
-    ? searchParams.get('reviewed') === 'true'
-    : undefined
 
   const filterSilentDaysRaw = searchParams.get('silent_days')
   const filterSilentDays =
@@ -186,8 +190,16 @@ export function useEventsQuery({
   const filterEtId = SPECIAL_TABS.has(activeTab)
     ? undefined
     : eventTypes.find((e) => e.name === activeTab)?.id
-  const filterReviewedForQuery = activeTab === 'review' ? false : filterReviewed
-  const filterArchivedForQuery = activeTab === 'archived'
+
+  // Determine query statuses based on tab + user filter
+  const queryStatuses = useMemo((): string[] | undefined => {
+    if (activeTab === 'review') return ['in_review']
+    if (activeTab === 'archived') return ['archived']
+    // User has an explicit status filter set
+    if (filterStatuses.length > 0) return filterStatuses
+    // Default: exclude archived
+    return DEFAULT_ACTIVE_STATUSES
+  }, [activeTab, filterStatuses])
 
   const eventsQuery = useInfiniteQuery({
     queryKey: [
@@ -196,19 +208,15 @@ export function useEventsQuery({
       branchId,
       filterEtId,
       debouncedSearch,
-      filterImplemented,
+      queryStatuses,
       filterTag,
-      filterReviewedForQuery,
-      filterArchivedForQuery,
       filterSilentDays,
     ],
     queryFn: ({ pageParam }) =>
       eventsApi.list(slug!, {
         event_type_id: filterEtId,
         search: debouncedSearch || undefined,
-        implemented: filterImplemented,
-        reviewed: filterReviewedForQuery,
-        archived: filterArchivedForQuery,
+        status: queryStatuses,
         tag: filterTag || undefined,
         silent_since_days: filterSilentDays,
         offset: pageParam,
@@ -242,13 +250,10 @@ export function useEventsQuery({
     // filters
     search,
     setSearch,
-    filterImplemented,
-    setFilterImplemented,
+    filterStatuses,
+    setFilterStatuses,
     filterTag,
     setFilterTag,
-    filterReviewed,
-    filterReviewedForQuery,
-    filterArchivedForQuery,
     filterSilentDays,
     setFilterSilentDays,
     fieldFilters,
@@ -260,6 +265,7 @@ export function useEventsQuery({
     debouncedMetaFilters,
     isFilterPending,
     filterEtId,
+    queryStatuses,
     // query
     eventsQuery,
     rawEvents,

@@ -34,10 +34,8 @@ import {
 type TabMetricsFilters = {
   filterEtId: string | undefined
   debouncedSearch: string
-  filterImplemented: boolean | undefined
+  queryStatuses: string[] | undefined
   filterTag: string
-  filterReviewedForQuery: boolean | undefined
-  filterArchivedForQuery: boolean
 }
 
 /**
@@ -78,10 +76,8 @@ export function TabMetricsCard({
       slug,
       filters.filterEtId,
       filters.debouncedSearch,
-      filters.filterImplemented,
+      filters.queryStatuses,
       filters.filterTag,
-      filters.filterReviewedForQuery,
-      filters.filterArchivedForQuery,
       range.from,
       range.to,
     ],
@@ -89,9 +85,7 @@ export function TabMetricsCard({
       metricsApi.getEventsMetrics(slug, {
         event_type_id: filters.filterEtId,
         search: filters.debouncedSearch || undefined,
-        implemented: filters.filterImplemented,
-        reviewed: filters.filterReviewedForQuery,
-        archived: filters.filterArchivedForQuery,
+        status: filters.queryStatuses,
         tag: filters.filterTag || undefined,
         from: range.from,
         to: range.to,

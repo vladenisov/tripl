@@ -44,7 +44,7 @@ export function useEventsPageData({
   })
   const unreviewedDataQuery = useQuery({
     queryKey: ['events', slug, branchId, 'unreviewedCount'],
-    queryFn: () => eventsApi.list(slug!, { reviewed: false, archived: false, limit: 1 }, branchId),
+    queryFn: () => eventsApi.list(slug!, { status: ['in_review'], limit: 1 }, branchId),
     enabled: !!slug,
   })
   const urlEventQuery = useQuery({

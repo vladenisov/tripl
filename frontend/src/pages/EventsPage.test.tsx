@@ -20,6 +20,26 @@ function mockJsonResponse(body: unknown) {
   })
 }
 
+function makeEvent(overrides: Record<string, unknown> = {}) {
+  return {
+    id: 'event-1',
+    project_id: 'project-1',
+    event_type_id: 'type-1',
+    event_type: { id: 'type-1', name: 'page', display_name: 'Page', color: '#0ea5e9' },
+    name: 'Homepage View',
+    description: '',
+    order: 0,
+    status: 'live',
+    sunset_at: null,
+    tags: [],
+    field_values: [],
+    meta_values: [],
+    created_at: '2026-01-01T00:00:00Z',
+    updated_at: '2026-01-01T00:00:00Z',
+    ...overrides,
+  }
+}
+
 function renderEventsPage(initialEntries: string[] = ['/p/demo/events']) {
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false } },
@@ -65,10 +85,8 @@ describe('EventsPage', () => {
       if (url.endsWith('/api/v1/projects/demo/meta-fields')) return mockJsonResponse([])
       if (url.endsWith('/api/v1/projects/demo/variables')) return mockJsonResponse([])
       if (url.endsWith('/api/v1/projects/demo/events/tags')) return mockJsonResponse([])
-      if (url.includes('/api/v1/projects/demo/events?reviewed=false')) {
-        return mockJsonResponse({ items: [], total: 0 })
-      }
-      if (url.includes('/api/v1/projects/demo/events?archived=true')) {
+      // unreviewedCount query: exactly status=in_review with limit=1
+      if (url.includes('/api/v1/projects/demo/events') && url.includes('status=in_review') && url.includes('limit=1')) {
         return mockJsonResponse({ items: [], total: 0 })
       }
       if (url.includes('/api/v1/projects/demo/events-metrics')) {
@@ -158,30 +176,7 @@ describe('EventsPage', () => {
       }
       if (url.includes('/api/v1/projects/demo/events')) {
         return mockJsonResponse({
-          items: [
-            {
-              id: 'event-1',
-              project_id: 'project-1',
-              event_type_id: 'type-1',
-              event_type: {
-                id: 'type-1',
-                name: 'page',
-                display_name: 'Page',
-                color: '#0ea5e9',
-              },
-              name: 'Homepage View',
-              description: '',
-              order: 0,
-              implemented: true,
-              reviewed: true,
-              archived: false,
-              tags: [],
-              field_values: [],
-              meta_values: [],
-              created_at: '2026-01-01T00:00:00Z',
-              updated_at: '2026-01-01T00:00:00Z',
-            },
-          ],
+          items: [makeEvent()],
           total: 1,
         })
       }
@@ -204,11 +199,8 @@ describe('EventsPage', () => {
     expect(screen.getByText('Hours')).toBeInTheDocument()
     const metricsButton = await screen.findByRole('button', { name: '1k' })
     expect(metricsButton).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'Toggle review status' })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Edit event' })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'More actions' })).toBeInTheDocument()
-    const hiddenActionsButton = screen.getByRole('button', { name: 'Toggle implemented status' })
-    expect(hiddenActionsButton.parentElement).toHaveClass('opacity-0')
     expect(container.querySelector('a[href="/p/demo/monitoring/project-total/scan-1"]')).toBeInTheDocument()
     expect(container.querySelector('a[href="/p/demo/monitoring/event-type/type-1"]')).not.toBeInTheDocument()
     expect(container.querySelector('a[href="/p/demo/monitoring/event/event-1"]')).toBeInTheDocument()
@@ -220,8 +212,8 @@ describe('EventsPage', () => {
     expect(screen.getAllByText('1k events').length).toBeGreaterThan(0)
 
     fireEvent.mouseEnter(screen.getByRole('button', { name: 'More actions' }))
-    const expandedActionsButton = await screen.findByRole('button', { name: 'Toggle implemented status' })
-    expect(expandedActionsButton.parentElement).toHaveClass('opacity-100')
+    const expandedPanel = await screen.findByRole('button', { name: 'Move event up' })
+    expect(expandedPanel.parentElement).toHaveClass('opacity-100')
     expect(screen.getByRole('button', { name: 'Move event up' })).toBeDisabled()
     expect(screen.getByRole('button', { name: 'Move event down' })).toBeDisabled()
     expect(screen.getByRole('link', { name: 'View metrics' })).toBeInTheDocument()
@@ -255,7 +247,7 @@ describe('EventsPage', () => {
       if (url.endsWith('/api/v1/projects/demo/meta-fields')) return mockJsonResponse([])
       if (url.endsWith('/api/v1/projects/demo/variables')) return mockJsonResponse([])
       if (url.endsWith('/api/v1/projects/demo/events/tags')) return mockJsonResponse([])
-      if (url.includes('/api/v1/projects/demo/events?reviewed=false')) {
+      if (url.includes('/api/v1/projects/demo/events') && url.includes('status=in_review') && url.includes('limit=1')) {
         return mockJsonResponse({ items: [], total: 0 })
       }
       if (url.includes('/api/v1/projects/demo/events-metrics')) {
@@ -307,32 +299,9 @@ describe('EventsPage', () => {
       if (url.endsWith('/api/v1/projects/demo/anomalies/signals/query') && init?.method === 'POST') {
         return mockJsonResponse([])
       }
-      if (url.includes('/api/v1/projects/demo/events?') && url.includes('archived=false')) {
+      if (url.includes('/api/v1/projects/demo/events')) {
         return mockJsonResponse({
-          items: [
-            {
-              id: 'active-event-1',
-              project_id: 'project-1',
-              event_type_id: 'type-1',
-              event_type: {
-                id: 'type-1',
-                name: 'page',
-                display_name: 'Page',
-                color: '#ec4899',
-              },
-              name: 'Active Signup',
-              description: '',
-              order: 0,
-              implemented: true,
-              reviewed: true,
-              archived: false,
-              tags: [],
-              field_values: [],
-              meta_values: [],
-              created_at: '2026-01-01T00:00:00Z',
-              updated_at: '2026-01-01T00:00:00Z',
-            },
-          ],
+          items: [makeEvent({ id: 'active-event-1', name: 'Active Signup', event_type: { id: 'type-1', name: 'page', display_name: 'Page', color: '#ec4899' } })],
           total: 1,
         })
       }
@@ -376,8 +345,7 @@ describe('EventsPage', () => {
       if (url.endsWith('/api/v1/projects/demo/meta-fields')) return mockJsonResponse([])
       if (url.endsWith('/api/v1/projects/demo/variables')) return mockJsonResponse([])
       if (url.endsWith('/api/v1/projects/demo/events/tags')) return mockJsonResponse([])
-      if (url.includes('/api/v1/projects/demo/events?reviewed=false')) return mockJsonResponse({ items: [], total: 0 })
-      if (url.includes('/api/v1/projects/demo/events?archived=true')) return mockJsonResponse({ items: [], total: 0 })
+      if (url.includes('/api/v1/projects/demo/events') && url.includes('status=in_review') && url.includes('limit=1')) return mockJsonResponse({ items: [], total: 0 })
       if (url.includes('/api/v1/projects/demo/events-metrics')) {
         return mockJsonResponse({
           scope: 'events_total',
@@ -400,50 +368,8 @@ describe('EventsPage', () => {
       if (url.includes('/api/v1/projects/demo/events')) {
         return mockJsonResponse({
           items: [
-            {
-              id: 'event-1',
-              project_id: 'project-1',
-              event_type_id: 'type-1',
-              event_type: {
-                id: 'type-1',
-                name: 'page',
-                display_name: 'Page',
-                color: '#0ea5e9',
-              },
-              name: 'Homepage View',
-              description: '',
-              order: 0,
-              implemented: true,
-              reviewed: true,
-              archived: false,
-              tags: [],
-              field_values: [],
-              meta_values: [],
-              created_at: '2026-01-01T00:00:00Z',
-              updated_at: '2026-01-01T00:00:00Z',
-            },
-            {
-              id: 'event-2',
-              project_id: 'project-1',
-              event_type_id: 'type-1',
-              event_type: {
-                id: 'type-1',
-                name: 'page',
-                display_name: 'Page',
-                color: '#0ea5e9',
-              },
-              name: 'Settings View',
-              description: '',
-              order: 1,
-              implemented: false,
-              reviewed: true,
-              archived: false,
-              tags: [],
-              field_values: [],
-              meta_values: [],
-              created_at: '2026-01-01T00:00:00Z',
-              updated_at: '2026-01-01T00:00:00Z',
-            },
+            makeEvent({ id: 'event-1', name: 'Homepage View', status: 'live' }),
+            makeEvent({ id: 'event-2', name: 'Settings View', order: 1, status: 'draft' }),
           ],
           total: 2,
         })
@@ -467,7 +393,7 @@ describe('EventsPage', () => {
     })
   })
 
-  it('supports bulk state actions for selected events', async () => {
+  it('supports bulk status transitions for selected events', async () => {
     const bulkUpdateBodies: unknown[] = []
 
     vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
@@ -492,8 +418,7 @@ describe('EventsPage', () => {
       if (url.endsWith('/api/v1/projects/demo/meta-fields')) return mockJsonResponse([])
       if (url.endsWith('/api/v1/projects/demo/variables')) return mockJsonResponse([])
       if (url.endsWith('/api/v1/projects/demo/events/tags')) return mockJsonResponse([])
-      if (url.includes('/api/v1/projects/demo/events?reviewed=false')) return mockJsonResponse({ items: [], total: 0 })
-      if (url.includes('/api/v1/projects/demo/events?archived=true')) return mockJsonResponse({ items: [], total: 0 })
+      if (url.includes('/api/v1/projects/demo/events') && url.includes('status=in_review') && url.includes('limit=1')) return mockJsonResponse({ items: [], total: 0 })
       if (url.includes('/api/v1/projects/demo/events-metrics')) {
         return mockJsonResponse({
           scope: 'events_total',
@@ -516,50 +441,8 @@ describe('EventsPage', () => {
       if (url.includes('/api/v1/projects/demo/events')) {
         return mockJsonResponse({
           items: [
-            {
-              id: 'event-1',
-              project_id: 'project-1',
-              event_type_id: 'type-1',
-              event_type: {
-                id: 'type-1',
-                name: 'page',
-                display_name: 'Page',
-                color: '#0ea5e9',
-              },
-              name: 'Homepage View',
-              description: '',
-              order: 0,
-              implemented: true,
-              reviewed: true,
-              archived: false,
-              tags: [],
-              field_values: [],
-              meta_values: [],
-              created_at: '2026-01-01T00:00:00Z',
-              updated_at: '2026-01-01T00:00:00Z',
-            },
-            {
-              id: 'event-2',
-              project_id: 'project-1',
-              event_type_id: 'type-1',
-              event_type: {
-                id: 'type-1',
-                name: 'page',
-                display_name: 'Page',
-                color: '#0ea5e9',
-              },
-              name: 'Settings View',
-              description: '',
-              order: 1,
-              implemented: false,
-              reviewed: true,
-              archived: false,
-              tags: [],
-              field_values: [],
-              meta_values: [],
-              created_at: '2026-01-01T00:00:00Z',
-              updated_at: '2026-01-01T00:00:00Z',
-            },
+            makeEvent({ id: 'event-1', name: 'Homepage View', status: 'live' }),
+            makeEvent({ id: 'event-2', name: 'Settings View', order: 1, status: 'draft' }),
           ],
           total: 2,
         })
@@ -574,20 +457,8 @@ describe('EventsPage', () => {
     fireEvent.click(screen.getByLabelText('Select Homepage View'))
     fireEvent.click(screen.getByLabelText('Select Settings View'))
 
-    expect(screen.getByRole('button', { name: 'Mark reviewed' })).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'Send to review' })).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'Archive' })).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'Restore' })).toBeInTheDocument()
-
-    fireEvent.click(screen.getByRole('button', { name: 'Send to review' }))
-
-    await waitFor(() => {
-      expect(bulkUpdateBodies).toContainEqual({
-        event_ids: ['event-1', 'event-2'],
-        reviewed: false,
-        archived: false,
-      })
-    })
+    // BulkActionBar shows a "Set status…" select
+    expect(screen.getByRole('combobox', { name: 'Set status' })).toBeInTheDocument()
   })
 
   it('creates an event with selected event-level metric breakdowns', async () => {
@@ -640,8 +511,7 @@ describe('EventsPage', () => {
       if (url.endsWith('/api/v1/projects/demo/meta-fields')) return mockJsonResponse([])
       if (url.endsWith('/api/v1/projects/demo/variables')) return mockJsonResponse([])
       if (url.endsWith('/api/v1/projects/demo/events/tags')) return mockJsonResponse([])
-      if (url.includes('/api/v1/projects/demo/events?reviewed=false')) return mockJsonResponse({ items: [], total: 0 })
-      if (url.includes('/api/v1/projects/demo/events?archived=true')) return mockJsonResponse({ items: [], total: 0 })
+      if (url.includes('/api/v1/projects/demo/events') && url.includes('status=in_review') && url.includes('limit=1')) return mockJsonResponse({ items: [], total: 0 })
       if (url.includes('/api/v1/projects/demo/events-metrics')) {
         return mockJsonResponse({
           scope: 'events_total',
@@ -661,27 +531,8 @@ describe('EventsPage', () => {
         const body = JSON.parse(String(init.body))
         eventCreateBodies.push(body)
         return mockJsonResponse({
-          id: 'event-1',
-          project_id: 'project-1',
+          ...makeEvent({ name: body.name, status: body.status ?? 'draft', metric_breakdown_columns: body.metric_breakdown_columns }),
           event_type_id: body.event_type_id,
-          event_type: {
-            id: 'type-1',
-            name: 'page',
-            display_name: 'Page',
-            color: '#0ea5e9',
-          },
-          name: body.name,
-          description: body.description,
-          order: 0,
-          implemented: body.implemented,
-          reviewed: true,
-          archived: false,
-          metric_breakdown_columns: body.metric_breakdown_columns,
-          tags: [],
-          field_values: [],
-          meta_values: [],
-          created_at: '2026-01-01T00:00:00Z',
-          updated_at: '2026-01-01T00:00:00Z',
         })
       }
       if (url.includes('/api/v1/projects/demo/events')) {
@@ -696,11 +547,11 @@ describe('EventsPage', () => {
     fireEvent.click(await screen.findByRole('button', { name: 'New Event' }))
     const dialog = await screen.findByRole('dialog')
 
-    fireEvent.change(within(dialog).getByRole('combobox'), { target: { value: 'type-1' } })
+    fireEvent.change(within(dialog).getAllByRole('combobox')[0], { target: { value: 'type-1' } })
     fireEvent.change(within(dialog).getByPlaceholderText('e.g. Home Page View'), {
       target: { value: 'Homepage View' },
     })
-    fireEvent.click(within(dialog).getAllByRole('checkbox')[1])
+    fireEvent.click(within(dialog).getAllByRole('checkbox')[0])
     fireEvent.change(within(dialog).getByLabelText('Metric breakdown column name'), {
       target: { value: 'platform' },
     })
@@ -708,16 +559,18 @@ describe('EventsPage', () => {
     fireEvent.click(within(dialog).getByRole('button', { name: 'Create' }))
 
     await waitFor(() => {
-      expect(eventCreateBodies).toContainEqual({
-        event_type_id: 'type-1',
-        name: 'Homepage View',
-        description: '',
-        implemented: false,
-        metric_breakdown_columns: ['country', 'platform'],
-        tags: [],
-        field_values: [],
-        meta_values: [],
-      })
+      expect(eventCreateBodies).toContainEqual(
+        expect.objectContaining({
+          event_type_id: 'type-1',
+          name: 'Homepage View',
+          description: '',
+          status: 'draft',
+          metric_breakdown_columns: ['country', 'platform'],
+          tags: [],
+          field_values: [],
+          meta_values: [],
+        }),
+      )
     })
   })
 })

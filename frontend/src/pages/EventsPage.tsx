@@ -2,6 +2,7 @@ import { useCallback, useMemo, useState } from 'react'
 import { useConfirm } from '@/hooks/useConfirm'
 import { useActiveBranchId } from '@/hooks/useBranch'
 import { ErrorState } from '@/components/error-state'
+import type { EventStatus } from '@/lib/eventStatus'
 
 import { BulkActionBar } from './events/BulkActionBar'
 import { EventForm } from './events/EventForm'
@@ -64,13 +65,10 @@ export default function EventsPage() {
   const {
     search,
     setSearch,
-    filterImplemented,
-    setFilterImplemented,
+    filterStatuses,
+    setFilterStatuses,
     filterTag,
     setFilterTag,
-    filterReviewed,
-    filterReviewedForQuery,
-    filterArchivedForQuery,
     filterSilentDays,
     setFilterSilentDays,
     fieldFilters,
@@ -82,6 +80,7 @@ export default function EventsPage() {
     debouncedMetaFilters,
     isFilterPending,
     filterEtId,
+    queryStatuses,
     eventsQuery,
     rawEvents,
     total,
@@ -131,8 +130,7 @@ export default function EventsPage() {
     eventTypeSignals,
     fieldColumns,
     fieldFilters,
-    filterImplemented,
-    filterReviewed,
+    filterStatuses,
     filterSilentDays,
     filterTag,
     hiddenColumns,
@@ -159,7 +157,7 @@ export default function EventsPage() {
     onBulkDeleteOptimistic: clearSelection,
     onBulkUpdateOptimistic: clearSelection,
   })
-  const { bulkDeleteMut, bulkUpdateMut } = mutations
+  const { bulkDeleteMut, bulkUpdateMut, setStatusMut } = mutations
 
   const dndSensors = useEventsDndSensors()
 
@@ -190,12 +188,15 @@ export default function EventsPage() {
     bulkDeleteMut,
     confirm,
   })
-  const handleBulkUpdate = useCallback((
-    patch: { implemented?: boolean; reviewed?: boolean; archived?: boolean },
-  ) => {
+
+  const handleBulkSetStatus = useCallback((status: EventStatus) => {
     if (!selectedVisibleEventIds.length) return
-    bulkUpdateMut.mutate({ eventIds: selectedVisibleEventIds, ...patch })
+    bulkUpdateMut.mutate({ eventIds: selectedVisibleEventIds, status })
   }, [bulkUpdateMut, selectedVisibleEventIds])
+
+  const handleSetStatus = useCallback((id: string, status: EventStatus) => {
+    setStatusMut.mutate({ id, status })
+  }, [setStatusMut])
 
   const { eventWindowMetricsByEvent, eventRowSignals } = useEventRowMetrics({
     slug,
@@ -239,8 +240,8 @@ export default function EventsPage() {
             search={search}
             onSearchChange={setSearch}
             isFilterPending={isFilterPending}
-            filterImplemented={filterImplemented}
-            onFilterImplementedChange={setFilterImplemented}
+            filterStatuses={filterStatuses}
+            onFilterStatusesChange={setFilterStatuses}
             filterSilentDays={filterSilentDays}
             onFilterSilentDaysChange={setFilterSilentDays}
             hasActiveFilters={hasActiveFilters}
@@ -265,10 +266,7 @@ export default function EventsPage() {
             selectedCount={selectedVisibleEventIds.length}
             isDeleting={bulkDeleteMut.isPending}
             isUpdating={bulkUpdateMut.isPending}
-            onMarkReviewed={() => handleBulkUpdate({ reviewed: true, archived: false })}
-            onSendToReview={() => handleBulkUpdate({ reviewed: false, archived: false })}
-            onArchive={() => handleBulkUpdate({ archived: true })}
-            onRestore={() => handleBulkUpdate({ archived: false })}
+            onSetStatus={handleBulkSetStatus}
             onDelete={() => { void handleBulkDelete() }}
             onClear={clearSelection}
           />
@@ -296,10 +294,8 @@ export default function EventsPage() {
               filters={{
                 filterEtId,
                 debouncedSearch,
-                filterImplemented,
+                queryStatuses,
                 filterTag,
-                filterReviewedForQuery,
-                filterArchivedForQuery,
               }}
             />
           )}
@@ -343,6 +339,7 @@ export default function EventsPage() {
             toggleEventSelected={toggleEventSelected}
             onToggleExpandedCell={onToggleExpandedCell}
             onRowAction={onRowAction}
+            onSetStatus={handleSetStatus}
           />
         </>
       )}

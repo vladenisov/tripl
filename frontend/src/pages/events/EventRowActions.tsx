@@ -6,13 +6,12 @@ import {
   ArrowDown,
   ArrowUp,
   BarChart3,
-  CircleCheck,
-  Eye,
   MoreHorizontal,
   Pencil,
   Trash2,
 } from 'lucide-react'
 import type { EventListItem } from '@/types'
+import { EVENT_STATUS_LABELS, EVENT_STATUSES, type EventStatus } from '@/lib/eventStatus'
 import { Button } from '@/components/ui/button'
 
 export const EventRowActions = memo(function EventRowActions({
@@ -23,10 +22,10 @@ export const EventRowActions = memo(function EventRowActions({
   onEdit,
   onMoveUp,
   onMoveDown,
-  onToggleReviewed,
-  onToggleImplemented,
-  onToggleArchived,
+  onArchive,
+  onRestore,
   onDelete,
+  onSetStatus,
 }: {
   event: EventListItem
   slug: string
@@ -35,10 +34,10 @@ export const EventRowActions = memo(function EventRowActions({
   onEdit: () => void
   onMoveUp: () => void
   onMoveDown: () => void
-  onToggleReviewed: () => void
-  onToggleImplemented: () => void
-  onToggleArchived: () => void
+  onArchive: () => void
+  onRestore: () => void
   onDelete: () => void
+  onSetStatus?: (status: EventStatus) => void
 }) {
   const [isExpanded, setIsExpanded] = useState(false)
   const containerRef = useRef<HTMLDivElement | null>(null)
@@ -65,6 +64,8 @@ export const EventRowActions = memo(function EventRowActions({
   }, [clearCloseTimer])
 
   useEffect(() => () => clearCloseTimer(), [clearCloseTimer])
+
+  const isArchived = event.status === 'archived'
 
   return (
     <div
@@ -108,16 +109,19 @@ export const EventRowActions = memo(function EventRowActions({
           >
             <ArrowDown className="h-3.5 w-3.5" />
           </Button>
-          <Button
-            variant={event.implemented ? 'default' : 'ghost'}
-            size="icon"
-            className="h-7 w-7"
-            title={event.implemented ? 'Implemented' : 'Not implemented'}
-            aria-label="Toggle implemented status"
-            onClick={onToggleImplemented}
-          >
-            <CircleCheck className="h-3.5 w-3.5" />
-          </Button>
+          {onSetStatus && (
+            <select
+              value={event.status}
+              onChange={e => onSetStatus(e.target.value as EventStatus)}
+              className="h-7 rounded border border-input bg-background px-1.5 text-[11px] focus:outline-none"
+              title="Set status"
+              aria-label="Set event status"
+            >
+              {EVENT_STATUSES.map(s => (
+                <option key={s} value={s}>{EVENT_STATUS_LABELS[s]}</option>
+              ))}
+            </select>
+          )}
           <Button
             variant="ghost"
             size="icon"
@@ -134,11 +138,11 @@ export const EventRowActions = memo(function EventRowActions({
             variant="ghost"
             size="icon"
             className="h-7 w-7 text-muted-foreground"
-            title={event.archived ? 'Unarchive' : 'Archive'}
-            aria-label={event.archived ? 'Unarchive event' : 'Archive event'}
-            onClick={onToggleArchived}
+            title={isArchived ? 'Restore (set to Draft)' : 'Archive'}
+            aria-label={isArchived ? 'Restore event' : 'Archive event'}
+            onClick={isArchived ? onRestore : onArchive}
           >
-            {event.archived ? <ArchiveRestore className="h-3.5 w-3.5" /> : <Archive className="h-3.5 w-3.5" />}
+            {isArchived ? <ArchiveRestore className="h-3.5 w-3.5" /> : <Archive className="h-3.5 w-3.5" />}
           </Button>
           <Button
             variant="ghost"
@@ -152,16 +156,6 @@ export const EventRowActions = memo(function EventRowActions({
           </Button>
         </div>
         <div className={`relative z-10 flex items-center gap-1 rounded-lg border bg-background/95 p-1 backdrop-blur-sm transition-shadow ${isExpanded ? 'shadow-lg' : 'shadow-sm'}`}>
-          <Button
-            variant={event.reviewed ? 'default' : 'ghost'}
-            size="icon"
-            className="h-7 w-7"
-            title={event.reviewed ? 'Reviewed' : 'Not reviewed'}
-            aria-label="Toggle review status"
-            onClick={onToggleReviewed}
-          >
-            <Eye className="h-3.5 w-3.5" />
-          </Button>
           <Button
             variant="ghost"
             size="icon"

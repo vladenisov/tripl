@@ -1,12 +1,10 @@
 import { api, withBranch } from './client'
-import type { Event, EventListResponse } from '../types'
+import type { Event, EventChange, EventListResponse } from '../types'
 
 type ListParams = {
   event_type_id?: string
   search?: string
-  implemented?: boolean
-  reviewed?: boolean
-  archived?: boolean
+  status?: string[]
   tag?: string
   silent_since_days?: number
   offset?: number
@@ -18,9 +16,9 @@ export const eventsApi = {
     const sp = new URLSearchParams()
     if (params?.event_type_id) sp.set('event_type_id', params.event_type_id)
     if (params?.search) sp.set('search', params.search)
-    if (params?.implemented !== undefined) sp.set('implemented', String(params.implemented))
-    if (params?.reviewed !== undefined) sp.set('reviewed', String(params.reviewed))
-    if (params?.archived !== undefined) sp.set('archived', String(params.archived))
+    if (params?.status?.length) {
+      for (const s of params.status) sp.append('status', s)
+    }
     if (params?.tag) sp.set('tag', params.tag)
     if (params?.silent_since_days !== undefined) sp.set('silent_since_days', String(params.silent_since_days))
     if (params?.offset !== undefined) sp.set('offset', String(params.offset))
@@ -39,8 +37,8 @@ export const eventsApi = {
       event_type_id: string
       name: string
       description?: string
-      implemented?: boolean
-      reviewed?: boolean
+      status?: string
+      sunset_at?: string | null
       tags?: string[]
       metric_breakdown_columns?: string[]
       field_values?: { field_definition_id: string; value: string }[]
@@ -54,9 +52,8 @@ export const eventsApi = {
     data: {
       name?: string
       description?: string
-      implemented?: boolean
-      reviewed?: boolean
-      archived?: boolean
+      status?: string
+      sunset_at?: string | null
       tags?: string[]
       metric_breakdown_columns?: string[]
       field_values?: { field_definition_id: string; value: string }[]
@@ -83,9 +80,8 @@ export const eventsApi = {
     slug: string,
     eventIds: string[],
     data: {
-      implemented?: boolean
-      reviewed?: boolean
-      archived?: boolean
+      status?: string
+      sunset_at?: string | null
     },
     branchId?: string | null,
   ) => api.post<void>(
@@ -100,4 +96,6 @@ export const eventsApi = {
   ) => api.patch<Event>(withBranch(`/projects/${slug}/events/${id}/move`, branchId), data),
   reorder: (slug: string, eventIds: string[], branchId?: string | null) =>
     api.patch<Event[]>(withBranch(`/projects/${slug}/events/reorder`, branchId), { event_ids: eventIds }),
+  history: (slug: string, eventId: string, branchId?: string | null) =>
+    api.get<EventChange[]>(withBranch(`/projects/${slug}/events/${eventId}/history`, branchId)),
 }

@@ -10,6 +10,7 @@ import { aiApi } from '@/api/ai'
 import { eventsApi } from '@/api/events'
 import { useActiveBranchId } from '@/hooks/useBranch'
 import { useAiStatus } from '@/hooks/useAiStatus'
+import { EVENT_STATUS_LABELS, EVENT_STATUSES } from '@/lib/eventStatus'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Checkbox } from '@/components/ui/checkbox'
@@ -112,7 +113,10 @@ export function EventForm({
   const [etId, setEtId] = useState(event?.event_type_id ?? defaultEventTypeId ?? '')
   const [name, setName] = useState(event?.name ?? '')
   const [description, setDescription] = useState(event?.description ?? '')
-  const [implemented, setImplemented] = useState(event?.implemented ?? false)
+  const [status, setStatus] = useState(event?.status ?? 'draft')
+  const [sunsetAt, setSunsetAt] = useState(
+    event?.sunset_at ? event.sunset_at.slice(0, 16) : '',
+  )
   const [metricBreakdownColumns, setMetricBreakdownColumns] = useState(
     () => normalizeMetricBreakdownColumns(event?.metric_breakdown_columns ?? []),
   )
@@ -167,7 +171,8 @@ export function EventForm({
         event_type_id: etId,
         name,
         description,
-        implemented,
+        status,
+        sunset_at: status === 'deprecated' && sunsetAt ? sunsetAt : null,
         metric_breakdown_columns: metricBreakdownColumns,
         tags,
         field_values: Object.entries(fieldValues)
@@ -248,13 +253,32 @@ export function EventForm({
               )}
             </div>
 
-            <div className="flex items-center gap-2">
-              <Checkbox
-                id="form-impl"
-                checked={implemented}
-                onCheckedChange={c => setImplemented(!!c)}
-              />
-              <Label htmlFor="form-impl" className="text-sm cursor-pointer">Implemented</Label>
+            <div className="grid grid-cols-2 gap-3">
+              <div className="grid gap-2">
+                <Label htmlFor="form-status">Status</Label>
+                <select
+                  id="form-status"
+                  value={status}
+                  onChange={e => setStatus(e.target.value)}
+                  className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-xs"
+                >
+                  {EVENT_STATUSES.map(s => (
+                    <option key={s} value={s}>{EVENT_STATUS_LABELS[s]}</option>
+                  ))}
+                </select>
+              </div>
+              {status === 'deprecated' && (
+                <div className="grid gap-2">
+                  <Label htmlFor="form-sunset">Sunset date</Label>
+                  <Input
+                    id="form-sunset"
+                    type="datetime-local"
+                    value={sunsetAt}
+                    onChange={e => setSunsetAt(e.target.value)}
+                    className="h-9 text-sm"
+                  />
+                </div>
+              )}
             </div>
 
             <div className="grid gap-2">

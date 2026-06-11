@@ -32,6 +32,7 @@ import type {
   MonitoringSignal,
 } from '@/types'
 
+import type { EventStatus } from '@/lib/eventStatus'
 import { ColumnFilter, FilterableHead, type ColumnFilterType } from './ColumnFilter'
 import { EventRow, type RowAction } from './EventRow'
 import { EMPTY_WINDOW_POINTS, ROW_METRICS_LABEL } from './utils'
@@ -79,6 +80,7 @@ export type EventsTableProps = {
   toggleEventSelected: (id: string, checked: boolean) => void
   onToggleExpandedCell: (cellKey: string | null) => void
   onRowAction: (action: RowAction, ev: EventListItem) => void
+  onSetStatus: (id: string, status: EventStatus) => void
 }
 
 export function EventsTable({
@@ -120,6 +122,7 @@ export function EventsTable({
   toggleEventSelected,
   onToggleExpandedCell,
   onRowAction,
+  onSetStatus,
 }: EventsTableProps) {
   return (
     <TooltipProvider delayDuration={0}>
@@ -270,6 +273,7 @@ export function EventsTable({
                         onToggleSelected={toggleEventSelected}
                         onToggleExpanded={onToggleExpandedCell}
                         onRowAction={onRowAction}
+                        onSetStatus={onSetStatus}
                       />
                     )
                   },

@@ -420,9 +420,8 @@ export interface Event {
   name: string
   description: string
   order: number
-  implemented: boolean
-  reviewed: boolean
-  archived: boolean
+  status: string
+  sunset_at: string | null
   last_seen_at: string | null
   metric_breakdown_columns: string[]
   drift_count: number
@@ -431,6 +430,17 @@ export interface Event {
   meta_values: EventMetaValue[]
   created_at: string
   updated_at: string
+}
+
+export interface EventChange {
+  id: string
+  event_id: string
+  user_id: string | null
+  user_email: string | null
+  field: string
+  old_value: string | null
+  new_value: string | null
+  created_at: string
 }
 
 export type SchemaDriftType =
@@ -495,6 +505,7 @@ export interface SearchResult {
   parent_event_id: string | null
   event_id: string | null
   name: string | null
+  /** Legacy field from search index — may be null for non-event results */
   implemented: boolean | null
   variable_values: SearchEventVariableValue[]
   title: string
