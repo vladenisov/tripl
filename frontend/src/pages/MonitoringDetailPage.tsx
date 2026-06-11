@@ -7,6 +7,8 @@ import { eventsApi } from '@/api/events'
 import { metaFieldsApi } from '@/api/metaFields'
 import { metricsApi } from '@/api/metrics'
 import { variablesApi } from '@/api/variables'
+import { EVENT_STATUS_BADGE_VARIANT, EVENT_STATUS_LABELS } from '@/lib/eventStatus'
+import type { EventStatus } from '@/lib/eventStatus'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
@@ -36,7 +38,7 @@ import type {
   Variable,
 } from '@/types'
 import { EventForm } from './events/EventForm'
-import { AlertTriangle, ArrowLeft, CalendarPlus, CircleCheck, Eye, GitCompareArrows, Layers, Pencil, Tag, Trash2 } from 'lucide-react'
+import { AlertTriangle, ArrowLeft, CalendarPlus, GitCompareArrows, Layers, Pencil, Tag, Trash2 } from 'lucide-react'
 
 // Stable empty reference so `metaFieldsQuery.data ?? EMPTY_META_FIELDS`
 // doesn't mint a new array each render and bust the memoized lookup map.
@@ -82,6 +84,13 @@ export default function MonitoringDetailPage() {
     enabled: scope === 'event' && !!slug && !!scopeId,
   })
   const event = eventQuery.data
+
+  const historyQuery = useQuery({
+    queryKey: ['eventHistory', slug, branchId, scopeId],
+    queryFn: () => eventsApi.history(slug!, scopeId, branchId),
+    enabled: scope === 'event' && !!slug && !!scopeId,
+  })
+  const eventHistory = historyQuery.data ?? []
 
   const eventTypesQuery = useQuery({
     queryKey: ['eventTypes', slug, branchId],
@@ -324,14 +333,15 @@ export default function MonitoringDetailPage() {
               {metrics.scan_config_id.slice(0, 8)}
             </Badge>
           )}
-          {scope === 'event' && event?.implemented && (
-            <Badge variant="outline" className="gap-1">
-              <CircleCheck className="h-3 w-3" /> Implemented
+          {scope === 'event' && event?.status && (
+            <Badge variant={EVENT_STATUS_BADGE_VARIANT[event.status as EventStatus] ?? 'outline'}>
+              {EVENT_STATUS_LABELS[event.status as EventStatus] ?? event.status}
             </Badge>
           )}
-          {scope === 'event' && event?.reviewed && (
-            <Badge variant="outline" className="gap-1">
-              <Eye className="h-3 w-3" /> Reviewed
+          {scope === 'event' && event?.sunset_at && (
+            <Badge variant="outline" className="gap-1 text-xs">
+              <CalendarPlus className="h-3 w-3" />
+              Sunset {formatTimestamp(event.sunset_at)}
             </Badge>
           )}
           {latestSignal && latestSignalLabel && (
@@ -420,6 +430,31 @@ export default function MonitoringDetailPage() {
               </CardContent>
             </Card>
           )}
+        {eventHistory.length > 0 && (
+          <Card>
+            <CardContent className="p-6">
+              <h2 className="text-sm font-semibold mb-3">History</h2>
+              <div className="grid gap-2">
+                {eventHistory.map(change => (
+                  <div key={change.id} className="flex items-start gap-3 text-xs">
+                    <span className="shrink-0 text-muted-foreground tnum min-w-[120px]">
+                      {formatTimestamp(change.created_at)}
+                    </span>
+                    <span className="shrink-0 text-muted-foreground min-w-[80px] truncate">
+                      {change.user_email ?? 'system'}
+                    </span>
+                    <span className="font-mono text-muted-foreground shrink-0">{change.field}</span>
+                    <span className="min-w-0 truncate">
+                      <span className="text-muted-foreground">{change.old_value ?? '—'}</span>
+                      <span className="mx-1 text-muted-foreground">→</span>
+                      <span className="text-foreground">{change.new_value ?? '—'}</span>
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </CardContent>
+          </Card>
+        )}
         </>
       )}
 

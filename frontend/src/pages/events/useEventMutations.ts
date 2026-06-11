@@ -10,7 +10,7 @@ import { eventsApi } from '@/api/events'
 import type { EventListItem, EventListResponse } from '@/types'
 
 // Both shapes coexist under the `['events', slug, ...]` prefix: the main
-// table uses `useInfiniteQuery` (InfiniteData), and unreviewed-count / alerting
+// table uses `useInfiniteQuery` (InfiniteData), and in-review-count / alerting
 // pages use a flat `EventListResponse`. Mutations need to update every cache
 // they touch so the optimistic patch stays consistent.
 type EventsQueryData = EventListResponse | InfiniteData<EventListResponse>
@@ -89,9 +89,8 @@ export function useEventMutations({
       ...patch
     }: {
       eventIds: string[]
-      implemented?: boolean
-      reviewed?: boolean
-      archived?: boolean
+      status?: string
+      sunset_at?: string | null
     }) => eventsApi.bulkUpdate(slug!, eventIds, patch, branchId),
     onMutate: async ({ eventIds, ...patch }) => {
       await qc.cancelQueries({ queryKey: eventsKey })
@@ -106,44 +105,17 @@ export function useEventMutations({
     onSettled: () => qc.invalidateQueries({ queryKey: eventsKey }),
   })
 
-  // Toggle mutations: optimistic patch with no on-success refetch. Boolean
-  // flips are self-consistent so the cache stays correct after the server
-  // confirms; skipping invalidate avoids the 200×N-row refetch that used to
-  // fire on every chip click. Filter-driven exits (e.g. marking reviewed while
-  // on the review tab) reconcile on the next natural refetch.
-  const toggleImplementedMut = useMutation({
-    mutationFn: ({ id, implemented }: { id: string; implemented: boolean }) =>
-      eventsApi.update(slug!, id, { implemented }, branchId),
-    onMutate: async ({ id, implemented }) => {
+  // Status mutation: optimistic patch with no on-success refetch. Status
+  // transitions are self-consistent so the cache stays correct after the
+  // server confirms; skipping invalidate avoids a 200×N-row refetch on every
+  // status chip click. Filter-driven exits reconcile on the next natural refetch.
+  const setStatusMut = useMutation({
+    mutationFn: ({ id, status, sunset_at }: { id: string; status: string; sunset_at?: string | null }) =>
+      eventsApi.update(slug!, id, { status, sunset_at }, branchId),
+    onMutate: async ({ id, status, sunset_at }) => {
       await qc.cancelQueries({ queryKey: eventsKey })
       const snapshots = applyToEventsCaches((items) =>
-        items.map((e) => (e.id === id ? { ...e, implemented } : e)),
-      )
-      return { snapshots }
-    },
-    onError: (_e, _v, ctx) => rollbackEventsCaches(ctx?.snapshots),
-  })
-
-  const toggleReviewedMut = useMutation({
-    mutationFn: ({ id, reviewed }: { id: string; reviewed: boolean }) =>
-      eventsApi.update(slug!, id, { reviewed }, branchId),
-    onMutate: async ({ id, reviewed }) => {
-      await qc.cancelQueries({ queryKey: eventsKey })
-      const snapshots = applyToEventsCaches((items) =>
-        items.map((e) => (e.id === id ? { ...e, reviewed } : e)),
-      )
-      return { snapshots }
-    },
-    onError: (_e, _v, ctx) => rollbackEventsCaches(ctx?.snapshots),
-  })
-
-  const toggleArchivedMut = useMutation({
-    mutationFn: ({ id, archived }: { id: string; archived: boolean }) =>
-      eventsApi.update(slug!, id, { archived }, branchId),
-    onMutate: async ({ id, archived }) => {
-      await qc.cancelQueries({ queryKey: eventsKey })
-      const snapshots = applyToEventsCaches((items) =>
-        items.map((e) => (e.id === id ? { ...e, archived } : e)),
+        items.map((e) => (e.id === id ? { ...e, status, ...(sunset_at !== undefined ? { sunset_at } : {}) } : e)),
       )
       return { snapshots }
     },
@@ -199,9 +171,7 @@ export function useEventMutations({
     deleteMut,
     bulkDeleteMut,
     bulkUpdateMut,
-    toggleImplementedMut,
-    toggleReviewedMut,
-    toggleArchivedMut,
+    setStatusMut,
     moveEventMut,
     reorderEventsMut,
   }

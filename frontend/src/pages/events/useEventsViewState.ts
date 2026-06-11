@@ -7,6 +7,7 @@ import type {
   MetaFieldDefinition,
   MonitoringSignal,
 } from '@/types'
+import type { EventStatus } from '@/lib/eventStatus'
 
 export function useEventsViewState({
   activeTab,
@@ -14,8 +15,7 @@ export function useEventsViewState({
   eventTypeSignals,
   fieldColumns,
   fieldFilters,
-  filterImplemented,
-  filterReviewed,
+  filterStatuses,
   filterSilentDays,
   filterTag,
   hiddenColumns,
@@ -28,8 +28,7 @@ export function useEventsViewState({
   eventTypeSignals: Map<string, MonitoringSignal>
   fieldColumns: FieldDefinition[]
   fieldFilters: Record<string, string>
-  filterImplemented: boolean | undefined
-  filterReviewed: boolean | undefined
+  filterStatuses: EventStatus[]
   filterSilentDays: number | undefined
   filterTag: string
   hiddenColumns: Set<string>
@@ -78,15 +77,14 @@ export function useEventsViewState({
     visibleMetaFields.length +
     1
 
-  const hasActiveFilters = filterImplemented !== undefined || filterTag !== '' || filterReviewed !== undefined || filterSilentDays !== undefined ||
+  const hasActiveFilters = filterStatuses.length > 0 || filterTag !== '' || filterSilentDays !== undefined ||
     Object.values(fieldFilters).some(v => v !== '') ||
     Object.values(metaFilters).some(v => v !== '')
 
   const clearAllFilters = useCallback(() => {
     setSearchParams(prev => {
       const next = new URLSearchParams(prev)
-      next.delete('implemented')
-      next.delete('reviewed')
+      next.delete('status')
       next.delete('tag')
       next.delete('silent_days')
       Array.from(next.keys()).filter(k => k.startsWith('f.') || k.startsWith('m.')).forEach(k => next.delete(k))

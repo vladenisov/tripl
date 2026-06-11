@@ -15,6 +15,8 @@ import { Checkbox } from '@/components/ui/checkbox'
 import { TableCell, TableRow } from '@/components/ui/table'
 import { Chip } from '@/components/primitives/chip'
 import { Dot } from '@/components/primitives/dot'
+import { EVENT_STATUS_DOT_TONE } from '@/lib/eventStatus'
+import type { EventStatus } from '@/lib/eventStatus'
 import { resolveMetaFieldHref } from '@/lib/metaFields'
 import { VariableValueContextTrigger } from '@/components/variable-value-contexts'
 import { EventDriftBadge } from './EventDriftBadge'
@@ -28,9 +30,8 @@ export type RowAction =
   | 'navigate-monitoring'
   | 'move-up'
   | 'move-down'
-  | 'toggle-reviewed'
-  | 'toggle-implemented'
-  | 'toggle-archived'
+  | 'set-status-archived'
+  | 'set-status-draft'
   | 'delete'
 
 export type EventRowProps = {
@@ -54,6 +55,7 @@ export type EventRowProps = {
   onToggleSelected: (id: string, checked: boolean) => void
   onToggleExpanded: (cellKey: string | null) => void
   onRowAction: (action: RowAction, ev: EventListItem) => void
+  onSetStatus: (id: string, status: EventStatus) => void
 }
 
 export const EventRow = memo(function EventRow({
@@ -77,6 +79,7 @@ export const EventRow = memo(function EventRow({
   onToggleSelected,
   onToggleExpanded,
   onRowAction,
+  onSetStatus,
 }: EventRowProps) {
   const {
     attributes,
@@ -99,13 +102,7 @@ export const EventRow = memo(function EventRow({
       ? 'danger'
       : 'warning'
     : null
-  const statusTone: 'success' | 'warning' | 'neutral' = ev.archived
-    ? 'neutral'
-    : ev.implemented
-      ? 'success'
-      : ev.reviewed
-        ? 'warning'
-        : 'neutral'
+  const statusTone = EVENT_STATUS_DOT_TONE[(ev.status as EventStatus) ?? 'draft'] ?? 'neutral'
 
   return (
     <TableRow ref={setNodeRef} style={dragStyle} data-state={selected ? 'selected' : undefined}>
@@ -248,10 +245,10 @@ export const EventRow = memo(function EventRow({
           onEdit={() => onRowAction('edit', ev)}
           onMoveUp={() => onRowAction('move-up', ev)}
           onMoveDown={() => onRowAction('move-down', ev)}
-          onToggleReviewed={() => onRowAction('toggle-reviewed', ev)}
-          onToggleImplemented={() => onRowAction('toggle-implemented', ev)}
-          onToggleArchived={() => onRowAction('toggle-archived', ev)}
+          onArchive={() => onRowAction('set-status-archived', ev)}
+          onRestore={() => onRowAction('set-status-draft', ev)}
           onDelete={() => onRowAction('delete', ev)}
+          onSetStatus={status => onSetStatus(ev.id, status)}
         />
       </TableCell>
     </TableRow>

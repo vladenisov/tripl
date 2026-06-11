@@ -282,6 +282,7 @@ export function AppSidebar() {
 function buildEventViews(project: Project, eventTypes: EventType[]): SavedView[] {
   const base = `/p/${project.slug}/events`
   const summary = project.summary
+  // Planned = active events not yet implemented or live
   const plannedCount = Math.max(0, summary.active_event_count - summary.implemented_event_count)
 
   const summaryViews: SavedView[] = [
@@ -291,7 +292,7 @@ function buildEventViews(project: Project, eventTypes: EventType[]): SavedView[]
       count: summary.active_event_count,
       icon: Grid3x3,
       to: base,
-      match: (path, search) => path === base && !search.has('implemented'),
+      match: (path, search) => path === base && !search.has('status'),
     },
     {
       id: 'review',
@@ -308,8 +309,12 @@ function buildEventViews(project: Project, eventTypes: EventType[]): SavedView[]
       count: summary.implemented_event_count,
       icon: CircleCheck,
       tone: 'accent',
-      to: `${base}?implemented=true`,
-      match: (path, search) => path === base && search.get('implemented') === 'true',
+      to: `${base}?status=implemented&status=live`,
+      match: (path, search) => {
+        if (path !== base) return false
+        const statuses = search.getAll('status')
+        return statuses.includes('implemented') && statuses.includes('live')
+      },
     },
     {
       id: 'planned',
@@ -317,8 +322,12 @@ function buildEventViews(project: Project, eventTypes: EventType[]): SavedView[]
       count: plannedCount,
       icon: Calendar,
       tone: 'info',
-      to: `${base}?implemented=false`,
-      match: (path, search) => path === base && search.get('implemented') === 'false',
+      to: `${base}?status=draft&status=in_review&status=ready_for_dev`,
+      match: (path, search) => {
+        if (path !== base) return false
+        const statuses = search.getAll('status')
+        return statuses.includes('draft') && statuses.includes('in_review') && statuses.includes('ready_for_dev')
+      },
     },
     {
       id: 'archived',

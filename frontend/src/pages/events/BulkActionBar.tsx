@@ -1,25 +1,27 @@
-import { Archive, ArchiveRestore, Eye, RotateCcw, Trash2 } from 'lucide-react'
+import { Trash2 } from 'lucide-react'
 
+import { EVENT_STATUS_LABELS, EVENT_STATUSES, type EventStatus } from '@/lib/eventStatus'
 import { Button } from '@/components/ui/button'
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select'
 
 export function BulkActionBar({
   selectedCount,
   isDeleting,
   isUpdating,
-  onMarkReviewed,
-  onSendToReview,
-  onArchive,
-  onRestore,
+  onSetStatus,
   onDelete,
   onClear,
 }: {
   selectedCount: number
   isDeleting: boolean
   isUpdating: boolean
-  onMarkReviewed: () => void
-  onSendToReview: () => void
-  onArchive: () => void
-  onRestore: () => void
+  onSetStatus: (status: EventStatus) => void
   onDelete: () => void
   onClear: () => void
 }) {
@@ -28,42 +30,22 @@ export function BulkActionBar({
   return (
     <div className="mb-4 flex flex-wrap items-center gap-2 rounded-lg border bg-muted/30 px-3 py-2">
       <span className="text-sm font-medium">{selectedCount} selected</span>
-      <Button
-        variant="outline"
-        size="sm"
-        onClick={onMarkReviewed}
+      <Select
+        value=""
+        onValueChange={v => { if (v) onSetStatus(v as EventStatus) }}
         disabled={disabled}
       >
-        <Eye className="mr-1 h-3.5 w-3.5" />
-        Mark reviewed
-      </Button>
-      <Button
-        variant="outline"
-        size="sm"
-        onClick={onSendToReview}
-        disabled={disabled}
-      >
-        <RotateCcw className="mr-1 h-3.5 w-3.5" />
-        Send to review
-      </Button>
-      <Button
-        variant="outline"
-        size="sm"
-        onClick={onArchive}
-        disabled={disabled}
-      >
-        <Archive className="mr-1 h-3.5 w-3.5" />
-        Archive
-      </Button>
-      <Button
-        variant="outline"
-        size="sm"
-        onClick={onRestore}
-        disabled={disabled}
-      >
-        <ArchiveRestore className="mr-1 h-3.5 w-3.5" />
-        Restore
-      </Button>
+        <SelectTrigger className="h-8 w-36 text-xs" aria-label="Set status">
+          <SelectValue placeholder="Set status…" />
+        </SelectTrigger>
+        <SelectContent>
+          {EVENT_STATUSES.map(s => (
+            <SelectItem key={s} value={s} className="text-xs">
+              {EVENT_STATUS_LABELS[s]}
+            </SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
       <Button
         variant="destructive"
         size="sm"

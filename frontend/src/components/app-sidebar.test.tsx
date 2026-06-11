@@ -101,7 +101,7 @@ describe('AppSidebar', () => {
       throw new Error(`Unhandled fetch: ${url}`)
     })
 
-    const { container } = renderSidebar('/p/demo/events?implemented=false')
+    const { container } = renderSidebar('/p/demo/events?status=draft&status=in_review&status=ready_for_dev')
 
     expect(await screen.findByText('All events')).toBeInTheDocument()
     expect(screen.getByText('Needs review')).toBeInTheDocument()
@@ -113,7 +113,8 @@ describe('AppSidebar', () => {
     expect(screen.getByText('7')).toBeInTheDocument()
     expect(screen.getAllByText('3').length).toBeGreaterThan(0)
     expect(container.querySelector('a[href="/p/demo/settings"]')).toBeInTheDocument()
-    expect(container.querySelector('a[href="/p/demo/events?implemented=false"]')).toBeInTheDocument()
+    const plannedLink = screen.getByRole('link', { name: /Planned/ })
+    expect(plannedLink).toHaveAttribute('href', '/p/demo/events?status=draft&status=in_review&status=ready_for_dev')
     expect(container.querySelector('a[href="/p/demo/events/page_view"]')).toBeInTheDocument()
     expect(screen.queryByText('Event Types')).not.toBeInTheDocument()
     expect(screen.queryByText('Alerting')).not.toBeInTheDocument()

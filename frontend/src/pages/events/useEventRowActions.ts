@@ -84,14 +84,11 @@ export function useEventRowActions({
       case 'move-down':
         mutations.moveEventMut.mutate({ id: ev.id, direction: 'down', visibleEventIds: ctx.visibleEventIds })
         return
-      case 'toggle-reviewed':
-        mutations.toggleReviewedMut.mutate({ id: ev.id, reviewed: !ev.reviewed })
+      case 'set-status-archived':
+        mutations.setStatusMut.mutate({ id: ev.id, status: 'archived' })
         return
-      case 'toggle-implemented':
-        mutations.toggleImplementedMut.mutate({ id: ev.id, implemented: !ev.implemented })
-        return
-      case 'toggle-archived':
-        mutations.toggleArchivedMut.mutate({ id: ev.id, archived: !ev.archived })
+      case 'set-status-draft':
+        mutations.setStatusMut.mutate({ id: ev.id, status: 'draft' })
         return
       case 'delete': {
         void (async () => {

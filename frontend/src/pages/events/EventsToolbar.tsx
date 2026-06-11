@@ -1,5 +1,6 @@
 import { Search, X } from 'lucide-react'
 import type { FieldDefinition, MetaFieldDefinition } from '@/types'
+import { EVENT_STATUS_LABELS, EVENT_STATUSES, type EventStatus } from '@/lib/eventStatus'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import {
@@ -17,8 +18,8 @@ export function EventsToolbar({
   search,
   onSearchChange,
   isFilterPending,
-  filterImplemented,
-  onFilterImplementedChange,
+  filterStatuses,
+  onFilterStatusesChange,
   filterSilentDays,
   onFilterSilentDaysChange,
   hasActiveFilters,
@@ -41,8 +42,8 @@ export function EventsToolbar({
   search: string
   onSearchChange: (value: string) => void
   isFilterPending: boolean
-  filterImplemented: boolean | undefined
-  onFilterImplementedChange: (value: boolean | undefined) => void
+  filterStatuses: EventStatus[]
+  onFilterStatusesChange: (value: EventStatus[]) => void
   filterSilentDays: number | undefined
   onFilterSilentDaysChange: (value: number | undefined) => void
   hasActiveFilters: boolean
@@ -62,6 +63,7 @@ export function EventsToolbar({
   metaFields: MetaFieldDefinition[]
   onToggleColumn: (key: string) => void
 }) {
+  const singleStatus = filterStatuses.length === 1 ? filterStatuses[0] : undefined
   return (
     <div className="mb-3 flex flex-wrap items-center gap-2">
       <div className="relative">
@@ -82,16 +84,17 @@ export function EventsToolbar({
         )}
       </div>
       <Select
-        value={filterImplemented === undefined ? '__all__' : String(filterImplemented)}
-        onValueChange={value => onFilterImplementedChange(value === '__all__' ? undefined : value === 'true')}
+        value={singleStatus ?? '__all__'}
+        onValueChange={value => onFilterStatusesChange(value === '__all__' ? [] : [value as EventStatus])}
       >
         <SelectTrigger className="h-8 w-36 text-xs">
           <SelectValue placeholder="All statuses" />
         </SelectTrigger>
         <SelectContent>
           <SelectItem value="__all__">All statuses</SelectItem>
-          <SelectItem value="true">Implemented</SelectItem>
-          <SelectItem value="false">Not implemented</SelectItem>
+          {EVENT_STATUSES.map(s => (
+            <SelectItem key={s} value={s}>{EVENT_STATUS_LABELS[s]}</SelectItem>
+          ))}
         </SelectContent>
       </Select>
       <Select
