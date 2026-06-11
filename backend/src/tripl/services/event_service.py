@@ -9,10 +9,12 @@ from sqlalchemy.orm import noload
 
 from tripl import cache
 from tripl.models.event import Event
+from tripl.models.event_change import EventChange
 from tripl.models.event_field_value import EventFieldValue
 from tripl.models.event_meta_value import EventMetaValue
 from tripl.models.event_tag import EventTag
 from tripl.models.field_definition import FieldDefinition
+from tripl.models.user import User
 from tripl.schemas.event import (
     EventBulkDelete,
     EventBulkUpdate,
@@ -27,6 +29,32 @@ from tripl.services.project_service import get_project_id_by_slug
 from tripl.services.schema_drift_service import get_drift_counts_by_event_type
 from tripl.services.search_service import reindex_project_branch
 from tripl.services.variable_value_service import attach_event_field_variable_values
+
+_TRACKED_FIELDS = ("status", "name", "description", "sunset_at")
+
+
+def _record_changes(
+    session: AsyncSession,
+    *,
+    event: Event,
+    old_values: dict,
+    new_values: dict,
+    user_id: uuid.UUID | None,
+) -> None:
+    for field, new_val in new_values.items():
+        old_val = old_values.get(field)
+        old_str = str(old_val) if old_val is not None else None
+        new_str = str(new_val) if new_val is not None else None
+        if old_str != new_str:
+            session.add(
+                EventChange(
+                    event_id=event.id,
+                    user_id=user_id,
+                    field=field,
+                    old_value=old_str,
+                    new_value=new_str,
+                )
+            )
 
 
 async def _validate_field_values(
@@ -53,10 +81,8 @@ async def list_events(
     slug: str,
     event_type_id: uuid.UUID | None = None,
     search: str | None = None,
-    implemented: bool | None = None,
+    status: list[str] | None = None,
     tag: str | None = None,
-    reviewed: bool | None = None,
-    archived: bool | None = None,
     offset: int = 0,
     limit: int = 200,
     silent_since_days: int | None = None,
@@ -93,15 +119,9 @@ async def list_events(
         )
         query = query.where(search_clause)
         count_query = count_query.where(search_clause)
-    if implemented is not None:
-        query = query.where(Event.implemented == implemented)
-        count_query = count_query.where(Event.implemented == implemented)
-    if reviewed is not None:
-        query = query.where(Event.reviewed == reviewed)
-        count_query = count_query.where(Event.reviewed == reviewed)
-    if archived is not None:
-        query = query.where(Event.archived == archived)
-        count_query = count_query.where(Event.archived == archived)
+    if status:
+        query = query.where(Event.status.in_(status))
+        count_query = count_query.where(Event.status.in_(status))
     if tag:
         tag_filter = select(EventTag.event_id).where(EventTag.name == tag).correlate(None)
         query = query.where(Event.id.in_(tag_filter))
@@ -217,9 +237,8 @@ async def create_event(
         name=data.name,
         description=data.description,
         order=await _get_next_event_order(session, project_id, branch_id),
-        implemented=data.implemented,
-        reviewed=data.reviewed,
-        archived=data.archived,
+        status=data.status,
+        sunset_at=data.sunset_at,
         metric_breakdown_columns=data.metric_breakdown_columns,
     )
     session.add(event)
@@ -259,23 +278,30 @@ async def update_event(
     event_id: uuid.UUID,
     data: EventUpdate,
     branch_id: uuid.UUID | None = None,
+    user_id: uuid.UUID | None = None,
 ) -> Event:
     is_main = branch_id is None
     event = await get_event(session, slug, event_id, branch_id)
     update_data = data.model_dump(exclude_unset=True)
 
+    # Snapshot tracked fields before mutation for change history
+    old_values = {f: getattr(event, f) for f in _TRACKED_FIELDS if f in update_data}
+
     if "name" in update_data:
         event.name = update_data["name"]
     if "description" in update_data:
         event.description = update_data["description"]
-    if "implemented" in update_data:
-        event.implemented = update_data["implemented"]
-    if "reviewed" in update_data:
-        event.reviewed = update_data["reviewed"]
-    if "archived" in update_data:
-        event.archived = update_data["archived"]
+    if "status" in update_data:
+        event.status = update_data["status"]
+    if "sunset_at" in update_data:
+        event.sunset_at = update_data["sunset_at"]
     if "metric_breakdown_columns" in update_data:
         event.metric_breakdown_columns = update_data["metric_breakdown_columns"]
+
+    tracked_new = {f: update_data[f] for f in _TRACKED_FIELDS if f in update_data}
+    _record_changes(
+        session, event=event, old_values=old_values, new_values=tracked_new, user_id=user_id
+    )
 
     # Replace child rows via a single DELETE+INSERT-batch per relation, instead
     # of `await session.delete(row)` per existing child (was ~N round-trips).
@@ -393,6 +419,7 @@ async def bulk_update_events(
     slug: str,
     data: EventBulkUpdate,
     branch_id: uuid.UUID | None = None,
+    user_id: uuid.UUID | None = None,
 ) -> None:
     is_main = branch_id is None
     project_id = await get_project_id_by_slug(session, slug)
@@ -413,6 +440,26 @@ async def bulk_update_events(
         exclude={"event_ids"},
         exclude_none=True,
     )
+
+    # Record changes for each event
+    if update_values:
+        events_result = await session.execute(
+            select(Event).where(
+                Event.project_id == project_id,
+                Event.branch_id == branch_id,
+                Event.id.in_(event_ids),
+            )
+        )
+        for event in events_result.scalars().all():
+            old_values = {f: getattr(event, f) for f in _TRACKED_FIELDS if f in update_values}
+            _record_changes(
+                session,
+                event=event,
+                old_values=old_values,
+                new_values={f: update_values[f] for f in _TRACKED_FIELDS if f in update_values},
+                user_id=user_id,
+            )
+
     await session.execute(
         sql_update(Event)
         .where(
@@ -550,9 +597,8 @@ async def bulk_create_events(
                 name=data.name,
                 description=data.description,
                 order=base_order + i,
-                implemented=data.implemented,
-                reviewed=data.reviewed,
-                archived=data.archived,
+                status=data.status,
+                sunset_at=data.sunset_at,
                 metric_breakdown_columns=data.metric_breakdown_columns,
             )
         )
@@ -594,3 +640,36 @@ async def bulk_create_events(
     if is_main:
         await cache.delete_prefix(cache.prefix_projects())
     return ordered_events
+
+
+async def get_event_history(
+    session: AsyncSession,
+    slug: str,
+    event_id: uuid.UUID,
+    branch_id: uuid.UUID | None = None,
+) -> list[dict]:
+    # Validate event belongs to this project
+    await get_event(session, slug, event_id, branch_id)
+
+    result = await session.execute(
+        select(EventChange, User.email)
+        .outerjoin(User, EventChange.user_id == User.id)
+        .where(EventChange.event_id == event_id)
+        .order_by(EventChange.created_at.desc())
+    )
+    rows = result.all()
+    history = []
+    for change, user_email in rows:
+        history.append(
+            {
+                "id": change.id,
+                "event_id": change.event_id,
+                "user_id": change.user_id,
+                "user_email": user_email,
+                "field": change.field,
+                "old_value": change.old_value,
+                "new_value": change.new_value,
+                "created_at": change.created_at,
+            }
+        )
+    return history

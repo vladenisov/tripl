@@ -14,6 +14,7 @@ from tripl.models.coverage_metric import CoverageMetric
 from tripl.models.data_source import DataSource
 from tripl.models.distribution_drift import DistributionDrift
 from tripl.models.event import Event
+from tripl.models.event_change import EventChange
 from tripl.models.event_field_value import EventFieldValue
 from tripl.models.event_meta_value import EventMetaValue
 from tripl.models.event_metric import EventMetric
@@ -68,6 +69,7 @@ __all__ = [
     "EventTypeRelation",
     "MetaFieldDefinition",
     "Event",
+    "EventChange",
     "EventFieldValue",
     "EventMetaValue",
     "EventTag",

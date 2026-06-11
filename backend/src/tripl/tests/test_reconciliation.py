@@ -144,7 +144,7 @@ async def test_accept_shadow_event_creates_event_with_source_identity(client: As
         assert event is not None
         assert event.name == "Checkout Screen"
         assert event.source_name == "screen | checkout"
-        assert event.implemented is True
+        assert event.status == "live"
         candidate = await session.get(ShadowEventCandidate, candidate_id)
         assert candidate is not None
         assert candidate.status == SHADOW_STATUS_ACCEPTED
@@ -235,7 +235,7 @@ async def test_dead_events_reports_stale_implemented_events_only(client: AsyncCl
         event = await session.get(Event, uuid.UUID(event_id))
         assert event is not None
         # Implemented long ago, last seen 60 days ago → dead.
-        event.implemented = True
+        event.status = "live"
         event.created_at = now - timedelta(days=90)
         event.last_seen_at = now - timedelta(days=60)
 
@@ -244,7 +244,7 @@ async def test_dead_events_reports_stale_implemented_events_only(client: AsyncCl
             branch_id=event.branch_id,
             event_type_id=uuid.UUID(et_id),
             name="Fresh Event",
-            implemented=True,
+            status="live",
             last_seen_at=now - timedelta(days=1),
         )
         fresh.created_at = now - timedelta(days=90)
@@ -253,7 +253,7 @@ async def test_dead_events_reports_stale_implemented_events_only(client: AsyncCl
             branch_id=event.branch_id,
             event_type_id=uuid.UUID(et_id),
             name="Never Seen Old",
-            implemented=True,
+            status="implemented",
             last_seen_at=None,
         )
         never_seen_old.created_at = now - timedelta(days=90)
@@ -262,7 +262,7 @@ async def test_dead_events_reports_stale_implemented_events_only(client: AsyncCl
             branch_id=event.branch_id,
             event_type_id=uuid.UUID(et_id),
             name="Recent Unseen",
-            implemented=True,
+            status="implemented",
             last_seen_at=None,
         )
         not_implemented = Event(
@@ -270,7 +270,7 @@ async def test_dead_events_reports_stale_implemented_events_only(client: AsyncCl
             branch_id=event.branch_id,
             event_type_id=uuid.UUID(et_id),
             name="Planned Only",
-            implemented=False,
+            status="draft",
             last_seen_at=None,
         )
         not_implemented.created_at = now - timedelta(days=90)
@@ -358,9 +358,7 @@ def test_collect_metrics_records_coverage_and_shadow_candidates(
             event_type_id=config.event_type_id,
             name="event_name=Login",
             description="",
-            implemented=True,
-            reviewed=True,
-            archived=False,
+            status="live",
         )
         session.add(login_event)
         session.commit()

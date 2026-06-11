@@ -35,10 +35,8 @@ async def get_events_metrics(
     slug: str,
     event_type_id: uuid.UUID | None = None,
     search: str | None = None,
-    implemented: bool | None = None,
     tag: str | None = None,
-    reviewed: bool | None = None,
-    archived: bool | None = None,
+    status: Annotated[list[str] | None, Query()] = None,
     time_from: TimeFrom = None,
     time_to: TimeTo = None,
 ) -> EventMetricsResponse:
@@ -47,10 +45,8 @@ async def get_events_metrics(
         slug,
         event_type_id=event_type_id,
         search=search,
-        implemented=implemented,
         tag=tag,
-        reviewed=reviewed,
-        archived=archived,
+        status=status,
         time_from=time_from,
         time_to=time_to,
     )

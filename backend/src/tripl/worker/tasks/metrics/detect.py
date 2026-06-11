@@ -284,7 +284,7 @@ def _collect_scope_ids(
                     EventMetric.event_id.is_not(None),
                     EventMetric.bucket >= history_from,
                     EventMetric.bucket < evaluation_end,
-                    Event.archived.is_(False),
+                    Event.status != "archived",
                 )
             ).scalars()
             if value is not None
@@ -300,7 +300,7 @@ def _collect_scope_ids(
                     MetricAnomaly.event_id.is_not(None),
                     MetricAnomaly.bucket >= evaluation_start,
                     MetricAnomaly.bucket < evaluation_end,
-                    Event.archived.is_(False),
+                    Event.status != "archived",
                 )
             ).scalars()
             if value is not None
@@ -386,14 +386,14 @@ def _collect_breakdown_scope_keys(
     elif scope_type == SCOPE_EVENT:
         metric_query = metric_query.join(Event, EventMetricBreakdown.event_id == Event.id).where(
             EventMetricBreakdown.event_id.is_not(None),
-            Event.archived.is_(False),
+            Event.status != "archived",
         )
         anomaly_query = anomaly_query.join(
             Event,
             MetricBreakdownAnomaly.event_id == Event.id,
         ).where(
             MetricBreakdownAnomaly.event_id.is_not(None),
-            Event.archived.is_(False),
+            Event.status != "archived",
         )
     else:
         metric_query = metric_query.where(metric_id_column.is_not(None))

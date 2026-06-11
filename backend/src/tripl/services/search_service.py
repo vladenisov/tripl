@@ -582,7 +582,7 @@ def _event_document(
             ]
         ),
         route_path=f"/p/{slug}/events/detail/{event.id}",
-        archived=event.archived,
+        archived=(event.status == "archived"),
     )
 
 
@@ -609,7 +609,7 @@ def _tag_document(
         ),
         keywords=tag.name,
         route_path=f"/p/{slug}/events/detail/{event.id}",
-        archived=event.archived,
+        archived=(event.status == "archived"),
     )
 
 
@@ -1094,15 +1094,15 @@ async def _enrich_event_hits(
 
     rows = (
         await session.execute(
-            select(Event.id, Event.name, Event.implemented).where(
+            select(Event.id, Event.name, Event.status).where(
                 Event.project_id == project_id,
                 Event.branch_id == branch_id,
                 Event.id.in_(event_ids),
             )
         )
     ).all()
-    events_by_id: dict[uuid.UUID, tuple[str, bool]] = {
-        event_id: (name, implemented) for event_id, name, implemented in rows
+    events_by_id: dict[uuid.UUID, tuple[str, str]] = {
+        event_id: (name, status) for event_id, name, status in rows
     }
 
     variable_rows = (
@@ -1171,10 +1171,10 @@ async def _enrich_event_hits(
         event_state = events_by_id.get(item.parent_event_id)
         if event_state is None:
             continue
-        name, implemented = event_state
+        name, status = event_state
         item.event_id = item.parent_event_id
         item.name = name
-        item.implemented = implemented
+        item.implemented = status in ("implemented", "live")
         item.variable_values = variable_values_by_event.get(item.parent_event_id, [])
 
 

@@ -178,8 +178,7 @@ async def test_project_summary_counts(client: AsyncClient):
         json={
             "event_type_id": event_type_id,
             "name": "Landing Viewed",
-            "implemented": True,
-            "reviewed": True,
+            "status": "implemented",
         },
     )
     assert active_event_resp.status_code == 201
@@ -189,8 +188,7 @@ async def test_project_summary_counts(client: AsyncClient):
         json={
             "event_type_id": event_type_id,
             "name": "Checkout Started",
-            "implemented": False,
-            "reviewed": False,
+            "status": "in_review",
         },
     )
     assert review_event_resp.status_code == 201
@@ -200,9 +198,7 @@ async def test_project_summary_counts(client: AsyncClient):
         json={
             "event_type_id": event_type_id,
             "name": "Legacy Event",
-            "implemented": True,
-            "reviewed": True,
-            "archived": True,
+            "status": "archived",
         },
     )
     assert archived_event_resp.status_code == 201

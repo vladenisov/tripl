@@ -55,9 +55,8 @@ _FIELD_DEFINITION_CHANGE_KEYS = (
 _EVENT_TYPE_CHANGE_KEYS = ("display_name", "description", "color")
 _EVENT_CHANGE_KEYS = (
     "description",
-    "implemented",
-    "reviewed",
-    "archived",
+    "status",
+    "sunset_at",
     "event_type_name",
 )
 _VARIABLE_CHANGE_KEYS = ("variable_type", "source_name", "description")
@@ -162,9 +161,8 @@ async def build_plan_snapshot(
             "name": ev.name,
             "description": ev.description,
             "order": ev.order,
-            "implemented": ev.implemented,
-            "reviewed": ev.reviewed,
-            "archived": ev.archived,
+            "status": ev.status,
+            "sunset_at": str(ev.sunset_at) if ev.sunset_at is not None else None,
         }
         for ev in events_rows
     ]

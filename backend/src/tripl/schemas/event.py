@@ -4,6 +4,7 @@ from typing import Literal
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
+from tripl.models.event import EventStatus
 from tripl.schemas.event_type import EventTypeBrief
 
 
@@ -21,9 +22,8 @@ class EventCreate(BaseModel):
     event_type_id: uuid.UUID
     name: str = Field(min_length=1, max_length=500)
     description: str = ""
-    implemented: bool = False
-    reviewed: bool = True
-    archived: bool = False
+    status: EventStatus = EventStatus.draft
+    sunset_at: datetime | None = None
     metric_breakdown_columns: list[str] = []
     tags: list[str] = []
     field_values: list[EventFieldValueIn] = []
@@ -38,9 +38,8 @@ class EventCreate(BaseModel):
 class EventUpdate(BaseModel):
     name: str | None = Field(None, min_length=1, max_length=500)
     description: str | None = None
-    implemented: bool | None = None
-    reviewed: bool | None = None
-    archived: bool | None = None
+    status: EventStatus | None = None
+    sunset_at: datetime | None = None
     metric_breakdown_columns: list[str] | None = None
     tags: list[str] | None = None
     field_values: list[EventFieldValueIn] | None = None
@@ -75,14 +74,13 @@ class EventBulkDelete(BaseModel):
 
 class EventBulkUpdate(BaseModel):
     event_ids: list[uuid.UUID] = Field(min_length=1)
-    implemented: bool | None = None
-    reviewed: bool | None = None
-    archived: bool | None = None
+    status: EventStatus | None = None
+    sunset_at: datetime | None = None
 
     @model_validator(mode="after")
     def validate_has_update(self) -> "EventBulkUpdate":
-        if self.implemented is None and self.reviewed is None and self.archived is None:
-            raise ValueError("At least one event state field must be provided")
+        if self.status is None and self.sunset_at is None:
+            raise ValueError("At least one of status or sunset_at must be provided")
         return self
 
 
@@ -131,6 +129,19 @@ class EventTagResponse(BaseModel):
     model_config = {"from_attributes": True}
 
 
+class EventChangeResponse(BaseModel):
+    id: uuid.UUID
+    event_id: uuid.UUID
+    user_id: uuid.UUID | None = None
+    user_email: str | None = None
+    field: str
+    old_value: str | None = None
+    new_value: str | None = None
+    created_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
 class EventResponse(BaseModel):
     id: uuid.UUID
     project_id: uuid.UUID
@@ -139,9 +150,8 @@ class EventResponse(BaseModel):
     name: str
     description: str
     order: int
-    implemented: bool
-    reviewed: bool
-    archived: bool
+    status: str
+    sunset_at: datetime | None = None
     last_seen_at: datetime | None = None
     metric_breakdown_columns: list[str] = []
     drift_count: int = 0
@@ -168,9 +178,8 @@ class EventListItemResponse(BaseModel):
     name: str
     description: str
     order: int
-    implemented: bool
-    reviewed: bool
-    archived: bool
+    status: str
+    sunset_at: datetime | None = None
     last_seen_at: datetime | None = None
     metric_breakdown_columns: list[str] = []
     drift_count: int = 0

@@ -48,9 +48,7 @@ def _serialize_generation_result(result: GenerationResult) -> dict[str, object]:
                 "name": event.name,
                 "source_name": event.source_name,
                 "branch_id": str(event.branch_id) if event.branch_id is not None else None,
-                "archived": event.archived,
-                "implemented": event.implemented,
-                "reviewed": event.reviewed,
+                "status": event.status,
                 "metric_breakdown_columns": list(event.metric_breakdown_columns or []),
                 "field_values": [
                     {

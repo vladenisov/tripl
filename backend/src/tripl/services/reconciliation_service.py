@@ -157,7 +157,7 @@ async def accept_shadow_event(
         EventCreate(
             event_type_id=event_type_id,
             name=data.name or candidate.event_name,
-            implemented=True,
+            status="live",
         ),
         branch_id=branch_id,
     )
@@ -221,8 +221,7 @@ async def list_dead_events(
             .where(
                 Event.project_id == project_id,
                 Event.branch_id == main_branch_id,
-                Event.implemented.is_(True),
-                Event.archived.is_(False),
+                Event.status.in_(["implemented", "live"]),
                 # Grace period: an event created inside the window legitimately
                 # has no data yet — don't report it as dead.
                 Event.created_at < cutoff,

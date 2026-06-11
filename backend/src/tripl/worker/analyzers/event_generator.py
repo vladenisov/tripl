@@ -25,6 +25,8 @@ from tripl.json_paths import (
 )
 from tripl.models.alert_delivery_item import AlertDeliveryItem
 from tripl.models.event import Event
+from tripl.models.event import EventStatus as _ES
+from tripl.models.event import event_status_rank as _rank
 from tripl.models.event_field_value import EventFieldValue
 from tripl.models.event_metric import EventMetric
 from tripl.models.event_metric_breakdown import EventMetricBreakdown
@@ -442,8 +444,7 @@ def generate_events(
             source_name=event_name,
             description="Auto-generated from data source scan",
             order=next_event_order,
-            implemented=True,
-            reviewed=False,
+            status="in_review",
         )
         session.add(event)
         session.flush()
@@ -496,7 +497,9 @@ def generate_events(
     # Keyed by scan identity (source_name == formatted event name); metric collection looks
     # events up by the same row-derived name, so renamed events still match here.
     # Exclude archived events so we don't collect metrics/send alerts for them.
-    result.events_by_name = {k: v for k, v in existing_by_identity.items() if not v.archived}
+    result.events_by_name = {
+        k: v for k, v in existing_by_identity.items() if v.status != "archived"
+    }
     return result
 
 
@@ -891,9 +894,7 @@ def _create_group_event_from_source(
         source_name=group_name,
         description="Auto-generated event group from data source scan",
         order=order,
-        implemented=source.implemented,
-        reviewed=False,
-        archived=False,
+        status=source.status,
         last_seen_at=source.last_seen_at,
         metric_breakdown_columns=list(source.metric_breakdown_columns or []),
     )
@@ -919,9 +920,12 @@ def _merge_event_into_group(session: Session, *, source: Event, target: Event) -
         target.last_seen_at is None or source.last_seen_at > target.last_seen_at
     ):
         target.last_seen_at = source.last_seen_at
-    target.implemented = target.implemented or source.implemented
-    target.reviewed = target.reviewed and source.reviewed
-    target.archived = False
+    s_status = _ES(source.status) if source.status in _ES._value2member_map_ else _ES.draft
+    t_status = _ES(target.status) if target.status in _ES._value2member_map_ else _ES.draft
+    if s_status != _ES.archived and t_status != _ES.archived:
+        target.status = (
+            s_status if _rank(s_status) > _rank(t_status) else t_status
+        )
     target.metric_breakdown_columns = sorted(
         set(target.metric_breakdown_columns or []) | set(source.metric_breakdown_columns or [])
     )

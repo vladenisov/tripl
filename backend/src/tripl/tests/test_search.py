@@ -329,7 +329,7 @@ async def test_search_filters_archived_and_excludes_sensitive_values(client: Asy
         json={
             "event_type_id": event_type_id,
             "name": "Archived Secret",
-            "archived": True,
+            "status": "archived",
             "field_values": [
                 {"field_definition_id": field_id, "value": "archived_marker"},
                 {"field_definition_id": secret_field_id, "value": "sk_live_should_not_index"},
