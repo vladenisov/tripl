@@ -3,10 +3,11 @@ from __future__ import annotations
 import uuid
 from datetime import datetime
 
-from sqlalchemy import update
+from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
-from tripl.models.event import Event
+from tripl.models.event import Event, EventStatus
+from tripl.models.event_change import EventChange
 
 
 def _bump_event_last_seen(
@@ -18,6 +19,11 @@ def _bump_event_last_seen(
 
     Monotonic: we only move the column forward, so historical replays of an
     older window cannot rewind a freshly-collected last_seen_at.
+
+    AUTO-LIVE: events with status='implemented' that receive fresh data are
+    promoted to 'live'. An EventChange row (user_id=None) is written for the
+    transition. The status check makes this naturally idempotent — already-live
+    events are never re-transitioned.
     """
     if not event_agg:
         return
@@ -43,4 +49,31 @@ def _bump_event_last_seen(
             )
             .values(last_seen_at=bucket)
             .execution_options(synchronize_session=False)
+        )
+
+    # AUTO-LIVE: find the subset of bumped events that are still 'implemented'
+    # and promote them to 'live', writing one EventChange row per transition.
+    event_ids = list(latest_by_event.keys())
+    implemented_events = session.execute(
+        select(Event.id).where(
+            Event.id.in_(event_ids),
+            Event.status == EventStatus.implemented,
+        )
+    ).scalars().all()
+
+    for eid in implemented_events:
+        session.execute(
+            update(Event)
+            .where(Event.id == eid, Event.status == EventStatus.implemented)
+            .values(status=EventStatus.live)
+            .execution_options(synchronize_session=False)
+        )
+        session.add(
+            EventChange(
+                event_id=eid,
+                user_id=None,
+                field="status",
+                old_value=EventStatus.implemented,
+                new_value=EventStatus.live,
+            )
         )

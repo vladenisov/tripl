@@ -15,7 +15,8 @@ from tripl.models.alert_destination import AlertDestination
 from tripl.models.alert_rule import AlertRule
 from tripl.models.data_source import DataSource
 from tripl.models.distribution_drift import DistributionDrift
-from tripl.models.event import Event
+from tripl.models.event import Event, EventStatus
+from tripl.models.event_change import EventChange
 from tripl.models.event_field_value import EventFieldValue
 from tripl.models.event_metric import EventMetric
 from tripl.models.event_metric_breakdown import EventMetricBreakdown
@@ -1515,6 +1516,69 @@ def test_bump_event_last_seen_is_monotonic_and_ignores_zero(
         )
         session.commit()
         assert _current_last_seen() == later
+
+
+def test_bump_event_last_seen_promotes_implemented_to_live(
+    sync_session_factory: sessionmaker[Session],
+) -> None:
+    """An 'implemented' event that receives fresh data is promoted to 'live'
+    and an EventChange row (user_id=None) is written for the transition."""
+    with sync_session_factory() as session:
+        config, _event_type, event = _seed_anomaly_scan_state(session)
+        # _seed_anomaly_scan_state creates the event with status='implemented'
+        assert event.status == "implemented"
+        event_id = event.id
+        bucket = datetime(2026, 5, 1, 12, tzinfo=UTC)
+
+        metrics_collect._bump_event_last_seen(
+            session,
+            event_agg={(config.id, event_id, bucket): 7},
+        )
+        session.commit()
+
+        session.expire_all()
+        refreshed = session.get(Event, event_id)
+        assert refreshed is not None
+        assert refreshed.status == EventStatus.live
+
+        changes = session.execute(
+            select(EventChange).where(EventChange.event_id == event_id)
+        ).scalars().all()
+        assert len(changes) == 1
+        assert changes[0].user_id is None
+        assert changes[0].field == "status"
+        assert changes[0].old_value == EventStatus.implemented
+        assert changes[0].new_value == EventStatus.live
+
+
+def test_bump_event_last_seen_does_not_duplicate_live_transition(
+    sync_session_factory: sessionmaker[Session],
+) -> None:
+    """Bumping an already-'live' event must not write an extra EventChange row."""
+    with sync_session_factory() as session:
+        config, _event_type, event = _seed_anomaly_scan_state(session)
+        event_id = event.id
+        bucket1 = datetime(2026, 5, 1, 12, tzinfo=UTC)
+        bucket2 = datetime(2026, 5, 1, 13, tzinfo=UTC)
+
+        # First bump: implemented → live + one EventChange row.
+        metrics_collect._bump_event_last_seen(
+            session,
+            event_agg={(config.id, event_id, bucket1): 5},
+        )
+        session.commit()
+
+        # Second bump on the same already-live event: no extra row.
+        metrics_collect._bump_event_last_seen(
+            session,
+            event_agg={(config.id, event_id, bucket2): 3},
+        )
+        session.commit()
+
+        changes = session.execute(
+            select(EventChange).where(EventChange.event_id == event_id)
+        ).scalars().all()
+        assert len(changes) == 1  # still exactly one row from the first bump
 
 
 def _make_event_type_with_fields(
