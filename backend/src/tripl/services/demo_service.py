@@ -10,6 +10,7 @@ from __future__ import annotations
 import math
 import uuid
 from datetime import UTC, datetime, timedelta
+from typing import NotRequired, TypedDict, cast
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -41,6 +42,20 @@ from tripl.worker.analyzers.anomaly_detector import (
 # helpers
 # ---------------------------------------------------------------------------
 
+
+class _DemoEventSpec(TypedDict):
+    et: EventType
+    name: str
+    description: str
+    base: int
+    status: str
+    tags: list[str]
+    fvs: dict[uuid.UUID, str]
+    last_seen_at: datetime | None
+    metric_breakdown_columns: list[str]
+    sunset_at: NotRequired[datetime]
+
+
 def _hour_buckets(now: datetime, days: int) -> list[datetime]:
     """Return UTC hour-aligned buckets covering the last ``days`` days."""
     end = now.replace(minute=0, second=0, microsecond=0)
@@ -67,6 +82,7 @@ def _sinusoidal_count(base: int, bucket: datetime, noise_seed: int) -> int:
 # ---------------------------------------------------------------------------
 # main entry point
 # ---------------------------------------------------------------------------
+
 
 async def create_demo_project(session: AsyncSession) -> ProjectResponse:
     now = datetime.now(tz=UTC).replace(minute=0, second=0, microsecond=0)
@@ -220,11 +236,20 @@ async def create_demo_project(session: AsyncSession) -> ProjectResponse:
         is_required=False,
         order=4,
     )
-    session.add_all([
-        fd_sv_screen_name, fd_sv_platform,
-        fd_cl_button_id, fd_cl_screen_name, fd_cl_platform,
-        fd_pu_product_id, fd_pu_amount, fd_pu_currency, fd_pu_platform, fd_pu_payload,
-    ])
+    session.add_all(
+        [
+            fd_sv_screen_name,
+            fd_sv_platform,
+            fd_cl_button_id,
+            fd_cl_screen_name,
+            fd_cl_platform,
+            fd_pu_product_id,
+            fd_pu_amount,
+            fd_pu_currency,
+            fd_pu_platform,
+            fd_pu_payload,
+        ]
+    )
     await session.flush()
 
     # 5. Meta fields
@@ -254,7 +279,7 @@ async def create_demo_project(session: AsyncSession) -> ProjectResponse:
         project_id=project_id,
         name="Demo scan",
         base_query="SELECT 1 -- demo",
-        time_column="event_time",          # required for _get_default_scan_config_id
+        time_column="event_time",  # required for _get_default_scan_config_id
         interval="1h",
         anomaly_detection_enabled=True,
         distribution_drift_fields=["platform"],
@@ -280,231 +305,234 @@ async def create_demo_project(session: AsyncSession) -> ProjectResponse:
     #   ready_for_dev — reviewed and planned, not yet built (reviewed=True, implemented=False)
     #   archived      — Legacy CTA Click
     #   deprecated    — Promo Applied (sunset showcase)
-    event_specs = [
-        # screen_view events
-        dict(
-            et=et_screen_view,
-            name="Home Screen View",
-            description="User lands on the home screen.",
-            base=1800,
-            status="live",
-            tags=["core", "onboarding"],
-            fvs={fd_sv_screen_name.id: "home", fd_sv_platform.id: "${platform}"},
-            last_seen_at=now - timedelta(minutes=15),
-            metric_breakdown_columns=["platform"],
-        ),
-        dict(
-            et=et_screen_view,
-            name="Paywall View",
-            description="User sees the paywall / subscription upsell screen.",
-            base=600,
-            status="live",
-            tags=["core", "checkout"],
-            fvs={fd_sv_screen_name.id: "paywall", fd_sv_platform.id: "${platform}"},
-            last_seen_at=now - timedelta(hours=1),
-            metric_breakdown_columns=[],
-        ),
-        dict(
-            et=et_screen_view,
-            name="Onboarding Step 1 View",
-            description="First step of the onboarding flow.",
-            base=900,
-            status="live",
-            tags=["onboarding"],
-            fvs={fd_sv_screen_name.id: "onboarding_step1", fd_sv_platform.id: "${platform}"},
-            last_seen_at=now - timedelta(hours=2),
-            metric_breakdown_columns=[],
-        ),
-        dict(
-            et=et_screen_view,
-            name="Onboarding Step 2 View",
-            description="Second step of the onboarding flow.",
-            base=700,
-            status="in_review",
-            tags=["onboarding"],
-            fvs={fd_sv_screen_name.id: "onboarding_step2", fd_sv_platform.id: "${platform}"},
-            last_seen_at=now - timedelta(hours=3),
-            metric_breakdown_columns=[],
-        ),
-        dict(
-            et=et_screen_view,
-            name="Profile Screen View",
-            description="User opens their profile.",
-            base=400,
-            status="live",
-            tags=["core"],
-            fvs={fd_sv_screen_name.id: "profile", fd_sv_platform.id: "${platform}"},
-            last_seen_at=now - timedelta(hours=4),
-            metric_breakdown_columns=[],
-        ),
-        dict(
-            et=et_screen_view,
-            name="Settings Screen View",
-            description="User opens app settings.",
-            base=200,
-            status="in_review",
-            tags=[],
-            fvs={fd_sv_screen_name.id: "settings"},
-            last_seen_at=None,
-            metric_breakdown_columns=[],
-        ),
-        # click events
-        dict(
-            et=et_click,
-            name="Buy Button Click",
-            description="User taps the primary CTA on the paywall.",
-            base=300,
-            status="live",
-            tags=["core", "checkout"],
-            fvs={
-                fd_cl_button_id.id: "buy_now",
-                fd_cl_screen_name.id: "paywall",
-                fd_cl_platform.id: "${platform}",
-            },
-            last_seen_at=now - timedelta(minutes=30),
-            metric_breakdown_columns=[],
-        ),
-        dict(
-            et=et_click,
-            name="Skip Onboarding Click",
-            description="User skips onboarding.",
-            base=180,
-            status="live",
-            tags=["onboarding"],
-            fvs={
-                fd_cl_button_id.id: "skip_onboarding",
-                fd_cl_screen_name.id: "onboarding_step1",
-                fd_cl_platform.id: "${platform}",
-            },
-            last_seen_at=now - timedelta(hours=5),
-            metric_breakdown_columns=[],
-        ),
-        dict(
-            et=et_click,
-            name="Restore Purchase Click",
-            description="User taps restore purchase.",
-            base=40,
-            status="in_review",
-            tags=["checkout"],
-            fvs={fd_cl_button_id.id: "restore_purchase", fd_cl_screen_name.id: "paywall"},
-            last_seen_at=now - timedelta(hours=8),
-            metric_breakdown_columns=[],
-        ),
-        dict(
-            et=et_click,
-            name="Share Button Click",
-            description="User shares content.",
-            base=120,
-            status="in_review",
-            tags=[],
-            fvs={fd_cl_button_id.id: "share"},
-            last_seen_at=None,
-            metric_breakdown_columns=[],
-        ),
-        dict(
-            et=et_click,
-            name="Legacy CTA Click",
-            description="Old primary CTA, replaced by buy_now.",
-            base=20,
-            status="archived",
-            tags=["checkout"],
-            fvs={fd_cl_button_id.id: "old_cta"},
-            last_seen_at=seven_days_ago,
-            metric_breakdown_columns=[],
-        ),
-        # purchase events
-        dict(
-            et=et_purchase,
-            name="Purchase Completed",
-            description="User successfully completes an in-app purchase.",
-            base=120,
-            status="live",
-            tags=["core", "checkout"],
-            fvs={
-                fd_pu_product_id.id: "${product_id}",
-                fd_pu_amount.id: "9.99",
-                fd_pu_currency.id: "USD",
-                fd_pu_platform.id: "${platform}",
-            },
-            last_seen_at=now - timedelta(minutes=45),
-            metric_breakdown_columns=[],
-        ),
-        dict(
-            et=et_purchase,
-            name="Purchase Failed",
-            description="An in-app purchase was attempted but failed.",
-            base=15,
-            status="live",
-            tags=["checkout"],
-            fvs={
-                fd_pu_product_id.id: "${product_id}",
-                fd_pu_currency.id: "USD",
-                fd_pu_platform.id: "${platform}",
-            },
-            last_seen_at=now - timedelta(hours=2),
-            metric_breakdown_columns=[],
-        ),
-        dict(
-            et=et_purchase,
-            name="Trial Started",
-            description="User starts a free trial.",
-            base=250,
-            status="live",
-            tags=["checkout", "onboarding"],
-            fvs={fd_pu_product_id.id: "${product_id}", fd_pu_platform.id: "${platform}"},
-            last_seen_at=now - timedelta(hours=1),
-            metric_breakdown_columns=[],
-        ),
-        dict(
-            et=et_purchase,
-            name="Subscription Renewed",
-            description="Recurring subscription renewal processed.",
-            base=80,
-            status="in_review",
-            tags=["checkout"],
-            fvs={
-                fd_pu_product_id.id: "${product_id}",
-                fd_pu_amount.id: "9.99",
-                fd_pu_currency.id: "USD",
-            },
-            last_seen_at=now - timedelta(hours=6),
-            metric_breakdown_columns=[],
-        ),
-        dict(
-            et=et_purchase,
-            name="Refund Processed",
-            description="A refund was issued to the user.",
-            base=8,
-            status="in_review",
-            tags=[],
-            fvs={fd_pu_product_id.id: "${product_id}", fd_pu_amount.id: "9.99"},
-            last_seen_at=None,
-            metric_breakdown_columns=[],
-        ),
-        dict(
-            et=et_purchase,
-            name="Promo Applied",
-            description="User redeemed a promotional code.",
-            base=35,
-            status="deprecated",
-            sunset_at=now - timedelta(days=1),
-            tags=["checkout", "onboarding"],
-            fvs={fd_pu_product_id.id: "${product_id}", fd_pu_platform.id: "${platform}"},
-            last_seen_at=two_days_ago,
-            metric_breakdown_columns=[],
-        ),
-        dict(
-            et=et_purchase,
-            name="Subscription Cancelled",
-            description="User cancels their subscription.",
-            base=22,
-            status="implemented",
-            tags=["checkout"],
-            fvs={fd_pu_product_id.id: "${product_id}", fd_pu_platform.id: "${platform}"},
-            last_seen_at=one_day_ago,
-            metric_breakdown_columns=[],
-        ),
-    ]
+    event_specs = cast(
+        list[_DemoEventSpec],
+        [
+            # screen_view events
+            dict(
+                et=et_screen_view,
+                name="Home Screen View",
+                description="User lands on the home screen.",
+                base=1800,
+                status="live",
+                tags=["core", "onboarding"],
+                fvs={fd_sv_screen_name.id: "home", fd_sv_platform.id: "${platform}"},
+                last_seen_at=now - timedelta(minutes=15),
+                metric_breakdown_columns=["platform"],
+            ),
+            dict(
+                et=et_screen_view,
+                name="Paywall View",
+                description="User sees the paywall / subscription upsell screen.",
+                base=600,
+                status="live",
+                tags=["core", "checkout"],
+                fvs={fd_sv_screen_name.id: "paywall", fd_sv_platform.id: "${platform}"},
+                last_seen_at=now - timedelta(hours=1),
+                metric_breakdown_columns=[],
+            ),
+            dict(
+                et=et_screen_view,
+                name="Onboarding Step 1 View",
+                description="First step of the onboarding flow.",
+                base=900,
+                status="live",
+                tags=["onboarding"],
+                fvs={fd_sv_screen_name.id: "onboarding_step1", fd_sv_platform.id: "${platform}"},
+                last_seen_at=now - timedelta(hours=2),
+                metric_breakdown_columns=[],
+            ),
+            dict(
+                et=et_screen_view,
+                name="Onboarding Step 2 View",
+                description="Second step of the onboarding flow.",
+                base=700,
+                status="in_review",
+                tags=["onboarding"],
+                fvs={fd_sv_screen_name.id: "onboarding_step2", fd_sv_platform.id: "${platform}"},
+                last_seen_at=now - timedelta(hours=3),
+                metric_breakdown_columns=[],
+            ),
+            dict(
+                et=et_screen_view,
+                name="Profile Screen View",
+                description="User opens their profile.",
+                base=400,
+                status="live",
+                tags=["core"],
+                fvs={fd_sv_screen_name.id: "profile", fd_sv_platform.id: "${platform}"},
+                last_seen_at=now - timedelta(hours=4),
+                metric_breakdown_columns=[],
+            ),
+            dict(
+                et=et_screen_view,
+                name="Settings Screen View",
+                description="User opens app settings.",
+                base=200,
+                status="in_review",
+                tags=[],
+                fvs={fd_sv_screen_name.id: "settings"},
+                last_seen_at=None,
+                metric_breakdown_columns=[],
+            ),
+            # click events
+            dict(
+                et=et_click,
+                name="Buy Button Click",
+                description="User taps the primary CTA on the paywall.",
+                base=300,
+                status="live",
+                tags=["core", "checkout"],
+                fvs={
+                    fd_cl_button_id.id: "buy_now",
+                    fd_cl_screen_name.id: "paywall",
+                    fd_cl_platform.id: "${platform}",
+                },
+                last_seen_at=now - timedelta(minutes=30),
+                metric_breakdown_columns=[],
+            ),
+            dict(
+                et=et_click,
+                name="Skip Onboarding Click",
+                description="User skips onboarding.",
+                base=180,
+                status="live",
+                tags=["onboarding"],
+                fvs={
+                    fd_cl_button_id.id: "skip_onboarding",
+                    fd_cl_screen_name.id: "onboarding_step1",
+                    fd_cl_platform.id: "${platform}",
+                },
+                last_seen_at=now - timedelta(hours=5),
+                metric_breakdown_columns=[],
+            ),
+            dict(
+                et=et_click,
+                name="Restore Purchase Click",
+                description="User taps restore purchase.",
+                base=40,
+                status="in_review",
+                tags=["checkout"],
+                fvs={fd_cl_button_id.id: "restore_purchase", fd_cl_screen_name.id: "paywall"},
+                last_seen_at=now - timedelta(hours=8),
+                metric_breakdown_columns=[],
+            ),
+            dict(
+                et=et_click,
+                name="Share Button Click",
+                description="User shares content.",
+                base=120,
+                status="in_review",
+                tags=[],
+                fvs={fd_cl_button_id.id: "share"},
+                last_seen_at=None,
+                metric_breakdown_columns=[],
+            ),
+            dict(
+                et=et_click,
+                name="Legacy CTA Click",
+                description="Old primary CTA, replaced by buy_now.",
+                base=20,
+                status="archived",
+                tags=["checkout"],
+                fvs={fd_cl_button_id.id: "old_cta"},
+                last_seen_at=seven_days_ago,
+                metric_breakdown_columns=[],
+            ),
+            # purchase events
+            dict(
+                et=et_purchase,
+                name="Purchase Completed",
+                description="User successfully completes an in-app purchase.",
+                base=120,
+                status="live",
+                tags=["core", "checkout"],
+                fvs={
+                    fd_pu_product_id.id: "${product_id}",
+                    fd_pu_amount.id: "9.99",
+                    fd_pu_currency.id: "USD",
+                    fd_pu_platform.id: "${platform}",
+                },
+                last_seen_at=now - timedelta(minutes=45),
+                metric_breakdown_columns=[],
+            ),
+            dict(
+                et=et_purchase,
+                name="Purchase Failed",
+                description="An in-app purchase was attempted but failed.",
+                base=15,
+                status="live",
+                tags=["checkout"],
+                fvs={
+                    fd_pu_product_id.id: "${product_id}",
+                    fd_pu_currency.id: "USD",
+                    fd_pu_platform.id: "${platform}",
+                },
+                last_seen_at=now - timedelta(hours=2),
+                metric_breakdown_columns=[],
+            ),
+            dict(
+                et=et_purchase,
+                name="Trial Started",
+                description="User starts a free trial.",
+                base=250,
+                status="live",
+                tags=["checkout", "onboarding"],
+                fvs={fd_pu_product_id.id: "${product_id}", fd_pu_platform.id: "${platform}"},
+                last_seen_at=now - timedelta(hours=1),
+                metric_breakdown_columns=[],
+            ),
+            dict(
+                et=et_purchase,
+                name="Subscription Renewed",
+                description="Recurring subscription renewal processed.",
+                base=80,
+                status="in_review",
+                tags=["checkout"],
+                fvs={
+                    fd_pu_product_id.id: "${product_id}",
+                    fd_pu_amount.id: "9.99",
+                    fd_pu_currency.id: "USD",
+                },
+                last_seen_at=now - timedelta(hours=6),
+                metric_breakdown_columns=[],
+            ),
+            dict(
+                et=et_purchase,
+                name="Refund Processed",
+                description="A refund was issued to the user.",
+                base=8,
+                status="in_review",
+                tags=[],
+                fvs={fd_pu_product_id.id: "${product_id}", fd_pu_amount.id: "9.99"},
+                last_seen_at=None,
+                metric_breakdown_columns=[],
+            ),
+            dict(
+                et=et_purchase,
+                name="Promo Applied",
+                description="User redeemed a promotional code.",
+                base=35,
+                status="deprecated",
+                sunset_at=now - timedelta(days=1),
+                tags=["checkout", "onboarding"],
+                fvs={fd_pu_product_id.id: "${product_id}", fd_pu_platform.id: "${platform}"},
+                last_seen_at=two_days_ago,
+                metric_breakdown_columns=[],
+            ),
+            dict(
+                et=et_purchase,
+                name="Subscription Cancelled",
+                description="User cancels their subscription.",
+                base=22,
+                status="implemented",
+                tags=["checkout"],
+                fvs={fd_pu_product_id.id: "${product_id}", fd_pu_platform.id: "${platform}"},
+                last_seen_at=one_day_ago,
+                metric_breakdown_columns=[],
+            ),
+        ],
+    )
 
     events: list[Event] = []
     for order, spec in enumerate(event_specs):
@@ -518,7 +546,7 @@ async def create_demo_project(session: AsyncSession) -> ProjectResponse:
             status=spec["status"],
             sunset_at=spec.get("sunset_at"),
             last_seen_at=spec.get("last_seen_at"),
-            metric_breakdown_columns=spec.get("metric_breakdown_columns", []),
+            metric_breakdown_columns=spec["metric_breakdown_columns"],
         )
         session.add(ev)
         events.append(ev)
@@ -565,43 +593,49 @@ async def create_demo_project(session: AsyncSession) -> ProjectResponse:
     # Attach VariableValues to a few event/field pairs
     # user_id appears in many events via ${user_id} — attach to the first screen_view
     home_event = events[0]  # Home Screen View
-    session.add(VariableValue(
-        project_id=project_id,
-        branch_id=branch_id,
-        variable_id=var_user_id.id,
-        event_id=home_event.id,
-        field_definition_id=fd_sv_screen_name.id,
-        source_column="user_id",
-        value_kind="low",
-        observed_count=14823,
-        values=["u_001", "u_002", "u_003", "u_004", "u_005"],
-    ))
+    session.add(
+        VariableValue(
+            project_id=project_id,
+            branch_id=branch_id,
+            variable_id=var_user_id.id,
+            event_id=home_event.id,
+            field_definition_id=fd_sv_screen_name.id,
+            source_column="user_id",
+            value_kind="low",
+            observed_count=14823,
+            values=["u_001", "u_002", "u_003", "u_004", "u_005"],
+        )
+    )
     # product_id in purchase completed
     purchase_event = events[11]  # Purchase Completed
-    session.add(VariableValue(
-        project_id=project_id,
-        branch_id=branch_id,
-        variable_id=var_product_id.id,
-        event_id=purchase_event.id,
-        field_definition_id=fd_pu_product_id.id,
-        source_column="product_id",
-        value_kind="low",
-        observed_count=3241,
-        values=["prod_monthly", "prod_annual", "prod_lifetime"],
-    ))
+    session.add(
+        VariableValue(
+            project_id=project_id,
+            branch_id=branch_id,
+            variable_id=var_product_id.id,
+            event_id=purchase_event.id,
+            field_definition_id=fd_pu_product_id.id,
+            source_column="product_id",
+            value_kind="low",
+            observed_count=3241,
+            values=["prod_monthly", "prod_annual", "prod_lifetime"],
+        )
+    )
     # session_id in paywall view
     paywall_event = events[1]  # Paywall View
-    session.add(VariableValue(
-        project_id=project_id,
-        branch_id=branch_id,
-        variable_id=var_session_id.id,
-        event_id=paywall_event.id,
-        field_definition_id=fd_sv_screen_name.id,
-        source_column="session_id",
-        value_kind="low",
-        observed_count=6102,
-        values=["sess_aaa", "sess_bbb", "sess_ccc"],
-    ))
+    session.add(
+        VariableValue(
+            project_id=project_id,
+            branch_id=branch_id,
+            variable_id=var_session_id.id,
+            event_id=paywall_event.id,
+            field_definition_id=fd_sv_screen_name.id,
+            source_column="session_id",
+            value_kind="low",
+            observed_count=6102,
+            values=["sess_aaa", "sess_bbb", "sess_ccc"],
+        )
+    )
     await session.flush()
 
     # 9. EventMetric rows
@@ -635,30 +669,32 @@ async def create_demo_project(session: AsyncSession) -> ProjectResponse:
             if ev is spike_event and bucket >= spike_start:
                 count = count * 3
 
-            session.add(EventMetric(
-                scan_config_id=scan_config.id,
-                event_id=ev.id,
-                event_type_id=None,
-                bucket=bucket,
-                count=count,
-            ))
+            session.add(
+                EventMetric(
+                    scan_config_id=scan_config.id,
+                    event_id=ev.id,
+                    event_type_id=None,
+                    bucket=bucket,
+                    count=count,
+                )
+            )
 
             et_id = spec["et"].id
-            type_bucket_counts[(et_id, bucket)] = (
-                type_bucket_counts.get((et_id, bucket), 0) + count
-            )
+            type_bucket_counts[(et_id, bucket)] = type_bucket_counts.get((et_id, bucket), 0) + count
 
     await session.flush()
 
     # Per-type aggregate rows
     for (et_id, bucket), count in type_bucket_counts.items():
-        session.add(EventMetric(
-            scan_config_id=scan_config.id,
-            event_id=None,
-            event_type_id=et_id,
-            bucket=bucket,
-            count=count,
-        ))
+        session.add(
+            EventMetric(
+                scan_config_id=scan_config.id,
+                event_id=None,
+                event_type_id=et_id,
+                bucket=bucket,
+                count=count,
+            )
+        )
 
     await session.flush()
 
@@ -674,34 +710,38 @@ async def create_demo_project(session: AsyncSession) -> ProjectResponse:
         z_score = round((spike_actual - expected) / max(stddev, 1), 2)
 
         # Event-scope anomaly
-        session.add(MetricAnomaly(
-            scan_config_id=scan_config.id,
-            scope_type=SCOPE_EVENT,
-            scope_ref=str(spike_event.id),
-            event_id=spike_event.id,
-            event_type_id=None,
-            bucket=anomaly_bucket,
-            actual_count=spike_actual,
-            expected_count=expected,
-            stddev=stddev,
-            z_score=z_score,
-            direction="spike",
-        ))
+        session.add(
+            MetricAnomaly(
+                scan_config_id=scan_config.id,
+                scope_type=SCOPE_EVENT,
+                scope_ref=str(spike_event.id),
+                event_id=spike_event.id,
+                event_type_id=None,
+                bucket=anomaly_bucket,
+                actual_count=spike_actual,
+                expected_count=expected,
+                stddev=stddev,
+                z_score=z_score,
+                direction="spike",
+            )
+        )
 
         # Project-total scope anomaly (scope_ref is the scan_config_id, per metrics_service)
-        session.add(MetricAnomaly(
-            scan_config_id=scan_config.id,
-            scope_type=SCOPE_PROJECT_TOTAL,
-            scope_ref=str(scan_config.id),
-            event_id=None,
-            event_type_id=None,
-            bucket=anomaly_bucket,
-            actual_count=spike_actual,
-            expected_count=expected,
-            stddev=stddev,
-            z_score=z_score,
-            direction="spike",
-        ))
+        session.add(
+            MetricAnomaly(
+                scan_config_id=scan_config.id,
+                scope_type=SCOPE_PROJECT_TOTAL,
+                scope_ref=str(scan_config.id),
+                event_id=None,
+                event_type_id=None,
+                bucket=anomaly_bucket,
+                actual_count=spike_actual,
+                expected_count=expected,
+                stddev=stddev,
+                z_score=z_score,
+                direction="spike",
+            )
+        )
 
     await session.flush()
 
@@ -709,9 +749,9 @@ async def create_demo_project(session: AsyncSession) -> ProjectResponse:
     #     last 48 h, hourly.
     breakdown_buckets = _hour_buckets(now, days=2)
     platforms = [
-        ("ios",     0.50, 1),
+        ("ios", 0.50, 1),
         ("android", 0.35, 2),
-        ("web",     0.15, 3),
+        ("web", 0.15, 3),
     ]
     base_sv = 1800
     noise_seed_sv = hash(spike_event.id) % 997
@@ -723,21 +763,23 @@ async def create_demo_project(session: AsyncSession) -> ProjectResponse:
             if platform_idx < len(platforms) - 1:
                 raw_count = round(total_count * share)
                 # small noise on share
-                noise = ((p_seed * 17 + idx * 7) % 11 - 5)
+                noise = (p_seed * 17 + idx * 7) % 11 - 5
                 count = max(1, raw_count + noise)
                 remaining -= count
             else:
                 count = max(1, remaining)
 
-            session.add(EventMetricBreakdown(
-                scan_config_id=scan_config.id,
-                event_id=spike_event.id,
-                bucket=bucket,
-                breakdown_column="platform",
-                breakdown_value=platform,
-                is_other=False,
-                count=count,
-            ))
+            session.add(
+                EventMetricBreakdown(
+                    scan_config_id=scan_config.id,
+                    event_id=spike_event.id,
+                    bucket=bucket,
+                    breakdown_column="platform",
+                    breakdown_value=platform,
+                    is_other=False,
+                    count=count,
+                )
+            )
 
     await session.flush()
 
@@ -754,52 +796,58 @@ async def create_demo_project(session: AsyncSession) -> ProjectResponse:
         drift_bucket = (now - timedelta(days=days_back)).replace(
             hour=0, minute=0, second=0, microsecond=0
         )
-        session.add(DistributionDrift(
-            scan_config_id=scan_config.id,
-            event_type_id=et_screen_view.id,
-            field_name="platform",
-            bucket=drift_bucket,
-            psi=psi,
-            band=band,
-            baseline_total=50000,
-            current_total=48500,
-            top_movers=[
-                {
-                    "value": "web",
-                    "baseline_share": 0.12,
-                    "current_share": 0.12 + psi * 0.5,
-                    "contribution": round(psi * 0.6, 4),
-                },
-                {
-                    "value": "ios",
-                    "baseline_share": 0.53,
-                    "current_share": max(0.01, 0.53 - psi * 0.3),
-                    "contribution": round(psi * 0.3, 4),
-                },
-            ],
-        ))
+        session.add(
+            DistributionDrift(
+                scan_config_id=scan_config.id,
+                event_type_id=et_screen_view.id,
+                field_name="platform",
+                bucket=drift_bucket,
+                psi=psi,
+                band=band,
+                baseline_total=50000,
+                current_total=48500,
+                top_movers=[
+                    {
+                        "value": "web",
+                        "baseline_share": 0.12,
+                        "current_share": 0.12 + psi * 0.5,
+                        "contribution": round(psi * 0.6, 4),
+                    },
+                    {
+                        "value": "ios",
+                        "baseline_share": 0.53,
+                        "current_share": max(0.01, 0.53 - psi * 0.3),
+                        "contribution": round(psi * 0.3, 4),
+                    },
+                ],
+            )
+        )
 
     # 13. SchemaDrift
-    session.add(SchemaDrift(
-        event_type_id=et_purchase.id,
-        scan_config_id=scan_config.id,
-        field_name="amount",
-        drift_type="type_mismatch",
-        observed_type="String",
-        declared_type="number",
-        sample_value="9.99",
-        status="open",
-    ))
-    session.add(SchemaDrift(
-        event_type_id=et_purchase.id,
-        scan_config_id=scan_config.id,
-        field_name="currency",
-        drift_type="new_value",
-        observed_type=None,
-        declared_type=None,
-        sample_value="GBP",
-        status="open",
-    ))
+    session.add(
+        SchemaDrift(
+            event_type_id=et_purchase.id,
+            scan_config_id=scan_config.id,
+            field_name="amount",
+            drift_type="type_mismatch",
+            observed_type="String",
+            declared_type="number",
+            sample_value="9.99",
+            status="open",
+        )
+    )
+    session.add(
+        SchemaDrift(
+            event_type_id=et_purchase.id,
+            scan_config_id=scan_config.id,
+            field_name="currency",
+            drift_type="new_value",
+            observed_type=None,
+            declared_type=None,
+            sample_value="GBP",
+            status="open",
+        )
+    )
 
     await session.flush()
 

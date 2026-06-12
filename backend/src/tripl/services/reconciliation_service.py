@@ -89,7 +89,7 @@ async def list_shadow_events(
             observed_count=candidate.observed_count,
             first_seen_at=candidate.first_seen_at,
             last_seen_at=candidate.last_seen_at,
-            status=candidate.status,  # type: ignore[arg-type]
+            status=candidate.status,
             accepted_event_id=candidate.accepted_event_id,
         )
         for candidate, scan_name, event_type_name in rows
@@ -174,7 +174,7 @@ async def accept_shadow_event(
     return ShadowEventAcceptResponse(
         candidate_id=candidate.id,
         event_id=event.id,
-        status=SHADOW_STATUS_ACCEPTED,  # type: ignore[arg-type]
+        status=SHADOW_STATUS_ACCEPTED,
     )
 
 
@@ -200,7 +200,7 @@ async def dismiss_shadow_event(
 
     return ShadowEventDismissResponse(
         candidate_id=candidate.id,
-        status=SHADOW_STATUS_DISMISSED,  # type: ignore[arg-type]
+        status=SHADOW_STATUS_DISMISSED,
     )
 
 
