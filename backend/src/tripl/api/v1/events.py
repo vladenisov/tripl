@@ -98,9 +98,7 @@ async def bulk_update_events(
     branch_id: BranchIdDep,
     current_user: EditorUserDep,
 ) -> None:
-    await event_service.bulk_update_events(
-        session, slug, data, branch_id, user_id=current_user.id
-    )
+    await event_service.bulk_update_events(session, slug, data, branch_id, user_id=current_user.id)
 
 
 @router.patch(
@@ -124,7 +122,7 @@ async def get_event(
 @router.get("/{event_id}/history", response_model=list[EventChangeResponse])
 async def get_event_history(
     session: SessionDep, slug: str, event_id: uuid.UUID, branch_id: BranchIdDep
-) -> list[dict]:
+) -> list[dict[str, object]]:
     return await event_service.get_event_history(session, slug, event_id, branch_id)
 
 

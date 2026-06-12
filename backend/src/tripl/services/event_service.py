@@ -37,8 +37,8 @@ def _record_changes(
     session: AsyncSession,
     *,
     event: Event,
-    old_values: dict,
-    new_values: dict,
+    old_values: dict[str, object],
+    new_values: dict[str, object],
     user_id: uuid.UUID | None,
 ) -> None:
     for field, new_val in new_values.items():
@@ -647,7 +647,7 @@ async def get_event_history(
     slug: str,
     event_id: uuid.UUID,
     branch_id: uuid.UUID | None = None,
-) -> list[dict]:
+) -> list[dict[str, object]]:
     # Validate event belongs to this project
     await get_event(session, slug, event_id, branch_id)
 
@@ -658,7 +658,7 @@ async def get_event_history(
         .order_by(EventChange.created_at.desc())
     )
     rows = result.all()
-    history = []
+    history: list[dict[str, object]] = []
     for change, user_email in rows:
         history.append(
             {
