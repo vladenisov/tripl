@@ -347,7 +347,7 @@ def test_collect_metrics_records_coverage_and_shadow_candidates(
     from tripl.tests.test_metrics_tasks import _create_scan_config
     from tripl.worker.adapters.base import ColumnInfo
     from tripl.worker.analyzers.event_generator import GenerationResult
-    from tripl.worker.tasks import metrics
+    from tripl.worker.tasks.metrics import tasks as metrics
 
     with sync_session_factory() as session:
         config = _create_scan_config(session, with_event_type=True)
