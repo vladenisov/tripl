@@ -1124,9 +1124,9 @@ def test_send_alert_delivery_falls_back_from_telegram_markdownv2_to_plain(
     # The sparkline/top-movers DB build must run ONCE even though we render the
     # message twice (MarkdownV2 then the plain fallback) — the fallback reuses
     # the cached context instead of re-querying.
-    from tripl.worker.tasks import alerts as alerts_module
+    from tripl.worker.tasks import alerts_messages as alerts_messages_module
 
-    real_build_context = alerts_module.build_alert_item_context
+    real_build_context = alerts_messages_module.build_alert_item_context
     build_context_calls = 0
 
     def counting_build_context(*args: object, **kwargs: object) -> tuple[str, str]:
@@ -1134,7 +1134,9 @@ def test_send_alert_delivery_falls_back_from_telegram_markdownv2_to_plain(
         build_context_calls += 1
         return real_build_context(*args, **kwargs)
 
-    monkeypatch.setattr(alerts_module, "build_alert_item_context", counting_build_context)
+    monkeypatch.setattr(
+        alerts_messages_module, "build_alert_item_context", counting_build_context
+    )
 
     result = metrics.send_alert_delivery.run(delivery_id)
 

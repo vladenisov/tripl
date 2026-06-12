@@ -3,6 +3,11 @@
 Takes breakdown analysis (per-column cardinality stats + raw GROUP BY ALL rows)
 and produces deduplicated Event + EventFieldValue records.  Each breakdown row
 maps to one event, preserving actual column correlations from the data.
+
+Implementation is split across two private sibling modules:
+
+* ``_event_generator_variables``  — variable detection, creation, context ops
+* ``_event_generator_merge``      — grouping rules, merge/consolidation logic
 """
 
 from __future__ import annotations
@@ -14,8 +19,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
-from sqlalchemy import delete, func, or_, select, update
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from tripl.json_paths import (
@@ -23,20 +27,43 @@ from tripl.json_paths import (
     decode_json_path_value,
     format_json_path_value,
 )
-from tripl.models.alert_delivery_item import AlertDeliveryItem
 from tripl.models.event import Event
-from tripl.models.event import EventStatus as _ES
-from tripl.models.event import event_status_rank as _rank
 from tripl.models.event_field_value import EventFieldValue
-from tripl.models.event_metric import EventMetric
-from tripl.models.event_metric_breakdown import EventMetricBreakdown
-from tripl.models.event_photo import EventPhoto
 from tripl.models.field_definition import FieldDefinition
-from tripl.models.metric_anomaly import MetricAnomaly
-from tripl.models.metric_breakdown_anomaly import MetricBreakdownAnomaly
-from tripl.models.plan_branch import BranchKind, PlanBranch
-from tripl.models.variable import Variable
-from tripl.models.variable_value import VariableValue, VariableValueKind
+from tripl.models.variable_value import VariableValueKind
+from tripl.worker.analyzers._event_generator_merge import (
+    EventGroupMatch,
+    _merge_existing_grouped_events,
+    apply_event_group_rules,
+    merge_existing_events_for_group_rules,
+)
+from tripl.worker.analyzers._event_generator_variables import (
+    VariableObservation,
+)
+from tripl.worker.analyzers._event_generator_variables import (
+    delete_variable_contexts_for_event_type as _delete_variable_contexts_for_event_type,
+)
+from tripl.worker.analyzers._event_generator_variables import (
+    ensure_variable as _ensure_variable,
+)
+from tripl.worker.analyzers._event_generator_variables import (
+    insert_variable_contexts as _insert_variable_contexts,
+)
+from tripl.worker.analyzers._event_generator_variables import (
+    load_variables_for_contexts as _load_variables_for_contexts,
+)
+from tripl.worker.analyzers._event_generator_variables import (
+    preserve_existing_variable_context_values as _preserve_existing_variable_context_values,
+)
+from tripl.worker.analyzers._event_generator_variables import (
+    record_variable_contexts as _record_variable_contexts,
+)
+from tripl.worker.analyzers._event_generator_variables import (
+    resolve_main_branch_id as _resolve_main_branch_id,
+)
+from tripl.worker.analyzers._event_generator_variables import (
+    sample_variable_values as _sample_variable_values,
+)
 from tripl.worker.analyzers.cardinality import BreakdownAnalysis
 from tripl.worker.analyzers.variable_detector import (
     DetectedPattern,
@@ -47,14 +74,19 @@ logger = logging.getLogger(__name__)
 
 VARIABLE_VALUE_SAMPLE_LIMIT = 20
 
+# Re-export public names that callers import directly from this module.
+__all__ = [
+    "EventGroupMatch",
+    "GenerationResult",
+    "VariableObservation",
+    "_ensure_variable",
+    "_resolve_main_branch_id",
+    "apply_event_group_rules",
+    "generate_events",
+    "merge_existing_events_for_group_rules",
+]
 
-def _format_value(raw_val: object) -> str:
-    """Format a value for display, showing ints without decimal point."""
-    if raw_val is None:
-        return ""
-    if isinstance(raw_val, float) and raw_val.is_integer():
-        return str(int(raw_val))
-    return str(raw_val)
+_FMT_PATTERN = re.compile(r"\{([^}]+)\}")
 
 
 @dataclass
@@ -70,89 +102,6 @@ class GenerationResult:
     col_meta: dict[str, dict[str, Any]] = field(default_factory=dict)
     events_by_name: dict[str, Event] = field(default_factory=dict)
     snapshot: dict[str, Any] | None = None
-
-
-@dataclass(frozen=True)
-class VariableObservation:
-    name: str
-    source_column: str
-    value_kind: str
-    observed_count: int
-    values: list[str]
-
-
-@dataclass(frozen=True)
-class EventGroupMatch:
-    event_name: str
-    field_value_overrides: dict[str, str] = field(default_factory=dict)
-    matched_rule_name: str | None = None
-
-
-def apply_event_group_rules(
-    event_name: str,
-    values_by_field: Mapping[str, object],
-    event_group_rules: Sequence[Mapping[str, object]] | None,
-) -> EventGroupMatch:
-    """Return the grouped event name for the first matching scan group rule."""
-    if not event_group_rules:
-        return EventGroupMatch(event_name=event_name)
-
-    for rule in event_group_rules:
-        group_name = str(rule.get("name", "")).strip()
-        raw_conditions = rule.get("conditions")
-        if not group_name or not isinstance(raw_conditions, list):
-            continue
-
-        condition_results: list[tuple[str, str, bool]] = []
-        for raw_condition in raw_conditions:
-            if not isinstance(raw_condition, Mapping):
-                continue
-            field_name = str(raw_condition.get("field", "")).strip()
-            pattern = str(raw_condition.get("pattern", "")).strip()
-            if not field_name or not pattern:
-                continue
-            try:
-                # DOTALL so ``.`` spans newlines: some event values carry multi-line
-                # free text (e.g. a pasted notification body), and ``^...$`` anchored
-                # patterns must still match those against the whole value.
-                matched = (
-                    re.search(
-                        pattern,
-                        _format_value(values_by_field.get(field_name)),
-                        re.DOTALL,
-                    )
-                    is not None
-                )
-            except re.error:
-                continue
-            condition_results.append((field_name, pattern, matched))
-
-        if not condition_results:
-            continue
-
-        logic = str(rule.get("condition_logic", "all")).strip().lower()
-        if logic == "any":
-            rule_matched = any(matched for _, _, matched in condition_results)
-        else:
-            rule_matched = all(matched for _, _, matched in condition_results)
-
-        if not rule_matched:
-            continue
-
-        overrides = {
-            field_name: f"/{pattern}/"
-            for field_name, pattern, matched in condition_results
-            if matched and field_name != "__event_name"
-        }
-        if len(group_name) > 500:
-            group_name = group_name[:497] + "..."
-        return EventGroupMatch(
-            event_name=group_name,
-            field_value_overrides=overrides,
-            matched_rule_name=group_name,
-        )
-
-    return EventGroupMatch(event_name=event_name)
 
 
 def generate_events(
@@ -503,185 +452,13 @@ def generate_events(
     return result
 
 
-def _sample_variable_values(values: Sequence[str], value_kind: str) -> list[str]:
-    seen: set[str] = set()
-    unique_values: list[str] = []
-    for value in values:
-        if value in seen:
-            continue
-        seen.add(value)
-        unique_values.append(value)
-    if value_kind == VariableValueKind.low.value:
-        return unique_values
-    return unique_values[:VARIABLE_VALUE_SAMPLE_LIMIT]
-
-
-def _variable_observations(col_meta: dict[str, dict[str, Any]]) -> list[VariableObservation]:
-    observations: list[VariableObservation] = []
-    for meta in col_meta.values():
-        observations.extend(meta.get("variable_observations") or [])
-    return observations
-
-
-def _load_variables_for_contexts(
-    session: Session,
-    *,
-    project_id: uuid.UUID,
-    branch_id: uuid.UUID | None,
-    col_meta: dict[str, dict[str, Any]],
-) -> dict[str, Variable]:
-    names = {observation.name for observation in _variable_observations(col_meta)}
-    if not names:
-        return {}
-    query = select(Variable).where(
-        Variable.project_id == project_id,
-        or_(Variable.name.in_(names), Variable.source_name.in_(names)),
-    )
-    if branch_id is not None:
-        query = query.where(Variable.branch_id == branch_id)
-    variables = session.execute(query).scalars().all()
-    variable_by_token: dict[str, Variable] = {}
-    for variable in variables:
-        if variable.source_name in names:
-            variable_by_token.setdefault(variable.source_name, variable)
-        if variable.name in names:
-            variable_by_token.setdefault(variable.name, variable)
-    return variable_by_token
-
-
-def _delete_variable_contexts_for_event_type(
-    session: Session,
-    *,
-    project_id: uuid.UUID,
-    branch_id: uuid.UUID | None,
-    event_type_id: uuid.UUID,
-) -> None:
-    event_ids = select(Event.id).where(
-        Event.project_id == project_id,
-        Event.event_type_id == event_type_id,
-    )
-    if branch_id is not None:
-        event_ids = event_ids.where(Event.branch_id == branch_id)
-    delete_query = delete(VariableValue).where(
-        VariableValue.project_id == project_id,
-        VariableValue.event_id.in_(event_ids),
-    )
-    if branch_id is not None:
-        delete_query = delete_query.where(VariableValue.branch_id == branch_id)
-    session.execute(delete_query)
-
-
-def _preserve_existing_variable_context_values(
-    session: Session,
-    *,
-    project_id: uuid.UUID,
-    branch_id: uuid.UUID | None,
-    contexts: dict[tuple[uuid.UUID, uuid.UUID, uuid.UUID], dict[str, Any]],
-) -> None:
-    if not contexts:
-        return
-
-    variable_ids = {variable_id for variable_id, _, _ in contexts}
-    event_ids = {event_id for _, event_id, _ in contexts}
-    field_definition_ids = {field_id for _, _, field_id in contexts}
-    query = select(VariableValue).where(
-        VariableValue.project_id == project_id,
-        VariableValue.variable_id.in_(variable_ids),
-        VariableValue.event_id.in_(event_ids),
-        VariableValue.field_definition_id.in_(field_definition_ids),
-    )
-    if branch_id is not None:
-        query = query.where(VariableValue.branch_id == branch_id)
-
-    existing_contexts = session.execute(query).scalars().all()
-    for existing in existing_contexts:
-        key = (existing.variable_id, existing.event_id, existing.field_definition_id)
-        context = contexts.get(key)
-        if context is None:
-            continue
-
-        context_values = list(context.get("values") or [])
-        existing_values = list(existing.values or [])
-        if not context_values and existing_values:
-            context["values"] = _sample_variable_values(existing_values, existing.value_kind)
-
-        context["observed_count"] = max(
-            int(context.get("observed_count") or 0),
-            existing.observed_count,
-            len(context.get("values") or []),
-        )
-        if existing.value_kind == VariableValueKind.high.value:
-            context["value_kind"] = VariableValueKind.high.value
-
-
-def _record_variable_contexts(
-    contexts: dict[tuple[uuid.UUID, uuid.UUID, uuid.UUID], dict[str, Any]],
-    *,
-    event: Event,
-    field_values: Sequence[tuple[uuid.UUID, str, str]],
-    col_meta: dict[str, dict[str, Any]],
-    variable_by_token: dict[str, Variable],
-) -> None:
-    for field_definition_id, col_name, value in field_values:
-        observations: list[VariableObservation] = (
-            col_meta.get(col_name, {}).get("variable_observations") or []
-        )
-        if not observations:
-            continue
-        for observation in observations:
-            if f"${{{observation.name}}}" not in value:
-                continue
-            variable = variable_by_token.get(observation.name)
-            if variable is None:
-                continue
-            key = (variable.id, event.id, field_definition_id)
-            existing = contexts.get(key)
-            if existing is None:
-                contexts[key] = {
-                    "variable_id": variable.id,
-                    "event_id": event.id,
-                    "field_definition_id": field_definition_id,
-                    "source_column": observation.source_column,
-                    "value_kind": observation.value_kind,
-                    "observed_count": observation.observed_count,
-                    "values": list(observation.values),
-                }
-                continue
-
-            existing["observed_count"] = max(
-                int(existing["observed_count"]),
-                observation.observed_count,
-            )
-            if observation.value_kind == VariableValueKind.high.value:
-                existing["value_kind"] = VariableValueKind.high.value
-            existing["values"] = _sample_variable_values(
-                [*existing["values"], *observation.values],
-                existing["value_kind"],
-            )
-
-
-def _insert_variable_contexts(
-    session: Session,
-    *,
-    project_id: uuid.UUID,
-    branch_id: uuid.UUID | None,
-    contexts: dict[tuple[uuid.UUID, uuid.UUID, uuid.UUID], dict[str, Any]],
-) -> None:
-    for context in contexts.values():
-        payload = {
-            "id": uuid.uuid4(),
-            "project_id": project_id,
-            "variable_id": context["variable_id"],
-            "event_id": context["event_id"],
-            "field_definition_id": context["field_definition_id"],
-            "source_column": context["source_column"],
-            "value_kind": context["value_kind"],
-            "observed_count": context["observed_count"],
-            "values": context["values"],
-        }
-        if branch_id is not None:
-            payload["branch_id"] = branch_id
-        session.add(VariableValue(**payload))
+def _format_value(raw_val: object) -> str:
+    """Format a value for display, showing ints without decimal point."""
+    if raw_val is None:
+        return ""
+    if isinstance(raw_val, float) and raw_val.is_integer():
+        return str(int(raw_val))
+    return str(raw_val)
 
 
 def _upsert_field_values(
@@ -747,341 +524,6 @@ def _raw_values_from_row(
     return values
 
 
-def _merge_existing_grouped_events(
-    session: Session,
-    *,
-    project_id: uuid.UUID,
-    event_type_id: uuid.UUID,
-    existing_by_identity: dict[str, Event],
-    event_group_rules: Sequence[Mapping[str, object]] | None,
-    field_definitions: dict[str, FieldDefinition],
-    next_event_order: int,
-) -> int:
-    if not event_group_rules:
-        return 0
-
-    field_name_by_id = {fd.id: name for name, fd in field_definitions.items()}
-    merged = 0
-
-    for identity, source in list(existing_by_identity.items()):
-        if source.project_id != project_id or source.event_type_id != event_type_id:
-            continue
-        values = _event_values_for_group_matching(source, field_name_by_id)
-        match = apply_event_group_rules(identity, values, event_group_rules)
-        if match.matched_rule_name is None:
-            continue
-
-        target = existing_by_identity.get(match.event_name)
-        if target is None:
-            target = _create_group_event_from_source(
-                session,
-                source=source,
-                group_name=match.event_name,
-                field_name_by_id=field_name_by_id,
-                field_value_overrides=match.field_value_overrides,
-                order=next_event_order,
-            )
-            next_event_order += 1
-            existing_by_identity[match.event_name] = target
-
-        if target.id == source.id:
-            continue
-
-        _merge_event_into_group(
-            session,
-            source=source,
-            target=target,
-        )
-        for key, event in list(existing_by_identity.items()):
-            if event.id == source.id:
-                del existing_by_identity[key]
-        merged += 1
-
-    return merged
-
-
-def merge_existing_events_for_group_rules(
-    session: Session,
-    *,
-    project_id: uuid.UUID,
-    event_type_ids: Sequence[uuid.UUID],
-    event_group_rules: Sequence[Mapping[str, object]] | None,
-) -> int:
-    """Apply scan group rules to already-created catalog events."""
-    if not event_group_rules:
-        return 0
-
-    total_merged = 0
-    next_event_order = session.execute(
-        select(func.max(Event.order)).where(Event.project_id == project_id)
-    ).scalar_one()
-    next_event_order = 0 if next_event_order is None else int(next_event_order) + 1
-
-    for event_type_id in event_type_ids:
-        field_definitions = {
-            field_definition.name: field_definition
-            for field_definition in session.execute(
-                select(FieldDefinition).where(FieldDefinition.event_type_id == event_type_id)
-            )
-            .scalars()
-            .all()
-        }
-        if not field_definitions:
-            continue
-
-        existing_events = (
-            session.execute(
-                select(Event).where(
-                    Event.project_id == project_id,
-                    Event.event_type_id == event_type_id,
-                )
-            )
-            .scalars()
-            .all()
-        )
-        existing_by_identity: dict[str, Event] = {}
-        for event in existing_events:
-            if event.source_name is None:
-                event.source_name = event.name
-            existing_by_identity[event.source_name] = event
-
-        total_merged += _merge_existing_grouped_events(
-            session,
-            project_id=project_id,
-            event_type_id=event_type_id,
-            existing_by_identity=existing_by_identity,
-            event_group_rules=event_group_rules,
-            field_definitions=field_definitions,
-            next_event_order=next_event_order,
-        )
-        next_event_order = session.execute(
-            select(func.max(Event.order)).where(Event.project_id == project_id)
-        ).scalar_one()
-        next_event_order = 0 if next_event_order is None else int(next_event_order) + 1
-
-    session.flush()
-    return total_merged
-
-
-def _event_values_for_group_matching(
-    event: Event,
-    field_name_by_id: dict[uuid.UUID, str],
-) -> dict[str, str]:
-    identity = event.source_name or event.name
-    values = {"__event_name": identity, "event_name": identity}
-    for field_value in event.field_values:
-        field_name = field_name_by_id.get(field_value.field_definition_id)
-        if field_name:
-            values[field_name] = field_value.value
-    return values
-
-
-def _create_group_event_from_source(
-    session: Session,
-    *,
-    source: Event,
-    group_name: str,
-    field_name_by_id: dict[uuid.UUID, str],
-    field_value_overrides: dict[str, str],
-    order: int,
-) -> Event:
-    target = Event(
-        id=uuid.uuid4(),
-        project_id=source.project_id,
-        branch_id=source.branch_id,
-        event_type_id=source.event_type_id,
-        name=group_name,
-        source_name=group_name,
-        description="Auto-generated event group from data source scan",
-        order=order,
-        status=source.status,
-        last_seen_at=source.last_seen_at,
-        metric_breakdown_columns=list(source.metric_breakdown_columns or []),
-    )
-    session.add(target)
-    session.flush()
-    for field_value in source.field_values:
-        field_name = field_name_by_id.get(field_value.field_definition_id)
-        value = field_value_overrides.get(field_name or "", field_value.value)
-        session.add(
-            EventFieldValue(
-                id=uuid.uuid4(),
-                event_id=target.id,
-                field_definition_id=field_value.field_definition_id,
-                value=value,
-            )
-        )
-    session.flush()
-    return target
-
-
-def _merge_event_into_group(session: Session, *, source: Event, target: Event) -> None:
-    if source.last_seen_at is not None and (
-        target.last_seen_at is None or source.last_seen_at > target.last_seen_at
-    ):
-        target.last_seen_at = source.last_seen_at
-    s_status = _ES(source.status) if source.status in _ES._value2member_map_ else _ES.draft
-    t_status = _ES(target.status) if target.status in _ES._value2member_map_ else _ES.draft
-    if s_status != _ES.archived and t_status != _ES.archived:
-        target.status = (
-            s_status if _rank(s_status) > _rank(t_status) else t_status
-        )
-    target.metric_breakdown_columns = sorted(
-        set(target.metric_breakdown_columns or []) | set(source.metric_breakdown_columns or [])
-    )
-
-    _move_event_tags(session, source=source, target=target)
-    _move_event_meta_values(session, source=source, target=target)
-    session.execute(
-        update(EventPhoto).where(EventPhoto.event_id == source.id).values(event_id=target.id)
-    )
-    _merge_event_metric_rows(session, source_ids=[source.id], target_id=target.id)
-    _merge_event_metric_breakdown_rows(session, source_ids=[source.id], target_id=target.id)
-    _delete_event_anomalies(session, event_ids=[source.id, target.id])
-    session.execute(
-        update(AlertDeliveryItem)
-        .where(AlertDeliveryItem.event_id == source.id)
-        .values(event_id=target.id, scope_ref=str(target.id), scope_name=target.name)
-    )
-    session.delete(source)
-    session.flush()
-
-
-def _move_event_tags(session: Session, *, source: Event, target: Event) -> None:
-    target_names = {tag.name for tag in target.tags}
-    for tag in list(source.tags):
-        if tag.name in target_names:
-            session.delete(tag)
-            continue
-        source.tags.remove(tag)
-        target.tags.append(tag)
-        tag.event_id = target.id
-        target_names.add(tag.name)
-
-
-def _move_event_meta_values(session: Session, *, source: Event, target: Event) -> None:
-    target_meta_ids = {value.meta_field_definition_id for value in target.meta_values}
-    for meta_value in list(source.meta_values):
-        if meta_value.meta_field_definition_id in target_meta_ids:
-            session.delete(meta_value)
-            continue
-        source.meta_values.remove(meta_value)
-        target.meta_values.append(meta_value)
-        meta_value.event_id = target.id
-        target_meta_ids.add(meta_value.meta_field_definition_id)
-
-
-def _merge_event_metric_rows(
-    session: Session,
-    *,
-    source_ids: list[uuid.UUID],
-    target_id: uuid.UUID,
-) -> None:
-    event_ids = [target_id, *source_ids]
-    rows = session.execute(
-        select(
-            EventMetric.scan_config_id,
-            EventMetric.bucket,
-            func.sum(EventMetric.count),
-        )
-        .where(EventMetric.event_id.in_(event_ids))
-        .group_by(EventMetric.scan_config_id, EventMetric.bucket)
-    ).all()
-    if not rows:
-        return
-
-    session.execute(delete(EventMetric).where(EventMetric.event_id.in_(event_ids)))
-    for scan_config_id, bucket, count in rows:
-        session.add(
-            EventMetric(
-                id=uuid.uuid4(),
-                scan_config_id=scan_config_id,
-                event_id=target_id,
-                event_type_id=None,
-                bucket=bucket,
-                count=int(count or 0),
-            )
-        )
-
-
-def _merge_event_metric_breakdown_rows(
-    session: Session,
-    *,
-    source_ids: list[uuid.UUID],
-    target_id: uuid.UUID,
-) -> None:
-    event_ids = [target_id, *source_ids]
-    rows = session.execute(
-        select(
-            EventMetricBreakdown.scan_config_id,
-            EventMetricBreakdown.bucket,
-            EventMetricBreakdown.breakdown_column,
-            EventMetricBreakdown.breakdown_value,
-            EventMetricBreakdown.is_other,
-            func.sum(EventMetricBreakdown.count),
-        )
-        .where(EventMetricBreakdown.event_id.in_(event_ids))
-        .group_by(
-            EventMetricBreakdown.scan_config_id,
-            EventMetricBreakdown.bucket,
-            EventMetricBreakdown.breakdown_column,
-            EventMetricBreakdown.breakdown_value,
-            EventMetricBreakdown.is_other,
-        )
-    ).all()
-    if not rows:
-        return
-
-    session.execute(
-        delete(EventMetricBreakdown).where(EventMetricBreakdown.event_id.in_(event_ids))
-    )
-    for scan_config_id, bucket, breakdown_column, breakdown_value, is_other, count in rows:
-        session.add(
-            EventMetricBreakdown(
-                id=uuid.uuid4(),
-                scan_config_id=scan_config_id,
-                event_id=target_id,
-                event_type_id=None,
-                bucket=bucket,
-                breakdown_column=breakdown_column,
-                breakdown_value=breakdown_value,
-                is_other=bool(is_other),
-                count=int(count or 0),
-            )
-        )
-
-
-def _delete_event_anomalies(session: Session, *, event_ids: list[uuid.UUID]) -> None:
-    scope_refs = [str(event_id) for event_id in event_ids]
-    session.execute(
-        delete(MetricAnomaly).where(
-            MetricAnomaly.scope_type == "event",
-            MetricAnomaly.scope_ref.in_(scope_refs),
-        )
-    )
-    session.execute(
-        delete(MetricAnomaly).where(
-            MetricAnomaly.scope_type == "event",
-            MetricAnomaly.event_id.in_(event_ids),
-        )
-    )
-    session.execute(
-        delete(MetricBreakdownAnomaly).where(
-            MetricBreakdownAnomaly.scope_type == "event",
-            MetricBreakdownAnomaly.scope_ref.in_(scope_refs),
-        )
-    )
-    session.execute(
-        delete(MetricBreakdownAnomaly).where(
-            MetricBreakdownAnomaly.scope_type == "event",
-            MetricBreakdownAnomaly.event_id.in_(event_ids),
-        )
-    )
-
-
-_FMT_PATTERN = re.compile(r"\{([^}]+)\}")
-
-
 def _apply_name_format(fmt: str, kwargs: dict[str, str]) -> str:
     """Replace {key} placeholders, supporting keys with dots like {event.category}."""
     missing: list[str] = []
@@ -1102,94 +544,3 @@ def _apply_name_format(fmt: str, kwargs: dict[str, str]) -> str:
         )
         raise ValueError(msg)
     return result
-
-
-def _resolve_main_branch_id(session: Session, project_id: uuid.UUID) -> uuid.UUID | None:
-    """Return the project's existing main-branch id, or ``None`` if not created yet.
-
-    Scans write plan entities to the main branch (see ``default_branch_id``).
-    Variable uniqueness is enforced per branch — ``(project_id, branch_id,
-    source_name)`` — so the working copies a project's plan branches hold can
-    legitimately share a ``source_name``. Scoping the scan's existence checks to
-    the main branch keeps that constraint meaningful and stops a same-name row on
-    another branch from making the lookup raise ``MultipleResultsFound``.
-    """
-    return (
-        session.execute(
-            select(PlanBranch.id).where(
-                PlanBranch.project_id == project_id,
-                PlanBranch.kind == BranchKind.main.value,
-            )
-        )
-        .scalars()
-        .first()
-    )
-
-
-def _ensure_variable(
-    session: Session,
-    project_id: uuid.UUID,
-    name: str,
-    inferred_type: str,
-    branch_id: uuid.UUID | None = None,
-) -> int:
-    """Create a Variable if it doesn't exist. Returns 1 if created, 0 if already exists.
-
-    Looks up by source_name (the original scan-detected name) so that
-    user renames of the display ``name`` don't cause duplicates. Lookups are
-    scoped to ``branch_id`` (the scan's main branch) so a same-named variable on
-    another plan branch is not treated as an existing match — without that scope
-    the query spans branches and can match more than one row.
-    """
-    source_query = select(Variable).where(
-        Variable.project_id == project_id,
-        Variable.source_name == name,
-    )
-    if branch_id is not None:
-        source_query = source_query.where(Variable.branch_id == branch_id)
-    existing = session.execute(source_query).scalars().first()
-
-    if existing is not None:
-        return 0
-
-    # Also check by name (covers manually created variables)
-    name_query = select(Variable).where(
-        Variable.project_id == project_id,
-        Variable.name == name,
-    )
-    if branch_id is not None:
-        name_query = name_query.where(Variable.branch_id == branch_id)
-    existing_by_name = session.execute(name_query).scalars().first()
-
-    if existing_by_name is not None:
-        # Backfill source_name if missing
-        if existing_by_name.source_name is None:
-            existing_by_name.source_name = name
-            session.flush()
-        return 0
-
-    var = Variable(
-        id=uuid.uuid4(),
-        project_id=project_id,
-        name=name,
-        source_name=name,
-        variable_type=inferred_type,
-        description="Auto-detected variable from data source scan",
-    )
-    if branch_id is not None:
-        var.branch_id = branch_id
-    # Race-safe insert: two concurrent scan workers can discover the same
-    # variable in the same bucket and attempt to insert simultaneously.
-    # Keep this operation isolated in a SAVEPOINT so an IntegrityError does not
-    # poison the outer transaction.
-    try:
-        with session.begin_nested():
-            session.add(var)
-            session.flush()
-    except IntegrityError:
-        logger.info(
-            "Variable already inserted concurrently; skipping duplicate",
-            extra={"project_id": str(project_id), "name": name, "branch_id": str(branch_id)},
-        )
-        return 0
-    return 1

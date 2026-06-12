@@ -1,0 +1,171 @@
+export interface PlanRevisionEntityCounts {
+  event_types: number
+  fields: number
+  events: number
+  variables: number
+  meta_fields: number
+  relations: number
+}
+
+export interface PlanRevisionSummary {
+  id: string
+  project_id: string
+  summary: string
+  created_at: string
+  created_by: string | null
+  entity_counts: PlanRevisionEntityCounts
+}
+
+export interface PlanRevisionDetail extends PlanRevisionSummary {
+  payload: Record<string, unknown>
+}
+
+export type PlanBranchKind = 'main' | 'working'
+
+export type PlanBranchStatus =
+  | 'draft'
+  | 'ready_for_review'
+  | 'changes_requested'
+  | 'approved'
+  | 'merged'
+  | 'closed'
+
+export type PlanBranchTransitionAction =
+  | 'submit'
+  | 'request_changes'
+  | 'approve'
+  | 'reopen'
+  | 'close'
+
+export interface PlanBranchSummary {
+  id: string
+  project_id: string
+  name: string
+  kind: PlanBranchKind
+  status: PlanBranchStatus
+  description: string
+  base_revision_id: string | null
+  created_by: string | null
+  merged_at: string | null
+  merged_by: string | null
+  created_at: string
+  updated_at: string
+}
+
+export interface PlanBranchReviewer {
+  id: string
+  user_id: string
+  created_at: string
+}
+
+export interface PlanBranchApproval {
+  user_id: string | null
+  approved_at: string
+}
+
+export type ResolutionChoice = 'ours' | 'theirs'
+
+export interface PlanBranchConflictField {
+  field: string
+  base: unknown
+  ours: unknown
+  theirs: unknown
+  choice: ResolutionChoice | null
+}
+
+export interface PlanBranchConflictEntity {
+  entity_type: string
+  name: string
+  fields: PlanBranchConflictField[]
+}
+
+export interface PlanBranchConflicts {
+  entities: PlanBranchConflictEntity[]
+  unresolved_count: number
+}
+
+export interface PlanBranchMergeResolution {
+  id: string
+  branch_id: string
+  entity_type: string
+  entity_name: string
+  field_name: string
+  choice: ResolutionChoice
+  resolved_by: string | null
+  created_at: string
+}
+
+export interface PlanBranchDetail extends PlanBranchSummary {
+  reviewers: PlanBranchReviewer[]
+  approvals: PlanBranchApproval[]
+}
+
+export interface PlanBranchList {
+  items: PlanBranchSummary[]
+  total: number
+}
+
+export interface PlanBranchComment {
+  id: string
+  branch_id: string
+  parent_id: string | null
+  user_id: string | null
+  body: string
+  created_at: string
+  updated_at: string
+}
+
+export interface PlanBranchDiffSummary {
+  entries: PlanDiffEntry[]
+  summary: { added: number; removed: number; changed: number }
+  behind_base: boolean
+}
+
+export interface PlanRevisionList {
+  items: PlanRevisionSummary[]
+  total: number
+}
+
+export type PlanDiffEntityType =
+  | 'event_type'
+  | 'field_definition'
+  | 'event'
+  | 'variable'
+  | 'meta_field'
+  | 'relation'
+
+export type PlanDiffKind = 'added' | 'removed' | 'changed'
+
+export interface PlanDiffEntry {
+  entity_type: PlanDiffEntityType
+  kind: PlanDiffKind
+  name: string
+  parent: string | null
+  changes: string[]
+}
+
+export interface PlanDiff {
+  revision_id: string
+  compare_to: string
+  entries: PlanDiffEntry[]
+  summary: { added: number; removed: number; changed: number }
+}
+
+export interface AuditEntry {
+  id: string
+  created_at: string
+  user_id: string | null
+  user_email: string
+  project_id: string | null
+  project_slug: string
+  action: string
+  target_type: string
+  target_id: string | null
+  target_name: string
+  payload: Record<string, unknown>
+}
+
+export interface AuditListResponse {
+  items: AuditEntry[]
+  total: number
+}

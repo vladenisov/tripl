@@ -33,10 +33,12 @@ from tripl.models.variable import Variable
 from tripl.models.variable_value import VariableValue, VariableValueKind
 from tripl.worker.adapters.base import ColumnInfo, FieldContractViolation
 from tripl.worker.analyzers.event_generator import GenerationResult
-from tripl.worker.tasks import metrics
 from tripl.worker.tasks.metrics import collect as metrics_collect
 from tripl.worker.tasks.metrics import dispatch as metrics_dispatch
+from tripl.worker.tasks.metrics import schedule as metrics_schedule
 from tripl.worker.tasks.metrics import schema_drift as metrics_schema_drift
+from tripl.worker.tasks.metrics import tasks as metrics
+from tripl.worker.tasks.metrics._helpers import STALE_ACTIVE_SCAN_JOB_TIMEOUT
 
 
 @pytest.fixture
@@ -162,18 +164,18 @@ def test_check_metrics_due_skips_dispatch_when_active_job_exists(
         job_id = job.id
 
     dispatched: list[tuple[str, str]] = []
-    monkeypatch.setattr(metrics, "_get_sync_session", sync_session_factory)
+    monkeypatch.setattr(metrics_schedule, "_get_sync_session", sync_session_factory)
 
     def fake_delay(scan_config_id: str, scan_job_id: str) -> None:
         dispatched.append((scan_config_id, scan_job_id))
 
     monkeypatch.setattr(
-        metrics.collect_metrics,
+        metrics_schedule.collect_metrics,
         "delay",
         fake_delay,
     )
 
-    result = metrics.check_metrics_due.run()
+    result = metrics_schedule.check_metrics_due.run()
 
     assert result == {"checked": 1, "dispatched": 0}
     assert dispatched == []
@@ -198,18 +200,18 @@ def test_check_metrics_due_creates_pending_job_before_dispatch(
         config_id = config.id
 
     dispatched: list[tuple[str, str]] = []
-    monkeypatch.setattr(metrics, "_get_sync_session", sync_session_factory)
+    monkeypatch.setattr(metrics_schedule, "_get_sync_session", sync_session_factory)
 
     def fake_delay(scan_config_id: str, scan_job_id: str) -> None:
         dispatched.append((scan_config_id, scan_job_id))
 
     monkeypatch.setattr(
-        metrics.collect_metrics,
+        metrics_schedule.collect_metrics,
         "delay",
         fake_delay,
     )
 
-    result = metrics.check_metrics_due.run()
+    result = metrics_schedule.check_metrics_due.run()
 
     assert result == {"checked": 1, "dispatched": 1}
     assert dispatched[0][0] == str(config_id)
@@ -238,7 +240,7 @@ def test_check_metrics_due_reaps_stale_active_job_and_dispatches_replacement(
             scan_config_id=config.id,
             status=ScanJobStatus.running.value,
             started_at=(
-                datetime.now(UTC) - metrics.STALE_ACTIVE_SCAN_JOB_TIMEOUT - timedelta(minutes=5)
+                datetime.now(UTC) - STALE_ACTIVE_SCAN_JOB_TIMEOUT - timedelta(minutes=5)
             ),
         )
         session.add(stale_job)
@@ -247,14 +249,14 @@ def test_check_metrics_due_reaps_stale_active_job_and_dispatches_replacement(
         stale_job_id = stale_job.id
 
     dispatched: list[tuple[str, str]] = []
-    monkeypatch.setattr(metrics, "_get_sync_session", sync_session_factory)
+    monkeypatch.setattr(metrics_schedule, "_get_sync_session", sync_session_factory)
 
     def fake_delay(scan_config_id: str, scan_job_id: str) -> None:
         dispatched.append((scan_config_id, scan_job_id))
 
-    monkeypatch.setattr(metrics.collect_metrics, "delay", fake_delay)
+    monkeypatch.setattr(metrics_schedule.collect_metrics, "delay", fake_delay)
 
-    result = metrics.check_metrics_due.run()
+    result = metrics_schedule.check_metrics_due.run()
 
     assert result == {"checked": 1, "dispatched": 1}
     assert dispatched[0][0] == str(config_id)
