@@ -1,9 +1,14 @@
 import { HardDrive } from 'lucide-react'
 import type { ServiceSettings } from '@/types'
 import { Input } from '@/components/ui/input'
-import { FieldRow, SectionCard, SwitchRow } from './ServiceSettingsPrimitives'
+import { FieldRow, SectionCard, SelectRow, SwitchRow } from './ServiceSettingsPrimitives'
 import type { EditableSettings, SectionKey } from './serviceSettingsHelpers'
 import { sourceFor } from './serviceSettingsHelpers'
+
+const PHOTO_STORAGE_BACKEND_OPTIONS = [
+  { value: 'local', label: 'Local filesystem' },
+  { value: 'gcs', label: 'Google Cloud Storage' },
+] as const
 
 export function StorageSection({
   form,
@@ -26,17 +31,13 @@ export function StorageSection({
       resetting={resetting}
     >
       <div className="grid gap-4 sm:grid-cols-2">
-        <FieldRow
+        <SelectRow
           label="Photo storage backend"
           source={sourceFor(settings, 'storage', 'photo_storage_backend')}
-        >
-          <Input
-            value={form.storage.photo_storage_backend}
-            onChange={event =>
-              setField('storage', 'photo_storage_backend', event.target.value)
-            }
-          />
-        </FieldRow>
+          value={form.storage.photo_storage_backend}
+          options={PHOTO_STORAGE_BACKEND_OPTIONS}
+          onChange={value => setField('storage', 'photo_storage_backend', value)}
+        />
         <FieldRow
           label="Photo max size MB"
           source={sourceFor(settings, 'storage', 'photo_max_size_mb')}

@@ -1,9 +1,17 @@
 import { Activity } from 'lucide-react'
 import type { ServiceSettings } from '@/types'
 import { Input } from '@/components/ui/input'
-import { FieldRow, SectionCard, SwitchRow } from './ServiceSettingsPrimitives'
+import { FieldRow, SectionCard, SelectRow, SwitchRow } from './ServiceSettingsPrimitives'
 import type { EditableSettings, SectionKey } from './serviceSettingsHelpers'
 import { sourceFor } from './serviceSettingsHelpers'
+
+const LOG_LEVEL_OPTIONS = [
+  { value: 'DEBUG', label: 'DEBUG' },
+  { value: 'INFO', label: 'INFO' },
+  { value: 'WARNING', label: 'WARNING' },
+  { value: 'ERROR', label: 'ERROR' },
+  { value: 'CRITICAL', label: 'CRITICAL' },
+] as const
 
 export function ObservabilitySection({
   form,
@@ -37,12 +45,13 @@ export function ObservabilitySection({
             }
           />
         </FieldRow>
-        <FieldRow label="Log level" source={sourceFor(settings, 'observability', 'log_level')}>
-          <Input
-            value={form.observability.log_level}
-            onChange={event => setField('observability', 'log_level', event.target.value)}
-          />
-        </FieldRow>
+        <SelectRow
+          label="Log level"
+          source={sourceFor(settings, 'observability', 'log_level')}
+          value={form.observability.log_level}
+          options={LOG_LEVEL_OPTIONS}
+          onChange={value => setField('observability', 'log_level', value)}
+        />
       </div>
       <div className="grid gap-4 sm:grid-cols-2">
         <SwitchRow

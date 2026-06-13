@@ -118,7 +118,7 @@ export default function ServiceSettingsSection({
   const settings = settingsQuery.data
 
   return (
-    <div className="min-w-0 max-w-3xl space-y-5">
+    <div className="min-w-0 space-y-5">
       {section !== 'system' && (
         <div className="flex items-center justify-between gap-3">
           <p className="text-sm text-muted-foreground">
