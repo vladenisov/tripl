@@ -86,7 +86,7 @@ describe('App', () => {
     // while the footer still renders the signed-in user and sign-out action.
     expect(await screen.findByText('No projects yet')).toBeInTheDocument()
     expect(screen.getByText('Owner')).toBeInTheDocument()
-    expect(screen.getByText('Sign out')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Sign out' })).toBeInTheDocument()
   })
 
   it('redirects anonymous users to the auth page', async () => {
