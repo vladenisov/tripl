@@ -56,6 +56,7 @@ from tripl.services._alerting_destinations import (
 from tripl.services._alerting_destinations import (
     get_destination_response as get_destination,
 )
+from tripl.services._alerting_monitors import get_monitors_summary
 from tripl.services.alerting_rendering import (
     SCOPE_SCHEMA_DRIFT,
 )
@@ -90,6 +91,7 @@ __all__ = [
     "get_delivery",
     "get_destination",
     "get_destination_response",
+    "get_monitors_summary",
     "get_rule",
     "list_alert_inbox",
     "list_deliveries",

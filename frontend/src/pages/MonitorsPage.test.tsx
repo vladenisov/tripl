@@ -1,0 +1,95 @@
+import { render, screen } from '@testing-library/react'
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { MemoryRouter, Route, Routes } from 'react-router-dom'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import MonitorsPage from './MonitorsPage'
+
+function jsonResponse(body: unknown) {
+  return new Response(JSON.stringify(body), {
+    status: 200,
+    headers: { 'Content-Type': 'application/json' },
+  })
+}
+
+function mockSummary(body: unknown) {
+  return vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+    const url = String(input)
+    if (url.includes('/monitors-summary')) return jsonResponse(body)
+    throw new Error(`Unhandled fetch: ${url}`)
+  })
+}
+
+function renderMonitors() {
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+  return render(
+    <QueryClientProvider client={queryClient}>
+      <MemoryRouter initialEntries={['/p/demo/monitors']}>
+        <Routes>
+          <Route path="/p/:slug/monitors" element={<MonitorsPage />} />
+        </Routes>
+      </MemoryRouter>
+    </QueryClientProvider>,
+  )
+}
+
+afterEach(() => {
+  vi.restoreAllMocks()
+})
+
+describe('MonitorsPage', () => {
+  it('shows the rollup and a firing monitor row', async () => {
+    mockSummary({
+      monitors: [
+        {
+          rule_id: 'rule-1',
+          rule_name: 'payment_failed spike',
+          destination_id: 'dest-1',
+          destination_name: 'Main Slack',
+          destination_type: 'slack',
+          enabled: true,
+          status: 'firing',
+          active_scope_count: 2,
+          firing_scope_count: 1,
+          last_anomaly_at: '2026-06-13T10:00:00Z',
+          last_notified_at: null,
+          notify_on_spike: true,
+          notify_on_drop: false,
+          min_percent_delta: 50,
+          min_expected_count: 100,
+          cooldown_minutes: 60,
+        },
+      ],
+      firing_count: 1,
+      warning_count: 0,
+      healthy_count: 0,
+      total: 1,
+    })
+
+    renderMonitors()
+
+    expect(await screen.findByRole('heading', { name: 'Monitors' })).toBeInTheDocument()
+    expect(await screen.findByText('payment_failed spike')).toBeInTheDocument()
+    // "Firing" appears both as the rollup KPI label and the row status chip.
+    expect(screen.getAllByText('Firing').length).toBeGreaterThanOrEqual(2)
+    expect(screen.getByText('Healthy')).toBeInTheDocument()
+    expect(screen.getByText('slack')).toBeInTheDocument()
+  })
+
+  it('shows an empty state with a link to alerting settings', async () => {
+    mockSummary({
+      monitors: [],
+      firing_count: 0,
+      warning_count: 0,
+      healthy_count: 0,
+      total: 0,
+    })
+
+    renderMonitors()
+
+    expect(await screen.findByText(/No monitors yet/)).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: /Alerting settings/ })).toHaveAttribute(
+      'href',
+      '/p/demo/settings/alerting',
+    )
+  })
+})

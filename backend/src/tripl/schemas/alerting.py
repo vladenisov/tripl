@@ -541,3 +541,33 @@ class AlertRuleSimulateResponse(BaseModel):
     # an extra round-trip).
     cooldown_minutes_saved: int
     rendered_message: str | None = None
+
+
+class MonitorSummaryItem(BaseModel):
+    """One alert rule rolled up into a single monitor status."""
+
+    rule_id: uuid.UUID
+    rule_name: str
+    destination_id: uuid.UUID
+    destination_name: str
+    destination_type: str
+    enabled: bool
+    status: Literal["firing", "warning", "healthy"]
+    active_scope_count: int
+    firing_scope_count: int
+    last_anomaly_at: datetime | None = None
+    last_notified_at: datetime | None = None
+    # Condition summary (so the UI can show the monitor's trigger at a glance).
+    notify_on_spike: bool
+    notify_on_drop: bool
+    min_percent_delta: float
+    min_expected_count: float
+    cooldown_minutes: int
+
+
+class MonitorsSummaryResponse(BaseModel):
+    monitors: list[MonitorSummaryItem]
+    firing_count: int
+    warning_count: int
+    healthy_count: int
+    total: int

@@ -19,6 +19,7 @@ from tripl.schemas.alerting import (
     AlertRuleResponse,
     AlertRuleSimulateResponse,
     AlertRuleUpdate,
+    MonitorsSummaryResponse,
 )
 from tripl.services import alerting_service, audit_service
 
@@ -28,6 +29,11 @@ router = APIRouter(prefix="/projects/{slug}", tags=["alerting"])
 @router.get("/alert-destinations", response_model=list[AlertDestinationResponse])
 async def list_alert_destinations(session: SessionDep, slug: str) -> list[AlertDestinationResponse]:
     return await alerting_service.list_destinations(session, slug)
+
+
+@router.get("/monitors-summary", response_model=MonitorsSummaryResponse)
+async def get_monitors_summary(session: SessionDep, slug: str) -> MonitorsSummaryResponse:
+    return await alerting_service.get_monitors_summary(session, slug)
 
 
 @router.post("/alert-destinations", response_model=AlertDestinationResponse, status_code=201)
