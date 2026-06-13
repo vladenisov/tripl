@@ -61,3 +61,16 @@ async def test_demo_project_viewer_cannot_create(anon_client: AsyncClient) -> No
     # session at all — the endpoint should return 401.
     resp = await anon_client.post("/api/v1/projects/demo")
     assert resp.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_delete_demo_project_cascades(client: AsyncClient) -> None:
+    # A demo project is data-rich (event types, events, fields, metrics,
+    # signals, drifts, scan configs). Deleting it must succeed and remove it.
+    resp = await client.post("/api/v1/projects/demo")
+    assert resp.status_code == 201
+    slug = resp.json()["slug"]
+
+    del_resp = await client.delete(f"/api/v1/projects/{slug}")
+    assert del_resp.status_code == 204
+    assert (await client.get(f"/api/v1/projects/{slug}")).status_code == 404
