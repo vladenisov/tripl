@@ -119,7 +119,7 @@ export default function ReconciliationPage() {
   const eventTypes = eventTypesQuery.data ?? []
 
   return (
-    <div className="min-w-0 max-w-3xl space-y-8 pb-12">
+    <div className="min-w-0 space-y-8 pb-12">
       {/* Header */}
       <div className="flex items-center gap-2">
         <GitCompare className="h-5 w-5 shrink-0" style={{ color: 'var(--fg-subtle)' }} />
