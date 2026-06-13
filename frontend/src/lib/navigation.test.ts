@@ -60,6 +60,7 @@ describe('resolveNavLocation', () => {
     ['/p/demo/events', 'Plan', 'Events'],
     ['/p/demo', 'Plan', 'Events'],
     ['/p/demo/events/checkout', 'Plan', 'Events'],
+    ['/p/demo/overview', 'Observe', 'Overview'],
     ['/p/demo/settings/event-types', 'Plan', 'Event types'],
     ['/p/demo/settings/meta-fields', 'Plan', 'Schema & fields'],
     ['/p/demo/settings/branches', 'Plan', 'Plan branches'],

@@ -10,6 +10,7 @@ import { Toaster } from './components/ui/sonner'
 const AuthPage = lazy(() => import('./pages/AuthPage'))
 const MainPage = lazy(() => import('./pages/ProjectsPage'))
 const EventsPage = lazy(() => import('./pages/EventsPage'))
+const OverviewPage = lazy(() => import('./pages/OverviewPage'))
 const MonitoringDetailPage = lazy(() => import('./pages/MonitoringDetailPage'))
 const ProjectSettingsPage = lazy(() => import('./pages/ProjectSettingsPage'))
 const ReconciliationPage = lazy(() => import('./pages/ReconciliationPage'))
@@ -127,6 +128,7 @@ export default function App() {
             <Route path="/p/:slug/events/:tab/:eventId" element={withSuspense(<EventsPage />)} />
             <Route path="/p/:slug/events/:tab" element={withSuspense(<EventsPage />)} />
             <Route path="/p/:slug/events" element={withSuspense(<EventsPage />)} />
+            <Route path="/p/:slug/overview" element={withSuspense(<OverviewPage />)} />
             <Route path="/p/:slug/reconciliation" element={withSuspense(<ReconciliationPage />)} />
             <Route path="/p/:slug/settings/:tab/:itemId" element={withSuspense(<ProjectSettingsPage />)} />
             <Route path="/p/:slug/settings/:tab" element={withSuspense(<ProjectSettingsPage />)} />
