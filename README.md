@@ -123,7 +123,7 @@ Frontend:
 
 ```bash
 cd frontend
-# Node 26, pnpm 10.28
+# Node 26, pnpm 11.6
 pnpm install
 pnpm test
 pnpm build          # tsc -b && vite build
@@ -141,7 +141,7 @@ What reloads automatically:
 - frontend `src` and `public`: synced into the container and handled by Vite HMR;
 - backend `src`: synced into the API container and reloaded by `uvicorn --reload`;
 - Celery worker and beat: synced backend changes trigger container restart;
-- `package.json`, `pnpm-lock.yaml`, `.node-version`, `pyproject.toml`, `uv.lock`, and Dockerfiles: trigger image rebuild.
+- `package.json`, `pnpm-lock.yaml`, `pnpm-workspace.yaml`, `.node-version`, `pyproject.toml`, `uv.lock`, and Dockerfiles: trigger image rebuild.
 
 ## Documentation
 

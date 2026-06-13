@@ -2,7 +2,7 @@
 
 FROM node:26-trixie-slim AS base
 
-ARG PNPM_VERSION=10.28.2
+ARG PNPM_VERSION=11.6.0
 ENV PNPM_HOME=/pnpm
 ENV PATH=$PNPM_HOME:$PATH
 
@@ -10,7 +10,7 @@ RUN npm install --global pnpm@${PNPM_VERSION}
 
 WORKDIR /app
 
-COPY package.json pnpm-lock.yaml ./
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 RUN --mount=type=cache,id=pnpm,target=/pnpm/store \
     pnpm config set store-dir /pnpm/store && pnpm install --frozen-lockfile
 

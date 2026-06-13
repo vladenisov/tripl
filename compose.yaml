@@ -221,6 +221,8 @@ services:
         - action: rebuild
           path: ./frontend/pnpm-lock.yaml
         - action: rebuild
+          path: ./frontend/pnpm-workspace.yaml
+        - action: rebuild
           path: ./frontend/.node-version
         - action: rebuild
           path: ./frontend/Dockerfile
