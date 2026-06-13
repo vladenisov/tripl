@@ -62,7 +62,7 @@ def _post_chat_completions(
         except json.JSONDecodeError:
             pass
         return None, error
-    except (urllib.error.URLError, TimeoutError):
+    except urllib.error.URLError, TimeoutError:
         logger.exception("AI completion request failed")
         return None, None
 
@@ -137,6 +137,6 @@ def complete(
             logger.warning("AI completion response content is not a string")
             return None
         return content
-    except (json.JSONDecodeError, KeyError, IndexError):
+    except json.JSONDecodeError, KeyError, IndexError:
         logger.exception("Failed to parse AI completion response")
         return None

@@ -11,17 +11,23 @@ const STORAGE_KEY = 'tripl.eventsSavedViews'
 let memoryStore: string | null = null
 
 function readStore(): StoredEventsSavedViews {
+  let raw: string | null
   try {
-    const raw = typeof localStorage.getItem === 'function'
-      ? localStorage.getItem(STORAGE_KEY)
-      : memoryStore
-    if (!raw) return {}
+    raw = typeof localStorage.getItem === 'function' ? localStorage.getItem(STORAGE_KEY) : null
+  } catch {
+    raw = memoryStore
+  }
+  raw ??= memoryStore
+  if (!raw) return {}
+  try {
     const parsed = JSON.parse(raw) as unknown
-    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {}
-    return parsed as StoredEventsSavedViews
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      return parsed as StoredEventsSavedViews
+    }
   } catch {
     return {}
   }
+  return {}
 }
 
 function writeStore(store: StoredEventsSavedViews) {

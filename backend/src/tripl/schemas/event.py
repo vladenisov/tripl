@@ -78,7 +78,7 @@ class EventBulkUpdate(BaseModel):
     sunset_at: datetime | None = None
 
     @model_validator(mode="after")
-    def validate_has_update(self) -> "EventBulkUpdate":
+    def validate_has_update(self) -> EventBulkUpdate:
         if self.status is None and self.sunset_at is None:
             raise ValueError("At least one of status or sunset_at must be provided")
         return self

@@ -41,7 +41,7 @@ def _is_uuid(val: str) -> bool:
     try:
         _uuid.UUID(val)
         return True
-    except (ValueError, AttributeError):
+    except ValueError, AttributeError:
         return False
 
 
@@ -149,7 +149,7 @@ def _detect_json_pattern(
             return None
         try:
             obj = json.loads(v)
-        except (json.JSONDecodeError, TypeError):
+        except json.JSONDecodeError, TypeError:
             return None
         if not isinstance(obj, dict):
             return None
@@ -341,7 +341,7 @@ def expand_json_low_cardinality(
     """
     try:
         template_obj = json.loads(template)
-    except (json.JSONDecodeError, TypeError):
+    except json.JSONDecodeError, TypeError:
         return [(template, [])]
 
     # Collect actual values for low-cardinality keys
@@ -351,7 +351,7 @@ def expand_json_low_cardinality(
             obj = json.loads(v)
             if isinstance(obj, dict):
                 parsed_values.append(obj)
-        except (json.JSONDecodeError, TypeError):
+        except json.JSONDecodeError, TypeError:
             continue
 
     low_card_keys: dict[str, list[str]] = {}

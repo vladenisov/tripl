@@ -353,7 +353,6 @@ def test_collect_metrics_records_coverage_and_shadow_candidates(
     sync_session_factory,  # noqa: F811
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from sqlalchemy.orm import Session
 
     from tripl.tests.test_metrics_tasks import _create_scan_config
     from tripl.worker.adapters.base import ColumnInfo

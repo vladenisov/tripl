@@ -1,11 +1,12 @@
-# syntax=docker/dockerfile:1.7
+# syntax=docker/dockerfile:1
 
-FROM node:22-slim AS base
+FROM node:26-trixie-slim AS base
 
+ARG PNPM_VERSION=10.28.2
 ENV PNPM_HOME=/pnpm
 ENV PATH=$PNPM_HOME:$PATH
 
-RUN corepack enable pnpm
+RUN npm install --global pnpm@${PNPM_VERSION}
 
 WORKDIR /app
 
@@ -28,10 +29,10 @@ RUN --mount=type=cache,id=pnpm,target=/pnpm/store \
 
 # Install nginx AND the brotli module from the same alpine repo so their
 # versions match. The official `nginx:*-alpine` image compiles nginx itself,
-# which diverges from the community `nginx-mod-http-brotli` build → nginx
-# fails at load with "module version X instead of Y". Pinning the alpine
-# release keeps nginx (1.28.3) and the brotli module in lockstep.
-FROM alpine:3.22 AS runtime
+# which diverges from the community `nginx-mod-http-brotli` build and can fail
+# at load with a module-version mismatch. Pinning the alpine release keeps nginx
+# and the brotli module in lockstep.
+FROM alpine:3.24 AS runtime
 
 RUN apk add --no-cache nginx nginx-mod-http-brotli
 

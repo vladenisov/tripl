@@ -34,7 +34,7 @@ class FieldDefinitionCreate(BaseModel):
         return value
 
     @model_validator(mode="after")
-    def validate_contract_range(self) -> "FieldDefinitionCreate":
+    def validate_contract_range(self) -> FieldDefinitionCreate:
         if (
             self.contract_min_value is not None
             and self.contract_max_value is not None
@@ -70,7 +70,7 @@ class FieldDefinitionUpdate(BaseModel):
         return value
 
     @model_validator(mode="after")
-    def validate_contract_range(self) -> "FieldDefinitionUpdate":
+    def validate_contract_range(self) -> FieldDefinitionUpdate:
         if (
             self.contract_min_value is not None
             and self.contract_max_value is not None

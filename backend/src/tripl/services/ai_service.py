@@ -48,7 +48,7 @@ def _parse_describe_response(raw: str) -> AiDescribeResponse:
             if isinstance(s, dict)
         ]
         return AiDescribeResponse(description=description, field_suggestions=field_suggestions)
-    except (json.JSONDecodeError, TypeError, ValueError):
+    except json.JSONDecodeError, TypeError, ValueError:
         logger.warning("AI describe response was not valid JSON; using raw text as description")
         return AiDescribeResponse(description=raw.strip(), field_suggestions=[])
 

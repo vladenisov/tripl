@@ -55,7 +55,7 @@ def embed_texts(texts: list[str], *, config: AiConfig | None = None) -> list[lis
     try:
         with urllib.request.urlopen(request, timeout=30) as response:  # noqa: S310
             body = response.read().decode("utf-8")
-    except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError):
+    except urllib.error.HTTPError, urllib.error.URLError, TimeoutError:
         logger.exception("Search embedding request failed")
         return []
 
