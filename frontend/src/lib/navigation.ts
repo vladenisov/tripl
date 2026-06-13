@@ -1,4 +1,5 @@
 import {
+  Activity,
   Bell,
   Braces,
   Database,
@@ -93,6 +94,13 @@ export function buildNavGroups(slug: string, summary: ProjectSummary | undefined
     {
       label: 'Observe',
       items: [
+        {
+          id: 'overview',
+          label: 'Overview',
+          icon: Activity,
+          href: `${base}/overview`,
+          match: (p) => p.startsWith(`${base}/overview`),
+        },
         {
           id: 'monitoring',
           label: 'Monitors',

@@ -1,14 +1,14 @@
 import { useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { GitCompare } from 'lucide-react'
-import { reconciliationApi, type ShadowEventStatus } from '@/api/reconciliation'
+import { ChevronDown, GitCompare } from 'lucide-react'
+import { reconciliationApi, type DeadEvent, type ShadowEventStatus } from '@/api/reconciliation'
 import { eventTypesApi } from '@/api/eventTypes'
 import { ErrorState } from '@/components/error-state'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { useActiveBranchId } from '@/hooks/useBranch'
-import { formatRelativeTime } from '@/lib/datetime'
+import { formatDate, formatDateTime, formatRelativeTime } from '@/lib/datetime'
 import { getMonitoringPath } from '@/lib/monitoring'
 
 const COVERAGE_DAY_OPTIONS = [7, 14, 30] as const
@@ -27,6 +27,7 @@ export default function ReconciliationPage() {
   const [acceptingId, setAcceptingId] = useState<string | null>(null)
   const [selectedEventType, setSelectedEventType] = useState<Record<string, string>>({})
   const [rowError, setRowError] = useState<Record<string, string>>({})
+  const [expandedDeadId, setExpandedDeadId] = useState<string | null>(null)
 
   const coverageQuery = useQuery({
     queryKey: ['reconciliation', 'coverage', slug, coverageDays],
@@ -410,29 +411,15 @@ export default function ReconciliationPage() {
         {dead && dead.items.length > 0 && (
           <div className="divide-y" style={{ borderColor: 'var(--border-subtle)' }}>
             {dead.items.map((item) => (
-              <div key={item.event_id} className="flex items-center gap-2 py-1.5">
-                <Link
-                  to={
-                    slug
-                      ? getMonitoringPath(slug, { scope_type: 'event', scope_ref: item.event_id })
-                      : '#'
-                  }
-                  className="mono flex-1 truncate text-[12px] text-primary hover:underline"
-                >
-                  {item.name}
-                </Link>
-                {item.event_type_name && (
-                  <Badge variant="secondary" className="shrink-0 text-[10px]">
-                    {item.event_type_name}
-                  </Badge>
-                )}
-                <span
-                  className="w-[60px] shrink-0 text-right text-[11px]"
-                  style={{ color: 'var(--fg-faint)' }}
-                >
-                  {item.last_seen_at ? formatRelativeTime(item.last_seen_at) : 'never'}
-                </span>
-              </div>
+              <DeadEventRow
+                key={item.event_id}
+                item={item}
+                slug={slug}
+                expanded={expandedDeadId === item.event_id}
+                onToggle={() =>
+                  setExpandedDeadId((prev) => (prev === item.event_id ? null : item.event_id))
+                }
+              />
             ))}
           </div>
         )}
@@ -466,6 +453,83 @@ function DaySelector({
           {opt}d
         </button>
       ))}
+    </div>
+  )
+}
+
+function DeadEventRow({
+  item,
+  slug,
+  expanded,
+  onToggle,
+}: {
+  item: DeadEvent
+  slug: string | undefined
+  expanded: boolean
+  onToggle: () => void
+}) {
+  return (
+    <div className="py-1.5">
+      <div className="flex items-center gap-2">
+        <Link
+          to={slug ? getMonitoringPath(slug, { scope_type: 'event', scope_ref: item.event_id }) : '#'}
+          className="mono flex-1 truncate text-[12px] text-primary hover:underline"
+        >
+          {item.name}
+        </Link>
+        {item.event_type_name && (
+          <Badge variant="secondary" className="shrink-0 text-[10px]">
+            {item.event_type_name}
+          </Badge>
+        )}
+        <span className="w-[60px] shrink-0 text-right text-[11px]" style={{ color: 'var(--fg-faint)' }}>
+          {item.last_seen_at ? formatRelativeTime(item.last_seen_at) : 'never'}
+        </span>
+        <button
+          type="button"
+          onClick={onToggle}
+          aria-expanded={expanded}
+          aria-label={expanded ? 'Hide details' : 'Show details'}
+          className="flex h-5 w-5 shrink-0 items-center justify-center rounded transition-colors hover:bg-[var(--surface-hover)]"
+          style={{ color: 'var(--fg-subtle)' }}
+        >
+          <ChevronDown
+            className="h-3.5 w-3.5 transition-transform"
+            style={{ transform: expanded ? 'rotate(180deg)' : 'none' }}
+          />
+        </button>
+      </div>
+      {expanded && (
+        <div
+          className="ml-1 mt-1.5 grid grid-cols-2 gap-x-6 gap-y-1.5 pb-1 text-[11px]"
+          style={{ color: 'var(--fg-subtle)' }}
+        >
+          <DeadEventDetail
+            label="Last observed"
+            value={item.last_seen_at ? formatDateTime(item.last_seen_at) : 'never'}
+          />
+          <DeadEventDetail
+            label="Last activity"
+            value={item.last_seen_at ? formatRelativeTime(item.last_seen_at) : 'never seen'}
+          />
+          <DeadEventDetail label="Tracked since" value={formatDate(item.created_at)} />
+          <DeadEventDetail label="Event type" value={item.event_type_name || '—'} />
+        </div>
+      )}
+    </div>
+  )
+}
+
+function DeadEventDetail({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="flex flex-col gap-px">
+      <span
+        className="text-[10px] font-semibold uppercase tracking-[0.06em]"
+        style={{ color: 'var(--fg-faint)' }}
+      >
+        {label}
+      </span>
+      <span style={{ color: 'var(--fg)' }}>{value}</span>
     </div>
   )
 }
