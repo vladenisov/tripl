@@ -64,6 +64,7 @@ export type EventsTableProps = {
   updateMetaFilter: (name: string, value: string) => void
   // Body / virtualization
   events: EventListItem[]
+  total: number
   virtualize: boolean
   virtualItems: VirtualItem[]
   totalVirtualSize: number
@@ -106,6 +107,7 @@ export function EventsTable({
   metaFilters,
   updateMetaFilter,
   events,
+  total,
   virtualize,
   virtualItems,
   totalVirtualSize,
@@ -124,6 +126,24 @@ export function EventsTable({
   onRowAction,
   onSetStatus,
 }: EventsTableProps) {
+  // Visible window for the "Showing X–Y of N" footer. When virtualized this
+  // tracks the rendered window as the user scrolls; otherwise all loaded rows
+  // are on screen.
+  const firstVisible =
+    virtualize && virtualItems.length > 0
+      ? virtualItems[0].index + 1
+      : events.length > 0
+        ? 1
+        : 0
+  const lastVisible =
+    virtualize && virtualItems.length > 0
+      ? virtualItems[virtualItems.length - 1].index + 1
+      : events.length
+  const rangeLabel =
+    firstVisible === lastVisible
+      ? firstVisible.toLocaleString()
+      : `${firstVisible.toLocaleString()}–${lastVisible.toLocaleString()}`
+
   return (
     <TooltipProvider delayDuration={0}>
       <DndContext sensors={dndSensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
@@ -304,6 +324,20 @@ export function EventsTable({
               </TableBody>
             </Table>
           </div>
+          {events.length > 0 && (
+            <div
+              className="flex items-center gap-2 border-t px-3 py-1.5 text-[11px]"
+              style={{
+                borderColor: 'var(--border)',
+                background: 'var(--bg-sunken)',
+                color: 'var(--fg-subtle)',
+              }}
+            >
+              <span className="mono tnum">
+                Showing {rangeLabel} of {total.toLocaleString()}
+              </span>
+            </div>
+          )}
         </SortableContext>
       </DndContext>
     </TooltipProvider>

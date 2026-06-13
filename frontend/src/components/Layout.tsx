@@ -10,6 +10,7 @@ import { CommandPaletteProvider } from '@/components/command-palette'
 import { ErrorState } from '@/components/error-state'
 import { TopBar } from '@/components/top-bar'
 import { TweaksPanelProvider } from '@/components/tweaks-panel'
+import { resolveNavLocation } from '@/lib/navigation'
 
 const ACTIVITY_STORAGE_KEY = 'tripl-activity-open'
 
@@ -36,7 +37,7 @@ function useActivityOpen() {
 
 type Crumbs = { crumbs: string[]; title: string }
 
-function resolveCrumbs(pathname: string, projectName?: string): Crumbs {
+function resolveCrumbs(pathname: string, slug?: string, projectName?: string): Crumbs {
   if (pathname === '/') return { crumbs: [], title: 'Overview' }
   if (pathname.startsWith('/settings') || pathname.startsWith('/data-sources')) {
     return { crumbs: [], title: 'Settings' }
@@ -45,17 +46,24 @@ function resolveCrumbs(pathname: string, projectName?: string): Crumbs {
 
   const projectCrumb = projectName ?? 'project'
 
-  if (pathname.includes('/settings')) {
-    return { crumbs: [projectCrumb], title: 'Settings' }
-  }
+  // Detail surfaces carry their nav area so the breadcrumb reads
+  // "project › Area › Page › Detail".
   if (pathname.includes('/monitoring/')) {
-    return { crumbs: [projectCrumb, 'Monitoring'], title: 'Detail' }
+    return { crumbs: [projectCrumb, 'Observe', 'Monitors'], title: 'Detail' }
   }
   if (pathname.includes('/events/detail/')) {
-    return { crumbs: [projectCrumb, 'Events'], title: 'Detail' }
+    return { crumbs: [projectCrumb, 'Plan', 'Events'], title: 'Detail' }
   }
-  if (pathname.includes('/events')) {
-    return { crumbs: [projectCrumb], title: 'Events' }
+
+  // Map the route to its grouped-nav area (Plan / Observe / Govern / Connect)
+  // using the same model the sidebar renders from.
+  const navLocation = slug ? resolveNavLocation(slug, pathname) : null
+  if (navLocation) {
+    return { crumbs: [projectCrumb, navLocation.area], title: navLocation.label }
+  }
+
+  if (pathname.includes('/settings')) {
+    return { crumbs: [projectCrumb], title: 'Settings' }
   }
   return { crumbs: [projectCrumb], title: 'Overview' }
 }
@@ -89,7 +97,7 @@ export default function Layout() {
   const activeProject = projects.find((p) => p.slug === slug)
 
   const { crumbs, title } = useMemo(
-    () => resolveCrumbs(location.pathname, activeProject?.name ?? slug),
+    () => resolveCrumbs(location.pathname, slug, activeProject?.name ?? slug),
     [location.pathname, activeProject?.name, slug],
   )
 
