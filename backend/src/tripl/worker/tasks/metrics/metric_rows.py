@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 import uuid
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterator, Mapping, Sequence
 from datetime import datetime, timedelta
 from typing import cast
 
@@ -182,6 +182,21 @@ def _get_scan_json_value_path_map(config: ScanConfig) -> dict[str, list[str]]:
     return group_json_value_paths(config.json_value_paths)
 
 
+# PostgreSQL/psycopg caps a single statement at 65535 bind parameters. A
+# multi-row INSERT contributes one parameter per column per row, so large
+# upserts must be split into batches that stay under that ceiling. We use a
+# margin below 65535 to be safe across drivers.
+_MAX_BIND_PARAMS = 60000
+
+
+def _chunk_rows(rows: list[dict[str, object]]) -> Iterator[list[dict[str, object]]]:
+    """Yield row batches sized so ``rows_per_batch * columns <= _MAX_BIND_PARAMS``."""
+    columns = max(1, len(rows[0]))
+    batch_size = max(1, _MAX_BIND_PARAMS // columns)
+    for start in range(0, len(rows), batch_size):
+        yield rows[start : start + batch_size]
+
+
 def _upsert_event_metrics_rows(
     session: Session,
     *,
@@ -191,23 +206,25 @@ def _upsert_event_metrics_rows(
     if not rows:
         return
 
-    if session.bind is not None and session.bind.dialect.name == "sqlite":
-        sqlite_stmt = sqlite_insert(EventMetric).values(rows)
-        sqlite_stmt = sqlite_stmt.on_conflict_do_update(
-            index_elements=["scan_config_id", "event_id", "bucket"]
-            if constraint == "uq_event_metric_config_event_bucket"
-            else ["scan_config_id", "event_type_id", "bucket"],
-            set_={"count": sqlite_stmt.excluded.count},
-        )
-        session.execute(sqlite_stmt)
-        return
+    is_sqlite = session.bind is not None and session.bind.dialect.name == "sqlite"
+    for chunk in _chunk_rows(rows):
+        if is_sqlite:
+            sqlite_stmt = sqlite_insert(EventMetric).values(chunk)
+            sqlite_stmt = sqlite_stmt.on_conflict_do_update(
+                index_elements=["scan_config_id", "event_id", "bucket"]
+                if constraint == "uq_event_metric_config_event_bucket"
+                else ["scan_config_id", "event_type_id", "bucket"],
+                set_={"count": sqlite_stmt.excluded.count},
+            )
+            session.execute(sqlite_stmt)
+            continue
 
-    pg_stmt = pg_insert(EventMetric).values(rows)
-    pg_stmt = pg_stmt.on_conflict_do_update(
-        constraint=constraint,
-        set_={"count": pg_stmt.excluded.count},
-    )
-    session.execute(pg_stmt)
+        pg_stmt = pg_insert(EventMetric).values(chunk)
+        pg_stmt = pg_stmt.on_conflict_do_update(
+            constraint=constraint,
+            set_={"count": pg_stmt.excluded.count},
+        )
+        session.execute(pg_stmt)
 
 
 def _upsert_event_metric_breakdown_rows(
@@ -219,33 +236,38 @@ def _upsert_event_metric_breakdown_rows(
     if not rows:
         return
 
-    if session.bind is not None and session.bind.dialect.name == "sqlite":
-        sqlite_stmt = sqlite_insert(EventMetricBreakdown).values(rows)
-        sqlite_stmt = sqlite_stmt.on_conflict_do_update(
-            index_elements=[
-                "scan_config_id",
-                "event_id" if constraint == "event" else "event_type_id",
-                "bucket",
-                "breakdown_column",
-                "breakdown_value",
-                "is_other",
-            ],
-            set_={"count": sqlite_stmt.excluded.count, "is_other": sqlite_stmt.excluded.is_other},
-        )
-        session.execute(sqlite_stmt)
-        return
-
+    is_sqlite = session.bind is not None and session.bind.dialect.name == "sqlite"
     pg_constraint = (
         "uq_event_metric_breakdown_config_event_bucket_value"
         if constraint == "event"
         else "uq_event_metric_breakdown_config_type_bucket_value"
     )
-    pg_stmt = pg_insert(EventMetricBreakdown).values(rows)
-    pg_stmt = pg_stmt.on_conflict_do_update(
-        constraint=pg_constraint,
-        set_={"count": pg_stmt.excluded.count, "is_other": pg_stmt.excluded.is_other},
-    )
-    session.execute(pg_stmt)
+    for chunk in _chunk_rows(rows):
+        if is_sqlite:
+            sqlite_stmt = sqlite_insert(EventMetricBreakdown).values(chunk)
+            sqlite_stmt = sqlite_stmt.on_conflict_do_update(
+                index_elements=[
+                    "scan_config_id",
+                    "event_id" if constraint == "event" else "event_type_id",
+                    "bucket",
+                    "breakdown_column",
+                    "breakdown_value",
+                    "is_other",
+                ],
+                set_={
+                    "count": sqlite_stmt.excluded.count,
+                    "is_other": sqlite_stmt.excluded.is_other,
+                },
+            )
+            session.execute(sqlite_stmt)
+            continue
+
+        pg_stmt = pg_insert(EventMetricBreakdown).values(chunk)
+        pg_stmt = pg_stmt.on_conflict_do_update(
+            constraint=pg_constraint,
+            set_={"count": pg_stmt.excluded.count, "is_other": pg_stmt.excluded.is_other},
+        )
+        session.execute(pg_stmt)
 
 
 def _upsert_coverage_rows(
@@ -256,27 +278,29 @@ def _upsert_coverage_rows(
     if not rows:
         return
 
-    if session.bind is not None and session.bind.dialect.name == "sqlite":
-        sqlite_stmt = sqlite_insert(CoverageMetric).values(rows)
-        sqlite_stmt = sqlite_stmt.on_conflict_do_update(
-            index_elements=["scan_config_id", "bucket"],
+    is_sqlite = session.bind is not None and session.bind.dialect.name == "sqlite"
+    for chunk in _chunk_rows(rows):
+        if is_sqlite:
+            sqlite_stmt = sqlite_insert(CoverageMetric).values(chunk)
+            sqlite_stmt = sqlite_stmt.on_conflict_do_update(
+                index_elements=["scan_config_id", "bucket"],
+                set_={
+                    "total_count": sqlite_stmt.excluded.total_count,
+                    "matched_count": sqlite_stmt.excluded.matched_count,
+                },
+            )
+            session.execute(sqlite_stmt)
+            continue
+
+        pg_stmt = pg_insert(CoverageMetric).values(chunk)
+        pg_stmt = pg_stmt.on_conflict_do_update(
+            constraint="uq_coverage_metric_config_bucket",
             set_={
-                "total_count": sqlite_stmt.excluded.total_count,
-                "matched_count": sqlite_stmt.excluded.matched_count,
+                "total_count": pg_stmt.excluded.total_count,
+                "matched_count": pg_stmt.excluded.matched_count,
             },
         )
-        session.execute(sqlite_stmt)
-        return
-
-    pg_stmt = pg_insert(CoverageMetric).values(rows)
-    pg_stmt = pg_stmt.on_conflict_do_update(
-        constraint="uq_coverage_metric_config_bucket",
-        set_={
-            "total_count": pg_stmt.excluded.total_count,
-            "matched_count": pg_stmt.excluded.matched_count,
-        },
-    )
-    session.execute(pg_stmt)
+        session.execute(pg_stmt)
 
 
 def _delete_coverage_metrics_window(
@@ -312,35 +336,37 @@ def _upsert_shadow_event_candidates(
     if not rows:
         return
 
-    if session.bind is not None and session.bind.dialect.name == "sqlite":
-        sqlite_stmt = sqlite_insert(ShadowEventCandidate).values(rows)
-        sqlite_stmt = sqlite_stmt.on_conflict_do_update(
-            index_elements=["scan_config_id", "event_name"],
+    is_sqlite = session.bind is not None and session.bind.dialect.name == "sqlite"
+    for chunk in _chunk_rows(rows):
+        if is_sqlite:
+            sqlite_stmt = sqlite_insert(ShadowEventCandidate).values(chunk)
+            sqlite_stmt = sqlite_stmt.on_conflict_do_update(
+                index_elements=["scan_config_id", "event_name"],
+                set_={
+                    "observed_count": sqlite_stmt.excluded.observed_count,
+                    "event_type_id": sqlite_stmt.excluded.event_type_id,
+                    "last_seen_at": sa_func.max(
+                        ShadowEventCandidate.last_seen_at,
+                        sqlite_stmt.excluded.last_seen_at,
+                    ),
+                },
+            )
+            session.execute(sqlite_stmt)
+            continue
+
+        pg_stmt = pg_insert(ShadowEventCandidate).values(chunk)
+        pg_stmt = pg_stmt.on_conflict_do_update(
+            constraint="uq_shadow_candidate_config_name",
             set_={
-                "observed_count": sqlite_stmt.excluded.observed_count,
-                "event_type_id": sqlite_stmt.excluded.event_type_id,
-                "last_seen_at": sa_func.max(
+                "observed_count": pg_stmt.excluded.observed_count,
+                "event_type_id": pg_stmt.excluded.event_type_id,
+                "last_seen_at": sa_func.greatest(
                     ShadowEventCandidate.last_seen_at,
-                    sqlite_stmt.excluded.last_seen_at,
+                    pg_stmt.excluded.last_seen_at,
                 ),
             },
         )
-        session.execute(sqlite_stmt)
-        return
-
-    pg_stmt = pg_insert(ShadowEventCandidate).values(rows)
-    pg_stmt = pg_stmt.on_conflict_do_update(
-        constraint="uq_shadow_candidate_config_name",
-        set_={
-            "observed_count": pg_stmt.excluded.observed_count,
-            "event_type_id": pg_stmt.excluded.event_type_id,
-            "last_seen_at": sa_func.greatest(
-                ShadowEventCandidate.last_seen_at,
-                pg_stmt.excluded.last_seen_at,
-            ),
-        },
-    )
-    session.execute(pg_stmt)
+        session.execute(pg_stmt)
 
 
 def _delete_event_metrics_window(
