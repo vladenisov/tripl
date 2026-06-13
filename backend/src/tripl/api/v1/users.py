@@ -54,9 +54,7 @@ async def update_user_role(
         # Residual staleness window: an in-flight request that already passed
         # the auth dependency still completes with the old role; only the next
         # request is affected.
-        await session.execute(
-            delete(UserSession).where(UserSession.user_id == target.id)
-        )
+        await session.execute(delete(UserSession).where(UserSession.user_id == target.id))
     await session.commit()
     await session.refresh(target)
     await audit_service.record(

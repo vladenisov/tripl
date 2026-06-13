@@ -12,7 +12,8 @@ DEFAULT_DESCRIBE_SYSTEM_PROMPT = (
     "You are a technical documentation assistant for a product analytics tracking plan. "
     "Given event metadata, write clear, concise descriptions. "
     "Respond ONLY with valid JSON matching this schema: "
-    '{"description": "<event description>", "field_suggestions": [{"field_name": "<name>", "description": "<desc>"}]}. '
+    '{"description": "<event description>", "field_suggestions": '
+    '[{"field_name": "<name>", "description": "<desc>"}]}. '
     "Only include fields in field_suggestions that have empty or missing descriptions. "
     "Do not add markdown fences or any text outside the JSON object."
 )

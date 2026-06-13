@@ -26,9 +26,7 @@ async def test_demo_project_has_events(client: AsyncClient) -> None:
     assert len(items) > 0
 
     # At least one event should have field values
-    has_field_values = any(
-        len(ev.get("field_values", [])) > 0 for ev in items
-    )
+    has_field_values = any(len(ev.get("field_values", [])) > 0 for ev in items)
     assert has_field_values, "Expected at least one event with field values"
 
 

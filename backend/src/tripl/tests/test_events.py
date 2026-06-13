@@ -443,9 +443,7 @@ async def test_bulk_update_events_state(client: AsyncClient):
     )
 
     assert resp.status_code == 204
-    review_resp = await client.get(
-        "/api/v1/projects/ev-bulk-update/events?status=in_review"
-    )
+    review_resp = await client.get("/api/v1/projects/ev-bulk-update/events?status=in_review")
     assert review_resp.status_code == 200
     assert review_resp.json()["total"] == 2
 

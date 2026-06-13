@@ -12,9 +12,7 @@ class EventChange(UUIDMixin, TimestampMixin, Base):
     __tablename__ = "event_changes"
     __table_args__ = (Index("ix_event_changes_event_id", "event_id"),)
 
-    event_id: Mapped[uuid.UUID] = mapped_column(
-        ForeignKey("events.id", ondelete="CASCADE")
-    )
+    event_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("events.id", ondelete="CASCADE"))
     user_id: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("users.id", ondelete="SET NULL"), nullable=True
     )

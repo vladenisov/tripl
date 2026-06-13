@@ -2,6 +2,7 @@ import { render, screen } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { MemoryRouter } from 'react-router-dom'
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { AuthContext, type AuthContextValue } from '@/components/auth-context'
 import { GeneralTab } from './GeneralTab'
 
 function jsonResponse(body: unknown) {
@@ -34,13 +35,33 @@ const PROJECT = {
   },
 }
 
+function ownerAuthValue(): AuthContextValue {
+  return {
+    user: {
+      id: 'owner-1',
+      email: 'owner@example.com',
+      name: 'Owner',
+      role: 'owner',
+      created_at: '2026-01-01T00:00:00Z',
+      updated_at: '2026-01-01T00:00:00Z',
+    },
+    status: 'authenticated',
+    error: null,
+    isLoggingOut: false,
+    logout: async () => {},
+    refresh: () => {},
+  }
+}
+
 function renderTab() {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   return render(
     <QueryClientProvider client={queryClient}>
-      <MemoryRouter initialEntries={['/p/demo/settings/general']}>
-        <GeneralTab slug="demo" />
-      </MemoryRouter>
+      <AuthContext.Provider value={ownerAuthValue()}>
+        <MemoryRouter initialEntries={['/p/demo/settings/general']}>
+          <GeneralTab slug="demo" />
+        </MemoryRouter>
+      </AuthContext.Provider>
     </QueryClientProvider>,
   )
 }

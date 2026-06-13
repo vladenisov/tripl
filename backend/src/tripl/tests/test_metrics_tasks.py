@@ -239,9 +239,7 @@ def test_check_metrics_due_reaps_stale_active_job_and_dispatches_replacement(
             id=uuid.uuid4(),
             scan_config_id=config.id,
             status=ScanJobStatus.running.value,
-            started_at=(
-                datetime.now(UTC) - STALE_ACTIVE_SCAN_JOB_TIMEOUT - timedelta(minutes=5)
-            ),
+            started_at=(datetime.now(UTC) - STALE_ACTIVE_SCAN_JOB_TIMEOUT - timedelta(minutes=5)),
         )
         session.add(stale_job)
         session.commit()
@@ -1543,9 +1541,11 @@ def test_bump_event_last_seen_promotes_implemented_to_live(
         assert refreshed is not None
         assert refreshed.status == EventStatus.live
 
-        changes = session.execute(
-            select(EventChange).where(EventChange.event_id == event_id)
-        ).scalars().all()
+        changes = (
+            session.execute(select(EventChange).where(EventChange.event_id == event_id))
+            .scalars()
+            .all()
+        )
         assert len(changes) == 1
         assert changes[0].user_id is None
         assert changes[0].field == "status"
@@ -1577,9 +1577,11 @@ def test_bump_event_last_seen_does_not_duplicate_live_transition(
         )
         session.commit()
 
-        changes = session.execute(
-            select(EventChange).where(EventChange.event_id == event_id)
-        ).scalars().all()
+        changes = (
+            session.execute(select(EventChange).where(EventChange.event_id == event_id))
+            .scalars()
+            .all()
+        )
         assert len(changes) == 1  # still exactly one row from the first bump
 
 

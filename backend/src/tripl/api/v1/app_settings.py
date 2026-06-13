@@ -36,9 +36,7 @@ def _ai_response(payload: dict[str, Any]) -> AiSettingsResponse:
     return AiSettingsResponse(
         ai=payload["ai"],
         overridden_fields=[field for field in payload["overridden_fields"] if field in ai_fields],
-        sources={
-            key: value for key, value in payload["sources"].items() if key.startswith("ai.")
-        },
+        sources={key: value for key, value in payload["sources"].items() if key.startswith("ai.")},
     )
 
 

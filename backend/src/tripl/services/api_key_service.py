@@ -130,9 +130,7 @@ async def verify_and_touch(session: AsyncSession, raw_token: str) -> ApiKey | No
     last_used = row.last_used_at
     if last_used is not None and last_used.tzinfo is None:
         last_used = last_used.replace(tzinfo=UTC)
-    if last_used is None or (now - last_used) >= timedelta(
-        seconds=API_KEY_TOUCH_INTERVAL_SECONDS
-    ):
+    if last_used is None or (now - last_used) >= timedelta(seconds=API_KEY_TOUCH_INTERVAL_SECONDS):
         row.last_used_at = now
         await session.commit()
     return row

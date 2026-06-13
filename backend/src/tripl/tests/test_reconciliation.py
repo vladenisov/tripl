@@ -1,10 +1,14 @@
 import uuid
+from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
 import pytest
 from httpx import AsyncClient
-from sqlalchemy import select
+from sqlalchemy import create_engine, select
+from sqlalchemy.orm import Session, sessionmaker
 
+from tripl.models import Base
 from tripl.models.coverage_metric import CoverageMetric
 from tripl.models.data_source import DataSource
 from tripl.models.event import Event
@@ -16,9 +20,18 @@ from tripl.models.shadow_event_candidate import (
     ShadowEventCandidate,
 )
 from tripl.tests.conftest import TestSessionLocal
-from tripl.tests.test_metrics_tasks import sync_session_factory  # noqa: F401
 
 NOW = datetime(2026, 6, 10, 12, 0, tzinfo=UTC)
+
+
+@pytest.fixture
+def sync_session_factory(tmp_path: Path) -> Iterator[sessionmaker[Session]]:
+    engine = create_engine(f"sqlite:///{tmp_path / 'reconciliation_metrics.db'}")
+    Base.metadata.create_all(engine)
+    factory = sessionmaker(engine, expire_on_commit=False)
+    yield factory
+    Base.metadata.drop_all(engine)
+    engine.dispose()
 
 
 async def _setup_project(client: AsyncClient, slug: str) -> tuple[str, str]:
@@ -105,9 +118,7 @@ async def test_list_shadow_events_orders_by_volume_and_counts_new(client: AsyncC
         project_id, scan_id, event_name="small", observed_count=5, event_type_id=uuid.UUID(et_id)
     )
     await _insert_candidate(project_id, scan_id, event_name="big", observed_count=500)
-    await _insert_candidate(
-        project_id, scan_id, event_name="gone", status=SHADOW_STATUS_DISMISSED
-    )
+    await _insert_candidate(project_id, scan_id, event_name="gone", status=SHADOW_STATUS_DISMISSED)
 
     resp = await client.get("/api/v1/projects/rec-list/reconciliation/shadow-events?status=new")
     assert resp.status_code == 200
@@ -339,7 +350,7 @@ async def test_coverage_aggregates_buckets_and_summary(client: AsyncClient):
 
 
 def test_collect_metrics_records_coverage_and_shadow_candidates(
-    sync_session_factory,
+    sync_session_factory,  # noqa: F811
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from sqlalchemy.orm import Session

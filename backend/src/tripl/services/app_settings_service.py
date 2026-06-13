@@ -464,9 +464,7 @@ def public_service_settings(overrides: dict[str, Any]) -> dict[str, Any]:
             "gcs_photo_bucket": values["gcs_photo_bucket"],
             "gcs_photo_credentials_path": values["gcs_photo_credentials_path"],
             "gcs_photo_public": values["gcs_photo_public"],
-            "gcs_photo_signed_url_ttl_seconds": values[
-                "gcs_photo_signed_url_ttl_seconds"
-            ],
+            "gcs_photo_signed_url_ttl_seconds": values["gcs_photo_signed_url_ttl_seconds"],
         },
         "observability": {
             "request_id_header": values["request_id_header"],
@@ -493,15 +491,11 @@ def public_service_settings(overrides: dict[str, Any]) -> dict[str, Any]:
             "ai_max_output_tokens": values["ai_max_output_tokens"],
             "describe_system_prompt": values["describe_system_prompt"],
             "ask_system_prompt": values["ask_system_prompt"],
-            "alert_explanation_system_prompt": values[
-                "alert_explanation_system_prompt"
-            ],
+            "alert_explanation_system_prompt": values["alert_explanation_system_prompt"],
             "search_embeddings_enabled": values["search_embeddings_enabled"],
             "search_embedding_provider": values["search_embedding_provider"],
             "search_embedding_model": values["search_embedding_model"],
-            "search_embedding_api_key_configured": bool(
-                values["search_embedding_api_key"]
-            ),
+            "search_embedding_api_key_configured": bool(values["search_embedding_api_key"]),
             "search_embedding_dimensions": settings.search_embedding_dimensions,
         },
         "system": {
