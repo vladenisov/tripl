@@ -82,7 +82,9 @@ describe('App', () => {
 
     renderApp()
 
-    expect(await screen.findByText('Main')).toBeInTheDocument()
+    // No projects in this fixture, so the grouped nav shows its empty state
+    // while the footer still renders the signed-in user and sign-out action.
+    expect(await screen.findByText('No projects yet')).toBeInTheDocument()
     expect(screen.getByText('Owner')).toBeInTheDocument()
     expect(screen.getByText('Sign out')).toBeInTheDocument()
   })

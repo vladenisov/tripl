@@ -1,7 +1,7 @@
 import { render, screen } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { AuthContext, type AuthContextValue } from './auth-context'
 import { AppSidebar } from './app-sidebar'
 
@@ -28,6 +28,39 @@ const authValue: AuthContextValue = {
   refresh: () => {},
 }
 
+function mockProjectsFetch() {
+  return vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+    const url = String(input)
+    if (url.endsWith('/api/v1/projects')) {
+      return mockJsonResponse([
+        {
+          id: 'project-1',
+          name: 'Demo',
+          slug: 'demo',
+          description: '',
+          created_at: '2026-01-01T00:00:00Z',
+          updated_at: '2026-01-01T00:00:00Z',
+          summary: {
+            event_type_count: 2,
+            event_count: 13,
+            active_event_count: 10,
+            implemented_event_count: 7,
+            review_pending_event_count: 3,
+            archived_event_count: 2,
+            variable_count: 5,
+            scan_count: 4,
+            alert_destination_count: 1,
+            monitoring_signal_count: 2,
+            latest_scan_job: null,
+            latest_signal: null,
+          },
+        },
+      ])
+    }
+    throw new Error(`Unhandled fetch: ${url}`)
+  })
+}
+
 function renderSidebar(initialEntry = '/p/demo/events') {
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false } },
@@ -48,76 +81,89 @@ function renderSidebar(initialEntry = '/p/demo/events') {
   )
 }
 
+beforeEach(() => {
+  try {
+    localStorage.clear()
+  } catch {
+    /* ignore */
+  }
+})
+
 afterEach(() => {
   vi.restoreAllMocks()
 })
 
 describe('AppSidebar', () => {
-  it('renders event views and a settings shortcut for the active project', async () => {
-    vi.spyOn(globalThis, 'fetch').mockImplementation(async input => {
-      const url = String(input)
-      if (url.endsWith('/api/v1/projects')) {
-        return mockJsonResponse([
-          {
-            id: 'project-1',
-            name: 'Demo',
-            slug: 'demo',
-            description: '',
-            created_at: '2026-01-01T00:00:00Z',
-            updated_at: '2026-01-01T00:00:00Z',
-            summary: {
-              event_type_count: 2,
-              event_count: 13,
-              active_event_count: 10,
-              implemented_event_count: 7,
-              review_pending_event_count: 3,
-              archived_event_count: 2,
-              variable_count: 5,
-              scan_count: 4,
-              alert_destination_count: 1,
-              monitoring_signal_count: 2,
-              latest_scan_job: null,
-              latest_signal: null,
-            },
-          },
-        ])
-      }
-      if (url.endsWith('/api/v1/projects/demo/event-types')) {
-        return mockJsonResponse([
-          {
-            id: 'event-type-1',
-            project_id: 'project-1',
-            name: 'page_view',
-            display_name: 'Page view',
-            description: '',
-            color: '#0ea5e9',
-            order: 0,
-            created_at: '2026-01-01T00:00:00Z',
-            updated_at: '2026-01-01T00:00:00Z',
-            field_definitions: [],
-          },
-        ])
-      }
-      throw new Error(`Unhandled fetch: ${url}`)
-    })
+  it('renders the job-based navigation groups for the active project', async () => {
+    mockProjectsFetch()
 
-    const { container } = renderSidebar('/p/demo/events?status=draft&status=in_review&status=ready_for_dev')
+    renderSidebar('/p/demo/events')
 
-    expect(await screen.findByText('All events')).toBeInTheDocument()
-    expect(screen.getByText('Needs review')).toBeInTheDocument()
-    expect(screen.getByText('Implemented')).toBeInTheDocument()
-    expect(screen.getByText('Planned')).toBeInTheDocument()
-    expect(screen.getByText('Archived')).toBeInTheDocument()
-    expect(await screen.findByText('Page view')).toBeInTheDocument()
-    expect(screen.getByText('10')).toBeInTheDocument()
-    expect(screen.getByText('7')).toBeInTheDocument()
-    expect(screen.getAllByText('3').length).toBeGreaterThan(0)
+    // Await the projects query so the active project (and its counts) resolve.
+    expect(await screen.findByText('Events')).toBeInTheDocument()
+
+    for (const group of ['Plan', 'Observe', 'Govern', 'Connect']) {
+      expect(screen.getByText(group)).toBeInTheDocument()
+    }
+    for (const item of [
+      'Events',
+      'Event types',
+      'Schema & fields',
+      'Plan branches',
+      'Monitors',
+      'Alerting',
+      'Reconciliation',
+      'Audit log',
+      'Data sources',
+    ]) {
+      expect(screen.getByText(item)).toBeInTheDocument()
+    }
+  })
+
+  it('points each nav item at its first-class route', async () => {
+    mockProjectsFetch()
+
+    const { container } = renderSidebar('/p/demo/events')
+    await screen.findByText('Events')
+
+    const expected: Record<string, string> = {
+      Events: '/p/demo/events',
+      'Event types': '/p/demo/settings/event-types',
+      'Schema & fields': '/p/demo/settings/meta-fields',
+      'Plan branches': '/p/demo/settings/branches',
+      Monitors: '/p/demo/settings/monitoring',
+      Alerting: '/p/demo/settings/alerting',
+      Reconciliation: '/p/demo/reconciliation',
+      'Audit log': '/p/demo/settings/audit',
+      'Data sources': '/settings/data-sources',
+    }
+    for (const [label, href] of Object.entries(expected)) {
+      expect(screen.getByRole('link', { name: new RegExp(label) })).toHaveAttribute('href', href)
+    }
+    // Footer: workspace + project settings.
+    expect(container.querySelector('a[href="/settings"]')).toBeInTheDocument()
     expect(container.querySelector('a[href="/p/demo/settings"]')).toBeInTheDocument()
-    const plannedLink = screen.getByRole('link', { name: /Planned/ })
-    expect(plannedLink).toHaveAttribute('href', '/p/demo/events?status=draft&status=in_review&status=ready_for_dev')
-    expect(container.querySelector('a[href="/p/demo/events/page_view"]')).toBeInTheDocument()
-    expect(screen.queryByText('Event Types')).not.toBeInTheDocument()
-    expect(screen.queryByText('Alerting')).not.toBeInTheDocument()
-    expect(screen.queryByText('Monitoring')).not.toBeInTheDocument()
+  })
+
+  it('surfaces project-summary counts and an attention tone on monitors', async () => {
+    mockProjectsFetch()
+
+    renderSidebar('/p/demo/events')
+    // The nav labels render from the URL slug immediately; counts only appear
+    // once the projects query resolves the active project's summary.
+    await screen.findByText('10')
+
+    // Events active count (10) + event-type count (2) + monitoring signals (2) + destinations (1).
+    expect(screen.getByText('10')).toBeInTheDocument()
+    expect(screen.getByText('1')).toBeInTheDocument()
+    expect(screen.getAllByText('2').length).toBeGreaterThanOrEqual(2)
+  })
+
+  it('marks the active surface based on the current route', async () => {
+    mockProjectsFetch()
+
+    renderSidebar('/p/demo/settings/monitoring')
+    const monitors = await screen.findByRole('link', { name: /Monitors/ })
+    expect(monitors).toHaveStyle({ background: 'var(--surface-hover)' })
   })
 })

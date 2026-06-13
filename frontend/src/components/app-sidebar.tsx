@@ -2,31 +2,30 @@ import { useEffect, useState } from 'react'
 import { Link, useLocation, useNavigate, useParams } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 import {
-  Archive,
-  Calendar,
+  Bell,
+  Braces,
   Check,
   ChevronLeft,
   ChevronRight,
   ChevronsUpDown,
-  CircleCheck,
-  Eye,
+  Database,
   Folder,
+  Gauge,
+  GitBranch,
   GitCompare,
-  Grid3x3,
   LayoutDashboard,
   LogOut,
+  ScrollText,
   Search,
   Settings,
   SlidersHorizontal,
+  Table2,
   Tag,
   type LucideIcon,
 } from 'lucide-react'
-import { cn } from '@/lib/utils'
-import { eventTypesApi } from '@/api/eventTypes'
 import { projectsApi } from '@/api/projects'
 import { useAuth } from '@/components/auth-context'
 import { useCommandPalette } from '@/components/command-palette-context'
-import { ErrorState } from '@/components/error-state'
 import { Kbd } from '@/components/primitives/kbd'
 import { Button } from '@/components/ui/button'
 import {
@@ -37,27 +36,155 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
-import type { EventType, Project } from '@/types'
+import type { Project, ProjectSummary } from '@/types'
 
 const SIDEBAR_STORAGE_KEY = 'tripl-sidebar-collapsed'
+const LAST_SLUG_STORAGE_KEY = 'tripl-last-project-slug'
 
-type SavedView = {
-  id: string
-  name: string
-  count?: number
-  icon: LucideIcon
-  tone?: 'danger' | 'warning' | 'accent' | 'info'
-  color?: string
-  to: string
-  match: (path: string, search: URLSearchParams) => boolean
-}
+type NavTone = 'danger' | 'warning' | 'accent' | 'info'
 
 type NavItem = {
   id: string
   label: string
-  to: string
   icon: LucideIcon
+  href: string
   match: (path: string) => boolean
+  count?: string
+  tone?: NavTone
+}
+
+type NavGroup = { label: string; items: NavItem[] }
+
+function toneColor(tone: NavTone | undefined, active: boolean): string {
+  if (active) return 'var(--accent)'
+  switch (tone) {
+    case 'danger':
+      return 'var(--danger)'
+    case 'warning':
+      return 'var(--warning)'
+    case 'accent':
+      return 'var(--accent)'
+    case 'info':
+      return 'var(--info)'
+    default:
+      return 'var(--fg-subtle)'
+  }
+}
+
+function formatCount(n: number): string {
+  if (n >= 1000) {
+    const k = n / 1000
+    return `${k >= 10 ? Math.round(k) : k.toFixed(1)}k`
+  }
+  return String(n)
+}
+
+/**
+ * Job-based navigation groups (Plan / Observe / Govern / Connect). Each item
+ * maps to a route that already exists in the app — the redesign's job is to
+ * give every major surface a first-class home instead of burying it under a
+ * flat "Settings" tab list. Counts/tones are derived from the cheap
+ * project summary; surfaces without a backing count simply omit it.
+ */
+function buildNavGroups(slug: string, summary: ProjectSummary | undefined): NavGroup[] {
+  const base = `/p/${slug}`
+  const signals = summary?.monitoring_signal_count ?? 0
+  const destinations = summary?.alert_destination_count ?? 0
+
+  return [
+    {
+      label: 'Plan',
+      items: [
+        {
+          id: 'events',
+          label: 'Events',
+          icon: Table2,
+          href: `${base}/events`,
+          match: (p) => p === base || p.startsWith(`${base}/events`),
+          count: summary ? formatCount(summary.active_event_count) : undefined,
+        },
+        {
+          id: 'event-types',
+          label: 'Event types',
+          icon: Tag,
+          href: `${base}/settings/event-types`,
+          match: (p) => p.startsWith(`${base}/settings/event-types`),
+          count: summary ? formatCount(summary.event_type_count) : undefined,
+        },
+        {
+          id: 'schema',
+          label: 'Schema & fields',
+          icon: Braces,
+          href: `${base}/settings/meta-fields`,
+          match: (p) =>
+            p.startsWith(`${base}/settings/meta-fields`)
+            || p.startsWith(`${base}/settings/variables`)
+            || p.startsWith(`${base}/settings/relations`),
+        },
+        {
+          id: 'branches',
+          label: 'Plan branches',
+          icon: GitBranch,
+          href: `${base}/settings/branches`,
+          match: (p) => p.startsWith(`${base}/settings/branches`),
+        },
+      ],
+    },
+    {
+      label: 'Observe',
+      items: [
+        {
+          id: 'monitoring',
+          label: 'Monitors',
+          icon: Gauge,
+          href: `${base}/settings/monitoring`,
+          match: (p) =>
+            p.startsWith(`${base}/settings/monitoring`) || p.startsWith(`${base}/monitoring`),
+          count: signals > 0 ? formatCount(signals) : undefined,
+          tone: signals > 0 ? 'danger' : undefined,
+        },
+        {
+          id: 'alerting',
+          label: 'Alerting',
+          icon: Bell,
+          href: `${base}/settings/alerting`,
+          match: (p) => p.startsWith(`${base}/settings/alerting`),
+          count: destinations > 0 ? formatCount(destinations) : undefined,
+        },
+      ],
+    },
+    {
+      label: 'Govern',
+      items: [
+        {
+          id: 'reconciliation',
+          label: 'Reconciliation',
+          icon: GitCompare,
+          href: `${base}/reconciliation`,
+          match: (p) => p.startsWith(`${base}/reconciliation`),
+        },
+        {
+          id: 'audit',
+          label: 'Audit log',
+          icon: ScrollText,
+          href: `${base}/settings/audit`,
+          match: (p) => p.startsWith(`${base}/settings/audit`),
+        },
+      ],
+    },
+    {
+      label: 'Connect',
+      items: [
+        {
+          id: 'data-sources',
+          label: 'Data sources',
+          icon: Database,
+          href: '/settings/data-sources',
+          match: (p) => p.startsWith('/settings/data-sources') || p.startsWith('/data-sources'),
+        },
+      ],
+    },
+  ]
 }
 
 function useSidebarCollapsed() {
@@ -80,6 +207,33 @@ function useSidebarCollapsed() {
   return [collapsed, setCollapsed] as const
 }
 
+/**
+ * Resolve the project the grouped nav should target. Prefer the slug in the
+ * URL; otherwise fall back to the last project visited (persisted) so global
+ * routes like `/` or `/settings` still offer a way back into a project.
+ */
+function useResolvedSlug(slug: string | undefined, projects: Project[]): string | undefined {
+  useEffect(() => {
+    if (slug) {
+      try {
+        localStorage.setItem(LAST_SLUG_STORAGE_KEY, slug)
+      } catch {
+        /* ignore */
+      }
+    }
+  }, [slug])
+
+  if (slug) return slug
+  let last: string | null = null
+  try {
+    last = localStorage.getItem(LAST_SLUG_STORAGE_KEY)
+  } catch {
+    /* ignore */
+  }
+  if (last && projects.some((p) => p.slug === last)) return last
+  return projects[0]?.slug
+}
+
 export function AppSidebar() {
   const { slug } = useParams()
   const location = useLocation()
@@ -93,48 +247,19 @@ export function AppSidebar() {
     queryFn: projectsApi.list,
   })
   const projects = projectsQuery.data ?? []
-  const activeProject = projects.find((p) => p.slug === slug)
-  const eventTypesQuery = useQuery({
-    queryKey: ['eventTypes', slug],
-    queryFn: () => eventTypesApi.list(slug!),
-    enabled: !!slug && !!activeProject,
-    staleTime: 60_000,
-  })
-  const eventTypes = eventTypesQuery.data ?? []
-
-  const navItems: NavItem[] = [
-    {
-      id: 'main',
-      label: 'Main',
-      to: '/',
-      icon: LayoutDashboard,
-      match: (path) => path === '/',
-    },
-    {
-      id: 'settings',
-      label: 'Settings',
-      to: '/settings',
-      icon: SlidersHorizontal,
-      match: (path) =>
-        path.startsWith('/settings')
-        || path.startsWith('/data-sources')
-        || path.startsWith('/users')
-        || path.startsWith('/account'),
-    },
-  ]
-
-  const showProjectViews =
-    !!activeProject && !!slug && location.pathname.startsWith(`/p/${slug}`)
-  const eventViews = activeProject ? buildEventViews(activeProject, eventTypes) : []
-  const currentSearch = new URLSearchParams(location.search)
+  const navSlug = useResolvedSlug(slug, projects)
+  const navProject = projects.find((p) => p.slug === navSlug)
+  const navGroups = navSlug ? buildNavGroups(navSlug, navProject?.summary) : []
+  const currentPath = location.pathname
+  const userInitials = initialsFrom(auth.user?.name ?? auth.user?.email ?? '')
 
   if (collapsed) {
     return (
       <CollapsedSidebar
         onExpand={() => setCollapsed(false)}
-        navItems={navItems}
-        currentPath={location.pathname}
-        userInitials={initialsFrom(auth.user?.name ?? auth.user?.email ?? '')}
+        navGroups={navGroups}
+        currentPath={currentPath}
+        userInitials={userInitials}
         onOpenPalette={() => palette.setOpen(true)}
       />
     )
@@ -148,7 +273,7 @@ export function AppSidebar() {
       {/* Brand + project switcher */}
       <div className="flex items-center gap-1.5 px-3 pt-2.5 pb-2">
         <ProjectSwitcher
-          activeProject={activeProject}
+          activeProject={navProject}
           projects={projects}
           loading={projectsQuery.isLoading}
           onPick={(project) => navigate(`/p/${project.slug}/events`)}
@@ -182,72 +307,25 @@ export function AppSidebar() {
         </button>
       </div>
 
-      {/* Nav */}
-      <nav className="flex flex-col gap-px px-2">
-        {navItems.map((item) => (
-          <SidebarLink
-            key={item.id}
-            to={item.to}
-            active={item.match(location.pathname)}
-            icon={item.icon}
-          >
-            {item.label}
-          </SidebarLink>
-        ))}
-      </nav>
-
-      {/* Projects */}
-      <div className="min-h-0 flex-1 overflow-y-auto px-3 pt-4">
-        <div
-          className="px-0.5 pb-1.5 text-[10px] font-semibold uppercase tracking-[0.08em]"
-          style={{ color: 'var(--fg-faint)' }}
-        >
-          Projects
-        </div>
-        {projectsQuery.isError ? (
-          <ErrorState
-            title="Projects unavailable"
-            description="The sidebar could not load project navigation."
-            error={projectsQuery.error}
-            onRetry={() => {
-              void projectsQuery.refetch()
-            }}
-            retryLabel="Retry"
-            compact
-          />
+      {/* Grouped nav */}
+      <div className="min-h-0 flex-1 overflow-y-auto px-2 pt-1 pb-2">
+        {navGroups.length > 0 ? (
+          navGroups.map((group) => (
+            <NavGroupSection key={group.label} group={group} currentPath={currentPath} />
+          ))
         ) : (
-          <div className="flex flex-col gap-px">
-            {projects.map((p) => (
-              <div key={p.id}>
-                <ProjectRow project={p} active={p.slug === slug} />
-                {showProjectViews && p.slug === slug && eventViews.length > 0 && (
-                  <ProjectViews
-                    title="Views"
-                    views={eventViews}
-                    currentPath={location.pathname}
-                    currentSearch={currentSearch}
-                    loadingEventTypes={eventTypesQuery.isLoading}
-                  />
-                )}
-              </div>
-            ))}
-            {projects.length === 0 && !projectsQuery.isLoading && (
-              <div className="px-2 py-1 text-[11px]" style={{ color: 'var(--fg-subtle)' }}>
-                No projects yet
-              </div>
-            )}
-          </div>
+          <EmptyNav loading={projectsQuery.isLoading || projectsQuery.isError} />
         )}
       </div>
 
-      {/* User footer */}
+      {/* Footer: user + org / project settings + sign out */}
       <div className="px-3 py-3 border-t" style={{ borderColor: 'var(--border-subtle)' }}>
         <div className="flex items-center gap-2">
           <div
             className="flex h-[26px] w-[26px] items-center justify-center rounded-full text-[11px] font-semibold text-white"
             style={{ background: 'oklch(0.62 0.14 240)' }}
           >
-            {initialsFrom(auth.user?.name ?? auth.user?.email ?? '')}
+            {userInitials}
           </div>
           <div className="min-w-0 flex-1">
             <div className="truncate text-[12px] font-medium leading-[1.1]">
@@ -257,194 +335,128 @@ export function AppSidebar() {
               className="mt-px truncate text-[10.5px] leading-[1.1]"
               style={{ color: 'var(--fg-subtle)' }}
             >
-              {auth.user?.name ? auth.user.email : 'Signed in'}
+              {auth.user?.role ? capitalize(auth.user.role) : 'Signed in'}
             </div>
           </div>
+          <Link
+            to="/settings"
+            title="Workspace settings"
+            aria-label="Workspace settings"
+            className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md no-underline transition-colors hover:bg-[var(--surface-hover)]"
+            style={{
+              color: currentPath.startsWith('/settings') ? 'var(--fg)' : 'var(--fg-subtle)',
+            }}
+          >
+            <Settings className="h-3.5 w-3.5" />
+          </Link>
         </div>
-        <Button
-          type="button"
-          variant="ghost"
-          size="sm"
-          className="mt-2 w-full justify-start text-xs"
-          onClick={() => {
-            void auth.logout()
-          }}
-          disabled={auth.isLoggingOut}
-        >
-          <LogOut className="h-3 w-3" />
-          {auth.isLoggingOut ? 'Signing out…' : 'Sign out'}
-        </Button>
+        <div className="mt-2 flex items-center gap-1.5">
+          {navSlug && (
+            <Button
+              asChild
+              variant="ghost"
+              size="sm"
+              className="flex-1 justify-start text-xs"
+            >
+              <Link to={`/p/${navSlug}/settings`}>
+                <SlidersHorizontal className="h-3 w-3" />
+                Project settings
+              </Link>
+            </Button>
+          )}
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            className={navSlug ? 'shrink-0 px-2' : 'flex-1 justify-start text-xs'}
+            title="Sign out"
+            onClick={() => {
+              void auth.logout()
+            }}
+            disabled={auth.isLoggingOut}
+          >
+            <LogOut className="h-3 w-3" />
+            {navSlug ? null : auth.isLoggingOut ? 'Signing out…' : 'Sign out'}
+          </Button>
+        </div>
       </div>
     </aside>
   )
 }
 
-function buildEventViews(project: Project, eventTypes: EventType[]): SavedView[] {
-  const base = `/p/${project.slug}/events`
-  const summary = project.summary
-  // Planned = active events not yet implemented or live
-  const plannedCount = Math.max(0, summary.active_event_count - summary.implemented_event_count)
-
-  const summaryViews: SavedView[] = [
-    {
-      id: 'all',
-      name: 'All events',
-      count: summary.active_event_count,
-      icon: Grid3x3,
-      to: base,
-      match: (path, search) => path === base && !search.has('status'),
-    },
-    {
-      id: 'review',
-      name: 'Needs review',
-      count: summary.review_pending_event_count,
-      icon: Eye,
-      tone: 'warning',
-      to: `${base}/review`,
-      match: (path) => path === `${base}/review`,
-    },
-    {
-      id: 'implemented',
-      name: 'Implemented',
-      count: summary.implemented_event_count,
-      icon: CircleCheck,
-      tone: 'accent',
-      to: `${base}?status=implemented&status=live`,
-      match: (path, search) => {
-        if (path !== base) return false
-        const statuses = search.getAll('status')
-        return statuses.includes('implemented') && statuses.includes('live')
-      },
-    },
-    {
-      id: 'planned',
-      name: 'Planned',
-      count: plannedCount,
-      icon: Calendar,
-      tone: 'info',
-      to: `${base}?status=draft&status=in_review&status=ready_for_dev`,
-      match: (path, search) => {
-        if (path !== base) return false
-        const statuses = search.getAll('status')
-        return statuses.includes('draft') && statuses.includes('in_review') && statuses.includes('ready_for_dev')
-      },
-    },
-    {
-      id: 'archived',
-      name: 'Archived',
-      count: summary.archived_event_count,
-      icon: Archive,
-      to: `${base}/archived`,
-      match: (path) => path === `${base}/archived`,
-    },
-    {
-      id: 'reconciliation',
-      name: 'Reconciliation',
-      icon: GitCompare,
-      to: `/p/${project.slug}/reconciliation`,
-      match: (path) => path === `/p/${project.slug}/reconciliation`,
-    },
-  ]
-
-  const eventTypeViews: SavedView[] = eventTypes.map((eventType) => ({
-    id: `event-type:${eventType.id}`,
-    name: eventType.display_name,
-    icon: Tag,
-    color: eventType.color,
-    to: `${base}/${eventType.name}`,
-    match: (path) => path === `${base}/${eventType.name}`,
-  }))
-
-  return eventTypeViews.length > 0
-    ? [...summaryViews, ...eventTypeViews]
-    : summaryViews
-}
-
-function ProjectViews({
-  title,
-  views,
-  currentPath,
-  currentSearch,
-  loadingEventTypes,
-}: {
-  title: string
-  views: SavedView[]
-  currentPath: string
-  currentSearch: URLSearchParams
-  loadingEventTypes: boolean
-}) {
+function NavGroupSection({ group, currentPath }: { group: NavGroup; currentPath: string }) {
   return (
-    <div className="mt-1 mb-2 ml-4 border-l pl-2" style={{ borderColor: 'var(--border-subtle)' }}>
+    <div className="mb-3">
       <div
-        className="px-2 pb-1 pt-1 text-[10px] font-semibold uppercase tracking-[0.08em]"
+        className="px-2 pb-1 text-[10px] font-semibold uppercase tracking-[0.08em]"
         style={{ color: 'var(--fg-faint)' }}
       >
-        {title}
+        {group.label}
       </div>
       <div className="flex flex-col gap-px">
-        {views.map((view) => (
-          <ProjectViewRow
-            key={view.id}
-            view={view}
-            active={view.match(currentPath, currentSearch)}
-          />
+        {group.items.map((item) => (
+          <NavRow key={item.id} item={item} active={item.match(currentPath)} />
         ))}
-        {loadingEventTypes && (
-          <div className="px-2 py-1 text-[11px]" style={{ color: 'var(--fg-subtle)' }}>
-            Loading event types…
-          </div>
-        )}
       </div>
     </div>
   )
 }
 
-function ProjectViewRow({ view, active }: { view: SavedView; active: boolean }) {
-  const ViewIcon = view.icon
+function NavRow({ item, active }: { item: NavItem; active: boolean }) {
+  const Icon = item.icon
   return (
     <Link
-      to={view.to}
-      className="flex items-center gap-2 rounded-[5px] px-2 py-1 text-[12px] no-underline transition-colors"
+      to={item.href}
+      className="flex items-center gap-2 rounded-[5px] px-2 py-1.5 text-[12.5px] font-medium no-underline transition-colors"
       style={{
         background: active ? 'var(--surface-hover)' : 'transparent',
         color: active ? 'var(--fg)' : 'var(--fg-muted)',
       }}
+      onMouseEnter={(e) => {
+        if (!active) e.currentTarget.style.background = 'var(--surface-hover)'
+      }}
+      onMouseLeave={(e) => {
+        if (!active) e.currentTarget.style.background = 'transparent'
+      }}
     >
-      <ViewIcon
-        className="h-3 w-3 shrink-0"
-        style={{
-          color:
-            view.color ??
-            (view.tone === 'danger'
-              ? 'var(--danger)'
-              : view.tone === 'warning'
-                ? 'var(--warning)'
-                : view.tone === 'accent'
-                  ? 'var(--accent)'
-                  : view.tone === 'info'
-                    ? 'var(--info)'
-                    : 'var(--fg-subtle)'),
-        }}
-      />
-      <span className="flex-1 truncate text-left">{view.name}</span>
-      {view.count !== undefined && (
-        <span className="mono text-[10.5px]" style={{ color: 'var(--fg-faint)' }}>
-          {view.count}
+      <Icon className="h-3.5 w-3.5 shrink-0" style={{ color: toneColor(item.tone, active) }} />
+      <span className="flex-1 truncate text-left">{item.label}</span>
+      {item.count !== undefined && (
+        <span
+          className="mono text-[10.5px]"
+          style={{
+            color:
+              item.tone === 'danger'
+                ? 'var(--danger)'
+                : item.tone === 'warning'
+                  ? 'var(--warning)'
+                  : 'var(--fg-faint)',
+          }}
+        >
+          {item.count}
         </span>
       )}
     </Link>
   )
 }
 
+function EmptyNav({ loading }: { loading: boolean }) {
+  return (
+    <div className="px-2 py-2 text-[11px]" style={{ color: 'var(--fg-subtle)' }}>
+      {loading ? 'Loading projects…' : 'No projects yet'}
+    </div>
+  )
+}
+
 function CollapsedSidebar({
   onExpand,
-  navItems,
+  navGroups,
   currentPath,
   userInitials,
   onOpenPalette,
 }: {
   onExpand: () => void
-  navItems: NavItem[]
+  navGroups: NavGroup[]
   currentPath: string
   userInitials: string
   onOpenPalette: () => void
@@ -482,27 +494,48 @@ function CollapsedSidebar({
       >
         <Search className="h-3.5 w-3.5" />
       </button>
-      <div className="mt-1 flex flex-col gap-0.5">
-        {navItems.map((item) => {
-          const Icon = item.icon
-          const active = item.match(currentPath)
-          return (
-            <Link
-              key={item.id}
-              to={item.to}
-              title={item.label}
-              className="flex h-8 w-8 items-center justify-center rounded-md no-underline"
-              style={{
-                background: active ? 'var(--surface-hover)' : 'transparent',
-                color: active ? 'var(--fg)' : 'var(--fg-muted)',
-              }}
-            >
-              <Icon className="h-[15px] w-[15px]" />
-            </Link>
-          )
-        })}
+      <div className="mt-1 flex min-h-0 flex-1 flex-col items-center gap-0.5 overflow-y-auto">
+        {navGroups.map((group, gi) => (
+          <div key={group.label} className="flex flex-col items-center gap-0.5">
+            {gi > 0 && (
+              <div
+                className="my-1 h-px w-5"
+                style={{ background: 'var(--border-subtle)' }}
+              />
+            )}
+            {group.items.map((item) => {
+              const Icon = item.icon
+              const active = item.match(currentPath)
+              return (
+                <Link
+                  key={item.id}
+                  to={item.href}
+                  title={item.label}
+                  className="relative flex h-8 w-8 items-center justify-center rounded-md no-underline"
+                  style={{
+                    background: active ? 'var(--surface-hover)' : 'transparent',
+                    color: active ? 'var(--fg)' : 'var(--fg-muted)',
+                  }}
+                >
+                  <Icon className="h-[15px] w-[15px]" />
+                  {item.tone === 'danger' && (
+                    <span
+                      className="absolute right-1.5 top-1.5 h-1.5 w-1.5 rounded-full"
+                      style={{ background: 'var(--danger)' }}
+                    />
+                  )}
+                  {item.tone === 'warning' && (
+                    <span
+                      className="absolute right-1.5 top-1.5 h-1.5 w-1.5 rounded-full"
+                      style={{ background: 'var(--warning)' }}
+                    />
+                  )}
+                </Link>
+              )
+            })}
+          </div>
+        ))}
       </div>
-      <div className="flex-1" />
       <button
         type="button"
         onClick={onExpand}
@@ -636,61 +669,8 @@ function ProjectSwitcher({
   )
 }
 
-function ProjectRow({ project, active }: { project: Project; active: boolean }) {
-  return (
-    <div
-      className="group flex items-center gap-1 rounded-[5px] pr-1 transition-colors"
-      style={{ background: active ? 'var(--surface-hover)' : 'transparent' }}
-    >
-      <Link
-        to={`/p/${project.slug}/events`}
-        className="flex min-w-0 flex-1 items-center gap-2 rounded-[5px] px-2 py-1 text-[12px] no-underline"
-        style={{ color: active ? 'var(--fg)' : 'var(--fg-muted)' }}
-      >
-        <Folder className="h-3 w-3 shrink-0" style={{ color: 'var(--fg-subtle)' }} />
-        <span className="flex-1 truncate text-left">{project.name}</span>
-      </Link>
-      {active && (
-        <Link
-          to={`/p/${project.slug}/settings`}
-          title="Project settings"
-          aria-label={`${project.name} settings`}
-          className="flex h-5 w-5 shrink-0 items-center justify-center rounded transition-colors hover:bg-[var(--surface-hover-strong,var(--surface-hover))]"
-          style={{ color: 'var(--fg-subtle)' }}
-        >
-          <Settings className="h-3 w-3" />
-        </Link>
-      )}
-    </div>
-  )
-}
-
-function SidebarLink({
-  to,
-  active,
-  icon: Icon,
-  children,
-}: {
-  to: string
-  active: boolean
-  icon: LucideIcon
-  children: React.ReactNode
-}) {
-  return (
-    <Link
-      to={to}
-      className={cn(
-        'flex items-center gap-2 rounded-md px-2 py-1.5 text-[12.5px] font-medium no-underline transition-colors',
-      )}
-      style={{
-        background: active ? 'var(--surface-hover)' : 'transparent',
-        color: active ? 'var(--fg)' : 'var(--fg-muted)',
-      }}
-    >
-      <Icon className="h-3.5 w-3.5 shrink-0" />
-      <span className="flex-1">{children}</span>
-    </Link>
-  )
+function capitalize(value: string): string {
+  return value ? value[0]!.toUpperCase() + value.slice(1) : value
 }
 
 function initialsFrom(nameOrEmail: string): string {
