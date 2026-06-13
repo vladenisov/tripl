@@ -106,8 +106,7 @@ def requeue_stranded_alert_deliveries() -> dict[str, object]:
             requeued.append(delivery_id)
 
         logger.info(
-            "Reaper: re-enqueued %d stranded alert deliveries, marked %d exhausted "
-            "(older than %s)",
+            "Reaper: re-enqueued %d stranded alert deliveries, marked %d exhausted (older than %s)",
             len(requeued),
             len(exhausted),
             cutoff.isoformat(),

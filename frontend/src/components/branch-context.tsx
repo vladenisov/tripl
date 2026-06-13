@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react'
+import { useCallback, useMemo, useState, type ReactNode } from 'react'
 import { BranchContext } from './branch-context-internal'
 
 const STORAGE_PREFIX = 'tripl-branch:'
@@ -27,12 +27,15 @@ function writeStored(slug: string, value: string | null) {
 }
 
 export function BranchProvider({ slug, children }: { slug: string | null; children: ReactNode }) {
-  const [branchId, setBranchIdState] = useState<string | null>(() => readStored(slug))
+  return (
+    <BranchProviderState key={slug ?? '__root__'} slug={slug}>
+      {children}
+    </BranchProviderState>
+  )
+}
 
-  // Re-sync when the active project changes (slug switches → load that project's stored branch).
-  useEffect(() => {
-    setBranchIdState(readStored(slug))
-  }, [slug])
+function BranchProviderState({ slug, children }: { slug: string | null; children: ReactNode }) {
+  const [branchId, setBranchIdState] = useState<string | null>(() => readStored(slug))
 
   const setBranchId = useCallback(
     (next: string | null) => {

@@ -54,12 +54,16 @@ def _bump_event_last_seen(
     # AUTO-LIVE: find the subset of bumped events that are still 'implemented'
     # and promote them to 'live', writing one EventChange row per transition.
     event_ids = list(latest_by_event.keys())
-    implemented_events = session.execute(
-        select(Event.id).where(
-            Event.id.in_(event_ids),
-            Event.status == EventStatus.implemented,
+    implemented_events = (
+        session.execute(
+            select(Event.id).where(
+                Event.id.in_(event_ids),
+                Event.status == EventStatus.implemented,
+            )
         )
-    ).scalars().all()
+        .scalars()
+        .all()
+    )
 
     for eid in implemented_events:
         session.execute(

@@ -1134,9 +1134,7 @@ def test_send_alert_delivery_falls_back_from_telegram_markdownv2_to_plain(
         build_context_calls += 1
         return real_build_context(*args, **kwargs)
 
-    monkeypatch.setattr(
-        alerts_messages_module, "build_alert_item_context", counting_build_context
-    )
+    monkeypatch.setattr(alerts_messages_module, "build_alert_item_context", counting_build_context)
 
     result = metrics.send_alert_delivery.run(delivery_id)
 
@@ -2961,9 +2959,7 @@ def _make_sunset_project(
     session,  # type: ignore[no-untyped-def]
 ) -> tuple:
     """Return (project, destination) seeded in *session*."""
-    project = Project(
-        id=uuid.uuid4(), name="Sunset Project", slug="sunset-proj", description=""
-    )
+    project = Project(id=uuid.uuid4(), name="Sunset Project", slug="sunset-proj", description="")
     data_source = DataSource(
         id=uuid.uuid4(),
         name="DS",
@@ -3045,9 +3041,7 @@ def test_check_deprecated_sunset_events_fires_when_event_alive_past_sunset(
     engine.dispose()
 
 
-def test_check_deprecated_sunset_events_silent_when_no_recent_data(
-    monkeypatch, tmp_path
-) -> None:
+def test_check_deprecated_sunset_events_silent_when_no_recent_data(monkeypatch, tmp_path) -> None:
     """A deprecated event whose last_seen_at is before sunset_at does NOT fire."""
     engine = create_engine(f"sqlite:///{tmp_path / 'sunset_alert_silent.db'}")
     Base.metadata.create_all(engine)

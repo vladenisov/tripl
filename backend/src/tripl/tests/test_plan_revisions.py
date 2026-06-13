@@ -125,8 +125,6 @@ async def test_diff_reports_added_removed_and_changed_entities(
         for change in kinds_by_name[("field_definition", "screen")]["changes"]
     )
     assert kinds_by_name[("event", "Home View")]["kind"] == "changed"
-    assert any(
-        "status" in change for change in kinds_by_name[("event", "Home View")]["changes"]
-    )
+    assert any("status" in change for change in kinds_by_name[("event", "Home View")]["changes"])
     assert diff["summary"]["added"] >= 1
     assert diff["summary"]["changed"] >= 2
