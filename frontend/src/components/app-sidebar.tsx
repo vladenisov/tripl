@@ -17,7 +17,6 @@ import { projectsApi } from '@/api/projects'
 import { useAuth } from '@/components/auth-context'
 import { useCommandPalette } from '@/components/command-palette-context'
 import { Kbd } from '@/components/primitives/kbd'
-import { Button } from '@/components/ui/button'
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -113,6 +112,10 @@ export function AppSidebar() {
   const navGroups = navSlug ? buildNavGroups(navSlug, navProject?.summary) : []
   const currentPath = location.pathname
   const userInitials = initialsFrom(auth.user?.name ?? auth.user?.email ?? '')
+  const projectSettingsActive =
+    !!navSlug
+    && (currentPath === `/p/${navSlug}/settings`
+      || currentPath === `/p/${navSlug}/settings/general`)
 
   if (collapsed) {
     return (
@@ -177,11 +180,35 @@ export function AppSidebar() {
         ) : (
           <EmptyNav loading={projectsQuery.isLoading || projectsQuery.isError} />
         )}
+        {navSlug && (
+          <div className="mt-1 border-t pt-2" style={{ borderColor: 'var(--border-subtle)' }}>
+            <Link
+              to={`/p/${navSlug}/settings`}
+              className="flex items-center gap-2 rounded-[5px] px-2 py-1.5 text-[12.5px] font-medium no-underline transition-colors"
+              style={{
+                background: projectSettingsActive ? 'var(--surface-hover)' : 'transparent',
+                color: projectSettingsActive ? 'var(--fg)' : 'var(--fg-muted)',
+              }}
+              onMouseEnter={(e) => {
+                if (!projectSettingsActive) e.currentTarget.style.background = 'var(--surface-hover)'
+              }}
+              onMouseLeave={(e) => {
+                if (!projectSettingsActive) e.currentTarget.style.background = 'transparent'
+              }}
+            >
+              <SlidersHorizontal
+                className="h-3.5 w-3.5 shrink-0"
+                style={{ color: projectSettingsActive ? 'var(--accent)' : 'var(--fg-subtle)' }}
+              />
+              <span className="flex-1 truncate text-left">Project settings</span>
+            </Link>
+          </div>
+        )}
       </div>
 
-      {/* Footer: user + org / project settings + sign out */}
+      {/* Footer: user row with workspace settings + sign out */}
       <div className="px-3 py-3 border-t" style={{ borderColor: 'var(--border-subtle)' }}>
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-1.5">
           <div
             className="flex h-[26px] w-[26px] items-center justify-center rounded-full text-[11px] font-semibold text-white"
             style={{ background: 'oklch(0.62 0.14 240)' }}
@@ -210,35 +237,19 @@ export function AppSidebar() {
           >
             <Settings className="h-3.5 w-3.5" />
           </Link>
-        </div>
-        <div className="mt-2 flex items-center gap-1.5">
-          {navSlug && (
-            <Button
-              asChild
-              variant="ghost"
-              size="sm"
-              className="flex-1 justify-start text-xs"
-            >
-              <Link to={`/p/${navSlug}/settings`}>
-                <SlidersHorizontal className="h-3 w-3" />
-                Project settings
-              </Link>
-            </Button>
-          )}
-          <Button
+          <button
             type="button"
-            variant="ghost"
-            size="sm"
-            className={navSlug ? 'shrink-0 px-2' : 'flex-1 justify-start text-xs'}
-            title="Sign out"
+            title={auth.isLoggingOut ? 'Signing out…' : 'Sign out'}
+            aria-label="Sign out"
             onClick={() => {
               void auth.logout()
             }}
             disabled={auth.isLoggingOut}
+            className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md transition-colors hover:bg-[var(--surface-hover)] disabled:opacity-50"
+            style={{ color: 'var(--fg-subtle)' }}
           >
-            <LogOut className="h-3 w-3" />
-            {navSlug ? null : auth.isLoggingOut ? 'Signing out…' : 'Sign out'}
-          </Button>
+            <LogOut className="h-3.5 w-3.5" />
+          </button>
         </div>
       </div>
     </aside>
