@@ -46,7 +46,7 @@ class SchemaDriftActionRequest(BaseModel):
     snoozed_until: datetime | None = None
 
     @model_validator(mode="after")
-    def validate_action(self) -> "SchemaDriftActionRequest":
+    def validate_action(self) -> SchemaDriftActionRequest:
         if self.action == "snooze" and self.snoozed_until is None:
             raise ValueError("snoozed_until is required when action is snooze")
         return self

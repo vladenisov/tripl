@@ -1,6 +1,6 @@
-# syntax=docker/dockerfile:1.7
+# syntax=docker/dockerfile:1
 
-FROM ghcr.io/astral-sh/uv:python3.13-bookworm-slim AS base
+FROM ghcr.io/astral-sh/uv:python3.14-trixie-slim AS base
 
 WORKDIR /app
 ENV UV_LINK_MODE=copy
@@ -23,7 +23,7 @@ EXPOSE 8000
 
 CMD ["uvicorn", "tripl.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
 
-FROM python:3.13-slim-bookworm AS runtime
+FROM python:3.14-slim-trixie AS runtime
 
 WORKDIR /app
 COPY --from=base /app/.venv /app/.venv

@@ -51,7 +51,7 @@ def verify_password(password: str, stored_hash: str) -> bool:
             p=int(p_value),
             dklen=len(expected_hash),
         )
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         return False
 
     return hmac.compare_digest(actual_hash, expected_hash)

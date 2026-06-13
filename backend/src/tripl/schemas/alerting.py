@@ -39,7 +39,7 @@ class AlertRuleFilterPayload(BaseModel):
     values: list[str] = Field(default_factory=list)
 
     @model_validator(mode="after")
-    def validate_filter(self) -> "AlertRuleFilterPayload":
+    def validate_filter(self) -> AlertRuleFilterPayload:
         if not self.values:
             raise ValueError("Filter must have at least one value")
         if self.operator in ("eq", "ne") and len(self.values) != 1:
@@ -87,7 +87,7 @@ class AlertRuleBase(BaseModel):
     filters: list[AlertRuleFilterPayload] | None = None
 
     @model_validator(mode="after")
-    def validate_direction(self) -> "AlertRuleBase":
+    def validate_direction(self) -> AlertRuleBase:
         notify_on_spike = self.notify_on_spike
         notify_on_drop = self.notify_on_drop
         if notify_on_spike is False and notify_on_drop is False:
@@ -200,7 +200,7 @@ class AlertDestinationCreate(BaseModel):
         return normalize_required_text(value, field_name="Telegram chat_id")
 
     @model_validator(mode="after")
-    def validate_channel_config(self) -> "AlertDestinationCreate":
+    def validate_channel_config(self) -> AlertDestinationCreate:
         if self.type == "slack":
             self.webhook_url = validate_slack_webhook_url(self.webhook_url)
         elif self.type == "telegram":
@@ -497,7 +497,7 @@ class AlertInboxActionRequest(BaseModel):
     muted_until: datetime | None = None
 
     @model_validator(mode="after")
-    def validate_action(self) -> "AlertInboxActionRequest":
+    def validate_action(self) -> AlertInboxActionRequest:
         if self.action == "mute" and self.muted_until is None:
             raise ValueError("muted_until is required when action is mute")
         return self

@@ -131,7 +131,7 @@ class ScanConfigCreate(BaseModel):
         )
 
     @model_validator(mode="after")
-    def validate_monitoring_selection(self) -> "ScanConfigCreate":
+    def validate_monitoring_selection(self) -> ScanConfigCreate:
         check_scalar_columns_unreserved(
             metric_breakdown_columns=self.metric_breakdown_columns,
             distribution_drift_fields=self.distribution_drift_fields,
@@ -285,7 +285,7 @@ class ScanMetricsReplayRequest(BaseModel):
         return value.astimezone(UTC)
 
     @model_validator(mode="after")
-    def validate_window(self) -> "ScanMetricsReplayRequest":
+    def validate_window(self) -> ScanMetricsReplayRequest:
         if self.time_from >= self.time_to:
             raise ValueError("time_from must be earlier than time_to")
         return self

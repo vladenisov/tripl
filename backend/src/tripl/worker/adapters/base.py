@@ -179,7 +179,7 @@ class BaseAdapter(abc.ABC):
                     elif expectation.drift_type == "range_violation":
                         try:
                             numeric = float(text)
-                        except (TypeError, ValueError):
+                        except TypeError, ValueError:
                             is_bad = True
                         else:
                             is_bad = (

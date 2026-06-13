@@ -1974,7 +1974,7 @@ def test_send_alert_delivery_sends_email(monkeypatch, tmp_path) -> None:
         def __init__(self, host: str, port: int, timeout: int = 10) -> None:
             sent_messages.append({"connect_host": host, "connect_port": port})
 
-        def __enter__(self) -> "FakeSMTP":
+        def __enter__(self) -> FakeSMTP:
             return self
 
         def __exit__(self, *_: object) -> None:
