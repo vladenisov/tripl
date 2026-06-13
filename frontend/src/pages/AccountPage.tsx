@@ -102,6 +102,7 @@ export default function AccountPage() {
   }
 
   const keys = listQuery.data ?? []
+  const canCreateWriteKeys = user?.role === 'owner' || user?.role === 'editor'
 
   return (
     <div className="space-y-5">
@@ -114,7 +115,13 @@ export default function AccountPage() {
       <div>
         <div className="flex items-center justify-between mb-2">
           <h2 className="text-lg font-semibold">API keys</h2>
-          <Button size="sm" onClick={() => setShowForm(true)}>
+          <Button
+            size="sm"
+            onClick={() => {
+              if (!canCreateWriteKeys) setScope('read')
+              setShowForm(true)
+            }}
+          >
             <Plus className="h-4 w-4 mr-1" /> New key
           </Button>
         </div>
@@ -122,7 +129,9 @@ export default function AccountPage() {
           Long-lived bearer tokens for non-browser clients (LLM agents, CLI scripts).
           Send them as <span className="font-mono">Authorization: Bearer &lt;token&gt;</span>.
           Read keys can only call <span className="font-mono">GET</span> endpoints;
-          write keys carry your editor permissions.
+          {canCreateWriteKeys
+            ? ' write keys carry your editor permissions.'
+            : ' write keys require an editor or owner role.'}
         </p>
 
         <Card>
@@ -243,7 +252,9 @@ export default function AccountPage() {
                   className="h-9 rounded-md border bg-background px-2 text-sm"
                 >
                   <option value="read">read — GET endpoints only</option>
-                  <option value="write">write — full editor access</option>
+                  {canCreateWriteKeys && (
+                    <option value="write">write — full editor access</option>
+                  )}
                 </select>
               </div>
               <div className="grid gap-2">

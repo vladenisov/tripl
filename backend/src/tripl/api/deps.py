@@ -104,7 +104,7 @@ def require_editor(user: User) -> None:
 
 
 def require_owner(user: User) -> None:
-    """Reject anyone below owner — user management is owner-only."""
+    """Reject anyone below owner."""
     if user.role != "owner":
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
@@ -140,6 +140,11 @@ async def get_editor_user(request: Request, user: CurrentUserDep) -> User:
 async def get_owner_user(request: Request, user: CurrentUserDep) -> User:
     require_write_scope(request)
     require_owner(user)
+    if getattr(request.state, "api_key_scope", None) is not None:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Owner session required",
+        )
     return user
 
 

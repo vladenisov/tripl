@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { dataSourcesApi } from '@/api/dataSources'
+import { useAuth } from '@/components/auth-context'
 import { useConfirm } from '@/hooks/useConfirm'
 import type { DataSource, DbType } from '@/types'
 import { DB_TYPE_OPTIONS } from '@/types'
@@ -42,6 +43,7 @@ export default function DataSourcesPage() {
 function ConnectionsTab({ openDsId }: { openDsId?: string }) {
   const navigate = useNavigate()
   const qc = useQueryClient()
+  const { user } = useAuth()
   const [showForm, setShowForm] = useState(false)
   const [editingDs, setEditingDs] = useState<DataSource | null>(null)
   const editingDsIdRef = useRef<string | null>(null)
@@ -76,6 +78,7 @@ function ConnectionsTab({ openDsId }: { openDsId?: string }) {
   const [editTimeoutSeconds, setEditTimeoutSeconds] = useState('')
 
   const [testingId, setTestingId] = useState<string | null>(null)
+  const canManageDataSources = user?.role === 'owner'
 
   const dataSourcesQuery = useQuery({
     queryKey: ['dataSources'],
@@ -187,11 +190,16 @@ function ConnectionsTab({ openDsId }: { openDsId?: string }) {
       return
     }
 
+    if (openDsId && !canManageDataSources) {
+      navigate('/settings/data-sources', { replace: true })
+      return
+    }
+
     if (openDsId && dataSources.length > 0) {
       const ds = dataSources.find((d: DataSource) => d.id === openDsId)
       if (ds) populateEditForm(ds)
     }
-  }, [openDsId, dataSources, populateEditForm])
+  }, [openDsId, dataSources, populateEditForm, canManageDataSources, navigate])
 
   const resetForm = () => {
     setShowForm(false)
@@ -230,10 +238,12 @@ function ConnectionsTab({ openDsId }: { openDsId?: string }) {
             value={String(warningCount)}
             tone={warningCount > 0 ? 'danger' : 'neutral'}
           />
-          <Button onClick={() => setShowForm(true)} size="sm">
-            <Plus className="h-3.5 w-3.5" />
-            Add connection
-          </Button>
+          {canManageDataSources && (
+            <Button onClick={() => setShowForm(true)} size="sm">
+              <Plus className="h-3.5 w-3.5" />
+              Add connection
+            </Button>
+          )}
         </div>
       </div>
 
@@ -417,13 +427,17 @@ function ConnectionsTab({ openDsId }: { openDsId?: string }) {
         <EmptyState
           icon={Database}
           title="No data sources"
-          description="Add a database connection to start scanning for events."
-          action={
+          description={
+            canManageDataSources
+              ? 'Add a database connection to start scanning for events.'
+              : 'Data source connections are managed by owners.'
+          }
+          action={canManageDataSources ? (
             <Button onClick={() => setShowForm(true)}>
               <Plus className="h-3.5 w-3.5" />
               Add connection
             </Button>
-          }
+          ) : undefined}
         />
       )}
 
@@ -434,6 +448,7 @@ function ConnectionsTab({ openDsId }: { openDsId?: string }) {
               key={ds.id}
               ds={ds}
               testing={testingId === ds.id}
+              canManage={canManageDataSources}
               onTest={() => handleTest(ds.id)}
               onEdit={() => startEdit(ds)}
               onDelete={() => { void handleDelete(ds) }}
@@ -448,12 +463,14 @@ function ConnectionsTab({ openDsId }: { openDsId?: string }) {
 function DataSourceCard({
   ds,
   testing,
+  canManage,
   onTest,
   onEdit,
   onDelete,
 }: {
   ds: DataSource
   testing: boolean
+  canManage: boolean
   onTest: () => void
   onEdit: () => void
   onDelete: () => void
@@ -547,28 +564,30 @@ function DataSourceCard({
         </div>
       )}
 
-      <div
-        className="flex items-center gap-1 border-t px-2.5 py-2"
-        style={{ borderColor: 'var(--border-subtle)', background: 'var(--bg-sunken)' }}
-      >
-        <Button variant="ghost" size="sm" onClick={onTest} disabled={testing}>
-          <Plug className="h-3 w-3" />
-          {testing ? 'Testing…' : 'Test'}
-        </Button>
-        <Button variant="ghost" size="sm" onClick={onEdit}>
-          <Pencil className="h-3 w-3" />
-          Edit
-        </Button>
-        <div className="flex-1" />
-        <Button
-          variant="ghost"
-          size="icon"
-          className="text-muted-foreground hover:text-destructive"
-          onClick={onDelete}
+      {canManage && (
+        <div
+          className="flex items-center gap-1 border-t px-2.5 py-2"
+          style={{ borderColor: 'var(--border-subtle)', background: 'var(--bg-sunken)' }}
         >
-          <Trash2 className="h-3.5 w-3.5" />
-        </Button>
-      </div>
+          <Button variant="ghost" size="sm" onClick={onTest} disabled={testing}>
+            <Plug className="h-3 w-3" />
+            {testing ? 'Testing…' : 'Test'}
+          </Button>
+          <Button variant="ghost" size="sm" onClick={onEdit}>
+            <Pencil className="h-3 w-3" />
+            Edit
+          </Button>
+          <div className="flex-1" />
+          <Button
+            variant="ghost"
+            size="icon"
+            className="text-muted-foreground hover:text-destructive"
+            onClick={onDelete}
+          >
+            <Trash2 className="h-3.5 w-3.5" />
+          </Button>
+        </div>
+      )}
     </div>
   )
 }

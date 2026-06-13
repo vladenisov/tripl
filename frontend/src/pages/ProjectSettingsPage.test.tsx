@@ -2,6 +2,7 @@ import { fireEvent, render, screen, waitFor, within } from '@testing-library/rea
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { AuthContext, type AuthContextValue } from '@/components/auth-context'
 import ProjectSettingsPage from './ProjectSettingsPage'
 
 function mockJsonResponse(body: unknown) {
@@ -14,6 +15,24 @@ function mockJsonResponse(body: unknown) {
 afterEach(() => {
   vi.restoreAllMocks()
 })
+
+function ownerAuthValue(): AuthContextValue {
+  return {
+    user: {
+      id: 'owner-1',
+      email: 'owner@example.com',
+      name: 'Owner',
+      role: 'owner',
+      created_at: '2026-01-01T00:00:00Z',
+      updated_at: '2026-01-01T00:00:00Z',
+    },
+    status: 'authenticated',
+    error: null,
+    isLoggingOut: false,
+    logout: async () => {},
+    refresh: () => {},
+  }
+}
 
 describe('ProjectSettingsPage', () => {
   it('rebuilds the search index from general settings', async () => {
@@ -58,13 +77,15 @@ describe('ProjectSettingsPage', () => {
     })
     render(
       <QueryClientProvider client={queryClient}>
-        <MemoryRouter initialEntries={['/p/demo/settings/general']}>
-          <Routes>
-            <Route path="/p/:slug/settings/:tab/:itemId" element={<ProjectSettingsPage />} />
-            <Route path="/p/:slug/settings/:tab" element={<ProjectSettingsPage />} />
-            <Route path="/p/:slug/settings" element={<ProjectSettingsPage />} />
-          </Routes>
-        </MemoryRouter>
+        <AuthContext.Provider value={ownerAuthValue()}>
+          <MemoryRouter initialEntries={['/p/demo/settings/general']}>
+            <Routes>
+              <Route path="/p/:slug/settings/:tab/:itemId" element={<ProjectSettingsPage />} />
+              <Route path="/p/:slug/settings/:tab" element={<ProjectSettingsPage />} />
+              <Route path="/p/:slug/settings" element={<ProjectSettingsPage />} />
+            </Routes>
+          </MemoryRouter>
+        </AuthContext.Provider>
       </QueryClientProvider>,
     )
 

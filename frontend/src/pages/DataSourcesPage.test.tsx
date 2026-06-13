@@ -2,6 +2,7 @@ import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom'
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { AuthContext, type AuthContextValue } from '@/components/auth-context'
 import DataSourcesPage from './DataSourcesPage'
 import type { DataSource } from '@/types'
 
@@ -35,7 +36,28 @@ function LocationProbe() {
   return <span data-testid="location">{location.pathname}</span>
 }
 
-function renderDataSourcesPage(path = '/settings/data-sources/ds-1') {
+function authValue(role: 'owner' | 'editor' | 'viewer'): AuthContextValue {
+  return {
+    user: {
+      id: `${role}-1`,
+      email: `${role}@example.com`,
+      name: role,
+      role,
+      created_at: '2026-01-01T00:00:00Z',
+      updated_at: '2026-01-01T00:00:00Z',
+    },
+    status: 'authenticated',
+    error: null,
+    isLoggingOut: false,
+    logout: async () => {},
+    refresh: () => {},
+  }
+}
+
+function renderDataSourcesPage(
+  path = '/settings/data-sources/ds-1',
+  role: 'owner' | 'editor' | 'viewer' = 'owner',
+) {
   const queryClient = new QueryClient({
     defaultOptions: {
       queries: { retry: false },
@@ -45,28 +67,30 @@ function renderDataSourcesPage(path = '/settings/data-sources/ds-1') {
 
   return render(
     <QueryClientProvider client={queryClient}>
-      <MemoryRouter initialEntries={[path]}>
-        <Routes>
-          <Route
-            path="/settings/data-sources"
-            element={(
-              <>
-                <DataSourcesPage />
-                <LocationProbe />
-              </>
-            )}
-          />
-          <Route
-            path="/settings/data-sources/:dsId"
-            element={(
-              <>
-                <DataSourcesPage />
-                <LocationProbe />
-              </>
-            )}
-          />
-        </Routes>
-      </MemoryRouter>
+      <AuthContext.Provider value={authValue(role)}>
+        <MemoryRouter initialEntries={[path]}>
+          <Routes>
+            <Route
+              path="/settings/data-sources"
+              element={(
+                <>
+                  <DataSourcesPage />
+                  <LocationProbe />
+                </>
+              )}
+            />
+            <Route
+              path="/settings/data-sources/:dsId"
+              element={(
+                <>
+                  <DataSourcesPage />
+                  <LocationProbe />
+                </>
+              )}
+            />
+          </Routes>
+        </MemoryRouter>
+      </AuthContext.Provider>
     </QueryClientProvider>,
   )
 }
@@ -139,5 +163,32 @@ describe('DataSourcesPage', () => {
     })
     expect(screen.getByTestId('location')).toHaveTextContent('/settings/data-sources')
     expect(patchPayload?.timeout_seconds).toBe(120)
+  })
+
+  it('keeps data source management controls owner-only', async () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation((input: RequestInfo | URL) => {
+      const url =
+        typeof input === 'string'
+          ? input
+          : input instanceof URL
+            ? input.toString()
+            : input.url
+
+      if (url.endsWith('/api/v1/data-sources')) {
+        return Promise.resolve(jsonResponse([DATA_SOURCE]))
+      }
+
+      return Promise.reject(new Error(`Unexpected request: ${url}`))
+    })
+
+    renderDataSourcesPage('/settings/data-sources/ds-1', 'editor')
+
+    expect(await screen.findByText('Warehouse')).toBeInTheDocument()
+    await waitFor(() => {
+      expect(screen.getByTestId('location')).toHaveTextContent('/settings/data-sources')
+    })
+    expect(screen.queryByRole('button', { name: 'Add connection' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Test' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Edit' })).not.toBeInTheDocument()
   })
 })

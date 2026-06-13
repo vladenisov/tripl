@@ -36,6 +36,7 @@ function authenticatedFetch(input: RequestInfo | URL) {
       id: 'user-1',
       email: 'owner@example.com',
       name: 'Owner',
+      role: 'owner',
       created_at: '2026-04-18T10:00:00Z',
       updated_at: '2026-04-18T10:00:00Z',
     }))
@@ -85,7 +86,7 @@ describe('App', () => {
     // No projects in this fixture, so the grouped nav shows its empty state
     // while the footer still renders the signed-in user and sign-out action.
     expect(await screen.findByText('No projects yet')).toBeInTheDocument()
-    expect(screen.getByText('Owner')).toBeInTheDocument()
+    expect(screen.getAllByText('Owner').length).toBeGreaterThan(0)
     expect(screen.getByRole('button', { name: 'Sign out' })).toBeInTheDocument()
   })
 

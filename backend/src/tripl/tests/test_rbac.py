@@ -120,6 +120,78 @@ async def test_viewer_cannot_mutate_but_can_read(fresh_anon_client: AsyncClient)
 
 
 @pytest.mark.asyncio
+async def test_project_delete_is_owner_only(fresh_anon_client: AsyncClient) -> None:
+    await _register(fresh_anon_client, "project-owner@example.com")
+    create = await fresh_anon_client.post(
+        "/api/v1/projects",
+        json={"name": "Protected", "slug": "protected-project"},
+    )
+    assert create.status_code == 201
+
+    await fresh_anon_client.post("/api/v1/auth/logout")
+    await _register(fresh_anon_client, "project-editor@example.com")
+
+    denied = await fresh_anon_client.delete("/api/v1/projects/protected-project")
+    assert denied.status_code == 403
+    assert "owner" in denied.json()["detail"].lower()
+
+    await fresh_anon_client.post("/api/v1/auth/logout")
+    await fresh_anon_client.post(
+        "/api/v1/auth/login",
+        json={"email": "project-owner@example.com", "password": "Password123!"},
+    )
+    deleted = await fresh_anon_client.delete("/api/v1/projects/protected-project")
+    assert deleted.status_code == 204
+
+
+@pytest.mark.asyncio
+async def test_data_source_management_is_owner_only(fresh_anon_client: AsyncClient) -> None:
+    await _register(fresh_anon_client, "ds-owner@example.com")
+    create = await fresh_anon_client.post(
+        "/api/v1/data-sources",
+        json={
+            "name": "Warehouse",
+            "db_type": "clickhouse",
+            "host": "localhost",
+            "port": 8123,
+            "database_name": "analytics",
+        },
+    )
+    assert create.status_code == 201, create.text
+    ds_id = create.json()["id"]
+
+    await fresh_anon_client.post("/api/v1/auth/logout")
+    await _register(fresh_anon_client, "ds-editor@example.com")
+
+    listing = await fresh_anon_client.get("/api/v1/data-sources")
+    assert listing.status_code == 200
+
+    create_denied = await fresh_anon_client.post(
+        "/api/v1/data-sources",
+        json={
+            "name": "Editor DS",
+            "db_type": "clickhouse",
+            "host": "localhost",
+            "port": 8123,
+            "database_name": "analytics",
+        },
+    )
+    assert create_denied.status_code == 403
+
+    update_denied = await fresh_anon_client.patch(
+        f"/api/v1/data-sources/{ds_id}",
+        json={"name": "Renamed"},
+    )
+    assert update_denied.status_code == 403
+
+    test_denied = await fresh_anon_client.post(f"/api/v1/data-sources/{ds_id}/test")
+    assert test_denied.status_code == 403
+
+    delete_denied = await fresh_anon_client.delete(f"/api/v1/data-sources/{ds_id}")
+    assert delete_denied.status_code == 403
+
+
+@pytest.mark.asyncio
 async def test_only_owner_can_change_roles(fresh_anon_client: AsyncClient) -> None:
     await _register(fresh_anon_client, "owner2@example.com")
     await fresh_anon_client.post("/api/v1/auth/logout")

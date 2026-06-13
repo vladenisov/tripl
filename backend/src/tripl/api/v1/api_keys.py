@@ -12,7 +12,7 @@ import uuid
 
 from fastapi import APIRouter
 
-from tripl.api.deps import CurrentUserDep, SessionDep, WriteUserDep
+from tripl.api.deps import CurrentUserDep, SessionDep, WriteUserDep, require_editor
 from tripl.schemas.api_key import (
     ApiKeyCreate,
     ApiKeyCreateResponse,
@@ -35,6 +35,9 @@ async def create_api_key(
     current_user: WriteUserDep,
     data: ApiKeyCreate,
 ) -> ApiKeyCreateResponse:
+    if data.scope == "write":
+        require_editor(current_user)
+
     # A project-bound key validates the slug up front so operators can't mint
     # a key pointing at a project that doesn't exist.
     project_id = (

@@ -2,7 +2,7 @@ import uuid
 
 from fastapi import APIRouter, Depends
 
-from tripl.api.deps import EditorUserDep, SessionDep, get_editor_user
+from tripl.api.deps import OwnerUserDep, SessionDep, get_owner_user
 from tripl.schemas.data_source import (
     DataSourceCreate,
     DataSourceResponse,
@@ -15,7 +15,7 @@ router = APIRouter(
     prefix="/data-sources",
     tags=["data-sources"],
 )
-_editor_required = [Depends(get_editor_user)]
+_owner_required = [Depends(get_owner_user)]
 
 
 @router.get("", response_model=list[DataSourceResponse])
@@ -27,7 +27,7 @@ async def list_data_sources(session: SessionDep) -> list[DataSourceResponse]:
 async def create_data_source(
     session: SessionDep,
     data: DataSourceCreate,
-    current_user: EditorUserDep,
+    current_user: OwnerUserDep,
 ) -> DataSourceResponse:
     ds = await datasource_service.create_data_source(session, data)
     await audit_service.record(
@@ -52,7 +52,7 @@ async def update_data_source(
     session: SessionDep,
     ds_id: uuid.UUID,
     data: DataSourceUpdate,
-    current_user: EditorUserDep,
+    current_user: OwnerUserDep,
 ) -> DataSourceResponse:
     ds = await datasource_service.update_data_source(session, ds_id, data)
     await audit_service.record(
@@ -71,7 +71,7 @@ async def update_data_source(
 async def delete_data_source(
     session: SessionDep,
     ds_id: uuid.UUID,
-    current_user: EditorUserDep,
+    current_user: OwnerUserDep,
 ) -> None:
     existing = await datasource_service.get_data_source(session, ds_id)
     name = existing.name
@@ -89,7 +89,7 @@ async def delete_data_source(
 @router.post(
     "/{ds_id}/test",
     response_model=DataSourceTestResponse,
-    dependencies=_editor_required,
+    dependencies=_owner_required,
 )
 async def test_data_source_connection(
     session: SessionDep, ds_id: uuid.UUID

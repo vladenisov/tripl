@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link, useNavigate } from 'react-router-dom'
 import { dataSourcesApi } from '@/api/dataSources'
 import { projectsApi } from '@/api/projects'
+import { useAuth } from '@/components/auth-context'
 import { EmptyState } from '@/components/empty-state'
 import { ErrorState } from '@/components/error-state'
 import { Chip } from '@/components/primitives/chip'
@@ -51,6 +52,7 @@ import {
 export default function MainPage() {
   const queryClient = useQueryClient()
   const navigate = useNavigate()
+  const { user } = useAuth()
   const [showForm, setShowForm] = useState(false)
   const [name, setName] = useState('')
   const [slug, setSlug] = useState('')
@@ -161,6 +163,8 @@ export default function MainPage() {
     : dataSourcesQuery.isLoading
       ? '...'
       : String(dataSourceCount)
+  const canCreateProject = user?.role === 'owner' || user?.role === 'editor'
+  const canDeleteProject = user?.role === 'owner'
 
   return (
     <div className="space-y-6">
@@ -205,19 +209,23 @@ export default function MainPage() {
             value={dataSourceValue}
             tone={dataSourcesQuery.isError ? 'danger' : 'neutral'}
           />
-          <Button
-            size="sm"
-            variant="outline"
-            onClick={() => demoMut.mutate()}
-            disabled={demoMut.isPending}
-          >
-            <Sparkles className="h-3.5 w-3.5" />
-            {demoMut.isPending ? 'Generating…' : 'Generate demo project'}
-          </Button>
-          <Button size="sm" onClick={() => setShowForm(true)}>
-            <Plus className="h-3.5 w-3.5" />
-            New project
-          </Button>
+          {canCreateProject && (
+            <>
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => demoMut.mutate()}
+                disabled={demoMut.isPending}
+              >
+                <Sparkles className="h-3.5 w-3.5" />
+                {demoMut.isPending ? 'Generating…' : 'Generate demo project'}
+              </Button>
+              <Button size="sm" onClick={() => setShowForm(true)}>
+                <Plus className="h-3.5 w-3.5" />
+                New project
+              </Button>
+            </>
+          )}
         </div>
       </div>
 
@@ -375,6 +383,7 @@ export default function MainPage() {
                   <ProjectCard
                     key={project.id}
                     project={project}
+                    canDelete={canDeleteProject}
                     onDelete={() => { void handleDelete(project) }}
                   />
                 ))}
@@ -385,7 +394,7 @@ export default function MainPage() {
               icon={FolderKanban}
               title="No projects yet"
               description="Create your first project to start building a richer tracking-plan workspace with event coverage, scans, and monitoring."
-              action={
+              action={canCreateProject ? (
                 <div className="flex gap-2">
                   <Button
                     variant="outline"
@@ -400,7 +409,7 @@ export default function MainPage() {
                     New project
                   </Button>
                 </div>
-              }
+              ) : undefined}
             />
           )}
         </>
@@ -544,9 +553,11 @@ function SignalsBanner({
 
 function ProjectCard({
   project,
+  canDelete,
   onDelete,
 }: {
   project: Project
+  canDelete: boolean
   onDelete: () => void
 }) {
   const status = getProjectStatus(project.summary)
@@ -599,15 +610,17 @@ function ProjectCard({
             <span className="mono">{project.slug}</span> · Updated {formatDate(project.updated_at)}
           </p>
         </div>
-        <Button
-          variant="ghost"
-          size="icon"
-          className="shrink-0 text-muted-foreground hover:text-destructive"
-          onClick={onDelete}
-          aria-label={`Delete ${project.name}`}
-        >
-          <Trash2 className="h-3.5 w-3.5" />
-        </Button>
+        {canDelete && (
+          <Button
+            variant="ghost"
+            size="icon"
+            className="shrink-0 text-muted-foreground hover:text-destructive"
+            onClick={onDelete}
+            aria-label={`Delete ${project.name}`}
+          >
+            <Trash2 className="h-3.5 w-3.5" />
+          </Button>
+        )}
       </div>
 
       <CardContent className="space-y-4 px-4 py-4">
@@ -866,4 +879,3 @@ function describeScanJobTiming(job: ProjectLatestScanJob) {
   }
   return `Queued ${formatDateTime(job.created_at)}`
 }
-
