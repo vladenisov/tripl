@@ -2,18 +2,39 @@ import { render, screen } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { MemoryRouter } from 'react-router-dom'
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { AuthContext, type AuthContextValue } from '@/components/auth-context'
 import ProjectsPage from './ProjectsPage'
 
-function renderProjectsPage() {
+function authValue(role: 'owner' | 'editor' | 'viewer'): AuthContextValue {
+  return {
+    user: {
+      id: `${role}-1`,
+      email: `${role}@example.com`,
+      name: role,
+      role,
+      created_at: '2026-01-01T00:00:00Z',
+      updated_at: '2026-01-01T00:00:00Z',
+    },
+    status: 'authenticated',
+    error: null,
+    isLoggingOut: false,
+    logout: async () => {},
+    refresh: () => {},
+  }
+}
+
+function renderProjectsPage(role: 'owner' | 'editor' | 'viewer' = 'owner') {
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false } },
   })
 
   return render(
     <QueryClientProvider client={queryClient}>
-      <MemoryRouter>
-        <ProjectsPage />
-      </MemoryRouter>
+      <AuthContext.Provider value={authValue(role)}>
+        <MemoryRouter>
+          <ProjectsPage />
+        </MemoryRouter>
+      </AuthContext.Provider>
     </QueryClientProvider>,
   )
 }
@@ -128,6 +149,55 @@ describe('ProjectsPage', () => {
     expect(screen.getByText('2 active')).toBeInTheDocument()
     expect(screen.getByText('Open Signal')).toBeInTheDocument()
     expect(screen.getByText('Open Project')).toBeInTheDocument()
+  })
+
+  it('hides project deletion from editors', async () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation((input: RequestInfo | URL) => {
+      const url =
+        typeof input === 'string'
+          ? input
+          : input instanceof URL
+            ? input.toString()
+            : input.url
+
+      if (url.endsWith('/api/v1/projects')) {
+        return Promise.resolve(jsonResponse([
+          {
+            id: 'proj-1',
+            name: 'Alpha',
+            slug: 'alpha',
+            description: '',
+            created_at: '2026-04-01T09:00:00Z',
+            updated_at: '2026-04-10T09:00:00Z',
+            summary: {
+              event_type_count: 0,
+              event_count: 0,
+              active_event_count: 0,
+              implemented_event_count: 0,
+              review_pending_event_count: 0,
+              archived_event_count: 0,
+              variable_count: 0,
+              scan_count: 0,
+              alert_destination_count: 0,
+              monitoring_signal_count: 0,
+              latest_scan_job: null,
+              latest_signal: null,
+            },
+          },
+        ]))
+      }
+
+      if (url.endsWith('/api/v1/data-sources')) {
+        return Promise.resolve(jsonResponse([]))
+      }
+
+      return Promise.reject(new Error(`Unexpected request: ${url}`))
+    })
+
+    renderProjectsPage('editor')
+
+    expect(await screen.findByText('Alpha')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /Delete Alpha/i })).not.toBeInTheDocument()
   })
 
   it('shows an error instead of the empty state when the backend is unavailable', async () => {

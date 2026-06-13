@@ -41,6 +41,7 @@ Scopes:
 
 - `read`: allowed on `GET` endpoints only. Use this for retrieval, search, indexing, and agent context loading.
 - `write`: allowed on mutation endpoints, subject to the user role behind the key. Editor-only routes still require an editor or owner user.
+- Owner-only security and instance-administration routes require an interactive owner session; API keys do not perform owner-only actions.
 
 Project scope:
 

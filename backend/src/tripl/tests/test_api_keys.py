@@ -129,6 +129,59 @@ async def test_read_key_cannot_manage_api_keys(
 
 
 @pytest.mark.asyncio
+async def test_viewer_can_create_read_key_but_not_write_key(anon_client: AsyncClient) -> None:
+    owner = await anon_client.post(
+        "/api/v1/auth/register",
+        json={
+            "email": "api-owner@example.com",
+            "password": "Password123!",
+            "name": "Owner",
+        },
+    )
+    assert owner.status_code == 201
+
+    await anon_client.post("/api/v1/auth/logout")
+    viewer = await anon_client.post(
+        "/api/v1/auth/register",
+        json={
+            "email": "api-viewer@example.com",
+            "password": "Password123!",
+            "name": "Viewer",
+        },
+    )
+    assert viewer.status_code == 201
+
+    await anon_client.post("/api/v1/auth/logout")
+    await anon_client.post(
+        "/api/v1/auth/login",
+        json={"email": "api-owner@example.com", "password": "Password123!"},
+    )
+    users = await anon_client.get("/api/v1/users")
+    assert users.status_code == 200
+    viewer_id = next(u["id"] for u in users.json() if u["email"] == "api-viewer@example.com")
+    role_update = await anon_client.patch(f"/api/v1/users/{viewer_id}", json={"role": "viewer"})
+    assert role_update.status_code == 200
+
+    await anon_client.post("/api/v1/auth/logout")
+    await anon_client.post(
+        "/api/v1/auth/login",
+        json={"email": "api-viewer@example.com", "password": "Password123!"},
+    )
+
+    read_key = await anon_client.post(
+        "/api/v1/me/api-keys",
+        json={"name": "viewer-read", "scope": "read"},
+    )
+    assert read_key.status_code == 201, read_key.text
+
+    write_key = await anon_client.post(
+        "/api/v1/me/api-keys",
+        json={"name": "viewer-write", "scope": "write"},
+    )
+    assert write_key.status_code == 403
+
+
+@pytest.mark.asyncio
 async def test_owner_read_key_cannot_update_roles(
     anon_client: AsyncClient, client: AsyncClient
 ) -> None:
@@ -160,6 +213,32 @@ async def test_write_key_can_call_write_endpoints(
     )
     assert resp.status_code == 201
     assert resp.json()["name"] == "checkout"
+
+
+@pytest.mark.asyncio
+async def test_write_key_cannot_call_owner_only_endpoints(
+    anon_client: AsyncClient, client: AsyncClient
+) -> None:
+    await client.post("/api/v1/projects", json={"name": "P", "slug": "owner-key-block"})
+    users = await client.get("/api/v1/users")
+    assert users.status_code == 200
+    owner_id = users.json()[0]["id"]
+    _key_id, token = await _issue_key(client, scope="write")
+
+    role_update = await anon_client.patch(
+        f"/api/v1/users/{owner_id}",
+        json={"role": "editor"},
+        headers=_bearer(token),
+    )
+    assert role_update.status_code == 403
+    assert "owner session" in role_update.json()["detail"].lower()
+
+    project_delete = await anon_client.delete(
+        "/api/v1/projects/owner-key-block",
+        headers=_bearer(token),
+    )
+    assert project_delete.status_code == 403
+    assert "owner session" in project_delete.json()["detail"].lower()
 
 
 @pytest.mark.asyncio
@@ -293,13 +372,9 @@ async def test_verify_and_touch_throttles_last_used_writes(client: AsyncClient) 
 
     # Backdate beyond the interval: the next auth refreshes the timestamp.
     async with TestSessionLocal() as session:
-        row = await session.scalar(
-            select(ApiKey).where(ApiKey.key_hash == _hash_token(token))
-        )
+        row = await session.scalar(select(ApiKey).where(ApiKey.key_hash == _hash_token(token)))
         assert row is not None
-        row.last_used_at = datetime.now(UTC) - timedelta(
-            seconds=API_KEY_TOUCH_INTERVAL_SECONDS + 5
-        )
+        row.last_used_at = datetime.now(UTC) - timedelta(seconds=API_KEY_TOUCH_INTERVAL_SECONDS + 5)
         await session.commit()
 
     async with TestSessionLocal() as session:

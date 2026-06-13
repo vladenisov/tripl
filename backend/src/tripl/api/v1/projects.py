@@ -1,12 +1,13 @@
 from fastapi import APIRouter, Depends
 
-from tripl.api.deps import SessionDep, get_editor_user
+from tripl.api.deps import SessionDep, get_editor_user, get_owner_user
 from tripl.schemas.project import ProjectCreate, ProjectResponse, ProjectUpdate
 from tripl.services import demo_service, project_service
 
 router = APIRouter(prefix="/projects", tags=["projects"])
 
 _editor_required = [Depends(get_editor_user)]
+_owner_required = [Depends(get_owner_user)]
 
 
 @router.get("", response_model=list[ProjectResponse])
@@ -48,6 +49,6 @@ async def update_project(session: SessionDep, slug: str, data: ProjectUpdate) ->
     return await project_service.update_project(session, slug, data)
 
 
-@router.delete("/{slug}", status_code=204, dependencies=_editor_required)
+@router.delete("/{slug}", status_code=204, dependencies=_owner_required)
 async def delete_project(session: SessionDep, slug: str) -> None:
     await project_service.delete_project(session, slug)

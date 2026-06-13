@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { projectsApi } from '@/api/projects'
 import { searchApi } from '@/api/search'
+import { useAuth } from '@/components/auth-context'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
@@ -15,6 +16,7 @@ import { getErrorMessage } from '@/lib/utils'
 export function GeneralTab({ slug }: { slug: string }) {
   const qc = useQueryClient()
   const navigate = useNavigate()
+  const { user } = useAuth()
   const { confirm, dialog } = useConfirm()
   const projectQuery = useQuery({
     queryKey: ['project', slug],
@@ -80,6 +82,8 @@ export function GeneralTab({ slug }: { slug: string }) {
     && name === projectQuery.data.name
     && slugDraft === projectQuery.data.slug
     && description === (projectQuery.data.description ?? '')
+  const canEditProject = user?.role === 'owner' || user?.role === 'editor'
+  const canDeleteProject = user?.role === 'owner'
 
   return (
     <>
@@ -97,7 +101,7 @@ export function GeneralTab({ slug }: { slug: string }) {
               <form
                 onSubmit={(event) => {
                   event.preventDefault()
-                  if (slugError) return
+                  if (!canEditProject || slugError) return
                   updateMut.mutate()
                 }}
                 className="space-y-3"
@@ -109,6 +113,7 @@ export function GeneralTab({ slug }: { slug: string }) {
                       id="project-name"
                       value={name}
                       onChange={(event) => setName(event.target.value)}
+                      readOnly={!canEditProject}
                       required
                     />
                   </div>
@@ -119,6 +124,7 @@ export function GeneralTab({ slug }: { slug: string }) {
                       value={slugDraft}
                       onChange={(event) => setSlugDraft(event.target.value)}
                       className="font-mono"
+                      readOnly={!canEditProject}
                       required
                     />
                   </div>
@@ -136,6 +142,7 @@ export function GeneralTab({ slug }: { slug: string }) {
                     id="project-description"
                     value={description}
                     onChange={(event) => setDescription(event.target.value)}
+                    readOnly={!canEditProject}
                     rows={2}
                   />
                 </div>
@@ -146,7 +153,7 @@ export function GeneralTab({ slug }: { slug: string }) {
                   <Button
                     type="submit"
                     size="sm"
-                    disabled={updateMut.isPending || isPristine || !!slugError}
+                    disabled={!canEditProject || updateMut.isPending || isPristine || !!slugError}
                   >
                     {updateMut.isPending ? 'Saving…' : 'Save'}
                   </Button>
@@ -180,7 +187,7 @@ export function GeneralTab({ slug }: { slug: string }) {
                   variant="outline"
                   size="sm"
                   onClick={() => reindexMut.mutate()}
-                  disabled={reindexMut.isPending}
+                  disabled={!canEditProject || reindexMut.isPending}
                 >
                   <RefreshCw className={reindexMut.isPending ? 'mr-2 h-3.5 w-3.5 animate-spin' : 'mr-2 h-3.5 w-3.5'} />
                   {reindexMut.isPending ? 'Rebuilding…' : 'Rebuild index'}
@@ -189,36 +196,38 @@ export function GeneralTab({ slug }: { slug: string }) {
             </CardContent>
           </Card>
 
-          <Card style={{ borderColor: 'var(--danger)' }}>
-            <CardContent className="flex flex-col gap-3 p-4 sm:flex-row sm:items-center sm:justify-between">
-              <div className="min-w-0">
-                <h2 className="text-sm font-semibold" style={{ color: 'var(--danger)' }}>
-                  Delete project
-                </h2>
-                <p className="mt-1 text-xs text-muted-foreground">
-                  Permanently removes this project and all of its event types, events, fields,
-                  metrics, monitors, and history. This cannot be undone.
-                </p>
-                {deleteMut.isError && (
-                  <p className="mt-2 text-xs text-destructive">{getErrorMessage(deleteMut.error)}</p>
-                )}
-              </div>
-              <div className="shrink-0">
-                <Button
-                  type="button"
-                  variant="destructive"
-                  size="sm"
-                  onClick={() => {
-                    void handleDelete()
-                  }}
-                  disabled={deleteMut.isPending}
-                >
-                  <Trash2 className="mr-2 h-3.5 w-3.5" />
-                  {deleteMut.isPending ? 'Deleting…' : 'Delete project'}
-                </Button>
-              </div>
-            </CardContent>
-          </Card>
+          {canDeleteProject && (
+            <Card style={{ borderColor: 'var(--danger)' }}>
+              <CardContent className="flex flex-col gap-3 p-4 sm:flex-row sm:items-center sm:justify-between">
+                <div className="min-w-0">
+                  <h2 className="text-sm font-semibold" style={{ color: 'var(--danger)' }}>
+                    Delete project
+                  </h2>
+                  <p className="mt-1 text-xs text-muted-foreground">
+                    Permanently removes this project and all of its event types, events, fields,
+                    metrics, monitors, and history. This cannot be undone.
+                  </p>
+                  {deleteMut.isError && (
+                    <p className="mt-2 text-xs text-destructive">{getErrorMessage(deleteMut.error)}</p>
+                  )}
+                </div>
+                <div className="shrink-0">
+                  <Button
+                    type="button"
+                    variant="destructive"
+                    size="sm"
+                    onClick={() => {
+                      void handleDelete()
+                    }}
+                    disabled={deleteMut.isPending}
+                  >
+                    <Trash2 className="mr-2 h-3.5 w-3.5" />
+                    {deleteMut.isPending ? 'Deleting…' : 'Delete project'}
+                  </Button>
+                </div>
+              </CardContent>
+            </Card>
+          )}
         </div>
       )}
     </>
