@@ -131,7 +131,7 @@ describe('AppSidebar', () => {
       'Event types': '/p/demo/settings/event-types',
       'Schema & fields': '/p/demo/settings/meta-fields',
       'Plan branches': '/p/demo/settings/branches',
-      Monitors: '/p/demo/settings/monitoring',
+      Monitors: '/p/demo/monitors',
       Alerting: '/p/demo/settings/alerting',
       Reconciliation: '/p/demo/reconciliation',
       'Audit log': '/p/demo/settings/audit',

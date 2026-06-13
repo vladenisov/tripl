@@ -190,3 +190,32 @@ export interface AlertInboxListResponse {
   items: AlertInboxGroup[]
   total: number
 }
+
+export type MonitorStatus = 'firing' | 'warning' | 'healthy'
+
+export interface MonitorSummaryItem {
+  rule_id: string
+  rule_name: string
+  destination_id: string
+  destination_name: string
+  destination_type: AlertDestinationType
+  enabled: boolean
+  status: MonitorStatus
+  active_scope_count: number
+  firing_scope_count: number
+  last_anomaly_at: string | null
+  last_notified_at: string | null
+  notify_on_spike: boolean
+  notify_on_drop: boolean
+  min_percent_delta: number
+  min_expected_count: number
+  cooldown_minutes: number
+}
+
+export interface MonitorsSummaryResponse {
+  monitors: MonitorSummaryItem[]
+  firing_count: number
+  warning_count: number
+  healthy_count: number
+  total: number
+}

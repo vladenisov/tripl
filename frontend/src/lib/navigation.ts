@@ -105,9 +105,11 @@ export function buildNavGroups(slug: string, summary: ProjectSummary | undefined
           id: 'monitoring',
           label: 'Monitors',
           icon: Gauge,
-          href: `${base}/settings/monitoring`,
+          href: `${base}/monitors`,
           match: (p) =>
-            p.startsWith(`${base}/settings/monitoring`) || p.startsWith(`${base}/monitoring`),
+            p.startsWith(`${base}/monitors`)
+            || p.startsWith(`${base}/monitoring`)
+            || p.startsWith(`${base}/settings/monitoring`),
           count: signals > 0 ? formatCount(signals) : undefined,
           tone: signals > 0 ? 'danger' : undefined,
         },

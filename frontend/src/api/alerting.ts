@@ -8,11 +8,15 @@ import type {
   AlertRule,
   AlertRuleFilterPayload,
   AlertRuleSimulateResponse,
+  MonitorsSummaryResponse,
 } from '../types'
 
 export const alertingApi = {
   listDestinations: (slug: string) =>
     api.get<AlertDestination[]>(`/projects/${slug}/alert-destinations`),
+
+  getMonitorsSummary: (slug: string) =>
+    api.get<MonitorsSummaryResponse>(`/projects/${slug}/monitors-summary`),
 
   createDestination: (
     slug: string,
