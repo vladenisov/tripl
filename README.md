@@ -1,151 +1,155 @@
 # tripl
 
-Analytics tracking-plan, monitoring, and alerting service.
+**Keep your product analytics honest.**
 
-## What It Does
+tripl is the single place where your team writes down what you *intend* to
+track, checks it against what your apps are *actually* sending, and gets a
+heads-up the moment the numbers start to look wrong.
 
-`tripl` gives product and analytics teams one place to define what should be tracked, branch and review changes to that plan like code, compare it against what's actually flowing through the data warehouse, and react when volume, shape, or schema changes look suspicious.
+---
 
-### Tracking plan
+## The problem tripl solves
 
-- Project-scoped catalog of event types, fields, relations, meta fields, and reusable variables.
-- Event catalog with implementation, review, archive, and tag workflows.
-- Optional photo / Figma attachments per event with threaded comments (local or GCS storage backend).
-- Plan revisions + diff history.
-- PII / sensitivity tagging on fields.
+Most teams describe their analytics in a spreadsheet or a wiki page. That
+document is correct on the day it's written — and slowly drifts from reality
+after that. An event quietly stops firing. A field changes shape. A new release
+doubles the volume of one event and zeroes out another. Nobody notices until a
+dashboard looks strange weeks later and someone has to reverse-engineer what
+happened.
 
-### Branch-based plan workflow
+tripl closes that gap:
 
-- Every project has a real `main` branch plus working branches that deep-copy the live plan (event types, fields, events, variables, meta fields, relations, photos, threaded comments).
-- Review workflow: Draft → Ready for Review → Changes Requested → Approved → Merged / Closed.
-- Reviewer assignment, per-branch threaded comments, approval tracking.
-- Branch diff vs main, `behind_base` detection.
-- 3-way merge engine preserves live event/event-type IDs by natural key (attached metrics, photos, alerts survive a merge).
-- **Inline 3-way per-field merge** on event_type metadata: non-overlapping edits auto-merge; same-field conflicts are surfaced with base/ours/theirs payload and resolved through "Keep ours / Keep theirs" picks persisted per branch.
-- **Stakeholder ownership gating**: assign owners to event types; merging a branch that touches an owned type requires an approval from at least one owner.
-- Editor-level branch switcher threads a `?branch=` query param through every plan API and the React Query keys.
+- **One source of truth** for every event, field, and value your product tracks.
+- **Changes reviewed like code** — propose, review, and merge edits to the plan
+  on a branch, so the live plan is never broken by accident.
+- **Plan checked against real data** pulled straight from your data warehouse.
+- **Automatic alerts** when volume, shape, or schema drifts away from what's
+  expected.
 
-### Data ingestion & analysis
+It's built for **product managers, analysts, and data engineers** who own a
+tracking plan and are tired of finding out about broken analytics from a
+stakeholder instead of from a tool.
 
-- Data source adapters for **ClickHouse**, **BigQuery**, and **PostgreSQL** warehouses.
-- Async scan jobs via Celery + RabbitMQ.
-- Cardinality analysis, JSON-path detection, auto-generation of event types and variables from observed columns.
-- Metrics collection into PostgreSQL on a configurable interval (15m / 1h / 6h / 1d / 1w), with replay-by-chunk support.
-- Per-event and scan-wide metric breakdown dimensions.
+---
 
-### Monitoring & detection
+## See it without setting anything up
 
-- Anomaly detection on project-total, event-type, and event scopes with z-score thresholds and seasonality (STL/MSTL).
-- **Forecast preview**: next-bucket extrapolation rendered as a dashed line on the metric chart.
-- **Schema drift** detector + sample values + retention cleanup; surfaces in the catalog and as a dedicated alert scope.
-- **Distribution drift** (PSI) on event field values.
-- **Top-movers** drill-down on breakdowns.
-- Hour-of-day × weekday heatmap on monitoring detail.
-- Chart annotations (deploy / release markers) overlaid on metric charts.
+You don't need a data warehouse to explore tripl. On the projects screen click
+**Generate demo project** and tripl builds a complete, realistic project for
+you — event types, events, fields, collected metrics, a few anomalies, and some
+schema drift — all synthetic. Click around and you'll understand the product in
+a couple of minutes.
 
-### Alerting
+---
 
-- Destinations: **Slack**, **Telegram**, **generic webhook**, **email (SMTP)**, **Jira** (REST v3 + ADF body), **Linear** (GraphQL).
-- Rules with project-total / event-type / event scopes, spike / drop directions, percent + absolute deltas, cooldowns, message and item templates.
-- Anomaly explainability: sparkline + top movers embedded in the delivery payload.
-- Correlation-aware grouping so a single underlying cause produces one alert.
-- Alert rule **simulator**: replay the last N days against current rule config; template preview + cooldown A/B.
-- Delivery history with status, rendered message, and per-item context.
-- Audit log of plan and alerting mutations with filters.
+## What you can do with it
 
-### Access & governance
+tripl is organised around four jobs. They map directly to the four sections of
+the app's navigation.
 
-- Session-based authentication (HTTP-only cookie), email validated via `email-validator` (RFC 5321 / 6531).
-- **User-issued API keys** (Bearer tokens) for LLM agents and CLI scripts: `read` (GET only) or `write` (full editor) scope, optional `expires_in_days`, revocable from the Account page. Send as `Authorization: Bearer tk_…`; only the sha-256 hash is stored.
-- **RBAC**: owner / editor / viewer roles.
-- Audit log UI with filters (action, user, target type, email).
+### 📐 Plan — design what should be tracked
 
-### Observability
+- A clean, searchable **catalog** of every event, grouped by event type.
+- **Fields, variables, and relations** describe the shape of each event and the
+  values it can carry — define a value list once as a variable and reuse it
+  everywhere.
+- Mark events as implemented, reviewed, archived, or tag them however your team
+  works.
+- **Plan branches**: make changes on a branch, get them reviewed, and merge —
+  exactly like a pull request, but for your tracking plan. The live plan stays
+  stable while work is in progress, and merges are smart enough to keep the
+  history, metrics, and alerts attached to each event.
+- Flag fields that carry personal or sensitive data.
 
-- Prometheus `/metrics` endpoint (opt-in via `PROMETHEUS_METRICS_ENABLED`) exposing scan, anomaly, alert-delivery, schema-drift, and Celery task counters / histograms.
-- OpenTelemetry tracing (opt-in via `OTEL_EXPORTER_OTLP_ENDPOINT`) for FastAPI + SQLAlchemy + Celery — degrades to a logged no-op if the env is blank or the `opentelemetry-*` packages aren't installed.
+### 📊 Observe — watch the real data
 
-### Frontend workspace
+- An **Overview** that shows the health of a project at a glance.
+- **Monitors** that learn the normal rhythm of each event (including time-of-day
+  and day-of-week patterns) and raise a signal when something spikes, drops, or
+  changes shape. A short forecast shows where the next data point is expected to
+  land.
+- **Schema drift** detection — get told when a field appears, disappears, or
+  starts carrying values it never used to.
+- Drill into any signal to see what moved, when, and which slice of the data
+  caused it.
 
-- React 19 + TypeScript + Vite + Tailwind 4 + shadcn UI.
-- Pages: events catalog, project settings (event types, fields, meta fields, variables, relations, **branches**), monitoring + monitoring detail, data sources + scan configs, alerting (destinations / rules / deliveries / simulator), audit log.
-- Per-page branch switcher with `localStorage` persistence per project slug.
+### 🛡️ Govern — stay in control
 
-## Architecture
+- **Reconciliation** compares the plan to reality and answers two questions at
+  once: *what is documented but no longer arriving* (dead events), and *what is
+  arriving but isn't documented yet*.
+- An **audit log** records who changed what, with filters to find any change.
+- **Roles** (owner / editor / viewer) and revocable **API keys** keep access
+  appropriate, so scripts and AI agents get exactly the permissions they need
+  and nothing more.
 
-- **Backend**: FastAPI, SQLAlchemy async, PostgreSQL, Alembic, Pydantic v2.
-- **Worker**: Celery, RabbitMQ, multi-warehouse adapter (ClickHouse / BigQuery / Postgres), anomaly + scan + drift analyzers, alert dispatcher.
-- **Frontend**: React 19, TypeScript, Vite, Tailwind CSS 4, TanStack Query, Recharts, dnd-kit.
-- **Storage**: PostgreSQL for plan + metrics + audit + alerts; configurable photo storage backend (local filesystem or GCS).
-- **Observability**: Prometheus metrics + OpenTelemetry tracing (both opt-in via env).
-- **Local runtime**: Docker Compose for `postgres`, `rabbitmq`, `api`, `celery-worker`, `celery-beat`, and `frontend`.
+### 🔌 Connect — plug in your data
 
-Important runtime notes:
+- Connect a **data warehouse** as a data source: ClickHouse, BigQuery, or
+  PostgreSQL.
+- **Scans** read your real tables and propose events, fields, and value lists
+  automatically — a fast way to bootstrap a plan from data you already have, or
+  to keep an existing plan in step with what's flowing through.
 
-- Data warehouses (ClickHouse / BigQuery / Postgres source DBs) are external and are not started by Compose.
-- The API runs `alembic upgrade head` before serving requests.
-- Metrics collection and schema-drift retention cleanup are scheduled by Celery beat.
-- API health endpoint: `GET /health`.
+### 🔔 Alerting
 
-## Quick Start
+When a monitor fires, tripl can deliver the alert wherever your team already
+works: **Slack, Telegram, email, a generic webhook, Jira, or Linear**. Rules let
+you decide what's worth interrupting people for — direction (spike or drop),
+size of the change, quiet periods so you're not paged twice for the same cause,
+and message templates. A built-in **simulator** lets you replay recent data
+against a rule before you turn it on, so you can tune it without the noise.
+
+---
+
+## Quick start
 
 ```bash
 cp .env.example .env
 docker compose up -d --build
 ```
 
-Open the frontend, create the first account on the sign-in page, and the app will establish an HTTP-only session cookie for subsequent API access.
+Then open the app, create the first account on the sign-in page, and click
+**Generate demo project** to explore — or connect your own warehouse under
+**Connect → Data sources**.
 
-Endpoints:
+| Where | URL |
+|---|---|
+| App | http://localhost:5173 |
+| API | http://localhost:8000 |
+| API reference (interactive) | http://localhost:8000/docs |
 
-- Frontend: http://localhost:5173
-- API: http://localhost:8000
-- API docs: http://localhost:8000/docs
-- RabbitMQ management: http://localhost:15672
-- Prometheus metrics (when enabled): http://localhost:8000/metrics
+> Your analytics warehouse (ClickHouse / BigQuery / Postgres) lives outside
+> tripl and is not started for you — you connect it as a data source from inside
+> the app.
 
-## Development
-
-Backend:
-
-```bash
-cd backend
-# Python 3.14
-uv sync --extra dev
-uv run pytest
-uv run ruff check
-uv run mypy
-uv run alembic upgrade head           # apply migrations to dev DB
-uv run alembic revision --autogenerate -m "msg"   # generate migration
-```
-
-Frontend:
-
-```bash
-cd frontend
-# Node 26, pnpm 11.6
-pnpm install
-pnpm test
-pnpm build          # tsc -b && vite build
-pnpm lint           # eslint . --max-warnings 0
-```
-
-Docker hot reload:
-
-```bash
-docker compose up --build --watch
-```
-
-What reloads automatically:
-
-- frontend `src` and `public`: synced into the container and handled by Vite HMR;
-- backend `src`: synced into the API container and reloaded by `uvicorn --reload`;
-- Celery worker and beat: synced backend changes trigger container restart;
-- `package.json`, `pnpm-lock.yaml`, `pnpm-workspace.yaml`, `.node-version`, `pyproject.toml`, `uv.lock`, and Dockerfiles: trigger image rebuild.
+---
 
 ## Documentation
 
-- [CONTRIBUTING.md](CONTRIBUTING.md): local setup, commands, and API overview
-- [docs/agent-api-guide.md](docs/agent-api-guide.md): OpenAPI + Bearer-key guide for external LLM agents and CLI scripts
-- [PLAN.md](PLAN.md): product scope, architecture map, and future roadmap
-- [AGENTS.md](AGENTS.md): repo navigation map for coding agents
+New to tripl? Start at the top and work down:
+
+- **[docs/concepts.md](docs/concepts.md)** — the ideas behind tripl in plain
+  language: tracking plans, events, branches, monitors, and how they fit
+  together. Read this first.
+- **[docs/user-guide.md](docs/user-guide.md)** — a hands-on walkthrough, from
+  your first project to a working alert.
+- **[docs/agent-api-guide.md](docs/agent-api-guide.md)** — how to let an LLM
+  agent or a script read and update the plan through the API.
+
+For people working on tripl itself:
+
+- **[docs/architecture.md](docs/architecture.md)** — how the system is built and
+  why; the technical details that used to live in this file.
+- **[CONTRIBUTING.md](CONTRIBUTING.md)** — local setup, commands, and project
+  structure.
+- **[PLAN.md](PLAN.md)** — product scope and roadmap.
+- **[AGENTS.md](AGENTS.md)** — repo navigation map for coding agents.
+
+---
+
+## What it's built with, in one line
+
+A FastAPI + PostgreSQL backend, a Celery worker that talks to your warehouses,
+and a React frontend — all runnable locally with Docker Compose. The full story
+is in **[docs/architecture.md](docs/architecture.md)**.
