@@ -23,6 +23,7 @@ from tripl.worker.analyzers.anomaly_detector import (
     DetectedAnomaly,
     SeriesPoint,
     detect_anomalies,
+    required_history_buckets,
 )
 from tripl.worker.utils.intervals import get_interval
 
@@ -430,8 +431,10 @@ def _recalculate_metric_anomalies(
         return 0
 
     interval_spec = get_interval(config.interval)
-    history_from = evaluation_start - interval_spec.delta * project_settings.baseline_window_buckets
     settings = _build_anomaly_settings(project_settings)
+    history_from = evaluation_start - interval_spec.delta * required_history_buckets(
+        interval_spec.delta, settings
+    )
     anomalies_detected = 0
 
     if project_settings.detect_project_total:
@@ -590,8 +593,10 @@ def _recalculate_metric_breakdown_anomalies(
         return 0
 
     interval_spec = get_interval(config.interval)
-    history_from = evaluation_start - interval_spec.delta * project_settings.baseline_window_buckets
     settings = _build_anomaly_settings(project_settings)
+    history_from = evaluation_start - interval_spec.delta * required_history_buckets(
+        interval_spec.delta, settings
+    )
     anomalies_detected = 0
 
     if project_settings.detect_project_total:

@@ -5,6 +5,7 @@ from tripl.worker.analyzers.anomaly_detector import (
     SeriesPoint,
     detect_anomalies,
     forecast_next_buckets,
+    required_history_buckets,
 )
 
 
@@ -273,3 +274,116 @@ def test_forecast_next_buckets_predicts_seasonal_pattern() -> None:
 def test_forecast_next_buckets_handles_zero_horizon() -> None:
     points = [SeriesPoint(bucket=_bucket(hour), count=10) for hour in range(50)]
     assert forecast_next_buckets(points, interval=timedelta(hours=1), horizon=0) == []
+
+
+def _weekly_pattern_count(hour: int) -> int:
+    """Deterministic hourly series with a daily shape and a weekend dip — the
+    kind of strongly seasonal volume that made the old detector fire every
+    cycle at the same phase."""
+    hour_of_day = hour % 24
+    day_of_week = (hour // 24) % 7
+    if 9 <= hour_of_day < 12:
+        level = 600
+    elif 12 <= hour_of_day < 18:
+        level = 450
+    elif 18 <= hour_of_day < 22:
+        level = 300
+    else:
+        level = 120  # overnight trough
+    if day_of_week in (5, 6):
+        level = int(level * 0.6)  # weekend
+    return level
+
+
+def _four_weeks() -> list[SeriesPoint]:
+    return [
+        SeriesPoint(bucket=_bucket(hour), count=_weekly_pattern_count(hour))
+        for hour in range(24 * 28)
+    ]
+
+
+def test_required_history_buckets_covers_longest_seasonal_cycle() -> None:
+    # Hourly: 3 weeks (hour-of-week * 3) dominates the 14-bucket rolling window.
+    assert required_history_buckets(timedelta(hours=1), SETTINGS) == 24 * 7 * 3
+    assert required_history_buckets(timedelta(hours=6), SETTINGS) == 4 * 7 * 3
+    assert required_history_buckets(timedelta(days=1), SETTINGS) == 7 * 3
+
+
+def test_phase_baseline_no_false_positive_on_recurring_seasonal_trough() -> None:
+    """Regression: a strongly seasonal series with recurring daily troughs and a
+    weekend dip must not flag the trough as a drop every cycle. The whole last
+    day is evaluated; a clean series must yield zero anomalies."""
+    points = _four_weeks()
+
+    anomalies = detect_anomalies(
+        points,
+        interval=timedelta(hours=1),
+        evaluation_start=_bucket(24 * 28 - 24),
+        evaluation_end=_bucket(24 * 28),
+        settings=SETTINGS,
+    )
+
+    assert anomalies == []
+
+
+def test_phase_baseline_catches_real_drop_at_trough() -> None:
+    points = _four_weeks()
+    trough_hour = 24 * 28 - 20  # 04:00 on the last day, normally the daily low
+    points[trough_hour] = SeriesPoint(
+        bucket=_bucket(trough_hour), count=_weekly_pattern_count(trough_hour) // 4
+    )
+
+    anomalies = detect_anomalies(
+        points,
+        interval=timedelta(hours=1),
+        evaluation_start=_bucket(trough_hour),
+        evaluation_end=_bucket(24 * 28),
+        settings=SETTINGS,
+    )
+
+    drop = next(anomaly for anomaly in anomalies if anomaly.bucket == _bucket(trough_hour))
+    assert drop.direction == "drop"
+
+
+def test_phase_baseline_catches_spike_at_peak() -> None:
+    points = _four_weeks()
+    peak_hour = 24 * 28 - 14  # 10:00 on the last day, normally the daily peak
+    points[peak_hour] = SeriesPoint(
+        bucket=_bucket(peak_hour), count=_weekly_pattern_count(peak_hour) * 3
+    )
+
+    anomalies = detect_anomalies(
+        points,
+        interval=timedelta(hours=1),
+        evaluation_start=_bucket(peak_hour),
+        evaluation_end=_bucket(24 * 28),
+        settings=SETTINGS,
+    )
+
+    spike = next(anomaly for anomaly in anomalies if anomaly.bucket == _bucket(peak_hour))
+    assert spike.direction == "spike"
+
+
+def test_hybrid_detects_sustained_level_shift_on_seasonal_series() -> None:
+    """A sustained +35% step on top of the seasonal pattern should surface,
+    via either the per-bucket phase baseline or the deseasonalized trend-shift
+    detector."""
+    points = [
+        SeriesPoint(bucket=_bucket(hour), count=_weekly_pattern_count(hour))
+        for hour in range(24 * 28)
+    ]
+    shift_start = 24 * 23  # last 5 days run 35% hot
+    for hour in range(shift_start, 24 * 28):
+        points[hour] = SeriesPoint(
+            bucket=_bucket(hour), count=int(_weekly_pattern_count(hour) * 1.35)
+        )
+
+    anomalies = detect_anomalies(
+        points,
+        interval=timedelta(hours=1),
+        evaluation_start=_bucket(24 * 28 - 1),
+        evaluation_end=_bucket(24 * 28),
+        settings=SETTINGS,
+    )
+
+    assert any(anomaly.direction == "spike" for anomaly in anomalies)
