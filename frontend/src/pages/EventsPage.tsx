@@ -323,6 +323,7 @@ export default function EventsPage() {
             metaFilters={metaFilters}
             updateMetaFilter={updateMetaFilter}
             events={events}
+            total={total}
             virtualize={virtualize}
             virtualItems={virtualItems}
             totalVirtualSize={totalVirtualSize}

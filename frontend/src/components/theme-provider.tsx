@@ -28,7 +28,7 @@ type ThemeProviderState = {
 const initialState: ThemeProviderState = {
   theme: "system",
   accent: "teal",
-  density: "cozy",
+  density: "compact",
   chartStyle: "line",
   setTheme: () => null,
   setAccent: () => null,
@@ -56,7 +56,7 @@ export function ThemeProvider({
   children,
   defaultTheme = "dark",
   defaultAccent = "teal",
-  defaultDensity = "cozy",
+  defaultDensity = "compact",
   defaultChartStyle = "line",
   storageKey = "tripl-ui-theme",
 }: ThemeProviderProps) {
