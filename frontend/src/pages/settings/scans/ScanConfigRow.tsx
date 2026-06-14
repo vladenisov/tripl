@@ -1,4 +1,4 @@
-import { ChevronRight, Pencil, Trash2 } from 'lucide-react'
+import { ChevronRight, Trash2 } from 'lucide-react'
 import type { ScanConfig } from '@/types'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -8,13 +8,11 @@ export function ScanConfigRow({
   sc,
   dsName,
   onNavigate,
-  onEdit,
   onDelete,
 }: {
   sc: ScanConfig
   dsName: string
   onNavigate: () => void
-  onEdit: () => void
   onDelete: () => void
 }) {
   return (
@@ -50,15 +48,6 @@ export function ScanConfigRow({
           )}
         </div>
         <div className="flex items-center gap-2">
-          <Button
-            variant="ghost"
-            size="icon"
-            className="h-7 w-7"
-            title="Edit scan config"
-            onClick={e => { e.stopPropagation(); onEdit() }}
-          >
-            <Pencil className="h-3 w-3" />
-          </Button>
           <Button
             variant="ghost"
             size="icon"
