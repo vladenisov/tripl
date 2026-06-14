@@ -180,6 +180,18 @@ export function ScanDetail({ slug, scanConfig, eventTypes, branchId }: { slug: s
                 </strong>
               </span>
             )}
+            {scanConfig.app_version_column && (
+              <span>
+                Version:
+                <strong className="text-foreground">
+                  {' '}
+                  {scanConfig.app_version_column}
+                  {scanConfig.app_version_keep_releases
+                    ? ` · keep ${scanConfig.app_version_keep_releases}`
+                    : ' · default retention'}
+                </strong>
+              </span>
+            )}
             {scanConfig.event_group_rules.length > 0 && (
               <span>
                 Groups:

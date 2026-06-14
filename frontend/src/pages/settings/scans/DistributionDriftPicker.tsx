@@ -8,16 +8,18 @@ export function DistributionDriftPicker({
   selectedFields,
   eventTypeColumn,
   timeColumn,
+  appVersionColumn,
   onToggleField,
 }: {
   columns: ScanConfigPreview['columns']
   selectedFields: string[]
   eventTypeColumn: string
   timeColumn: string
+  appVersionColumn: string
   onToggleField: (field: string) => void
 }) {
   const availableColumns = columns.filter(column => !isJsonPreviewType(column.type_name))
-  const reservedColumns = new Set([eventTypeColumn, timeColumn].filter(Boolean))
+  const reservedColumns = new Set([eventTypeColumn, timeColumn, appVersionColumn].filter(Boolean))
 
   return (
     <div className="space-y-3 rounded-lg border bg-muted/20 p-4">

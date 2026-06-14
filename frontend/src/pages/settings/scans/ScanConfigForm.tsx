@@ -11,6 +11,7 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Textarea } from '@/components/ui/textarea'
 import { ErrorState } from '@/components/error-state'
+import { AppVersionFields } from './AppVersionFields'
 import { CreateMissingFieldsButton } from './CreateMissingFieldsButton'
 import { DistributionDriftPicker } from './DistributionDriftPicker'
 import { EventGroupRulesEditor } from './EventGroupRulesEditor'
@@ -49,6 +50,8 @@ export function ScanCreateDialog({
   const [eventTypeId, setEventTypeId] = useState('')
   const [eventTypeColumn, setEventTypeColumn] = useState('')
   const [timeColumn, setTimeColumn] = useState('')
+  const [appVersionColumn, setAppVersionColumn] = useState('')
+  const [appVersionKeepReleases, setAppVersionKeepReleases] = useState('')
   const [eventNameFormat, setEventNameFormat] = useState('')
   const [jsonValuePaths, setJsonValuePaths] = useState<string[]>([])
   const [eventGroupRules, setEventGroupRules] = useState<UiEventGroupRule[]>([])
@@ -77,7 +80,8 @@ export function ScanCreateDialog({
     onClose()
     setDsId(''); setScanName(''); setBaseQuery('')
     setEventTypeId(''); setEventTypeColumn('')
-    setTimeColumn(''); setEventNameFormat('')
+    setTimeColumn(''); setAppVersionColumn(''); setAppVersionKeepReleases('')
+    setEventNameFormat('')
     setJsonValuePaths([]); setMetricBreakdownColumns([])
     setEventGroupRules([])
     setDistributionDriftFields([])
@@ -101,6 +105,8 @@ export function ScanCreateDialog({
         metric_breakdown_columns: metricBreakdownColumns,
         metric_breakdown_values_limit: metricBreakdownValuesLimit ? Number(metricBreakdownValuesLimit) : null,
         distribution_drift_fields: distributionDriftFields,
+        app_version_column: appVersionColumn || null,
+        app_version_keep_releases: appVersionColumn ? parseOptionalPositiveInt(appVersionKeepReleases) : null,
         cardinality_threshold: cardinalityThreshold,
         interval: interval || null,
         replay_chunk_interval: chunkInterval || null,
@@ -127,18 +133,24 @@ export function ScanCreateDialog({
       setPreview(data)
       if (!data.columns.some(column => column.name === eventTypeColumn)) setEventTypeColumn('')
       if (!data.columns.some(column => column.name === timeColumn)) setTimeColumn('')
+      if (!data.columns.some(column => column.name === appVersionColumn)) {
+        setAppVersionColumn('')
+        setAppVersionKeepReleases('')
+      }
       setMetricBreakdownColumns(current =>
         current.filter(column =>
           data.columns.some(item => item.name === column)
           && column !== eventTypeColumn
-          && column !== timeColumn,
+          && column !== timeColumn
+          && column !== appVersionColumn,
         ),
       )
       setDistributionDriftFields(current =>
         current.filter(field =>
           data.columns.some(item => item.name === field)
           && field !== eventTypeColumn
-          && field !== timeColumn,
+          && field !== timeColumn
+          && field !== appVersionColumn,
         ),
       )
     },
@@ -160,6 +172,13 @@ export function ScanCreateDialog({
     setDistributionDriftFields(current =>
       current.includes(field) ? current.filter(item => item !== field) : [...current, field],
     )
+  }
+
+  const handleAppVersionColumnChange = (column: string) => {
+    setAppVersionColumn(column)
+    setMetricBreakdownColumns(current => current.filter(item => item !== column))
+    setDistributionDriftFields(current => current.filter(item => item !== column))
+    if (!column) setAppVersionKeepReleases('')
   }
 
   return (
@@ -259,6 +278,13 @@ export function ScanCreateDialog({
               </div>
               <div className="grid gap-2"><Label>Event Name Format (optional)</Label><Input value={eventNameFormat} onChange={e => setEventNameFormat(e.target.value)} placeholder="e.g. {action}:{category}" /></div>
             </div>
+            <AppVersionFields
+              columns={preview?.columns ?? null}
+              appVersionColumn={appVersionColumn}
+              keepReleases={appVersionKeepReleases}
+              onAppVersionColumnChange={handleAppVersionColumnChange}
+              onKeepReleasesChange={setAppVersionKeepReleases}
+            />
             {preview && eventTypeId && (
               <CreateMissingFieldsButton
                 slug={slug}
@@ -282,6 +308,7 @@ export function ScanCreateDialog({
                 selectedColumns={metricBreakdownColumns}
                 eventTypeColumn={eventTypeColumn}
                 timeColumn={timeColumn}
+                appVersionColumn={appVersionColumn}
                 valuesLimit={metricBreakdownValuesLimit}
                 onToggleColumn={toggleMetricBreakdownColumn}
                 onValuesLimitChange={setMetricBreakdownValuesLimit}
@@ -293,6 +320,7 @@ export function ScanCreateDialog({
                 selectedFields={distributionDriftFields}
                 eventTypeColumn={eventTypeColumn}
                 timeColumn={timeColumn}
+                appVersionColumn={appVersionColumn}
                 onToggleField={toggleDistributionDriftField}
               />
             )}

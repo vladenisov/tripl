@@ -43,6 +43,12 @@ export function ScanConfigRow({
           {sc.distribution_drift_fields.length > 0 && (
             <Badge variant="outline" className="text-xs">Distribution {sc.distribution_drift_fields.length}</Badge>
           )}
+          {sc.app_version_column && (
+            <Badge variant="outline" className="text-xs">
+              Version {sc.app_version_column}
+              {sc.app_version_keep_releases ? ` · keep ${sc.app_version_keep_releases}` : ''}
+            </Badge>
+          )}
           {sc.event_group_rules.length > 0 && (
             <Badge variant="outline" className="text-xs">Groups {sc.event_group_rules.length}</Badge>
           )}
