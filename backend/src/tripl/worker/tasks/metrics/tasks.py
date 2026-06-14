@@ -65,6 +65,7 @@ from tripl.worker.tasks.metrics.metric_rows import (
     _get_scan_json_value_path_map,
     _upsert_event_metrics_rows,
 )
+from tripl.worker.tasks.metrics.regression import _recalculate_release_regressions
 from tripl.worker.tasks.metrics.signals import (
     _get_visible_signal_scope_keys,
 )
@@ -428,6 +429,12 @@ def collect_metrics(
             evaluation_start=time_from_dt,
             evaluation_end=time_to_dt,
         )
+        release_regressions_detected = _recalculate_release_regressions(
+            session,
+            config,
+            evaluation_start=time_from_dt,
+            evaluation_end=time_to_dt,
+        )
         delivery_ids = _prepare_alert_deliveries(
             session,
             config,
@@ -470,6 +477,7 @@ def collect_metrics(
             "contract_violations_detected": contract_violations_detected,
             "anomalies_detected": anomalies_detected,
             "breakdown_anomalies_detected": breakdown_anomalies_detected,
+            "release_regressions_detected": release_regressions_detected,
             "signals_added": signals_added,
             "signals_removed": signals_removed,
             "alerts_queued": len(delivery_ids),

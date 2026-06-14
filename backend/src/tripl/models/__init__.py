@@ -37,6 +37,7 @@ from tripl.models.plan_branch_reviewer import PlanBranchReviewer
 from tripl.models.plan_revision import PlanRevision
 from tripl.models.project import Project
 from tripl.models.project_anomaly_settings import ProjectAnomalySettings
+from tripl.models.release_regression import ReleaseRegression
 from tripl.models.scan_config import ScanConfig
 from tripl.models.scan_job import ScanJob
 from tripl.models.scan_preview_job import ScanPreviewJob
@@ -86,6 +87,7 @@ __all__ = [
     "PlanBranchReviewer",
     "PlanRevision",
     "ProjectAnomalySettings",
+    "ReleaseRegression",
     "Variable",
     "DataSource",
     "DistributionDrift",

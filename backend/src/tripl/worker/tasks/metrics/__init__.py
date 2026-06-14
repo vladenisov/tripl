@@ -46,6 +46,7 @@ from tripl.worker.tasks.metrics.metric_rows import (
     _upsert_event_metric_breakdown_rows,
     _upsert_event_metrics_rows,
 )
+from tripl.worker.tasks.metrics.regression import _recalculate_release_regressions
 from tripl.worker.tasks.metrics.schedule import check_metrics_due
 from tripl.worker.tasks.metrics.schema_drift import (
     _detect_field_contract_violations,
@@ -96,6 +97,7 @@ __all__ = [
     "_parse_task_datetime",
     "_recalculate_metric_anomalies",
     "_recalculate_metric_breakdown_anomalies",
+    "_recalculate_release_regressions",
     "_serialize_distribution_top_movers",
     "_trim_alert_text",
     "_upsert_event_metric_breakdown_rows",

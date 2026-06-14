@@ -26,6 +26,7 @@ from tripl.models.metric_anomaly import MetricAnomaly
 from tripl.models.metric_breakdown_anomaly import MetricBreakdownAnomaly
 from tripl.models.project import Project
 from tripl.models.project_anomaly_settings import ProjectAnomalySettings
+from tripl.models.release_regression import ReleaseRegression
 from tripl.models.scan_config import ScanConfig
 from tripl.models.scan_job import ScanJob, ScanJobStatus
 from tripl.models.schema_drift import SchemaDrift
@@ -838,6 +839,163 @@ def test_collect_metrics_retains_latest_app_versions_by_semver(
             (row.breakdown_column, row.breakdown_value, row.is_other, row.count)
             for row in type_breakdowns
         } == expected
+
+
+def _seed_app_version_breakdowns(
+    session: Session,
+    config: ScanConfig,
+    *,
+    login_id: uuid.UUID,
+    filler_id: uuid.UUID,
+) -> None:
+    """Mature 2.0.0 across 10 daily buckets; 2.1.0 ships on day 7 (active) but
+    Login disappears (no 2.1.0 rows for it)."""
+    days = [datetime(2026, 1, d) for d in range(1, 11)]
+    for day in days:
+        for event_id, count in ((login_id, 100), (filler_id, 900)):
+            session.add(
+                EventMetricBreakdown(
+                    id=uuid.uuid4(),
+                    scan_config_id=config.id,
+                    event_id=event_id,
+                    event_type_id=None,
+                    bucket=day,
+                    breakdown_column="app_version",
+                    breakdown_value="2.0.0",
+                    is_other=False,
+                    count=count,
+                )
+            )
+    for day in days[6:]:
+        session.add(
+            EventMetricBreakdown(
+                id=uuid.uuid4(),
+                scan_config_id=config.id,
+                event_id=filler_id,
+                event_type_id=None,
+                bucket=day,
+                breakdown_column="app_version",
+                breakdown_value="2.1.0",
+                is_other=False,
+                count=500,
+            )
+        )
+
+
+def test_recalculate_release_regressions_flags_missing_event_idempotently(
+    sync_session_factory: sessionmaker[Session],
+) -> None:
+    eval_start = datetime(2026, 1, 1)
+    eval_end = datetime(2026, 1, 11)
+    with sync_session_factory() as session:
+        config = _create_scan_config(session, with_event_type=True)
+        config.app_version_column = "app_version"
+        login = Event(
+            id=uuid.uuid4(),
+            project_id=config.project_id,
+            event_type_id=config.event_type_id,
+            name="event_name=Login",
+            description="",
+            status="implemented",
+        )
+        filler = Event(
+            id=uuid.uuid4(),
+            project_id=config.project_id,
+            event_type_id=config.event_type_id,
+            name="event_name=Filler",
+            description="",
+            status="implemented",
+        )
+        session.add_all([login, filler])
+        session.commit()
+        login_id = login.id
+        _seed_app_version_breakdowns(session, config, login_id=login_id, filler_id=filler.id)
+        session.commit()
+
+        detected = metrics._recalculate_release_regressions(
+            session, config, evaluation_start=eval_start, evaluation_end=eval_end
+        )
+        session.commit()
+        assert detected == 1
+        rows = (
+            session.execute(
+                select(ReleaseRegression).where(ReleaseRegression.scan_config_id == config.id)
+            )
+            .scalars()
+            .all()
+        )
+        assert len(rows) == 1
+        regression = rows[0]
+        assert regression.scope_type == "event"
+        assert regression.event_id == login_id
+        assert regression.version == "2.1.0"
+        assert regression.previous_version == "2.0.0"
+        assert regression.kind == "missing"
+        assert regression.observed_count == 0
+        assert regression.expected_count == 200.0
+
+        # Re-run replaces, never accumulates.
+        detected_again = metrics._recalculate_release_regressions(
+            session, config, evaluation_start=eval_start, evaluation_end=eval_end
+        )
+        session.commit()
+        assert detected_again == 1
+        rows_again = (
+            session.execute(
+                select(ReleaseRegression).where(ReleaseRegression.scan_config_id == config.id)
+            )
+            .scalars()
+            .all()
+        )
+        assert len(rows_again) == 1
+
+
+def test_recalculate_release_regressions_inert_without_version_column(
+    sync_session_factory: sessionmaker[Session],
+) -> None:
+    with sync_session_factory() as session:
+        config = _create_scan_config(session, with_event_type=True)
+        # No app_version_column set: feature is inert and clears stale rows.
+        session.add(
+            ReleaseRegression(
+                id=uuid.uuid4(),
+                scan_config_id=config.id,
+                scope_type="event",
+                scope_ref="stale",
+                event_id=None,
+                event_type_id=None,
+                app_version_column="app_version",
+                version="9.9.9",
+                previous_version="9.8.0",
+                kind="missing",
+                observed_count=0,
+                expected_count=10.0,
+                ratio=0.0,
+                share_prev=0.5,
+                share_new=0.0,
+                release_share=0.5,
+                window_from=datetime(2026, 1, 1),
+                window_to=datetime(2026, 1, 2),
+            )
+        )
+        session.commit()
+
+        detected = metrics._recalculate_release_regressions(
+            session,
+            config,
+            evaluation_start=datetime(2026, 1, 1),
+            evaluation_end=datetime(2026, 1, 11),
+        )
+        session.commit()
+        assert detected == 0
+        rows = (
+            session.execute(
+                select(ReleaseRegression).where(ReleaseRegression.scan_config_id == config.id)
+            )
+            .scalars()
+            .all()
+        )
+        assert rows == []
 
 
 def test_collect_metrics_uses_event_level_breakdown_columns(
