@@ -9,13 +9,12 @@ import { useConfirm } from "@/hooks/useConfirm"
 import { Button } from "@/components/ui/button"
 import { EmptyState } from "@/components/empty-state"
 import { ScanConfigRow } from "./scans/ScanConfigRow"
-import { ScanCreateDialog, ScanEditDialog } from "./scans/ScanConfigForm"
+import { ScanCreateDialog } from "./scans/ScanConfigForm"
 
 export function ScansTab({ slug }: { slug: string }) {
   const qc = useQueryClient()
   const navigate = useNavigate()
   const [showForm, setShowForm] = useState(false)
-  const [editingScanConfig, setEditingScanConfig] = useState<ScanConfig | null>(null)
   const { confirm, dialog } = useConfirm()
 
   const { data: dataSources = [] } = useQuery({
@@ -69,20 +68,12 @@ export function ScansTab({ slug }: { slug: string }) {
         onClose={() => setShowForm(false)}
       />
 
-      <ScanEditDialog
-        key={editingScanConfig?.id ?? 'none'}
-        slug={slug}
-        scanConfig={editingScanConfig}
-        onClose={() => setEditingScanConfig(null)}
-      />
-
       {scanConfigs.map((sc: ScanConfig) => (
         <ScanConfigRow
           key={sc.id}
           sc={sc}
           dsName={dsMap.get(sc.data_source_id) ?? 'Unknown'}
           onNavigate={() => navigate(`/p/${slug}/settings/scans/${sc.id}`)}
-          onEdit={() => setEditingScanConfig(sc)}
           onDelete={() => handleDelete(sc)}
         />
       ))}
