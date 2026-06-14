@@ -17,7 +17,9 @@ from sqlalchemy.orm import Session
 
 from tripl.alerting_matching import (
     SCOPE_DISTRIBUTION_DRIFT,
+    SCOPE_RELEASE_REGRESSION,
     DistributionDriftAlertCandidate,
+    DriftAlertCandidate,
     SchemaDriftAlertCandidate,
     distribution_drift_scope_ref,
 )
@@ -26,6 +28,7 @@ from tripl.models.event import Event
 from tripl.models.event_metric import EventMetric
 from tripl.models.event_type import EventType
 from tripl.models.metric_anomaly import MetricAnomaly
+from tripl.models.release_regression import ReleaseRegression
 from tripl.models.scan_config import ScanConfig
 from tripl.models.schema_drift import SchemaDrift
 from tripl.worker.analyzers.anomaly_detector import (
@@ -211,6 +214,44 @@ def _get_active_schema_drift_candidates(
             drift_field=drift.field_name,
             drift_type=drift.drift_type,
             sample_value=_trim_alert_text(drift.sample_value),
+        )
+        candidates[(candidate.scope_type, candidate.scope_ref)] = candidate
+    return candidates
+
+
+def _get_active_release_regression_candidates(
+    session: Session,
+    config: ScanConfig,
+) -> dict[tuple[str, str], DriftAlertCandidate]:
+    """Turn the scan's current ReleaseRegression rows into alert candidates.
+
+    The recalculation step keeps only the latest release's regressions, so every
+    row here is current. Version context rides on the shared drift fields
+    (version -> drift_field, kind -> drift_type, previous release -> sample_value)
+    so it flows through the existing delivery-item and message machinery.
+    Naturally inert: no rows exist when the scan has no version column.
+    """
+    if not config.app_version_column:
+        return {}
+    candidates: dict[tuple[str, str], DriftAlertCandidate] = {}
+    for regression in session.execute(
+        select(ReleaseRegression)
+        .where(ReleaseRegression.scan_config_id == config.id)
+        .order_by(ReleaseRegression.scope_ref)
+    ).scalars():
+        candidate = DriftAlertCandidate(
+            id=regression.id,
+            scope_type=SCOPE_RELEASE_REGRESSION,
+            scope_ref=regression.scope_ref,
+            event_id=regression.event_id,
+            event_type_id=regression.event_type_id,
+            bucket=regression.window_to,
+            direction="drop",
+            actual_count=regression.observed_count,
+            expected_count=regression.expected_count,
+            drift_field=regression.version,
+            drift_type=regression.kind,
+            sample_value=regression.previous_version,
         )
         candidates[(candidate.scope_type, candidate.scope_ref)] = candidate
     return candidates

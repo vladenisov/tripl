@@ -11,7 +11,11 @@ import uuid
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from tripl.alerting_matching import SCOPE_DISTRIBUTION_DRIFT, AlertMatchCandidate
+from tripl.alerting_matching import (
+    SCOPE_DISTRIBUTION_DRIFT,
+    SCOPE_RELEASE_REGRESSION,
+    AlertMatchCandidate,
+)
 from tripl.models.alert_destination import AlertDestination
 from tripl.models.alert_rule import AlertRule
 from tripl.models.event import Event
@@ -76,6 +80,20 @@ def _build_alert_scope_names(
             select(Event.id, Event.name).where(Event.id.in_(event_ids))
         ).all():
             scope_names[(SCOPE_EVENT, str(event_id))] = name
+
+    # Release regressions borrow the name of their underlying event / event type
+    # (already resolved above) so the message shows "Login", not a raw UUID.
+    for anomaly in anomalies:
+        if anomaly.scope_type != SCOPE_RELEASE_REGRESSION:
+            continue
+        if anomaly.event_id is not None:
+            underlying = scope_names.get((SCOPE_EVENT, str(anomaly.event_id)))
+        elif anomaly.event_type_id is not None:
+            underlying = scope_names.get((SCOPE_EVENT_TYPE, str(anomaly.event_type_id)))
+        else:
+            underlying = None
+        if underlying is not None:
+            scope_names[(anomaly.scope_type, anomaly.scope_ref)] = underlying
 
     for anomaly in anomalies:
         key = (anomaly.scope_type, anomaly.scope_ref)
