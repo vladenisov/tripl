@@ -26,6 +26,7 @@ from tripl.models.event_metric_breakdown import EventMetricBreakdown
 from tripl.models.event_type import EventType
 from tripl.models.scan_config import ScanConfig
 from tripl.models.shadow_event_candidate import ShadowEventCandidate
+from tripl.semver import order_versions
 from tripl.worker.adapters.base import BaseAdapter
 from tripl.worker.analyzers.distribution_drift import TopShift, compute_psi
 from tripl.worker.analyzers.event_generator import (
@@ -37,6 +38,14 @@ from tripl.worker.analyzers.event_generator import (
 from tripl.worker.tasks.metrics._helpers import MAX_BREAKDOWN_VALUE_LENGTH
 
 logger = logging.getLogger(__name__)
+
+# How many latest releases (by SemVer order) to retain as explicit series when
+# a scan has no ``app_version_keep_releases`` override. Older releases collapse
+# into the shared "Other" bucket.
+DEFAULT_APP_VERSION_KEEP_RELEASES = 10
+# Sentinel breakdown value for releases outside the retained window. Mirrors the
+# warehouse adapters' own "Other" label so the UI renders both consistently.
+APP_VERSION_OTHER_LABEL = "Other"
 
 
 def _build_event_name_from_row(
@@ -686,6 +695,186 @@ def _collect_metric_breakdown_rows(
                 is_other,
             )
             type_agg[key] = type_agg.get(key, 0) + cnt
+
+    event_rows: list[dict[str, object]] = [
+        {
+            "id": uuid.uuid4(),
+            "scan_config_id": sc_id,
+            "event_id": ev_id,
+            "event_type_id": None,
+            "bucket": bucket,
+            "breakdown_column": column,
+            "breakdown_value": value,
+            "is_other": is_other,
+            "count": total,
+        }
+        for (sc_id, ev_id, bucket, column, value, is_other), total in event_agg.items()
+    ]
+    type_rows: list[dict[str, object]] = [
+        {
+            "id": uuid.uuid4(),
+            "scan_config_id": sc_id,
+            "event_id": None,
+            "event_type_id": et_id,
+            "bucket": bucket,
+            "breakdown_column": column,
+            "breakdown_value": value,
+            "is_other": is_other,
+            "count": total,
+        }
+        for (sc_id, et_id, bucket, column, value, is_other), total in type_agg.items()
+    ]
+    return event_rows, type_rows, truncated
+
+
+def _collect_app_version_breakdown_rows(
+    *,
+    adapter: BaseAdapter,
+    config: ScanConfig,
+    interval_ch_interval: str,
+    regular_cols: list[str],
+    json_cols: list[str],
+    json_value_path_map: dict[str, list[str]],
+    time_from: datetime,
+    time_to: datetime,
+    query_row_limit: int,
+    reg_index: dict[str, int],
+    json_index: dict[str, int],
+    n_reg: int,
+    gen_results: dict[str, GenerationResult],
+    single_result: GenerationResult | None,
+    et_by_name: dict[str, EventType],
+) -> tuple[list[dict[str, object]], list[dict[str, object]], bool]:
+    """Collect per-app-version metric series as EventMetricBreakdown rows.
+
+    Unlike generic breakdowns (top-N values by volume, selected in the
+    warehouse), version retention is SemVer-aware: every distinct version is
+    fetched (``values_limit=None``) and the latest ``app_version_keep_releases``
+    releases are kept as explicit series, with older releases collapsed into the
+    shared "Other" bucket here in Python. Rows use the same shape as
+    ``_collect_metric_breakdown_rows`` so callers store them on the existing
+    breakdown path. Returns empty (inert) when no version column is configured.
+
+    Retention is computed over the versions observed in this chunk, matching the
+    per-chunk nature of the generic top-N selection.
+    """
+    version_column = config.app_version_column
+    if not version_column:
+        return [], [], False
+    if not _is_supported_metric_breakdown_column(
+        config,
+        column=version_column,
+        regular_cols=regular_cols,
+    ):
+        logger.warning(
+            "Skipping unsupported app_version_column %r for scan %s",
+            version_column,
+            config.id,
+        )
+        return [], [], False
+
+    et_col_idx = reg_index.get(config.event_type_column) if config.event_type_column else None
+
+    (
+        _col_names,
+        breakdown_json_value_names,
+        rows,
+    ) = adapter.get_time_bucketed_breakdown_counts_multi(
+        config.base_query,
+        config.time_column or "",
+        interval_ch_interval,
+        [version_column],
+        regular_cols,
+        json_cols,
+        json_value_path_map,
+        time_from,
+        time_to,
+        values_limit=None,  # keep every version; retention is applied below by SemVer
+        limit=query_row_limit + 1,
+    )
+    truncated = len(rows) > query_row_limit
+    rows = rows[:query_row_limit]
+
+    # (scan_config_id, scope_id, bucket, version) -> count. The is_other split is
+    # deferred until every version is known so retention can be SemVer-aware.
+    event_counts: dict[tuple[uuid.UUID, uuid.UUID, datetime, str], int] = {}
+    type_counts: dict[tuple[uuid.UUID, uuid.UUID, datetime, str], int] = {}
+
+    for row in rows:
+        bucket = cast(datetime, row[0])
+        breakdown_column = str(row[1])
+        if breakdown_column != version_column:
+            continue
+        version_value = _normalize_breakdown_value(row[2])
+        data_row = row[4:]
+        cnt = int(cast(int | str | float, row[-1]))
+        col_meta: dict[str, dict[str, object]]
+        events_by_name: dict[str, Event]
+        event_type_id: uuid.UUID | None
+
+        if config.event_type_column and et_col_idx is not None:
+            et_name = str(data_row[et_col_idx])
+            event_type = et_by_name.get(et_name)
+            if event_type is None:
+                continue
+            event_type_id = event_type.id
+            gen_result: GenerationResult | None = gen_results.get(et_name)
+            if gen_result is None:
+                continue
+            col_meta = gen_result.col_meta
+            events_by_name = gen_result.events_by_name
+        else:
+            event_type_id = config.event_type_id
+            if single_result is None:
+                continue
+            col_meta = single_result.col_meta
+            events_by_name = single_result.events_by_name
+
+        event_name = _build_event_name_from_row(
+            data_row,
+            col_meta,
+            reg_index,
+            json_index,
+            n_reg,
+            breakdown_json_value_names,
+            config.event_name_format,
+            config.event_group_rules,
+        )
+
+        if event_name:
+            ev = events_by_name.get(event_name)
+            if isinstance(ev, Event):
+                event_key = (config.id, ev.id, bucket, version_value)
+                event_counts[event_key] = event_counts.get(event_key, 0) + cnt
+
+        # The version column is scan-wide, so it also rolls up to the event type.
+        if event_type_id:
+            type_key = (config.id, event_type_id, bucket, version_value)
+            type_counts[type_key] = type_counts.get(type_key, 0) + cnt
+
+    keep_releases = config.app_version_keep_releases or DEFAULT_APP_VERSION_KEEP_RELEASES
+    distinct_versions = {key[3] for key in event_counts} | {key[3] for key in type_counts}
+    kept_versions = (
+        set(order_versions(distinct_versions, reverse=True)[:keep_releases])
+        if distinct_versions
+        else set()
+    )
+
+    def _finalize(
+        counts: dict[tuple[uuid.UUID, uuid.UUID, datetime, str], int],
+    ) -> dict[tuple[uuid.UUID, uuid.UUID, datetime, str, str, bool], int]:
+        agg: dict[tuple[uuid.UUID, uuid.UUID, datetime, str, str, bool], int] = {}
+        for (sc_id, scope_id, bucket, version), total in counts.items():
+            if version in kept_versions:
+                value, is_other = version, False
+            else:
+                value, is_other = APP_VERSION_OTHER_LABEL, True
+            key = (sc_id, scope_id, bucket, version_column, value, is_other)
+            agg[key] = agg.get(key, 0) + total
+        return agg
+
+    event_agg = _finalize(event_counts)
+    type_agg = _finalize(type_counts)
 
     event_rows: list[dict[str, object]] = [
         {
