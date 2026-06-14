@@ -132,6 +132,10 @@ With a plan and collected metrics, monitoring comes to life.
   - a **breakdown** of which slice of the data actually moved.
 - **Schema drift** shows up in the catalog when a field appears, disappears, or
   starts carrying new values.
+- **By version** — if the scan names an app version column, this view splits an
+  event's volume across recent releases and lists **release regressions**: what
+  disappeared or dropped in the latest release versus the one before it. Scans
+  without a version column simply don't show this view.
 
 Tune what counts as "abnormal" in the monitoring settings if the defaults are
 too sensitive or too quiet for a given event.
@@ -147,7 +151,8 @@ Monitoring is only useful if the right person hears about it.
 2. **Rules** — create a rule that says *which* signals matter and *where* they
    go. Set the scope, the direction (spike, drop, or both), how big a change is
    worth sending, and a **cooldown** so the same problem doesn't notify you
-   repeatedly. Write the message template.
+   repeatedly. Write the message template. **Release regressions** are their own
+   opt-in toggle on the rule, kept separate from the generic volume anomalies.
 3. **Simulate before you commit.** Use the **simulator** to replay the last
    several days against your rule and see exactly what it *would* have sent.
    Adjust until it's signal, not noise.
