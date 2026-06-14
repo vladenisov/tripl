@@ -584,8 +584,8 @@ describe('ProjectSettingsPage', () => {
     )
 
     expect(await screen.findByText('Main Slack')).toBeInTheDocument()
-    expect(screen.getByText('Ops Bot')).toBeInTheDocument()
-    expect(screen.getByText('chat -100123')).toBeInTheDocument()
+    expect(await screen.findByText('Ops Bot')).toBeInTheDocument()
+    expect(await screen.findByText('chat -100123')).toBeInTheDocument()
   })
 
   it('prefills a new alert rule with the default template and list variable help', async () => {
@@ -1460,6 +1460,10 @@ describe('ProjectSettingsPage', () => {
         ])
       }
 
+      if (url.endsWith('/api/v1/projects/demo/scans/scan-1/jobs')) {
+        return mockJsonResponse([])
+      }
+
       if (url.endsWith('/api/v1/projects/demo/scans/preview') && init?.method === 'POST') {
         previewBodies.push(JSON.parse(String(init.body)))
         return mockJsonResponse({
@@ -1511,8 +1515,9 @@ describe('ProjectSettingsPage', () => {
       </QueryClientProvider>,
     )
 
-    expect(await screen.findByText('JSON keep 1')).toBeInTheDocument()
-    fireEvent.click(screen.getByTitle('Edit scan config'))
+    // Edit now lives on the scan detail page, not the list row — open it there.
+    fireEvent.click(await screen.findByText('Main scan'))
+    fireEvent.click(await screen.findByRole('button', { name: 'Edit' }))
 
     const dialog = await screen.findByRole('dialog')
     fireEvent.click(within(dialog).getByRole('button', { name: 'Load Preview' }))
