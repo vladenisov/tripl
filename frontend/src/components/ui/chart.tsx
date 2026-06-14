@@ -39,11 +39,13 @@ interface MetricsMultiSeriesChartProps {
     label: string
     data: EventMetricPoint[]
     color?: string
+    isHighlighted?: boolean
   }>
   className?: string
   height?: number
   granularity?: MetricsGranularity
   seriesLabel?: string
+  emptyLabel?: string
 }
 
 function formatTick(dateStr: string, granularity: MetricsGranularity) {
@@ -451,6 +453,7 @@ export function MetricsMultiSeriesChart({
   height = 300,
   granularity = 'hour',
   seriesLabel = 'events',
+  emptyLabel = 'No breakdown metrics available',
 }: MetricsMultiSeriesChartProps) {
   const chartSeries = useMemo(
     () => series
@@ -480,7 +483,7 @@ export function MetricsMultiSeriesChart({
   if (!chartSeries.length || !chartData.length) {
     return (
       <div className={cn('flex items-center justify-center text-muted-foreground text-sm', className)} style={{ height }}>
-        No breakdown metrics available
+        {emptyLabel}
       </div>
     )
   }
@@ -514,7 +517,8 @@ export function MetricsMultiSeriesChart({
               dataKey={item.key}
               name={item.label}
               stroke={item.color}
-              strokeWidth={2}
+              strokeWidth={item.isHighlighted ? 3 : 2}
+              strokeOpacity={item.isHighlighted ? 1 : 0.82}
               dot={(props: { cx?: number; cy?: number; payload?: Record<string, unknown> }) => {
                 if (!props.payload?.[`${item.key}__anomaly`]) return <></>
                 return (
@@ -529,7 +533,7 @@ export function MetricsMultiSeriesChart({
                   />
                 )
               }}
-              activeDot={{ r: 4, strokeWidth: 0 }}
+              activeDot={{ r: item.isHighlighted ? 5 : 4, strokeWidth: 0 }}
               connectNulls={false}
             />
           ))}
