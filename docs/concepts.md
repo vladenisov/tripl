@@ -166,6 +166,23 @@ at once:
 It's the fastest way to find the gaps between what you think you track and what
 you actually track.
 
+### App version & release regression
+
+A scan can name an optional **app version column**. When it does, tripl keeps a
+metric series per release — the latest few releases by version order, with older
+ones folded into a single **"Other"** bucket — and watches for a **release
+regression**: an event that disappeared or fired far less in the newest release
+than in the one before it.
+
+Releases roll out gradually, and a build spends its first stretch seen only by
+developers and testers, so tripl judges a release only once it takes a real
+share of traffic, and compares the new release against the previous one over the
+window where both are live. That catches "we shipped 2.4 and
+`checkout_completed` stopped firing" without crying wolf during the rollout.
+
+The column is **optional**: scans without one (a web stream, say) behave exactly
+as before — no per-version series, no regressions, nothing extra to see.
+
 ---
 
 ## Reacting
