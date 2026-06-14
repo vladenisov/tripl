@@ -44,6 +44,14 @@ packages = ["src/tripl"]
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["src/tripl/tests"]
+filterwarnings = [
+    # Third-party deprecations we don't control — keep the run summary clean
+    # without hiding warnings raised by our own code.
+    "ignore:Using `httpx` with `starlette.testclient` is deprecated",
+    "ignore:The 'u' type code is deprecated",
+    # statsmodels MSTL on the short synthetic series in the seasonality test.
+    "ignore:A period\\(s\\) is larger than half the length of time series",
+]
 
 [tool.ruff]
 target-version = "py314"
