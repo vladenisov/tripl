@@ -53,19 +53,30 @@ def check_scalar_columns_unreserved(
     distribution_drift_fields: list[str],
     event_type_column: str | None,
     time_column: str | None,
+    app_version_column: str | None = None,
 ) -> None:
-    """Reject selections that overlap reserved time/grouping columns.
+    """Reject selections that overlap reserved time/grouping/version columns.
 
     Used by both ScanConfigCreate (full payload) and the scan service
     update path (merged payload). Raises ValueError so pydantic surfaces it
     as 422 directly; the service-layer catches it to convert to HTTPException.
+
+    ``app_version_column`` is reserved because, when set, version series are
+    collected on a dedicated path; letting it double as a generic breakdown or
+    drift column would collect it twice.
     """
-    reserved = {column for column in (event_type_column, time_column) if column}
+    reserved = {
+        column for column in (event_type_column, time_column, app_version_column) if column
+    }
     if set(metric_breakdown_columns) & reserved:
-        raise ValueError("metric_breakdown_columns cannot include event_type_column or time_column")
+        raise ValueError(
+            "metric_breakdown_columns cannot include event_type_column, time_column "
+            "or app_version_column"
+        )
     if set(distribution_drift_fields) & reserved:
         raise ValueError(
-            "distribution_drift_fields cannot include event_type_column or time_column"
+            "distribution_drift_fields cannot include event_type_column, time_column "
+            "or app_version_column"
         )
 
 
@@ -104,6 +115,8 @@ class ScanConfigCreate(BaseModel):
     scan_lookback_hours: int | None = Field(default=None, ge=1)
     scan_row_limit: int | None = Field(default=None, ge=1)
     metrics_row_limit: int | None = Field(default=None, ge=1)
+    app_version_column: str | None = Field(default=None, min_length=1, max_length=255)
+    app_version_keep_releases: int | None = Field(default=None, ge=1)
 
     @field_validator("json_value_paths")
     @classmethod
@@ -137,6 +150,7 @@ class ScanConfigCreate(BaseModel):
             distribution_drift_fields=self.distribution_drift_fields,
             event_type_column=self.event_type_column,
             time_column=self.time_column,
+            app_version_column=self.app_version_column,
         )
         check_replay_chunk_against_interval(
             interval=self.interval,
@@ -178,6 +192,8 @@ class ScanConfigUpdate(BaseModel):
     scan_lookback_hours: int | None = Field(default=None, ge=1)
     scan_row_limit: int | None = Field(default=None, ge=1)
     metrics_row_limit: int | None = Field(default=None, ge=1)
+    app_version_column: str | None = Field(default=None, max_length=255)
+    app_version_keep_releases: int | None = Field(default=None, ge=1)
 
     @field_validator("json_value_paths")
     @classmethod
@@ -226,6 +242,8 @@ class ScanConfigResponse(BaseModel):
     scan_lookback_hours: int | None
     scan_row_limit: int | None
     metrics_row_limit: int | None
+    app_version_column: str | None
+    app_version_keep_releases: int | None
     created_at: datetime
     updated_at: datetime
 

@@ -96,6 +96,9 @@ async def update_scan_config(
             or [],
             event_type_column=update_dict.get("event_type_column", config.event_type_column),
             time_column=update_dict.get("time_column", config.time_column),
+            app_version_column=update_dict.get(
+                "app_version_column", config.app_version_column
+            ),
         )
         check_replay_chunk_against_interval(
             interval=update_dict.get("interval", config.interval),

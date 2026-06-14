@@ -93,6 +93,8 @@ export interface ScanConfig {
   scan_lookback_hours: number | null
   scan_row_limit: number | null
   metrics_row_limit: number | null
+  app_version_column: string | null
+  app_version_keep_releases: number | null
   created_at: string
   updated_at: string
 }
