@@ -10,6 +10,7 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Textarea } from '@/components/ui/textarea'
 import { ErrorState } from '@/components/error-state'
+import { AppVersionFields } from './AppVersionFields'
 import { CreateMissingFieldsButton } from './CreateMissingFieldsButton'
 import { DistributionDriftPicker } from './DistributionDriftPicker'
 import { EventGroupRulesEditor } from './EventGroupRulesEditor'
@@ -44,6 +45,10 @@ export function ScanEditDialog({
   const [editEventTypeId, setEditEventTypeId] = useState(scanConfig?.event_type_id ?? '')
   const [editEventTypeColumn, setEditEventTypeColumn] = useState(scanConfig?.event_type_column ?? '')
   const [editTimeColumn, setEditTimeColumn] = useState(scanConfig?.time_column ?? '')
+  const [editAppVersionColumn, setEditAppVersionColumn] = useState(scanConfig?.app_version_column ?? '')
+  const [editAppVersionKeepReleases, setEditAppVersionKeepReleases] = useState(
+    scanConfig?.app_version_keep_releases ? String(scanConfig.app_version_keep_releases) : '',
+  )
   const [editEventNameFormat, setEditEventNameFormat] = useState(scanConfig?.event_name_format ?? '')
   const [editJsonValuePaths, setEditJsonValuePaths] = useState<string[]>(scanConfig?.json_value_paths ?? [])
   const [editEventGroupRules, setEditEventGroupRules] = useState<UiEventGroupRule[]>(
@@ -93,6 +98,8 @@ export function ScanEditDialog({
         metric_breakdown_columns: editMetricBreakdownColumns,
         metric_breakdown_values_limit: editMetricBreakdownValuesLimit ? Number(editMetricBreakdownValuesLimit) : null,
         distribution_drift_fields: editDistributionDriftFields,
+        app_version_column: editAppVersionColumn || null,
+        app_version_keep_releases: editAppVersionColumn ? parseOptionalPositiveInt(editAppVersionKeepReleases) : null,
         cardinality_threshold: editCardinalityThreshold,
         interval: editInterval || null,
         replay_chunk_interval: editChunkInterval || null,
@@ -122,18 +129,24 @@ export function ScanEditDialog({
       setEditPreview(data)
       if (!data.columns.some(column => column.name === editEventTypeColumn)) setEditEventTypeColumn('')
       if (!data.columns.some(column => column.name === editTimeColumn)) setEditTimeColumn('')
+      if (!data.columns.some(column => column.name === editAppVersionColumn)) {
+        setEditAppVersionColumn('')
+        setEditAppVersionKeepReleases('')
+      }
       setEditMetricBreakdownColumns(current =>
         current.filter(column =>
           data.columns.some(item => item.name === column)
           && column !== editEventTypeColumn
-          && column !== editTimeColumn,
+          && column !== editTimeColumn
+          && column !== editAppVersionColumn,
         ),
       )
       setEditDistributionDriftFields(current =>
         current.filter(field =>
           data.columns.some(item => item.name === field)
           && field !== editEventTypeColumn
-          && field !== editTimeColumn,
+          && field !== editTimeColumn
+          && field !== editAppVersionColumn,
         ),
       )
     },
@@ -155,6 +168,13 @@ export function ScanEditDialog({
     setEditDistributionDriftFields(current =>
       current.includes(field) ? current.filter(item => item !== field) : [...current, field],
     )
+  }
+
+  const handleEditAppVersionColumnChange = (column: string) => {
+    setEditAppVersionColumn(column)
+    setEditMetricBreakdownColumns(current => current.filter(item => item !== column))
+    setEditDistributionDriftFields(current => current.filter(item => item !== column))
+    if (!column) setEditAppVersionKeepReleases('')
   }
 
   return (
@@ -243,6 +263,13 @@ export function ScanEditDialog({
               </div>
               <div className="grid gap-2"><Label>Event Name Format (optional)</Label><Input value={editEventNameFormat} onChange={e => setEditEventNameFormat(e.target.value)} placeholder="e.g. {action}:{category}" /></div>
             </div>
+            <AppVersionFields
+              columns={editPreview?.columns ?? null}
+              appVersionColumn={editAppVersionColumn}
+              keepReleases={editAppVersionKeepReleases}
+              onAppVersionColumnChange={handleEditAppVersionColumnChange}
+              onKeepReleasesChange={setEditAppVersionKeepReleases}
+            />
             {editPreview && editEventTypeId && (
               <CreateMissingFieldsButton
                 slug={slug}
@@ -266,6 +293,7 @@ export function ScanEditDialog({
                 selectedColumns={editMetricBreakdownColumns}
                 eventTypeColumn={editEventTypeColumn}
                 timeColumn={editTimeColumn}
+                appVersionColumn={editAppVersionColumn}
                 valuesLimit={editMetricBreakdownValuesLimit}
                 onToggleColumn={toggleEditMetricBreakdownColumn}
                 onValuesLimitChange={setEditMetricBreakdownValuesLimit}
@@ -277,6 +305,7 @@ export function ScanEditDialog({
                 selectedFields={editDistributionDriftFields}
                 eventTypeColumn={editEventTypeColumn}
                 timeColumn={editTimeColumn}
+                appVersionColumn={editAppVersionColumn}
                 onToggleField={toggleEditDistributionDriftField}
               />
             )}

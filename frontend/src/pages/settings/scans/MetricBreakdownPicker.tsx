@@ -10,6 +10,7 @@ export function MetricBreakdownPicker({
   selectedColumns,
   eventTypeColumn,
   timeColumn,
+  appVersionColumn,
   valuesLimit,
   onToggleColumn,
   onValuesLimitChange,
@@ -18,12 +19,13 @@ export function MetricBreakdownPicker({
   selectedColumns: string[]
   eventTypeColumn: string
   timeColumn: string
+  appVersionColumn: string
   valuesLimit: string
   onToggleColumn: (column: string) => void
   onValuesLimitChange: (value: string) => void
 }) {
   const availableColumns = columns.filter(column => !isJsonPreviewType(column.type_name))
-  const reservedColumns = new Set([eventTypeColumn, timeColumn].filter(Boolean))
+  const reservedColumns = new Set([eventTypeColumn, timeColumn, appVersionColumn].filter(Boolean))
 
   return (
     <div className="space-y-3 rounded-lg border bg-muted/20 p-4">

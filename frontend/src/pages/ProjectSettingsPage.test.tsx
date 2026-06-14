@@ -977,6 +977,8 @@ describe('ProjectSettingsPage', () => {
           metric_breakdown_columns: body.metric_breakdown_columns,
           metric_breakdown_values_limit: body.metric_breakdown_values_limit,
           distribution_drift_fields: body.distribution_drift_fields,
+          app_version_column: body.app_version_column,
+          app_version_keep_releases: body.app_version_keep_releases,
           cardinality_threshold: body.cardinality_threshold,
           interval: body.interval,
           replay_chunk_interval: body.replay_chunk_interval,
@@ -1056,6 +1058,8 @@ describe('ProjectSettingsPage', () => {
         metric_breakdown_columns: ['event_name'],
         metric_breakdown_values_limit: 2,
         distribution_drift_fields: [],
+        app_version_column: null,
+        app_version_keep_releases: null,
         cardinality_threshold: 100,
         interval: null,
         replay_chunk_interval: null,
@@ -1063,6 +1067,148 @@ describe('ProjectSettingsPage', () => {
         scan_row_limit: null,
         metrics_row_limit: null,
       })
+    })
+  })
+
+  it('creates scan configs with app version observation fields', async () => {
+    const postBodies: unknown[] = []
+
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const url = String(input)
+
+      if (url.endsWith('/api/v1/data-sources')) {
+        return mockJsonResponse([
+          {
+            id: 'ds-1',
+            name: 'Main DS',
+            db_type: 'clickhouse',
+            host: 'localhost',
+            port: 8123,
+            database_name: 'default',
+            username: 'default',
+            password_set: false,
+            extra_params: null,
+            created_at: '2026-01-01T00:00:00Z',
+            updated_at: '2026-01-01T00:00:00Z',
+          },
+        ])
+      }
+
+      if (url.endsWith('/api/v1/projects/demo/event-types')) {
+        return mockJsonResponse([])
+      }
+
+      if (url.endsWith('/api/v1/projects/demo/scans') && (!init || !init.method || init.method === 'GET')) {
+        return mockJsonResponse([])
+      }
+
+      if (url.endsWith('/api/v1/projects/demo/scans/preview') && init?.method === 'POST') {
+        return mockJsonResponse({
+          id: 'preview-job-1',
+          scan_config_id: null,
+          status: 'completed',
+          error_message: null,
+          created_at: '2026-04-12T00:00:00Z',
+          started_at: '2026-04-12T00:00:00Z',
+          completed_at: '2026-04-12T00:00:00Z',
+          result_summary: {
+            columns: [
+              { name: 'event_name', type_name: 'String', is_nullable: false },
+              { name: 'created_at', type_name: 'DateTime', is_nullable: false },
+              { name: 'app_version', type_name: 'String', is_nullable: true },
+              { name: 'payload', type_name: 'JSON', is_nullable: true },
+            ],
+            rows: [
+              {
+                event_name: 'purchase',
+                created_at: '2026-04-12T10:30:00',
+                app_version: '2.10.0',
+                payload: { locale: 'en' },
+              },
+            ],
+            json_columns: [],
+          },
+        })
+      }
+
+      if (url.endsWith('/api/v1/projects/demo/scans') && init?.method === 'POST') {
+        const body = JSON.parse(String(init.body))
+        postBodies.push(body)
+        return mockJsonResponse({
+          id: 'scan-1',
+          data_source_id: body.data_source_id,
+          project_id: 'project-1',
+          event_type_id: body.event_type_id,
+          name: body.name,
+          base_query: body.base_query,
+          event_type_column: body.event_type_column,
+          time_column: body.time_column,
+          event_name_format: body.event_name_format,
+          json_value_paths: body.json_value_paths,
+          event_group_rules: body.event_group_rules,
+          metric_breakdown_columns: body.metric_breakdown_columns,
+          metric_breakdown_values_limit: body.metric_breakdown_values_limit,
+          distribution_drift_fields: body.distribution_drift_fields,
+          app_version_column: body.app_version_column,
+          app_version_keep_releases: body.app_version_keep_releases,
+          cardinality_threshold: body.cardinality_threshold,
+          interval: body.interval,
+          replay_chunk_interval: body.replay_chunk_interval,
+          scan_lookback_hours: body.scan_lookback_hours,
+          scan_row_limit: body.scan_row_limit,
+          metrics_row_limit: body.metrics_row_limit,
+          created_at: '2026-04-12T00:00:00Z',
+          updated_at: '2026-04-12T00:00:00Z',
+        })
+      }
+
+      throw new Error(`Unhandled fetch: ${url}`)
+    })
+
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    })
+    render(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter initialEntries={['/p/demo/settings/scans']}>
+          <Routes>
+            <Route path="/p/:slug/settings/:tab/:itemId" element={<ProjectSettingsPage />} />
+            <Route path="/p/:slug/settings/:tab" element={<ProjectSettingsPage />} />
+            <Route path="/p/:slug/settings" element={<ProjectSettingsPage />} />
+          </Routes>
+        </MemoryRouter>
+      </QueryClientProvider>,
+    )
+
+    const addScanButton = await screen.findByRole('button', { name: /Add Scan Config/i })
+    await waitFor(() => expect(addScanButton).not.toBeDisabled())
+    fireEvent.click(addScanButton)
+
+    const dialog = await screen.findByRole('dialog')
+    const textboxes = within(dialog).getAllByRole('textbox')
+    fireEvent.change(textboxes[0], { target: { value: 'Versioned scan' } })
+    fireEvent.change(textboxes[1], { target: { value: 'SELECT * FROM analytics.events' } })
+    fireEvent.change(within(dialog).getAllByRole('combobox')[0], { target: { value: 'ds-1' } })
+
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Load Preview' }))
+    await within(dialog).findByText('Column pickers use the sample rows; JSON path options are discovered from the source query.')
+
+    fireEvent.change(within(dialog).getByLabelText('App Version Column (optional)'), {
+      target: { value: 'app_version' },
+    })
+    fireEvent.change(within(dialog).getByLabelText('Releases to keep'), {
+      target: { value: '5' },
+    })
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Create' }))
+
+    await waitFor(() => {
+      expect(postBodies).toContainEqual(
+        expect.objectContaining({
+          name: 'Versioned scan',
+          app_version_column: 'app_version',
+          app_version_keep_releases: 5,
+        }),
+      )
     })
   })
 
