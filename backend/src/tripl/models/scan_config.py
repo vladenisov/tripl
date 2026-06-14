@@ -73,6 +73,15 @@ class ScanConfig(UUIDMixin, TimestampMixin, Base):
     scan_row_limit: Mapped[int | None] = mapped_column(Integer, nullable=True)
     # Optional override for time-bucketed replay/metrics query row caps.
     metrics_row_limit: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # Optional column holding the app/build version (e.g. "2.10.0"). When set,
+    # per-version metric series are collected and release regressions detected.
+    # NULL means version observation is fully disabled (e.g. web scans with no
+    # app version) and the whole version pipeline is inert.
+    app_version_column: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    # How many latest releases (by semver order) to retain/observe; older
+    # releases collapse into an "other" bucket. NULL falls back to a system
+    # default at collection time.
+    app_version_keep_releases: Mapped[int | None] = mapped_column(Integer, nullable=True)
     anomaly_detection_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
     detect_project_total: Mapped[bool] = mapped_column(Boolean, default=True)
     detect_event_types: Mapped[bool] = mapped_column(Boolean, default=True)

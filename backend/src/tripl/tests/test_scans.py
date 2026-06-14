@@ -99,7 +99,45 @@ class TestScanConfigsCRUD:
             }
         ]
         assert data["replay_chunk_interval"] is None
+        # App-version observation is off by default (inert when column unset).
+        assert data["app_version_column"] is None
+        assert data["app_version_keep_releases"] is None
         assert "anomaly_detection_enabled" not in data
+
+    async def test_create_scan_config_with_app_version(
+        self, client: AsyncClient, project: dict, data_source: dict, event_type: dict
+    ):
+        resp = await client.post(
+            f"/api/v1/projects/{project['slug']}/scans",
+            json={
+                "data_source_id": data_source["id"],
+                "name": "Versioned scan",
+                "base_query": "SELECT * FROM events",
+                "event_type_id": event_type["id"],
+                "app_version_column": "app_version",
+                "app_version_keep_releases": 5,
+            },
+        )
+        assert resp.status_code == 201
+        data = resp.json()
+        assert data["app_version_column"] == "app_version"
+        assert data["app_version_keep_releases"] == 5
+
+    async def test_create_scan_config_rejects_app_version_as_breakdown(
+        self, client: AsyncClient, project: dict, data_source: dict, event_type: dict
+    ):
+        resp = await client.post(
+            f"/api/v1/projects/{project['slug']}/scans",
+            json={
+                "data_source_id": data_source["id"],
+                "name": "Version clash scan",
+                "base_query": "SELECT * FROM events",
+                "event_type_id": event_type["id"],
+                "app_version_column": "app_version",
+                "metric_breakdown_columns": ["app_version"],
+            },
+        )
+        assert resp.status_code == 422
 
     async def test_create_scan_config_rejects_invalid_group_regex(
         self, client: AsyncClient, project: dict, data_source: dict, event_type: dict
