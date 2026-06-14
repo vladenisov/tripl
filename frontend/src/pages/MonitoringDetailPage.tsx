@@ -16,6 +16,7 @@ import { Card, CardContent } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
 import { ErrorState } from '@/components/error-state'
 import EventPhotosSection from '@/components/event-photos-section'
+import { ReleaseRegressionPanel } from '@/components/monitoring/release-regression-panel'
 import { SeasonalityHeatmap } from '@/components/monitoring/seasonality-heatmap'
 import { TopMoversPanel } from '@/components/monitoring/top-movers-panel'
 import { VariableValueContextTrigger } from '@/components/variable-value-contexts'
@@ -868,6 +869,12 @@ export default function MonitoringDetailPage() {
                 )}
               </CardContent>
             </Card>
+
+            <ReleaseRegressionPanel
+              slug={slug!}
+              scanConfigId={scanConfigId!}
+              enabled={selectedTab === 'versions'}
+            />
           </TabsContent>
         )}
 

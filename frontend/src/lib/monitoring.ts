@@ -1,4 +1,4 @@
-type MonitoringScope = 'project_total' | 'event_type' | 'event'
+export type MonitoringScope = 'project_total' | 'event_type' | 'event'
 
 export function getMonitoringPath(
   slug: string,
@@ -13,7 +13,7 @@ export function getMonitoringPath(
   return `/p/${slug}/monitoring/event/${signal.scope_ref}`
 }
 
-export function routeScopeToApiScope(scope: string | undefined) {
+export function routeScopeToApiScope(scope: string | undefined): MonitoringScope {
   if (scope === 'project-total') return 'project_total'
   if (scope === 'event-type') return 'event_type'
   return 'event'

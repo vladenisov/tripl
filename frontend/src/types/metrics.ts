@@ -173,6 +173,32 @@ export interface AppVersionAdoptionResponse extends AppVersionSeriesResponse {
   totals: BreakdownTimelinePoint[]
 }
 
+export interface ReleaseRegressionItem {
+  scope_type: string
+  scope_ref: string
+  scope_name: string
+  event_id: string | null
+  event_type_id: string | null
+  kind: 'missing' | 'volume_drop'
+  version: string
+  previous_version: string
+  observed_count: number
+  expected_count: number
+  ratio: number
+  share_prev: number
+  share_new: number
+  release_share: number
+  window_from: string
+  window_to: string
+}
+
+export interface ReleaseRegressionsResponse {
+  scan_config_id: string
+  app_version_column: string | null
+  latest_version: string | null
+  items: ReleaseRegressionItem[]
+}
+
 export interface EventWindowMetrics {
   event_id: string
   scan_config_id: string | null
