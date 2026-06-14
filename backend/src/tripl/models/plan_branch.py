@@ -9,6 +9,7 @@ from sqlalchemy import DateTime, ForeignKey, Index, String, Text, UniqueConstrai
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from tripl.models.base import Base, TimestampMixin, UUIDMixin
+from tripl.models.enum_types import db_enum
 
 if TYPE_CHECKING:
     from sqlalchemy.engine.interfaces import ExecutionContext
@@ -54,9 +55,11 @@ class PlanBranch(UUIDMixin, TimestampMixin, Base):
         ForeignKey("projects.id", ondelete="CASCADE"),
     )
     name: Mapped[str] = mapped_column(String(255))
-    kind: Mapped[str] = mapped_column(String(20), default=BranchKind.working.value)
+    kind: Mapped[str] = mapped_column(
+        db_enum(BranchKind, "plan_branch_kind"), default=BranchKind.working.value
+    )
     status: Mapped[str] = mapped_column(
-        String(30),
+        db_enum(BranchStatus, "plan_branch_status"),
         default=BranchStatus.draft.value,
         server_default=BranchStatus.draft.value,
     )

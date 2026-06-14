@@ -6,9 +6,8 @@ from typing import Literal
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 from tripl.json_paths import normalize_json_value_paths
+from tripl.models.domain_enums import ScanInterval
 from tripl.worker.utils.intervals import get_interval
-
-VALID_INTERVALS = ("15m", "1h", "6h", "1d", "1w")
 
 
 class EventGroupCondition(BaseModel):
@@ -65,9 +64,7 @@ def check_scalar_columns_unreserved(
     collected on a dedicated path; letting it double as a generic breakdown or
     drift column would collect it twice.
     """
-    reserved = {
-        column for column in (event_type_column, time_column, app_version_column) if column
-    }
+    reserved = {column for column in (event_type_column, time_column, app_version_column) if column}
     if set(metric_breakdown_columns) & reserved:
         raise ValueError(
             "metric_breakdown_columns cannot include event_type_column, time_column "
@@ -110,8 +107,8 @@ class ScanConfigCreate(BaseModel):
     metric_breakdown_values_limit: int | None = Field(default=None, ge=1)
     distribution_drift_fields: list[str] = Field(default_factory=list)
     cardinality_threshold: int = Field(default=100, ge=1)
-    interval: str | None = Field(None, pattern=r"^(15m|1h|6h|1d|1w)$")
-    replay_chunk_interval: str | None = Field(None, pattern=r"^(15m|1h|6h|1d|1w)$")
+    interval: ScanInterval | None = None
+    replay_chunk_interval: ScanInterval | None = None
     scan_lookback_hours: int | None = Field(default=None, ge=1)
     scan_row_limit: int | None = Field(default=None, ge=1)
     metrics_row_limit: int | None = Field(default=None, ge=1)
@@ -187,8 +184,8 @@ class ScanConfigUpdate(BaseModel):
     metric_breakdown_values_limit: int | None = Field(default=None, ge=1)
     distribution_drift_fields: list[str] | None = None
     cardinality_threshold: int | None = Field(None, ge=1)
-    interval: str | None = Field(None, pattern=r"^(15m|1h|6h|1d|1w)$")
-    replay_chunk_interval: str | None = Field(None, pattern=r"^(15m|1h|6h|1d|1w)$")
+    interval: ScanInterval | None = None
+    replay_chunk_interval: ScanInterval | None = None
     scan_lookback_hours: int | None = Field(default=None, ge=1)
     scan_row_limit: int | None = Field(default=None, ge=1)
     metrics_row_limit: int | None = Field(default=None, ge=1)
@@ -237,8 +234,8 @@ class ScanConfigResponse(BaseModel):
     metric_breakdown_values_limit: int | None
     distribution_drift_fields: list[str]
     cardinality_threshold: int
-    interval: str | None
-    replay_chunk_interval: str | None
+    interval: ScanInterval | None
+    replay_chunk_interval: ScanInterval | None
     scan_lookback_hours: int | None
     scan_row_limit: int | None
     metrics_row_limit: int | None

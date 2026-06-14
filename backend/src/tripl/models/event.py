@@ -9,6 +9,7 @@ from sqlalchemy import JSON, DateTime, ForeignKey, Index, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from tripl.models.base import Base, TimestampMixin, UUIDMixin
+from tripl.models.enum_types import db_enum
 from tripl.models.plan_branch import default_branch_id
 
 if TYPE_CHECKING:
@@ -69,7 +70,10 @@ class Event(UUIDMixin, TimestampMixin, Base):
     description: Mapped[str] = mapped_column(Text, default="")
     order: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
     status: Mapped[str] = mapped_column(
-        String(20), default=EventStatus.draft, server_default="draft", nullable=False
+        db_enum(EventStatus, "event_status"),
+        default=EventStatus.draft,
+        server_default=EventStatus.draft.value,
+        nullable=False,
     )
     sunset_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     last_seen_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

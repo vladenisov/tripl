@@ -9,14 +9,15 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from tripl.config import settings
+from tripl.models.domain_enums import EventPhotoKind
 from tripl.models.event import Event
 from tripl.models.event_photo import EventPhoto
 from tripl.models.event_photo_comment import EventPhotoComment
 from tripl.services.project_service import get_project_id_by_slug
 from tripl.storage import get_photo_storage
 
-PHOTO_KIND_PHOTO = "photo"
-PHOTO_KIND_FIGMA = "figma"
+PHOTO_KIND_PHOTO = EventPhotoKind.photo.value
+PHOTO_KIND_FIGMA = EventPhotoKind.figma.value
 
 # Match canonical figma.com URLs only — narrow on purpose so we don't render
 # arbitrary cross-origin iframes for users.

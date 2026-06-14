@@ -2,16 +2,15 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime
-from typing import Literal
 
 from pydantic import BaseModel, Field
 
-ApiKeyScope = Literal["read", "write"]
+from tripl.models.domain_enums import ApiKeyScope
 
 
 class ApiKeyCreate(BaseModel):
     name: str = Field(min_length=1, max_length=100)
-    scope: ApiKeyScope = "read"
+    scope: ApiKeyScope = ApiKeyScope.read
     expires_in_days: int | None = Field(default=None, ge=1, le=3650)
     # Bind the key to a single project. Omit (null) for a cross-project key.
     project_slug: str | None = Field(default=None, min_length=1, max_length=255)

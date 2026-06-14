@@ -5,6 +5,7 @@ from typing import Literal
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 from tripl.models.event import EventStatus
+from tripl.models.variable_value import VariableValueKind
 from tripl.schemas.event_type import EventTypeBrief
 
 
@@ -98,7 +99,7 @@ class EventFieldVariableValueResponse(BaseModel):
     variable_id: uuid.UUID
     variable_name: str
     source_column: str
-    value_kind: Literal["low", "high"]
+    value_kind: VariableValueKind
     observed_count: int
     values: list[str] = []
 
@@ -150,7 +151,7 @@ class EventResponse(BaseModel):
     name: str
     description: str
     order: int
-    status: str
+    status: EventStatus
     sunset_at: datetime | None = None
     last_seen_at: datetime | None = None
     metric_breakdown_columns: list[str] = []
@@ -178,7 +179,7 @@ class EventListItemResponse(BaseModel):
     name: str
     description: str
     order: int
-    status: str
+    status: EventStatus
     sunset_at: datetime | None = None
     last_seen_at: datetime | None = None
     metric_breakdown_columns: list[str] = []

@@ -14,6 +14,7 @@ from datetime import UTC, datetime, timedelta
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from tripl.models.domain_enums import MetricScopeType
 from tripl.models.scan_job import ScanJob, ScanJobStatus
 from tripl.worker.db import _build_adapter, _get_sync_session
 
@@ -43,7 +44,7 @@ ACTIVE_SCAN_JOB_STATUSES = (
 STALE_ACTIVE_SCAN_JOB_TIMEOUT = timedelta(minutes=30)
 RECENT_SIGNAL_WINDOW = timedelta(hours=24)
 MAX_BREAKDOWN_VALUE_LENGTH = 500
-SCOPE_SCHEMA_DRIFT = "schema"
+SCOPE_SCHEMA_DRIFT = MetricScopeType.schema.value
 
 
 def _floor_to_interval(dt: datetime, delta: timedelta) -> datetime:

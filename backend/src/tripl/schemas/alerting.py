@@ -26,10 +26,18 @@ from tripl.alerting_validation import (
     validate_webhook_header_value,
     validate_webhook_target_url,
 )
+from tripl.models.alert_delivery import AlertDeliveryStatus
+from tripl.models.alert_destination import AlertDestinationType
+from tripl.models.domain_enums import (
+    AlertDriftType,
+    AlertInboxStatus,
+    AlertMessageFormat,
+    AlertRuleFilterField,
+    AlertRuleFilterOperator,
+    AnomalyDirection,
+    MetricScopeType,
+)
 
-AlertRuleFilterField = Literal["event_type", "event", "direction"]
-AlertRuleFilterOperator = Literal["eq", "ne", "in", "not_in"]
-AlertInboxStatus = Literal["open", "acknowledged", "resolved", "muted", "false_positive"]
 AlertInboxAction = Literal["acknowledge", "resolve", "mute", "reopen", "false_positive"]
 
 
@@ -84,7 +92,7 @@ class AlertRuleBase(BaseModel):
     cooldown_minutes: int | None = Field(None, ge=1)
     message_template: str | None = None
     items_template: str | None = None
-    message_format: str | None = None
+    message_format: AlertMessageFormat | None = None
     filters: list[AlertRuleFilterPayload] | None = None
 
     @model_validator(mode="after")
@@ -114,7 +122,7 @@ class AlertRuleCreate(AlertRuleBase):
     cooldown_minutes: int = Field(1440, ge=1)
     message_template: str | None = None
     items_template: str | None = None
-    message_format: str = "plain"
+    message_format: AlertMessageFormat = AlertMessageFormat.plain
     filters: list[AlertRuleFilterPayload] = Field(default_factory=list)
 
 
@@ -142,14 +150,14 @@ class AlertRuleResponse(BaseModel):
     cooldown_minutes: int
     message_template: str | None
     items_template: str | None
-    message_format: str
+    message_format: AlertMessageFormat
     filters: list[AlertRuleFilterResponse]
     created_at: datetime
     updated_at: datetime
 
 
 class AlertDestinationCreate(BaseModel):
-    type: str
+    type: AlertDestinationType
     name: str
     enabled: bool = True
     webhook_url: str | None = None
@@ -171,10 +179,10 @@ class AlertDestinationCreate(BaseModel):
     linear_state_id: str | None = None
     linear_label_ids: str | None = None
 
-    @field_validator("type")
+    @field_validator("type", mode="before")
     @classmethod
-    def normalize_type(cls, value: str) -> str:
-        return normalize_required_text(value, field_name="Destination type").lower()
+    def normalize_type(cls, value: object) -> str:
+        return normalize_required_text(str(value), field_name="Destination type").lower()
 
     @field_validator("name")
     @classmethod
@@ -390,7 +398,7 @@ class AlertDestinationUpdate(BaseModel):
 class AlertDestinationResponse(BaseModel):
     id: uuid.UUID
     project_id: uuid.UUID
-    type: str
+    type: AlertDestinationType
     name: str
     enabled: bool
     webhook_set: bool
@@ -418,13 +426,13 @@ class AlertDestinationResponse(BaseModel):
 class AlertDeliveryItemResponse(BaseModel):
     id: uuid.UUID
     delivery_id: uuid.UUID
-    scope_type: str
+    scope_type: MetricScopeType
     scope_ref: str
     scope_name: str
     event_type_id: uuid.UUID | None
     event_id: uuid.UUID | None
     bucket: datetime
-    direction: str
+    direction: AnomalyDirection
     actual_count: int
     expected_count: int
     absolute_delta: int
@@ -432,7 +440,7 @@ class AlertDeliveryItemResponse(BaseModel):
     details_path: str | None
     monitoring_path: str | None
     drift_field: str | None
-    drift_type: str | None
+    drift_type: AlertDriftType | None
     sample_value: str | None
     # Items that co-fired in the same bucket+direction inside one delivery
     # share this id. NULL means the row is a singleton (no peers).
@@ -451,8 +459,8 @@ class AlertDeliveryResponse(BaseModel):
     destination_name: str
     rule_name: str
     scan_name: str
-    status: str
-    channel: str
+    status: AlertDeliveryStatus
+    channel: AlertDestinationType
     matched_count: int
     payload_snapshot: dict[str, object] | None
     error_message: str | None
@@ -480,7 +488,7 @@ class AlertInboxGroupResponse(BaseModel):
     delivery_count: int
     latest_bucket: datetime
     latest_delivery_at: datetime
-    direction: str
+    direction: AnomalyDirection
     scope_names: list[str]
     destination_names: list[str]
     rule_names: list[str]
@@ -510,16 +518,16 @@ class SimulatedRuleFiring(BaseModel):
     """One virtual delivery the rule would have triggered during the window."""
 
     anomaly_id: uuid.UUID
-    scope_type: str
+    scope_type: MetricScopeType
     scope_ref: str
     scope_name: str
     event_type_id: uuid.UUID | None
     event_id: uuid.UUID | None
     drift_field: str | None = None
-    drift_type: str | None = None
+    drift_type: AlertDriftType | None = None
     sample_value: str | None = None
     bucket: datetime
-    direction: str
+    direction: AnomalyDirection
     actual_count: int
     expected_count: float
     absolute_delta: float

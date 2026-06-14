@@ -18,8 +18,9 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from tripl.models.api_key import ApiKey
+from tripl.models.domain_enums import ApiKeyScope
 
-ALLOWED_SCOPES = ("read", "write")
+ALLOWED_SCOPES = tuple(scope.value for scope in ApiKeyScope)
 _PREFIX = "tk_"
 _RANDOM_LEN = 24
 

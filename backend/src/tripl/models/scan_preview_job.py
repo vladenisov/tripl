@@ -8,6 +8,7 @@ from sqlalchemy import DateTime, ForeignKey, Index, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from tripl.models.base import Base, TimestampMixin, UUIDMixin
+from tripl.models.enum_types import db_enum
 
 # Reuse the shared lifecycle states (pending/running/completed/failed).
 from tripl.models.scan_job import ScanJobStatus  # noqa: F401  (re-exported for callers)
@@ -35,7 +36,9 @@ class ScanPreviewJob(UUIDMixin, TimestampMixin, Base):
     time_column: Mapped[str | None] = mapped_column(String(255), nullable=True)
     scan_lookback_hours: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
-    status: Mapped[str] = mapped_column(String(20), default=ScanJobStatus.pending.value)
+    status: Mapped[str] = mapped_column(
+        db_enum(ScanJobStatus, "scan_job_status"), default=ScanJobStatus.pending.value
+    )
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     result_summary: Mapped[dict[str, object] | None] = mapped_column(sa.JSON, nullable=True)

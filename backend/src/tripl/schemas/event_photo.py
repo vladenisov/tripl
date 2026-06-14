@@ -5,16 +5,18 @@ from datetime import datetime
 
 from pydantic import BaseModel, Field
 
+from tripl.models.domain_enums import EventPhotoKind, EventPhotoStorageBackend
+
 
 class EventPhotoResponse(BaseModel):
     id: uuid.UUID
     event_id: uuid.UUID
     project_id: uuid.UUID
-    kind: str
+    kind: EventPhotoKind
     original_filename: str
     content_type: str
     size_bytes: int
-    storage_backend: str | None
+    storage_backend: EventPhotoStorageBackend | None
     sort_order: int
     # Resolved URL the client can render directly. For "local" this is an
     # authenticated API endpoint; for "gcs" it's a signed URL (or public URL

@@ -4,7 +4,8 @@ from typing import Literal
 
 from pydantic import BaseModel, Field, model_validator
 
-SchemaDriftStatus = Literal["open", "accepted", "snoozed", "false_positive"]
+from tripl.models.domain_enums import SchemaDriftStatus, SchemaDriftType
+
 SchemaDriftAction = Literal["accept", "snooze", "false_positive", "reopen"]
 
 
@@ -13,19 +14,11 @@ class SchemaDriftResponse(BaseModel):
     event_type_id: uuid.UUID
     scan_config_id: uuid.UUID | None
     field_name: str
-    drift_type: Literal[
-        "new_field",
-        "missing_field",
-        "type_changed",
-        "enum_violation",
-        "required_null_violation",
-        "regex_violation",
-        "range_violation",
-    ]
+    drift_type: SchemaDriftType
     observed_type: str | None
     declared_type: str | None
     sample_value: str | None
-    status: SchemaDriftStatus = "open"
+    status: SchemaDriftStatus = SchemaDriftStatus.open
     resolution_note: str | None = None
     snoozed_until: datetime | None = None
     resolved_at: datetime | None = None

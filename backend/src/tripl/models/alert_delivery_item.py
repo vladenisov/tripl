@@ -8,6 +8,8 @@ from sqlalchemy import DateTime, ForeignKey, Index, Integer, String, Uuid
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from tripl.models.base import Base, UUIDMixin
+from tripl.models.domain_enums import AlertDriftType, AnomalyDirection, MetricScopeType
+from tripl.models.enum_types import db_enum
 
 if TYPE_CHECKING:
     from tripl.models.alert_delivery import AlertDelivery
@@ -20,7 +22,7 @@ class AlertDeliveryItem(UUIDMixin, Base):
     delivery_id: Mapped[uuid.UUID] = mapped_column(
         ForeignKey("alert_deliveries.id", ondelete="CASCADE"),
     )
-    scope_type: Mapped[str] = mapped_column(String(32))
+    scope_type: Mapped[str] = mapped_column(db_enum(MetricScopeType, "metric_scope_type"))
     scope_ref: Mapped[str] = mapped_column(String(64))
     scope_name: Mapped[str] = mapped_column(String(255))
     event_type_id: Mapped[uuid.UUID | None] = mapped_column(
@@ -32,7 +34,7 @@ class AlertDeliveryItem(UUIDMixin, Base):
         nullable=True,
     )
     bucket: Mapped[datetime] = mapped_column(DateTime(timezone=True))
-    direction: Mapped[str] = mapped_column(String(16))
+    direction: Mapped[str] = mapped_column(db_enum(AnomalyDirection, "anomaly_direction"))
     actual_count: Mapped[int] = mapped_column()
     expected_count: Mapped[int] = mapped_column(Integer)
     absolute_delta: Mapped[int] = mapped_column(Integer)
@@ -40,7 +42,9 @@ class AlertDeliveryItem(UUIDMixin, Base):
     details_path: Mapped[str | None] = mapped_column(String(500), nullable=True)
     monitoring_path: Mapped[str | None] = mapped_column(String(500), nullable=True)
     drift_field: Mapped[str | None] = mapped_column(String(255), nullable=True)
-    drift_type: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    drift_type: Mapped[str | None] = mapped_column(
+        db_enum(AlertDriftType, "alert_drift_type"), nullable=True
+    )
     sample_value: Mapped[str | None] = mapped_column(String(500), nullable=True)
     # Items that fired in the same bucket+direction inside one delivery share
     # this id. NULL when the item is a singleton (no co-firing peers). The UI

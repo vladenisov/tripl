@@ -8,6 +8,8 @@ from sqlalchemy import Boolean, ForeignKey, Integer, String, Text, UniqueConstra
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from tripl.models.base import Base, UUIDMixin
+from tripl.models.domain_enums import MetaFieldType, Sensitivity
+from tripl.models.enum_types import db_enum
 from tripl.models.plan_branch import default_branch_id
 
 if TYPE_CHECKING:
@@ -26,12 +28,16 @@ class MetaFieldDefinition(UUIDMixin, Base):
     )
     name: Mapped[str] = mapped_column(String(100))
     display_name: Mapped[str] = mapped_column(String(255))
-    field_type: Mapped[str] = mapped_column(String(20))  # string, url, boolean, enum, date
+    field_type: Mapped[str] = mapped_column(db_enum(MetaFieldType, "meta_field_type"))
     is_required: Mapped[bool] = mapped_column(Boolean, default=False)
     enum_options: Mapped[list[str] | None] = mapped_column(sa.JSON, nullable=True)
     default_value: Mapped[str | None] = mapped_column(Text, nullable=True)
     link_template: Mapped[str | None] = mapped_column(Text, nullable=True)
     order: Mapped[int] = mapped_column(Integer, default=0)
-    sensitivity: Mapped[str] = mapped_column(String(20), default="none", server_default="none")
+    sensitivity: Mapped[str] = mapped_column(
+        db_enum(Sensitivity, "sensitivity_level"),
+        default=Sensitivity.none.value,
+        server_default=Sensitivity.none.value,
+    )
 
     project: Mapped[Project] = relationship(back_populates="meta_field_definitions")

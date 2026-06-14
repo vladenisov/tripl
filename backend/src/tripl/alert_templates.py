@@ -6,11 +6,12 @@ from dataclasses import dataclass
 from datetime import datetime
 
 from tripl.models.alert_destination import AlertDestinationType
+from tripl.models.domain_enums import AlertMessageFormat
 
-ALERT_MESSAGE_FORMAT_PLAIN = "plain"
-ALERT_MESSAGE_FORMAT_SLACK_MRKDWN = "slack_mrkdwn"
-ALERT_MESSAGE_FORMAT_TELEGRAM_HTML = "telegram_html"
-ALERT_MESSAGE_FORMAT_TELEGRAM_MARKDOWNV2 = "telegram_markdownv2"
+ALERT_MESSAGE_FORMAT_PLAIN = AlertMessageFormat.plain.value
+ALERT_MESSAGE_FORMAT_SLACK_MRKDWN = AlertMessageFormat.slack_mrkdwn.value
+ALERT_MESSAGE_FORMAT_TELEGRAM_HTML = AlertMessageFormat.telegram_html.value
+ALERT_MESSAGE_FORMAT_TELEGRAM_MARKDOWNV2 = AlertMessageFormat.telegram_markdownv2.value
 
 ALERT_MESSAGE_FORMATS_BY_DESTINATION: dict[str, tuple[str, ...]] = {
     AlertDestinationType.slack: (

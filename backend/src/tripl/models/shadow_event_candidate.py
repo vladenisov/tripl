@@ -7,10 +7,12 @@ from sqlalchemy import BigInteger, DateTime, ForeignKey, Index, String, UniqueCo
 from sqlalchemy.orm import Mapped, mapped_column
 
 from tripl.models.base import Base, UUIDMixin
+from tripl.models.domain_enums import ShadowEventStatus
+from tripl.models.enum_types import db_enum
 
-SHADOW_STATUS_NEW = "new"
-SHADOW_STATUS_ACCEPTED = "accepted"
-SHADOW_STATUS_DISMISSED = "dismissed"
+SHADOW_STATUS_NEW = ShadowEventStatus.new.value
+SHADOW_STATUS_ACCEPTED = ShadowEventStatus.accepted.value
+SHADOW_STATUS_DISMISSED = ShadowEventStatus.dismissed.value
 
 
 class ShadowEventCandidate(UUIDMixin, Base):
@@ -48,7 +50,10 @@ class ShadowEventCandidate(UUIDMixin, Base):
     observed_count: Mapped[int] = mapped_column(BigInteger, default=0)
     first_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
-    status: Mapped[str] = mapped_column(String(16), default=SHADOW_STATUS_NEW)
+    status: Mapped[str] = mapped_column(
+        db_enum(ShadowEventStatus, "shadow_event_status"),
+        default=SHADOW_STATUS_NEW,
+    )
     accepted_event_id: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("events.id", ondelete="SET NULL"),
         nullable=True,

@@ -8,6 +8,8 @@ from sqlalchemy import Boolean, Float, ForeignKey, Integer, String, Text, Unique
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from tripl.models.base import Base, UUIDMixin
+from tripl.models.domain_enums import FieldDefinitionType, Sensitivity
+from tripl.models.enum_types import db_enum
 
 if TYPE_CHECKING:
     from tripl.models.event_type import EventType
@@ -24,12 +26,16 @@ class FieldDefinition(UUIDMixin, Base):
     )
     name: Mapped[str] = mapped_column(String(100))
     display_name: Mapped[str] = mapped_column(String(255))
-    field_type: Mapped[str] = mapped_column(String(20))  # string, number, boolean, json, enum, url
+    field_type: Mapped[str] = mapped_column(db_enum(FieldDefinitionType, "field_definition_type"))
     is_required: Mapped[bool] = mapped_column(Boolean, default=False)
     enum_options: Mapped[list[str] | None] = mapped_column(sa.JSON, nullable=True)
     description: Mapped[str] = mapped_column(Text, default="")
     order: Mapped[int] = mapped_column(Integer, default=0)
-    sensitivity: Mapped[str] = mapped_column(String(20), default="none", server_default="none")
+    sensitivity: Mapped[str] = mapped_column(
+        db_enum(Sensitivity, "sensitivity_level"),
+        default=Sensitivity.none.value,
+        server_default=Sensitivity.none.value,
+    )
     contract_required_max_null_rate: Mapped[float | None] = mapped_column(
         Float,
         nullable=True,

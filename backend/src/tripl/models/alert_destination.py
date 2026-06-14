@@ -8,6 +8,7 @@ from sqlalchemy import Boolean, ForeignKey, Index, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from tripl.models.base import Base, TimestampMixin, UUIDMixin
+from tripl.models.enum_types import db_enum
 
 if TYPE_CHECKING:
     from tripl.models.alert_delivery import AlertDelivery
@@ -30,7 +31,7 @@ class AlertDestination(UUIDMixin, TimestampMixin, Base):
     project_id: Mapped[uuid.UUID] = mapped_column(
         ForeignKey("projects.id", ondelete="CASCADE"),
     )
-    type: Mapped[str] = mapped_column(String(32))
+    type: Mapped[str] = mapped_column(db_enum(AlertDestinationType, "alert_destination_type"))
     name: Mapped[str] = mapped_column(String(255))
     enabled: Mapped[bool] = mapped_column(Boolean, default=True, server_default="true")
     webhook_url_encrypted: Mapped[str | None] = mapped_column(Text, nullable=True)

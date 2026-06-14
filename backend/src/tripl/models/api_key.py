@@ -7,6 +7,8 @@ from sqlalchemy import DateTime, ForeignKey, String
 from sqlalchemy.orm import Mapped, mapped_column
 
 from tripl.models.base import Base, TimestampMixin, UUIDMixin
+from tripl.models.domain_enums import ApiKeyScope
+from tripl.models.enum_types import db_enum
 
 
 class ApiKey(UUIDMixin, TimestampMixin, Base):
@@ -39,7 +41,7 @@ class ApiKey(UUIDMixin, TimestampMixin, Base):
     name: Mapped[str] = mapped_column(String(100))
     key_prefix: Mapped[str] = mapped_column(String(20), index=True)
     key_hash: Mapped[str] = mapped_column(String(64), unique=True)
-    scope: Mapped[str] = mapped_column(String(20))
+    scope: Mapped[str] = mapped_column(db_enum(ApiKeyScope, "api_key_scope"))
     expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

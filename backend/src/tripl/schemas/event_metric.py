@@ -3,6 +3,14 @@ from datetime import datetime
 
 from pydantic import BaseModel
 
+from tripl.models.domain_enums import (
+    AnomalyDirection,
+    DistributionDriftBand,
+    MetricScopeType,
+    ReleaseRegressionKind,
+    ScanInterval,
+)
+
 
 class EventMetricPoint(BaseModel):
     bucket: datetime
@@ -13,13 +21,13 @@ class EventMetricPoint(BaseModel):
     # that have an anomaly row; for the rest the band is undrawn.
     stddev: float | None = None
     is_anomaly: bool = False
-    anomaly_direction: str | None = None
+    anomaly_direction: AnomalyDirection | None = None
     z_score: float | None = None
 
 
 class MetricSignalResponse(BaseModel):
     scan_config_id: uuid.UUID
-    scope_type: str
+    scope_type: MetricScopeType
     scope_ref: str
     state: str
     event_id: uuid.UUID | None = None
@@ -29,7 +37,7 @@ class MetricSignalResponse(BaseModel):
     expected_count: float
     stddev: float
     z_score: float
-    direction: str
+    direction: AnomalyDirection
 
 
 class SeasonalityCell(BaseModel):
@@ -49,7 +57,7 @@ class SeasonalityCell(BaseModel):
 
 class SeasonalityHeatmapResponse(BaseModel):
     scan_config_id: uuid.UUID
-    scope_type: str
+    scope_type: MetricScopeType
     scope_ref: str
     cells: list[SeasonalityCell]
     max_count: int
@@ -63,12 +71,12 @@ class BreakdownTimelinePoint(BaseModel):
 
 class BreakdownTimelineResponse(BaseModel):
     scan_config_id: uuid.UUID
-    scope_type: str
+    scope_type: MetricScopeType
     scope_ref: str
     breakdown_column: str
     breakdown_value: str
     is_other: bool
-    interval: str | None
+    interval: ScanInterval | None
     data: list[BreakdownTimelinePoint]
 
 
@@ -90,7 +98,7 @@ class EventMetricsResponse(BaseModel):
     scan_config_id: uuid.UUID | None = None
     event_id: uuid.UUID | None = None
     event_type_id: uuid.UUID | None = None
-    interval: str | None = None
+    interval: ScanInterval | None = None
     latest_signal: MetricSignalResponse | None = None
     data: list[EventMetricPoint]
     forecast: list[ForecastPoint] = []
@@ -106,7 +114,7 @@ class EventMetricBreakdownSeries(BaseModel):
 class EventMetricBreakdownsResponse(BaseModel):
     event_id: uuid.UUID
     scan_config_id: uuid.UUID | None = None
-    interval: str | None = None
+    interval: ScanInterval | None = None
     columns: list[str]
     selected_column: str | None = None
     series: list[EventMetricBreakdownSeries]
@@ -128,12 +136,12 @@ class AppVersionMetricSeries(BaseModel):
 
 class AppVersionSeriesResponse(BaseModel):
     scan_config_id: uuid.UUID
-    scope_type: str
+    scope_type: MetricScopeType
     scope_ref: str
     event_id: uuid.UUID | None = None
     event_type_id: uuid.UUID | None = None
     app_version_column: str | None = None
-    interval: str | None = None
+    interval: ScanInterval | None = None
     latest_version: str | None = None
     versions: list[AppVersionInfo]
     series: list[AppVersionMetricSeries]
@@ -146,12 +154,12 @@ class AppVersionAdoptionResponse(AppVersionSeriesResponse):
 class ReleaseRegressionItem(BaseModel):
     """One event (or event type) that regressed in the latest active release."""
 
-    scope_type: str
+    scope_type: MetricScopeType
     scope_ref: str
     scope_name: str
     event_id: uuid.UUID | None = None
     event_type_id: uuid.UUID | None = None
-    kind: str  # "missing" | "volume_drop"
+    kind: ReleaseRegressionKind
     version: str
     previous_version: str
     observed_count: int
@@ -181,7 +189,7 @@ class TopMoverItem(BaseModel):
     expected_count: float
     stddev: float
     z_score: float
-    direction: str
+    direction: AnomalyDirection
 
 
 class DistributionDriftTopMover(BaseModel):
@@ -198,7 +206,7 @@ class DistributionDriftPoint(BaseModel):
     field_name: str
     bucket: datetime
     psi: float
-    band: str
+    band: DistributionDriftBand
     baseline_total: int
     current_total: int
     top_movers: list[DistributionDriftTopMover]
@@ -225,6 +233,6 @@ class ActiveSignalsQuery(BaseModel):
 class EventWindowMetricsResponse(BaseModel):
     event_id: uuid.UUID
     scan_config_id: uuid.UUID | None = None
-    interval: str | None = None
+    interval: ScanInterval | None = None
     total_count: int
     data: list[EventMetricPoint]
