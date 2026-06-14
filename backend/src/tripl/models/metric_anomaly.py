@@ -16,6 +16,8 @@ from sqlalchemy import (
 from sqlalchemy.orm import Mapped, mapped_column
 
 from tripl.models.base import Base, UUIDMixin
+from tripl.models.domain_enums import AnomalyDirection, MetricScopeType
+from tripl.models.enum_types import db_enum
 
 
 class MetricAnomaly(UUIDMixin, Base):
@@ -42,7 +44,7 @@ class MetricAnomaly(UUIDMixin, Base):
     scan_config_id: Mapped[uuid.UUID] = mapped_column(
         ForeignKey("scan_configs.id", ondelete="CASCADE"),
     )
-    scope_type: Mapped[str] = mapped_column(String(32))
+    scope_type: Mapped[str] = mapped_column(db_enum(MetricScopeType, "metric_scope_type"))
     scope_ref: Mapped[str] = mapped_column(String(64))
     event_id: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("events.id", ondelete="SET NULL"),
@@ -57,7 +59,7 @@ class MetricAnomaly(UUIDMixin, Base):
     expected_count: Mapped[float] = mapped_column(Float)
     stddev: Mapped[float] = mapped_column(Float)
     z_score: Mapped[float] = mapped_column(Float)
-    direction: Mapped[str] = mapped_column(String(16))
+    direction: Mapped[str] = mapped_column(db_enum(AnomalyDirection, "anomaly_direction"))
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         server_default=func.now(),

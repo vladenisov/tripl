@@ -5,6 +5,8 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
+from tripl.models.variable_value import VariableValueKind
+
 SearchEntityType = Literal[
     "event",
     "event_type",
@@ -24,7 +26,7 @@ class SearchEventVariableValue(BaseModel):
     field_name: str
     field_display_name: str
     source_column: str
-    value_kind: Literal["low", "high"]
+    value_kind: VariableValueKind
     observed_count: int
     values: list[str] = []
 

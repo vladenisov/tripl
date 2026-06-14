@@ -6,6 +6,8 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, field_validator
 
+from tripl.models.domain_enums import MergeResolutionChoice
+from tripl.models.plan_branch import BranchKind, BranchStatus
 from tripl.schemas.plan_revision import PlanDiffEntry
 
 BranchTransitionAction = Literal[
@@ -36,8 +38,8 @@ class PlanBranchResponse(BaseModel):
     id: uuid.UUID
     project_id: uuid.UUID
     name: str
-    kind: str
-    status: str
+    kind: BranchKind
+    status: BranchStatus
     description: str
     base_revision_id: uuid.UUID | None
     created_by: uuid.UUID | None
@@ -117,7 +119,7 @@ class PlanBranchDiff(BaseModel):
 
 # --- inline 3-way merge conflict resolution ---------------------------------
 
-ResolutionChoice = Literal["ours", "theirs"]
+ResolutionChoice = MergeResolutionChoice
 
 
 class ConflictField(BaseModel):

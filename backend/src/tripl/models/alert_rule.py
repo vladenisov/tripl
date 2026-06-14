@@ -7,6 +7,8 @@ from sqlalchemy import Boolean, Float, ForeignKey, Index, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from tripl.models.base import Base, TimestampMixin, UUIDMixin
+from tripl.models.domain_enums import AlertMessageFormat
+from tripl.models.enum_types import db_enum
 
 if TYPE_CHECKING:
     from tripl.models.alert_destination import AlertDestination
@@ -69,9 +71,9 @@ class AlertRule(UUIDMixin, TimestampMixin, Base):
     message_template: Mapped[str | None] = mapped_column(Text, nullable=True)
     items_template: Mapped[str | None] = mapped_column(Text, nullable=True)
     message_format: Mapped[str] = mapped_column(
-        String(64),
-        default="plain",
-        server_default="plain",
+        db_enum(AlertMessageFormat, "alert_message_format"),
+        default=AlertMessageFormat.plain.value,
+        server_default=AlertMessageFormat.plain.value,
     )
 
     destination: Mapped[AlertDestination] = relationship(back_populates="rules")

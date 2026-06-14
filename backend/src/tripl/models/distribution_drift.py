@@ -17,6 +17,8 @@ from sqlalchemy.orm import Mapped, mapped_column
 from sqlalchemy.types import JSON
 
 from tripl.models.base import Base, UUIDMixin
+from tripl.models.domain_enums import DistributionDriftBand
+from tripl.models.enum_types import db_enum
 
 
 class DistributionDrift(UUIDMixin, Base):
@@ -48,7 +50,7 @@ class DistributionDrift(UUIDMixin, Base):
     field_name: Mapped[str] = mapped_column(String(255))
     bucket: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     psi: Mapped[float] = mapped_column(Float)
-    band: Mapped[str] = mapped_column(String(16))  # stable | minor | significant
+    band: Mapped[str] = mapped_column(db_enum(DistributionDriftBand, "distribution_drift_band"))
     baseline_total: Mapped[int] = mapped_column(Integer)
     current_total: Mapped[int] = mapped_column(Integer)
     # Top contributing values: [{"value", "baseline_share", "current_share",

@@ -9,6 +9,7 @@ from sqlalchemy import ForeignKey, Index, Integer, String, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from tripl.models.base import Base, TimestampMixin, UUIDMixin
+from tripl.models.enum_types import db_enum
 from tripl.models.plan_branch import default_branch_id
 
 if TYPE_CHECKING:
@@ -47,7 +48,10 @@ class VariableValue(UUIDMixin, TimestampMixin, Base):
         ForeignKey("field_definitions.id", ondelete="CASCADE")
     )
     source_column: Mapped[str] = mapped_column(String(255))
-    value_kind: Mapped[str] = mapped_column(String(10), default=VariableValueKind.high.value)
+    value_kind: Mapped[str] = mapped_column(
+        db_enum(VariableValueKind, "variable_value_kind"),
+        default=VariableValueKind.high.value,
+    )
     observed_count: Mapped[int] = mapped_column(Integer, default=0)
     values: Mapped[list[str]] = mapped_column(sa.JSON, default=list, server_default="[]")
 

@@ -3,11 +3,13 @@ from datetime import datetime
 
 from pydantic import BaseModel
 
+from tripl.models.scan_job import ScanJobStatus
+
 
 class ScanJobResponse(BaseModel):
     id: uuid.UUID
     scan_config_id: uuid.UUID
-    status: str
+    status: ScanJobStatus
     started_at: datetime | None
     completed_at: datetime | None
     result_summary: dict[str, object] | None
@@ -20,7 +22,7 @@ class ScanJobResponse(BaseModel):
 
 class ScanPreviewJobResponse(BaseModel):
     id: uuid.UUID
-    status: str
+    status: ScanJobStatus
     started_at: datetime | None
     completed_at: datetime | None
     # When status == "completed", holds the ScanConfigPreviewResponse payload

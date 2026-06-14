@@ -3,6 +3,9 @@ from datetime import datetime
 
 from pydantic import BaseModel, Field
 
+from tripl.models.domain_enums import AnomalyDirection, MetricScopeType
+from tripl.models.scan_job import ScanJobStatus
+
 
 class ProjectCreate(BaseModel):
     name: str = Field(min_length=1, max_length=255)
@@ -22,7 +25,7 @@ class ProjectLatestScanJob(BaseModel):
     id: uuid.UUID
     scan_config_id: uuid.UUID
     scan_name: str
-    status: str
+    status: ScanJobStatus
     started_at: datetime | None
     completed_at: datetime | None
     result_summary: dict[str, object] | None
@@ -33,7 +36,7 @@ class ProjectLatestScanJob(BaseModel):
 class ProjectLatestSignal(BaseModel):
     scan_config_id: uuid.UUID
     scan_name: str
-    scope_type: str
+    scope_type: MetricScopeType
     scope_ref: str
     scope_name: str
     state: str
@@ -41,7 +44,7 @@ class ProjectLatestSignal(BaseModel):
     actual_count: int
     expected_count: float
     z_score: float
-    direction: str
+    direction: AnomalyDirection
 
 
 class ProjectSummary(BaseModel):

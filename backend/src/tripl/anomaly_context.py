@@ -13,12 +13,13 @@ from datetime import datetime
 from sqlalchemy import desc, func, select
 from sqlalchemy.orm import Session
 
+from tripl.models.domain_enums import MetricScopeType
 from tripl.models.event_metric import EventMetric
 from tripl.models.metric_breakdown_anomaly import MetricBreakdownAnomaly
 
-SCOPE_PROJECT_TOTAL = "project_total"
-SCOPE_EVENT_TYPE = "event_type"
-SCOPE_EVENT = "event"
+SCOPE_PROJECT_TOTAL = MetricScopeType.project_total.value
+SCOPE_EVENT_TYPE = MetricScopeType.event_type.value
+SCOPE_EVENT = MetricScopeType.event.value
 
 _SPARK_BLOCKS = "▁▂▃▄▅▆▇█"
 SPARKLINE_WIDTH = 24

@@ -7,6 +7,8 @@ from sqlalchemy import Boolean, DateTime, ForeignKey, Index, String, UniqueConst
 from sqlalchemy.orm import Mapped, mapped_column
 
 from tripl.models.base import Base, TimestampMixin, UUIDMixin
+from tripl.models.domain_enums import MetricScopeType
+from tripl.models.enum_types import db_enum
 
 
 class AlertRuleState(UUIDMixin, TimestampMixin, Base):
@@ -29,7 +31,7 @@ class AlertRuleState(UUIDMixin, TimestampMixin, Base):
     scan_config_id: Mapped[uuid.UUID] = mapped_column(
         ForeignKey("scan_configs.id", ondelete="CASCADE"),
     )
-    scope_type: Mapped[str] = mapped_column(String(32))
+    scope_type: Mapped[str] = mapped_column(db_enum(MetricScopeType, "metric_scope_type"))
     scope_ref: Mapped[str] = mapped_column(String(64))
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, server_default="true")
     opened_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

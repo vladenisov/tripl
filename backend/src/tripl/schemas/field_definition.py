@@ -1,21 +1,21 @@
 import re
 import uuid
-from typing import Any, Literal
+from typing import Any
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
-Sensitivity = Literal["none", "pii", "phi", "financial", "secret"]
+from tripl.models.domain_enums import FieldDefinitionType, Sensitivity
 
 
 class FieldDefinitionCreate(BaseModel):
     name: str = Field(min_length=1, max_length=100)
     display_name: str = Field(min_length=1, max_length=255)
-    field_type: str = Field(pattern=r"^(string|number|boolean|json|enum|url)$")
+    field_type: FieldDefinitionType
     is_required: bool = False
     enum_options: list[str] | None = None
     description: str = ""
     order: int = 0
-    sensitivity: Sensitivity = "none"
+    sensitivity: Sensitivity = Sensitivity.none
     contract_required_max_null_rate: float | None = Field(None, ge=0, le=1)
     contract_regex: str | None = Field(None, min_length=1, max_length=500)
     contract_min_value: float | None = None
@@ -46,7 +46,7 @@ class FieldDefinitionCreate(BaseModel):
 
 class FieldDefinitionUpdate(BaseModel):
     display_name: str | None = Field(None, min_length=1, max_length=255)
-    field_type: str | None = Field(None, pattern=r"^(string|number|boolean|json|enum|url)$")
+    field_type: FieldDefinitionType | None = None
     is_required: bool | None = None
     enum_options: list[str] | None = None
     description: str | None = None
@@ -85,7 +85,7 @@ class FieldDefinitionResponse(BaseModel):
     event_type_id: uuid.UUID
     name: str
     display_name: str
-    field_type: str
+    field_type: FieldDefinitionType
     is_required: bool
     enum_options: list[Any] | None
     description: str

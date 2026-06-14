@@ -13,15 +13,16 @@ from tripl.alerting_matching import SCOPE_DISTRIBUTION_DRIFT
 from tripl.models.alert_destination import AlertDestination
 from tripl.models.alert_rule import AlertRule
 from tripl.models.distribution_drift import DistributionDrift
+from tripl.models.domain_enums import MetricScopeType
 from tripl.models.project import Project
 from tripl.schemas.alerting import SimulatedRuleFiring
 
-SCOPE_SCHEMA_DRIFT = "schema"
+SCOPE_SCHEMA_DRIFT = MetricScopeType.schema.value
 
 _SCOPE_LABELS = {
-    "project_total": "Project total",
-    "event_type": "Event type",
-    "event": "Event",
+    MetricScopeType.project_total.value: "Project total",
+    MetricScopeType.event_type.value: "Event type",
+    MetricScopeType.event.value: "Event",
     SCOPE_SCHEMA_DRIFT: "Schema drift",
     SCOPE_DISTRIBUTION_DRIFT: "Distribution drift",
 }

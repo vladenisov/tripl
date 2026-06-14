@@ -5,10 +5,12 @@ from datetime import datetime
 
 from pydantic import BaseModel, Field, model_validator
 
+from tripl.models.domain_enums import ChartAnnotationScopeType
+
 # Project-wide markers leave both fields NULL; scoped markers must pair a
 # scope_type with a scope_ref so chart filters never silently match the wrong
 # series.
-ALLOWED_SCOPES = {"project_total", "event_type", "event"}
+ALLOWED_SCOPES = {scope.value for scope in ChartAnnotationScopeType}
 
 
 class ChartAnnotationCreate(BaseModel):
@@ -16,7 +18,7 @@ class ChartAnnotationCreate(BaseModel):
     label: str = Field(min_length=1, max_length=200)
     description: str | None = Field(default=None, max_length=2000)
     color: str = Field(default="#ef4444", max_length=20)
-    scope_type: str | None = Field(default=None, max_length=30)
+    scope_type: ChartAnnotationScopeType | None = None
     scope_ref: str | None = Field(default=None, max_length=120)
 
     @model_validator(mode="after")
@@ -33,7 +35,7 @@ class ChartAnnotationCreate(BaseModel):
 class ChartAnnotationResponse(BaseModel):
     id: uuid.UUID
     project_id: uuid.UUID
-    scope_type: str | None
+    scope_type: ChartAnnotationScopeType | None
     scope_ref: str | None
     bucket: datetime
     label: str

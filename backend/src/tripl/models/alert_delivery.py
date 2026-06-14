@@ -6,10 +6,12 @@ from datetime import datetime
 from typing import TYPE_CHECKING
 
 import sqlalchemy as sa
-from sqlalchemy import DateTime, ForeignKey, Index, String, Text
+from sqlalchemy import DateTime, ForeignKey, Index, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
+from tripl.models.alert_destination import AlertDestinationType
 from tripl.models.base import Base, TimestampMixin, UUIDMixin
+from tripl.models.enum_types import db_enum
 
 if TYPE_CHECKING:
     from tripl.models.alert_delivery_item import AlertDeliveryItem
@@ -48,11 +50,11 @@ class AlertDelivery(UUIDMixin, TimestampMixin, Base):
         ForeignKey("alert_rules.id", ondelete="CASCADE"),
     )
     status: Mapped[str] = mapped_column(
-        String(20),
+        db_enum(AlertDeliveryStatus, "alert_delivery_status"),
         default=AlertDeliveryStatus.pending.value,
         server_default=AlertDeliveryStatus.pending.value,
     )
-    channel: Mapped[str] = mapped_column(String(32))
+    channel: Mapped[str] = mapped_column(db_enum(AlertDestinationType, "alert_destination_type"))
     matched_count: Mapped[int] = mapped_column(default=0, server_default="0")
     # Number of times the reaper has re-enqueued this delivery after it was
     # left stranded in `pending`. Bounds retries so a permanently broken

@@ -1,10 +1,11 @@
 import uuid
 from datetime import datetime
-from typing import Literal
 
 from pydantic import BaseModel, EmailStr, Field
 
-Role = Literal["owner", "editor", "viewer"]
+from tripl.models.domain_enums import UserRole
+
+Role = UserRole
 
 
 class RegisterRequest(BaseModel):

@@ -3,16 +3,18 @@ from __future__ import annotations
 import uuid
 from datetime import datetime
 
-from sqlalchemy import DateTime, ForeignKey, Index, Integer, String, Text, UniqueConstraint
+from sqlalchemy import DateTime, ForeignKey, Index, Integer, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
 from tripl.models.base import Base, TimestampMixin, UUIDMixin
+from tripl.models.domain_enums import AlertInboxStatus
+from tripl.models.enum_types import db_enum
 
-ALERT_GROUP_STATUS_OPEN = "open"
-ALERT_GROUP_STATUS_ACKNOWLEDGED = "acknowledged"
-ALERT_GROUP_STATUS_RESOLVED = "resolved"
-ALERT_GROUP_STATUS_MUTED = "muted"
-ALERT_GROUP_STATUS_FALSE_POSITIVE = "false_positive"
+ALERT_GROUP_STATUS_OPEN = AlertInboxStatus.open.value
+ALERT_GROUP_STATUS_ACKNOWLEDGED = AlertInboxStatus.acknowledged.value
+ALERT_GROUP_STATUS_RESOLVED = AlertInboxStatus.resolved.value
+ALERT_GROUP_STATUS_MUTED = AlertInboxStatus.muted.value
+ALERT_GROUP_STATUS_FALSE_POSITIVE = AlertInboxStatus.false_positive.value
 
 
 class AlertCorrelationState(UUIDMixin, TimestampMixin, Base):
@@ -31,7 +33,7 @@ class AlertCorrelationState(UUIDMixin, TimestampMixin, Base):
     )
     correlation_group_id: Mapped[uuid.UUID] = mapped_column()
     status: Mapped[str] = mapped_column(
-        String(32),
+        db_enum(AlertInboxStatus, "alert_inbox_status"),
         default=ALERT_GROUP_STATUS_OPEN,
         server_default=ALERT_GROUP_STATUS_OPEN,
     )

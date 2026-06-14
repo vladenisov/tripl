@@ -2,11 +2,10 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime
-from typing import Literal
 
 from pydantic import BaseModel, Field
 
-ShadowEventStatus = Literal["new", "accepted", "dismissed"]
+from tripl.models.domain_enums import ShadowEventStatus
 
 
 class ShadowEventCandidateResponse(BaseModel):

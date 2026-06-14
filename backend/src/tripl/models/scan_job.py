@@ -6,10 +6,11 @@ from datetime import datetime
 from typing import TYPE_CHECKING
 
 import sqlalchemy as sa
-from sqlalchemy import DateTime, ForeignKey, Index, String, Text
+from sqlalchemy import DateTime, ForeignKey, Index, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from tripl.models.base import Base, TimestampMixin, UUIDMixin
+from tripl.models.enum_types import db_enum
 
 if TYPE_CHECKING:
     from tripl.models.scan_config import ScanConfig
@@ -29,7 +30,9 @@ class ScanJob(UUIDMixin, TimestampMixin, Base):
     scan_config_id: Mapped[uuid.UUID] = mapped_column(
         ForeignKey("scan_configs.id", ondelete="CASCADE")
     )
-    status: Mapped[str] = mapped_column(String(20), default=ScanJobStatus.pending.value)
+    status: Mapped[str] = mapped_column(
+        db_enum(ScanJobStatus, "scan_job_status"), default=ScanJobStatus.pending.value
+    )
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     result_summary: Mapped[dict[str, object] | None] = mapped_column(sa.JSON, nullable=True)

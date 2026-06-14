@@ -17,6 +17,8 @@ from sqlalchemy import (
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from tripl.models.base import Base, TimestampMixin, UUIDMixin
+from tripl.models.domain_enums import ScanInterval
+from tripl.models.enum_types import db_enum
 
 if TYPE_CHECKING:
     from tripl.models.data_source import DataSource
@@ -61,11 +63,15 @@ class ScanConfig(UUIDMixin, TimestampMixin, Base):
         server_default="[]",
     )
     cardinality_threshold: Mapped[int] = mapped_column(Integer, default=100)
-    interval: Mapped[str | None] = mapped_column(String(10), nullable=True)
+    interval: Mapped[str | None] = mapped_column(
+        db_enum(ScanInterval, "scan_interval"), nullable=True
+    )
     # Splits the metrics collection window into interval-aligned chunks so a long
     # replay runs several bounded warehouse queries instead of one that times out.
     # Must be >= ``interval``; NULL means "scan the whole window in one query".
-    replay_chunk_interval: Mapped[str | None] = mapped_column(String(10), nullable=True)
+    replay_chunk_interval: Mapped[str | None] = mapped_column(
+        db_enum(ScanInterval, "scan_interval"), nullable=True
+    )
     # Optional lookback for manual scan/preview catalog sync. Scheduled metrics
     # catalog sync uses the collection window when this is unset.
     scan_lookback_hours: Mapped[int | None] = mapped_column(Integer, nullable=True)

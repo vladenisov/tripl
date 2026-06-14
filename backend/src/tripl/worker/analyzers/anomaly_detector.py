@@ -9,9 +9,11 @@ from statistics import fmean, median
 import numpy as np
 from statsmodels.tsa.seasonal import MSTL, STL
 
-SCOPE_PROJECT_TOTAL = "project_total"
-SCOPE_EVENT_TYPE = "event_type"
-SCOPE_EVENT = "event"
+from tripl.models.domain_enums import MetricScopeType
+
+SCOPE_PROJECT_TOTAL = MetricScopeType.project_total.value
+SCOPE_EVENT_TYPE = MetricScopeType.event_type.value
+SCOPE_EVENT = MetricScopeType.event.value
 # Seasonal periods (in buckets) used by the STL/MSTL decomposition for the
 # trend-shift detector and the forecast. Ascending order matters: MSTL drops
 # periods longer than half the series and keeps the shortest survivors first.

@@ -16,6 +16,8 @@ from sqlalchemy import (
 from sqlalchemy.orm import Mapped, mapped_column
 
 from tripl.models.base import Base, UUIDMixin
+from tripl.models.domain_enums import MetricScopeType, ReleaseRegressionKind
+from tripl.models.enum_types import db_enum
 
 
 class ReleaseRegression(UUIDMixin, Base):
@@ -51,7 +53,7 @@ class ReleaseRegression(UUIDMixin, Base):
     scan_config_id: Mapped[uuid.UUID] = mapped_column(
         ForeignKey("scan_configs.id", ondelete="CASCADE"),
     )
-    scope_type: Mapped[str] = mapped_column(String(32))  # "event" | "event_type"
+    scope_type: Mapped[str] = mapped_column(db_enum(MetricScopeType, "metric_scope_type"))
     scope_ref: Mapped[str] = mapped_column(String(64))
     event_id: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("events.id", ondelete="SET NULL"),
@@ -64,7 +66,7 @@ class ReleaseRegression(UUIDMixin, Base):
     app_version_column: Mapped[str] = mapped_column(String(255))
     version: Mapped[str] = mapped_column(String(500))  # the release under test (v_new)
     previous_version: Mapped[str] = mapped_column(String(500))  # baseline release (v_prev)
-    kind: Mapped[str] = mapped_column(String(16))  # "missing" | "volume_drop"
+    kind: Mapped[str] = mapped_column(db_enum(ReleaseRegressionKind, "release_regression_kind"))
     observed_count: Mapped[int] = mapped_column(BigInteger)
     expected_count: Mapped[float] = mapped_column(Float)
     ratio: Mapped[float] = mapped_column(Float)

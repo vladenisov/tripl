@@ -17,9 +17,10 @@ from typing import Protocol
 
 from tripl.models.alert_rule import AlertRule
 from tripl.models.alert_rule_filter import AlertRuleFilter
+from tripl.models.domain_enums import MetricScopeType
 
-SCOPE_DISTRIBUTION_DRIFT = "distribution"
-SCOPE_RELEASE_REGRESSION = "release_regression"
+SCOPE_DISTRIBUTION_DRIFT = MetricScopeType.distribution.value
+SCOPE_RELEASE_REGRESSION = MetricScopeType.release_regression.value
 
 
 class AlertMatchCandidate(Protocol):
@@ -90,13 +91,13 @@ def filter_matches_anomaly(filter_row: AlertRuleFilter, anomaly: AlertMatchCandi
 
 def rule_matches_anomaly(rule: AlertRule, anomaly: AlertMatchCandidate) -> bool:
     # Scope gates.
-    if anomaly.scope_type == "project_total" and not rule.include_project_total:
+    if anomaly.scope_type == MetricScopeType.project_total.value and not rule.include_project_total:
         return False
-    if anomaly.scope_type == "event_type" and not rule.include_event_types:
+    if anomaly.scope_type == MetricScopeType.event_type.value and not rule.include_event_types:
         return False
-    if anomaly.scope_type == "event" and not rule.include_events:
+    if anomaly.scope_type == MetricScopeType.event.value and not rule.include_events:
         return False
-    if anomaly.scope_type == "schema" and not rule.include_schema_drifts:
+    if anomaly.scope_type == MetricScopeType.schema.value and not rule.include_schema_drifts:
         return False
     if anomaly.scope_type == SCOPE_DISTRIBUTION_DRIFT and not rule.include_distribution_drifts:
         return False
@@ -109,7 +110,11 @@ def rule_matches_anomaly(rule: AlertRule, anomaly: AlertMatchCandidate) -> bool:
     if anomaly.direction == "drop" and not rule.notify_on_drop:
         return False
 
-    if anomaly.scope_type in {"schema", SCOPE_DISTRIBUTION_DRIFT, SCOPE_RELEASE_REGRESSION}:
+    if anomaly.scope_type in {
+        MetricScopeType.schema.value,
+        SCOPE_DISTRIBUTION_DRIFT,
+        SCOPE_RELEASE_REGRESSION,
+    }:
         return all(filter_matches_anomaly(filter_row, anomaly) for filter_row in rule.filters)
 
     # Numeric thresholds.

@@ -9,6 +9,7 @@ from sqlalchemy import DateTime, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from tripl.models.base import Base, TimestampMixin, UUIDMixin
+from tripl.models.enum_types import db_enum
 
 if TYPE_CHECKING:
     from tripl.models.scan_config import ScanConfig
@@ -30,7 +31,7 @@ class DataSource(UUIDMixin, TimestampMixin, Base):
     __table_args__ = (UniqueConstraint("name", name="uq_data_source_name"),)
 
     name: Mapped[str] = mapped_column(String(255))
-    db_type: Mapped[str] = mapped_column(String(20))  # clickhouse, bigquery, ...
+    db_type: Mapped[str] = mapped_column(db_enum(DBType, "data_source_db_type"))
     host: Mapped[str] = mapped_column(String(500))
     port: Mapped[int] = mapped_column(Integer, default=8123)
     database_name: Mapped[str] = mapped_column(String(255))
@@ -42,7 +43,9 @@ class DataSource(UUIDMixin, TimestampMixin, Base):
     last_test_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True, default=None
     )
-    last_test_status: Mapped[str | None] = mapped_column(String(16), nullable=True, default=None)
+    last_test_status: Mapped[str | None] = mapped_column(
+        db_enum(TestStatus, "data_source_test_status"), nullable=True, default=None
+    )
     last_test_message: Mapped[str | None] = mapped_column(Text, nullable=True, default=None)
 
     scan_configs: Mapped[list[ScanConfig]] = relationship(

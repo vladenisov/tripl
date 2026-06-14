@@ -6,6 +6,7 @@ from typing import Annotated
 from fastapi import APIRouter, Query
 
 from tripl.api.deps import BranchIdDep, EditorUserDep, SessionDep
+from tripl.models.domain_enums import ShadowEventStatus
 from tripl.schemas.reconciliation import (
     CoverageResponse,
     DeadEventListResponse,
@@ -13,7 +14,6 @@ from tripl.schemas.reconciliation import (
     ShadowEventAcceptResponse,
     ShadowEventDismissResponse,
     ShadowEventListResponse,
-    ShadowEventStatus,
 )
 from tripl.services import reconciliation_service
 
