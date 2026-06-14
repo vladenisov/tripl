@@ -12,6 +12,7 @@ from tripl.models.event_metric_breakdown import EventMetricBreakdown
 from tripl.models.metric_anomaly import MetricAnomaly
 from tripl.models.metric_breakdown_anomaly import MetricBreakdownAnomaly
 from tripl.models.project_anomaly_settings import ProjectAnomalySettings
+from tripl.models.release_regression import ReleaseRegression
 from tripl.models.scan_config import ScanConfig
 from tripl.tests.conftest import TestSessionLocal
 
@@ -905,6 +906,160 @@ async def test_get_app_version_endpoints_are_empty_without_version_column(
     assert series_body["series"] == []
     assert adoption_body["totals"] == []
     assert adoption_body["series"] == []
+
+
+@pytest.mark.asyncio
+async def test_get_release_regressions_lists_missing_first(client: AsyncClient) -> None:
+    setup = await _setup_metrics_project(client, "release-regressions")
+
+    event_resp = await client.post(
+        "/api/v1/projects/release-regressions/events",
+        json={
+            "event_type_id": setup["page_type_id"],
+            "name": "event_name=Login",
+            "status": "implemented",
+            "field_values": [{"field_definition_id": setup["page_field_id"], "value": "home"}],
+        },
+    )
+    event_id = event_resp.json()["id"]
+
+    async with TestSessionLocal() as session:
+        data_source = DataSource(
+            id=uuid.uuid4(),
+            name=f"Regression DS {uuid.uuid4().hex[:8]}",
+            db_type="clickhouse",
+            host="localhost",
+            port=8123,
+            database_name="default",
+            username="default",
+            password_encrypted="",
+        )
+        scan_config = ScanConfig(
+            id=uuid.uuid4(),
+            data_source_id=data_source.id,
+            project_id=uuid.UUID(setup["project_id"]),
+            event_type_id=uuid.UUID(setup["page_type_id"]),
+            name="Regression Config",
+            base_query="SELECT time, event_name, app_version FROM events",
+            time_column="time",
+            app_version_column="app_version",
+            cardinality_threshold=100,
+            interval="1h",
+        )
+        session.add_all([data_source, scan_config])
+        # A volume_drop (event-type scope) and a missing event — missing should
+        # sort first regardless of insertion order.
+        session.add(
+            ReleaseRegression(
+                id=uuid.uuid4(),
+                scan_config_id=scan_config.id,
+                scope_type="event_type",
+                scope_ref=setup["page_type_id"],
+                event_id=None,
+                event_type_id=uuid.UUID(setup["page_type_id"]),
+                app_version_column="app_version",
+                version="2.1.0",
+                previous_version="2.0.0",
+                kind="volume_drop",
+                observed_count=40,
+                expected_count=100.0,
+                ratio=0.4,
+                share_prev=0.2,
+                share_new=0.08,
+                release_share=0.33,
+                window_from=datetime(2026, 1, 1, 10, tzinfo=UTC),
+                window_to=datetime(2026, 1, 1, 11, tzinfo=UTC),
+            )
+        )
+        session.add(
+            ReleaseRegression(
+                id=uuid.uuid4(),
+                scan_config_id=scan_config.id,
+                scope_type="event",
+                scope_ref=event_id,
+                event_id=uuid.UUID(event_id),
+                event_type_id=None,
+                app_version_column="app_version",
+                version="2.1.0",
+                previous_version="2.0.0",
+                kind="missing",
+                observed_count=0,
+                expected_count=200.0,
+                ratio=0.0,
+                share_prev=0.1,
+                share_new=0.0,
+                release_share=0.33,
+                window_from=datetime(2026, 1, 1, 10, tzinfo=UTC),
+                window_to=datetime(2026, 1, 1, 11, tzinfo=UTC),
+            )
+        )
+        await session.commit()
+        scan_config_id = str(scan_config.id)
+
+    resp = await client.get(
+        f"/api/v1/projects/release-regressions/scans/{scan_config_id}/release-regressions"
+    )
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["app_version_column"] == "app_version"
+    assert body["latest_version"] == "2.1.0"
+    assert [item["kind"] for item in body["items"]] == ["missing", "volume_drop"]
+    missing = body["items"][0]
+    assert missing["scope_type"] == "event"
+    assert missing["scope_name"] == "event_name=Login"
+    assert missing["version"] == "2.1.0"
+    assert missing["previous_version"] == "2.0.0"
+    assert missing["observed_count"] == 0
+    assert missing["expected_count"] == 200.0
+    assert body["items"][1]["scope_type"] == "event_type"
+
+    # scope_type filter narrows the result set.
+    filtered = await client.get(
+        f"/api/v1/projects/release-regressions/scans/{scan_config_id}/release-regressions",
+        params={"scope_type": "event"},
+    )
+    assert [item["kind"] for item in filtered.json()["items"]] == ["missing"]
+
+
+@pytest.mark.asyncio
+async def test_get_release_regressions_empty_without_version_column(client: AsyncClient) -> None:
+    setup = await _setup_metrics_project(client, "regression-empty")
+
+    async with TestSessionLocal() as session:
+        data_source = DataSource(
+            id=uuid.uuid4(),
+            name=f"Regression Empty DS {uuid.uuid4().hex[:8]}",
+            db_type="clickhouse",
+            host="localhost",
+            port=8123,
+            database_name="default",
+            username="default",
+            password_encrypted="",
+        )
+        scan_config = ScanConfig(
+            id=uuid.uuid4(),
+            data_source_id=data_source.id,
+            project_id=uuid.UUID(setup["project_id"]),
+            event_type_id=uuid.UUID(setup["page_type_id"]),
+            name="No Version Regression Config",
+            base_query="SELECT time, event_name FROM events",
+            time_column="time",
+            cardinality_threshold=100,
+            interval="1h",
+        )
+        session.add_all([data_source, scan_config])
+        await session.commit()
+        scan_config_id = str(scan_config.id)
+
+    resp = await client.get(
+        f"/api/v1/projects/regression-empty/scans/{scan_config_id}/release-regressions"
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["app_version_column"] is None
+    assert body["latest_version"] is None
+    assert body["items"] == []
 
 
 @pytest.mark.asyncio

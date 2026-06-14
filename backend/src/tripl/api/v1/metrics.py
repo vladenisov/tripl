@@ -16,6 +16,7 @@ from tripl.schemas.event_metric import (
     EventWindowMetricsRequest,
     EventWindowMetricsResponse,
     MetricSignalResponse,
+    ReleaseRegressionsResponse,
     SeasonalityHeatmapResponse,
     TopMoverItem,
 )
@@ -295,6 +296,24 @@ async def get_app_version_adoption(
         scan_config_id=scan_config_id,
         time_from=time_from,
         time_to=time_to,
+    )
+
+
+@router.get(
+    "/projects/{slug}/scans/{scan_config_id}/release-regressions",
+    response_model=ReleaseRegressionsResponse,
+)
+async def get_release_regressions(
+    session: SessionDep,
+    slug: str,
+    scan_config_id: uuid.UUID,
+    scope_type: str | None = None,
+) -> ReleaseRegressionsResponse:
+    return await metrics_service.get_release_regressions(
+        session,
+        slug,
+        scan_config_id=scan_config_id,
+        scope_type=scope_type,
     )
 
 

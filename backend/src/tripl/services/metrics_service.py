@@ -17,6 +17,7 @@ from tripl.models.event_type import EventType
 from tripl.models.metric_anomaly import MetricAnomaly
 from tripl.models.metric_breakdown_anomaly import MetricBreakdownAnomaly
 from tripl.models.project import Project
+from tripl.models.release_regression import ReleaseRegression
 from tripl.models.scan_config import ScanConfig
 from tripl.schemas.event_metric import (
     AppVersionAdoptionResponse,
@@ -31,6 +32,8 @@ from tripl.schemas.event_metric import (
     EventWindowMetricsResponse,
     ForecastPoint,
     MetricSignalResponse,
+    ReleaseRegressionItem,
+    ReleaseRegressionsResponse,
 )
 from tripl.semver import order_versions
 from tripl.services.monitoring_utils import classify_signal_state
@@ -916,6 +919,99 @@ async def get_app_version_adoption(
         versions=versions,
         series=series,
         totals=_build_app_version_totals(metric_rows_by_series),
+    )
+
+
+async def get_release_regressions(
+    session: AsyncSession,
+    slug: str,
+    *,
+    scan_config_id: uuid.UUID,
+    scope_type: str | None = None,
+) -> ReleaseRegressionsResponse:
+    """Events that changed in the latest active release, per scope.
+
+    Backed by the ReleaseRegression rows the scan recomputes each run (they
+    always describe the current latest release). Empty when the scan has no
+    version column.
+    """
+    project = await _resolve_project(session, slug)
+    config = await _resolve_scan_config(session, project.id, scan_config_id)
+    if not config.app_version_column:
+        return ReleaseRegressionsResponse(
+            scan_config_id=config.id,
+            app_version_column=None,
+            latest_version=None,
+            items=[],
+        )
+
+    stmt = select(ReleaseRegression).where(ReleaseRegression.scan_config_id == config.id)
+    if scope_type is not None:
+        stmt = stmt.where(ReleaseRegression.scope_type == scope_type)
+    regressions = list((await session.execute(stmt)).scalars())
+    if not regressions:
+        return ReleaseRegressionsResponse(
+            scan_config_id=config.id,
+            app_version_column=config.app_version_column,
+            latest_version=None,
+            items=[],
+        )
+
+    event_ids = {r.event_id for r in regressions if r.event_id is not None}
+    type_ids = {r.event_type_id for r in regressions if r.event_type_id is not None}
+    event_names: dict[uuid.UUID, str] = {}
+    if event_ids:
+        for event_id, name in (
+            await session.execute(select(Event.id, Event.name).where(Event.id.in_(event_ids)))
+        ).all():
+            event_names[event_id] = name
+    type_names: dict[uuid.UUID, str] = {}
+    if type_ids:
+        for type_id, display_name, name in (
+            await session.execute(
+                select(EventType.id, EventType.display_name, EventType.name).where(
+                    EventType.id.in_(type_ids)
+                )
+            )
+        ).all():
+            type_names[type_id] = display_name or name
+
+    def _scope_name(regression: ReleaseRegression) -> str:
+        if regression.event_id is not None:
+            return event_names.get(regression.event_id, regression.scope_ref)
+        if regression.event_type_id is not None:
+            return type_names.get(regression.event_type_id, regression.scope_ref)
+        return regression.scope_ref
+
+    latest_version = order_versions({r.version for r in regressions})[-1]
+    # Missing events first, then by severity (lowest ratio = worst).
+    ordered = sorted(regressions, key=lambda r: (0 if r.kind == "missing" else 1, r.ratio))
+    items = [
+        ReleaseRegressionItem(
+            scope_type=regression.scope_type,
+            scope_ref=regression.scope_ref,
+            scope_name=_scope_name(regression),
+            event_id=regression.event_id,
+            event_type_id=regression.event_type_id,
+            kind=regression.kind,
+            version=regression.version,
+            previous_version=regression.previous_version,
+            observed_count=regression.observed_count,
+            expected_count=regression.expected_count,
+            ratio=regression.ratio,
+            share_prev=regression.share_prev,
+            share_new=regression.share_new,
+            release_share=regression.release_share,
+            window_from=regression.window_from,
+            window_to=regression.window_to,
+        )
+        for regression in ordered
+    ]
+    return ReleaseRegressionsResponse(
+        scan_config_id=config.id,
+        app_version_column=config.app_version_column,
+        latest_version=latest_version,
+        items=items,
     )
 
 
