@@ -6,6 +6,12 @@ tripl is the single place where your team writes down what you *intend* to
 track, checks it against what your apps are *actually* sending, and gets a
 heads-up the moment the numbers start to look wrong.
 
+**tripl works with the analytics data you already have.** It connects to your
+existing data warehouse — **ClickHouse**, **BigQuery**, or **PostgreSQL** — and
+reads the events that are already landing there. There's no new SDK to ship and
+nothing to re-instrument: you point tripl at your data, and it takes care of the
+rest. Your warehouse stays yours; tripl only ever reads from it.
+
 ---
 
 ## The problem tripl solves
@@ -119,9 +125,6 @@ Then open the app, create the first account on the sign-in page, and click
 | API | http://localhost:8000 |
 | API reference (interactive) | http://localhost:8000/docs |
 
-> Your analytics warehouse (ClickHouse / BigQuery / Postgres) lives outside
-> tripl and is not started for you — you connect it as a data source from inside
-> the app.
 
 ---
 
