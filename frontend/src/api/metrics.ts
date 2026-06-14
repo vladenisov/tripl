@@ -1,5 +1,7 @@
 import { api } from './client'
 import type {
+  AppVersionAdoptionResponse,
+  AppVersionSeriesResponse,
   BreakdownTimeline,
   EventMetricBreakdownsResponse,
   EventMetricsResponse,
@@ -172,6 +174,41 @@ export const metricsApi = {
     if (params.to) sp.set('to', params.to)
     return api.get<DistributionDriftsResponse>(
       `/projects/${slug}/distribution-drifts?${sp.toString()}`,
+    )
+  },
+
+  getAppVersionSeries: (
+    slug: string,
+    scanConfigId: string,
+    params?: {
+      scope_type?: 'project_total' | 'event_type' | 'event'
+      scope_ref?: string
+      from?: string
+      to?: string
+    },
+  ) => {
+    const sp = new URLSearchParams()
+    if (params?.scope_type) sp.set('scope_type', params.scope_type)
+    if (params?.scope_ref) sp.set('scope_ref', params.scope_ref)
+    if (params?.from) sp.set('from', params.from)
+    if (params?.to) sp.set('to', params.to)
+    const qs = sp.toString()
+    return api.get<AppVersionSeriesResponse>(
+      `/projects/${slug}/scans/${scanConfigId}/app-versions${qs ? `?${qs}` : ''}`,
+    )
+  },
+
+  getAppVersionAdoption: (
+    slug: string,
+    scanConfigId: string,
+    params?: { from?: string; to?: string },
+  ) => {
+    const sp = new URLSearchParams()
+    if (params?.from) sp.set('from', params.from)
+    if (params?.to) sp.set('to', params.to)
+    const qs = sp.toString()
+    return api.get<AppVersionAdoptionResponse>(
+      `/projects/${slug}/scans/${scanConfigId}/version-adoption${qs ? `?${qs}` : ''}`,
     )
   },
 }

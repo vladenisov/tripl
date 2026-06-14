@@ -19,6 +19,11 @@ from tripl.models.metric_breakdown_anomaly import MetricBreakdownAnomaly
 from tripl.models.project import Project
 from tripl.models.scan_config import ScanConfig
 from tripl.schemas.event_metric import (
+    AppVersionAdoptionResponse,
+    AppVersionInfo,
+    AppVersionMetricSeries,
+    AppVersionSeriesResponse,
+    BreakdownTimelinePoint,
     EventMetricBreakdownSeries,
     EventMetricBreakdownsResponse,
     EventMetricPoint,
@@ -27,6 +32,7 @@ from tripl.schemas.event_metric import (
     ForecastPoint,
     MetricSignalResponse,
 )
+from tripl.semver import order_versions
 from tripl.services.monitoring_utils import classify_signal_state
 from tripl.services.project_lookup import get_project_by_slug
 from tripl.worker.analyzers.anomaly_detector import (
@@ -64,6 +70,17 @@ async def _resolve_event_type(
     if event_type is None or event_type.project_id != project_id:
         raise HTTPException(404, "Event type not found")
     return event_type
+
+
+async def _resolve_scan_config(
+    session: AsyncSession,
+    project_id: uuid.UUID,
+    scan_config_id: uuid.UUID,
+) -> ScanConfig:
+    config = await session.get(ScanConfig, scan_config_id)
+    if config is None or config.project_id != project_id:
+        raise HTTPException(404, "Scan config not found")
+    return config
 
 
 async def _get_project_interval(session: AsyncSession, project_id: uuid.UUID) -> str | None:
@@ -581,6 +598,324 @@ async def get_event_metric_breakdowns(
         columns=columns,
         selected_column=selected_column,
         series=series,
+    )
+
+
+def _validate_app_version_scope_ref(
+    *,
+    scope_type: str,
+    scope_ref: str | None,
+    scan_config_id: uuid.UUID,
+) -> str:
+    if scope_type == SCOPE_PROJECT_TOTAL:
+        return str(scan_config_id)
+    if scope_type in {SCOPE_EVENT_TYPE, SCOPE_EVENT}:
+        if not scope_ref:
+            raise HTTPException(400, "scope_ref is required for event and event_type scopes")
+        try:
+            return str(uuid.UUID(scope_ref))
+        except ValueError as exc:
+            raise HTTPException(400, "scope_ref must be a UUID") from exc
+    raise HTTPException(400, "scope_type must be project_total, event_type, or event")
+
+
+async def _resolve_app_version_scope(
+    session: AsyncSession,
+    *,
+    project_id: uuid.UUID,
+    scope_type: str,
+    scope_ref: str,
+) -> tuple[uuid.UUID | None, uuid.UUID | None]:
+    if scope_type == SCOPE_EVENT:
+        event = await _resolve_event(session, project_id, uuid.UUID(scope_ref))
+        return event.id, None
+    if scope_type == SCOPE_EVENT_TYPE:
+        event_type = await _resolve_event_type(session, project_id, uuid.UUID(scope_ref))
+        return None, event_type.id
+    return None, None
+
+
+def _order_app_version_keys(keys: set[tuple[str, bool]]) -> list[tuple[str, bool]]:
+    explicit_versions = {version for version, is_other in keys if not is_other}
+    ordered = [(version, False) for version in order_versions(explicit_versions, reverse=True)]
+    other_versions = sorted((version, is_other) for version, is_other in keys if is_other)
+    return ordered + other_versions
+
+
+def _latest_app_version(keys: set[tuple[str, bool]]) -> str | None:
+    explicit_versions = {version for version, is_other in keys if not is_other}
+    ordered = order_versions(explicit_versions, reverse=True)
+    return ordered[0] if ordered else None
+
+
+async def _load_app_version_metric_rows(
+    session: AsyncSession,
+    *,
+    config: ScanConfig,
+    scope_type: str,
+    event_id: uuid.UUID | None,
+    event_type_id: uuid.UUID | None,
+    time_from: datetime | None,
+    time_to: datetime | None,
+) -> dict[tuple[str, bool], list[tuple[datetime, int]]]:
+    if config.app_version_column is None:
+        return {}
+
+    metric_query = (
+        select(
+            EventMetricBreakdown.breakdown_value,
+            EventMetricBreakdown.is_other,
+            EventMetricBreakdown.bucket,
+            func.sum(EventMetricBreakdown.count),
+        )
+        .where(
+            EventMetricBreakdown.scan_config_id == config.id,
+            EventMetricBreakdown.breakdown_column == config.app_version_column,
+        )
+        .group_by(
+            EventMetricBreakdown.breakdown_value,
+            EventMetricBreakdown.is_other,
+            EventMetricBreakdown.bucket,
+        )
+        .order_by(EventMetricBreakdown.bucket)
+    )
+
+    if scope_type == SCOPE_PROJECT_TOTAL:
+        metric_query = metric_query.where(
+            EventMetricBreakdown.event_id.is_(None),
+            EventMetricBreakdown.event_type_id.is_not(None),
+        )
+    elif scope_type == SCOPE_EVENT_TYPE:
+        metric_query = metric_query.where(
+            EventMetricBreakdown.event_id.is_(None),
+            EventMetricBreakdown.event_type_id == event_type_id,
+        )
+    else:
+        metric_query = metric_query.where(EventMetricBreakdown.event_id == event_id)
+
+    if time_from is not None:
+        metric_query = metric_query.where(EventMetricBreakdown.bucket >= time_from)
+    if time_to is not None:
+        metric_query = metric_query.where(EventMetricBreakdown.bucket < time_to)
+
+    metric_rows_by_series: dict[tuple[str, bool], list[tuple[datetime, int]]] = {}
+    for version, is_other, bucket, count in (await session.execute(metric_query)).all():
+        key = (str(version), bool(is_other))
+        metric_rows_by_series.setdefault(key, []).append((bucket, int(count)))
+    return metric_rows_by_series
+
+
+async def _load_app_version_anomaly_rows(
+    session: AsyncSession,
+    *,
+    config: ScanConfig,
+    scope_type: str,
+    scope_ref: str,
+    time_from: datetime | None,
+    time_to: datetime | None,
+) -> dict[tuple[str, bool], list[MetricBreakdownAnomaly]]:
+    if config.app_version_column is None:
+        return {}
+
+    anomaly_query = (
+        select(MetricBreakdownAnomaly)
+        .where(
+            MetricBreakdownAnomaly.scan_config_id == config.id,
+            MetricBreakdownAnomaly.scope_type == scope_type,
+            MetricBreakdownAnomaly.scope_ref == scope_ref,
+            MetricBreakdownAnomaly.breakdown_column == config.app_version_column,
+        )
+        .order_by(MetricBreakdownAnomaly.breakdown_value, MetricBreakdownAnomaly.bucket)
+    )
+    if time_from is not None:
+        anomaly_query = anomaly_query.where(MetricBreakdownAnomaly.bucket >= time_from)
+    if time_to is not None:
+        anomaly_query = anomaly_query.where(MetricBreakdownAnomaly.bucket < time_to)
+
+    anomalies_by_series: dict[tuple[str, bool], list[MetricBreakdownAnomaly]] = {}
+    for anomaly in (await session.execute(anomaly_query)).scalars():
+        key = (anomaly.breakdown_value, anomaly.is_other)
+        anomalies_by_series.setdefault(key, []).append(anomaly)
+    return anomalies_by_series
+
+
+def _build_app_version_series(
+    *,
+    interval: str | None,
+    metric_rows_by_series: dict[tuple[str, bool], list[tuple[datetime, int]]],
+    anomalies_by_series: dict[tuple[str, bool], list[MetricBreakdownAnomaly]],
+) -> tuple[str | None, list[AppVersionInfo], list[AppVersionMetricSeries]]:
+    keys = set(metric_rows_by_series) | set(anomalies_by_series)
+    ordered_keys = _order_app_version_keys(keys)
+    latest_version = _latest_app_version(keys)
+
+    versions = [
+        AppVersionInfo(
+            version=version,
+            is_other=is_other,
+            is_latest=not is_other and version == latest_version,
+        )
+        for version, is_other in ordered_keys
+    ]
+
+    series: list[AppVersionMetricSeries] = []
+    for version, is_other in ordered_keys:
+        key = (version, is_other)
+        data = _build_metric_points(
+            interval=interval,
+            metric_rows=metric_rows_by_series.get(key, []),
+            anomalies=anomalies_by_series.get(key, []),
+        )
+        series.append(
+            AppVersionMetricSeries(
+                version=version,
+                is_other=is_other,
+                is_latest=not is_other and version == latest_version,
+                total_count=sum(point.count for point in data),
+                data=data,
+            )
+        )
+    return latest_version, versions, series
+
+
+def _build_app_version_totals(
+    metric_rows_by_series: dict[tuple[str, bool], list[tuple[datetime, int]]],
+) -> list[BreakdownTimelinePoint]:
+    counts_by_bucket: dict[datetime, int] = {}
+    for rows in metric_rows_by_series.values():
+        for bucket, count in rows:
+            counts_by_bucket[bucket] = counts_by_bucket.get(bucket, 0) + count
+    return [
+        BreakdownTimelinePoint(bucket=bucket, count=count)
+        for bucket, count in sorted(counts_by_bucket.items())
+    ]
+
+
+async def get_app_version_series(
+    session: AsyncSession,
+    slug: str,
+    *,
+    scan_config_id: uuid.UUID,
+    scope_type: str = SCOPE_PROJECT_TOTAL,
+    scope_ref: str | None = None,
+    time_from: datetime | None = None,
+    time_to: datetime | None = None,
+) -> AppVersionSeriesResponse:
+    project = await _resolve_project(session, slug)
+    config = await _resolve_scan_config(session, project.id, scan_config_id)
+    resolved_scope_ref = _validate_app_version_scope_ref(
+        scope_type=scope_type,
+        scope_ref=scope_ref,
+        scan_config_id=config.id,
+    )
+    if not config.app_version_column:
+        return AppVersionSeriesResponse(
+            scan_config_id=config.id,
+            scope_type=scope_type,
+            scope_ref=resolved_scope_ref,
+            app_version_column=None,
+            interval=config.interval,
+            versions=[],
+            series=[],
+        )
+
+    event_id, event_type_id = await _resolve_app_version_scope(
+        session,
+        project_id=project.id,
+        scope_type=scope_type,
+        scope_ref=resolved_scope_ref,
+    )
+    metric_rows_by_series = await _load_app_version_metric_rows(
+        session,
+        config=config,
+        scope_type=scope_type,
+        event_id=event_id,
+        event_type_id=event_type_id,
+        time_from=time_from,
+        time_to=time_to,
+    )
+    anomalies_by_series = await _load_app_version_anomaly_rows(
+        session,
+        config=config,
+        scope_type=scope_type,
+        scope_ref=resolved_scope_ref,
+        time_from=time_from,
+        time_to=time_to,
+    )
+    latest_version, versions, series = _build_app_version_series(
+        interval=config.interval,
+        metric_rows_by_series=metric_rows_by_series,
+        anomalies_by_series=anomalies_by_series,
+    )
+    return AppVersionSeriesResponse(
+        scan_config_id=config.id,
+        scope_type=scope_type,
+        scope_ref=resolved_scope_ref,
+        event_id=event_id,
+        event_type_id=event_type_id,
+        app_version_column=config.app_version_column,
+        interval=config.interval,
+        latest_version=latest_version,
+        versions=versions,
+        series=series,
+    )
+
+
+async def get_app_version_adoption(
+    session: AsyncSession,
+    slug: str,
+    *,
+    scan_config_id: uuid.UUID,
+    time_from: datetime | None = None,
+    time_to: datetime | None = None,
+) -> AppVersionAdoptionResponse:
+    project = await _resolve_project(session, slug)
+    config = await _resolve_scan_config(session, project.id, scan_config_id)
+    scope_ref = str(config.id)
+    if not config.app_version_column:
+        return AppVersionAdoptionResponse(
+            scan_config_id=config.id,
+            scope_type=SCOPE_PROJECT_TOTAL,
+            scope_ref=scope_ref,
+            app_version_column=None,
+            interval=config.interval,
+            versions=[],
+            series=[],
+            totals=[],
+        )
+
+    metric_rows_by_series = await _load_app_version_metric_rows(
+        session,
+        config=config,
+        scope_type=SCOPE_PROJECT_TOTAL,
+        event_id=None,
+        event_type_id=None,
+        time_from=time_from,
+        time_to=time_to,
+    )
+    anomalies_by_series = await _load_app_version_anomaly_rows(
+        session,
+        config=config,
+        scope_type=SCOPE_PROJECT_TOTAL,
+        scope_ref=scope_ref,
+        time_from=time_from,
+        time_to=time_to,
+    )
+    latest_version, versions, series = _build_app_version_series(
+        interval=config.interval,
+        metric_rows_by_series=metric_rows_by_series,
+        anomalies_by_series=anomalies_by_series,
+    )
+    return AppVersionAdoptionResponse(
+        scan_config_id=config.id,
+        scope_type=SCOPE_PROJECT_TOTAL,
+        scope_ref=scope_ref,
+        app_version_column=config.app_version_column,
+        interval=config.interval,
+        latest_version=latest_version,
+        versions=versions,
+        series=series,
+        totals=_build_app_version_totals(metric_rows_by_series),
     )
 
 

@@ -697,6 +697,217 @@ async def test_get_event_metric_breakdowns_returns_series(client: AsyncClient) -
 
 
 @pytest.mark.asyncio
+async def test_get_app_version_series_returns_semver_ordered_versions(
+    client: AsyncClient,
+) -> None:
+    setup = await _setup_metrics_project(client, "version-series")
+
+    event_resp = await client.post(
+        "/api/v1/projects/version-series/events",
+        json={
+            "event_type_id": setup["page_type_id"],
+            "name": "event_name=Login",
+            "status": "implemented",
+            "field_values": [{"field_definition_id": setup["page_field_id"], "value": "home"}],
+        },
+    )
+    event_id = event_resp.json()["id"]
+
+    async with TestSessionLocal() as session:
+        data_source = DataSource(
+            id=uuid.uuid4(),
+            name=f"Version DS {uuid.uuid4().hex[:8]}",
+            db_type="clickhouse",
+            host="localhost",
+            port=8123,
+            database_name="default",
+            username="default",
+            password_encrypted="",
+        )
+        scan_config = ScanConfig(
+            id=uuid.uuid4(),
+            data_source_id=data_source.id,
+            project_id=uuid.UUID(setup["project_id"]),
+            event_type_id=uuid.UUID(setup["page_type_id"]),
+            name="Version Config",
+            base_query="SELECT time, event_name, app_version FROM events",
+            time_column="time",
+            app_version_column="app_version",
+            cardinality_threshold=100,
+            interval="1h",
+        )
+        session.add_all([data_source, scan_config])
+        for bucket, version, count, is_other in [
+            (datetime(2026, 1, 1, 10, tzinfo=UTC), "2.9.0", 9, False),
+            (datetime(2026, 1, 1, 10, tzinfo=UTC), "2.10.0", 10, False),
+            (datetime(2026, 1, 1, 10, tzinfo=UTC), "beta", 1, False),
+            (datetime(2026, 1, 1, 10, tzinfo=UTC), "Other", 4, True),
+            (datetime(2026, 1, 1, 11, tzinfo=UTC), "2.10.0", 20, False),
+            (datetime(2026, 1, 1, 11, tzinfo=UTC), "2.9.0", 8, False),
+            (datetime(2026, 1, 1, 11, tzinfo=UTC), "beta", 2, False),
+        ]:
+            session.add(
+                EventMetricBreakdown(
+                    id=uuid.uuid4(),
+                    scan_config_id=scan_config.id,
+                    event_id=uuid.UUID(event_id),
+                    event_type_id=None,
+                    bucket=bucket,
+                    breakdown_column="app_version",
+                    breakdown_value=version,
+                    is_other=is_other,
+                    count=count,
+                )
+            )
+        await session.commit()
+        scan_config_id = str(scan_config.id)
+
+    resp = await client.get(
+        f"/api/v1/projects/version-series/scans/{scan_config_id}/app-versions",
+        params={"scope_type": "event", "scope_ref": event_id},
+    )
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["app_version_column"] == "app_version"
+    assert body["latest_version"] == "2.10.0"
+    assert [item["version"] for item in body["versions"]] == [
+        "2.10.0",
+        "2.9.0",
+        "beta",
+        "Other",
+    ]
+    assert [item["is_latest"] for item in body["versions"]] == [True, False, False, False]
+    assert [series["version"] for series in body["series"]] == [
+        "2.10.0",
+        "2.9.0",
+        "beta",
+        "Other",
+    ]
+    assert body["series"][0]["is_latest"] is True
+    assert body["series"][0]["total_count"] == 30
+    assert body["series"][-1]["is_other"] is True
+
+
+@pytest.mark.asyncio
+async def test_get_app_version_adoption_returns_project_totals(client: AsyncClient) -> None:
+    setup = await _setup_metrics_project(client, "version-adoption")
+
+    async with TestSessionLocal() as session:
+        data_source = DataSource(
+            id=uuid.uuid4(),
+            name=f"Version Adoption DS {uuid.uuid4().hex[:8]}",
+            db_type="clickhouse",
+            host="localhost",
+            port=8123,
+            database_name="default",
+            username="default",
+            password_encrypted="",
+        )
+        scan_config = ScanConfig(
+            id=uuid.uuid4(),
+            data_source_id=data_source.id,
+            project_id=uuid.UUID(setup["project_id"]),
+            event_type_id=uuid.UUID(setup["page_type_id"]),
+            name="Version Adoption Config",
+            base_query="SELECT time, event_name, app_version FROM events",
+            time_column="time",
+            app_version_column="app_version",
+            cardinality_threshold=100,
+            interval="1h",
+        )
+        session.add_all([data_source, scan_config])
+        for bucket, version, count, is_other in [
+            (datetime(2026, 1, 1, 10, tzinfo=UTC), "2.9.0", 9, False),
+            (datetime(2026, 1, 1, 10, tzinfo=UTC), "2.10.0", 10, False),
+            (datetime(2026, 1, 1, 10, tzinfo=UTC), "Other", 4, True),
+            (datetime(2026, 1, 1, 11, tzinfo=UTC), "2.10.0", 20, False),
+            (datetime(2026, 1, 1, 11, tzinfo=UTC), "2.9.0", 8, False),
+        ]:
+            session.add(
+                EventMetricBreakdown(
+                    id=uuid.uuid4(),
+                    scan_config_id=scan_config.id,
+                    event_id=None,
+                    event_type_id=uuid.UUID(setup["page_type_id"]),
+                    bucket=bucket,
+                    breakdown_column="app_version",
+                    breakdown_value=version,
+                    is_other=is_other,
+                    count=count,
+                )
+            )
+        await session.commit()
+        scan_config_id = str(scan_config.id)
+
+    resp = await client.get(
+        f"/api/v1/projects/version-adoption/scans/{scan_config_id}/version-adoption"
+    )
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["scope_type"] == "project_total"
+    assert body["scope_ref"] == scan_config_id
+    assert body["latest_version"] == "2.10.0"
+    assert [series["version"] for series in body["series"]] == ["2.10.0", "2.9.0", "Other"]
+    assert body["totals"] == [
+        {"bucket": "2026-01-01T10:00:00", "count": 23},
+        {"bucket": "2026-01-01T11:00:00", "count": 28},
+    ]
+
+
+@pytest.mark.asyncio
+async def test_get_app_version_endpoints_are_empty_without_version_column(
+    client: AsyncClient,
+) -> None:
+    setup = await _setup_metrics_project(client, "version-empty")
+
+    async with TestSessionLocal() as session:
+        data_source = DataSource(
+            id=uuid.uuid4(),
+            name=f"Version Empty DS {uuid.uuid4().hex[:8]}",
+            db_type="clickhouse",
+            host="localhost",
+            port=8123,
+            database_name="default",
+            username="default",
+            password_encrypted="",
+        )
+        scan_config = ScanConfig(
+            id=uuid.uuid4(),
+            data_source_id=data_source.id,
+            project_id=uuid.UUID(setup["project_id"]),
+            event_type_id=uuid.UUID(setup["page_type_id"]),
+            name="No Version Config",
+            base_query="SELECT time, event_name FROM events",
+            time_column="time",
+            cardinality_threshold=100,
+            interval="1h",
+        )
+        session.add_all([data_source, scan_config])
+        await session.commit()
+        scan_config_id = str(scan_config.id)
+
+    series_resp = await client.get(
+        f"/api/v1/projects/version-empty/scans/{scan_config_id}/app-versions"
+    )
+    adoption_resp = await client.get(
+        f"/api/v1/projects/version-empty/scans/{scan_config_id}/version-adoption"
+    )
+
+    assert series_resp.status_code == 200
+    assert adoption_resp.status_code == 200
+    series_body = series_resp.json()
+    adoption_body = adoption_resp.json()
+    assert series_body["app_version_column"] is None
+    assert series_body["latest_version"] is None
+    assert series_body["versions"] == []
+    assert series_body["series"] == []
+    assert adoption_body["totals"] == []
+    assert adoption_body["series"] == []
+
+
+@pytest.mark.asyncio
 async def test_get_project_total_metrics_and_active_signals(client: AsyncClient) -> None:
     setup = await _setup_metrics_project(client, "monitoring-total")
 
