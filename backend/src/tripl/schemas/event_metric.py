@@ -112,6 +112,37 @@ class EventMetricBreakdownsResponse(BaseModel):
     series: list[EventMetricBreakdownSeries]
 
 
+class AppVersionInfo(BaseModel):
+    version: str
+    is_other: bool = False
+    is_latest: bool = False
+
+
+class AppVersionMetricSeries(BaseModel):
+    version: str
+    is_other: bool = False
+    is_latest: bool = False
+    total_count: int
+    data: list[EventMetricPoint]
+
+
+class AppVersionSeriesResponse(BaseModel):
+    scan_config_id: uuid.UUID
+    scope_type: str
+    scope_ref: str
+    event_id: uuid.UUID | None = None
+    event_type_id: uuid.UUID | None = None
+    app_version_column: str | None = None
+    interval: str | None = None
+    latest_version: str | None = None
+    versions: list[AppVersionInfo]
+    series: list[AppVersionMetricSeries]
+
+
+class AppVersionAdoptionResponse(AppVersionSeriesResponse):
+    totals: list[BreakdownTimelinePoint]
+
+
 class TopMoverItem(BaseModel):
     """One row of "what moved this anomaly" — backed by MetricBreakdownAnomaly."""
 

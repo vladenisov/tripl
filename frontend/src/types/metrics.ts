@@ -142,6 +142,37 @@ export interface EventMetricBreakdownsResponse {
   series: EventMetricBreakdownSeries[]
 }
 
+export interface AppVersionInfo {
+  version: string
+  is_other: boolean
+  is_latest: boolean
+}
+
+export interface AppVersionMetricSeries {
+  version: string
+  is_other: boolean
+  is_latest: boolean
+  total_count: number
+  data: EventMetricPoint[]
+}
+
+export interface AppVersionSeriesResponse {
+  scan_config_id: string
+  scope_type: 'project_total' | 'event_type' | 'event'
+  scope_ref: string
+  event_id: string | null
+  event_type_id: string | null
+  app_version_column: string | null
+  interval: string | null
+  latest_version: string | null
+  versions: AppVersionInfo[]
+  series: AppVersionMetricSeries[]
+}
+
+export interface AppVersionAdoptionResponse extends AppVersionSeriesResponse {
+  totals: BreakdownTimelinePoint[]
+}
+
 export interface EventWindowMetrics {
   event_id: string
   scan_config_id: string | null

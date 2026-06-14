@@ -7,6 +7,8 @@ from fastapi import APIRouter, Query
 from tripl.api.deps import SessionDep
 from tripl.schemas.event_metric import (
     ActiveSignalsQuery,
+    AppVersionAdoptionResponse,
+    AppVersionSeriesResponse,
     BreakdownTimelineResponse,
     DistributionDriftsResponse,
     EventMetricBreakdownsResponse,
@@ -247,6 +249,50 @@ async def get_breakdown_timeline(
         breakdown_column=breakdown_column,
         breakdown_value=breakdown_value,
         is_other=is_other,
+        time_from=time_from,
+        time_to=time_to,
+    )
+
+
+@router.get(
+    "/projects/{slug}/scans/{scan_config_id}/app-versions",
+    response_model=AppVersionSeriesResponse,
+)
+async def get_app_version_series(
+    session: SessionDep,
+    slug: str,
+    scan_config_id: uuid.UUID,
+    scope_type: str = "project_total",
+    scope_ref: str | None = None,
+    time_from: TimeFrom = None,
+    time_to: TimeTo = None,
+) -> AppVersionSeriesResponse:
+    return await metrics_service.get_app_version_series(
+        session,
+        slug,
+        scan_config_id=scan_config_id,
+        scope_type=scope_type,
+        scope_ref=scope_ref,
+        time_from=time_from,
+        time_to=time_to,
+    )
+
+
+@router.get(
+    "/projects/{slug}/scans/{scan_config_id}/version-adoption",
+    response_model=AppVersionAdoptionResponse,
+)
+async def get_app_version_adoption(
+    session: SessionDep,
+    slug: str,
+    scan_config_id: uuid.UUID,
+    time_from: TimeFrom = None,
+    time_to: TimeTo = None,
+) -> AppVersionAdoptionResponse:
+    return await metrics_service.get_app_version_adoption(
+        session,
+        slug,
+        scan_config_id=scan_config_id,
         time_from=time_from,
         time_to=time_to,
     )
