@@ -31,6 +31,7 @@ from tripl.worker.tasks.metrics.generation import (
 )
 from tripl.worker.tasks.metrics.metric_rows import (
     _build_event_name_from_row,
+    _collect_app_version_breakdown_rows,
     _collect_distribution_drift_rows,
     _collect_metric_breakdown_rows,
     _delete_coverage_metrics_window,
@@ -321,6 +322,42 @@ def process_chunk(
             "increase metrics_row_limit to avoid partial breakdown metrics"
         )
         raise ValueError(msg)
+
+    # App-version series are stored on the same breakdown path (same table and
+    # row shape) but use SemVer-aware latest-N retention instead of top-N by
+    # volume. Merging here lets the delete/upsert/stats logic below treat them
+    # uniformly. Inert (empty) when the scan has no app_version_column.
+    (
+        version_event_rows,
+        version_type_rows,
+        version_truncated,
+    ) = _collect_app_version_breakdown_rows(
+        adapter=adapter,
+        config=config,
+        interval_ch_interval=interval_ch_interval,
+        regular_cols=regular_cols,
+        json_cols=json_cols,
+        json_value_path_map=json_value_path_map,
+        time_from=chunk_from,
+        time_to=chunk_to,
+        query_row_limit=metrics_row_limit,
+        reg_index=reg_index,
+        json_index=json_index,
+        n_reg=n_reg,
+        gen_results=gen_results,
+        single_result=single_result,
+        et_by_name=et_by_name,
+    )
+    if version_truncated:
+        msg = (
+            "App-version breakdown query reached configured row limit "
+            f"({metrics_row_limit}) for chunk "
+            f"{chunk_from.isoformat()}..{chunk_to.isoformat()}; "
+            "increase metrics_row_limit to avoid partial version metrics"
+        )
+        raise ValueError(msg)
+    breakdown_event_rows.extend(version_event_rows)
+    breakdown_type_rows.extend(version_type_rows)
 
     (
         chunk_drift_rows,

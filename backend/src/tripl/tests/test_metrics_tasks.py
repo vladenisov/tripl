@@ -692,6 +692,154 @@ def test_collect_metrics_uses_database_grouped_breakdown_rows(
         }
 
 
+def test_collect_metrics_retains_latest_app_versions_by_semver(
+    sync_session_factory: sessionmaker[Session],
+    monkeypatch: MonkeyPatch,
+) -> None:
+    with sync_session_factory() as session:
+        config = _create_scan_config(session, with_event_type=True)
+        assert config.event_type_id is not None
+        config.app_version_column = "app_version"
+        config.app_version_keep_releases = 2
+        login_event = Event(
+            id=uuid.uuid4(),
+            project_id=config.project_id,
+            event_type_id=config.event_type_id,
+            name="event_name=Login",
+            description="",
+            status="implemented",
+        )
+        session.add(login_event)
+        session.commit()
+        config_id = str(config.id)
+        login_event_id = login_event.id
+        event_type_id = config.event_type_id
+
+    class FakeAdapter:
+        def __init__(self) -> None:
+            self.breakdown_calls: list[tuple[list[str], int | None]] = []
+
+        def test_connection(self) -> bool:
+            return True
+
+        def get_columns(self, base_query: str) -> list[ColumnInfo]:
+            return [
+                ColumnInfo(name="time", type_name="DateTime"),
+                ColumnInfo(name="event_name", type_name="String"),
+                ColumnInfo(name="app_version", type_name="String"),
+            ]
+
+        def get_time_bucketed_counts(
+            self,
+            base_query: str,
+            time_column: str,
+            ch_interval: str,
+            regular_columns: list[str],
+            json_columns: list[str],
+            json_value_paths: dict[str, list[str]] | None,
+            time_from: datetime,
+            time_to: datetime,
+            limit: int = 100000,
+        ) -> tuple[list[str], list[str], list[tuple[object, ...]]]:
+            return (
+                ["event_name", "app_version"],
+                [],
+                [(datetime(2026, 1, 1, 10), "Login", "2.2.0", 30)],
+            )
+
+        def get_time_bucketed_breakdown_counts_multi(
+            self,
+            base_query: str,
+            time_column: str,
+            ch_interval: str,
+            breakdown_columns: list[str],
+            regular_columns: list[str],
+            json_columns: list[str],
+            json_value_paths: dict[str, list[str]] | None,
+            time_from: datetime,
+            time_to: datetime,
+            values_limit: int | None = None,
+            limit: int = 100000,
+        ) -> tuple[list[str], list[str], list[tuple[object, ...]]]:
+            self.breakdown_calls.append((breakdown_columns, values_limit))
+            # Versions are fetched in full (no volume limit); Python keeps the
+            # latest two by SemVer and folds older releases into "Other".
+            return (
+                ["event_name", "app_version"],
+                [],
+                [
+                    (datetime(2026, 1, 1, 10), "app_version", "2.2.0", False, "Login", "2.2.0", 10),
+                    (datetime(2026, 1, 1, 10), "app_version", "2.1.0", False, "Login", "2.1.0", 8),
+                    (datetime(2026, 1, 1, 10), "app_version", "2.0.0", False, "Login", "2.0.0", 5),
+                    (datetime(2026, 1, 1, 10), "app_version", "1.9.0", False, "Login", "1.9.0", 3),
+                ],
+            )
+
+        def close(self) -> None:
+            return None
+
+    adapter = FakeAdapter()
+    monkeypatch.setattr(metrics, "_get_sync_session", sync_session_factory)
+    monkeypatch.setattr(metrics, "_build_adapter", lambda ds: adapter)
+    monkeypatch.setattr(
+        metrics,
+        "_resolve_collection_window",
+        lambda *args, **kwargs: (datetime(2026, 1, 1, 10), datetime(2026, 1, 1, 11), False),
+    )
+    monkeypatch.setattr(metrics, "analyze_cardinality", lambda *args, **kwargs: object())
+
+    def fake_generate_events(*args: object, **kwargs: object) -> GenerationResult:
+        with sync_session_factory() as session:
+            persisted_event = session.get(Event, login_event_id)
+            assert persisted_event is not None
+            return GenerationResult(
+                columns_analyzed=2,
+                col_meta={"event_name": {"is_json": False, "is_low": True}},
+                events_by_name={"event_name=Login": persisted_event},
+            )
+
+    monkeypatch.setattr(metrics, "generate_events", fake_generate_events)
+
+    result = metrics.collect_metrics.run(config_id)
+
+    # Only the version column is collected (no generic breakdown columns set),
+    # and it is fetched without a volume limit so retention stays SemVer-based.
+    assert adapter.breakdown_calls == [(["app_version"], None)]
+    assert result["breakdown_event_metrics"] == 3
+    assert result["breakdown_type_metrics"] == 3
+
+    expected = {
+        ("app_version", "2.2.0", False, 10),
+        ("app_version", "2.1.0", False, 8),
+        ("app_version", "Other", True, 8),  # 2.0.0 (5) + 1.9.0 (3) folded together
+    }
+    with sync_session_factory() as session:
+        event_breakdowns = (
+            session.execute(
+                select(EventMetricBreakdown).where(EventMetricBreakdown.event_id == login_event_id)
+            )
+            .scalars()
+            .all()
+        )
+        assert {
+            (row.breakdown_column, row.breakdown_value, row.is_other, row.count)
+            for row in event_breakdowns
+        } == expected
+        type_breakdowns = (
+            session.execute(
+                select(EventMetricBreakdown).where(
+                    EventMetricBreakdown.event_type_id == event_type_id
+                )
+            )
+            .scalars()
+            .all()
+        )
+        assert {
+            (row.breakdown_column, row.breakdown_value, row.is_other, row.count)
+            for row in type_breakdowns
+        } == expected
+
+
 def test_collect_metrics_uses_event_level_breakdown_columns(
     sync_session_factory: sessionmaker[Session],
     monkeypatch: MonkeyPatch,
