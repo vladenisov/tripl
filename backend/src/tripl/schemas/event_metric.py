@@ -143,6 +143,34 @@ class AppVersionAdoptionResponse(AppVersionSeriesResponse):
     totals: list[BreakdownTimelinePoint]
 
 
+class ReleaseRegressionItem(BaseModel):
+    """One event (or event type) that regressed in the latest active release."""
+
+    scope_type: str
+    scope_ref: str
+    scope_name: str
+    event_id: uuid.UUID | None = None
+    event_type_id: uuid.UUID | None = None
+    kind: str  # "missing" | "volume_drop"
+    version: str
+    previous_version: str
+    observed_count: int
+    expected_count: float
+    ratio: float
+    share_prev: float
+    share_new: float
+    release_share: float
+    window_from: datetime
+    window_to: datetime
+
+
+class ReleaseRegressionsResponse(BaseModel):
+    scan_config_id: uuid.UUID
+    app_version_column: str | None = None
+    latest_version: str | None = None
+    items: list[ReleaseRegressionItem]
+
+
 class TopMoverItem(BaseModel):
     """One row of "what moved this anomaly" — backed by MetricBreakdownAnomaly."""
 
