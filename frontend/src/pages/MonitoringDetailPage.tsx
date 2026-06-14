@@ -6,6 +6,7 @@ import { eventTypesApi } from '@/api/eventTypes'
 import { eventsApi } from '@/api/events'
 import { metaFieldsApi } from '@/api/metaFields'
 import { metricsApi } from '@/api/metrics'
+import { scansApi } from '@/api/scans'
 import { variablesApi } from '@/api/variables'
 import { EVENT_STATUS_BADGE_VARIANT, EVENT_STATUS_LABELS } from '@/lib/eventStatus'
 import type { EventStatus } from '@/lib/eventStatus'
@@ -35,15 +36,41 @@ import type {
   EventType,
   FieldDefinition,
   MetaFieldDefinition,
+  AppVersionMetricSeries,
   Variable,
 } from '@/types'
 import { EventForm } from './events/EventForm'
-import { AlertTriangle, ArrowLeft, CalendarPlus, GitCompareArrows, Layers, Pencil, Tag, Trash2 } from 'lucide-react'
+import { AlertTriangle, ArrowLeft, CalendarPlus, GitBranch, GitCompareArrows, Layers, Pencil, Tag, Trash2 } from 'lucide-react'
 
 // Stable empty reference so `metaFieldsQuery.data ?? EMPTY_META_FIELDS`
 // doesn't mint a new array each render and bust the memoized lookup map.
 const EMPTY_META_FIELDS: MetaFieldDefinition[] = []
 const EMPTY_VARIABLES: Variable[] = []
+
+type MonitoringDetailTab = 'volume' | 'versions' | 'distribution' | 'heatmap' | 'breakdowns'
+type VersionFilter = 'all' | 'latest'
+
+const VERSION_CHART_COLORS = [
+  'var(--chart-1)',
+  'var(--chart-2)',
+  'var(--chart-3)',
+  'var(--chart-4)',
+  'var(--chart-5)',
+  '#0f766e',
+  '#b45309',
+  '#be123c',
+]
+
+interface VersionChartSeries {
+  label: string
+  version: string
+  isOther: boolean
+  isLatest: boolean
+  totalCount: number
+  data: AppVersionMetricSeries['data']
+  color: string
+  isHighlighted: boolean
+}
 
 export default function MonitoringDetailPage() {
   const { slug, scope: scopeParam, id, eventId } = useParams<{
@@ -63,7 +90,8 @@ export default function MonitoringDetailPage() {
   }
   const [rangeDays, setRangeDays] = useState(30)
   const [granularity, setGranularity] = useState<MetricsGranularity>('hour')
-  const [activeTab, setActiveTab] = useState<'volume' | 'distribution' | 'heatmap' | 'breakdowns'>('volume')
+  const [activeTab, setActiveTab] = useState<MonitoringDetailTab>('volume')
+  const [versionFilter, setVersionFilter] = useState<VersionFilter>('all')
   const [distributionField, setDistributionField] = useState('')
   const [breakdownColumn, setBreakdownColumn] = useState('')
   const [isEditOpen, setIsEditOpen] = useState(false)
@@ -131,6 +159,55 @@ export default function MonitoringDetailPage() {
     refetchInterval: 60000,
   })
   const metrics = metricsQuery.data
+  const scanConfigId = metrics?.scan_config_id ?? (scope === 'project_total' ? scopeId : null)
+
+  const scanConfigQuery = useQuery({
+    queryKey: ['scanConfig', slug, scanConfigId],
+    queryFn: () => scansApi.get(slug!, scanConfigId!),
+    enabled: !!slug && !!scanConfigId,
+  })
+  const hasVersionColumn = Boolean(scanConfigQuery.data?.app_version_column)
+  const selectedTab: MonitoringDetailTab = activeTab === 'versions' && !hasVersionColumn
+    ? 'volume'
+    : activeTab
+
+  const appVersionScope = useMemo(() => {
+    if (!scanConfigId || !scopeId) return null
+    return {
+      scope_type: scope,
+      scope_ref: scope === 'project_total' ? scanConfigId : scopeId,
+    }
+  }, [scanConfigId, scope, scopeId])
+
+  const appVersionSeriesQuery = useQuery({
+    queryKey: [
+      'appVersionSeries',
+      slug,
+      scanConfigId,
+      appVersionScope?.scope_type,
+      appVersionScope?.scope_ref,
+      timeRange.from,
+      timeRange.to,
+    ],
+    queryFn: () => metricsApi.getAppVersionSeries(slug!, scanConfigId!, {
+      scope_type: appVersionScope!.scope_type,
+      scope_ref: appVersionScope!.scope_ref,
+      ...timeRange,
+    }),
+    enabled: selectedTab === 'versions' && hasVersionColumn && !!slug && !!scanConfigId && !!appVersionScope,
+    refetchInterval: 60000,
+  })
+
+  const appVersionAdoptionQuery = useQuery({
+    queryKey: ['appVersionAdoption', slug, scanConfigId, timeRange.from, timeRange.to],
+    queryFn: () => metricsApi.getAppVersionAdoption(slug!, scanConfigId!, timeRange),
+    enabled: selectedTab === 'versions' && hasVersionColumn && !!slug && !!scanConfigId,
+    refetchInterval: 60000,
+  })
+  const selectedVersionFilter: VersionFilter = versionFilter === 'latest' && !appVersionSeriesQuery.data?.latest_version
+    ? 'all'
+    : versionFilter
+
   const eventDistributionEventTypeId = event?.event_type_id ?? null
 
   const distributionScope = useMemo(() => {
@@ -166,7 +243,7 @@ export default function MonitoringDetailPage() {
         : undefined,
       ...timeRange,
     }),
-    enabled: activeTab === 'distribution' && !!slug && !!distributionScope,
+    enabled: selectedTab === 'distribution' && !!slug && !!distributionScope,
     refetchInterval: 60000,
   })
 
@@ -184,7 +261,7 @@ export default function MonitoringDetailPage() {
       column: breakdownColumn || undefined,
       ...timeRange,
     }),
-    enabled: scope === 'event' && activeTab === 'breakdowns' && !!slug && !!scopeId,
+    enabled: scope === 'event' && selectedTab === 'breakdowns' && !!slug && !!scopeId,
     refetchInterval: 60000,
   })
   const breakdowns = breakdownQuery.data
@@ -198,6 +275,44 @@ export default function MonitoringDetailPage() {
       })),
     [breakdowns?.series, granularity],
   )
+  const versionChartSeries = useMemo(
+    () => buildVersionChartSeries(
+      appVersionSeriesQuery.data?.series ?? [],
+      granularity,
+      selectedVersionFilter,
+      appVersionSeriesQuery.data?.latest_version,
+    ),
+    [
+      appVersionSeriesQuery.data?.latest_version,
+      appVersionSeriesQuery.data?.series,
+      granularity,
+      selectedVersionFilter,
+    ],
+  )
+  const adoptionChartSeries = useMemo(
+    () => buildVersionChartSeries(
+      appVersionAdoptionQuery.data?.series ?? [],
+      granularity,
+      selectedVersionFilter,
+      appVersionAdoptionQuery.data?.latest_version,
+    ),
+    [
+      appVersionAdoptionQuery.data?.latest_version,
+      appVersionAdoptionQuery.data?.series,
+      granularity,
+      selectedVersionFilter,
+    ],
+  )
+  const adoptionTotal = useMemo(
+    () => appVersionAdoptionQuery.data?.totals.reduce((sum, point) => sum + point.count, 0) ?? 0,
+    [appVersionAdoptionQuery.data?.totals],
+  )
+  const latestAdoptionTotal = useMemo(
+    () => appVersionAdoptionQuery.data?.series
+      .find(series => series.is_latest)?.total_count ?? 0,
+    [appVersionAdoptionQuery.data?.series],
+  )
+  const latestAdoptionShare = adoptionTotal > 0 ? latestAdoptionTotal / adoptionTotal : null
 
   const queryClient = useQueryClient()
   const annotationsKey = useMemo(
@@ -281,6 +396,9 @@ export default function MonitoringDetailPage() {
     || eventTypesQuery.isError
     || metaFieldsQuery.isError
     || metricsQuery.isError
+    || scanConfigQuery.isError
+    || appVersionSeriesQuery.isError
+    || appVersionAdoptionQuery.isError
     || distributionQuery.isError
   ) {
     return (
@@ -288,13 +406,28 @@ export default function MonitoringDetailPage() {
         <ErrorState
           title="Failed to load monitoring details"
           description="The monitoring page could not fetch data from the backend."
-          error={eventQuery.error ?? eventTypesQuery.error ?? metaFieldsQuery.error ?? metricsQuery.error ?? distributionQuery.error}
+          error={
+            eventQuery.error
+            ?? eventTypesQuery.error
+            ?? metaFieldsQuery.error
+            ?? metricsQuery.error
+            ?? scanConfigQuery.error
+            ?? appVersionSeriesQuery.error
+            ?? appVersionAdoptionQuery.error
+            ?? distributionQuery.error
+          }
           onRetry={() => {
             const refetches: Promise<unknown>[] = [
               eventTypesQuery.refetch(),
               metricsQuery.refetch(),
             ]
-            if (activeTab === 'distribution') {
+            if (scanConfigId) {
+              refetches.push(scanConfigQuery.refetch())
+            }
+            if (selectedTab === 'versions' && hasVersionColumn) {
+              refetches.push(appVersionSeriesQuery.refetch(), appVersionAdoptionQuery.refetch())
+            }
+            if (selectedTab === 'distribution') {
               refetches.push(distributionQuery.refetch())
             }
             if (scope === 'event') {
@@ -458,9 +591,15 @@ export default function MonitoringDetailPage() {
         </>
       )}
 
-      <Tabs value={activeTab} onValueChange={value => setActiveTab(value as 'volume' | 'distribution' | 'heatmap' | 'breakdowns')}>
+      <Tabs value={selectedTab} onValueChange={value => setActiveTab(value as MonitoringDetailTab)}>
         <TabsList>
           <TabsTrigger value="volume">Volume</TabsTrigger>
+          {hasVersionColumn && (
+            <TabsTrigger value="versions">
+              <GitBranch className="h-3.5 w-3.5" />
+              By version
+            </TabsTrigger>
+          )}
           <TabsTrigger value="heatmap">Heatmap</TabsTrigger>
           <TabsTrigger value="distribution">
             <GitCompareArrows className="h-3.5 w-3.5" />
@@ -514,35 +653,12 @@ export default function MonitoringDetailPage() {
             <CardContent className="p-6">
               <div className="flex items-center justify-between mb-4">
                 <h2 className="text-lg font-semibold">Volume</h2>
-                <div className="flex flex-wrap items-center gap-2">
-                  <div className="flex gap-1">
-                    {RANGE_OPTIONS.map(option => (
-                      <Button
-                        key={option.days}
-                        variant={rangeDays === option.days ? 'default' : 'outline'}
-                        size="sm"
-                        onClick={() => setRangeDays(option.days)}
-                      >
-                        {option.label}
-                      </Button>
-                    ))}
-                  </div>
-                  <Select
-                    value={granularity}
-                    onValueChange={(value: MetricsGranularity) => setGranularity(value)}
-                  >
-                    <SelectTrigger className="h-8 w-[130px]">
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {GRANULARITY_OPTIONS.map(option => (
-                        <SelectItem key={option.value} value={option.value}>
-                          {option.label}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                </div>
+                <MetricsRangeControls
+                  rangeDays={rangeDays}
+                  granularity={granularity}
+                  onRangeDaysChange={setRangeDays}
+                  onGranularityChange={setGranularity}
+                />
               </div>
               {metricsQuery.isLoading ? (
                 <div className="h-[280px] flex items-center justify-center text-sm text-muted-foreground">
@@ -651,6 +767,110 @@ export default function MonitoringDetailPage() {
           </Card>
         </TabsContent>
 
+        {hasVersionColumn && (
+          <TabsContent value="versions" className="space-y-4">
+            <Card>
+              <CardContent className="p-6">
+                <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+                  <div className="flex items-center gap-2">
+                    <GitBranch className="h-4 w-4 text-muted-foreground" />
+                    <h2 className="text-lg font-semibold">By version</h2>
+                    {appVersionSeriesQuery.data?.latest_version && (
+                      <Badge variant="outline" className="font-mono">
+                        latest {appVersionSeriesQuery.data.latest_version}
+                      </Badge>
+                    )}
+                  </div>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <div className="inline-flex h-8 items-center rounded-md border bg-muted/30 p-0.5">
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant={selectedVersionFilter === 'all' ? 'secondary' : 'ghost'}
+                        className="h-6 px-2 text-xs"
+                        onClick={() => setVersionFilter('all')}
+                      >
+                        All versions
+                      </Button>
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant={selectedVersionFilter === 'latest' ? 'secondary' : 'ghost'}
+                        className="h-6 px-2 text-xs"
+                        onClick={() => setVersionFilter('latest')}
+                        disabled={!appVersionSeriesQuery.data?.latest_version}
+                      >
+                        Latest
+                      </Button>
+                    </div>
+                    <MetricsRangeControls
+                      rangeDays={rangeDays}
+                      granularity={granularity}
+                      onRangeDaysChange={setRangeDays}
+                      onGranularityChange={setGranularity}
+                    />
+                  </div>
+                </div>
+                {appVersionSeriesQuery.isLoading ? (
+                  <div className="flex h-[280px] items-center justify-center text-sm text-muted-foreground">
+                    Loading version metrics…
+                  </div>
+                ) : (
+                  <>
+                    <MetricsMultiSeriesChart
+                      series={versionChartSeries}
+                      height={280}
+                      granularity={granularity}
+                      emptyLabel="No version metrics available"
+                    />
+                    <VersionLegend series={versionChartSeries} />
+                    {appVersionSeriesQuery.data?.interval && (
+                      <p className="mt-2 text-xs text-muted-foreground">
+                        Collection interval: {appVersionSeriesQuery.data.interval}
+                      </p>
+                    )}
+                  </>
+                )}
+              </CardContent>
+            </Card>
+
+            <Card>
+              <CardContent className="p-6">
+                <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+                  <div className="flex items-center gap-2">
+                    <h2 className="text-lg font-semibold">Version adoption</h2>
+                    {latestAdoptionShare !== null && (
+                      <Badge variant="outline">
+                        Latest {formatPercent(latestAdoptionShare)}
+                      </Badge>
+                    )}
+                  </div>
+                  {appVersionAdoptionQuery.data?.app_version_column && (
+                    <Badge variant="secondary" className="font-mono">
+                      {appVersionAdoptionQuery.data.app_version_column}
+                    </Badge>
+                  )}
+                </div>
+                {appVersionAdoptionQuery.isLoading ? (
+                  <div className="flex h-[240px] items-center justify-center text-sm text-muted-foreground">
+                    Loading adoption…
+                  </div>
+                ) : (
+                  <>
+                    <MetricsMultiSeriesChart
+                      series={adoptionChartSeries}
+                      height={240}
+                      granularity={granularity}
+                      emptyLabel="No adoption data available"
+                    />
+                    <VersionLegend series={adoptionChartSeries} />
+                  </>
+                )}
+              </CardContent>
+            </Card>
+          </TabsContent>
+        )}
+
         <TabsContent value="heatmap">
           {metrics?.scan_config_id ? (
             <SeasonalityHeatmap
@@ -752,6 +972,110 @@ export default function MonitoringDetailPage() {
       {scope === 'event' && scopeId && (
         <EventPhotosSection slug={slug!} eventId={scopeId} />
       )}
+    </div>
+  )
+}
+
+function MetricsRangeControls({
+  rangeDays,
+  granularity,
+  onRangeDaysChange,
+  onGranularityChange,
+}: {
+  rangeDays: number
+  granularity: MetricsGranularity
+  onRangeDaysChange: (days: number) => void
+  onGranularityChange: (granularity: MetricsGranularity) => void
+}) {
+  return (
+    <div className="flex flex-wrap items-center gap-2">
+      <div className="flex gap-1">
+        {RANGE_OPTIONS.map(option => (
+          <Button
+            key={option.days}
+            variant={rangeDays === option.days ? 'default' : 'outline'}
+            size="sm"
+            onClick={() => onRangeDaysChange(option.days)}
+          >
+            {option.label}
+          </Button>
+        ))}
+      </div>
+      <Select
+        value={granularity}
+        onValueChange={(value: MetricsGranularity) => onGranularityChange(value)}
+      >
+        <SelectTrigger className="h-8 w-[130px]">
+          <SelectValue />
+        </SelectTrigger>
+        <SelectContent>
+          {GRANULARITY_OPTIONS.map(option => (
+            <SelectItem key={option.value} value={option.value}>
+              {option.label}
+            </SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
+    </div>
+  )
+}
+
+function buildVersionChartSeries(
+  series: AppVersionMetricSeries[],
+  granularity: MetricsGranularity,
+  versionFilter: VersionFilter,
+  latestVersion: string | null | undefined,
+): VersionChartSeries[] {
+  return series
+    .filter(item => versionFilter === 'all' || (!!latestVersion && item.is_latest))
+    .map((item, index) => {
+      const isLatest = item.is_latest && !item.is_other
+      return {
+        label: formatVersionLabel(item),
+        version: item.version,
+        isOther: item.is_other,
+        isLatest,
+        totalCount: item.total_count,
+        data: aggregateMetricPoints(item.data, granularity),
+        color: isLatest
+          ? 'var(--primary)'
+          : item.is_other
+            ? 'var(--muted-foreground)'
+            : VERSION_CHART_COLORS[index % VERSION_CHART_COLORS.length],
+        isHighlighted: isLatest,
+      }
+    })
+}
+
+function formatVersionLabel(version: AppVersionMetricSeries) {
+  const label = version.is_other ? 'Other' : (version.version || '(empty)')
+  return version.is_latest && !version.is_other ? `${label} · latest` : label
+}
+
+function VersionLegend({ series }: { series: VersionChartSeries[] }) {
+  if (!series.length) return null
+  return (
+    <div className="mt-3 flex flex-wrap gap-2">
+      {series.map(item => (
+        <div
+          key={`${item.version}-${item.isOther}`}
+          className="flex min-w-0 items-center gap-2 rounded-md border bg-background px-2 py-1 text-xs"
+        >
+          <span
+            className="h-2.5 w-2.5 shrink-0 rounded-full"
+            style={{ backgroundColor: item.color }}
+          />
+          <span className="min-w-0 truncate font-mono">{item.isOther ? 'Other' : item.version}</span>
+          {item.isLatest && (
+            <Badge variant="secondary" className="h-5 px-1.5 text-[10px]">
+              latest
+            </Badge>
+          )}
+          <span className="shrink-0 text-muted-foreground">
+            {item.totalCount.toLocaleString()}
+          </span>
+        </div>
+      ))}
     </div>
   )
 }
