@@ -19,6 +19,7 @@ from tripl.worker.tasks.metrics.alert_payload import (
 )
 from tripl.worker.tasks.metrics.signals import (
     _get_active_distribution_drift_candidates,
+    _get_active_release_regression_candidates,
     _get_active_schema_drift_candidates,
     _get_latest_active_anomalies,
 )
@@ -106,6 +107,7 @@ def _prepare_alert_deliveries(
     active_candidates.update(_get_latest_active_anomalies(session, config))
     active_candidates.update(_get_active_schema_drift_candidates(session, config))
     active_candidates.update(_get_active_distribution_drift_candidates(session, config))
+    active_candidates.update(_get_active_release_regression_candidates(session, config))
     destinations = _load_enabled_alert_destinations(session, config.project_id)
     if not destinations:
         return []

@@ -19,6 +19,7 @@ from tripl.models.alert_rule import AlertRule
 from tripl.models.alert_rule_filter import AlertRuleFilter
 
 SCOPE_DISTRIBUTION_DRIFT = "distribution"
+SCOPE_RELEASE_REGRESSION = "release_regression"
 
 
 class AlertMatchCandidate(Protocol):
@@ -99,6 +100,18 @@ def rule_matches_anomaly(rule: AlertRule, anomaly: AlertMatchCandidate) -> bool:
         return False
     if anomaly.scope_type == SCOPE_DISTRIBUTION_DRIFT and not rule.include_distribution_drifts:
         return False
+    if anomaly.scope_type == SCOPE_RELEASE_REGRESSION:
+        # Release regressions reuse the underlying scope's include flag; a
+        # dedicated opt-in toggle is added separately. An event-scope regression
+        # gates on include_events, an event-type-scope one on include_event_types.
+        if anomaly.event_id is not None and not rule.include_events:
+            return False
+        if (
+            anomaly.event_id is None
+            and anomaly.event_type_id is not None
+            and not rule.include_event_types
+        ):
+            return False
 
     # Direction gates.
     if anomaly.direction == "spike" and not rule.notify_on_spike:
@@ -106,7 +119,7 @@ def rule_matches_anomaly(rule: AlertRule, anomaly: AlertMatchCandidate) -> bool:
     if anomaly.direction == "drop" and not rule.notify_on_drop:
         return False
 
-    if anomaly.scope_type in {"schema", SCOPE_DISTRIBUTION_DRIFT}:
+    if anomaly.scope_type in {"schema", SCOPE_DISTRIBUTION_DRIFT, SCOPE_RELEASE_REGRESSION}:
         return all(filter_matches_anomaly(filter_row, anomaly) for filter_row in rule.filters)
 
     # Numeric thresholds.

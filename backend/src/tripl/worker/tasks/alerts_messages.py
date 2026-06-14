@@ -23,6 +23,7 @@ from tripl.alert_templates import (
     normalize_message_template,
     render_alert_template,
 )
+from tripl.alerting_matching import SCOPE_RELEASE_REGRESSION
 from tripl.anomaly_context import build_alert_item_context
 from tripl.models.alert_delivery import AlertDelivery
 from tripl.models.alert_delivery_item import AlertDeliveryItem
@@ -60,16 +61,29 @@ def _build_item_template_context(
         "event": "Event",
         "schema": "Schema drift",
         "distribution": "Distribution drift",
+        SCOPE_RELEASE_REGRESSION: "Release regression",
     }.get(item.scope_type, item.scope_type)
     details_line = f"\n  details: {item.details_path}" if item.details_path else ""
     monitoring_line = f"\n  monitoring: {item.monitoring_path}" if item.monitoring_path else ""
-    drift_parts = [
-        item.drift_type or "",
-        item.drift_field or "",
-        f"sample={item.sample_value}" if item.sample_value else "",
-    ]
-    drift_text = " ".join(part for part in drift_parts if part)
-    drift_line = f"\n  drift: {drift_text}" if drift_text else ""
+    if item.scope_type == SCOPE_RELEASE_REGRESSION:
+        # Release regressions reuse the drift fields: version -> drift_field,
+        # kind -> drift_type, previous release -> sample_value. Render them as a
+        # readable "release:" line via the shared ${drift_line} placeholder.
+        kind_label = {
+            "missing": "disappeared",
+            "volume_drop": "dropped",
+        }.get(item.drift_type or "", "regressed")
+        release_version = item.drift_field or "the new release"
+        previous_clause = f" (was {item.sample_value})" if item.sample_value else ""
+        drift_line = f"\n  release: {kind_label} in {release_version}{previous_clause}"
+    else:
+        drift_parts = [
+            item.drift_type or "",
+            item.drift_field or "",
+            f"sample={item.sample_value}" if item.sample_value else "",
+        ]
+        drift_text = " ".join(part for part in drift_parts if part)
+        drift_line = f"\n  drift: {drift_text}" if drift_text else ""
 
     # Explainability context — sparkline + top movers. The (sparkline,
     # top_movers) pair is format-independent and the only DB-touching part of
@@ -233,6 +247,17 @@ def _build_ai_explanation(
     lines: list[str] = [f"Project: {project_name}", f"Scan: {scan_name}", "Alert items:"]
     for item in delivery.items[:_AI_EXPLANATION_MAX_ITEMS]:
         sparkline, top_movers = item_context_cache.get(item.id, ("", ""))
+        if item.scope_type == SCOPE_RELEASE_REGRESSION:
+            kind_label = {"missing": "disappeared", "volume_drop": "dropped"}.get(
+                item.drift_type or "", "regressed"
+            )
+            previous_clause = f" (was {item.sample_value})" if item.sample_value else ""
+            lines.append(
+                f"- [release regression] {item.scope_name}: {kind_label} in "
+                f"{item.drift_field or 'the new release'}{previous_clause}, "
+                f"observed {item.actual_count} vs expected {item.expected_count}"
+            )
+            continue
         if item.scope_type in {"schema", "distribution"}:
             drift_bits = " ".join(
                 part

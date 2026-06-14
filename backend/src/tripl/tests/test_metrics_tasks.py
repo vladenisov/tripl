@@ -1778,6 +1778,112 @@ def test_distribution_drifts_queue_alert_deliveries(
         assert "psi=0.420" in item.sample_value
 
 
+def test_release_regressions_queue_alert_deliveries(
+    sync_session_factory: sessionmaker[Session],
+) -> None:
+    with sync_session_factory() as session:
+        config, _event_type, event = _seed_anomaly_scan_state(session)
+        config.app_version_column = "app_version"
+        destination = AlertDestination(
+            id=uuid.uuid4(),
+            project_id=config.project_id,
+            type="slack",
+            name="Main Slack",
+            enabled=True,
+            webhook_url_encrypted="secret",
+        )
+        rule = AlertRule(
+            id=uuid.uuid4(),
+            destination_id=destination.id,
+            name="Release Rule",
+            enabled=True,
+            include_project_total=False,
+            include_event_types=False,
+            include_events=True,
+            include_schema_drifts=False,
+            include_distribution_drifts=False,
+            notify_on_spike=False,
+            notify_on_drop=True,
+            # High numeric thresholds prove they are skipped for regressions.
+            min_percent_delta=999,
+            min_absolute_delta=999,
+            min_expected_count=999,
+            cooldown_minutes=1440,
+        )
+        regression = ReleaseRegression(
+            id=uuid.uuid4(),
+            scan_config_id=config.id,
+            scope_type="event",
+            scope_ref=str(event.id),
+            event_id=event.id,
+            event_type_id=None,
+            app_version_column="app_version",
+            version="2.1.0",
+            previous_version="2.0.0",
+            kind="missing",
+            observed_count=0,
+            expected_count=200.0,
+            ratio=0.0,
+            share_prev=0.1,
+            share_new=0.0,
+            release_share=0.33,
+            window_from=datetime(2026, 1, 1, 10),
+            window_to=datetime(2026, 1, 1, 11),
+        )
+        session.add_all([destination, rule, regression])
+        session.commit()
+        event_name = event.name
+
+        delivery_ids = metrics_dispatch._prepare_alert_deliveries(session, config, scan_job_id=None)
+
+        assert len(delivery_ids) == 1
+        delivery = session.execute(select(AlertDelivery)).scalar_one()
+        item = session.execute(select(AlertDeliveryItem)).scalar_one()
+        assert delivery.matched_count == 1
+        assert item.scope_type == "release_regression"
+        assert item.scope_name == event_name  # resolved to the event, not a UUID
+        assert item.direction == "drop"
+        assert item.drift_field == "2.1.0"
+        assert item.drift_type == "missing"
+        assert item.sample_value == "2.0.0"
+        assert item.actual_count == 0
+        assert item.expected_count == 200
+
+
+def test_release_regression_candidates_inert_without_version_column(
+    sync_session_factory: sessionmaker[Session],
+) -> None:
+    from tripl.worker.tasks.metrics.signals import _get_active_release_regression_candidates
+
+    with sync_session_factory() as session:
+        config, _event_type, event = _seed_anomaly_scan_state(session)
+        # No app_version_column: a stray row must never surface as a candidate.
+        session.add(
+            ReleaseRegression(
+                id=uuid.uuid4(),
+                scan_config_id=config.id,
+                scope_type="event",
+                scope_ref=str(event.id),
+                event_id=event.id,
+                event_type_id=None,
+                app_version_column="app_version",
+                version="2.1.0",
+                previous_version="2.0.0",
+                kind="missing",
+                observed_count=0,
+                expected_count=200.0,
+                ratio=0.0,
+                share_prev=0.1,
+                share_new=0.0,
+                release_share=0.33,
+                window_from=datetime(2026, 1, 1, 10),
+                window_to=datetime(2026, 1, 1, 11),
+            )
+        )
+        session.commit()
+        assert _get_active_release_regression_candidates(session, config) == {}
+
+
 def test_bump_event_last_seen_is_monotonic_and_ignores_zero(
     sync_session_factory: sessionmaker[Session],
 ) -> None:

@@ -1446,6 +1446,78 @@ def test_distribution_drift_rule_matching_uses_scope_gate_not_metric_thresholds(
     assert rule_matches_anomaly(enabled_rule, candidate) is True
 
 
+def test_release_regression_rule_matching_uses_scope_gate_not_metric_thresholds() -> None:
+    from tripl.alerting_matching import (
+        SCOPE_RELEASE_REGRESSION,
+        DriftAlertCandidate,
+        rule_matches_anomaly,
+    )
+
+    candidate = DriftAlertCandidate(
+        id=uuid.uuid4(),
+        scope_type=SCOPE_RELEASE_REGRESSION,
+        scope_ref=str(uuid.uuid4()),
+        event_id=uuid.uuid4(),
+        event_type_id=None,
+        bucket=datetime(2026, 5, 1, 12, tzinfo=UTC),
+        direction="drop",
+        actual_count=0,
+        expected_count=200.0,
+        drift_field="2.1.0",
+        drift_type="missing",
+        sample_value="2.0.0",
+    )
+
+    # An event-scope regression gates on include_events, and the analyzer's own
+    # significance gates mean the rule's numeric thresholds are skipped.
+    disabled_rule = _build_rule(include_events=False)
+    assert rule_matches_anomaly(disabled_rule, candidate) is False
+
+    enabled_rule = _build_rule(
+        include_events=True,
+        notify_on_drop=True,
+        min_percent_delta=999,
+        min_absolute_delta=999,
+        min_expected_count=999,
+    )
+    assert rule_matches_anomaly(enabled_rule, candidate) is True
+
+    # Direction gate still applies: a regression is a drop.
+    no_drop_rule = _build_rule(include_events=True, notify_on_drop=False)
+    assert rule_matches_anomaly(no_drop_rule, candidate) is False
+
+
+def test_release_regression_item_renders_readable_release_line() -> None:
+    from tripl.alert_templates import get_default_items_template, render_alert_template
+    from tripl.models.alert_delivery_item import AlertDeliveryItem
+    from tripl.worker.tasks.alerts_messages import _build_item_template_context
+
+    item = AlertDeliveryItem(
+        id=uuid.uuid4(),
+        delivery_id=uuid.uuid4(),
+        scope_type="release_regression",
+        scope_ref=str(uuid.uuid4()),
+        scope_name="Login",
+        event_id=uuid.uuid4(),
+        event_type_id=None,
+        bucket=datetime(2026, 5, 1, 12, tzinfo=UTC),
+        direction="drop",
+        actual_count=0,
+        expected_count=200,
+        absolute_delta=200,
+        percent_delta=100.0,
+        drift_type="missing",
+        drift_field="2.1.0",
+        sample_value="2.0.0",
+    )
+    context = _build_item_template_context(item, message_format="plain")
+    rendered = render_alert_template(get_default_items_template("plain"), context)
+    assert "Release regression Login" in rendered
+    assert "release: disappeared in 2.1.0 (was 2.0.0)" in rendered
+    assert "actual=0" in rendered
+    assert "expected=200" in rendered
+
+
 @pytest.mark.asyncio
 async def test_alert_rule_simulate_endpoint(client: AsyncClient) -> None:
     from datetime import timedelta
