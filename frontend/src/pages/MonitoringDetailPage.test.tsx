@@ -134,6 +134,14 @@ describe('MonitoringDetailPage app-version view', () => {
       if (url.includes('/api/v1/projects/demo/scans/scan-1/version-adoption')) {
         return mockJsonResponse(appVersionAdoptionResponse('scan-1'))
       }
+      if (url.includes('/api/v1/projects/demo/scans/scan-1/release-regressions')) {
+        return mockJsonResponse({
+          scan_config_id: 'scan-1',
+          app_version_column: 'app_version',
+          latest_version: '2.10.0',
+          items: [],
+        })
+      }
 
       throw new Error(`Unhandled fetch: ${url}`)
     })

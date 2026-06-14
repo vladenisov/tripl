@@ -8,6 +8,7 @@ import type {
   DistributionDriftsResponse,
   EventWindowMetrics,
   MonitoringSignal,
+  ReleaseRegressionsResponse,
   SeasonalityHeatmap,
   TopMoverItem,
 } from '../types'
@@ -209,6 +210,19 @@ export const metricsApi = {
     const qs = sp.toString()
     return api.get<AppVersionAdoptionResponse>(
       `/projects/${slug}/scans/${scanConfigId}/version-adoption${qs ? `?${qs}` : ''}`,
+    )
+  },
+
+  getReleaseRegressions: (
+    slug: string,
+    scanConfigId: string,
+    params?: { scope_type?: 'event' | 'event_type' },
+  ) => {
+    const sp = new URLSearchParams()
+    if (params?.scope_type) sp.set('scope_type', params.scope_type)
+    const qs = sp.toString()
+    return api.get<ReleaseRegressionsResponse>(
+      `/projects/${slug}/scans/${scanConfigId}/release-regressions${qs ? `?${qs}` : ''}`,
     )
   },
 }
