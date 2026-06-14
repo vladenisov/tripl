@@ -43,6 +43,15 @@ class AlertRule(UUIDMixin, TimestampMixin, Base):
         default=False,
         server_default="false",
     )
+    # Opt-in to app-version release-regression signals (events that disappeared
+    # or dropped in the latest release). Off by default, like the drift toggles,
+    # so regressions are a deliberate subscription rather than riding on the
+    # generic event/event-type anomaly rules.
+    include_release_regressions: Mapped[bool] = mapped_column(
+        Boolean,
+        default=False,
+        server_default="false",
+    )
     # Append an LLM-generated explanation paragraph to delivered alert
     # messages. Off by default; a no-op unless AI features are enabled in
     # instance settings.

@@ -1299,6 +1299,7 @@ def _build_rule(**overrides: object) -> AlertRule:
         "include_events": True,
         "include_schema_drifts": False,
         "include_distribution_drifts": False,
+        "include_release_regressions": False,
         "notify_on_spike": True,
         "notify_on_drop": True,
         "min_percent_delta": 0.0,
@@ -1468,13 +1469,20 @@ def test_release_regression_rule_matching_uses_scope_gate_not_metric_thresholds(
         sample_value="2.0.0",
     )
 
-    # An event-scope regression gates on include_events, and the analyzer's own
-    # significance gates mean the rule's numeric thresholds are skipped.
-    disabled_rule = _build_rule(include_events=False)
-    assert rule_matches_anomaly(disabled_rule, candidate) is False
+    # Gated by the dedicated include_release_regressions opt-in (not the generic
+    # event toggles), and the analyzer's own gates mean numeric thresholds are
+    # skipped.
+    assert rule_matches_anomaly(_build_rule(include_release_regressions=False), candidate) is False
+    # Generic event rules must NOT pick up regressions on their own.
+    assert (
+        rule_matches_anomaly(
+            _build_rule(include_events=True, include_release_regressions=False), candidate
+        )
+        is False
+    )
 
     enabled_rule = _build_rule(
-        include_events=True,
+        include_release_regressions=True,
         notify_on_drop=True,
         min_percent_delta=999,
         min_absolute_delta=999,
@@ -1483,7 +1491,7 @@ def test_release_regression_rule_matching_uses_scope_gate_not_metric_thresholds(
     assert rule_matches_anomaly(enabled_rule, candidate) is True
 
     # Direction gate still applies: a regression is a drop.
-    no_drop_rule = _build_rule(include_events=True, notify_on_drop=False)
+    no_drop_rule = _build_rule(include_release_regressions=True, notify_on_drop=False)
     assert rule_matches_anomaly(no_drop_rule, candidate) is False
 
 

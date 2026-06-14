@@ -1799,9 +1799,12 @@ def test_release_regressions_queue_alert_deliveries(
             enabled=True,
             include_project_total=False,
             include_event_types=False,
-            include_events=True,
+            # Generic event anomalies are off — only the dedicated regression
+            # toggle should drive this delivery.
+            include_events=False,
             include_schema_drifts=False,
             include_distribution_drifts=False,
+            include_release_regressions=True,
             notify_on_spike=False,
             notify_on_drop=True,
             # High numeric thresholds prove they are skipped for regressions.

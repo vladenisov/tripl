@@ -304,6 +304,13 @@ export function DestinationCard({
                   />
                   Distribution
                 </label>
+                <label className="flex items-center gap-2 text-sm">
+                  <Checkbox
+                    checked={ruleForm.include_release_regressions}
+                    onCheckedChange={checked => setRuleForm(current => ({ ...current, include_release_regressions: !!checked }))}
+                  />
+                  Release regressions
+                </label>
               </div>
 
               <div className="grid grid-cols-1 md:grid-cols-3 gap-3">

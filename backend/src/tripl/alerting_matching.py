@@ -100,18 +100,8 @@ def rule_matches_anomaly(rule: AlertRule, anomaly: AlertMatchCandidate) -> bool:
         return False
     if anomaly.scope_type == SCOPE_DISTRIBUTION_DRIFT and not rule.include_distribution_drifts:
         return False
-    if anomaly.scope_type == SCOPE_RELEASE_REGRESSION:
-        # Release regressions reuse the underlying scope's include flag; a
-        # dedicated opt-in toggle is added separately. An event-scope regression
-        # gates on include_events, an event-type-scope one on include_event_types.
-        if anomaly.event_id is not None and not rule.include_events:
-            return False
-        if (
-            anomaly.event_id is None
-            and anomaly.event_type_id is not None
-            and not rule.include_event_types
-        ):
-            return False
+    if anomaly.scope_type == SCOPE_RELEASE_REGRESSION and not rule.include_release_regressions:
+        return False
 
     # Direction gates.
     if anomaly.direction == "spike" and not rule.notify_on_spike:
