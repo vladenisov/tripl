@@ -415,6 +415,40 @@ def test_replace_scope_anomalies_upserts_on_conflict(
         assert rows[0].actual_count == 39  # row updated to the second run's value
 
 
+def test_collect_metrics_skips_job_cancelled_before_start(
+    sync_session_factory: sessionmaker[Session],
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """A job cancelled while queued must not run or be flipped back to running."""
+    with sync_session_factory() as session:
+        config = _create_scan_config(session)
+        job = ScanJob(
+            id=uuid.uuid4(),
+            scan_config_id=config.id,
+            status=ScanJobStatus.cancelled.value,
+        )
+        session.add(job)
+        session.commit()
+        config_id = str(config.id)
+        job_id = str(job.id)
+
+    monkeypatch.setattr(metrics, "_get_sync_session", sync_session_factory)
+
+    def _no_adapter(*args: object, **kwargs: object) -> object:
+        raise AssertionError("adapter must not be built for a cancelled job")
+
+    monkeypatch.setattr(metrics, "_build_adapter", _no_adapter)
+
+    result = metrics.collect_metrics.run(config_id, job_id)
+
+    assert result == {"cancelled": True, "scan_config_id": config_id}
+    with sync_session_factory() as session:
+        reloaded = session.get(ScanJob, uuid.UUID(job_id))
+        assert reloaded is not None
+        assert reloaded.status == ScanJobStatus.cancelled.value
+        assert reloaded.started_at is None
+
+
 def test_collect_metrics_reuses_existing_pending_job(
     sync_session_factory: sessionmaker[Session],
     monkeypatch: MonkeyPatch,
