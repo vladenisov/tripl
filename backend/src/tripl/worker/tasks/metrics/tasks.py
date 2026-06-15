@@ -391,6 +391,15 @@ def collect_metrics(
             n_distribution_drifts += chunk_stats.n_distribution_drifts
             significant_distribution_drifts += chunk_stats.significant_distribution_drifts
 
+            # Heartbeat: bump the job row after each chunk so the scheduler's
+            # staleness reaper sees forward progress. Without this, updated_at
+            # stays frozen at started_at for the whole run (chunk writes only
+            # touch metric rows, not the job), and a long replay over millions
+            # of rows gets false-failed mid-flight.
+            if job is not None:
+                job.updated_at = datetime.now(UTC)
+                session.commit()
+
         replay_values_touched = 0
         if is_replay and replay_variable_samples:
             replay_values_touched = _merge_replay_variable_samples(

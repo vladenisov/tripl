@@ -29,6 +29,7 @@ __all__ = [
     "_fail_stale_active_scan_job",
     "_floor_to_interval",
     "_get_active_scan_job",
+    "_get_active_scan_jobs",
     "_get_scan_job_activity_at",
     "_get_sync_session",
     "_normalize_job_timestamp",
@@ -41,7 +42,13 @@ ACTIVE_SCAN_JOB_STATUSES = (
     ScanJobStatus.pending.value,
     ScanJobStatus.running.value,
 )
-STALE_ACTIVE_SCAN_JOB_TIMEOUT = timedelta(minutes=30)
+# Must exceed the Celery hard ``task_time_limit`` (60 min, see celery_app.py) so a
+# legitimately long-running task (e.g. a multi-hour metrics replay over millions of
+# rows) is never reaped while it is still making progress. A genuinely dead job
+# (worker OOM/redeploy, no heartbeat) is still cleaned up after this window. Long
+# tasks additionally heartbeat ``ScanJob.updated_at`` per chunk so progress is
+# visible to ``_get_scan_job_activity_at`` well before the timeout.
+STALE_ACTIVE_SCAN_JOB_TIMEOUT = timedelta(minutes=75)
 RECENT_SIGNAL_WINDOW = timedelta(hours=24)
 MAX_BREAKDOWN_VALUE_LENGTH = 500
 SCOPE_SCHEMA_DRIFT = MetricScopeType.schema.value
@@ -83,6 +90,28 @@ def _get_active_scan_job(session: Session, scan_config_id: uuid.UUID) -> ScanJob
         .order_by(ScanJob.created_at.desc())
         .limit(1)
     ).scalar_one_or_none()
+
+
+def _get_active_scan_jobs(session: Session, scan_config_id: uuid.UUID) -> list[ScanJob]:
+    """Return ALL pending/running jobs for a scan config, oldest first.
+
+    The dispatcher must examine every active job, not just the newest: a stuck
+    old ``running`` job could otherwise be permanently shadowed by newer pending
+    rows and never reaped (the staleness check would only ever look at the fresh
+    one). Oldest-first ordering surfaces the genuinely stale job for reaping.
+    """
+    return list(
+        session.execute(
+            select(ScanJob)
+            .where(
+                ScanJob.scan_config_id == scan_config_id,
+                ScanJob.status.in_(ACTIVE_SCAN_JOB_STATUSES),
+            )
+            .order_by(ScanJob.created_at.asc())
+        )
+        .scalars()
+        .all()
+    )
 
 
 def _normalize_job_timestamp(dt: datetime) -> datetime:
