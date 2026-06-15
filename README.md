@@ -1,6 +1,10 @@
-# tripl
+# Tripl
 
-**Keep your product analytics honest.**
+<p align="center">
+  <img src="assets/tripl-logo.svg" alt="tripl" width="220" />
+</p>
+
+<p align="center"><strong>Keep your product analytics honest.</strong></p>
 
 tripl is the single place where your team writes down what you *intend* to
 track, checks it against what your apps are *actually* sending, and gets a

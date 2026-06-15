@@ -49,6 +49,27 @@ function toneColor(tone: NavTone | undefined, active: boolean): string {
   }
 }
 
+/**
+ * Tripl service mark — a single triangle split into three teal facets ("tri").
+ * Built on the active `--accent` so it re-tints with the chosen accent theme:
+ * a lightened facet, the accent itself, and a darkened facet.
+ */
+function TrifoldMark({ size = 24 }: { size?: number }) {
+  return (
+    <svg
+      width={size}
+      height={size}
+      viewBox="0 0 100 100"
+      aria-hidden="true"
+      style={{ display: 'block', flexShrink: 0 }}
+    >
+      <polygon points="50,15 14,85 50,61.7" fill="color-mix(in oklab, var(--accent) 60%, white)" />
+      <polygon points="50,15 86,85 50,61.7" fill="color-mix(in oklab, var(--accent) 80%, black)" />
+      <polygon points="14,85 86,85 50,61.7" fill="var(--accent)" />
+    </svg>
+  )
+}
+
 function useSidebarCollapsed() {
   const [collapsed, setCollapsed] = useState(() => {
     try {
@@ -143,14 +164,23 @@ export function AppSidebar() {
       className="flex h-screen w-[232px] flex-col border-r flex-shrink-0"
       style={{ background: 'var(--bg-sunken)', borderColor: 'var(--border)' }}
     >
-      {/* Brand + project switcher */}
-      <div className="flex items-center gap-1.5 px-3 pt-2.5 pb-2">
-        <ProjectSwitcher
-          activeProject={navProject}
-          projects={projects}
-          loading={projectsQuery.isLoading}
-          onPick={(project) => navigate(`/p/${project.slug}/events`)}
-        />
+      {/* Service logo — the triangle is the Tripl brand, so it lives here (not
+          in the project chip) and links back to the workspace overview. */}
+      <div className="flex items-center gap-1 px-3 pt-2.5 pb-1.5">
+        <Link
+          to="/"
+          title="Tripl — home"
+          aria-label="Tripl — home"
+          className="flex flex-1 items-center gap-2 rounded-md px-1 py-1 no-underline transition-colors hover:bg-[var(--surface-hover)]"
+        >
+          <TrifoldMark size={22} />
+          <span
+            className="text-[17px] font-bold leading-none tracking-[-0.045em]"
+            style={{ color: 'var(--fg)' }}
+          >
+            tripl
+          </span>
+        </Link>
         <button
           type="button"
           onClick={() => setCollapsed(true)}
@@ -160,6 +190,17 @@ export function AppSidebar() {
         >
           <ChevronLeft className="h-3.5 w-3.5" />
         </button>
+      </div>
+
+      {/* Project switcher — no service mark; just a monogram, so it reads as
+          project-scoped rather than as the service logo. */}
+      <div className="px-3 pb-2.5">
+        <ProjectSwitcher
+          activeProject={navProject}
+          projects={projects}
+          loading={projectsQuery.isLoading}
+          onPick={(project) => navigate(`/p/${project.slug}/events`)}
+        />
       </div>
 
       {/* Command / search */}
@@ -477,25 +518,14 @@ function CollapsedSidebar({
       className="flex h-screen w-[52px] flex-shrink-0 flex-col items-center border-r py-2.5"
       style={{ background: 'var(--bg-sunken)', borderColor: 'var(--border)' }}
     >
-      <button
-        type="button"
-        onClick={onExpand}
-        title="Expand sidebar"
-        className="mb-2.5 flex h-8 w-8 items-center justify-center rounded-md border transition-colors hover:bg-[var(--surface-hover)]"
-        style={{ background: 'var(--surface)', borderColor: 'var(--border-subtle)' }}
+      <Link
+        to="/"
+        title="Tripl — home"
+        aria-label="Tripl — home"
+        className="mb-2.5 flex h-8 w-8 items-center justify-center rounded-md no-underline transition-colors hover:bg-[var(--surface-hover)]"
       >
-        <div
-          className="flex h-[18px] w-[18px] items-center justify-center rounded font-bold"
-          style={{
-            background: 'linear-gradient(135deg, var(--accent), oklch(0.65 0.16 160))',
-            color: 'var(--accent-fg)',
-            fontSize: 10,
-            fontFamily: 'var(--font-mono)',
-          }}
-        >
-          △
-        </div>
-      </button>
+        <TrifoldMark size={20} />
+      </Link>
       <button
         type="button"
         title="Search · ⌘K"
@@ -579,29 +609,26 @@ function ProjectSwitcher({
 }) {
   const subtitle = activeProject?.slug
     ?? (loading ? 'loading…' : projects[0]?.slug ?? 'no project')
+  const displayName = activeProject?.name ?? (loading ? 'Loading…' : 'Select project')
+  const monogram = (activeProject?.name ?? '?').trim().charAt(0).toUpperCase() || '?'
 
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
         <button
           type="button"
-          className="flex flex-1 items-center gap-2 rounded-md border px-2 py-1.5 text-left transition-colors hover:bg-[var(--surface-hover)]"
+          className="flex w-full items-center gap-2 rounded-md border px-2 py-1.5 text-left transition-colors hover:bg-[var(--surface-hover)]"
           style={{ background: 'var(--surface)', borderColor: 'var(--border-subtle)' }}
         >
           <div
-            className="flex h-[22px] w-[22px] items-center justify-center rounded font-bold"
-            style={{
-              background: 'linear-gradient(135deg, var(--accent), oklch(0.65 0.16 160))',
-              color: 'var(--accent-fg)',
-              fontSize: 11,
-              fontFamily: 'var(--font-mono)',
-            }}
+            className="flex h-[22px] w-[22px] shrink-0 items-center justify-center rounded text-[11px] font-bold"
+            style={{ background: 'var(--surface-active)', color: 'var(--fg-muted)' }}
           >
-            △
+            {monogram}
           </div>
           <div className="min-w-0 flex-1">
-            <div className="text-[12.5px] font-semibold leading-[1.1]">
-              {activeProject?.name ?? 'tripl'}
+            <div className="truncate text-[12.5px] font-semibold leading-[1.1]">
+              {displayName}
             </div>
             <div
               className="mt-px text-[10.5px] leading-[1.1] truncate"
