@@ -34,10 +34,10 @@ export const EventWindowMetricsCell = memo(function EventWindowMetricsCell({
       <TooltipTrigger asChild>
         <button
           type="button"
-          className="tnum mono inline-flex items-center gap-2 text-[11.5px] font-medium hover:text-foreground"
+          className="tnum mono grid w-[106px] grid-cols-[60px_38px] items-center gap-2 text-[11.5px] font-medium hover:text-foreground"
           style={{ color: signalTone ? sparkColor : 'var(--fg-muted)' }}
         >
-          {counts.length > 1 && (
+          {counts.length > 1 ? (
             <Sparkline
               data={counts}
               color={sparkColor}
@@ -45,8 +45,10 @@ export const EventWindowMetricsCell = memo(function EventWindowMetricsCell({
               height={16}
               anomalyIdx={anomalyIdx ?? null}
             />
+          ) : (
+            <span className="block h-4 w-[60px]" aria-hidden="true" />
           )}
-          <span>{label}</span>
+          <span className="block w-[38px] text-right">{label}</span>
         </button>
       </TooltipTrigger>
       <TooltipContent

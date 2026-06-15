@@ -150,9 +150,11 @@ export const EventRow = memo(function EventRow({
           </Chip>
         </TableCell>
       )}
-      <TableCell className="text-right">
-        <div className="inline-flex items-center justify-end gap-2 align-middle">
-          <SignalLink slug={slug} signal={rowSignal} compact />
+      <TableCell className="w-32 text-right">
+        <div className="grid grid-cols-[14px_106px] items-center justify-end gap-2 align-middle">
+          <span className="flex h-3.5 w-3.5 items-center justify-center">
+            <SignalLink slug={slug} signal={rowSignal} compact />
+          </span>
           <EventWindowMetricsCell
             eventName={ev.name}
             color={eventType?.color ?? 'var(--accent)'}
