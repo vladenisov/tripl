@@ -90,6 +90,262 @@ def _drop_enum_types() -> None:
         postgresql.ENUM(*values, name=name).drop(bind, checkfirst=True)
 
 
+def _deduplicate_variables() -> None:
+    """Merge historical duplicate variables before PostgreSQL rebuilds unique indexes.
+
+    Some older production data can contain duplicate rows for
+    (project_id, branch_id, name). ALTER COLUMN TYPE rewrites the table and
+    rebuilds its unique indexes, so those duplicates must be resolved before
+    variables.variable_type is converted to an enum.
+    """
+    op.execute(
+        """
+        WITH variable_groups AS (
+            SELECT
+                project_id,
+                branch_id,
+                name,
+                MIN(id::text)::uuid AS canonical_id
+            FROM variables
+            GROUP BY project_id, branch_id, name
+            HAVING COUNT(*) > 1
+        ),
+        mapped_variables AS (
+            SELECT v.id AS variable_id, vg.canonical_id
+            FROM variables AS v
+            JOIN variable_groups AS vg
+              ON vg.project_id = v.project_id
+             AND vg.branch_id = v.branch_id
+             AND vg.name = v.name
+        ),
+        value_groups AS (
+            SELECT
+                mv.canonical_id,
+                vv.event_id,
+                vv.field_definition_id,
+                MIN(vv.id::text)::uuid AS keep_value_id,
+                MAX(vv.observed_count) AS observed_count,
+                CASE
+                    WHEN BOOL_OR(vv.value_kind = 'high') THEN 'high'
+                    ELSE 'low'
+                END AS value_kind
+            FROM variable_values AS vv
+            JOIN mapped_variables AS mv ON mv.variable_id = vv.variable_id
+            GROUP BY mv.canonical_id, vv.event_id, vv.field_definition_id
+            HAVING COUNT(*) > 1
+        ),
+        merged_values AS (
+            SELECT
+                vg.keep_value_id,
+                COALESCE(
+                    (
+                        SELECT jsonb_agg(DISTINCT item.value ORDER BY item.value)
+                        FROM mapped_variables AS mv
+                        JOIN variable_values AS vv
+                          ON vv.variable_id = mv.variable_id
+                        CROSS JOIN LATERAL jsonb_array_elements_text(
+                            COALESCE(vv."values"::jsonb, '[]'::jsonb)
+                        ) AS item(value)
+                        WHERE mv.canonical_id = vg.canonical_id
+                          AND vv.event_id = vg.event_id
+                          AND vv.field_definition_id = vg.field_definition_id
+                    ),
+                    '[]'::jsonb
+                ) AS merged_json
+            FROM value_groups AS vg
+        )
+        UPDATE variable_values AS vv
+        SET
+            observed_count = vg.observed_count,
+            value_kind = vg.value_kind,
+            "values" = mv.merged_json::json
+        FROM value_groups AS vg
+        JOIN merged_values AS mv ON mv.keep_value_id = vg.keep_value_id
+        WHERE vv.id = vg.keep_value_id
+        """
+    )
+    op.execute(
+        """
+        WITH variable_groups AS (
+            SELECT
+                project_id,
+                branch_id,
+                name,
+                MIN(id::text)::uuid AS canonical_id
+            FROM variables
+            GROUP BY project_id, branch_id, name
+            HAVING COUNT(*) > 1
+        ),
+        mapped_variables AS (
+            SELECT v.id AS variable_id, vg.canonical_id
+            FROM variables AS v
+            JOIN variable_groups AS vg
+              ON vg.project_id = v.project_id
+             AND vg.branch_id = v.branch_id
+             AND vg.name = v.name
+        ),
+        value_groups AS (
+            SELECT
+                mv.canonical_id,
+                vv.event_id,
+                vv.field_definition_id,
+                MIN(vv.id::text)::uuid AS keep_value_id
+            FROM variable_values AS vv
+            JOIN mapped_variables AS mv ON mv.variable_id = vv.variable_id
+            GROUP BY mv.canonical_id, vv.event_id, vv.field_definition_id
+            HAVING COUNT(*) > 1
+        )
+        DELETE FROM variable_values AS vv
+        USING mapped_variables AS mv, value_groups AS vg
+        WHERE vv.variable_id = mv.variable_id
+          AND mv.canonical_id = vg.canonical_id
+          AND vv.event_id = vg.event_id
+          AND vv.field_definition_id = vg.field_definition_id
+          AND vv.id <> vg.keep_value_id
+        """
+    )
+    op.execute(
+        """
+        WITH variable_groups AS (
+            SELECT
+                project_id,
+                branch_id,
+                name,
+                MIN(id::text)::uuid AS canonical_id
+            FROM variables
+            GROUP BY project_id, branch_id, name
+            HAVING COUNT(*) > 1
+        ),
+        mapped_variables AS (
+            SELECT v.id AS variable_id, vg.canonical_id
+            FROM variables AS v
+            JOIN variable_groups AS vg
+              ON vg.project_id = v.project_id
+             AND vg.branch_id = v.branch_id
+             AND vg.name = v.name
+        )
+        UPDATE variable_values AS vv
+        SET variable_id = mv.canonical_id
+        FROM mapped_variables AS mv
+        WHERE vv.variable_id = mv.variable_id
+          AND vv.variable_id <> mv.canonical_id
+        """
+    )
+    op.execute(
+        """
+        WITH variable_groups AS (
+            SELECT
+                project_id,
+                branch_id,
+                name,
+                MIN(id::text)::uuid AS canonical_id
+            FROM variables
+            GROUP BY project_id, branch_id, name
+            HAVING COUNT(*) > 1
+        ),
+        mapped_variables AS (
+            SELECT v.id AS variable_id, vg.canonical_id
+            FROM variables AS v
+            JOIN variable_groups AS vg
+              ON vg.project_id = v.project_id
+             AND vg.branch_id = v.branch_id
+             AND vg.name = v.name
+        )
+        DELETE FROM variables AS v
+        USING mapped_variables AS mv
+        WHERE v.id = mv.variable_id
+          AND mv.variable_id <> mv.canonical_id
+        """
+    )
+    op.execute(
+        """
+        WITH ranked AS (
+            SELECT
+                id,
+                ROW_NUMBER() OVER (
+                    PARTITION BY project_id, branch_id, source_name
+                    ORDER BY id::text
+                ) AS row_number
+            FROM variables
+            WHERE source_name IS NOT NULL
+        )
+        UPDATE variables AS v
+        SET source_name = NULL
+        FROM ranked AS r
+        WHERE v.id = r.id
+          AND r.row_number > 1
+        """
+    )
+
+
+def _deduplicate_variable_values() -> None:
+    op.execute(
+        """
+        WITH value_groups AS (
+            SELECT
+                variable_id,
+                event_id,
+                field_definition_id,
+                MIN(id::text)::uuid AS keep_value_id,
+                MAX(observed_count) AS observed_count,
+                CASE
+                    WHEN BOOL_OR(value_kind = 'high') THEN 'high'
+                    ELSE 'low'
+                END AS value_kind
+            FROM variable_values
+            GROUP BY variable_id, event_id, field_definition_id
+            HAVING COUNT(*) > 1
+        ),
+        merged_values AS (
+            SELECT
+                vg.keep_value_id,
+                COALESCE(
+                    (
+                        SELECT jsonb_agg(DISTINCT item.value ORDER BY item.value)
+                        FROM variable_values AS vv
+                        CROSS JOIN LATERAL jsonb_array_elements_text(
+                            COALESCE(vv."values"::jsonb, '[]'::jsonb)
+                        ) AS item(value)
+                        WHERE vv.variable_id = vg.variable_id
+                          AND vv.event_id = vg.event_id
+                          AND vv.field_definition_id = vg.field_definition_id
+                    ),
+                    '[]'::jsonb
+                ) AS merged_json
+            FROM value_groups AS vg
+        )
+        UPDATE variable_values AS vv
+        SET
+            observed_count = vg.observed_count,
+            value_kind = vg.value_kind,
+            "values" = mv.merged_json::json
+        FROM value_groups AS vg
+        JOIN merged_values AS mv ON mv.keep_value_id = vg.keep_value_id
+        WHERE vv.id = vg.keep_value_id
+        """
+    )
+    op.execute(
+        """
+        WITH value_groups AS (
+            SELECT
+                variable_id,
+                event_id,
+                field_definition_id,
+                MIN(id::text)::uuid AS keep_value_id
+            FROM variable_values
+            GROUP BY variable_id, event_id, field_definition_id
+            HAVING COUNT(*) > 1
+        )
+        DELETE FROM variable_values AS vv
+        USING value_groups AS vg
+        WHERE vv.variable_id = vg.variable_id
+          AND vv.event_id = vg.event_id
+          AND vv.field_definition_id = vg.field_definition_id
+          AND vv.id <> vg.keep_value_id
+        """
+    )
+
+
 def _alter_to_enum(
     table_name: str,
     column_name: str,
@@ -154,6 +410,8 @@ def upgrade() -> None:
     if op.get_bind().dialect.name != "postgresql":
         return
 
+    _deduplicate_variables()
+    _deduplicate_variable_values()
     _create_enum_types()
     for table_name, column_name, enum_name, varchar_length, server_default in _COLUMNS:
         _alter_to_enum(table_name, column_name, enum_name, varchar_length, server_default)
