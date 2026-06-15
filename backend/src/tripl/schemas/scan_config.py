@@ -271,6 +271,8 @@ class ScanConfigPreviewRequest(BaseModel):
     json_value_paths: list[str] = Field(default_factory=list)
     time_column: str | None = Field(default=None, min_length=1, max_length=255)
     scan_lookback_hours: int | None = Field(default=None, ge=1)
+    # When true, run the slow JSON path discovery instead of the fast preview.
+    include_json_paths: bool = False
 
     @field_validator("json_value_paths")
     @classmethod

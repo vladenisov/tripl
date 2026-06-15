@@ -183,7 +183,6 @@ def _get_json_path_samples(
     adapter: BaseAdapter,
     base_query: str,
     json_column_names: list[str],
-    fallback_rows: list[dict[str, object]],
     *,
     time_column: str | None = None,
     time_from: datetime | None = None,
@@ -204,23 +203,38 @@ def _get_json_path_samples(
             sample_row_limit=JSON_PATH_SAMPLE_ROW_LIMIT,
         )
     except AttributeError:
+        # Adapter without native discovery (e.g. a test double): sample rows
+        # ourselves and flatten the JSON locally.
+        column_names, rows = adapter.get_preview_rows(
+            base_query,
+            limit=JSON_PATH_SAMPLE_ROW_LIMIT,
+            time_column=time_column,
+            time_from=time_from,
+            time_to=time_to,
+        )
+        fallback_rows = [
+            {name: value for name, value in zip(column_names, row, strict=False)}
+            for row in rows
+        ]
         return _collect_json_path_samples_from_rows(fallback_rows, json_column_names)
 
 
 def build_preview_payload(
     adapter: BaseAdapter,
     base_query: str,
-    json_value_paths: list[str],
     limit: int,
     *,
     time_column: str | None = None,
     time_from: datetime | None = None,
     time_to: datetime | None = None,
 ) -> dict[str, object]:
-    """Connect, sample rows, discover JSON paths and return a preview payload.
+    """Connect and sample rows for a fast, single-query preview.
 
-    The shape mirrors ``ScanConfigPreviewResponse`` (columns / rows /
-    json_columns) and is JSON-serializable so it can be persisted on the job.
+    Deliberately does NOT discover JSON paths: that scan can be slow on large
+    tables and is requested separately via ``build_json_paths_payload`` (the
+    "Discover JSON keys" action). The shape still mirrors
+    ``ScanConfigPreviewResponse``; ``json_columns`` lists the JSON-typed columns
+    with empty ``paths`` so the UI knows discovery is available.
     """
     adapter.test_connection()
 
@@ -252,12 +266,51 @@ def build_preview_payload(
         for row in raw_rows
     ]
 
+    json_columns = [
+        {"column": column.name, "paths": []}
+        for column in columns
+        if _is_json_type(column.type_name)
+    ]
+
+    return {
+        "columns": [
+            {
+                "name": column.name,
+                "type_name": column.type_name,
+                "is_nullable": column.is_nullable,
+            }
+            for column in columns
+        ],
+        "rows": preview_rows,
+        "json_columns": json_columns,
+    }
+
+
+def build_json_paths_payload(
+    adapter: BaseAdapter,
+    base_query: str,
+    json_value_paths: list[str],
+    *,
+    time_column: str | None = None,
+    time_from: datetime | None = None,
+    time_to: datetime | None = None,
+) -> dict[str, object]:
+    """Discover JSON path candidates for the source query.
+
+    This is the slow half of the preview (it scans the source to enumerate
+    nested JSON keys), so it runs as its own worker job behind an explicit
+    "Discover JSON keys" action. Returns ``{"json_columns": [...]}`` where each
+    JSON column carries its discovered ``paths`` (plus any already-selected
+    ``json_value_paths`` so they stay visible even with no sampled value).
+    """
+    adapter.test_connection()
+
+    columns = adapter.get_columns(base_query)
     json_column_names = [column.name for column in columns if _is_json_type(column.type_name)]
     discovered_json_path_samples = _get_json_path_samples(
         adapter,
         base_query,
         json_column_names,
-        sampled_rows,
         time_column=time_column,
         time_from=time_from,
         time_to=time_to,
@@ -290,15 +343,4 @@ def build_preview_payload(
             }
         )
 
-    return {
-        "columns": [
-            {
-                "name": column.name,
-                "type_name": column.type_name,
-                "is_nullable": column.is_nullable,
-            }
-            for column in columns
-        ],
-        "rows": preview_rows,
-        "json_columns": json_columns,
-    }
+    return {"json_columns": json_columns}

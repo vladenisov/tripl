@@ -120,7 +120,6 @@ export function ScanEditDialog({
         data_source_id: scanConfig.data_source_id,
         base_query: editBaseQuery,
         limit: 10,
-        json_value_paths: editJsonValuePaths,
         time_column: editTimeColumn || null,
         scan_lookback_hours: parseOptionalPositiveInt(editScanLookbackHours),
       })
@@ -149,6 +148,29 @@ export function ScanEditDialog({
           && field !== editAppVersionColumn,
         ),
       )
+    },
+  })
+
+  // JSON path discovery is the slow half of the preview, so it runs as its own
+  // job behind an explicit "Discover JSON keys" action; merge the result into
+  // the already-loaded fast preview.
+  const editDiscoverJsonMut = useMutation({
+    mutationFn: () => {
+      if (!scanConfig) throw new Error('Missing scan config')
+      return scansApi.preview(slug, {
+        data_source_id: scanConfig.data_source_id,
+        base_query: editBaseQuery,
+        json_value_paths: editJsonValuePaths,
+        time_column: editTimeColumn || null,
+        scan_lookback_hours: parseOptionalPositiveInt(editScanLookbackHours),
+        include_json_paths: true,
+      })
+    },
+    onSuccess: data => {
+      // Discard a discovery result that resolves after the preview was reset
+      // (e.g. base query changed mid-flight) — merging into a null preview would
+      // drop columns/rows and crash the panel.
+      setEditPreview(current => (current ? { ...current, json_columns: data.json_columns } : current))
     },
   })
 
@@ -188,7 +210,7 @@ export function ScanEditDialog({
               <Label>Base Query (used as subquery)</Label>
               <Textarea
                 value={editBaseQuery}
-                onChange={e => { setEditBaseQuery(e.target.value); setEditPreview(null); setEditDistributionDriftFields([]) }}
+                onChange={e => { setEditBaseQuery(e.target.value); setEditPreview(null); setEditDistributionDriftFields([]); editDiscoverJsonMut.reset() }}
                 className="font-mono text-sm"
                 rows={4}
               />
@@ -204,7 +226,7 @@ export function ScanEditDialog({
                 type="button"
                 variant="outline"
                 size="sm"
-                onClick={() => editPreviewMut.mutate()}
+                onClick={() => { editDiscoverJsonMut.reset(); editPreviewMut.mutate() }}
                 disabled={editPreviewMut.isPending || !editBaseQuery.trim()}
               >
                 {editPreviewMut.isPending ? 'Loading…' : 'Load Preview'}
@@ -285,6 +307,10 @@ export function ScanEditDialog({
                 preview={editPreview}
                 selectedJsonValuePaths={editJsonValuePaths}
                 onToggleJsonValuePath={toggleEditJsonValuePath}
+                onDiscoverJsonPaths={() => editDiscoverJsonMut.mutate()}
+                isDiscoveringJsonPaths={editDiscoverJsonMut.isPending}
+                jsonPathsError={editDiscoverJsonMut.error}
+                jsonPathsDiscovered={editDiscoverJsonMut.isSuccess}
               />
             )}
             {editPreview && (

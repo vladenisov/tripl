@@ -166,6 +166,7 @@ async def trigger_preview(
         row_limit=data.limit,
         time_column=data.time_column,
         scan_lookback_hours=data.scan_lookback_hours,
+        include_json_paths=data.include_json_paths,
         status=ScanJobStatus.pending.value,
     )
     session.add(job)
