@@ -57,6 +57,34 @@ function mockProjectsFetch() {
         },
       ])
     }
+    if (url.endsWith('/api/v1/projects/demo/event-types')) {
+      return mockJsonResponse([
+        {
+          id: 'event-type-1',
+          project_id: 'project-1',
+          name: 'page_view',
+          display_name: 'Page view',
+          description: '',
+          color: '#3b82f6',
+          order: 0,
+          created_at: '2026-01-01T00:00:00Z',
+          updated_at: '2026-01-01T00:00:00Z',
+          field_definitions: [],
+        },
+        {
+          id: 'event-type-2',
+          project_id: 'project-1',
+          name: 'track_click',
+          display_name: 'Track click',
+          description: '',
+          color: '#f97316',
+          order: 1,
+          created_at: '2026-01-01T00:00:00Z',
+          updated_at: '2026-01-01T00:00:00Z',
+          field_definitions: [],
+        },
+      ])
+    }
     throw new Error(`Unhandled fetch: ${url}`)
   })
 }
@@ -72,6 +100,7 @@ function renderSidebar(initialEntry = '/p/demo/events') {
           <Routes>
             <Route path="/p/:slug/events" element={<AppSidebar />} />
             <Route path="/p/:slug/events/:tab" element={<AppSidebar />} />
+            <Route path="/p/:slug/events/:tab/:eventId" element={<AppSidebar />} />
             <Route path="/p/:slug/settings" element={<AppSidebar />} />
             <Route path="/p/:slug/settings/:tab" element={<AppSidebar />} />
           </Routes>
@@ -101,6 +130,7 @@ describe('AppSidebar', () => {
 
     // Await the projects query so the active project (and its counts) resolve.
     expect(await screen.findByText('Events')).toBeInTheDocument()
+    expect(await screen.findByText('Page view')).toBeInTheDocument()
 
     for (const group of ['Plan', 'Observe', 'Govern', 'Connect']) {
       expect(screen.getByText(group)).toBeInTheDocument()
@@ -108,6 +138,8 @@ describe('AppSidebar', () => {
     for (const item of [
       'Events',
       'Event types',
+      'Page view',
+      'Track click',
       'Schema & fields',
       'Plan branches',
       'Monitors',
@@ -125,10 +157,10 @@ describe('AppSidebar', () => {
 
     const { container } = renderSidebar('/p/demo/events')
     await screen.findByText('Events')
+    await screen.findByText('Page view')
 
     const expected: Record<string, string> = {
       Events: '/p/demo/events',
-      'Event types': '/p/demo/settings/event-types',
       'Schema & fields': '/p/demo/settings/meta-fields',
       'Plan branches': '/p/demo/settings/branches',
       Monitors: '/p/demo/monitors',
@@ -140,9 +172,23 @@ describe('AppSidebar', () => {
     for (const [label, href] of Object.entries(expected)) {
       expect(screen.getByRole('link', { name: new RegExp(label) })).toHaveAttribute('href', href)
     }
+    expect(screen.getByRole('link', { name: 'Page view' })).toHaveAttribute('href', '/p/demo/events/page_view')
+    expect(screen.getByRole('link', { name: 'Track click' })).toHaveAttribute('href', '/p/demo/events/track_click')
+    expect(screen.getByRole('link', { name: 'Event type settings' })).toHaveAttribute(
+      'href',
+      '/p/demo/settings/event-types',
+    )
     // Footer: workspace + project settings.
     expect(container.querySelector('a[href="/settings"]')).toBeInTheDocument()
     expect(container.querySelector('a[href="/p/demo/settings"]')).toBeInTheDocument()
+  })
+
+  it('marks the active event type link based on the current route', async () => {
+    mockProjectsFetch()
+
+    renderSidebar('/p/demo/events/page_view')
+    const eventTypeLink = await screen.findByRole('link', { name: 'Page view' })
+    expect(eventTypeLink).toHaveStyle({ background: 'var(--surface-hover)' })
   })
 
   it('surfaces project-summary counts and an attention tone on monitors', async () => {

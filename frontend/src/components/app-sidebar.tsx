@@ -13,6 +13,7 @@ import {
   Settings,
   SlidersHorizontal,
 } from 'lucide-react'
+import { eventTypesApi } from '@/api/eventTypes'
 import { projectsApi } from '@/api/projects'
 import { useAuth } from '@/components/auth-context'
 import { useCommandPalette } from '@/components/command-palette-context'
@@ -25,8 +26,9 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
+import { useActiveBranchId } from '@/hooks/useBranch'
 import { buildNavGroups, type NavGroup, type NavItem, type NavTone } from '@/lib/navigation'
-import type { Project } from '@/types'
+import type { EventType, Project } from '@/types'
 
 const SIDEBAR_STORAGE_KEY = 'tripl-sidebar-collapsed'
 const LAST_SLUG_STORAGE_KEY = 'tripl-last-project-slug'
@@ -100,6 +102,7 @@ export function AppSidebar() {
   const navigate = useNavigate()
   const auth = useAuth()
   const palette = useCommandPalette()
+  const branchId = useActiveBranchId()
   const [collapsed, setCollapsed] = useSidebarCollapsed()
 
   const projectsQuery = useQuery({
@@ -110,6 +113,12 @@ export function AppSidebar() {
   const navSlug = useResolvedSlug(slug, projects)
   const navProject = projects.find((p) => p.slug === navSlug)
   const navGroups = navSlug ? buildNavGroups(navSlug, navProject?.summary) : []
+  const eventTypesQuery = useQuery({
+    queryKey: ['eventTypes', navSlug, branchId],
+    queryFn: () => eventTypesApi.list(navSlug!, branchId),
+    enabled: !!navSlug,
+  })
+  const eventTypes = eventTypesQuery.data ?? []
   const currentPath = location.pathname
   const userInitials = initialsFrom(auth.user?.name ?? auth.user?.email ?? '')
   const projectSettingsActive =
@@ -175,7 +184,13 @@ export function AppSidebar() {
       <div className="min-h-0 flex-1 overflow-y-auto px-2 pt-1 pb-2">
         {navGroups.length > 0 ? (
           navGroups.map((group) => (
-            <NavGroupSection key={group.label} group={group} currentPath={currentPath} />
+            <NavGroupSection
+              key={group.label}
+              group={group}
+              currentPath={currentPath}
+              eventTypes={eventTypes}
+              navSlug={navSlug}
+            />
           ))
         ) : (
           <EmptyNav loading={projectsQuery.isLoading || projectsQuery.isError} />
@@ -256,7 +271,17 @@ export function AppSidebar() {
   )
 }
 
-function NavGroupSection({ group, currentPath }: { group: NavGroup; currentPath: string }) {
+function NavGroupSection({
+  group,
+  currentPath,
+  eventTypes,
+  navSlug,
+}: {
+  group: NavGroup
+  currentPath: string
+  eventTypes: EventType[]
+  navSlug: string | undefined
+}) {
   return (
     <div className="mb-3">
       <div
@@ -266,9 +291,20 @@ function NavGroupSection({ group, currentPath }: { group: NavGroup; currentPath:
         {group.label}
       </div>
       <div className="flex flex-col gap-px">
-        {group.items.map((item) => (
-          <NavRow key={item.id} item={item} active={item.match(currentPath)} />
-        ))}
+        {group.items.map((item) => {
+          if (item.id === 'event-types' && navSlug) {
+            return (
+              <EventTypesNavCategory
+                key={item.id}
+                item={item}
+                eventTypes={eventTypes}
+                navSlug={navSlug}
+                currentPath={currentPath}
+              />
+            )
+          }
+          return <NavRow key={item.id} item={item} active={item.match(currentPath)} />
+        })}
       </div>
     </div>
   )
@@ -310,6 +346,109 @@ function NavRow({ item, active }: { item: NavItem; active: boolean }) {
       )}
     </Link>
   )
+}
+
+function EventTypesNavCategory({
+  item,
+  eventTypes,
+  navSlug,
+  currentPath,
+}: {
+  item: NavItem
+  eventTypes: EventType[]
+  navSlug: string
+  currentPath: string
+}) {
+  const Icon = item.icon
+  const settingsActive = item.match(currentPath)
+  const childActive = eventTypes.some((eventType) => {
+    const href = eventTypeEventsHref(navSlug, eventType.name)
+    return currentPath === href || currentPath.startsWith(`${href}/`)
+  })
+  const active = settingsActive || childActive
+
+  return (
+    <div>
+      <div
+        className="flex items-center gap-2 rounded-[5px] px-2 py-1.5 text-[12.5px] font-medium"
+        style={{
+          background: active ? 'var(--surface-hover)' : 'transparent',
+          color: active ? 'var(--fg)' : 'var(--fg-muted)',
+        }}
+      >
+        <Icon className="h-3.5 w-3.5 shrink-0" style={{ color: toneColor(item.tone, active) }} />
+        <span className="flex-1 truncate text-left">{item.label}</span>
+        {item.count !== undefined && (
+          <span className="mono text-[10.5px]" style={{ color: 'var(--fg-faint)' }}>
+            {item.count}
+          </span>
+        )}
+        <Link
+          to={item.href}
+          title="Event type settings"
+          aria-label="Event type settings"
+          className="flex h-5 w-5 shrink-0 items-center justify-center rounded-[4px] no-underline transition-colors hover:bg-[var(--surface)]"
+          style={{ color: settingsActive ? 'var(--accent)' : 'var(--fg-subtle)' }}
+        >
+          <Settings className="h-3.5 w-3.5" />
+        </Link>
+      </div>
+      {eventTypes.length > 0 && (
+        <div
+          className="mt-px ml-[15px] flex flex-col gap-px border-l pl-2"
+          style={{ borderColor: 'var(--border-subtle)' }}
+        >
+          {eventTypes.map((eventType) => (
+            <EventTypeNavRow
+              key={eventType.id}
+              eventType={eventType}
+              href={eventTypeEventsHref(navSlug, eventType.name)}
+              currentPath={currentPath}
+            />
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
+function EventTypeNavRow({
+  eventType,
+  href,
+  currentPath,
+}: {
+  eventType: EventType
+  href: string
+  currentPath: string
+}) {
+  const active = currentPath === href || currentPath.startsWith(`${href}/`)
+
+  return (
+    <Link
+      to={href}
+      className="flex items-center gap-2 rounded-[5px] px-2 py-1.5 text-[12px] font-medium no-underline transition-colors"
+      style={{
+        background: active ? 'var(--surface-hover)' : 'transparent',
+        color: active ? 'var(--fg)' : 'var(--fg-muted)',
+      }}
+      onMouseEnter={(e) => {
+        if (!active) e.currentTarget.style.background = 'var(--surface-hover)'
+      }}
+      onMouseLeave={(e) => {
+        if (!active) e.currentTarget.style.background = 'transparent'
+      }}
+    >
+      <span
+        className="h-2 w-2 shrink-0 rounded-full"
+        style={{ backgroundColor: eventType.color || 'var(--fg-faint)' }}
+      />
+      <span className="min-w-0 flex-1 truncate text-left">{eventType.display_name}</span>
+    </Link>
+  )
+}
+
+function eventTypeEventsHref(slug: string, eventTypeName: string): string {
+  return `/p/${slug}/events/${eventTypeName}`
 }
 
 function EmptyNav({ loading }: { loading: boolean }) {
