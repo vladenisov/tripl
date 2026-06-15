@@ -5,6 +5,8 @@ from datetime import datetime
 
 from sqlalchemy import delete, select
 from sqlalchemy import func as sa_func
+from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.orm import Session
 
 from tripl.models.event import Event
@@ -138,24 +140,54 @@ def _replace_scope_anomalies(
         )
     )
 
+    rows: list[dict[str, object]] = []
     for anomaly in anomalies:
-        session.add(
-            MetricAnomaly(
-                id=uuid.uuid4(),
-                scan_config_id=scan_config_id,
-                scope_type=scope_type,
-                scope_ref=scope_ref,
-                event_id=event_id,
-                event_type_id=event_type_id,
-                bucket=anomaly.bucket,
-                actual_count=anomaly.actual_count,
-                expected_count=anomaly.expected_count,
-                stddev=anomaly.stddev,
-                z_score=anomaly.z_score,
-                direction=anomaly.direction,
-            )
+        rows.append(
+            {
+                "id": uuid.uuid4(),
+                "scan_config_id": scan_config_id,
+                "scope_type": scope_type,
+                "scope_ref": scope_ref,
+                "event_id": event_id,
+                "event_type_id": event_type_id,
+                "bucket": anomaly.bucket,
+                "actual_count": anomaly.actual_count,
+                "expected_count": anomaly.expected_count,
+                "stddev": anomaly.stddev,
+                "z_score": anomaly.z_score,
+                "direction": anomaly.direction,
+            }
         )
         anomalies_detected_total.labels(scope=scope_type, direction=anomaly.direction).inc()
+
+    # Idempotent insert: a concurrent collect_metrics run for the same config
+    # (e.g. a manual replay overlapping a scheduled collection) deletes and
+    # re-inserts the same (config, scope, bucket) rows; a plain INSERT trips
+    # uq_metric_anomaly_scope_bucket and fails the whole job. Upsert is safe.
+    _updatable = [
+        "event_id",
+        "event_type_id",
+        "actual_count",
+        "expected_count",
+        "stddev",
+        "z_score",
+        "direction",
+    ]
+    if rows:
+        if session.bind is not None and session.bind.dialect.name == "sqlite":
+            sqlite_stmt = sqlite_insert(MetricAnomaly).values(rows)
+            sqlite_stmt = sqlite_stmt.on_conflict_do_update(
+                index_elements=["scan_config_id", "scope_type", "scope_ref", "bucket"],
+                set_={col: getattr(sqlite_stmt.excluded, col) for col in _updatable},
+            )
+            session.execute(sqlite_stmt)
+        else:
+            pg_stmt = pg_insert(MetricAnomaly).values(rows)
+            pg_stmt = pg_stmt.on_conflict_do_update(
+                constraint="uq_metric_anomaly_scope_bucket",
+                set_={col: getattr(pg_stmt.excluded, col) for col in _updatable},
+            )
+            session.execute(pg_stmt)
 
     return len(anomalies)
 
@@ -231,29 +263,65 @@ def _replace_scope_breakdown_anomalies(
         )
     )
 
+    rows: list[dict[str, object]] = []
     for anomaly in anomalies:
         anomalies_detected_total.labels(
             scope=f"{scope_type}_breakdown", direction=anomaly.direction
         ).inc()
-        session.add(
-            MetricBreakdownAnomaly(
-                id=uuid.uuid4(),
-                scan_config_id=scan_config_id,
-                scope_type=scope_type,
-                scope_ref=scope_ref,
-                event_id=event_id,
-                event_type_id=event_type_id,
-                bucket=anomaly.bucket,
-                breakdown_column=breakdown_column,
-                breakdown_value=breakdown_value,
-                is_other=is_other,
-                actual_count=anomaly.actual_count,
-                expected_count=anomaly.expected_count,
-                stddev=anomaly.stddev,
-                z_score=anomaly.z_score,
-                direction=anomaly.direction,
-            )
+        rows.append(
+            {
+                "id": uuid.uuid4(),
+                "scan_config_id": scan_config_id,
+                "scope_type": scope_type,
+                "scope_ref": scope_ref,
+                "event_id": event_id,
+                "event_type_id": event_type_id,
+                "bucket": anomaly.bucket,
+                "breakdown_column": breakdown_column,
+                "breakdown_value": breakdown_value,
+                "is_other": is_other,
+                "actual_count": anomaly.actual_count,
+                "expected_count": anomaly.expected_count,
+                "stddev": anomaly.stddev,
+                "z_score": anomaly.z_score,
+                "direction": anomaly.direction,
+            }
         )
+
+    # Idempotent insert — see _replace_scope_anomalies: concurrent runs over the
+    # same window must not crash on uq_metric_breakdown_anomaly_scope_bucket_value.
+    _updatable = [
+        "event_id",
+        "event_type_id",
+        "actual_count",
+        "expected_count",
+        "stddev",
+        "z_score",
+        "direction",
+    ]
+    if rows:
+        if session.bind is not None and session.bind.dialect.name == "sqlite":
+            sqlite_stmt = sqlite_insert(MetricBreakdownAnomaly).values(rows)
+            sqlite_stmt = sqlite_stmt.on_conflict_do_update(
+                index_elements=[
+                    "scan_config_id",
+                    "scope_type",
+                    "scope_ref",
+                    "breakdown_column",
+                    "breakdown_value",
+                    "is_other",
+                    "bucket",
+                ],
+                set_={col: getattr(sqlite_stmt.excluded, col) for col in _updatable},
+            )
+            session.execute(sqlite_stmt)
+        else:
+            pg_stmt = pg_insert(MetricBreakdownAnomaly).values(rows)
+            pg_stmt = pg_stmt.on_conflict_do_update(
+                constraint="uq_metric_breakdown_anomaly_scope_bucket_value",
+                set_={col: getattr(pg_stmt.excluded, col) for col in _updatable},
+            )
+            session.execute(pg_stmt)
 
     return len(anomalies)
 

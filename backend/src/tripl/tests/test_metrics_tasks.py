@@ -281,6 +281,140 @@ def test_check_metrics_due_reaps_stale_active_job_and_dispatches_replacement(
     assert jobs[1].status == ScanJobStatus.pending.value
 
 
+def test_check_metrics_due_reaps_shadowed_stale_running_job(
+    sync_session_factory: sessionmaker[Session],
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """A stale RUNNING job is reaped even when a fresher, non-stale PENDING job
+    exists for the same config.
+
+    Regression: the dispatcher used to inspect only the *newest* active job, so
+    a stuck old running job could be permanently shadowed by a fresher pending
+    row and never reaped — it stayed `running` forever.
+    """
+    now = datetime.now(UTC)
+    with sync_session_factory() as session:
+        config = _create_scan_config(session)
+        stale_running = ScanJob(
+            id=uuid.uuid4(),
+            scan_config_id=config.id,
+            status=ScanJobStatus.running.value,
+            started_at=now - STALE_ACTIVE_SCAN_JOB_TIMEOUT - timedelta(minutes=10),
+        )
+        fresh_pending = ScanJob(
+            id=uuid.uuid4(),
+            scan_config_id=config.id,
+            status=ScanJobStatus.pending.value,
+        )
+        session.add_all([stale_running, fresh_pending])
+        session.commit()
+        config_id = config.id
+        stale_id = stale_running.id
+        fresh_id = fresh_pending.id
+
+    dispatched: list[tuple[str, str]] = []
+    monkeypatch.setattr(metrics_schedule, "_get_sync_session", sync_session_factory)
+    monkeypatch.setattr(
+        metrics_schedule.collect_metrics,
+        "delay",
+        lambda scan_config_id, scan_job_id: dispatched.append((scan_config_id, scan_job_id)),
+    )
+
+    result = metrics_schedule.check_metrics_due.run()
+
+    # The fresh pending job is still live, so no replacement is dispatched...
+    assert result == {"checked": 1, "dispatched": 0}
+    assert dispatched == []
+
+    with sync_session_factory() as session:
+        jobs = {
+            job.id: job
+            for job in session.execute(
+                select(ScanJob).where(ScanJob.scan_config_id == config_id)
+            ).scalars()
+        }
+
+    # ...but the shadowed stale running job is reaped instead of left stuck.
+    assert jobs[stale_id].status == ScanJobStatus.failed.value
+    assert jobs[stale_id].completed_at is not None
+    assert jobs[fresh_id].status == ScanJobStatus.pending.value
+
+
+def test_replace_scope_anomalies_upserts_on_conflict(
+    sync_session_factory: sessionmaker[Session],
+) -> None:
+    """The anomaly write upserts on (config, scope, bucket) instead of failing.
+
+    Regression: two concurrent collect_metrics runs for the same config both
+    delete + re-insert the same window; a plain INSERT then tripped
+    uq_metric_anomaly_scope_bucket and failed the whole job.
+    """
+    from tripl.worker.analyzers.anomaly_detector import SCOPE_EVENT, DetectedAnomaly
+    from tripl.worker.tasks.metrics.detect import _replace_scope_anomalies
+
+    bucket = datetime(2026, 6, 15, 9, 0, tzinfo=UTC)
+    with sync_session_factory() as session:
+        config = _create_scan_config(session)
+        event_id = uuid.uuid4()
+        # A row a racing run already committed. The delete window below is set
+        # AFTER this bucket on purpose, so the delete cannot clear it first and
+        # the insert is forced to hit the unique constraint.
+        session.add(
+            MetricAnomaly(
+                id=uuid.uuid4(),
+                scan_config_id=config.id,
+                scope_type=SCOPE_EVENT,
+                scope_ref=str(event_id),
+                event_id=event_id,
+                event_type_id=None,
+                bucket=bucket,
+                actual_count=10,
+                expected_count=5.0,
+                stddev=1.0,
+                z_score=5.0,
+                direction="spike",
+            )
+        )
+        session.commit()
+
+        written = _replace_scope_anomalies(
+            session,
+            scan_config_id=config.id,
+            scope_type=SCOPE_EVENT,
+            scope_ref=str(event_id),
+            evaluation_start=bucket + timedelta(hours=1),
+            evaluation_end=bucket + timedelta(hours=2),
+            event_id=event_id,
+            event_type_id=None,
+            anomalies=[
+                DetectedAnomaly(
+                    bucket=bucket,
+                    actual_count=39,
+                    expected_count=33.0,
+                    stddev=0.15,
+                    z_score=4.76,
+                    direction="spike",
+                )
+            ],
+        )
+        session.commit()
+
+        assert written == 1
+        rows = (
+            session.execute(
+                select(MetricAnomaly).where(
+                    MetricAnomaly.scan_config_id == config.id,
+                    MetricAnomaly.scope_ref == str(event_id),
+                    MetricAnomaly.bucket == bucket,
+                )
+            )
+            .scalars()
+            .all()
+        )
+        assert len(rows) == 1  # upserted, not duplicated and not crashed
+        assert rows[0].actual_count == 39  # row updated to the second run's value
+
+
 def test_collect_metrics_reuses_existing_pending_job(
     sync_session_factory: sessionmaker[Session],
     monkeypatch: MonkeyPatch,
