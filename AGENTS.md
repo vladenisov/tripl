@@ -18,10 +18,10 @@ The long-form product and architecture spec is in [PLAN.md](PLAN.md). This file 
 
 ## Agent Workflow
 
-If `agentmemory` MCP is available in the current session, use it for every task.
-- if it's not started, start with `npx @agentmemory/agentmemory`
-- recall relevant prior context before making assumptions, especially for ongoing work, prior decisions, and user preferences;
-- save durable decisions, preferences, and important implementation findings when they are likely to matter in future sessions.
+If `mem0` MCP is available in the current session, use it for every task.
+- search or list relevant memories before making assumptions, especially for ongoing work, prior decisions, and user preferences;
+- save durable decisions, preferences, and important implementation findings to `mem0` when they are likely to matter in future sessions;
+- do not start a separate memory service; this project uses the configured `mem0` MCP.
 
 ## Current Product Scope
 
