@@ -101,10 +101,6 @@ export default function Layout() {
     [location.pathname, activeProject?.name, slug],
   )
 
-  const onDetailPage =
-    location.pathname.includes('/detail/') ||
-    location.pathname.includes('/monitoring/')
-
   return (
     <BranchProvider slug={slug ?? null}>
     <TweaksPanelProvider>
@@ -166,7 +162,7 @@ export default function Layout() {
                 </div>
               </div>
 
-              <ActivityPanel open={activityOpen && !onDetailPage} slug={slug} />
+              <ActivityPanel open={activityOpen} slug={slug} />
             </div>
           </main>
         </div>
