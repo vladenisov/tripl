@@ -1,4 +1,6 @@
+import logging
 import uuid
+from datetime import UTC, datetime
 
 from fastapi import HTTPException
 from sqlalchemy import select
@@ -17,6 +19,8 @@ from tripl.schemas.scan_config import (
     check_scalar_columns_unreserved,
 )
 from tripl.services.project_lookup import get_project_id_by_slug
+
+logger = logging.getLogger(__name__)
 
 
 async def _verify_data_source(session: AsyncSession, ds_id: uuid.UUID) -> DataSource:
@@ -294,4 +298,44 @@ async def get_scan_job(
     job = result.scalar_one_or_none()
     if job is None:
         raise HTTPException(status_code=404, detail="Scan job not found")
+    return job
+
+
+async def cancel_scan_job(
+    session: AsyncSession,
+    slug: str,
+    scan_id: uuid.UUID,
+    job_id: uuid.UUID,
+) -> ScanJob:
+    """Cancel an active (pending/running) scan job.
+
+    Marks the job ``cancelled`` and best-effort revokes the Celery task. A
+    running task is not killed: it polls this status at each chunk boundary and
+    stops cooperatively, leaving already-written metrics intact.
+    """
+    job = await get_scan_job(session, slug, scan_id, job_id)
+    if job.status not in (ScanJobStatus.pending.value, ScanJobStatus.running.value):
+        raise HTTPException(
+            status_code=409,
+            detail=f"Scan job is not active (status: {job.status})",
+        )
+
+    if job.celery_task_id:
+        try:
+            from tripl.worker.celery_app import celery_app
+
+            celery_app.control.revoke(job.celery_task_id)
+        except Exception:  # noqa: BLE001 — revoke is best-effort; cooperative stop is the backstop
+            logger.warning(
+                "Failed to revoke celery task %s for scan job %s",
+                job.celery_task_id,
+                job.id,
+                exc_info=True,
+            )
+
+    job.status = ScanJobStatus.cancelled.value
+    job.completed_at = datetime.now(UTC)
+    job.error_message = "Cancelled by user"
+    await session.commit()
+    await session.refresh(job)
     return job

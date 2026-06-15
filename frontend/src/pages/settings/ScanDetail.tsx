@@ -1,6 +1,6 @@
 import { Fragment, useState } from "react"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
-import { ChevronDown, GitMerge, Play, RotateCcw } from "lucide-react"
+import { Ban, ChevronDown, GitMerge, Play, RotateCcw } from "lucide-react"
 import { scansApi } from "@/api/scans"
 import type { EventType, ScanConfig, ScanJob } from "@/types"
 import { Badge } from "@/components/ui/badge"
@@ -88,6 +88,11 @@ export function ScanDetail({ slug, scanConfig, eventTypes, branchId }: { slug: s
     },
   })
 
+  const cancelMut = useMutation({
+    mutationFn: (jobId: string) => scansApi.cancelJob(slug, scanConfig.id, jobId),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['scanJobs', slug, scanConfig.id] }),
+  })
+
   const openReplayDialog = () => {
     const defaultWindow = createDefaultReplayWindow()
     setReplayFrom(defaultWindow.from)
@@ -101,6 +106,7 @@ export function ScanDetail({ slug, scanConfig, eventTypes, branchId }: { slug: s
     running: 'secondary',
     completed: 'default',
     failed: 'destructive',
+    cancelled: 'outline',
   }
 
   return (
@@ -252,6 +258,7 @@ export function ScanDetail({ slug, scanConfig, eventTypes, branchId }: { slug: s
 
       {runMut.isError && <p className="text-sm text-destructive">{getErrorMessage(runMut.error)}</p>}
       {applyGroupsMut.isError && <p className="text-sm text-destructive">{getErrorMessage(applyGroupsMut.error)}</p>}
+      {cancelMut.isError && <p className="text-sm text-destructive">{getErrorMessage(cancelMut.error)}</p>}
       {applyGroupsMessage && <p className="text-sm text-muted-foreground">{applyGroupsMessage}</p>}
 
       {isLoading && <p className="text-sm text-muted-foreground">Loading jobs…</p>}
@@ -339,12 +346,26 @@ export function ScanDetail({ slug, scanConfig, eventTypes, branchId }: { slug: s
                       )}
                     </TableCell>
                     <TableCell>
-                      {(job.result_summary || job.error_message) && (
-                        <Button variant="ghost" size="icon" className="h-6 w-6"
-                          onClick={() => setExpandedJobId(expandedJobId === job.id ? null : job.id)}>
-                          <ChevronDown className={`h-3 w-3 transition-transform ${expandedJobId === job.id ? 'rotate-180' : ''}`} />
-                        </Button>
-                      )}
+                      <div className="flex items-center justify-end gap-1">
+                        {(job.status === 'pending' || job.status === 'running') && (
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            className="h-6 w-6 text-muted-foreground hover:text-destructive"
+                            title="Stop job"
+                            disabled={cancelMut.isPending && cancelMut.variables === job.id}
+                            onClick={() => cancelMut.mutate(job.id)}
+                          >
+                            <Ban className="h-3 w-3" />
+                          </Button>
+                        )}
+                        {(job.result_summary || job.error_message) && (
+                          <Button variant="ghost" size="icon" className="h-6 w-6"
+                            onClick={() => setExpandedJobId(expandedJobId === job.id ? null : job.id)}>
+                            <ChevronDown className={`h-3 w-3 transition-transform ${expandedJobId === job.id ? 'rotate-180' : ''}`} />
+                          </Button>
+                        )}
+                      </div>
                     </TableCell>
                   </TableRow>
                   {expandedJobId === job.id && (

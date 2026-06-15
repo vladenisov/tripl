@@ -150,6 +150,7 @@ def collect_metrics(
             logger.info(f"ScanConfig {scan_config_id}: time_column or interval not set, skipping")
             return {"skipped": True}
 
+        task_id = getattr(getattr(self, "request", None), "id", None)
         if job_id is not None:
             job = session.get(ScanJob, uuid.UUID(job_id))
             if job is None:
@@ -159,16 +160,24 @@ def collect_metrics(
                 msg = f"ScanJob {job_id} does not belong to ScanConfig {scan_config_id}"
                 raise ValueError(msg)
 
+            # The job may have been cancelled by the user while it sat queued;
+            # don't flip it back to running or do any work in that case.
+            if job.status == ScanJobStatus.cancelled.value:
+                logger.info("collect_metrics %s was cancelled before start; skipping", job_id)
+                return {"cancelled": True, "scan_config_id": scan_config_id}
+
             job.status = ScanJobStatus.running.value
             job.started_at = job.started_at or datetime.now(UTC)
             job.completed_at = None
             job.error_message = None
+            job.celery_task_id = task_id
         else:
             job = ScanJob(
                 id=uuid.uuid4(),
                 scan_config_id=config.id,
                 status=ScanJobStatus.running.value,
                 started_at=datetime.now(UTC),
+                celery_task_id=task_id,
             )
             session.add(job)
         session.commit()
@@ -356,6 +365,19 @@ def collect_metrics(
         query_rows_scanned = 0
 
         for chunk_from, chunk_to in chunks:
+            # Cooperative cancellation: a user "stop" sets status=cancelled. Bail
+            # out at the chunk boundary, leaving already-written metrics intact
+            # and the job in its cancelled state (don't mark it completed/failed).
+            if job is not None:
+                current_status = session.execute(
+                    select(ScanJob.status).where(ScanJob.id == job.id)
+                ).scalar()
+                if current_status == ScanJobStatus.cancelled.value:
+                    logger.info(
+                        "collect_metrics for %s cancelled mid-run; stopping", scan_config_id
+                    )
+                    return {"cancelled": True, "scan_config_id": scan_config_id}
+
             chunk_stats = process_chunk(
                 session,
                 adapter=adapter,
@@ -390,6 +412,15 @@ def collect_metrics(
             n_breakdown_tp += chunk_stats.n_breakdown_tp
             n_distribution_drifts += chunk_stats.n_distribution_drifts
             significant_distribution_drifts += chunk_stats.significant_distribution_drifts
+
+            # Heartbeat: bump the job row after each chunk so the scheduler's
+            # staleness reaper sees forward progress. Without this, updated_at
+            # stays frozen at started_at for the whole run (chunk writes only
+            # touch metric rows, not the job), and a long replay over millions
+            # of rows gets false-failed mid-flight.
+            if job is not None:
+                job.updated_at = datetime.now(UTC)
+                session.commit()
 
         replay_values_touched = 0
         if is_replay and replay_variable_samples:

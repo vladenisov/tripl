@@ -201,6 +201,48 @@ class TestScanConfigsCRUD:
         assert body["status"] == "pending"
         assert dispatched == [(scan_id, body["id"])]
 
+    async def test_cancel_scan_job_marks_cancelled_then_rejects_inactive(
+        self,
+        client: AsyncClient,
+        project: dict,
+        data_source: dict,
+        event_type: dict,
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        create_resp = await client.post(
+            f"/api/v1/projects/{project['slug']}/scans",
+            json={
+                "data_source_id": data_source["id"],
+                "name": "Cancellable scan",
+                "base_query": "SELECT * FROM events",
+                "event_type_id": event_type["id"],
+            },
+        )
+        assert create_resp.status_code == 201
+        scan_id = create_resp.json()["id"]
+
+        # Don't actually run the worker; we only need a pending job to cancel.
+        monkeypatch.setattr(scan_tasks.run_scan, "delay", lambda *a, **k: None)
+
+        run_resp = await client.post(
+            f"/api/v1/projects/{project['slug']}/scans/{scan_id}/run"
+        )
+        assert run_resp.status_code == 201
+        job_id = run_resp.json()["id"]
+        assert run_resp.json()["status"] == "pending"
+
+        cancel_resp = await client.post(
+            f"/api/v1/projects/{project['slug']}/scans/{scan_id}/jobs/{job_id}/cancel"
+        )
+        assert cancel_resp.status_code == 200
+        assert cancel_resp.json()["status"] == "cancelled"
+
+        # Cancelling an already-terminal job is rejected.
+        again = await client.post(
+            f"/api/v1/projects/{project['slug']}/scans/{scan_id}/jobs/{job_id}/cancel"
+        )
+        assert again.status_code == 409
+
     async def test_create_scan_config_with_replay_chunk_interval(
         self, client: AsyncClient, project: dict, data_source: dict, event_type: dict
     ):

@@ -37,7 +37,7 @@ export interface ProjectLatestScanJob {
   id: string
   scan_config_id: string
   scan_name: string
-  status: 'pending' | 'running' | 'completed' | 'failed'
+  status: 'pending' | 'running' | 'completed' | 'failed' | 'cancelled'
   started_at: string | null
   completed_at: string | null
   result_summary: ScanJobResultSummary | null
@@ -152,7 +152,7 @@ export interface ProjectAnomalySettings {
 export interface ScanJob {
   id: string
   scan_config_id: string
-  status: 'pending' | 'running' | 'completed' | 'failed'
+  status: 'pending' | 'running' | 'completed' | 'failed' | 'cancelled'
   started_at: string | null
   completed_at: string | null
   result_summary: ScanJobResultSummary | null

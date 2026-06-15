@@ -186,3 +186,24 @@ async def get_scan_job(
     job_id: uuid.UUID,
 ) -> object:
     return await scan_service.get_scan_job(session, slug, scan_id, job_id)
+
+
+@router.post("/{scan_id}/jobs/{job_id}/cancel", response_model=ScanJobResponse)
+async def cancel_scan_job(
+    session: SessionDep,
+    slug: str,
+    scan_id: uuid.UUID,
+    job_id: uuid.UUID,
+    current_user: EditorUserDep,
+) -> object:
+    job = await scan_service.cancel_scan_job(session, slug, scan_id, job_id)
+    await audit_service.record(
+        session,
+        user=current_user,
+        action="scan_job.cancel",
+        target_type="scan_job",
+        target_id=job_id,
+        target_name=str(job_id),
+        project_slug=slug,
+    )
+    return job
