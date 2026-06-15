@@ -125,4 +125,7 @@ export const scansApi = {
 
   getJob: (slug: string, scanId: string, jobId: string) =>
     api.get<ScanJob>(`/projects/${slug}/scans/${scanId}/jobs/${jobId}`),
+
+  cancelJob: (slug: string, scanId: string, jobId: string) =>
+    api.post<ScanJob>(`/projects/${slug}/scans/${scanId}/jobs/${jobId}/cancel`, {}),
 }

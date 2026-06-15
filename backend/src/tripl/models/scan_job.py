@@ -21,6 +21,7 @@ class ScanJobStatus(enum.StrEnum):
     running = "running"
     completed = "completed"
     failed = "failed"
+    cancelled = "cancelled"
 
 
 class ScanJob(UUIDMixin, TimestampMixin, Base):
@@ -37,5 +38,8 @@ class ScanJob(UUIDMixin, TimestampMixin, Base):
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     result_summary: Mapped[dict[str, object] | None] = mapped_column(sa.JSON, nullable=True)
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Celery task id of the dispatched task, recorded once the task starts, so a
+    # user-triggered cancel can best-effort revoke a still-queued task.
+    celery_task_id: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     scan_config: Mapped[ScanConfig] = relationship(back_populates="scan_jobs")
