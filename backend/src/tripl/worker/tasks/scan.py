@@ -26,7 +26,7 @@ from tripl.worker.analyzers.event_generator import (
     generate_events,
     merge_existing_events_for_group_rules,
 )
-from tripl.worker.analyzers.preview import build_preview_payload
+from tripl.worker.analyzers.preview import build_json_paths_payload, build_preview_payload
 from tripl.worker.celery_app import celery_app
 from tripl.worker.db import _build_adapter, _get_sync_session
 from tripl.worker.search_reindex import reindex_main_branch_from_worker
@@ -501,15 +501,26 @@ def preview_scan_config_async(self: object, job_id: str) -> dict[str, object]:
             time_column=job.time_column,
             lookback_hours=job.scan_lookback_hours,
         )
-        payload = build_preview_payload(
-            adapter,
-            job.base_query,
-            list(job.json_value_paths or []),
-            job.row_limit,
-            time_column=job.time_column if preview_window else None,
-            time_from=preview_window[0] if preview_window else None,
-            time_to=preview_window[1] if preview_window else None,
-        )
+        if job.include_json_paths:
+            # Heavy half: enumerate nested JSON keys for the source query.
+            payload = build_json_paths_payload(
+                adapter,
+                job.base_query,
+                list(job.json_value_paths or []),
+                time_column=job.time_column if preview_window else None,
+                time_from=preview_window[0] if preview_window else None,
+                time_to=preview_window[1] if preview_window else None,
+            )
+        else:
+            # Fast half: columns + sample rows only, no JSON path discovery.
+            payload = build_preview_payload(
+                adapter,
+                job.base_query,
+                job.row_limit,
+                time_column=job.time_column if preview_window else None,
+                time_from=preview_window[0] if preview_window else None,
+                time_to=preview_window[1] if preview_window else None,
+            )
 
         job.status = ScanJobStatus.completed.value
         job.completed_at = datetime.now(UTC)

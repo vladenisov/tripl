@@ -925,7 +925,8 @@ describe('ProjectSettingsPage', () => {
       }
 
       if (url.endsWith('/api/v1/projects/demo/scans/preview') && init?.method === 'POST') {
-        return mockJsonResponse({
+        const previewBody = JSON.parse(String(init.body))
+        const jobBase = {
           id: 'preview-job-1',
           scan_config_id: null,
           status: 'completed',
@@ -933,6 +934,28 @@ describe('ProjectSettingsPage', () => {
           created_at: '2026-04-12T00:00:00Z',
           started_at: '2026-04-12T00:00:00Z',
           completed_at: '2026-04-12T00:00:00Z',
+        }
+        // The slow JSON discovery runs as a separate job: it returns only the
+        // discovered json_columns. The fast preview lists JSON columns with no
+        // paths until discovery runs.
+        if (previewBody.include_json_paths) {
+          return mockJsonResponse({
+            ...jobBase,
+            result_summary: {
+              json_columns: [
+                {
+                  column: 'payload',
+                  paths: [
+                    { full_path: 'payload.extra.key', path: 'extra.key', sample_values: ['TASK-123'] },
+                    { full_path: 'payload.locale', path: 'locale', sample_values: ['en'] },
+                  ],
+                },
+              ],
+            },
+          })
+        }
+        return mockJsonResponse({
+          ...jobBase,
           result_summary: {
             columns: [
               { name: 'event_name', type_name: 'String', is_nullable: false },
@@ -946,15 +969,7 @@ describe('ProjectSettingsPage', () => {
                 payload: { extra: { key: 'TASK-123' }, locale: 'en' },
               },
             ],
-            json_columns: [
-              {
-                column: 'payload',
-                paths: [
-                  { full_path: 'payload.extra.key', path: 'extra.key', sample_values: ['TASK-123'] },
-                  { full_path: 'payload.locale', path: 'locale', sample_values: ['en'] },
-                ],
-              },
-            ],
+            json_columns: [{ column: 'payload', paths: [] }],
           },
         })
       }
@@ -1026,7 +1041,10 @@ describe('ProjectSettingsPage', () => {
 
     const updatedSelects = within(dialog).getAllByRole('combobox')
     fireEvent.change(updatedSelects[3], { target: { value: 'created_at' } })
-    fireEvent.click(within(dialog).getByText('extra.key'))
+
+    // JSON keys are discovered on demand via a separate job, not by the fast preview.
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Discover JSON keys' }))
+    fireEvent.click(await within(dialog).findByText('extra.key'))
     fireEvent.click(within(dialog).getByRole('checkbox', { name: 'event_name' }))
     fireEvent.change(within(dialog).getByPlaceholderText('Unlimited'), { target: { value: '2' } })
     fireEvent.click(within(dialog).getByRole('button', { name: 'Add Group Rule' }))
@@ -1191,7 +1209,7 @@ describe('ProjectSettingsPage', () => {
     fireEvent.change(within(dialog).getAllByRole('combobox')[0], { target: { value: 'ds-1' } })
 
     fireEvent.click(within(dialog).getByRole('button', { name: 'Load Preview' }))
-    await within(dialog).findByText('Column pickers use the sample rows; JSON path options are discovered from the source query.')
+    await within(dialog).findByText('Column pickers use the sample rows. JSON paths are discovered on demand to keep the preview fast.')
 
     fireEvent.change(within(dialog).getByLabelText('App Version Column (optional)'), {
       target: { value: 'app_version' },
@@ -1375,7 +1393,7 @@ describe('ProjectSettingsPage', () => {
 
     expect(
       await within(dialog).findByText(
-        'Column pickers use the sample rows; JSON path options are discovered from the source query.',
+        'Column pickers use the sample rows. JSON paths are discovered on demand to keep the preview fast.',
       ),
     ).toBeInTheDocument()
 
@@ -1465,8 +1483,9 @@ describe('ProjectSettingsPage', () => {
       }
 
       if (url.endsWith('/api/v1/projects/demo/scans/preview') && init?.method === 'POST') {
-        previewBodies.push(JSON.parse(String(init.body)))
-        return mockJsonResponse({
+        const previewBody = JSON.parse(String(init.body))
+        previewBodies.push(previewBody)
+        const jobBase = {
           id: 'preview-job-1',
           scan_config_id: null,
           status: 'completed',
@@ -1474,6 +1493,24 @@ describe('ProjectSettingsPage', () => {
           created_at: '2026-04-12T00:00:00Z',
           started_at: '2026-04-12T00:00:00Z',
           completed_at: '2026-04-12T00:00:00Z',
+        }
+        if (previewBody.include_json_paths) {
+          return mockJsonResponse({
+            ...jobBase,
+            result_summary: {
+              json_columns: [
+                {
+                  column: 'payload',
+                  paths: [
+                    { full_path: 'payload.locale', path: 'locale', sample_values: ['en'] },
+                  ],
+                },
+              ],
+            },
+          })
+        }
+        return mockJsonResponse({
+          ...jobBase,
           result_summary: {
             columns: [
               { name: 'event_name', type_name: 'String', is_nullable: false },
@@ -1485,14 +1522,7 @@ describe('ProjectSettingsPage', () => {
                 payload: { locale: 'en' },
               },
             ],
-            json_columns: [
-              {
-                column: 'payload',
-                paths: [
-                  { full_path: 'payload.locale', path: 'locale', sample_values: ['en'] },
-                ],
-              },
-            ],
+            json_columns: [{ column: 'payload', paths: [] }],
           },
         })
       }
@@ -1522,18 +1552,25 @@ describe('ProjectSettingsPage', () => {
     const dialog = await screen.findByRole('dialog')
     fireEvent.click(within(dialog).getByRole('button', { name: 'Load Preview' }))
 
+    // The saved json_value_paths stay visible immediately after the fast
+    // preview, before any JSON key discovery runs.
+    expect(await within(dialog).findByText('extra.key')).toBeInTheDocument()
+
+    // Discovering JSON keys is a separate job that carries the selected paths.
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Discover JSON keys' }))
+
     await waitFor(() => {
       expect(previewBodies).toContainEqual({
         data_source_id: 'ds-1',
         base_query: 'SELECT * FROM analytics.events',
-        limit: 10,
         json_value_paths: ['payload.extra.key'],
         time_column: null,
         scan_lookback_hours: null,
+        include_json_paths: true,
       })
     })
 
-    expect(await within(dialog).findByText('extra.key')).toBeInTheDocument()
-    expect(within(dialog).getByText('locale')).toBeInTheDocument()
+    expect(await within(dialog).findByText('locale')).toBeInTheDocument()
+    expect(within(dialog).getByText('extra.key')).toBeInTheDocument()
   })
 })

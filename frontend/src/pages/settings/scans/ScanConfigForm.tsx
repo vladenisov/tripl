@@ -125,7 +125,6 @@ export function ScanCreateDialog({
       data_source_id: dsId,
       base_query: baseQuery,
       limit: 10,
-      json_value_paths: jsonValuePaths,
       time_column: timeColumn || null,
       scan_lookback_hours: parseOptionalPositiveInt(scanLookbackHours),
     }),
@@ -153,6 +152,26 @@ export function ScanCreateDialog({
           && field !== appVersionColumn,
         ),
       )
+    },
+  })
+
+  // JSON path discovery is the slow half of the preview, so it runs as its own
+  // job behind an explicit "Discover JSON keys" action; merge the result into
+  // the already-loaded fast preview.
+  const discoverJsonMut = useMutation({
+    mutationFn: () => scansApi.preview(slug, {
+      data_source_id: dsId,
+      base_query: baseQuery,
+      json_value_paths: jsonValuePaths,
+      time_column: timeColumn || null,
+      scan_lookback_hours: parseOptionalPositiveInt(scanLookbackHours),
+      include_json_paths: true,
+    }),
+    onSuccess: data => {
+      // Discard a discovery result that resolves after the preview was reset
+      // (e.g. base query changed mid-flight) — merging into a null preview would
+      // drop columns/rows and crash the panel.
+      setPreview(current => (current ? { ...current, json_columns: data.json_columns } : current))
     },
   })
 
@@ -191,7 +210,7 @@ export function ScanCreateDialog({
               <div className="grid gap-2"><Label>Name</Label><Input value={scanName} onChange={e => setScanName(e.target.value)} required placeholder="e.g. Main events scan" /></div>
               <div className="grid gap-2">
                 <Label>Data Source</Label>
-                <select value={dsId} onChange={e => { setDsId(e.target.value); setPreview(null); setJsonValuePaths([]); setDistributionDriftFields([]) }} className={SELECT_CLASS} required>
+                <select value={dsId} onChange={e => { setDsId(e.target.value); setPreview(null); setJsonValuePaths([]); setDistributionDriftFields([]); discoverJsonMut.reset() }} className={SELECT_CLASS} required>
                   <option value="">Select…</option>
                   {dataSources.map((ds: DataSource) => <option key={ds.id} value={ds.id}>{ds.name}</option>)}
                 </select>
@@ -201,7 +220,7 @@ export function ScanCreateDialog({
               <Label>Base Query (used as subquery)</Label>
               <Textarea
                 value={baseQuery}
-                onChange={e => { setBaseQuery(e.target.value); setPreview(null); setJsonValuePaths([]); setDistributionDriftFields([]) }}
+                onChange={e => { setBaseQuery(e.target.value); setPreview(null); setJsonValuePaths([]); setDistributionDriftFields([]); discoverJsonMut.reset() }}
                 className="font-mono text-sm"
                 rows={4}
                 required
@@ -219,7 +238,7 @@ export function ScanCreateDialog({
                 type="button"
                 variant="outline"
                 size="sm"
-                onClick={() => previewMut.mutate()}
+                onClick={() => { discoverJsonMut.reset(); previewMut.mutate() }}
                 disabled={previewMut.isPending || !dsId || !baseQuery.trim()}
               >
                 {previewMut.isPending ? 'Loading…' : 'Load Preview'}
@@ -300,6 +319,10 @@ export function ScanCreateDialog({
                 preview={preview}
                 selectedJsonValuePaths={jsonValuePaths}
                 onToggleJsonValuePath={toggleJsonValuePath}
+                onDiscoverJsonPaths={() => discoverJsonMut.mutate()}
+                isDiscoveringJsonPaths={discoverJsonMut.isPending}
+                jsonPathsError={discoverJsonMut.error}
+                jsonPathsDiscovered={discoverJsonMut.isSuccess}
               />
             )}
             {preview && (

@@ -51,6 +51,7 @@ export const scansApi = {
     json_value_paths?: string[]
     time_column?: string | null
     scan_lookback_hours?: number | null
+    include_json_paths?: boolean
   }) => api.post<ScanPreviewJob>(`/projects/${slug}/scans/preview`, data),
 
   getPreviewJob: (slug: string, jobId: string) =>
@@ -58,6 +59,8 @@ export const scansApi = {
 
   // Enqueue a preview job and poll until it resolves, returning the preview
   // payload. Rejects if the job fails or polling exceeds the timeout.
+  // With include_json_paths the job discovers nested JSON keys instead, and the
+  // resolved payload carries only json_columns (the "Discover JSON keys" flow).
   preview: async (slug: string, data: {
     data_source_id: string
     base_query: string
@@ -65,6 +68,7 @@ export const scansApi = {
     json_value_paths?: string[]
     time_column?: string | null
     scan_lookback_hours?: number | null
+    include_json_paths?: boolean
   }): Promise<ScanConfigPreview> => {
     const job = await scansApi.startPreview(slug, data)
     const deadline = Date.now() + PREVIEW_POLL_TIMEOUT_MS

@@ -4,7 +4,7 @@ import uuid
 from datetime import datetime
 
 import sqlalchemy as sa
-from sqlalchemy import DateTime, ForeignKey, Index, Integer, String, Text
+from sqlalchemy import Boolean, DateTime, ForeignKey, Index, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from tripl.models.base import Base, TimestampMixin, UUIDMixin
@@ -35,6 +35,11 @@ class ScanPreviewJob(UUIDMixin, TimestampMixin, Base):
     row_limit: Mapped[int] = mapped_column(Integer, default=10)
     time_column: Mapped[str | None] = mapped_column(String(255), nullable=True)
     scan_lookback_hours: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # When true, the worker runs the (slow) JSON path discovery instead of the
+    # fast columns+rows preview. Drives the "Discover JSON keys" action.
+    include_json_paths: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default=sa.false(), nullable=False
+    )
 
     status: Mapped[str] = mapped_column(
         db_enum(ScanJobStatus, "scan_job_status"), default=ScanJobStatus.pending.value

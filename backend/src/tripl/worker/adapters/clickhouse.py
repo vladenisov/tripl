@@ -95,13 +95,20 @@ class ClickHouseAdapter(BaseAdapter):
 
         samples_by_column: dict[str, dict[str, list[object]]] = {}
         where_clause = self._time_window_where_clause(time_column, time_from, time_to)
+        # Bound discovery to a sample of source rows. The path enumeration below
+        # otherwise scans the whole source (no LIMIT survives a GROUP BY), which
+        # turns into a full-table scan and trips the timeout on large tables.
+        sampled_source = (
+            f"(SELECT * FROM ({base_query}) AS _src{where_clause} "
+            f"LIMIT {int(sample_row_limit)})"
+        )
         for column in json_columns:
             c = self._validate_column(column)
             path_sql = (
                 "SELECT _path "
                 "FROM ("
                 f"SELECT arrayJoin(JSONAllPaths(`{c}`)) AS _path "
-                f"FROM ({base_query}) AS _src{where_clause}"
+                f"FROM {sampled_source} AS _sample"
                 ") "
                 "WHERE _path != '' "
                 "GROUP BY _path "
@@ -135,11 +142,7 @@ class ClickHouseAdapter(BaseAdapter):
                 )
                 path_by_alias[alias] = path
 
-            sample_sql = (
-                f"SELECT {', '.join(select_parts)} "
-                f"FROM ({base_query}) AS _src{where_clause} "
-                f"LIMIT {int(sample_row_limit)}"
-            )
+            sample_sql = f"SELECT {', '.join(select_parts)} FROM {sampled_source} AS _sample"
             logger.info("CH JSON path sample query: %s", sample_sql)
             sample_result = self._client.query(sample_sql)
             index_to_path = {
