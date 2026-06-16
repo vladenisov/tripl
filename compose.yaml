@@ -50,6 +50,10 @@ services:
 
   rabbitmq:
     image: rabbitmq:3.13-management
+    # consumer_timeout raised above the Celery collect_metrics hard limit so long
+    # metrics replays aren't force-requeued mid-run. See infra/rabbitmq/rabbitmq.conf.
+    volumes:
+      - ./infra/rabbitmq/rabbitmq.conf:/etc/rabbitmq/rabbitmq.conf:ro
     ports:
       - "5672:5672"
       - "15672:15672"
