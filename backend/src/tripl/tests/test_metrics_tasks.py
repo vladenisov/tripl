@@ -960,7 +960,12 @@ def test_collect_metrics_retains_latest_app_versions_by_semver(
             return (
                 ["event_name", "app_version"],
                 [],
-                [(datetime(2026, 1, 1, 10), "Login", "2.2.0", 30)],
+                [
+                    (datetime(2026, 1, 1, 10), "Login", "2.2.0", 10),
+                    (datetime(2026, 1, 1, 10), "Login", "2.1.0", 8),
+                    (datetime(2026, 1, 1, 10), "Login", "2.0.0", 5),
+                    (datetime(2026, 1, 1, 10), "Login", "1.9.0", 3),
+                ],
             )
 
         def get_time_bucketed_breakdown_counts_multi(
@@ -978,17 +983,10 @@ def test_collect_metrics_retains_latest_app_versions_by_semver(
             limit: int = 100000,
         ) -> tuple[list[str], list[str], list[tuple[object, ...]]]:
             self.breakdown_calls.append((breakdown_columns, values_limit))
-            # Versions are fetched in full (no volume limit); Python keeps the
-            # latest two by SemVer and folds older releases into "Other".
             return (
                 ["event_name", "app_version"],
                 [],
-                [
-                    (datetime(2026, 1, 1, 10), "app_version", "2.2.0", False, "Login", "2.2.0", 10),
-                    (datetime(2026, 1, 1, 10), "app_version", "2.1.0", False, "Login", "2.1.0", 8),
-                    (datetime(2026, 1, 1, 10), "app_version", "2.0.0", False, "Login", "2.0.0", 5),
-                    (datetime(2026, 1, 1, 10), "app_version", "1.9.0", False, "Login", "1.9.0", 3),
-                ],
+                [],
             )
 
         def close(self) -> None:
@@ -1018,9 +1016,10 @@ def test_collect_metrics_retains_latest_app_versions_by_semver(
 
     result = metrics.collect_metrics.run(config_id)
 
-    # Only the version column is collected (no generic breakdown columns set),
-    # and it is fetched without a volume limit so retention stays SemVer-based.
-    assert adapter.breakdown_calls == [(["app_version"], None)]
+    # Version breakdown is derived from the primary bucketed metric rows, so no
+    # extra warehouse breakdown query is needed when generic breakdown columns
+    # are absent.
+    assert adapter.breakdown_calls == []
     assert result["breakdown_event_metrics"] == 3
     assert result["breakdown_type_metrics"] == 3
 
