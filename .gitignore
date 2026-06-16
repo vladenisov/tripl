@@ -59,3 +59,10 @@ pgdata/
 *.db
 .beads-credential-key
 .omc/
+
+graphify-out
+
+# Design handoff bundle from Claude Design (claude.ai/design).
+# Source-of-truth mockups for the data-first redesign. Kept locally, not committed.
+# Component map for agents: design/tripl/AGENTS.md
+design/
