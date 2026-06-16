@@ -234,13 +234,16 @@ def test_check_metrics_due_reaps_stale_active_job_and_dispatches_replacement(
     sync_session_factory: sessionmaker[Session],
     monkeypatch: MonkeyPatch,
 ) -> None:
+    stale_at = datetime.now(UTC) - STALE_ACTIVE_SCAN_JOB_TIMEOUT - timedelta(minutes=5)
     with sync_session_factory() as session:
         config = _create_scan_config(session)
         stale_job = ScanJob(
             id=uuid.uuid4(),
             scan_config_id=config.id,
             status=ScanJobStatus.running.value,
-            started_at=(datetime.now(UTC) - STALE_ACTIVE_SCAN_JOB_TIMEOUT - timedelta(minutes=5)),
+            created_at=stale_at,
+            started_at=stale_at,
+            updated_at=stale_at,
         )
         session.add(stale_job)
         session.commit()
@@ -281,6 +284,47 @@ def test_check_metrics_due_reaps_stale_active_job_and_dispatches_replacement(
     assert jobs[1].status == ScanJobStatus.pending.value
 
 
+def test_check_metrics_due_uses_updated_at_as_running_job_activity(
+    sync_session_factory: sessionmaker[Session],
+    monkeypatch: MonkeyPatch,
+) -> None:
+    now = datetime.now(UTC)
+    with sync_session_factory() as session:
+        config = _create_scan_config(session)
+        running_job = ScanJob(
+            id=uuid.uuid4(),
+            scan_config_id=config.id,
+            status=ScanJobStatus.running.value,
+            created_at=now - STALE_ACTIVE_SCAN_JOB_TIMEOUT - timedelta(minutes=10),
+            started_at=now - STALE_ACTIVE_SCAN_JOB_TIMEOUT - timedelta(minutes=10),
+            updated_at=now - timedelta(minutes=1),
+        )
+        session.add(running_job)
+        session.commit()
+        job_id = running_job.id
+
+    dispatched: list[tuple[str, str]] = []
+    monkeypatch.setattr(metrics_schedule, "_get_sync_session", sync_session_factory)
+    monkeypatch.setattr(
+        metrics_schedule.collect_metrics,
+        "delay",
+        lambda scan_config_id, scan_job_id: dispatched.append((scan_config_id, scan_job_id)),
+    )
+
+    result = metrics_schedule.check_metrics_due.run()
+
+    assert result == {"checked": 1, "dispatched": 0}
+    assert dispatched == []
+
+    with sync_session_factory() as session:
+        reloaded = session.get(ScanJob, job_id)
+
+    assert reloaded is not None
+    assert reloaded.status == ScanJobStatus.running.value
+    assert reloaded.completed_at is None
+    assert reloaded.error_message is None
+
+
 def test_check_metrics_due_reaps_shadowed_stale_running_job(
     sync_session_factory: sessionmaker[Session],
     monkeypatch: MonkeyPatch,
@@ -293,13 +337,16 @@ def test_check_metrics_due_reaps_shadowed_stale_running_job(
     row and never reaped — it stayed `running` forever.
     """
     now = datetime.now(UTC)
+    stale_at = now - STALE_ACTIVE_SCAN_JOB_TIMEOUT - timedelta(minutes=10)
     with sync_session_factory() as session:
         config = _create_scan_config(session)
         stale_running = ScanJob(
             id=uuid.uuid4(),
             scan_config_id=config.id,
             status=ScanJobStatus.running.value,
-            started_at=now - STALE_ACTIVE_SCAN_JOB_TIMEOUT - timedelta(minutes=10),
+            created_at=stale_at,
+            started_at=stale_at,
+            updated_at=stale_at,
         )
         fresh_pending = ScanJob(
             id=uuid.uuid4(),
@@ -2558,6 +2605,12 @@ def test_collect_metrics_splits_replay_into_interval_chunks(
         assert config.event_type_id is not None
         # 1h chunk over a 1h interval → exactly one bucket per warehouse query.
         config.replay_chunk_interval = "1h"
+        job = ScanJob(
+            id=uuid.uuid4(),
+            scan_config_id=config.id,
+            status=ScanJobStatus.pending.value,
+        )
+        session.add(job)
         session.add(
             FieldDefinition(
                 id=uuid.uuid4(),
@@ -2580,6 +2633,7 @@ def test_collect_metrics_splits_replay_into_interval_chunks(
         session.add(login_event)
         session.commit()
         config_id = str(config.id)
+        job_id = str(job.id)
         login_event_id = login_event.id
         event_type_id = config.event_type_id
 
@@ -2592,6 +2646,7 @@ def test_collect_metrics_splits_replay_into_interval_chunks(
     class FakeAdapter:
         def __init__(self) -> None:
             self.count_calls: list[tuple[datetime, datetime]] = []
+            self.progress_summaries: list[dict[str, object] | None] = []
 
         def test_connection(self) -> bool:
             return True
@@ -2615,6 +2670,10 @@ def test_collect_metrics_splits_replay_into_interval_chunks(
             limit: int = 100000,
         ) -> tuple[list[str], list[str], list[tuple[object, ...]]]:
             self.count_calls.append((time_from, time_to))
+            with sync_session_factory() as progress_session:
+                progress_job = progress_session.get(ScanJob, uuid.UUID(job_id))
+                assert progress_job is not None
+                self.progress_summaries.append(progress_job.result_summary)
             rows: list[tuple[object, ...]] = [
                 (bucket, "Login", count)
                 for bucket, count in counts_by_bucket.items()
@@ -2644,7 +2703,7 @@ def test_collect_metrics_splits_replay_into_interval_chunks(
         lambda *args, **kwargs: pytest.fail("replay must not sync catalog events"),
     )
 
-    result = metrics.collect_metrics.run(config_id)
+    result = metrics.collect_metrics.run(config_id, job_id)
 
     # One bounded warehouse query per 1-hour sub-window, not one giant query.
     assert adapter.count_calls == [
@@ -2656,8 +2715,36 @@ def test_collect_metrics_splits_replay_into_interval_chunks(
     assert result["catalog_sync_skipped"] is True
     assert result["event_metrics"] == 3
     assert result["type_metrics"] == 3
+    assert result["replay_chunks_total"] == 3
+    assert result["replay_chunks_completed"] == 3
+    assert result["replay_progress_percent"] == 100.0
+    assert result["replay_progress_phase"] == "completed"
+
+    completed_chunks = [
+        summary and summary["replay_chunks_completed"] for summary in adapter.progress_summaries
+    ]
+    current_chunks = [
+        summary and summary["replay_current_chunk_index"] for summary in adapter.progress_summaries
+    ]
+    assert completed_chunks == [
+        0,
+        1,
+        2,
+    ]
+    assert current_chunks == [
+        1,
+        2,
+        3,
+    ]
 
     with sync_session_factory() as session:
+        completed_job = session.get(ScanJob, uuid.UUID(job_id))
+        assert completed_job is not None
+        assert completed_job.result_summary is not None
+        assert completed_job.result_summary["replay_chunks_total"] == 3
+        assert completed_job.result_summary["replay_chunks_completed"] == 3
+        assert completed_job.result_summary["replay_progress_phase"] == "completed"
+
         login_metrics = (
             session.execute(
                 select(EventMetric)

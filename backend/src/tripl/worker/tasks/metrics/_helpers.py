@@ -119,8 +119,12 @@ def _normalize_job_timestamp(dt: datetime) -> datetime:
 
 
 def _get_scan_job_activity_at(job: ScanJob) -> datetime:
-    activity_at = job.started_at or job.updated_at or job.created_at
-    return _normalize_job_timestamp(activity_at)
+    activity_times = [
+        _normalize_job_timestamp(dt)
+        for dt in (job.created_at, job.started_at, job.updated_at)
+        if dt is not None
+    ]
+    return max(activity_times)
 
 
 def _fail_stale_active_scan_job(

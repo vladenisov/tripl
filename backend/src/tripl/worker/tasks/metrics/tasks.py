@@ -75,6 +75,68 @@ from tripl.worker.utils.query_windows import TimeWindow, resolve_lookback_window
 logger = logging.getLogger(__name__)
 
 
+def _build_replay_progress_summary(
+    *,
+    time_from_dt: datetime,
+    time_to_dt: datetime,
+    replay_chunk_interval: str | None,
+    total_chunks: int,
+    completed_chunks: int,
+    phase: str,
+    current_chunk_index: int | None = None,
+    current_chunk: tuple[datetime, datetime] | None = None,
+) -> dict[str, object]:
+    safe_total = max(total_chunks, 0)
+    safe_completed = min(max(completed_chunks, 0), safe_total)
+    summary: dict[str, object] = {
+        "mode": "metrics_replay",
+        "time_from": time_from_dt.isoformat(),
+        "time_to": time_to_dt.isoformat(),
+        "catalog_sync_skipped": True,
+        "replay_chunk_interval": replay_chunk_interval or "whole-window",
+        "replay_chunks_total": safe_total,
+        "replay_chunks_completed": safe_completed,
+        "replay_progress_percent": round((safe_completed / safe_total) * 100, 1)
+        if safe_total
+        else 100.0,
+        "replay_progress_phase": phase,
+        "replay_current_chunk_index": current_chunk_index,
+        "replay_current_chunk_from": current_chunk[0].isoformat() if current_chunk else None,
+        "replay_current_chunk_to": current_chunk[1].isoformat() if current_chunk else None,
+    }
+    return summary
+
+
+def _heartbeat_replay_progress(
+    session: Session,
+    job: ScanJob | None,
+    *,
+    time_from_dt: datetime,
+    time_to_dt: datetime,
+    replay_chunk_interval: str | None,
+    total_chunks: int,
+    completed_chunks: int,
+    phase: str,
+    current_chunk_index: int | None = None,
+    current_chunk: tuple[datetime, datetime] | None = None,
+) -> None:
+    if job is None:
+        return
+
+    job.updated_at = datetime.now(UTC)
+    job.result_summary = _build_replay_progress_summary(
+        time_from_dt=time_from_dt,
+        time_to_dt=time_to_dt,
+        replay_chunk_interval=replay_chunk_interval,
+        total_chunks=total_chunks,
+        completed_chunks=completed_chunks,
+        phase=phase,
+        current_chunk_index=current_chunk_index,
+        current_chunk=current_chunk,
+    )
+    session.commit()
+
+
 def _resolve_collection_window(
     session: Session,
     *,
@@ -225,6 +287,17 @@ def collect_metrics(
             interval_delta=delta,
             chunk_interval_code=config.replay_chunk_interval,
         )
+        if is_replay:
+            _heartbeat_replay_progress(
+                session,
+                job,
+                time_from_dt=time_from_dt,
+                time_to_dt=time_to_dt,
+                replay_chunk_interval=config.replay_chunk_interval,
+                total_chunks=len(chunks),
+                completed_chunks=0,
+                phase="preparing",
+            )
         catalog_scan_window: TimeWindow | None = resolve_lookback_window(
             time_column=config.time_column,
             lookback_hours=config.scan_lookback_hours,
@@ -364,7 +437,7 @@ def collect_metrics(
         significant_distribution_drifts = 0
         query_rows_scanned = 0
 
-        for chunk_from, chunk_to in chunks:
+        for chunk_index, (chunk_from, chunk_to) in enumerate(chunks, start=1):
             # Cooperative cancellation: a user "stop" sets status=cancelled. Bail
             # out at the chunk boundary, leaving already-written metrics intact
             # and the job in its cancelled state (don't mark it completed/failed).
@@ -377,6 +450,20 @@ def collect_metrics(
                         "collect_metrics for %s cancelled mid-run; stopping", scan_config_id
                     )
                     return {"cancelled": True, "scan_config_id": scan_config_id}
+
+            if is_replay:
+                _heartbeat_replay_progress(
+                    session,
+                    job,
+                    time_from_dt=time_from_dt,
+                    time_to_dt=time_to_dt,
+                    replay_chunk_interval=config.replay_chunk_interval,
+                    total_chunks=len(chunks),
+                    completed_chunks=chunk_index - 1,
+                    phase="collecting",
+                    current_chunk_index=chunk_index,
+                    current_chunk=(chunk_from, chunk_to),
+                )
 
             chunk_stats = process_chunk(
                 session,
@@ -419,8 +506,32 @@ def collect_metrics(
             # touch metric rows, not the job), and a long replay over millions
             # of rows gets false-failed mid-flight.
             if job is not None:
-                job.updated_at = datetime.now(UTC)
-                session.commit()
+                if is_replay:
+                    _heartbeat_replay_progress(
+                        session,
+                        job,
+                        time_from_dt=time_from_dt,
+                        time_to_dt=time_to_dt,
+                        replay_chunk_interval=config.replay_chunk_interval,
+                        total_chunks=len(chunks),
+                        completed_chunks=chunk_index,
+                        phase="collecting",
+                    )
+                else:
+                    job.updated_at = datetime.now(UTC)
+                    session.commit()
+
+        if is_replay:
+            _heartbeat_replay_progress(
+                session,
+                job,
+                time_from_dt=time_from_dt,
+                time_to_dt=time_to_dt,
+                replay_chunk_interval=config.replay_chunk_interval,
+                total_chunks=len(chunks),
+                completed_chunks=len(chunks),
+                phase="finalizing",
+            )
 
         replay_values_touched = 0
         if is_replay and replay_variable_samples:
@@ -516,6 +627,17 @@ def collect_metrics(
             "query_rows_scanned": query_rows_scanned,
             "details": all_details,
         }
+        if is_replay:
+            result_summary.update(
+                _build_replay_progress_summary(
+                    time_from_dt=time_from_dt,
+                    time_to_dt=time_to_dt,
+                    replay_chunk_interval=config.replay_chunk_interval,
+                    total_chunks=len(chunks),
+                    completed_chunks=len(chunks),
+                    phase="completed",
+                )
+            )
 
         if job:
             job.status = ScanJobStatus.completed.value
