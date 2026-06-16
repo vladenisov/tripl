@@ -42,12 +42,11 @@ ACTIVE_SCAN_JOB_STATUSES = (
     ScanJobStatus.pending.value,
     ScanJobStatus.running.value,
 )
-# Must exceed the Celery hard ``task_time_limit`` (60 min, see celery_app.py) so a
-# legitimately long-running task (e.g. a multi-hour metrics replay over millions of
-# rows) is never reaped while it is still making progress. A genuinely dead job
-# (worker OOM/redeploy, no heartbeat) is still cleaned up after this window. Long
-# tasks additionally heartbeat ``ScanJob.updated_at`` per chunk so progress is
-# visible to ``_get_scan_job_activity_at`` well before the timeout.
+# Must exceed the default Celery hard ``task_time_limit`` (60 min, see
+# celery_app.py). Metrics collection has a longer per-task override for replay,
+# and replay jobs additionally heartbeat ``ScanJob.updated_at`` per chunk so
+# progress is visible to ``_get_scan_job_activity_at``. A genuinely dead job
+# (worker OOM/redeploy, no heartbeat) is still cleaned up after this window.
 STALE_ACTIVE_SCAN_JOB_TIMEOUT = timedelta(minutes=75)
 RECENT_SIGNAL_WINDOW = timedelta(hours=24)
 MAX_BREAKDOWN_VALUE_LENGTH = 500

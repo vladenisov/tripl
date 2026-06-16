@@ -25,9 +25,10 @@ celery_app.conf.broker_connection_retry_on_startup = True
 celery_app.conf.task_acks_late = True
 celery_app.conf.task_reject_on_worker_lost = True
 
-# Hard cap task duration so a runaway scan/metrics task can't block the queue.
-# Soft limit raises SoftTimeLimitExceeded so tasks can clean up;
-# hard limit SIGKILLs the worker after the grace period.
+# Default hard cap so a runaway task can't block the queue. Long-running tasks
+# such as metrics replay may override this per task. Soft limit raises
+# SoftTimeLimitExceeded so tasks can clean up; hard limit SIGKILLs the worker
+# after the grace period.
 celery_app.conf.task_soft_time_limit = 55 * 60  # 55 min
 celery_app.conf.task_time_limit = 60 * 60  # 60 min
 

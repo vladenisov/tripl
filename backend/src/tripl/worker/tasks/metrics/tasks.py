@@ -74,6 +74,9 @@ from tripl.worker.utils.query_windows import TimeWindow, resolve_lookback_window
 
 logger = logging.getLogger(__name__)
 
+COLLECT_METRICS_SOFT_TIME_LIMIT_SECONDS = 24 * 60 * 60
+COLLECT_METRICS_TIME_LIMIT_SECONDS = 25 * 60 * 60
+
 
 def _build_replay_progress_summary(
     *,
@@ -137,6 +140,45 @@ def _heartbeat_replay_progress(
     session.commit()
 
 
+def _replay_summary_int(value: object) -> int | None:
+    if isinstance(value, bool):
+        return int(value)
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str):
+        try:
+            return int(value)
+        except ValueError:
+            return None
+    return None
+
+
+def _get_replay_resume_completed_chunks(
+    job: ScanJob | None,
+    *,
+    time_from_dt: datetime,
+    time_to_dt: datetime,
+    total_chunks: int,
+) -> int:
+    if job is None or not isinstance(job.result_summary, dict):
+        return 0
+
+    summary = job.result_summary
+    if summary.get("mode") != "metrics_replay":
+        return 0
+    if summary.get("time_from") != time_from_dt.isoformat():
+        return 0
+    if summary.get("time_to") != time_to_dt.isoformat():
+        return 0
+    summary_total = _replay_summary_int(summary.get("replay_chunks_total", 0))
+    completed = _replay_summary_int(summary.get("replay_chunks_completed", 0))
+    if summary_total is None or completed is None:
+        return 0
+    if summary_total != total_chunks:
+        return 0
+    return min(max(completed, 0), total_chunks)
+
+
 def _resolve_collection_window(
     session: Session,
     *,
@@ -184,6 +226,8 @@ def _resolve_collection_window(
     name="tripl.worker.tasks.metrics.collect_metrics",
     bind=True,
     max_retries=0,
+    soft_time_limit=COLLECT_METRICS_SOFT_TIME_LIMIT_SECONDS,
+    time_limit=COLLECT_METRICS_TIME_LIMIT_SECONDS,
 )
 def collect_metrics(
     self: object,
@@ -201,6 +245,7 @@ def collect_metrics(
     session = _get_sync_session()
     adapter = None
     job: ScanJob | None = None
+    previous_job_status: str | None = None
 
     try:
         config = session.get(ScanConfig, uuid.UUID(scan_config_id))
@@ -222,6 +267,7 @@ def collect_metrics(
                 msg = f"ScanJob {job_id} does not belong to ScanConfig {scan_config_id}"
                 raise ValueError(msg)
 
+            previous_job_status = job.status
             # The job may have been cancelled by the user while it sat queued;
             # don't flip it back to running or do any work in that case.
             if job.status == ScanJobStatus.cancelled.value:
@@ -287,6 +333,21 @@ def collect_metrics(
             interval_delta=delta,
             chunk_interval_code=config.replay_chunk_interval,
         )
+        resume_completed_chunks = 0
+        if is_replay and previous_job_status == ScanJobStatus.running.value:
+            resume_completed_chunks = _get_replay_resume_completed_chunks(
+                job,
+                time_from_dt=time_from_dt,
+                time_to_dt=time_to_dt,
+                total_chunks=len(chunks),
+            )
+            if resume_completed_chunks:
+                logger.info(
+                    "Resuming metrics replay for %s after %s/%s completed chunks",
+                    scan_config_id,
+                    resume_completed_chunks,
+                    len(chunks),
+                )
         if is_replay:
             _heartbeat_replay_progress(
                 session,
@@ -295,7 +356,7 @@ def collect_metrics(
                 time_to_dt=time_to_dt,
                 replay_chunk_interval=config.replay_chunk_interval,
                 total_chunks=len(chunks),
-                completed_chunks=0,
+                completed_chunks=resume_completed_chunks,
                 phase="preparing",
             )
         catalog_scan_window: TimeWindow | None = resolve_lookback_window(
@@ -438,6 +499,9 @@ def collect_metrics(
         query_rows_scanned = 0
 
         for chunk_index, (chunk_from, chunk_to) in enumerate(chunks, start=1):
+            if is_replay and chunk_index <= resume_completed_chunks:
+                continue
+
             # Cooperative cancellation: a user "stop" sets status=cancelled. Bail
             # out at the chunk boundary, leaving already-written metrics intact
             # and the job in its cancelled state (don't mark it completed/failed).

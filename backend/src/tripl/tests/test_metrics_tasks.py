@@ -2595,6 +2595,13 @@ def test_iter_window_chunks_splits_by_interval() -> None:
     ]
 
 
+def test_collect_metrics_uses_replay_safe_time_limit() -> None:
+    assert (
+        metrics.collect_metrics.soft_time_limit == metrics.COLLECT_METRICS_SOFT_TIME_LIMIT_SECONDS
+    )
+    assert metrics.collect_metrics.time_limit == metrics.COLLECT_METRICS_TIME_LIMIT_SECONDS
+
+
 def test_collect_metrics_splits_replay_into_interval_chunks(
     sync_session_factory: sessionmaker[Session],
     monkeypatch: MonkeyPatch,
@@ -2765,6 +2772,178 @@ def test_collect_metrics_splits_replay_into_interval_chunks(
             .all()
         )
         assert len(type_metrics) == 3
+
+
+def test_collect_metrics_resumes_running_replay_from_completed_chunks(
+    sync_session_factory: sessionmaker[Session],
+    monkeypatch: MonkeyPatch,
+) -> None:
+    with sync_session_factory() as session:
+        config = _create_scan_config(session, with_event_type=True)
+        assert config.event_type_id is not None
+        config.replay_chunk_interval = "1h"
+        time_from = datetime(2026, 1, 1, 8)
+        time_to = datetime(2026, 1, 1, 11)
+        job = ScanJob(
+            id=uuid.uuid4(),
+            scan_config_id=config.id,
+            status=ScanJobStatus.running.value,
+            result_summary=metrics._build_replay_progress_summary(
+                time_from_dt=time_from,
+                time_to_dt=time_to,
+                replay_chunk_interval="1h",
+                total_chunks=3,
+                completed_chunks=1,
+                phase="collecting",
+            ),
+        )
+        session.add(job)
+        session.add(
+            FieldDefinition(
+                id=uuid.uuid4(),
+                event_type_id=config.event_type_id,
+                name="event_name",
+                display_name="Event name",
+                field_type="string",
+                is_required=False,
+                description="",
+            )
+        )
+        login_event = Event(
+            id=uuid.uuid4(),
+            project_id=config.project_id,
+            event_type_id=config.event_type_id,
+            name="event_name=Login",
+            description="",
+            status="implemented",
+        )
+        session.add(login_event)
+        session.add_all(
+            [
+                EventMetric(
+                    id=uuid.uuid4(),
+                    scan_config_id=config.id,
+                    event_id=login_event.id,
+                    event_type_id=None,
+                    bucket=datetime(2026, 1, 1, 8),
+                    count=8,
+                ),
+                EventMetric(
+                    id=uuid.uuid4(),
+                    scan_config_id=config.id,
+                    event_id=None,
+                    event_type_id=config.event_type_id,
+                    bucket=datetime(2026, 1, 1, 8),
+                    count=8,
+                ),
+            ]
+        )
+        session.commit()
+        config_id = str(config.id)
+        job_id = str(job.id)
+        login_event_id = login_event.id
+
+    counts_by_bucket = {
+        datetime(2026, 1, 1, 8): 8,
+        datetime(2026, 1, 1, 9): 9,
+        datetime(2026, 1, 1, 10): 10,
+    }
+
+    class FakeAdapter:
+        def __init__(self) -> None:
+            self.count_calls: list[tuple[datetime, datetime]] = []
+            self.progress_summaries: list[dict[str, object] | None] = []
+
+        def test_connection(self) -> bool:
+            return True
+
+        def get_columns(self, base_query: str) -> list[ColumnInfo]:
+            return [
+                ColumnInfo(name="time", type_name="DateTime"),
+                ColumnInfo(name="event_name", type_name="String"),
+            ]
+
+        def get_time_bucketed_counts(
+            self,
+            base_query: str,
+            time_column: str,
+            ch_interval: str,
+            regular_columns: list[str],
+            json_columns: list[str],
+            json_value_paths: dict[str, list[str]] | None,
+            time_from: datetime,
+            time_to: datetime,
+            limit: int = 100000,
+        ) -> tuple[list[str], list[str], list[tuple[object, ...]]]:
+            self.count_calls.append((time_from, time_to))
+            with sync_session_factory() as progress_session:
+                progress_job = progress_session.get(ScanJob, uuid.UUID(job_id))
+                assert progress_job is not None
+                self.progress_summaries.append(progress_job.result_summary)
+            rows: list[tuple[object, ...]] = [
+                (bucket, "Login", count)
+                for bucket, count in counts_by_bucket.items()
+                if time_from <= bucket < time_to
+            ]
+            return (["event_name"], [], rows)
+
+        def close(self) -> None:
+            return None
+
+    adapter = FakeAdapter()
+    monkeypatch.setattr(metrics, "_get_sync_session", sync_session_factory)
+    monkeypatch.setattr(metrics, "_build_adapter", lambda ds: adapter)
+    monkeypatch.setattr(
+        metrics,
+        "_resolve_collection_window",
+        lambda *args, **kwargs: (time_from, time_to, True),
+    )
+    monkeypatch.setattr(
+        metrics,
+        "analyze_cardinality",
+        lambda *args, **kwargs: pytest.fail("replay must not run cardinality analysis"),
+    )
+    monkeypatch.setattr(
+        metrics,
+        "generate_events",
+        lambda *args, **kwargs: pytest.fail("replay must not sync catalog events"),
+    )
+
+    result = metrics.collect_metrics.run(config_id, job_id)
+
+    assert adapter.count_calls == [
+        (datetime(2026, 1, 1, 9), datetime(2026, 1, 1, 10)),
+        (datetime(2026, 1, 1, 10), datetime(2026, 1, 1, 11)),
+    ]
+    completed_chunks = [
+        summary and summary["replay_chunks_completed"] for summary in adapter.progress_summaries
+    ]
+    current_chunks = [
+        summary and summary["replay_current_chunk_index"] for summary in adapter.progress_summaries
+    ]
+    assert completed_chunks == [1, 2]
+    assert current_chunks == [2, 3]
+    assert result["event_metrics"] == 2
+    assert result["type_metrics"] == 2
+    assert result["query_rows_scanned"] == 2
+    assert result["replay_chunks_completed"] == 3
+    assert result["replay_progress_phase"] == "completed"
+
+    with sync_session_factory() as session:
+        login_metrics = (
+            session.execute(
+                select(EventMetric)
+                .where(EventMetric.event_id == login_event_id)
+                .order_by(EventMetric.bucket)
+            )
+            .scalars()
+            .all()
+        )
+        assert [(m.bucket, m.count) for m in login_metrics] == [
+            (datetime(2026, 1, 1, 8), 8),
+            (datetime(2026, 1, 1, 9), 9),
+            (datetime(2026, 1, 1, 10), 10),
+        ]
 
 
 def test_replay_appends_low_cardinality_variable_values(
