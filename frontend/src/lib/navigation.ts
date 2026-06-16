@@ -2,11 +2,11 @@ import {
   Activity,
   Bell,
   Braces,
-  Database,
   Gauge,
   GitBranch,
   GitCompare,
   ScrollText,
+  Search,
   Table2,
   Tag,
   type LucideIcon,
@@ -15,8 +15,8 @@ import type { ProjectSummary } from '@/types'
 
 /**
  * Shared navigation model for the job-based information architecture
- * (Plan / Observe / Govern / Connect). Both the sidebar (rendering) and the
- * top-bar breadcrumbs (area resolution) consume this so the two stay in sync.
+ * (Plan / Observe / Govern). Both the sidebar (rendering) and the top-bar
+ * breadcrumbs (area resolution) consume this so the two stay in sync.
  */
 
 export type NavTone = 'danger' | 'warning' | 'accent' | 'info'
@@ -42,10 +42,12 @@ export function formatCount(n: number): string {
 }
 
 /**
- * Build the four job-based groups for a project. Each item maps to a route that
+ * Build the three job-based groups for a project. Each item maps to a route that
  * already exists — the IA redesign gives every major surface a first-class home
  * instead of burying it under a flat "Settings" tab list. Counts/tones come from
- * the cheap project summary; surfaces without a backing count omit it.
+ * the cheap project summary; surfaces without a backing count omit it. Data
+ * sources / API keys are genuine configuration, so they live in workspace
+ * Settings rather than as a top-level "Connect" nav group.
  */
 export function buildNavGroups(slug: string, summary: ProjectSummary | undefined): NavGroup[] {
   const base = `/p/${slug}`
@@ -96,7 +98,7 @@ export function buildNavGroups(slug: string, summary: ProjectSummary | undefined
       items: [
         {
           id: 'overview',
-          label: 'Overview',
+          label: 'Live activity',
           icon: Activity,
           href: `${base}/overview`,
           match: (p) => p.startsWith(`${base}/overview`),
@@ -134,23 +136,18 @@ export function buildNavGroups(slug: string, summary: ProjectSummary | undefined
           match: (p) => p.startsWith(`${base}/reconciliation`),
         },
         {
+          id: 'scans',
+          label: 'Scans',
+          icon: Search,
+          href: `${base}/settings/scans`,
+          match: (p) => p.startsWith(`${base}/settings/scans`),
+        },
+        {
           id: 'audit',
           label: 'Audit log',
           icon: ScrollText,
           href: `${base}/settings/audit`,
           match: (p) => p.startsWith(`${base}/settings/audit`),
-        },
-      ],
-    },
-    {
-      label: 'Connect',
-      items: [
-        {
-          id: 'data-sources',
-          label: 'Data sources',
-          icon: Database,
-          href: '/settings/data-sources',
-          match: (p) => p.startsWith('/settings/data-sources') || p.startsWith('/data-sources'),
         },
       ],
     },

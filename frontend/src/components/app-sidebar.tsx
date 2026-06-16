@@ -16,6 +16,7 @@ import {
 import { eventTypesApi } from '@/api/eventTypes'
 import { projectsApi } from '@/api/projects'
 import { useAuth } from '@/components/auth-context'
+import { BranchSwitcher } from '@/components/branch-switcher'
 import { useCommandPalette } from '@/components/command-palette-context'
 import { Kbd } from '@/components/primitives/kbd'
 import {
@@ -173,9 +174,9 @@ export function AppSidebar() {
           aria-label="Tripl — home"
           className="flex flex-1 items-center gap-2 rounded-md px-1 py-1 no-underline transition-colors hover:bg-[var(--surface-hover)]"
         >
-          <TrifoldMark size={22} />
+          <TrifoldMark size={24} />
           <span
-            className="text-[17px] font-bold leading-none tracking-[-0.045em]"
+            className="text-[18px] font-bold leading-none tracking-[-0.045em]"
             style={{ color: 'var(--fg)' }}
           >
             tripl
@@ -194,7 +195,7 @@ export function AppSidebar() {
 
       {/* Project switcher — no service mark; just a monogram, so it reads as
           project-scoped rather than as the service logo. */}
-      <div className="px-3 pb-2.5">
+      <div className="px-3 pb-2">
         <ProjectSwitcher
           activeProject={navProject}
           projects={projects}
@@ -202,6 +203,14 @@ export function AppSidebar() {
           onPick={(project) => navigate(`/p/${project.slug}/events`)}
         />
       </div>
+
+      {/* Branch switcher — plan branches belong to a project, so the control
+          lives directly under it (and nowhere else in the shell). */}
+      {slug && (
+        <div className="px-3 pb-2.5">
+          <BranchSwitcher slug={slug} />
+        </div>
+      )}
 
       {/* Command / search */}
       <div className="px-3 pb-2.5">
@@ -524,7 +533,7 @@ function CollapsedSidebar({
         aria-label="Tripl — home"
         className="mb-2.5 flex h-8 w-8 items-center justify-center rounded-md no-underline transition-colors hover:bg-[var(--surface-hover)]"
       >
-        <TrifoldMark size={20} />
+        <TrifoldMark size={22} />
       </Link>
       <button
         type="button"

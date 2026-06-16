@@ -44,25 +44,23 @@ export function BranchSwitcher({ slug }: { slug: string }) {
         <button
           type="button"
           title="Switch branch"
-          className="flex h-7 items-center gap-1.5 rounded-md px-2 text-[12.5px] font-medium transition-colors hover:bg-[var(--surface-hover)]"
-          style={{
-            background: onMain ? 'transparent' : 'var(--surface)',
-            color: onMain ? 'var(--fg-muted)' : 'var(--fg)',
-            border: onMain ? '1px solid transparent' : '1px solid var(--border)',
-          }}
+          className="flex h-7 w-full items-center gap-2 rounded-md border px-2 text-[11.5px] transition-colors hover:bg-[var(--surface-hover)]"
+          style={{ background: 'transparent', borderColor: 'var(--border-subtle)' }}
         >
-          <GitBranch className="h-[13px] w-[13px]" />
-          <span className="max-w-[140px] truncate">{activeLabel}</span>
-          <ChevronDown className="h-3 w-3" style={{ color: 'var(--fg-faint)' }} />
+          <GitBranch className="h-[13px] w-[13px] shrink-0" style={{ color: 'var(--accent)' }} />
+          <span className="mono min-w-0 flex-1 truncate text-left" style={{ color: 'var(--fg)' }}>
+            {activeLabel}
+          </span>
+          <ChevronDown className="h-3 w-3 shrink-0" style={{ color: 'var(--fg-subtle)' }} />
         </button>
       </PopoverTrigger>
-      <PopoverContent align="end" className="w-[280px] p-0">
+      <PopoverContent align="start" className="w-[260px] p-0">
         <div
           className="flex items-center gap-2 border-b px-3 py-2"
           style={{ borderColor: 'var(--border-subtle)' }}
         >
           <GitBranch className="h-3.5 w-3.5" style={{ color: 'var(--fg-muted)' }} />
-          <span className="text-[12px] font-semibold">Branch</span>
+          <span className="text-[12px] font-semibold">Plan branches</span>
           {branchesQuery.isFetching && (
             <span className="mono ml-auto text-[10px]" style={{ color: 'var(--fg-faint)' }}>
               loading…

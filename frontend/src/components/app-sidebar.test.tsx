@@ -85,6 +85,27 @@ function mockProjectsFetch() {
         },
       ])
     }
+    if (url.endsWith('/api/v1/projects/demo/branches')) {
+      return mockJsonResponse({
+        items: [
+          {
+            id: 'branch-main',
+            project_id: 'project-1',
+            name: 'main',
+            kind: 'main',
+            status: 'merged',
+            description: '',
+            base_revision_id: null,
+            created_by: null,
+            merged_at: null,
+            merged_by: null,
+            created_at: '2026-01-01T00:00:00Z',
+            updated_at: '2026-01-01T00:00:00Z',
+          },
+        ],
+        total: 1,
+      })
+    }
     throw new Error(`Unhandled fetch: ${url}`)
   })
 }
@@ -132,7 +153,7 @@ describe('AppSidebar', () => {
     expect(await screen.findByText('Events')).toBeInTheDocument()
     expect(await screen.findByText('Page view')).toBeInTheDocument()
 
-    for (const group of ['Plan', 'Observe', 'Govern', 'Connect']) {
+    for (const group of ['Plan', 'Observe', 'Govern']) {
       expect(screen.getByText(group)).toBeInTheDocument()
     }
     for (const item of [
@@ -142,11 +163,12 @@ describe('AppSidebar', () => {
       'Track click',
       'Schema & fields',
       'Plan branches',
+      'Live activity',
       'Monitors',
       'Alerting',
       'Reconciliation',
+      'Scans',
       'Audit log',
-      'Data sources',
     ]) {
       expect(screen.getByText(item)).toBeInTheDocument()
     }
@@ -161,13 +183,14 @@ describe('AppSidebar', () => {
 
     const expected: Record<string, string> = {
       Events: '/p/demo/events',
+      'Live activity': '/p/demo/overview',
       'Schema & fields': '/p/demo/settings/meta-fields',
       'Plan branches': '/p/demo/settings/branches',
       Monitors: '/p/demo/monitors',
       Alerting: '/p/demo/settings/alerting',
       Reconciliation: '/p/demo/reconciliation',
+      Scans: '/p/demo/settings/scans',
       'Audit log': '/p/demo/settings/audit',
-      'Data sources': '/settings/data-sources',
     }
     for (const [label, href] of Object.entries(expected)) {
       expect(screen.getByRole('link', { name: new RegExp(label) })).toHaveAttribute('href', href)
