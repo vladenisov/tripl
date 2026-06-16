@@ -2602,6 +2602,34 @@ def test_collect_metrics_uses_replay_safe_time_limit() -> None:
     assert metrics.collect_metrics.time_limit == metrics.COLLECT_METRICS_TIME_LIMIT_SECONDS
 
 
+def test_rabbitmq_consumer_timeout_exceeds_collect_metrics_hard_limit() -> None:
+    """The broker must not force-requeue a still-running replay.
+
+    With task_acks_late=True a long metrics replay holds its delivery unacked for
+    the whole run (hours). If RabbitMQ's consumer_timeout is shorter than the
+    Celery hard task_time_limit, the broker force-closes the channel and requeues
+    the live task, spawning overlapping duplicate executions that corrupt chunk
+    progress (e.g. 19/24 -> 14/24) and never let the job finish. Keep the broker
+    timeout strictly above Celery's hard limit so Celery governs termination.
+    """
+    repo_root = Path(__file__).resolve().parents[4]
+    conf = repo_root / "infra" / "rabbitmq" / "rabbitmq.conf"
+    assert conf.is_file(), f"missing broker config at {conf}"
+
+    consumer_timeout_ms: int | None = None
+    for raw_line in conf.read_text().splitlines():
+        line = raw_line.split("#", 1)[0].strip()
+        if not line or "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        if key.strip() == "consumer_timeout":
+            consumer_timeout_ms = int(value.strip())
+            break
+
+    assert consumer_timeout_ms is not None, "consumer_timeout not set in rabbitmq.conf"
+    assert consumer_timeout_ms > metrics.COLLECT_METRICS_TIME_LIMIT_SECONDS * 1000
+
+
 def test_collect_metrics_splits_replay_into_interval_chunks(
     sync_session_factory: sessionmaker[Session],
     monkeypatch: MonkeyPatch,
