@@ -330,17 +330,11 @@ def process_chunk(
     (
         version_event_rows,
         version_type_rows,
-        version_truncated,
     ) = _collect_app_version_breakdown_rows(
-        adapter=adapter,
         config=config,
-        interval_ch_interval=interval_ch_interval,
         regular_cols=regular_cols,
-        json_cols=json_cols,
-        json_value_path_map=json_value_path_map,
-        time_from=chunk_from,
-        time_to=chunk_to,
-        query_row_limit=metrics_row_limit,
+        rows=rows,
+        json_value_names=json_value_names,
         reg_index=reg_index,
         json_index=json_index,
         n_reg=n_reg,
@@ -348,14 +342,6 @@ def process_chunk(
         single_result=single_result,
         et_by_name=et_by_name,
     )
-    if version_truncated:
-        msg = (
-            "App-version breakdown query reached configured row limit "
-            f"({metrics_row_limit}) for chunk "
-            f"{chunk_from.isoformat()}..{chunk_to.isoformat()}; "
-            "increase metrics_row_limit to avoid partial version metrics"
-        )
-        raise ValueError(msg)
     breakdown_event_rows.extend(version_event_rows)
     breakdown_type_rows.extend(version_type_rows)
 

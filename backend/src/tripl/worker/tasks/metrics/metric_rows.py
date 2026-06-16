@@ -729,38 +729,27 @@ def _collect_metric_breakdown_rows(
 
 def _collect_app_version_breakdown_rows(
     *,
-    adapter: BaseAdapter,
     config: ScanConfig,
-    interval_ch_interval: str,
     regular_cols: list[str],
-    json_cols: list[str],
-    json_value_path_map: dict[str, list[str]],
-    time_from: datetime,
-    time_to: datetime,
-    query_row_limit: int,
+    rows: list[tuple[object, ...]],
+    json_value_names: list[str],
     reg_index: dict[str, int],
     json_index: dict[str, int],
     n_reg: int,
     gen_results: dict[str, GenerationResult],
     single_result: GenerationResult | None,
     et_by_name: dict[str, EventType],
-) -> tuple[list[dict[str, object]], list[dict[str, object]], bool]:
-    """Collect per-app-version metric series as EventMetricBreakdown rows.
+) -> tuple[list[dict[str, object]], list[dict[str, object]]]:
+    """Derive app-version breakdowns from the primary bucketed metric rows.
 
-    Unlike generic breakdowns (top-N values by volume, selected in the
-    warehouse), version retention is SemVer-aware: every distinct version is
-    fetched (``values_limit=None``) and the latest ``app_version_keep_releases``
-    releases are kept as explicit series, with older releases collapsed into the
-    shared "Other" bucket here in Python. Rows use the same shape as
-    ``_collect_metric_breakdown_rows`` so callers store them on the existing
-    breakdown path. Returns empty (inert) when no version column is configured.
-
-    Retention is computed over the versions observed in this chunk, matching the
-    per-chunk nature of the generic top-N selection.
+    ``get_time_bucketed_counts`` already groups by every regular column,
+    including ``app_version_column`` when configured. A separate warehouse
+    GROUPING SETS query for one version dimension would therefore rescan the
+    same source rows at the same granularity.
     """
     version_column = config.app_version_column
     if not version_column:
-        return [], [], False
+        return [], []
     if not _is_supported_metric_breakdown_column(
         config,
         column=version_column,
@@ -771,42 +760,27 @@ def _collect_app_version_breakdown_rows(
             version_column,
             config.id,
         )
-        return [], [], False
+        return [], []
+
+    version_idx = reg_index.get(version_column)
+    if version_idx is None:
+        logger.warning(
+            "Skipping app_version_column %r for scan %s: column missing from metric rows",
+            version_column,
+            config.id,
+        )
+        return [], []
 
     et_col_idx = reg_index.get(config.event_type_column) if config.event_type_column else None
-
-    (
-        _col_names,
-        breakdown_json_value_names,
-        rows,
-    ) = adapter.get_time_bucketed_breakdown_counts_multi(
-        config.base_query,
-        config.time_column or "",
-        interval_ch_interval,
-        [version_column],
-        regular_cols,
-        json_cols,
-        json_value_path_map,
-        time_from,
-        time_to,
-        values_limit=None,  # keep every version; retention is applied below by SemVer
-        limit=query_row_limit + 1,
-    )
-    truncated = len(rows) > query_row_limit
-    rows = rows[:query_row_limit]
-
-    # (scan_config_id, scope_id, bucket, version) -> count. The is_other split is
-    # deferred until every version is known so retention can be SemVer-aware.
     event_counts: dict[tuple[uuid.UUID, uuid.UUID, datetime, str], int] = {}
     type_counts: dict[tuple[uuid.UUID, uuid.UUID, datetime, str], int] = {}
 
     for row in rows:
         bucket = cast(datetime, row[0])
-        breakdown_column = str(row[1])
-        if breakdown_column != version_column:
+        data_row = row[1:]
+        if version_idx >= len(data_row) - 1:
             continue
-        version_value = _normalize_breakdown_value(row[2])
-        data_row = row[4:]
+        version_value = _normalize_breakdown_value(data_row[version_idx])
         cnt = int(cast(int | str | float, row[-1]))
         col_meta: dict[str, dict[str, object]]
         events_by_name: dict[str, Event]
@@ -836,7 +810,7 @@ def _collect_app_version_breakdown_rows(
             reg_index,
             json_index,
             n_reg,
-            breakdown_json_value_names,
+            json_value_names,
             config.event_name_format,
             config.event_group_rules,
         )
@@ -847,11 +821,26 @@ def _collect_app_version_breakdown_rows(
                 event_key = (config.id, ev.id, bucket, version_value)
                 event_counts[event_key] = event_counts.get(event_key, 0) + cnt
 
-        # The version column is scan-wide, so it also rolls up to the event type.
         if event_type_id:
             type_key = (config.id, event_type_id, bucket, version_value)
             type_counts[type_key] = type_counts.get(type_key, 0) + cnt
 
+    event_rows, type_rows = _build_app_version_breakdown_rows(
+        config=config,
+        version_column=version_column,
+        event_counts=event_counts,
+        type_counts=type_counts,
+    )
+    return event_rows, type_rows
+
+
+def _build_app_version_breakdown_rows(
+    *,
+    config: ScanConfig,
+    version_column: str,
+    event_counts: dict[tuple[uuid.UUID, uuid.UUID, datetime, str], int],
+    type_counts: dict[tuple[uuid.UUID, uuid.UUID, datetime, str], int],
+) -> tuple[list[dict[str, object]], list[dict[str, object]]]:
     keep_releases = config.app_version_keep_releases or DEFAULT_APP_VERSION_KEEP_RELEASES
     distinct_versions = {key[3] for key in event_counts} | {key[3] for key in type_counts}
     kept_versions = (
@@ -904,7 +893,7 @@ def _collect_app_version_breakdown_rows(
         }
         for (sc_id, et_id, bucket, column, value, is_other), total in type_agg.items()
     ]
-    return event_rows, type_rows, truncated
+    return event_rows, type_rows
 
 
 def _collect_distribution_drift_rows(
