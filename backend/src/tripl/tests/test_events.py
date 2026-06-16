@@ -5,6 +5,7 @@ import pytest
 from httpx import AsyncClient
 
 from tripl.models.event import Event
+from tripl.models.event_change import create_event_change
 from tripl.models.variable import Variable
 from tripl.models.variable_value import VariableValue
 from tripl.tests.conftest import TestSessionLocal
@@ -34,6 +35,25 @@ async def _setup_events(client: AsyncClient, slug: str = "ev-proj"):
     meta_resp = await client.get(f"/api/v1/projects/{slug}/meta-fields")
     meta_id = meta_resp.json()[0]["id"]
     return et_id, field_id, meta_id
+
+
+def test_create_event_change_sets_timestamps_before_flush():
+    event_id = uuid.uuid4()
+    user_id = uuid.uuid4()
+
+    change = create_event_change(
+        event_id=event_id,
+        user_id=user_id,
+        field="description",
+        old_value="old",
+        new_value="new",
+    )
+
+    assert change.event_id == event_id
+    assert change.user_id == user_id
+    assert change.created_at is not None
+    assert change.updated_at == change.created_at
+    assert change.created_at.tzinfo is UTC
 
 
 @pytest.mark.asyncio
@@ -363,6 +383,36 @@ async def test_update_event(client: AsyncClient):
     assert resp.status_code == 200
     assert resp.json()["name"] == "New Name"
     assert resp.json()["metric_breakdown_columns"] == ["country"]
+
+
+@pytest.mark.asyncio
+async def test_update_event_records_change_history_with_timestamps(client: AsyncClient):
+    et_id, field_id, _ = await _setup_events(client, "ev-upd-history")
+    create = await client.post(
+        "/api/v1/projects/ev-upd-history/events",
+        json={
+            "event_type_id": et_id,
+            "name": "Forecast Model",
+            "description": "Old description",
+            "field_values": [{"field_definition_id": field_id, "value": "s"}],
+        },
+    )
+    event_id = create.json()["id"]
+
+    resp = await client.patch(
+        f"/api/v1/projects/ev-upd-history/events/{event_id}",
+        json={"description": "New description"},
+    )
+
+    assert resp.status_code == 200
+    history_resp = await client.get(f"/api/v1/projects/ev-upd-history/events/{event_id}/history")
+    assert history_resp.status_code == 200
+    history = history_resp.json()
+    assert len(history) == 1
+    assert history[0]["field"] == "description"
+    assert history[0]["old_value"] == "Old description"
+    assert history[0]["new_value"] == "New description"
+    assert history[0]["created_at"] is not None
 
 
 @pytest.mark.asyncio

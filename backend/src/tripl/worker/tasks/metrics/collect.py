@@ -7,7 +7,7 @@ from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
 from tripl.models.event import Event, EventStatus
-from tripl.models.event_change import EventChange
+from tripl.models.event_change import create_event_change
 
 
 def _bump_event_last_seen(
@@ -73,7 +73,7 @@ def _bump_event_last_seen(
             .execution_options(synchronize_session=False)
         )
         session.add(
-            EventChange(
+            create_event_change(
                 event_id=eid,
                 user_id=None,
                 field="status",

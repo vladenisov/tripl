@@ -9,7 +9,7 @@ from sqlalchemy.orm import noload
 
 from tripl import cache
 from tripl.models.event import Event
-from tripl.models.event_change import EventChange
+from tripl.models.event_change import EventChange, create_event_change
 from tripl.models.event_field_value import EventFieldValue
 from tripl.models.event_meta_value import EventMetaValue
 from tripl.models.event_tag import EventTag
@@ -47,7 +47,7 @@ def _record_changes(
         new_str = str(new_val) if new_val is not None else None
         if old_str != new_str:
             session.add(
-                EventChange(
+                create_event_change(
                     event_id=event.id,
                     user_id=user_id,
                     field=field,
