@@ -2,7 +2,7 @@ import { Fragment, useState } from "react"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { Ban, ChevronDown, GitMerge, Play, RotateCcw } from "lucide-react"
 import { scansApi } from "@/api/scans"
-import type { EventType, ScanConfig, ScanJob } from "@/types"
+import type { EventType, ScanConfig, ScanJob, ScanJobResultSummary } from "@/types"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Card } from "@/components/ui/card"
@@ -30,6 +30,75 @@ function createDefaultReplayWindow() {
     from: toDatetimeLocalValue(from),
     to: toDatetimeLocalValue(to),
   }
+}
+
+function clamp(value: number, min: number, max: number) {
+  return Math.min(Math.max(value, min), max)
+}
+
+function getReplayProgress(summary: ScanJobResultSummary | null) {
+  if (!summary || summary.mode !== 'metrics_replay' || !summary.replay_chunks_total) {
+    return null
+  }
+
+  const total = Math.max(summary.replay_chunks_total, 0)
+  if (total === 0) return null
+
+  const completed = clamp(summary.replay_chunks_completed ?? 0, 0, total)
+  const percent = clamp(summary.replay_progress_percent ?? (completed / total) * 100, 0, 100)
+  const current = summary.replay_current_chunk_index
+    ? clamp(summary.replay_current_chunk_index, 1, total)
+    : null
+
+  return {
+    completed,
+    total,
+    current,
+    percent,
+    phase: summary.replay_progress_phase,
+    currentFrom: summary.replay_current_chunk_from,
+    currentTo: summary.replay_current_chunk_to,
+  }
+}
+
+function ReplayChunkProgress({ summary, compact = false }: { summary: ScanJobResultSummary; compact?: boolean }) {
+  const progress = getReplayProgress(summary)
+  if (!progress) return null
+
+  const chunkLabel = `${progress.completed}/${progress.total} chunks`
+  const phaseLabel = progress.phase === 'collecting' && progress.current
+    ? `processing ${progress.current}/${progress.total}`
+    : progress.phase
+
+  return (
+    <div className={compact ? 'w-44 max-w-full space-y-1' : 'space-y-2'}>
+      <div className="flex items-center justify-between gap-2 text-[10px] text-muted-foreground">
+        <span className="font-medium text-foreground">Replay chunks</span>
+        <span>{chunkLabel}</span>
+      </div>
+      <div
+        aria-label="Replay chunks"
+        aria-valuemax={100}
+        aria-valuemin={0}
+        aria-valuenow={Math.round(progress.percent)}
+        className="h-1.5 w-full overflow-hidden rounded-full bg-muted"
+        role="progressbar"
+      >
+        <div className="h-full bg-primary transition-[width]" style={{ width: `${progress.percent}%` }} />
+      </div>
+      {!compact && (
+        <div className="flex flex-wrap gap-x-3 gap-y-1 text-xs text-muted-foreground">
+          {phaseLabel && <span>{phaseLabel}</span>}
+          {progress.currentFrom && progress.currentTo && (
+            <span>
+              {new Date(progress.currentFrom).toLocaleString()} - {new Date(progress.currentTo).toLocaleString()}
+            </span>
+          )}
+        </div>
+      )}
+      {compact && phaseLabel && <div className="text-[10px] text-muted-foreground">{phaseLabel}</div>}
+    </div>
+  )
 }
 
 /* ─── Scan Detail (jobs) ─── */
@@ -286,23 +355,24 @@ export function ScanDetail({ slug, scanConfig, eventTypes, branchId }: { slug: s
                   : job.started_at && job.status === 'running' ? 'running…' : '—'
                 return (
                   <Fragment key={job.id}>
-                  <TableRow>
-                    <TableCell>
-                      <Badge variant={statusVariant[job.status] ?? 'outline'} className="text-xs">{job.status}</Badge>
-                    </TableCell>
-                    <TableCell className="text-xs text-muted-foreground">
-                      {job.started_at ? new Date(job.started_at).toLocaleString() : '—'}
-                    </TableCell>
-                    <TableCell className="text-xs text-muted-foreground">{duration}</TableCell>
-                    <TableCell className="text-xs">
-                      {job.status === 'failed' && (
-                        <span className="text-destructive">{job.error_message}</span>
-                      )}
-                      {job.result_summary && (
-                        <div className="flex gap-2">
-                          {job.result_summary.events_created != null && (
-                            <Badge variant="outline" className="text-[10px] text-green-600">+{job.result_summary.events_created} events</Badge>
-                          )}
+                    <TableRow>
+                      <TableCell>
+                        <Badge variant={statusVariant[job.status] ?? 'outline'} className="text-xs">{job.status}</Badge>
+                      </TableCell>
+                      <TableCell className="text-xs text-muted-foreground">
+                        {job.started_at ? new Date(job.started_at).toLocaleString() : '—'}
+                      </TableCell>
+                      <TableCell className="text-xs text-muted-foreground">{duration}</TableCell>
+                      <TableCell className="text-xs">
+                        {job.status === 'failed' && (
+                          <span className="text-destructive">{job.error_message}</span>
+                        )}
+                        {job.result_summary && (
+                          <div className="flex flex-wrap items-center gap-2">
+                            <ReplayChunkProgress summary={job.result_summary} compact />
+                            {job.result_summary.events_created != null && (
+                              <Badge variant="outline" className="text-[10px] text-green-600">+{job.result_summary.events_created} events</Badge>
+                            )}
                           {job.result_summary.variables_created != null && job.result_summary.variables_created > 0 && (
                             <Badge variant="outline" className="text-[10px] text-blue-600">+{job.result_summary.variables_created} vars</Badge>
                           )}
@@ -390,12 +460,13 @@ export function ScanDetail({ slug, scanConfig, eventTypes, branchId }: { slug: s
                                   )}
                                 </div>
                               )}
-                              {job.result_summary.catalog_sync_skipped && (
-                                <div className="rounded-md border border-amber-300/60 bg-amber-50/80 p-3 text-xs text-amber-900">
-                                  Replay skipped event/variable catalog generation, but can still enrich observed variable values for existing templates.
-                                </div>
-                              )}
-                              <div className="grid grid-cols-2 gap-3 text-xs md:grid-cols-3 xl:grid-cols-5">
+                                {job.result_summary.catalog_sync_skipped && (
+                                  <div className="rounded-md border border-amber-300/60 bg-amber-50/80 p-3 text-xs text-amber-900">
+                                    Replay skipped event/variable catalog generation, but can still enrich observed variable values for existing templates.
+                                  </div>
+                                )}
+                                <ReplayChunkProgress summary={job.result_summary} />
+                                <div className="grid grid-cols-2 gap-3 text-xs md:grid-cols-3 xl:grid-cols-5">
                               <Card className="p-3 text-center"><div className="text-lg font-bold text-green-600">{job.result_summary.events_created ?? 0}</div><div className="text-muted-foreground">Events created</div></Card>
                               <Card className="p-3 text-center"><div className="text-lg font-bold text-blue-600">{job.result_summary.variables_created ?? 0}</div><div className="text-muted-foreground">Variables created</div></Card>
                               {job.result_summary.variable_values_touched != null && (

@@ -1,0 +1,98 @@
+import { render, screen } from '@testing-library/react'
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import type { ScanConfig } from '@/types'
+import { ScanDetail } from './ScanDetail'
+
+function mockJsonResponse(body: unknown) {
+  return new Response(JSON.stringify(body), {
+    status: 200,
+    headers: { 'Content-Type': 'application/json' },
+  })
+}
+
+const scanConfig: ScanConfig = {
+  id: 'scan-1',
+  data_source_id: 'ds-1',
+  project_id: 'project-1',
+  event_type_id: null,
+  name: 'Main scan',
+  base_query: 'SELECT * FROM analytics.events',
+  event_type_column: null,
+  time_column: 'created_at',
+  event_name_format: null,
+  json_value_paths: [],
+  event_group_rules: [],
+  metric_breakdown_columns: [],
+  metric_breakdown_values_limit: null,
+  distribution_drift_fields: [],
+  cardinality_threshold: 100,
+  interval: '1h',
+  replay_chunk_interval: '1h',
+  scan_lookback_hours: null,
+  scan_row_limit: null,
+  metrics_row_limit: null,
+  app_version_column: null,
+  app_version_keep_releases: null,
+  created_at: '2026-01-01T00:00:00Z',
+  updated_at: '2026-01-01T00:00:00Z',
+}
+
+afterEach(() => {
+  vi.restoreAllMocks()
+})
+
+describe('ScanDetail', () => {
+  it('shows replay chunk progress for running jobs', async () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async input => {
+      const url = String(input)
+      if (url.endsWith('/api/v1/projects/demo/scans/scan-1/jobs')) {
+        return mockJsonResponse([
+          {
+            id: 'job-1',
+            scan_config_id: 'scan-1',
+            status: 'running',
+            started_at: '2026-01-01T00:00:00Z',
+            completed_at: null,
+            result_summary: {
+              mode: 'metrics_replay',
+              catalog_sync_skipped: true,
+              time_from: '2026-01-01T00:00:00Z',
+              time_to: '2026-01-01T04:00:00Z',
+              replay_chunk_interval: '1h',
+              replay_chunks_total: 4,
+              replay_chunks_completed: 2,
+              replay_current_chunk_index: 3,
+              replay_current_chunk_from: '2026-01-01T02:00:00Z',
+              replay_current_chunk_to: '2026-01-01T03:00:00Z',
+              replay_progress_percent: 50,
+              replay_progress_phase: 'collecting',
+            },
+            error_message: null,
+            created_at: '2026-01-01T00:00:00Z',
+            updated_at: '2026-01-01T00:20:00Z',
+          },
+        ])
+      }
+
+      throw new Error(`Unhandled fetch: ${url}`)
+    })
+
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    })
+
+    render(
+      <QueryClientProvider client={queryClient}>
+        <ScanDetail slug="demo" scanConfig={scanConfig} eventTypes={[]} branchId={null} />
+      </QueryClientProvider>,
+    )
+
+    expect(await screen.findByText('2/4 chunks')).toBeInTheDocument()
+    expect(screen.getByText('processing 3/4')).toBeInTheDocument()
+    expect(screen.getByRole('progressbar', { name: 'Replay chunks' })).toHaveAttribute(
+      'aria-valuenow',
+      '50',
+    )
+  })
+})

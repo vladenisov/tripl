@@ -30,6 +30,14 @@ export interface ScanJobResultSummary {
   scan_truncated?: boolean
   metrics_row_limit?: number
   query_rows_scanned?: number
+  replay_chunk_interval?: string
+  replay_chunks_total?: number
+  replay_chunks_completed?: number
+  replay_current_chunk_index?: number | null
+  replay_current_chunk_from?: string | null
+  replay_current_chunk_to?: string | null
+  replay_progress_percent?: number
+  replay_progress_phase?: 'preparing' | 'collecting' | 'finalizing' | 'completed'
   details?: string[]
 }
 

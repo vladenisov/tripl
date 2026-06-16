@@ -15,6 +15,7 @@ from datetime import UTC, datetime
 
 from sqlalchemy import func as sa_func
 from sqlalchemy import select, text
+from sqlalchemy.engine import Engine
 
 from tripl.models.event_metric import EventMetric
 from tripl.models.scan_config import ScanConfig
@@ -51,7 +52,8 @@ def check_metrics_due() -> dict[str, int]:
     try:
         bind = session.get_bind()
         if getattr(getattr(bind, "dialect", None), "name", "") == "postgresql":
-            lock_conn = bind.connect().execution_options(isolation_level="AUTOCOMMIT")
+            engine = bind if isinstance(bind, Engine) else bind.engine
+            lock_conn = engine.connect().execution_options(isolation_level="AUTOCOMMIT")
             acquired = bool(
                 lock_conn.execute(
                     text("SELECT pg_try_advisory_lock(:key)"),
