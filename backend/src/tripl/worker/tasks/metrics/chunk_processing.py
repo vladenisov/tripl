@@ -38,6 +38,7 @@ from tripl.worker.tasks.metrics.metric_rows import (
     _delete_distribution_drifts_rows,
     _delete_distribution_drifts_window,
     _delete_event_metric_breakdown_rows,
+    _delete_event_metric_breakdowns_column_window,
     _delete_event_metric_breakdowns_window,
     _delete_event_metrics_rows,
     _delete_event_metrics_window,
@@ -430,6 +431,18 @@ def process_chunk(
             keys=breakdown_type_delete_keys,
             constraint="type",
         )
+        # App-version breakdowns now store every version verbatim (retention is a
+        # read-time concern). Clear the whole version column for this window so a
+        # re-collection drops obsolete versions and legacy is_other="Other" rows
+        # instead of leaving them to double-count at read time.
+        if config.app_version_column:
+            stats.breakdown_metrics_deleted += _delete_event_metric_breakdowns_column_window(
+                session,
+                scan_config_id=config.id,
+                breakdown_column=config.app_version_column,
+                time_from=chunk_from,
+                time_to=chunk_to,
+            )
         stats.distribution_drifts_deleted += _delete_distribution_drifts_rows(
             session,
             scan_config_id=config.id,

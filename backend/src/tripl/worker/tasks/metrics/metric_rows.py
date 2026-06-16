@@ -26,7 +26,6 @@ from tripl.models.event_metric_breakdown import EventMetricBreakdown
 from tripl.models.event_type import EventType
 from tripl.models.scan_config import ScanConfig
 from tripl.models.shadow_event_candidate import ShadowEventCandidate
-from tripl.semver import order_versions
 from tripl.worker.adapters.base import BaseAdapter
 from tripl.worker.analyzers.distribution_drift import TopShift, compute_psi
 from tripl.worker.analyzers.event_generator import (
@@ -38,14 +37,6 @@ from tripl.worker.analyzers.event_generator import (
 from tripl.worker.tasks.metrics._helpers import MAX_BREAKDOWN_VALUE_LENGTH
 
 logger = logging.getLogger(__name__)
-
-# How many latest releases (by SemVer order) to retain as explicit series when
-# a scan has no ``app_version_keep_releases`` override. Older releases collapse
-# into the shared "Other" bucket.
-DEFAULT_APP_VERSION_KEEP_RELEASES = 10
-# Sentinel breakdown value for releases outside the retained window. Mirrors the
-# warehouse adapters' own "Other" label so the UI renders both consistently.
-APP_VERSION_OTHER_LABEL = "Other"
 
 
 def _build_event_name_from_row(
@@ -452,6 +443,35 @@ def _delete_event_metric_breakdowns_window(
     return int(rowcount or 0)
 
 
+def _delete_event_metric_breakdowns_column_window(
+    session: Session,
+    *,
+    scan_config_id: uuid.UUID,
+    breakdown_column: str,
+    time_from: datetime,
+    time_to: datetime,
+) -> int:
+    """Delete every breakdown row for one column within a window.
+
+    Used by replay to clear app-version rows before re-inserting the complete
+    per-version set for the chunk. App-version breakdowns store every version
+    verbatim (retention / "Other" rollup is a read-time concern), so a
+    column-scoped window delete is the correct idempotent replacement for the
+    per-key delete — it also sweeps obsolete ``is_other=True`` rows left behind
+    by the old per-chunk retention path.
+    """
+    result = session.execute(
+        delete(EventMetricBreakdown).where(
+            EventMetricBreakdown.scan_config_id == scan_config_id,
+            EventMetricBreakdown.breakdown_column == breakdown_column,
+            EventMetricBreakdown.bucket >= time_from,
+            EventMetricBreakdown.bucket < time_to,
+        )
+    )
+    rowcount = getattr(result, "rowcount", 0)
+    return int(rowcount or 0)
+
+
 def _delete_event_metric_breakdown_rows(
     session: Session,
     *,
@@ -826,7 +846,6 @@ def _collect_app_version_breakdown_rows(
             type_counts[type_key] = type_counts.get(type_key, 0) + cnt
 
     event_rows, type_rows = _build_app_version_breakdown_rows(
-        config=config,
         version_column=version_column,
         event_counts=event_counts,
         type_counts=type_counts,
@@ -836,35 +855,21 @@ def _collect_app_version_breakdown_rows(
 
 def _build_app_version_breakdown_rows(
     *,
-    config: ScanConfig,
     version_column: str,
     event_counts: dict[tuple[uuid.UUID, uuid.UUID, datetime, str], int],
     type_counts: dict[tuple[uuid.UUID, uuid.UUID, datetime, str], int],
 ) -> tuple[list[dict[str, object]], list[dict[str, object]]]:
-    keep_releases = config.app_version_keep_releases or DEFAULT_APP_VERSION_KEEP_RELEASES
-    distinct_versions = {key[3] for key in event_counts} | {key[3] for key in type_counts}
-    kept_versions = (
-        set(order_versions(distinct_versions, reverse=True)[:keep_releases])
-        if distinct_versions
-        else set()
-    )
+    """Persist one ``is_other=False`` breakdown row per (scope, bucket, version).
 
-    def _finalize(
-        counts: dict[tuple[uuid.UUID, uuid.UUID, datetime, str], int],
-    ) -> dict[tuple[uuid.UUID, uuid.UUID, datetime, str, str, bool], int]:
-        agg: dict[tuple[uuid.UUID, uuid.UUID, datetime, str, str, bool], int] = {}
-        for (sc_id, scope_id, bucket, version), total in counts.items():
-            if version in kept_versions:
-                value, is_other = version, False
-            else:
-                value, is_other = APP_VERSION_OTHER_LABEL, True
-            key = (sc_id, scope_id, bucket, version_column, value, is_other)
-            agg[key] = agg.get(key, 0) + total
-        return agg
-
-    event_agg = _finalize(event_counts)
-    type_agg = _finalize(type_counts)
-
+    Every distinct version is stored verbatim — no "Other" rollup here. SemVer
+    latest-N retention and the "Other" rollup are applied at READ time
+    (``metrics_service.get_app_version_series``) over the full requested window.
+    Collapsing per chunk at write time made a version flip between its own
+    series and "Other" across chunk boundaries (e.g. a transient newer release
+    bumping a high-volume older one out of the kept set), producing
+    chunk-size-dependent timelines — most visible on replay (many sub-windows)
+    versus regular collection (a single small window).
+    """
     event_rows: list[dict[str, object]] = [
         {
             "id": uuid.uuid4(),
@@ -872,12 +877,12 @@ def _build_app_version_breakdown_rows(
             "event_id": ev_id,
             "event_type_id": None,
             "bucket": bucket,
-            "breakdown_column": column,
-            "breakdown_value": value,
-            "is_other": is_other,
+            "breakdown_column": version_column,
+            "breakdown_value": version,
+            "is_other": False,
             "count": total,
         }
-        for (sc_id, ev_id, bucket, column, value, is_other), total in event_agg.items()
+        for (sc_id, ev_id, bucket, version), total in event_counts.items()
     ]
     type_rows: list[dict[str, object]] = [
         {
@@ -886,12 +891,12 @@ def _build_app_version_breakdown_rows(
             "event_id": None,
             "event_type_id": et_id,
             "bucket": bucket,
-            "breakdown_column": column,
-            "breakdown_value": value,
-            "is_other": is_other,
+            "breakdown_column": version_column,
+            "breakdown_value": version,
+            "is_other": False,
             "count": total,
         }
-        for (sc_id, et_id, bucket, column, value, is_other), total in type_agg.items()
+        for (sc_id, et_id, bucket, version), total in type_counts.items()
     ]
     return event_rows, type_rows
 
