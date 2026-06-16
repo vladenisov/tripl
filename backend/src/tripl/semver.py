@@ -18,6 +18,14 @@ _SEMVER_RE = re.compile(
 )
 _NUMERIC_IDENTIFIER_RE = re.compile(r"^(0|[1-9]\d*)$")
 
+# How many latest releases (by SemVer order) to retain as explicit series in
+# app-version breakdowns; older releases roll up into the shared "Other" bucket.
+# Retention is applied at READ time over the full requested window so the kept
+# set stays stable regardless of how collection was chunked.
+DEFAULT_APP_VERSION_KEEP_RELEASES = 10
+# Display label for releases outside the retained window.
+APP_VERSION_OTHER_LABEL = "Other"
+
 
 @dataclass(frozen=True)
 class PrereleaseIdentifier:

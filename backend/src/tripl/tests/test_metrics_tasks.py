@@ -908,10 +908,13 @@ def test_collect_metrics_uses_database_grouped_breakdown_rows(
         }
 
 
-def test_collect_metrics_retains_latest_app_versions_by_semver(
+def test_collect_metrics_stores_every_app_version_without_collapse(
     sync_session_factory: sessionmaker[Session],
     monkeypatch: MonkeyPatch,
 ) -> None:
+    # Write path stores every version verbatim; SemVer latest-N retention and the
+    # "Other" rollup happen at read time (metrics_service.get_app_version_series),
+    # so the kept set stays stable across the whole window regardless of chunking.
     with sync_session_factory() as session:
         config = _create_scan_config(session, with_event_type=True)
         assert config.event_type_id is not None
@@ -1020,13 +1023,16 @@ def test_collect_metrics_retains_latest_app_versions_by_semver(
     # extra warehouse breakdown query is needed when generic breakdown columns
     # are absent.
     assert adapter.breakdown_calls == []
-    assert result["breakdown_event_metrics"] == 3
-    assert result["breakdown_type_metrics"] == 3
+    # Every version is stored verbatim (is_other=False); nothing is collapsed at
+    # write time regardless of app_version_keep_releases — retention is read-time.
+    assert result["breakdown_event_metrics"] == 4
+    assert result["breakdown_type_metrics"] == 4
 
     expected = {
         ("app_version", "2.2.0", False, 10),
         ("app_version", "2.1.0", False, 8),
-        ("app_version", "Other", True, 8),  # 2.0.0 (5) + 1.9.0 (3) folded together
+        ("app_version", "2.0.0", False, 5),
+        ("app_version", "1.9.0", False, 3),
     }
     with sync_session_factory() as session:
         event_breakdowns = (
