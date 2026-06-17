@@ -1,11 +1,11 @@
 import { useCallback, useMemo, useState } from 'react'
+import { Navigate } from 'react-router-dom'
 import { useConfirm } from '@/hooks/useConfirm'
 import { useActiveBranchId } from '@/hooks/useBranch'
 import { ErrorState } from '@/components/error-state'
 import type { EventStatus } from '@/lib/eventStatus'
 
 import { BulkActionBar } from './events/BulkActionBar'
-import { EventForm } from './events/EventForm'
 import { EventsHeader } from './events/EventsHeader'
 import { EventsTable } from './events/EventsTable'
 import { EventsToolbar } from './events/EventsToolbar'
@@ -29,8 +29,6 @@ import { useSavedViews } from './events/useSavedViews'
 export default function EventsPage() {
   const {
     activeTab,
-    closeEvent,
-    editingEvent,
     navigate,
     openEvent,
     openEventId,
@@ -54,10 +52,8 @@ export default function EventsPage() {
   const {
     eventTypes,
     metaFields,
-    variables,
     allTags,
     unreviewedCount,
-    urlEvent,
     dataError,
     refetchPageData,
   } = useEventsPageData({ slug, openEventId, branchId })
@@ -161,8 +157,6 @@ export default function EventsPage() {
 
   const dndSensors = useEventsDndSensors()
 
-  const openedEvent = openEventId ? (urlEvent ?? null) : editingEvent
-
   const {
     tableScrollRef,
     virtualize,
@@ -212,6 +206,17 @@ export default function EventsPage() {
   }, [eventsQuery, refetchPageData])
 
   const blockingError = eventsQuery.error ?? dataError
+
+  // Editing is a full page, not an inline Sheet. The "New event" action toggles
+  // showForm and "Edit"/row-edit navigates to /events/:tab/:eventId; both are
+  // redirected here to the dedicated new/edit routes.
+  const eventsBase = activeTab === 'all' ? `/p/${slug}/events` : `/p/${slug}/events/${activeTab}`
+  if (slug && showForm) {
+    return <Navigate to={`${eventsBase}/new`} replace />
+  }
+  if (slug && openEventId) {
+    return <Navigate to={`${eventsBase}/${openEventId}/edit`} replace />
+  }
 
   return (
     <div className="flex min-h-[calc(100vh-7rem)] flex-col">
@@ -270,18 +275,6 @@ export default function EventsPage() {
             onDelete={() => { void handleBulkDelete() }}
             onClear={clearSelection}
           />
-
-          {(showForm || openedEvent) && slug && (
-            <EventForm
-              slug={slug}
-              eventTypes={eventTypes}
-              metaFields={metaFields}
-              projectVariables={variables}
-              event={openedEvent}
-              defaultEventTypeId={activeEt?.id}
-              onClose={closeEvent}
-            />
-          )}
 
           {slug && (
             <TabMetricsCard
