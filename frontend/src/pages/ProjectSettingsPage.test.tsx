@@ -274,8 +274,14 @@ describe('ProjectSettingsPage', () => {
 
     fireEvent.click(await screen.findByText('Main scan'))
 
-    expect(await screen.findByText('+2 signals')).toBeInTheDocument()
-    expect(await screen.findByText('+1 alerts')).toBeInTheDocument()
+    // Job result details (signals / alerts) live in the expandable job row.
+    const startedCell = await screen.findByText('Started')
+    const jobsTable = startedCell.closest('table')!
+    const expandButton = within(jobsTable).getAllByRole('button').slice(-1)[0]
+    fireEvent.click(expandButton)
+
+    expect(await screen.findByText('Signals added')).toBeInTheDocument()
+    expect(screen.getByText('Alerts queued')).toBeInTheDocument()
   })
 
   it('applies saved scan group rules to existing events', async () => {
@@ -392,7 +398,7 @@ describe('ProjectSettingsPage', () => {
     )
 
     fireEvent.click(await screen.findByText('Main scan'))
-    fireEvent.click(await screen.findByRole('button', { name: 'Apply Groups' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Apply groups' }))
 
     expect(await screen.findByText('Group apply job queued.')).toBeInTheDocument()
     expect(calls).toContain('POST /api/v1/projects/demo/scans/scan-1/event-groups/apply')
@@ -506,7 +512,9 @@ describe('ProjectSettingsPage', () => {
     )
 
     fireEvent.click(await screen.findByText('Main scan'))
-    fireEvent.click(await screen.findByRole('button', { name: /Replay Period/i }))
+    // Replay now lives in the Configuration tab's danger zone.
+    fireEvent.click(await screen.findByRole('button', { name: 'Edit' }))
+    fireEvent.click(await screen.findByRole('button', { name: /Replay…/i }))
 
     const inputs = document.querySelectorAll('input[type="datetime-local"]')
     expect(inputs).toHaveLength(2)
@@ -514,7 +522,7 @@ describe('ProjectSettingsPage', () => {
     fireEvent.change(inputs[1], { target: { value: '2026-04-02T00:00' } })
 
     const dialog = screen.getByRole('dialog')
-    fireEvent.click(within(dialog).getByRole('button', { name: /Replay Period/i }))
+    fireEvent.click(within(dialog).getByRole('button', { name: /Replay period/i }))
 
     await waitFor(() => {
       expect(replayBodies).toEqual([
@@ -1023,38 +1031,39 @@ describe('ProjectSettingsPage', () => {
       </QueryClientProvider>,
     )
 
-    const addScanButton = await screen.findByRole('button', { name: /Add Scan Config/i })
+    const addScanButton = await screen.findByRole('button', { name: /New scan/i })
     await waitFor(() => expect(addScanButton).not.toBeDisabled())
     fireEvent.click(addScanButton)
 
-    const dialog = await screen.findByRole('dialog')
-    const textboxes = within(dialog).getAllByRole('textbox')
+    // Create flow is an in-place page (no dialog).
+    await screen.findByText('New scan config')
+    const textboxes = screen.getAllByRole('textbox')
     fireEvent.change(textboxes[0], { target: { value: 'Main scan' } })
     fireEvent.change(textboxes[1], { target: { value: 'SELECT * FROM analytics.events' } })
 
-    const selects = within(dialog).getAllByRole('combobox')
+    const selects = screen.getAllByRole('combobox')
     fireEvent.change(selects[0], { target: { value: 'ds-1' } })
 
-    fireEvent.click(within(dialog).getByRole('button', { name: 'Load Preview' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Load preview' }))
 
-    expect(await within(dialog).findByText('JSON values to keep as-is')).toBeInTheDocument()
+    expect(await screen.findByText('JSON values to keep as-is')).toBeInTheDocument()
 
-    const updatedSelects = within(dialog).getAllByRole('combobox')
+    const updatedSelects = screen.getAllByRole('combobox')
     fireEvent.change(updatedSelects[3], { target: { value: 'created_at' } })
 
     // JSON keys are discovered on demand via a separate job, not by the fast preview.
-    fireEvent.click(within(dialog).getByRole('button', { name: 'Discover JSON keys' }))
-    fireEvent.click(await within(dialog).findByText('extra.key'))
-    fireEvent.click(within(dialog).getByRole('checkbox', { name: 'event_name' }))
-    fireEvent.change(within(dialog).getByPlaceholderText('Unlimited'), { target: { value: '2' } })
-    fireEvent.click(within(dialog).getByRole('button', { name: 'Add Group Rule' }))
-    fireEvent.change(within(dialog).getByPlaceholderText('button events'), {
+    fireEvent.click(screen.getByRole('button', { name: 'Discover JSON keys' }))
+    fireEvent.click(await screen.findByText('extra.key'))
+    fireEvent.click(screen.getByRole('checkbox', { name: 'event_name' }))
+    fireEvent.change(screen.getByPlaceholderText('Unlimited'), { target: { value: '2' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Add Group Rule' }))
+    fireEvent.change(screen.getByPlaceholderText('button events'), {
       target: { value: 'product pages' },
     })
-    fireEvent.change(within(dialog).getByPlaceholderText('^button:'), {
+    fireEvent.change(screen.getByPlaceholderText('^button:'), {
       target: { value: '^product:' },
     })
-    fireEvent.click(within(dialog).getByRole('button', { name: 'Create' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Create scan' }))
 
     await waitFor(() => {
       expect(postBodies).toContainEqual({
@@ -1198,26 +1207,26 @@ describe('ProjectSettingsPage', () => {
       </QueryClientProvider>,
     )
 
-    const addScanButton = await screen.findByRole('button', { name: /Add Scan Config/i })
+    const addScanButton = await screen.findByRole('button', { name: /New scan/i })
     await waitFor(() => expect(addScanButton).not.toBeDisabled())
     fireEvent.click(addScanButton)
 
-    const dialog = await screen.findByRole('dialog')
-    const textboxes = within(dialog).getAllByRole('textbox')
+    await screen.findByText('New scan config')
+    const textboxes = screen.getAllByRole('textbox')
     fireEvent.change(textboxes[0], { target: { value: 'Versioned scan' } })
     fireEvent.change(textboxes[1], { target: { value: 'SELECT * FROM analytics.events' } })
-    fireEvent.change(within(dialog).getAllByRole('combobox')[0], { target: { value: 'ds-1' } })
+    fireEvent.change(screen.getAllByRole('combobox')[0], { target: { value: 'ds-1' } })
 
-    fireEvent.click(within(dialog).getByRole('button', { name: 'Load Preview' }))
-    await within(dialog).findByText('Column pickers use the sample rows. JSON paths are discovered on demand to keep the preview fast.')
+    fireEvent.click(screen.getByRole('button', { name: 'Load preview' }))
+    await screen.findByText('Column pickers use the sample rows. JSON paths are discovered on demand to keep the preview fast.')
 
-    fireEvent.change(within(dialog).getByLabelText('App Version Column (optional)'), {
+    fireEvent.change(screen.getByLabelText('App Version Column (optional)'), {
       target: { value: 'app_version' },
     })
-    fireEvent.change(within(dialog).getByLabelText('Releases to keep'), {
+    fireEvent.change(screen.getByLabelText('Releases to keep'), {
       target: { value: '5' },
     })
-    fireEvent.click(within(dialog).getByRole('button', { name: 'Create' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Create scan' }))
 
     await waitFor(() => {
       expect(postBodies).toContainEqual(
@@ -1378,30 +1387,30 @@ describe('ProjectSettingsPage', () => {
       </QueryClientProvider>,
     )
 
-    const addScanButton = await screen.findByRole('button', { name: /Add Scan Config/i })
+    const addScanButton = await screen.findByRole('button', { name: /New scan/i })
     await waitFor(() => expect(addScanButton).not.toBeDisabled())
     fireEvent.click(addScanButton)
 
-    const dialog = await screen.findByRole('dialog')
-    const textboxes = within(dialog).getAllByRole('textbox')
+    await screen.findByText('New scan config')
+    const textboxes = screen.getAllByRole('textbox')
     fireEvent.change(textboxes[0], { target: { value: 'Main scan' } })
     fireEvent.change(textboxes[1], { target: { value: 'SELECT * FROM analytics.events' } })
 
-    const selects = within(dialog).getAllByRole('combobox')
+    const selects = screen.getAllByRole('combobox')
     fireEvent.change(selects[0], { target: { value: 'ds-1' } })
-    fireEvent.click(within(dialog).getByRole('button', { name: 'Load Preview' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Load preview' }))
 
     expect(
-      await within(dialog).findByText(
+      await screen.findByText(
         'Column pickers use the sample rows. JSON paths are discovered on demand to keep the preview fast.',
       ),
     ).toBeInTheDocument()
 
-    const updatedSelects = within(dialog).getAllByRole('combobox')
+    const updatedSelects = screen.getAllByRole('combobox')
     fireEvent.change(updatedSelects[1], { target: { value: 'type-1' } })
 
-    expect(await within(dialog).findByText(/2 preview columns have no matching field/)).toBeInTheDocument()
-    fireEvent.click(within(dialog).getByRole('button', { name: 'Create 2 fields' }))
+    expect(await screen.findByText(/2 preview columns have no matching field/)).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Create 2 fields' }))
 
     await waitFor(() => {
       expect(bulkBodies).toContainEqual({
@@ -1545,19 +1554,18 @@ describe('ProjectSettingsPage', () => {
       </QueryClientProvider>,
     )
 
-    // Edit now lives on the scan detail page, not the list row — open it there.
+    // Edit now lives on the scan detail page's Configuration tab (no dialog).
     fireEvent.click(await screen.findByText('Main scan'))
     fireEvent.click(await screen.findByRole('button', { name: 'Edit' }))
 
-    const dialog = await screen.findByRole('dialog')
-    fireEvent.click(within(dialog).getByRole('button', { name: 'Load Preview' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Load preview' }))
 
     // The saved json_value_paths stay visible immediately after the fast
     // preview, before any JSON key discovery runs.
-    expect(await within(dialog).findByText('extra.key')).toBeInTheDocument()
+    expect(await screen.findByText('extra.key')).toBeInTheDocument()
 
     // Discovering JSON keys is a separate job that carries the selected paths.
-    fireEvent.click(within(dialog).getByRole('button', { name: 'Discover JSON keys' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Discover JSON keys' }))
 
     await waitFor(() => {
       expect(previewBodies).toContainEqual({
@@ -1570,7 +1578,7 @@ describe('ProjectSettingsPage', () => {
       })
     })
 
-    expect(await within(dialog).findByText('locale')).toBeInTheDocument()
-    expect(within(dialog).getByText('extra.key')).toBeInTheDocument()
+    expect(await screen.findByText('locale')).toBeInTheDocument()
+    expect(screen.getByText('extra.key')).toBeInTheDocument()
   })
 })
