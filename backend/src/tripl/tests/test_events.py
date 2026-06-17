@@ -804,3 +804,46 @@ async def test_bulk_create_events(client: AsyncClient):
     )
     assert resp.status_code == 201
     assert len(resp.json()) == 2
+
+
+@pytest.mark.asyncio
+async def test_event_owner_and_reviewed(client: AsyncClient):
+    et_id, field_id, _ = await _setup_events(client, slug="ev-owner")
+    users = (await client.get("/api/v1/users")).json()
+    owner_id = users[0]["id"]
+
+    created = await client.post(
+        "/api/v1/projects/ev-owner/events",
+        json={
+            "event_type_id": et_id,
+            "name": "Checkout",
+            "field_values": [{"field_definition_id": field_id, "value": "x"}],
+        },
+    )
+    assert created.status_code == 201
+    body = created.json()
+    assert body["reviewed"] is False
+    assert body["owner_id"] is None
+    event_id = body["id"]
+
+    # Assign owner + mark reviewed via single-event PATCH.
+    patched = await client.patch(
+        f"/api/v1/projects/ev-owner/events/{event_id}",
+        json={"owner_id": owner_id, "reviewed": True},
+    )
+    assert patched.status_code == 200
+    pbody = patched.json()
+    assert pbody["owner_id"] == owner_id
+    assert pbody["reviewed"] is True
+
+    # Bulk un-review; owner must be left untouched by a reviewed-only bulk update.
+    bulk = await client.post(
+        "/api/v1/projects/ev-owner/events/bulk-update",
+        json={"event_ids": [event_id], "reviewed": False},
+    )
+    assert bulk.status_code == 204
+
+    listed = (await client.get("/api/v1/projects/ev-owner/events")).json()
+    item = next(e for e in listed["items"] if e["id"] == event_id)
+    assert item["reviewed"] is False
+    assert item["owner_id"] == owner_id

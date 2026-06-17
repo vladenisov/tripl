@@ -25,6 +25,8 @@ class EventCreate(BaseModel):
     description: str = ""
     status: EventStatus = EventStatus.draft
     sunset_at: datetime | None = None
+    owner_id: uuid.UUID | None = None
+    reviewed: bool = False
     metric_breakdown_columns: list[str] = []
     tags: list[str] = []
     field_values: list[EventFieldValueIn] = []
@@ -41,6 +43,8 @@ class EventUpdate(BaseModel):
     description: str | None = None
     status: EventStatus | None = None
     sunset_at: datetime | None = None
+    owner_id: uuid.UUID | None = None
+    reviewed: bool | None = None
     metric_breakdown_columns: list[str] | None = None
     tags: list[str] | None = None
     field_values: list[EventFieldValueIn] | None = None
@@ -77,11 +81,20 @@ class EventBulkUpdate(BaseModel):
     event_ids: list[uuid.UUID] = Field(min_length=1)
     status: EventStatus | None = None
     sunset_at: datetime | None = None
+    owner_id: uuid.UUID | None = None
+    reviewed: bool | None = None
 
     @model_validator(mode="after")
     def validate_has_update(self) -> EventBulkUpdate:
-        if self.status is None and self.sunset_at is None:
-            raise ValueError("At least one of status or sunset_at must be provided")
+        if (
+            self.status is None
+            and self.sunset_at is None
+            and self.owner_id is None
+            and self.reviewed is None
+        ):
+            raise ValueError(
+                "At least one of status, sunset_at, owner_id or reviewed must be provided"
+            )
         return self
 
 
@@ -154,6 +167,8 @@ class EventResponse(BaseModel):
     status: EventStatus
     sunset_at: datetime | None = None
     last_seen_at: datetime | None = None
+    owner_id: uuid.UUID | None = None
+    reviewed: bool = False
     metric_breakdown_columns: list[str] = []
     drift_count: int = 0
     tags: list[EventTagResponse] = []
@@ -182,6 +197,8 @@ class EventListItemResponse(BaseModel):
     status: EventStatus
     sunset_at: datetime | None = None
     last_seen_at: datetime | None = None
+    owner_id: uuid.UUID | None = None
+    reviewed: bool = False
     metric_breakdown_columns: list[str] = []
     drift_count: int = 0
     tags: list[EventTagResponse] = []
