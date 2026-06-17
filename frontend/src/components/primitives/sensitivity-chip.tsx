@@ -1,13 +1,17 @@
-import { SENSITIVITY_OPTIONS, type Sensitivity } from '@/types'
+import { SENSITIVITY_OPTIONS, SENSITIVITY_STYLE, type Sensitivity } from '@/types'
 
 export function SensitivityChip({ value }: { value: Sensitivity }) {
-  const opt = SENSITIVITY_OPTIONS.find((o) => o.value === value) ?? SENSITIVITY_OPTIONS[0]
-  if (opt.value === 'none') {
-    return <span className="text-muted-foreground text-[10px]">—</span>
+  if (!value || value === 'none') {
+    return <span className="text-fg-faint text-[10.5px]">—</span>
   }
+  const style = SENSITIVITY_STYLE[value]
+  const label = SENSITIVITY_OPTIONS.find((o) => o.value === value)?.label ?? value.toUpperCase()
   return (
-    <span className={`inline-flex items-center rounded px-1.5 py-0.5 text-[10px] font-medium ${opt.chip}`}>
-      {opt.label}
+    <span
+      className="inline-flex items-center rounded-full font-semibold leading-none whitespace-nowrap"
+      style={{ height: 18, padding: '0 7px', fontSize: 10.5, background: style.bg, color: style.fg }}
+    >
+      {label}
     </span>
   )
 }
