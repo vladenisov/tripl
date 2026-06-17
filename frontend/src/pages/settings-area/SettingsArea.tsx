@@ -53,6 +53,8 @@ export default function SettingsArea({ section }: { section: string }) {
   const auth = useAuth()
   const isOwner = auth.user?.role === 'owner'
   const slug = useSettingsSlug()
+  const projectsQuery = useQuery({ queryKey: ['projects'], queryFn: projectsApi.list })
+  const projectName = projectsQuery.data?.find((p) => p.slug === slug)?.name
 
   // Persist the last visited section so re-entering /settings lands where the
   // user left off (the /settings index redirect reads this key).
@@ -68,7 +70,7 @@ export default function SettingsArea({ section }: { section: string }) {
   const backHref = slug ? `/p/${slug}/events` : '/'
 
   return (
-    <SettingsLayout activePath={section} onNavigate={onNavigate} backHref={backHref}>
+    <SettingsLayout activePath={section} onNavigate={onNavigate} backHref={backHref} projectName={projectName}>
       <Suspense fallback={<SectionFallback />}>
         {renderSection(section, slug, isOwner)}
       </Suspense>

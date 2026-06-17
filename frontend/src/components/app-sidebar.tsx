@@ -162,7 +162,7 @@ export function AppSidebar() {
 
   return (
     <aside
-      className="flex h-screen w-[232px] flex-col border-r flex-shrink-0"
+      className="flex h-screen w-[240px] flex-col border-r flex-shrink-0"
       style={{ background: 'var(--bg-sunken)', borderColor: 'var(--border)' }}
     >
       {/* Service logo — the triangle is the Tripl brand, so it lives here (not

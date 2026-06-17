@@ -1,4 +1,4 @@
-import { useMemo, useState, type ReactNode } from 'react'
+import { useMemo, useRef, useState, type ReactNode } from 'react'
 import { useLocation, useNavigate, useParams } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { chartAnnotationsApi } from '@/api/chartAnnotations'
@@ -99,6 +99,7 @@ export default function MonitoringDetailPage() {
   const [rangeDays, setRangeDays] = useState(30)
   const [granularity, setGranularity] = useState<MetricsGranularity>('hour')
   const [activeTab, setActiveTab] = useState<MonitoringDetailTab>('volume')
+  const metricsRef = useRef<HTMLSpanElement>(null)
   const [versionFilter, setVersionFilter] = useState<VersionFilter>('all')
   const [distributionField, setDistributionField] = useState('')
   const [breakdownColumn, setBreakdownColumn] = useState('')
@@ -456,6 +457,7 @@ export default function MonitoringDetailPage() {
           onEdit={() => navigate(
             `/p/${slug}/events/${event.event_type?.name ?? 'all'}/${event.id}/edit`,
           )}
+          onMetrics={() => metricsRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })}
         />
       ) : (
         <>
@@ -495,6 +497,7 @@ export default function MonitoringDetailPage() {
         </>
       )}
 
+      {isEventDetail && <span ref={metricsRef} aria-hidden className="-mt-5 block scroll-mt-4" />}
       <Tabs value={selectedTab} onValueChange={value => setActiveTab(value as MonitoringDetailTab)}>
         <TabsList>
           <TabsTrigger value="volume">Volume</TabsTrigger>
@@ -1222,6 +1225,7 @@ function EventDetailHero({
   metaFieldMap,
   onBack,
   onEdit,
+  onMetrics,
 }: {
   event: TEvent
   eventType: EventType | undefined
@@ -1231,6 +1235,7 @@ function EventDetailHero({
   metaFieldMap: Map<string, MetaFieldDefinition>
   onBack: () => void
   onEdit: () => void
+  onMetrics: () => void
 }) {
   const stats = computeEventStats(metrics)
   const signal = metrics?.latest_signal ?? null
@@ -1238,7 +1243,7 @@ function EventDetailHero({
   return (
     <div className="space-y-[18px]">
       <EventDetailBreadcrumb onBack={onBack} />
-      <EventDetailHeader event={event} eventType={eventType} signal={signal} onEdit={onEdit} />
+      <EventDetailHeader event={event} eventType={eventType} signal={signal} onEdit={onEdit} onMetrics={onMetrics} />
       {signal && <EventSignalBanner signal={signal} tone={signalTone} />}
       <EventStatStrip event={event} stats={stats} />
       {stats.series24h.length > 1 && (
@@ -1333,11 +1338,13 @@ function EventDetailHeader({
   eventType,
   signal,
   onEdit,
+  onMetrics,
 }: {
   event: TEvent
   eventType: EventType | undefined
   signal: MonitoringSignal | null
   onEdit: () => void
+  onMetrics: () => void
 }) {
   const status = event.status as EventStatus
   const statusTone = EVENT_STATUS_TONE[status] ?? 'neutral'
@@ -1367,7 +1374,7 @@ function EventDetailHeader({
       </div>
       <div className="flex flex-wrap items-center gap-2">
         <HeroAction icon={<Eye size={12} />} label="Watch" disabled />
-        <HeroAction icon={<TrendingUp size={12} />} label="Metrics" disabled />
+        <HeroAction icon={<TrendingUp size={12} />} label="Metrics" onClick={onMetrics} />
         <HeroAction icon={<Pencil size={12} />} label="Edit" onClick={onEdit} />
         <HeroAction icon={<Code size={12} />} label="Implementation" primary disabled />
       </div>

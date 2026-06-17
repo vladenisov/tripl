@@ -19,6 +19,7 @@ export function SettingsLayout({
   activePath,
   onNavigate,
   backHref,
+  projectName,
   children,
 }: {
   /** Current section path (e.g. 'project/general'). */
@@ -27,12 +28,24 @@ export function SettingsLayout({
   onNavigate: (path: string) => void
   /** Where "Back to tripl" returns to. */
   backHref: string
+  /** Active project name, used to personalize the Project group sub-label. */
+  projectName?: string
   children: ReactNode
 }) {
   const auth = useAuth()
   const navigate = useNavigate()
   const isOwner = auth.user?.role === 'owner'
   const ctx = contextForPath(activePath)
+
+  // Personalize group sub-labels with live identity, matching the mockup
+  // (Project → project name, Account → "You · <name>"). Workspace stays
+  // generic until a workspace entity exists.
+  const userName = auth.user?.name?.split(/\s+/)[0] ?? auth.user?.email ?? ''
+  const subFor = (group: { label: string; sub: string }): string => {
+    if (group.label === 'Project' && projectName) return projectName
+    if (group.label === 'Account' && userName) return `You · ${userName}`
+    return group.sub
+  }
 
   const setCtx = (next: SettingsContext) => {
     if (next === ctx) return
@@ -106,7 +119,7 @@ export function SettingsLayout({
                   className="text-[10px] uppercase tracking-[0.05em]"
                   style={{ color: 'var(--fg-faint)' }}
                 >
-                  {group.sub}
+                  {subFor(group)}
                 </span>
               </div>
               <div className="flex flex-col gap-px">
