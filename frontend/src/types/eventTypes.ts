@@ -41,14 +41,28 @@ export type Sensitivity = 'none' | 'pii' | 'phi' | 'financial' | 'secret'
 export const SENSITIVITY_OPTIONS: {
   value: Sensitivity
   label: string
-  chip: string
 }[] = [
-  { value: 'none', label: 'None', chip: 'bg-muted text-muted-foreground' },
-  { value: 'pii', label: 'PII', chip: 'bg-rose-500/15 text-rose-700' },
-  { value: 'phi', label: 'PHI', chip: 'bg-purple-500/15 text-purple-700' },
-  { value: 'financial', label: 'Financial', chip: 'bg-amber-500/15 text-amber-700' },
-  { value: 'secret', label: 'Secret', chip: 'bg-slate-800/80 text-slate-100' },
+  { value: 'none', label: 'None' },
+  { value: 'pii', label: 'PII' },
+  { value: 'phi', label: 'PHI' },
+  { value: 'financial', label: 'Financial' },
+  { value: 'secret', label: 'Secret' },
 ]
+
+export type SensitivityStyle = { bg: string; fg: string }
+
+/**
+ * Canonical sensitivity chip colors — matches the design mockup `SENS_STYLE`
+ * (`design/tripl/project/surface-pages.jsx`). Single source of truth for the
+ * sensitivity pill rendered by `SensitivityChip`, shared by the events/types
+ * surface tasks. `none` renders as an em-dash, so it has no entry here.
+ */
+export const SENSITIVITY_STYLE: Record<Exclude<Sensitivity, 'none'>, SensitivityStyle> = {
+  pii: { bg: 'oklch(0.7 0.17 15 / 0.16)', fg: 'oklch(0.8 0.16 15)' },
+  phi: { bg: 'oklch(0.7 0.16 300 / 0.16)', fg: 'oklch(0.8 0.15 300)' },
+  financial: { bg: 'oklch(0.78 0.15 75 / 0.16)', fg: 'oklch(0.84 0.13 75)' },
+  secret: { bg: 'oklch(0.42 0.02 250)', fg: 'oklch(0.92 0.01 250)' },
+}
 
 export interface EventTypeRelation {
   id: string
