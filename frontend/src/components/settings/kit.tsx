@@ -505,3 +505,102 @@ export function RadioCards({
     </div>
   )
 }
+
+// ───────── Page header ─────────
+
+/**
+ * Page header with an optional uppercase nav-group eyebrow, a 22px title, an
+ * optional description, and right-aligned actions. Canonical version of the
+ * header used by ReconciliationPage; reuse across redesigned surfaces
+ * (Alerting, Overview, Monitors) instead of re-inlining the markup.
+ */
+export function PageHead({
+  eyebrow,
+  title,
+  description,
+  right,
+}: {
+  eyebrow?: string
+  title: string
+  description?: string
+  right?: ReactNode
+}) {
+  return (
+    <div className="flex items-end justify-between gap-4">
+      <div className="min-w-0">
+        {eyebrow && (
+          <div
+            className="text-[11px] font-semibold uppercase tracking-[0.08em]"
+            style={{ color: 'var(--fg-subtle)' }}
+          >
+            {eyebrow}
+          </div>
+        )}
+        <h1 className={`${eyebrow ? 'mt-1 ' : ''}text-[22px] font-semibold tracking-[-0.01em]`}>
+          {title}
+        </h1>
+        {description && (
+          <p className="mt-1.5 max-w-[560px] text-[12px]" style={{ color: 'var(--fg-subtle)' }}>
+            {description}
+          </p>
+        )}
+      </div>
+      {right && <div className="shrink-0">{right}</div>}
+    </div>
+  )
+}
+
+// ───────── Panel ─────────
+
+export type PanelTone = 'warning' | 'danger'
+export type PanelSubtitleTone = 'success' | 'warning' | 'danger' | 'info' | 'neutral' | 'accent'
+
+/**
+ * Bordered surface card with a header bar (title + optional subtitle + optional
+ * right slot). A tone tints the header (danger/warning soft). Canonical version
+ * of the local Panel replicas in BranchesTab / ReconciliationPage; reuse for
+ * Alerting / Overview / Monitors chrome.
+ */
+export function Panel({
+  title,
+  subtitle,
+  subtitleTone,
+  right,
+  tone,
+  children,
+}: {
+  title: string
+  subtitle?: string
+  subtitleTone?: PanelSubtitleTone
+  right?: ReactNode
+  tone?: PanelTone
+  children: ReactNode
+}) {
+  const headerBg = tone ? `var(--${tone}-soft)` : 'transparent'
+  const titleColor = tone ? `var(--${tone})` : 'var(--fg)'
+  const subtitleColor = subtitleTone ? `var(--${subtitleTone})` : 'var(--fg-subtle)'
+  return (
+    <section
+      className="overflow-hidden rounded-[10px] border"
+      style={{ background: 'var(--surface)', borderColor: 'var(--border)' }}
+    >
+      <header
+        className="flex items-center gap-2.5 border-b px-4 py-3"
+        style={{ borderColor: 'var(--border-subtle)', background: headerBg }}
+      >
+        <div className="min-w-0 flex-1">
+          <div className="text-[12.5px] font-semibold" style={{ color: titleColor }}>
+            {title}
+          </div>
+          {subtitle && (
+            <div className="mt-0.5 text-[10.5px]" style={{ color: subtitleColor }}>
+              {subtitle}
+            </div>
+          )}
+        </div>
+        {right && <div className="shrink-0">{right}</div>}
+      </header>
+      {children}
+    </section>
+  )
+}
