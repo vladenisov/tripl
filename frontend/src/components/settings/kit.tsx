@@ -1,0 +1,507 @@
+import {
+  type CSSProperties,
+  type ReactNode,
+  type TextareaHTMLAttributes,
+} from 'react'
+import { ChevronDown } from 'lucide-react'
+
+/**
+ * Settings control kit — the shared form primitives for the full-takeover
+ * Settings area. Recreated in React+TS from the design mockup
+ * (design/tripl/project/settings-kit.jsx). These compose raw elements with the
+ * project's design tokens (var(--*)) rather than the shadcn UI kit, so the
+ * dense, card-driven settings idiom stays self-contained and consistent with
+ * the redesigned BranchesTab / ReconciliationPage page style.
+ */
+
+// ───────── Page header ─────────
+export function SHeader({
+  title,
+  description,
+  actions,
+}: {
+  title: string
+  description?: string
+  actions?: ReactNode
+}) {
+  return (
+    <div className="mb-7 flex items-start gap-4">
+      <div className="min-w-0 flex-1">
+        <h1 className="m-0 text-[21px] font-semibold tracking-[-0.015em]">{title}</h1>
+        {description && (
+          <p
+            className="mt-1.5 max-w-[520px] text-[13px] leading-[1.5]"
+            style={{ color: 'var(--fg-subtle)' }}
+          >
+            {description}
+          </p>
+        )}
+      </div>
+      {actions && <div className="flex shrink-0 gap-2">{actions}</div>}
+    </div>
+  )
+}
+
+// ───────── Section card ─────────
+export function SCard({
+  title,
+  description,
+  icon,
+  children,
+  footer,
+  tone,
+}: {
+  title?: string
+  description?: string
+  icon?: ReactNode
+  children?: ReactNode
+  footer?: ReactNode
+  tone?: 'danger'
+}) {
+  const borderColor =
+    tone === 'danger' ? 'color-mix(in oklab, var(--danger) 40%, var(--border))' : 'var(--border)'
+  return (
+    <section
+      className="mb-5 overflow-hidden rounded-xl"
+      style={{ background: 'var(--surface)', border: `1px solid ${borderColor}` }}
+    >
+      {(title || description) && (
+        <header
+          className="flex items-start gap-[11px] px-[18px] py-4"
+          style={{ borderBottom: children ? '1px solid var(--border-subtle)' : 'none' }}
+        >
+          {icon && (
+            <div
+              className="flex h-[30px] w-[30px] shrink-0 items-center justify-center rounded-lg"
+              style={{
+                background: tone === 'danger' ? 'var(--danger-soft)' : 'var(--bg-sunken)',
+                border: '1px solid var(--border-subtle)',
+                color: tone === 'danger' ? 'var(--danger)' : 'var(--fg-muted)',
+              }}
+            >
+              {icon}
+            </div>
+          )}
+          <div className="min-w-0 flex-1">
+            <h3
+              className="m-0 text-[14px] font-semibold"
+              style={{ color: tone === 'danger' ? 'var(--danger)' : 'var(--fg)' }}
+            >
+              {title}
+            </h3>
+            {description && (
+              <p
+                className="mt-1 text-[12.5px] leading-[1.5]"
+                style={{ color: 'var(--fg-subtle)' }}
+              >
+                {description}
+              </p>
+            )}
+          </div>
+        </header>
+      )}
+      {children}
+      {footer && (
+        <footer
+          className="flex items-center gap-2.5 px-[18px] py-3"
+          style={{
+            borderTop: '1px solid var(--border-subtle)',
+            background: 'var(--bg-sunken)',
+          }}
+        >
+          {footer}
+        </footer>
+      )}
+    </section>
+  )
+}
+
+// ───────── Field row ─────────
+export function Field({
+  label,
+  hint,
+  children,
+  stacked,
+  last,
+  htmlFor,
+}: {
+  label: string
+  hint?: ReactNode
+  children: ReactNode
+  stacked?: boolean
+  last?: boolean
+  htmlFor?: string
+}) {
+  return (
+    <div
+      className={stacked ? 'block px-[18px] py-[15px]' : 'flex items-start gap-6 px-[18px] py-[15px]'}
+      style={{ borderBottom: last ? 'none' : '1px solid var(--border-subtle)' }}
+    >
+      <div
+        className="shrink-0"
+        style={{
+          width: stacked ? 'auto' : 232,
+          marginBottom: stacked ? 9 : 0,
+          paddingTop: stacked ? 0 : 6,
+        }}
+      >
+        <label htmlFor={htmlFor} className="block text-[13px] font-medium" style={{ color: 'var(--fg)' }}>
+          {label}
+        </label>
+        {hint && (
+          <div className="mt-[3px] text-[12px] leading-[1.45]" style={{ color: 'var(--fg-subtle)' }}>
+            {hint}
+          </div>
+        )}
+      </div>
+      <div className="min-w-0 flex-1">{children}</div>
+    </div>
+  )
+}
+
+// ───────── Toggle row ─────────
+export function ToggleRow({
+  label,
+  hint,
+  value,
+  onChange,
+  last,
+  disabled,
+}: {
+  label: string
+  hint?: ReactNode
+  value: boolean
+  onChange?: (value: boolean) => void
+  last?: boolean
+  disabled?: boolean
+}) {
+  return (
+    <div
+      className="flex items-center gap-[18px] px-[18px] py-[14px]"
+      style={{ borderBottom: last ? 'none' : '1px solid var(--border-subtle)' }}
+    >
+      <div className="min-w-0 flex-1">
+        <div className="text-[13px] font-medium">{label}</div>
+        {hint && (
+          <div className="mt-[3px] text-[12px] leading-[1.45]" style={{ color: 'var(--fg-subtle)' }}>
+            {hint}
+          </div>
+        )}
+      </div>
+      <Toggle value={value} onChange={onChange} disabled={disabled} />
+    </div>
+  )
+}
+
+// ───────── Read-only info row ─────────
+export function InfoRow({
+  label,
+  value,
+  mono = true,
+  last,
+}: {
+  label: ReactNode
+  value: ReactNode
+  mono?: boolean
+  last?: boolean
+}) {
+  return (
+    <div
+      className="flex items-center gap-4 px-[18px] py-[11px]"
+      style={{ borderBottom: last ? 'none' : '1px solid var(--border-subtle)' }}
+    >
+      <span className="shrink-0 text-[12.5px]" style={{ width: 200, color: 'var(--fg-subtle)' }}>
+        {label}
+      </span>
+      <span
+        className={mono ? 'mono min-w-0 flex-1 truncate text-[12.5px]' : 'min-w-0 flex-1 truncate text-[12.5px]'}
+        style={{ color: 'var(--fg)' }}
+      >
+        {value}
+      </span>
+    </div>
+  )
+}
+
+// ───────── Toggle control ─────────
+export function Toggle({
+  value,
+  onChange,
+  disabled,
+}: {
+  value: boolean
+  onChange?: (value: boolean) => void
+  disabled?: boolean
+}) {
+  return (
+    <button
+      type="button"
+      role="switch"
+      aria-checked={value}
+      aria-pressed={value}
+      disabled={disabled}
+      onClick={() => onChange?.(!value)}
+      className="relative inline-flex h-[20px] w-[34px] shrink-0 items-center rounded-full transition-colors disabled:cursor-not-allowed disabled:opacity-50"
+      style={{
+        background: value ? 'var(--accent)' : 'var(--border-strong)',
+        cursor: disabled ? 'not-allowed' : 'pointer',
+      }}
+    >
+      <span
+        className="inline-block h-[16px] w-[16px] rounded-full bg-white transition-transform"
+        style={{ transform: value ? 'translateX(16px)' : 'translateX(2px)' }}
+      />
+    </button>
+  )
+}
+
+// ───────── Text input ─────────
+const INPUT_BASE: CSSProperties = {
+  height: 34,
+  width: '100%',
+  borderRadius: 7,
+  border: '1px solid var(--border)',
+  background: 'var(--bg)',
+  color: 'var(--fg)',
+  fontSize: 12.5,
+  padding: '0 10px',
+}
+
+export function TextInput({
+  value,
+  onChange,
+  placeholder,
+  mono,
+  prefix,
+  suffix,
+  type = 'text',
+  disabled,
+  id,
+}: {
+  value: string
+  onChange?: (value: string) => void
+  placeholder?: string
+  mono?: boolean
+  prefix?: string
+  suffix?: string
+  type?: 'text' | 'password' | 'number'
+  disabled?: boolean
+  id?: string
+}) {
+  const input = (
+    <input
+      id={id}
+      type={type}
+      value={value}
+      placeholder={placeholder}
+      disabled={disabled}
+      onChange={(e) => onChange?.(e.target.value)}
+      className={mono ? 'mono' : undefined}
+      style={{
+        ...INPUT_BASE,
+        ...(prefix
+          ? { borderTopLeftRadius: 0, borderBottomLeftRadius: 0, borderLeft: 'none' }
+          : {}),
+        ...(suffix
+          ? { borderTopRightRadius: 0, borderBottomRightRadius: 0, borderRight: 'none' }
+          : {}),
+        ...(disabled ? { opacity: 0.6, cursor: 'not-allowed' } : {}),
+      }}
+    />
+  )
+  if (!prefix && !suffix) return input
+  return (
+    <div className="flex items-stretch">
+      {prefix && <Affix side="left">{prefix}</Affix>}
+      {input}
+      {suffix && <Affix side="right">{suffix}</Affix>}
+    </div>
+  )
+}
+
+function Affix({ side, children }: { side: 'left' | 'right'; children: ReactNode }) {
+  return (
+    <span
+      className="mono flex items-center text-[12.5px]"
+      style={{
+        padding: '0 10px',
+        color: 'var(--fg-subtle)',
+        background: 'var(--bg-sunken)',
+        border: '1px solid var(--border)',
+        borderLeft: side === 'left' ? '1px solid var(--border)' : 'none',
+        borderRight: side === 'right' ? '1px solid var(--border)' : 'none',
+        borderRadius: side === 'left' ? '7px 0 0 7px' : '0 7px 7px 0',
+      }}
+    >
+      {children}
+    </span>
+  )
+}
+
+// ───────── Textarea ─────────
+export function TextArea({
+  value,
+  onChange,
+  placeholder,
+  rows = 3,
+  mono,
+  disabled,
+  id,
+}: {
+  value: string
+  onChange?: (value: string) => void
+  placeholder?: string
+  rows?: number
+  mono?: boolean
+  disabled?: boolean
+  id?: string
+}) {
+  const props: TextareaHTMLAttributes<HTMLTextAreaElement> = {
+    id,
+    rows,
+    value,
+    placeholder,
+    disabled,
+    onChange: (e) => onChange?.(e.target.value),
+  }
+  return (
+    <textarea
+      {...props}
+      className={mono ? 'mono' : undefined}
+      style={{
+        width: '100%',
+        borderRadius: 7,
+        border: '1px solid var(--border)',
+        background: 'var(--bg)',
+        color: 'var(--fg)',
+        fontSize: 12.5,
+        padding: '8px 10px',
+        lineHeight: 1.5,
+        resize: 'vertical',
+        ...(disabled ? { opacity: 0.6, cursor: 'not-allowed' } : {}),
+      }}
+    />
+  )
+}
+
+// ───────── Select ─────────
+export type SelectOption = string | { value: string; label: string }
+
+export function Select({
+  value,
+  onChange,
+  options,
+  disabled,
+  id,
+}: {
+  value: string
+  onChange?: (value: string) => void
+  options: readonly SelectOption[]
+  disabled?: boolean
+  id?: string
+}) {
+  return (
+    <div className="relative" style={{ maxWidth: 280 }}>
+      <select
+        id={id}
+        value={value}
+        disabled={disabled}
+        onChange={(e) => onChange?.(e.target.value)}
+        className="w-full appearance-none"
+        style={{
+          ...INPUT_BASE,
+          paddingRight: 30,
+          ...(disabled ? { opacity: 0.6, cursor: 'not-allowed' } : {}),
+        }}
+      >
+        {options.map((o) =>
+          typeof o === 'string' ? (
+            <option key={o} value={o}>
+              {o}
+            </option>
+          ) : (
+            <option key={o.value} value={o.value}>
+              {o.label}
+            </option>
+          ),
+        )}
+      </select>
+      <ChevronDown
+        className="pointer-events-none absolute right-[11px] top-1/2 h-[13px] w-[13px] -translate-y-1/2"
+        style={{ color: 'var(--fg-subtle)' }}
+      />
+    </div>
+  )
+}
+
+// ───────── Radio cards ─────────
+export type RadioCardOption = {
+  value: string
+  label: string
+  description?: string
+  icon?: ReactNode
+}
+
+export function RadioCards({
+  value,
+  onChange,
+  options,
+  columns = 1,
+  disabled,
+}: {
+  value: string
+  onChange?: (value: string) => void
+  options: readonly RadioCardOption[]
+  columns?: number
+  disabled?: boolean
+}) {
+  return (
+    <div className="grid gap-2" style={{ gridTemplateColumns: `repeat(${columns}, 1fr)` }}>
+      {options.map((o) => {
+        const active = value === o.value
+        return (
+          <button
+            key={o.value}
+            type="button"
+            disabled={disabled}
+            onClick={() => onChange?.(o.value)}
+            className="flex items-start gap-2.5 rounded-[9px] px-[13px] py-[11px] text-left transition-colors disabled:cursor-not-allowed disabled:opacity-60"
+            style={{
+              border: `1px solid ${active ? 'var(--accent)' : 'var(--border)'}`,
+              background: active ? 'var(--accent-soft)' : 'var(--bg)',
+            }}
+          >
+            <span
+              className="mt-px flex h-[15px] w-[15px] shrink-0 items-center justify-center rounded-full"
+              style={{ border: `1.5px solid ${active ? 'var(--accent)' : 'var(--border-strong)'}` }}
+            >
+              {active && (
+                <span
+                  className="h-[7px] w-[7px] rounded-full"
+                  style={{ background: 'var(--accent)' }}
+                />
+              )}
+            </span>
+            <span className="min-w-0">
+              <span
+                className="flex items-center gap-1.5 text-[12.5px] font-semibold"
+                style={{ color: 'var(--fg)' }}
+              >
+                {o.icon}
+                {o.label}
+              </span>
+              {o.description && (
+                <span
+                  className="mt-0.5 block text-[11.5px] leading-[1.4]"
+                  style={{ color: 'var(--fg-subtle)' }}
+                >
+                  {o.description}
+                </span>
+              )}
+            </span>
+          </button>
+        )
+      })}
+    </div>
+  )
+}

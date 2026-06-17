@@ -248,7 +248,7 @@ export function AppSidebar() {
         {navSlug && (
           <div className="mt-1 border-t pt-2" style={{ borderColor: 'var(--border-subtle)' }}>
             <Link
-              to={`/p/${navSlug}/settings`}
+              to="/settings/project/general"
               className="flex items-center gap-2 rounded-[5px] px-2 py-1.5 text-[12.5px] font-medium no-underline transition-colors"
               style={{
                 background: projectSettingsActive ? 'var(--surface-hover)' : 'transparent',

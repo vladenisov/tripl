@@ -201,9 +201,9 @@ describe('AppSidebar', () => {
       'href',
       '/p/demo/settings/event-types',
     )
-    // Footer: workspace + project settings.
+    // Footer: workspace + project settings now point at the full-takeover area.
     expect(container.querySelector('a[href="/settings"]')).toBeInTheDocument()
-    expect(container.querySelector('a[href="/p/demo/settings"]')).toBeInTheDocument()
+    expect(container.querySelector('a[href="/settings/project/general"]')).toBeInTheDocument()
   })
 
   it('marks the active event type link based on the current route', async () => {
