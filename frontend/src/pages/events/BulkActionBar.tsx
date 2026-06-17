@@ -1,4 +1,4 @@
-import { Trash2, X } from 'lucide-react'
+import { CheckCheck, Trash2, X } from 'lucide-react'
 
 import { EVENT_STATUS_LABELS, EVENT_STATUSES, type EventStatus } from '@/lib/eventStatus'
 import { Button } from '@/components/ui/button'
@@ -15,6 +15,7 @@ export function BulkActionBar({
   isDeleting,
   isUpdating,
   onSetStatus,
+  onMarkReviewed,
   onDelete,
   onClear,
 }: {
@@ -22,6 +23,7 @@ export function BulkActionBar({
   isDeleting: boolean
   isUpdating: boolean
   onSetStatus: (status: EventStatus) => void
+  onMarkReviewed: () => void
   onDelete: () => void
   onClear: () => void
 }) {
@@ -56,6 +58,16 @@ export function BulkActionBar({
           ))}
         </SelectContent>
       </Select>
+      <Button
+        variant="ghost"
+        size="sm"
+        className="h-7 text-xs"
+        onClick={onMarkReviewed}
+        disabled={disabled}
+      >
+        <CheckCheck className="mr-1 h-3.5 w-3.5" />
+        Mark reviewed
+      </Button>
       <Button
         variant="ghost"
         size="sm"

@@ -65,11 +65,15 @@ export function useEventsViewState({
   )
   const hideTags = hiddenColumns.has('tags')
   const hideLastSeen = hiddenColumns.has('last_seen')
+  const hideStatus = hiddenColumns.has('status')
+  const hideReviewed = hiddenColumns.has('reviewed')
   const colCount =
     1 +
     1 +
     1 +
     (activeEt ? 0 : 1) +
+    (hideStatus ? 0 : 1) +
+    (hideReviewed ? 0 : 1) +
     1 +
     (hideTags ? 0 : 1) +
     (hideLastSeen ? 0 : 1) +
@@ -99,6 +103,8 @@ export function useEventsViewState({
     colCount,
     hasActiveFilters,
     hideLastSeen,
+    hideReviewed,
+    hideStatus,
     hideTags,
     isTabChartOpen,
     setIsTabChartOpen,

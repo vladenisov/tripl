@@ -1,7 +1,7 @@
 import { memo } from 'react'
 import { useSortable } from '@dnd-kit/sortable'
 import { CSS } from '@dnd-kit/utilities'
-import { GripVertical } from 'lucide-react'
+import { Check, GripVertical } from 'lucide-react'
 import type {
   EventListItem,
   EventMetricPoint,
@@ -15,7 +15,7 @@ import { Checkbox } from '@/components/ui/checkbox'
 import { TableCell, TableRow } from '@/components/ui/table'
 import { Chip } from '@/components/primitives/chip'
 import { Dot } from '@/components/primitives/dot'
-import { EVENT_STATUS_DOT_TONE } from '@/lib/eventStatus'
+import { EVENT_STATUS_DOT_TONE, EVENT_STATUS_LABELS } from '@/lib/eventStatus'
 import type { EventStatus } from '@/lib/eventStatus'
 import { resolveMetaFieldHref } from '@/lib/metaFields'
 import { VariableValueContextTrigger } from '@/components/variable-value-contexts'
@@ -39,6 +39,8 @@ export type EventRowProps = {
   eventType: EventTypeBrief | undefined
   selected: boolean
   hideType: boolean
+  hideStatus: boolean
+  hideReviewed: boolean
   hideTags: boolean
   hideLastSeen: boolean
   fieldColumns: FieldDefinition[]
@@ -63,6 +65,8 @@ export const EventRow = memo(function EventRow({
   eventType,
   selected,
   hideType,
+  hideStatus,
+  hideReviewed,
   hideTags,
   hideLastSeen,
   fieldColumns,
@@ -156,6 +160,26 @@ export const EventRow = memo(function EventRow({
             />
             {eventType?.name ?? ''}
           </Chip>
+        </TableCell>
+      )}
+      {!hideStatus && (
+        <TableCell>
+          <Chip tone={statusTone} size="xs">
+            {EVENT_STATUS_LABELS[(ev.status as EventStatus) ?? 'draft'] ?? ev.status}
+          </Chip>
+        </TableCell>
+      )}
+      {!hideReviewed && (
+        <TableCell className="text-center">
+          {ev.reviewed ? (
+            <Check
+              className="mx-auto h-3.5 w-3.5"
+              style={{ color: 'var(--success)' }}
+              aria-label="Reviewed"
+            />
+          ) : (
+            <span className="text-[11px]" style={{ color: 'var(--fg-faint)' }}>—</span>
+          )}
         </TableCell>
       )}
       <TableCell className="w-32 text-right">

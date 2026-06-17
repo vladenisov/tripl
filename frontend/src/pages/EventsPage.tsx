@@ -115,6 +115,8 @@ export default function EventsPage() {
     colCount,
     hasActiveFilters,
     hideLastSeen,
+    hideReviewed,
+    hideStatus,
     hideTags,
     isTabChartOpen,
     setIsTabChartOpen,
@@ -186,6 +188,11 @@ export default function EventsPage() {
   const handleBulkSetStatus = useCallback((status: EventStatus) => {
     if (!selectedVisibleEventIds.length) return
     bulkUpdateMut.mutate({ eventIds: selectedVisibleEventIds, status })
+  }, [bulkUpdateMut, selectedVisibleEventIds])
+
+  const handleBulkMarkReviewed = useCallback(() => {
+    if (!selectedVisibleEventIds.length) return
+    bulkUpdateMut.mutate({ eventIds: selectedVisibleEventIds, reviewed: true })
   }, [bulkUpdateMut, selectedVisibleEventIds])
 
   const handleSetStatus = useCallback((id: string, status: EventStatus) => {
@@ -275,6 +282,7 @@ export default function EventsPage() {
             isDeleting={bulkDeleteMut.isPending}
             isUpdating={bulkUpdateMut.isPending}
             onSetStatus={handleBulkSetStatus}
+            onMarkReviewed={handleBulkMarkReviewed}
             onDelete={() => { void handleBulkDelete() }}
             onClear={clearSelection}
           />
@@ -306,6 +314,8 @@ export default function EventsPage() {
             someVisibleSelected={someVisibleSelected}
             toggleAllVisibleSelected={toggleAllVisibleSelected}
             activeEt={activeEt}
+            hideStatus={hideStatus}
+            hideReviewed={hideReviewed}
             hideTags={hideTags}
             hideLastSeen={hideLastSeen}
             allTags={allTags}
