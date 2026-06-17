@@ -8,6 +8,13 @@ export interface EventMetricPoint {
   z_score: number | null
 }
 
+export interface TopEvent {
+  event_id: string
+  name: string
+  event_type_id: string
+  total_count: number
+}
+
 export interface MonitoringSignal {
   scan_config_id: string
   scope_type: 'project_total' | 'event_type' | 'event'

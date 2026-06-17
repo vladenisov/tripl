@@ -53,6 +53,12 @@ export default function OverviewPage() {
     enabled: !!slug,
     staleTime: 60_000,
   })
+  const topEventsQuery = useQuery({
+    queryKey: ['overview', 'top-events', slug],
+    queryFn: () => metricsApi.getTopEvents(slug!, { windowHours: 48, limit: 6 }),
+    enabled: !!slug,
+    staleTime: 60_000,
+  })
   const signalsQuery = useQuery({
     queryKey: ['overview', 'signals', slug],
     queryFn: () => metricsApi.getActiveSignals(slug!),
@@ -75,6 +81,8 @@ export default function OverviewPage() {
   const summary = projectQuery.data?.summary
   const coverage = coverageQuery.data?.summary
   const volumePoints = volumeQuery.data?.data ?? []
+  const topEvents = topEventsQuery.data ?? []
+  const maxTopVolume = topEvents.reduce((m, e) => Math.max(m, e.total_count), 0)
   const signals = signalsQuery.data ?? []
   const activity = activityQuery.data ?? []
   const sources = sourcesQuery.data ?? []
@@ -180,6 +188,56 @@ export default function OverviewPage() {
               width={320}
               height={48}
             />
+          </div>
+        )}
+      </section>
+
+      {/* Top events by volume */}
+      <section>
+        <h2 className="mb-2 text-sm font-semibold">Top events · 48h</h2>
+        {topEventsQuery.isError && (
+          <ErrorState
+            title="Top events unavailable"
+            error={topEventsQuery.error}
+            onRetry={() => {
+              void topEventsQuery.refetch()
+            }}
+            retryLabel="Retry"
+            compact
+          />
+        )}
+        {!topEventsQuery.isError && topEvents.length === 0 && (
+          <div className="text-xs" style={{ color: 'var(--fg-subtle)' }}>
+            {topEventsQuery.isLoading ? 'Loading…' : 'No event volume in the last 48 hours.'}
+          </div>
+        )}
+        {topEvents.length > 0 && (
+          <div className="space-y-1.5">
+            {topEvents.map((e) => (
+              <div key={e.event_id} className="flex items-center gap-3">
+                <span className="mono w-40 shrink-0 truncate text-[12px]" title={e.name}>
+                  {e.name}
+                </span>
+                <div
+                  className="relative h-2 flex-1 overflow-hidden rounded-full"
+                  style={{ background: 'var(--surface-active)' }}
+                >
+                  <div
+                    className="absolute inset-y-0 left-0 rounded-full"
+                    style={{
+                      width: `${maxTopVolume > 0 ? (e.total_count / maxTopVolume) * 100 : 0}%`,
+                      background: 'var(--accent)',
+                    }}
+                  />
+                </div>
+                <span
+                  className="mono tnum w-16 shrink-0 text-right text-[11px]"
+                  style={{ color: 'var(--fg-subtle)' }}
+                >
+                  {e.total_count.toLocaleString()}
+                </span>
+              </div>
+            ))}
           </div>
         )}
       </section>

@@ -10,6 +10,7 @@ import type {
   MonitoringSignal,
   ReleaseRegressionsResponse,
   SeasonalityHeatmap,
+  TopEvent,
   TopMoverItem,
 } from '../types'
 
@@ -111,6 +112,14 @@ export const metricsApi = {
     return api.get<TopMoverItem[]>(
       `/projects/${slug}/scans/${scanConfigId}/top-movers?${sp.toString()}`,
     )
+  },
+
+  getTopEvents: (slug: string, params?: { windowHours?: number; limit?: number }) => {
+    const sp = new URLSearchParams()
+    if (params?.windowHours !== undefined) sp.set('window_hours', String(params.windowHours))
+    if (params?.limit !== undefined) sp.set('limit', String(params.limit))
+    const qs = sp.toString()
+    return api.get<TopEvent[]>(`/projects/${slug}/overview/top-events${qs ? `?${qs}` : ''}`)
   },
 
   getSeasonalityHeatmap: (
