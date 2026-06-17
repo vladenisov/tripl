@@ -41,6 +41,8 @@ export interface Event {
   status: string
   sunset_at: string | null
   last_seen_at: string | null
+  owner_id: string | null
+  reviewed: boolean
   metric_breakdown_columns: string[]
   drift_count: number
   tags: EventTag[]

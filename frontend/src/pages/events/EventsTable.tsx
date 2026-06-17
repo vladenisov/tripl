@@ -51,6 +51,8 @@ export type EventsTableProps = {
   someVisibleSelected: boolean
   toggleAllVisibleSelected: (checked: boolean) => void
   activeEt: EventType | null
+  hideStatus: boolean
+  hideReviewed: boolean
   hideTags: boolean
   hideLastSeen: boolean
   allTags: string[]
@@ -95,6 +97,8 @@ export function EventsTable({
   someVisibleSelected,
   toggleAllVisibleSelected,
   activeEt,
+  hideStatus,
+  hideReviewed,
   hideTags,
   hideLastSeen,
   allTags,
@@ -177,6 +181,10 @@ export function EventsTable({
                     Event
                   </TableHead>
                   {!activeEt && <TableHead>Type</TableHead>}
+                  {!hideStatus && <TableHead>Status</TableHead>}
+                  {!hideReviewed && (
+                    <TableHead className="w-20 text-center text-[11px]">Reviewed</TableHead>
+                  )}
                   <TableHead className="w-32 text-right">{ROW_METRICS_LABEL}</TableHead>
                   {!hideTags && (
                     <FilterableHead
@@ -283,6 +291,8 @@ export function EventsTable({
                         ev={ev}
                         selected={selectedSet.has(ev.id)}
                         hideType={!!activeEt}
+                        hideStatus={hideStatus}
+                        hideReviewed={hideReviewed}
                         hideTags={hideTags}
                         hideLastSeen={hideLastSeen}
                         fieldColumns={visibleFieldColumns}
