@@ -158,7 +158,11 @@
   border-collapse: separate;
   border-spacing: 0;
   font-size: 12.5px;
-  width: 100%;
+  /* min-width (not width) so the table sizes to its content and only scrolls
+     horizontally when the columns genuinely overflow. Forcing width:100% with
+     table-layout:auto + nowrap cells produces a phantom horizontal scrollbar
+     even when the content fits. Mirrors the mockup's `minWidth: '100%'`. */
+  min-width: 100%;
 }
 
 .tripl-table thead tr {
