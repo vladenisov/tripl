@@ -1,7 +1,8 @@
 import { Link, useParams } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
-import { Gauge, Settings2 } from 'lucide-react'
+import { AlertTriangle, Settings2 } from 'lucide-react'
 import { alertingApi } from '@/api/alerting'
+import { PageHead } from '@/components/settings/kit'
 import { ErrorState } from '@/components/error-state'
 import { Chip, type ChipTone } from '@/components/primitives/chip'
 import { Dot, type DotTone } from '@/components/primitives/dot'
@@ -38,21 +39,41 @@ export default function MonitorsPage() {
   return (
     <div className="min-w-0 space-y-6 pb-12">
       {/* Header */}
-      <div className="flex items-center gap-2">
-        <Gauge className="h-5 w-5 shrink-0" style={{ color: 'var(--fg-subtle)' }} />
-        <h1 className="text-lg font-semibold tracking-tight">Monitors</h1>
-        <div className="flex-1" />
-        {slug && (
-          <Link
-            to={`/p/${slug}/settings/monitoring`}
-            className="flex items-center gap-1.5 rounded-md px-2 py-1 text-[12px] no-underline transition-colors hover:bg-[var(--surface-hover)]"
-            style={{ color: 'var(--fg-muted)' }}
-          >
-            <Settings2 className="h-3.5 w-3.5" />
-            Detection settings
-          </Link>
-        )}
-      </div>
+      <PageHead
+        eyebrow="Observe"
+        title="Monitors"
+        right={
+          slug ? (
+            <Link
+              to={`/p/${slug}/settings/monitoring`}
+              className="flex items-center gap-1.5 rounded-md px-2 py-1 text-[12px] no-underline transition-colors hover:bg-[var(--surface-hover)]"
+              style={{ color: 'var(--fg-muted)' }}
+            >
+              <Settings2 className="h-3.5 w-3.5" />
+              Detection settings
+            </Link>
+          ) : undefined
+        }
+      />
+
+      {/* Firing banner */}
+      {summary && summary.firing_count > 0 && (
+        <div
+          className="flex items-center gap-2.5 rounded-[10px] px-4 py-3"
+          style={{
+            background: 'var(--danger-soft)',
+            border: '1px solid color-mix(in oklab, var(--danger) 35%, var(--border))',
+          }}
+        >
+          <AlertTriangle className="h-4 w-4 shrink-0" style={{ color: 'var(--danger)' }} />
+          <span className="text-[12.5px]" style={{ color: 'var(--fg-muted)' }}>
+            <span className="font-semibold" style={{ color: 'var(--fg)' }}>
+              {summary.firing_count}
+            </span>{' '}
+            monitor{summary.firing_count === 1 ? '' : 's'} firing right now.
+          </span>
+        </div>
+      )}
 
       {/* Rollup */}
       {monitorsQuery.isError ? (
