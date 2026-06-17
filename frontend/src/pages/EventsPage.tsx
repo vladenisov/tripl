@@ -210,7 +210,10 @@ export default function EventsPage() {
   // Editing is a full page, not an inline Sheet. The "New event" action toggles
   // showForm and "Edit"/row-edit navigates to /events/:tab/:eventId; both are
   // redirected here to the dedicated new/edit routes.
-  const eventsBase = activeTab === 'all' ? `/p/${slug}/events` : `/p/${slug}/events/${activeTab}`
+  // Always keep the :tab segment so the new/edit routes (/events/:tab/new and
+  // /events/:tab/:eventId/edit) match — '/events/new' would otherwise resolve to
+  // the /events/:tab list route with tab='new'. tab='all' is handled everywhere.
+  const eventsBase = `/p/${slug}/events/${activeTab}`
   if (slug && showForm) {
     return <Navigate to={`${eventsBase}/new`} replace />
   }
