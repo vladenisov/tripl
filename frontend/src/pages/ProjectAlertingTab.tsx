@@ -22,6 +22,7 @@ import type { AlertDestination, AlertInboxGroup } from '@/types'
 
 import { AlertDeliveryRow } from './alerting/AlertDeliveryRow'
 import { DestinationCard } from './alerting/DestinationCard'
+import { RoutingRulesPanel } from './alerting/RoutingRulesPanel'
 import {
   defaultDestinationForm,
   type DestinationChannel,
@@ -230,6 +231,8 @@ export default function ProjectAlertingTab({ slug }: { slug: string }) {
           Route active anomaly signals to Slack, Telegram, or a generic webhook. Rules are project-level and apply to every scan in the project.
         </p>
       </div>
+
+      <RoutingRulesPanel slug={slug} />
 
       <div className="grid gap-6">
         <div className="min-w-0 space-y-4">
