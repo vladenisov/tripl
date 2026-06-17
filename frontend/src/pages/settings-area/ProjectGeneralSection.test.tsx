@@ -1,9 +1,9 @@
-import { render, screen } from '@testing-library/react'
+import { fireEvent, render, screen } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { MemoryRouter } from 'react-router-dom'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { AuthContext, type AuthContextValue } from '@/components/auth-context'
-import { GeneralTab } from './GeneralTab'
+import ProjectGeneralSection from './ProjectGeneralSection'
 
 function jsonResponse(body: unknown) {
   return new Response(JSON.stringify(body), {
@@ -16,7 +16,7 @@ const PROJECT = {
   id: 'project-1',
   name: 'Demo',
   slug: 'demo',
-  description: 'A demo project',
+  description: '',
   created_at: '2026-01-01T00:00:00Z',
   updated_at: '2026-01-01T00:00:00Z',
   summary: {
@@ -53,13 +53,13 @@ function ownerAuthValue(): AuthContextValue {
   }
 }
 
-function renderTab() {
+function renderSection() {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   return render(
     <QueryClientProvider client={queryClient}>
       <AuthContext.Provider value={ownerAuthValue()}>
-        <MemoryRouter initialEntries={['/p/demo/settings/general']}>
-          <GeneralTab slug="demo" />
+        <MemoryRouter initialEntries={['/settings/project/general']}>
+          <ProjectGeneralSection slug="demo" />
         </MemoryRouter>
       </AuthContext.Provider>
     </QueryClientProvider>,
@@ -70,15 +70,35 @@ afterEach(() => {
   vi.restoreAllMocks()
 })
 
-describe('GeneralTab', () => {
-  it('exposes an in-project Delete project action (danger zone)', async () => {
+describe('ProjectGeneralSection', () => {
+  it('rebuilds the search index', async () => {
+    const calls: string[] = []
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const url = String(input)
+      calls.push(`${init?.method ?? 'GET'} ${url}`)
+      if (url.endsWith('/api/v1/projects/demo')) return jsonResponse(PROJECT)
+      if (url.endsWith('/api/v1/projects/demo/search/reindex') && init?.method === 'POST') {
+        return jsonResponse({ documents_indexed: 42, embeddings_scheduled: false })
+      }
+      throw new Error(`Unhandled fetch: ${url}`)
+    })
+
+    renderSection()
+
+    fireEvent.click(await screen.findByRole('button', { name: /Rebuild index/i }))
+
+    expect(await screen.findByText('Indexed 42 documents.')).toBeInTheDocument()
+    expect(calls).toContain('POST /api/v1/projects/demo/search/reindex')
+  })
+
+  it('exposes a Delete project danger action for owners', async () => {
     vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
       const url = String(input)
       if (url.endsWith('/api/v1/projects/demo')) return jsonResponse(PROJECT)
       throw new Error(`Unhandled fetch: ${url}`)
     })
 
-    renderTab()
+    renderSection()
 
     expect(await screen.findByRole('button', { name: /Delete project/ })).toBeInTheDocument()
   })

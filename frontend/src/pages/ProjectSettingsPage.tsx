@@ -1,9 +1,7 @@
 import { lazy, Suspense } from 'react'
-import { useNavigate, useParams } from 'react-router-dom'
-import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs'
+import { Navigate, useParams } from 'react-router-dom'
 import { AuditTab } from './settings/AuditTab'
 import { BranchesTab } from './settings/BranchesTab'
-import { GeneralTab } from './settings/GeneralTab'
 import { EventTypesTab } from './settings/EventTypesTab'
 import { EventTypeDetail } from './settings/EventTypeDetailView'
 import { HistoryTab } from './settings/HistoryTab'
@@ -14,8 +12,15 @@ import { MonitoringTab } from './settings/MonitoringTab'
 import { ScansTab } from './settings/ScansTab'
 import { ScanConfigDetail } from './settings/ScanConfigDetailView'
 
-type SettingsTab =
-  | 'general'
+/**
+ * Functional project surfaces (event types, schema & fields, monitoring,
+ * alerting, scans, branches, audit, history). The redesign collapsed the old
+ * 11-tab settings strip: these surfaces are now first-class sidebar pages, so
+ * this page renders the requested one full-width at its existing route with no
+ * tab strip. The `general` config tab moved into the full-takeover Settings
+ * area, so requests for it (and the bare /settings index) redirect there.
+ */
+type FunctionalTab =
   | 'event-types'
   | 'meta-fields'
   | 'relations'
@@ -26,70 +31,57 @@ type SettingsTab =
   | 'branches'
   | 'history'
   | 'audit'
+
+const FUNCTIONAL_TABS: FunctionalTab[] = [
+  'event-types',
+  'meta-fields',
+  'relations',
+  'variables',
+  'monitoring',
+  'alerting',
+  'scans',
+  'branches',
+  'history',
+  'audit',
+]
+
 const ProjectAlertingTab = lazy(() => import('@/pages/ProjectAlertingTab'))
 
 export default function ProjectSettingsPage() {
   const { slug, tab: urlTab, itemId } = useParams<{ slug: string; tab?: string; itemId?: string }>()
-  const navigate = useNavigate()
-  const validTabs: SettingsTab[] = [
-    'general',
-    'event-types',
-    'meta-fields',
-    'relations',
-    'variables',
-    'monitoring',
-    'alerting',
-    'scans',
-    'branches',
-    'history',
-    'audit',
-  ]
-  const tab: SettingsTab = validTabs.includes(urlTab as SettingsTab) ? (urlTab as SettingsTab) : 'general'
 
-  const changeTab = (t: string) => {
-    navigate(`/p/${slug}/settings/${t}`, { replace: true })
+  if (!slug) return null
+
+  // Bare /p/:slug/settings and the old general config tab both belong to the
+  // full-takeover Settings area now.
+  if (!urlTab || urlTab === 'general') {
+    return <Navigate to="/settings/project/general" replace />
   }
+
+  if (!FUNCTIONAL_TABS.includes(urlTab as FunctionalTab)) {
+    return <Navigate to={`/p/${slug}/events`} replace />
+  }
+
+  const tab = urlTab as FunctionalTab
 
   return (
     <div className="min-w-0">
-      <div className="mb-6">
-        <h1 className="text-2xl font-bold tracking-tight">Project Settings</h1>
-        <p className="text-sm text-muted-foreground mt-1">Configure project details, event types, monitoring, and scanning</p>
-      </div>
-
-      <Tabs value={tab} onValueChange={changeTab} className="mb-6 min-w-0">
-        <TabsList>
-          <TabsTrigger value="general">General</TabsTrigger>
-          <TabsTrigger value="event-types">Event Types</TabsTrigger>
-          <TabsTrigger value="meta-fields">Meta Fields</TabsTrigger>
-          <TabsTrigger value="relations">Relations</TabsTrigger>
-          <TabsTrigger value="variables">Variables</TabsTrigger>
-          <TabsTrigger value="monitoring">Monitoring</TabsTrigger>
-          <TabsTrigger value="alerting">Alerting</TabsTrigger>
-          <TabsTrigger value="scans">Scans</TabsTrigger>
-          <TabsTrigger value="branches">Branches</TabsTrigger>
-          <TabsTrigger value="history">History</TabsTrigger>
-          <TabsTrigger value="audit">Audit</TabsTrigger>
-        </TabsList>
-      </Tabs>
-
-      {tab === 'general' && slug && <GeneralTab slug={slug} />}
-      {tab === 'event-types' && slug && itemId && <EventTypeDetail slug={slug} eventTypeId={itemId} />}
-      {tab === 'event-types' && slug && !itemId && <EventTypesTab slug={slug} />}
-      {tab === 'meta-fields' && slug && <MetaFieldsTab slug={slug} />}
-      {tab === 'relations' && slug && <RelationsTab slug={slug} />}
-      {tab === 'variables' && slug && <VariablesTab slug={slug} />}
-      {tab === 'monitoring' && slug && <MonitoringTab slug={slug} />}
-      {tab === 'alerting' && slug && (
+      {tab === 'event-types' && itemId && <EventTypeDetail slug={slug} eventTypeId={itemId} />}
+      {tab === 'event-types' && !itemId && <EventTypesTab slug={slug} />}
+      {tab === 'meta-fields' && <MetaFieldsTab slug={slug} />}
+      {tab === 'relations' && <RelationsTab slug={slug} />}
+      {tab === 'variables' && <VariablesTab slug={slug} />}
+      {tab === 'monitoring' && <MonitoringTab slug={slug} />}
+      {tab === 'alerting' && (
         <Suspense fallback={<p className="text-sm text-muted-foreground">Loading alerting settings…</p>}>
           <ProjectAlertingTab slug={slug} />
         </Suspense>
       )}
-      {tab === 'scans' && slug && itemId && <ScanConfigDetail slug={slug} scanConfigId={itemId} />}
-      {tab === 'scans' && slug && !itemId && <ScansTab slug={slug} />}
-      {tab === 'branches' && slug && <BranchesTab slug={slug} />}
-      {tab === 'history' && slug && <HistoryTab slug={slug} />}
-      {tab === 'audit' && slug && <AuditTab slug={slug} />}
+      {tab === 'scans' && itemId && <ScanConfigDetail slug={slug} scanConfigId={itemId} />}
+      {tab === 'scans' && !itemId && <ScansTab slug={slug} />}
+      {tab === 'branches' && <BranchesTab slug={slug} />}
+      {tab === 'history' && <HistoryTab slug={slug} />}
+      {tab === 'audit' && <AuditTab slug={slug} />}
     </div>
   )
 }
