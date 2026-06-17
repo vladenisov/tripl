@@ -190,7 +190,7 @@ export default function ReconciliationPage() {
                 className="mono tnum text-[38px] font-semibold leading-none tracking-[-0.02em]"
                 style={{ color: 'var(--accent)' }}
               >
-                {coverage.summary.coverage_pct.toFixed(1)}%
+                {coverage.summary.coverage_pct.toFixed(0)}%
               </span>
               <span className="text-[11px]" style={{ color: 'var(--fg-subtle)' }}>
                 matched coverage

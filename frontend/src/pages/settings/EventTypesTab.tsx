@@ -906,7 +906,7 @@ export function SCard({
   const titleColor = tone === 'danger' ? 'var(--danger)' : 'var(--fg)'
   return (
     <section
-      className="mb-3 overflow-hidden rounded-[10px] border"
+      className="mb-3 overflow-hidden rounded-xl border"
       style={{ borderColor: 'var(--border)', background: 'var(--surface)' }}
     >
       <header

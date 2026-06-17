@@ -120,7 +120,7 @@ describe('ReconciliationPage', () => {
         'Compare what your plan defines against what your data sources actually send.',
       ),
     ).toBeInTheDocument()
-    expect(await screen.findByText('94.2%')).toBeInTheDocument()
+    expect(await screen.findByText('94%')).toBeInTheDocument()
     expect(screen.getByText('matched coverage')).toBeInTheDocument()
     expect(screen.getByText('124 of 132 planned events seen in data · 14d')).toBeInTheDocument()
   })

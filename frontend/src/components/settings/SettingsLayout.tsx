@@ -44,6 +44,9 @@ export function SettingsLayout({
   const subFor = (group: { label: string; sub: string }): string => {
     if (group.label === 'Project' && projectName) return projectName
     if (group.label === 'Account' && userName) return `You · ${userName}`
+    // Avoid the redundant "Workspace · Workspace" until a real workspace name
+    // is available in auth context.
+    if (group.label === 'Workspace' && group.sub === group.label) return ''
     return group.sub
   }
 
