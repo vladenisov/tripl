@@ -10,6 +10,7 @@ import { Toaster } from './components/ui/sonner'
 const AuthPage = lazy(() => import('./pages/AuthPage'))
 const MainPage = lazy(() => import('./pages/ProjectsPage'))
 const EventsPage = lazy(() => import('./pages/EventsPage'))
+const EventEditPage = lazy(() => import('./pages/events/EventForm'))
 const OverviewPage = lazy(() => import('./pages/OverviewPage'))
 const MonitorsPage = lazy(() => import('./pages/MonitorsPage'))
 const MonitoringDetailPage = lazy(() => import('./pages/MonitoringDetailPage'))
@@ -126,6 +127,8 @@ export default function App() {
             <Route path="/p/:slug/alerting" element={<ProjectSettingsRedirect tab="alerting" />} />
             <Route path="/p/:slug/events/detail/:eventId" element={withSuspense(<MonitoringDetailPage />)} />
             <Route path="/p/:slug/monitoring/:scope/:id" element={withSuspense(<MonitoringDetailPage />)} />
+            <Route path="/p/:slug/events/:tab/new" element={withSuspense(<EventEditPage />)} />
+            <Route path="/p/:slug/events/:tab/:eventId/edit" element={withSuspense(<EventEditPage />)} />
             <Route path="/p/:slug/events/:tab/:eventId" element={withSuspense(<EventsPage />)} />
             <Route path="/p/:slug/events/:tab" element={withSuspense(<EventsPage />)} />
             <Route path="/p/:slug/events" element={withSuspense(<EventsPage />)} />

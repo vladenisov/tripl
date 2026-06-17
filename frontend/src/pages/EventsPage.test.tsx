@@ -1,9 +1,10 @@
 import type { ReactNode } from 'react'
-import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import EventsPage from './EventsPage'
+import EventEditPage from './events/EventForm'
 
 vi.mock('recharts', async () => {
   const actual = await vi.importActual<typeof import('recharts')>('recharts')
@@ -49,6 +50,8 @@ function renderEventsPage(initialEntries: string[] = ['/p/demo/events']) {
       <MemoryRouter initialEntries={initialEntries}>
         <Routes>
           <Route path="/p/:slug/events" element={<EventsPage />} />
+          <Route path="/p/:slug/events/:tab/new" element={<EventEditPage />} />
+          <Route path="/p/:slug/events/:tab/:eventId/edit" element={<EventEditPage />} />
           <Route path="/p/:slug/events/:tab" element={<EventsPage />} />
           <Route path="/p/:slug/events/:tab/:eventId" element={<EventsPage />} />
         </Routes>
@@ -548,19 +551,18 @@ describe('EventsPage', () => {
 
     renderEventsPage()
 
+    // "New event" navigates to the page-based editor (no Sheet/dialog).
     fireEvent.click(await screen.findByRole('button', { name: 'New Event' }))
-    const dialog = await screen.findByRole('dialog')
+    expect(await screen.findByRole('heading', { name: 'New event' })).toBeInTheDocument()
 
-    fireEvent.change(within(dialog).getAllByRole('combobox')[0], { target: { value: 'type-1' } })
-    fireEvent.change(within(dialog).getByPlaceholderText('e.g. Home Page View'), {
+    fireEvent.change(screen.getAllByRole('combobox')[0], { target: { value: 'type-1' } })
+    fireEvent.change(screen.getByPlaceholderText('e.g. checkout_completed'), {
       target: { value: 'Homepage View' },
     })
-    fireEvent.click(within(dialog).getAllByRole('checkbox')[0])
-    fireEvent.change(within(dialog).getByLabelText('Metric breakdown column name'), {
-      target: { value: 'platform' },
-    })
-    fireEvent.click(within(dialog).getByRole('button', { name: 'Add metric breakdown column' }))
-    fireEvent.click(within(dialog).getByRole('button', { name: 'Create' }))
+    // Metric breakdowns are fixed toggle chips; click country then platform.
+    fireEvent.click(screen.getByRole('button', { name: 'country' }))
+    fireEvent.click(screen.getByRole('button', { name: 'platform' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Create event' }))
 
     await waitFor(() => {
       expect(eventCreateBodies).toContainEqual(
