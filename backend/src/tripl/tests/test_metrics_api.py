@@ -1543,3 +1543,88 @@ async def test_breakdown_timeline_returns_per_bucket_counts(client: AsyncClient)
     body = resp.json()
     assert body["breakdown_value"] == "US"
     assert [point["count"] for point in body["data"]] == [40, 50, 60]
+
+
+@pytest.mark.asyncio
+async def test_overview_top_events_ranks_by_volume(client: AsyncClient):
+    ctx = await _setup_metrics_project(client, slug="top-ev")
+
+    async def _make_event(name: str) -> str:
+        resp = await client.post(
+            "/api/v1/projects/top-ev/events",
+            json={
+                "event_type_id": ctx["page_type_id"],
+                "name": name,
+                "field_values": [{"field_definition_id": ctx["page_field_id"], "value": "x"}],
+            },
+        )
+        assert resp.status_code == 201
+        return resp.json()["id"]
+
+    big = await _make_event("Big")
+    small = await _make_event("Small")
+    recent = datetime.now(UTC) - timedelta(hours=1)
+    old = datetime.now(UTC) - timedelta(days=10)
+
+    async with TestSessionLocal() as session:
+        data_source = DataSource(
+            id=uuid.uuid4(),
+            name=f"Top DS {uuid.uuid4().hex[:8]}",
+            db_type="clickhouse",
+            host="localhost",
+            port=8123,
+            database_name="default",
+            username="default",
+            password_encrypted="",
+        )
+        scan_config = ScanConfig(
+            id=uuid.uuid4(),
+            data_source_id=data_source.id,
+            project_id=uuid.UUID(ctx["project_id"]),
+            event_type_id=None,
+            name="Top Config",
+            base_query="SELECT time, event_name FROM events",
+            event_type_column="event_name",
+            time_column="time",
+            cardinality_threshold=100,
+            interval="1h",
+        )
+        session.add_all([data_source, scan_config])
+        session.add_all(
+            [
+                EventMetric(
+                    id=uuid.uuid4(),
+                    scan_config_id=scan_config.id,
+                    event_id=uuid.UUID(big),
+                    event_type_id=None,
+                    bucket=recent,
+                    count=500,
+                ),
+                EventMetric(
+                    id=uuid.uuid4(),
+                    scan_config_id=scan_config.id,
+                    event_id=uuid.UUID(small),
+                    event_type_id=None,
+                    bucket=recent,
+                    count=20,
+                ),
+                # Outside the 48h window — must be excluded from the ranking.
+                EventMetric(
+                    id=uuid.uuid4(),
+                    scan_config_id=scan_config.id,
+                    event_id=uuid.UUID(small),
+                    event_type_id=None,
+                    bucket=old,
+                    count=99999,
+                ),
+            ]
+        )
+        await session.commit()
+
+    resp = await client.get("/api/v1/projects/top-ev/overview/top-events?window_hours=48&limit=6")
+    assert resp.status_code == 200
+    rows = resp.json()
+    assert [r["event_id"] for r in rows] == [big, small]
+    assert rows[0]["total_count"] == 500
+    assert rows[1]["total_count"] == 20
+    assert rows[0]["name"] == "Big"

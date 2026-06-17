@@ -236,3 +236,12 @@ class EventWindowMetricsResponse(BaseModel):
     interval: ScanInterval | None = None
     total_count: int
     data: list[EventMetricPoint]
+
+
+class TopEventResponse(BaseModel):
+    """One row of the Overview "Top events by volume" widget."""
+
+    event_id: uuid.UUID
+    name: str
+    event_type_id: uuid.UUID
+    total_count: int

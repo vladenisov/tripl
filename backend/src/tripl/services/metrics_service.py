@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import uuid
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
 
 from fastapi import HTTPException
 from sqlalchemy import func, select
@@ -34,6 +34,7 @@ from tripl.schemas.event_metric import (
     MetricSignalResponse,
     ReleaseRegressionItem,
     ReleaseRegressionsResponse,
+    TopEventResponse,
 )
 from tripl.semver import order_versions
 from tripl.services.monitoring_utils import classify_signal_state
@@ -1060,6 +1061,48 @@ async def get_events_metrics(
         interval=interval,
         data=[EventMetricPoint(bucket=bucket, count=count) for bucket, count in rows],
     )
+
+
+async def get_top_events_by_volume(
+    session: AsyncSession,
+    slug: str,
+    *,
+    window_hours: int = 48,
+    limit: int = 6,
+) -> list[TopEventResponse]:
+    """Rank a project's events by total volume over a recent window.
+
+    Sums EventMetric.count per event (scoped to the project via ScanConfig) and
+    returns the top ``limit`` by volume — the data behind the Overview "Top
+    events by volume" widget, computed server-side so the client need not fetch
+    window metrics for every event just to show a handful.
+    """
+    project = await _resolve_project(session, slug)
+    time_from = datetime.now(UTC) - timedelta(hours=window_hours)
+    total = func.coalesce(func.sum(EventMetric.count), 0)
+    rows = (
+        await session.execute(
+            select(Event.id, Event.name, Event.event_type_id, total.label("total"))
+            .join(EventMetric, EventMetric.event_id == Event.id)
+            .join(ScanConfig, ScanConfig.id == EventMetric.scan_config_id)
+            .where(
+                ScanConfig.project_id == project.id,
+                EventMetric.bucket >= time_from,
+            )
+            .group_by(Event.id, Event.name, Event.event_type_id)
+            .order_by(total.desc())
+            .limit(limit)
+        )
+    ).all()
+    return [
+        TopEventResponse(
+            event_id=row.id,
+            name=row.name,
+            event_type_id=row.event_type_id,
+            total_count=int(row.total or 0),
+        )
+        for row in rows
+    ]
 
 
 async def get_events_window_metrics(
