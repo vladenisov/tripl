@@ -90,9 +90,40 @@ describe('ScanDetail', () => {
 
     expect(await screen.findByText('2/4 chunks')).toBeInTheDocument()
     expect(screen.getByText('processing 3/4')).toBeInTheDocument()
-    expect(screen.getByRole('progressbar', { name: 'Replay chunks' })).toHaveAttribute(
+    expect(screen.getAllByRole('progressbar', { name: 'Replay chunks' })[0]).toHaveAttribute(
       'aria-valuenow',
       '50',
     )
+  })
+
+  it('renders the overview panels with real ScanConfig fields', async () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async input => {
+      const url = String(input)
+      if (url.endsWith('/api/v1/projects/demo/scans/scan-1/jobs')) {
+        return mockJsonResponse([])
+      }
+      throw new Error(`Unhandled fetch: ${url}`)
+    })
+
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    })
+
+    render(
+      <QueryClientProvider client={queryClient}>
+        <ScanDetail slug="demo" scanConfig={scanConfig} eventTypes={[]} branchId={null} />
+      </QueryClientProvider>,
+    )
+
+    // Overview stat cards + panels use the real fields.
+    expect(await screen.findByText('Source & query')).toBeInTheDocument()
+    expect(screen.getByText('Event mapping')).toBeInTheDocument()
+    expect(screen.getByText('Metrics & drift')).toBeInTheDocument()
+    expect(screen.getByText('Last run')).toBeInTheDocument()
+    expect(screen.getByText('SELECT * FROM analytics.events')).toBeInTheDocument()
+    // The mocked config has time_column set and no event type → Auto-detect.
+    expect(screen.getByText('created_at')).toBeInTheDocument()
+    expect(screen.getByText('Auto-detect')).toBeInTheDocument()
+    expect(await screen.findByText(/No jobs yet/)).toBeInTheDocument()
   })
 })

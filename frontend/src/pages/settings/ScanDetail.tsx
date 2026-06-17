@@ -1,36 +1,22 @@
 import { Fragment, useState } from "react"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
-import { Ban, ChevronDown, GitMerge, Play, RotateCcw } from "lucide-react"
+import { Ban, ChevronDown, GitMerge } from "lucide-react"
 import { scansApi } from "@/api/scans"
-import type { EventType, ScanConfig, ScanJob, ScanJobResultSummary } from "@/types"
-import { Badge } from "@/components/ui/badge"
+import type { DataSource, EventType, ScanConfig, ScanJob, ScanJobResultSummary } from "@/types"
 import { Button } from "@/components/ui/button"
 import { Card } from "@/components/ui/card"
-import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog"
-import { Input } from "@/components/ui/input"
-import { Label } from "@/components/ui/label"
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
+import { Chip } from "@/components/primitives/chip"
+import { Dot } from "@/components/primitives/dot"
 import { getErrorMessage } from '@/lib/utils'
-
-function toDatetimeLocalValue(date: Date) {
-  const pad = (value: number) => String(value).padStart(2, '0')
-  const year = date.getFullYear()
-  const month = pad(date.getMonth() + 1)
-  const day = pad(date.getDate())
-  const hours = pad(date.getHours())
-  const minutes = pad(date.getMinutes())
-  return `${year}-${month}-${day}T${hours}:${minutes}`
-}
-
-function createDefaultReplayWindow() {
-  const to = new Date()
-  to.setMinutes(0, 0, 0)
-  const from = new Date(to.getTime() - 24 * 60 * 60 * 1000)
-  return {
-    from: toDatetimeLocalValue(from),
-    to: toDatetimeLocalValue(to),
-  }
-}
+import { formatRelativeTime } from '@/lib/datetime'
+import {
+  KV,
+  NoneTag,
+  SrcIcon,
+  StatCard,
+  SurfPanel,
+} from './scans/scanLayout'
+import { jobDurationSeconds, jobRowsScanned } from './scans/scanUtils'
 
 function clamp(value: number, min: number, max: number) {
   return Math.min(Math.max(value, min), max)
@@ -40,16 +26,13 @@ function getReplayProgress(summary: ScanJobResultSummary | null) {
   if (!summary || summary.mode !== 'metrics_replay' || !summary.replay_chunks_total) {
     return null
   }
-
   const total = Math.max(summary.replay_chunks_total, 0)
   if (total === 0) return null
-
   const completed = clamp(summary.replay_chunks_completed ?? 0, 0, total)
   const percent = clamp(summary.replay_progress_percent ?? (completed / total) * 100, 0, 100)
   const current = summary.replay_current_chunk_index
     ? clamp(summary.replay_current_chunk_index, 1, total)
     : null
-
   return {
     completed,
     total,
@@ -101,27 +84,39 @@ function ReplayChunkProgress({ summary, compact = false }: { summary: ScanJobRes
   )
 }
 
-/* ─── Scan Detail (jobs) ─── */
-export function ScanDetail({ slug, scanConfig, eventTypes, branchId }: { slug: string; scanConfig: ScanConfig; eventTypes: EventType[]; branchId: string | null }) {
+function chipList(values: string[]) {
+  if (values.length === 0) return <NoneTag />
+  return (
+    <span className="inline-flex flex-wrap gap-1">
+      {values.map(value => <Chip key={value} size="xs">{value}</Chip>)}
+    </span>
+  )
+}
+
+/* ─── Overview tab body: stat cards + source/query + mapping/drift + jobs ─── */
+export function ScanDetail({
+  slug,
+  scanConfig,
+  eventTypes,
+  branchId,
+  dataSource,
+}: {
+  slug: string
+  scanConfig: ScanConfig
+  eventTypes: EventType[]
+  branchId: string | null
+  dataSource?: DataSource | null
+}) {
   const qc = useQueryClient()
   const [expandedJobId, setExpandedJobId] = useState<string | null>(null)
-  const [replayOpen, setReplayOpen] = useState(false)
-  const [replayFrom, setReplayFrom] = useState('')
-  const [replayTo, setReplayTo] = useState('')
   const [applyGroupsMessage, setApplyGroupsMessage] = useState('')
 
   const etName = eventTypes.find((et: EventType) => et.id === scanConfig.event_type_id)?.display_name
-  const canReplayMetrics = Boolean(scanConfig.time_column && scanConfig.interval)
 
   const { data: jobs = [], isLoading } = useQuery({
     queryKey: ['scanJobs', slug, scanConfig.id],
     queryFn: () => scansApi.listJobs(slug, scanConfig.id),
     refetchInterval: 5000,
-  })
-
-  const runMut = useMutation({
-    mutationFn: () => scansApi.run(slug, scanConfig.id),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['scanJobs', slug, scanConfig.id] }),
   })
 
   const applyGroupsMut = useMutation({
@@ -136,164 +131,99 @@ export function ScanDetail({ slug, scanConfig, eventTypes, branchId }: { slug: s
     },
   })
 
-  const replayMut = useMutation({
-    mutationFn: () => {
-      if (!replayFrom || !replayTo) throw new Error('Select a period to replay')
-      const from = new Date(replayFrom)
-      const to = new Date(replayTo)
-      if (Number.isNaN(from.getTime()) || Number.isNaN(to.getTime())) {
-        throw new Error('Period dates are invalid')
-      }
-      if (from >= to) throw new Error('Start must be before end')
-      return scansApi.replayMetrics(slug, scanConfig.id, {
-        time_from: from.toISOString(),
-        time_to: to.toISOString(),
-      })
-    },
-    onSuccess: () => {
-      setReplayOpen(false)
-      qc.invalidateQueries({ queryKey: ['scanJobs', slug, scanConfig.id] })
-      qc.invalidateQueries({ queryKey: ['scans', slug] })
-    },
-  })
-
   const cancelMut = useMutation({
     mutationFn: (jobId: string) => scansApi.cancelJob(slug, scanConfig.id, jobId),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['scanJobs', slug, scanConfig.id] }),
   })
 
-  const openReplayDialog = () => {
-    const defaultWindow = createDefaultReplayWindow()
-    setReplayFrom(defaultWindow.from)
-    setReplayTo(defaultWindow.to)
-    setReplayOpen(true)
-    replayMut.reset()
-  }
-
-  const statusVariant: Record<string, 'default' | 'secondary' | 'outline' | 'destructive'> = {
-    pending: 'outline',
-    running: 'secondary',
-    completed: 'default',
-    failed: 'destructive',
-    cancelled: 'outline',
-  }
+  const lastJob = jobs[0] ?? null
+  const lastRows = jobRowsScanned(lastJob)
+  const lastEvents = lastJob?.result_summary?.events_created ?? null
+  const lastMetricRows = lastJob?.result_summary?.breakdown_event_metrics
+    ?? lastJob?.result_summary?.event_metrics
+    ?? null
 
   return (
-    <div className="border-t p-4 space-y-4">
-      <Dialog open={replayOpen} onOpenChange={setReplayOpen}>
-        <DialogContent>
-          <form
-            className="space-y-4"
-            onSubmit={e => {
-              e.preventDefault()
-              replayMut.mutate()
-            }}
-          >
-            <DialogHeader>
-              <DialogTitle>Replay Metrics Period</DialogTitle>
-            </DialogHeader>
-            <div className="grid gap-3 sm:grid-cols-2">
-              <div className="grid gap-2">
-                <Label>From</Label>
-                <Input
-                  type="datetime-local"
-                  value={replayFrom}
-                  onChange={e => setReplayFrom(e.target.value)}
-                  required
-                />
-              </div>
-              <div className="grid gap-2">
-                <Label>To</Label>
-                <Input
-                  type="datetime-local"
-                  value={replayTo}
-                  onChange={e => setReplayTo(e.target.value)}
-                  required
-                />
-              </div>
-            </div>
-            {replayMut.isError && <p className="text-sm text-destructive">{getErrorMessage(replayMut.error)}</p>}
-            <DialogFooter>
-              <Button type="button" variant="outline" onClick={() => setReplayOpen(false)}>Cancel</Button>
-              <Button type="submit" disabled={replayMut.isPending}>
-                <RotateCcw className="mr-1 h-3 w-3" />
-                {replayMut.isPending ? 'Starting…' : 'Replay Period'}
-              </Button>
-            </DialogFooter>
-          </form>
-        </DialogContent>
-      </Dialog>
-
-      {/* Query info panel */}
-      <div className="rounded-lg border bg-muted/30 overflow-hidden">
-        <div className="px-3 py-2 bg-muted/50 border-b flex items-center justify-between">
-          <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Base Query (subquery)</span>
-          <div className="flex gap-3 text-xs text-muted-foreground flex-wrap">
-            <span>Threshold: <strong className="text-foreground">{scanConfig.cardinality_threshold}</strong></span>
-            {scanConfig.event_type_column && <span>Group by: <strong className="text-foreground">{scanConfig.event_type_column}</strong></span>}
-            {scanConfig.time_column && <span>Time col: <strong className="text-foreground">{scanConfig.time_column}</strong></span>}
-            {scanConfig.event_name_format && <span>Name fmt: <strong className="text-foreground">{scanConfig.event_name_format}</strong></span>}
-            {scanConfig.json_value_paths.length > 0 && (
-              <span>JSON keep: <strong className="text-foreground">{scanConfig.json_value_paths.length}</strong></span>
-            )}
-            {scanConfig.metric_breakdown_columns.length > 0 && (
-              <span>
-                Breakdowns:
-                <strong className="text-foreground">
-                  {' '}
-                  {scanConfig.metric_breakdown_columns.join(', ')}
-                  {scanConfig.metric_breakdown_values_limit ? ` · top ${scanConfig.metric_breakdown_values_limit}` : ' · unlimited'}
-                </strong>
-              </span>
-            )}
-            {scanConfig.distribution_drift_fields.length > 0 && (
-              <span>
-                Distribution:
-                <strong className="text-foreground">
-                  {' '}
-                  {scanConfig.distribution_drift_fields.join(', ')}
-                </strong>
-              </span>
-            )}
-            {scanConfig.app_version_column && (
-              <span>
-                Version:
-                <strong className="text-foreground">
-                  {' '}
-                  {scanConfig.app_version_column}
-                  {scanConfig.app_version_keep_releases
-                    ? ` · keep ${scanConfig.app_version_keep_releases}`
-                    : ' · default retention'}
-                </strong>
-              </span>
-            )}
-            {scanConfig.event_group_rules.length > 0 && (
-              <span>
-                Groups:
-                <strong className="text-foreground">
-                  {' '}
-                  {scanConfig.event_group_rules.map(rule => rule.name).join(', ')}
-                </strong>
-              </span>
-            )}
-            {etName && <span>Event Type: <strong className="text-foreground">{etName}</strong></span>}
-            {scanConfig.interval && <span>Interval: <strong className="text-foreground">{scanConfig.interval}</strong></span>}
-            {scanConfig.replay_chunk_interval && <span>Replay chunk: <strong className="text-foreground">{scanConfig.replay_chunk_interval}</strong></span>}
-            <span>
-              Monitoring:
-              <strong className="text-foreground">
-                {' '}
-                {scanConfig.time_column && scanConfig.interval ? 'shared project settings' : 'requires time column + interval'}
-              </strong>
-            </span>
-          </div>
-        </div>
-        <pre className="p-3 text-xs font-mono text-foreground/80 whitespace-pre-wrap overflow-x-auto">{scanConfig.base_query}</pre>
+    <div className="flex flex-col gap-4">
+      {/* Stat cards */}
+      <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+        <StatCard
+          label="Last run"
+          value={lastJob ? formatRelativeTime(lastJob.completed_at ?? lastJob.started_at ?? lastJob.created_at) : 'never'}
+        />
+        <StatCard label="Rows · last run" value={lastRows == null ? '—' : lastRows.toLocaleString()} />
+        <StatCard label="Events written" value={lastEvents == null ? '—' : lastEvents.toLocaleString()} />
+        <StatCard label="Metric rows" value={lastMetricRows == null ? '—' : lastMetricRows.toLocaleString()} />
       </div>
 
-      <div className="flex justify-between items-center">
-        <h3 className="text-sm font-semibold">Jobs</h3>
-        <div className="flex items-center gap-2">
+      {/* Source & query */}
+      <SurfPanel title="Source & query">
+        <KV
+          label="Data source"
+          value={
+            <span className="inline-flex items-center gap-2">
+              <SrcIcon dbType={dataSource?.db_type ?? null} size={18} />
+              {dataSource?.name ?? 'Unknown source'}
+            </span>
+          }
+        />
+        <div className="border-t px-4 py-3" style={{ borderColor: 'var(--border-subtle)' }}>
+          <div className="mb-1.5 text-xs" style={{ color: 'var(--fg-subtle)' }}>
+            Base query <span style={{ color: 'var(--fg-faint)' }}>· used as subquery</span>
+          </div>
+          <pre
+            className="mono m-0 overflow-x-auto rounded-lg border p-3 text-xs"
+            style={{ background: 'var(--bg-sunken)', borderColor: 'var(--border-subtle)', color: 'var(--fg)' }}
+          >{scanConfig.base_query}</pre>
+        </div>
+        <KV label="Time column" value={scanConfig.time_column || <NoneTag />} mono={!!scanConfig.time_column} />
+        <KV label="Event name format" value={scanConfig.event_name_format || <NoneTag />} mono={!!scanConfig.event_name_format} />
+      </SurfPanel>
+
+      {/* Mapping + metrics grid */}
+      <div className="grid items-start gap-3 lg:grid-cols-2">
+        <SurfPanel title="Event mapping">
+          <KV
+            label="Event type"
+            value={etName ?? <span style={{ color: 'var(--fg-faint)' }}>Auto-detect</span>}
+          />
+          <KV label="Event type column" value={scanConfig.event_type_column || <NoneTag />} mono={!!scanConfig.event_type_column} />
+          <KV
+            label="App version column"
+            value={
+              scanConfig.app_version_column
+                ? `${scanConfig.app_version_column}${scanConfig.app_version_keep_releases ? ` · keep ${scanConfig.app_version_keep_releases}` : ''}`
+                : <NoneTag />
+            }
+            mono={!!scanConfig.app_version_column}
+          />
+          <KV
+            label="Event group rules"
+            value={
+              scanConfig.event_group_rules.length
+                ? `${scanConfig.event_group_rules.length} rule${scanConfig.event_group_rules.length > 1 ? 's' : ''}`
+                : <NoneTag />
+            }
+          />
+        </SurfPanel>
+        <SurfPanel title="Metrics & drift">
+          <KV label="Breakdown columns" value={chipList(scanConfig.metric_breakdown_columns)} />
+          <KV
+            label="Values limit"
+            value={scanConfig.metric_breakdown_values_limit ?? <span style={{ color: 'var(--fg-faint)' }}>default</span>}
+            mono
+          />
+          <KV label="Distribution drift" value={chipList(scanConfig.distribution_drift_fields)} />
+          <KV label="JSON value paths" value={chipList(scanConfig.json_value_paths)} />
+          <KV label="Cardinality threshold" value={scanConfig.cardinality_threshold} mono />
+        </SurfPanel>
+      </div>
+
+      {/* Recent jobs */}
+      <SurfPanel
+        title="Recent jobs"
+        subtitle="Latest scan runs"
+        right={
           <Button
             size="sm"
             variant="outline"
@@ -305,264 +235,199 @@ export function ScanDetail({ slug, scanConfig, eventTypes, branchId }: { slug: s
                 : 'Add event group rules first'
             }
           >
-            <GitMerge className="mr-1 h-3 w-3" />
-            {applyGroupsMut.isPending ? 'Applying…' : 'Apply Groups'}
+            <GitMerge className="size-3" />
+            {applyGroupsMut.isPending ? 'Applying…' : 'Apply groups'}
           </Button>
-          <Button
-            size="sm"
-            variant="outline"
-            onClick={openReplayDialog}
-            disabled={!canReplayMetrics || replayMut.isPending}
-            title={canReplayMetrics ? 'Replay metrics for a past period' : 'Requires time column and interval'}
-          >
-            <RotateCcw className="mr-1 h-3 w-3" />
-            Replay Period
-          </Button>
-          <Button size="sm" onClick={() => runMut.mutate()} disabled={runMut.isPending}>
-            <Play className="mr-1 h-3 w-3" />
-            {runMut.isPending ? 'Starting…' : 'Run Scan'}
-          </Button>
-        </div>
-      </div>
+        }
+      >
+        {applyGroupsMut.isError && (
+          <p className="px-4 py-2 text-sm" style={{ color: 'var(--danger)' }}>{getErrorMessage(applyGroupsMut.error)}</p>
+        )}
+        {cancelMut.isError && (
+          <p className="px-4 py-2 text-sm" style={{ color: 'var(--danger)' }}>{getErrorMessage(cancelMut.error)}</p>
+        )}
+        {applyGroupsMessage && (
+          <p className="px-4 py-2 text-sm" style={{ color: 'var(--fg-subtle)' }}>{applyGroupsMessage}</p>
+        )}
+        {isLoading && <p className="px-4 py-3 text-sm text-muted-foreground">Loading jobs…</p>}
+        {jobs.length === 0 && !isLoading && (
+          <p className="px-4 py-3 text-sm text-muted-foreground">No jobs yet. Use “Run now” to start.</p>
+        )}
+        {jobs.length > 0 && (
+          <table className="w-full border-collapse">
+            <thead>
+              <tr style={{ background: 'var(--bg-sunken)' }}>
+                <th className="px-4 py-2 text-left text-[10.5px] font-semibold uppercase tracking-wide" style={{ color: 'var(--fg-subtle)' }}>Started</th>
+                <th className="px-4 py-2 text-right text-[10.5px] font-semibold uppercase tracking-wide" style={{ color: 'var(--fg-subtle)' }}>Duration</th>
+                <th className="px-4 py-2 text-right text-[10.5px] font-semibold uppercase tracking-wide" style={{ color: 'var(--fg-subtle)' }}>Rows scanned</th>
+                <th className="px-4 py-2 text-right text-[10.5px] font-semibold uppercase tracking-wide" style={{ color: 'var(--fg-subtle)' }}>Events</th>
+                <th className="px-4 py-2 text-left text-[10.5px] font-semibold uppercase tracking-wide" style={{ color: 'var(--fg-subtle)' }}>Status</th>
+                <th className="w-8" />
+              </tr>
+            </thead>
+            <tbody>
+              {jobs.map((job: ScanJob) => (
+                <JobRow
+                  key={job.id}
+                  job={job}
+                  expanded={expandedJobId === job.id}
+                  onToggle={() => setExpandedJobId(expandedJobId === job.id ? null : job.id)}
+                  onCancel={() => cancelMut.mutate(job.id)}
+                  cancelPending={cancelMut.isPending && cancelMut.variables === job.id}
+                />
+              ))}
+            </tbody>
+          </table>
+        )}
+      </SurfPanel>
+    </div>
+  )
+}
 
-      {runMut.isError && <p className="text-sm text-destructive">{getErrorMessage(runMut.error)}</p>}
-      {applyGroupsMut.isError && <p className="text-sm text-destructive">{getErrorMessage(applyGroupsMut.error)}</p>}
-      {cancelMut.isError && <p className="text-sm text-destructive">{getErrorMessage(cancelMut.error)}</p>}
-      {applyGroupsMessage && <p className="text-sm text-muted-foreground">{applyGroupsMessage}</p>}
+const STATUS_DOT: Record<string, 'success' | 'info' | 'danger' | 'neutral'> = {
+  completed: 'success',
+  running: 'info',
+  pending: 'neutral',
+  failed: 'danger',
+  cancelled: 'neutral',
+}
 
-      {isLoading && <p className="text-sm text-muted-foreground">Loading jobs…</p>}
+function JobRow({
+  job,
+  expanded,
+  onToggle,
+  onCancel,
+  cancelPending,
+}: {
+  job: ScanJob
+  expanded: boolean
+  onToggle: () => void
+  onCancel: () => void
+  cancelPending: boolean
+}) {
+  const durationSec = jobDurationSeconds(job)
+  const duration = durationSec != null
+    ? `${durationSec.toFixed(1)}s`
+    : job.status === 'running' ? 'running…' : '—'
+  const rows = jobRowsScanned(job)
+  const events = job.result_summary?.events_created ?? null
+  const isActive = job.status === 'pending' || job.status === 'running'
 
-      {jobs.length === 0 && !isLoading && (
-        <p className="text-sm text-muted-foreground">No jobs yet. Click "Run Scan" to start.</p>
+  return (
+    <Fragment>
+      <tr className="border-t" style={{ borderColor: 'var(--border-subtle)' }}>
+        <td className="px-4 py-2.5 text-xs" style={{ color: 'var(--fg-muted)' }}>
+          {job.started_at ? formatRelativeTime(job.started_at) : '—'}
+        </td>
+        <td className="mono px-4 py-2.5 text-right text-[11.5px]" style={{ color: 'var(--fg-subtle)' }}>{duration}</td>
+        <td className="mono tnum px-4 py-2.5 text-right text-[11.5px]">{rows == null ? '—' : rows.toLocaleString()}</td>
+        <td className="mono tnum px-4 py-2.5 text-right text-[11.5px]" style={{ color: 'var(--fg-muted)' }}>
+          {events == null ? '—' : events.toLocaleString()}
+        </td>
+        <td className="px-4 py-2.5">
+          {job.status === 'failed' ? (
+            <Chip tone="danger" size="xs">failed</Chip>
+          ) : (
+            <span className="inline-flex items-center gap-1.5">
+              <Dot tone={STATUS_DOT[job.status] ?? 'neutral'} pulse={job.status === 'running'} size={6} />
+              <span className="text-[11.5px]" style={{ color: 'var(--fg-muted)' }}>{job.status}</span>
+            </span>
+          )}
+        </td>
+        <td className="px-2">
+          <div className="flex items-center justify-end gap-1">
+            {isActive && (
+              <Button
+                variant="ghost"
+                size="icon"
+                className="size-6 text-muted-foreground hover:text-[var(--danger)]"
+                title="Stop job"
+                disabled={cancelPending}
+                onClick={onCancel}
+              >
+                <Ban className="size-3" />
+              </Button>
+            )}
+            {(job.result_summary || job.error_message) && (
+              <Button variant="ghost" size="icon" className="size-6" onClick={onToggle}>
+                <ChevronDown className={`size-3 transition-transform ${expanded ? 'rotate-180' : ''}`} />
+              </Button>
+            )}
+          </div>
+        </td>
+      </tr>
+      {job.result_summary && (
+        <tr>
+          <td colSpan={6} className="p-0">
+            <div className="px-4 pb-2">
+              <ReplayChunkProgress summary={job.result_summary} compact />
+            </div>
+          </td>
+        </tr>
       )}
+      {expanded && (
+        <tr>
+          <td colSpan={6} className="p-0">
+            <JobDetails job={job} />
+          </td>
+        </tr>
+      )}
+    </Fragment>
+  )
+}
 
-      {jobs.length > 0 && (
-        <div className="rounded-lg border">
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead>Status</TableHead>
-                <TableHead>Started</TableHead>
-                <TableHead>Duration</TableHead>
-                <TableHead>Result</TableHead>
-                <TableHead className="w-8"></TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {jobs.map((job: ScanJob) => {
-                const duration = job.started_at && job.completed_at
-                  ? `${((new Date(job.completed_at).getTime() - new Date(job.started_at).getTime()) / 1000).toFixed(1)}s`
-                  : job.started_at && job.status === 'running' ? 'running…' : '—'
-                return (
-                  <Fragment key={job.id}>
-                    <TableRow>
-                      <TableCell>
-                        <Badge variant={statusVariant[job.status] ?? 'outline'} className="text-xs">{job.status}</Badge>
-                      </TableCell>
-                      <TableCell className="text-xs text-muted-foreground">
-                        {job.started_at ? new Date(job.started_at).toLocaleString() : '—'}
-                      </TableCell>
-                      <TableCell className="text-xs text-muted-foreground">{duration}</TableCell>
-                      <TableCell className="text-xs">
-                        {job.status === 'failed' && (
-                          <span className="text-destructive">{job.error_message}</span>
-                        )}
-                        {job.result_summary && (
-                          <div className="flex flex-wrap items-center gap-2">
-                            <ReplayChunkProgress summary={job.result_summary} compact />
-                            {job.result_summary.events_created != null && (
-                              <Badge variant="outline" className="text-[10px] text-green-600">+{job.result_summary.events_created} events</Badge>
-                            )}
-                          {job.result_summary.variables_created != null && job.result_summary.variables_created > 0 && (
-                            <Badge variant="outline" className="text-[10px] text-blue-600">+{job.result_summary.variables_created} vars</Badge>
-                          )}
-                          {job.result_summary.variable_values_touched != null && job.result_summary.variable_values_touched > 0 && (
-                            <Badge variant="outline" className="text-[10px] text-indigo-600">+{job.result_summary.variable_values_touched} var values</Badge>
-                          )}
-                          {job.result_summary.events_skipped != null && job.result_summary.events_skipped > 0 && (
-                            <Badge variant="outline" className="text-[10px]">{job.result_summary.events_skipped} skipped</Badge>
-                          )}
-                          {job.result_summary.events_grouped != null && job.result_summary.events_grouped > 0 && (
-                            <Badge variant="outline" className="text-[10px]">{job.result_summary.events_grouped} grouped</Badge>
-                          )}
-                          {job.result_summary.events_merged != null && job.result_summary.events_merged > 0 && (
-                            <Badge variant="outline" className="text-[10px]">{job.result_summary.events_merged} merged</Badge>
-                          )}
-                          {job.result_summary.signals_added != null && job.result_summary.signals_added > 0 && (
-                            <Badge variant="outline" className="text-[10px] text-destructive">+{job.result_summary.signals_added} signals</Badge>
-                          )}
-                          {job.result_summary.signals_removed != null && job.result_summary.signals_removed > 0 && (
-                            <Badge variant="outline" className="text-[10px] text-green-700">-{job.result_summary.signals_removed} signals</Badge>
-                          )}
-                          {job.result_summary.metrics_deleted != null && job.result_summary.metrics_deleted > 0 && (
-                            <Badge variant="outline" className="text-[10px]">{job.result_summary.metrics_deleted} replaced</Badge>
-                          )}
-                          {job.result_summary.breakdown_event_metrics != null && job.result_summary.breakdown_event_metrics > 0 && (
-                            <Badge variant="outline" className="text-[10px]">{job.result_summary.breakdown_event_metrics} breakdowns</Badge>
-                          )}
-                          {job.result_summary.distribution_drifts != null && job.result_summary.distribution_drifts > 0 && (
-                            <Badge variant="outline" className="text-[10px]">{job.result_summary.distribution_drifts} drift rows</Badge>
-                          )}
-                          {job.result_summary.contract_violations_detected != null && job.result_summary.contract_violations_detected > 0 && (
-                            <Badge variant="outline" className="text-[10px] text-destructive">{job.result_summary.contract_violations_detected} contracts</Badge>
-                          )}
-                          {job.result_summary.alerts_queued != null && job.result_summary.alerts_queued > 0 && (
-                            <Badge variant="outline" className="text-[10px] text-amber-600">+{job.result_summary.alerts_queued} alerts</Badge>
-                          )}
-                          {job.result_summary.columns_analyzed != null && (
-                            <span className="text-muted-foreground text-[10px]">{job.result_summary.columns_analyzed} cols</span>
-                          )}
-                        </div>
-                      )}
-                    </TableCell>
-                    <TableCell>
-                      <div className="flex items-center justify-end gap-1">
-                        {(job.status === 'pending' || job.status === 'running') && (
-                          <Button
-                            variant="ghost"
-                            size="icon"
-                            className="h-6 w-6 text-muted-foreground hover:text-destructive"
-                            title="Stop job"
-                            disabled={cancelMut.isPending && cancelMut.variables === job.id}
-                            onClick={() => cancelMut.mutate(job.id)}
-                          >
-                            <Ban className="h-3 w-3" />
-                          </Button>
-                        )}
-                        {(job.result_summary || job.error_message) && (
-                          <Button variant="ghost" size="icon" className="h-6 w-6"
-                            onClick={() => setExpandedJobId(expandedJobId === job.id ? null : job.id)}>
-                            <ChevronDown className={`h-3 w-3 transition-transform ${expandedJobId === job.id ? 'rotate-180' : ''}`} />
-                          </Button>
-                        )}
-                      </div>
-                    </TableCell>
-                  </TableRow>
-                  {expandedJobId === job.id && (
-                    <TableRow>
-                      <TableCell colSpan={5} className="p-0">
-                        <div className="p-4 space-y-3 bg-muted/30">
-                          <h4 className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Job Details</h4>
-                          {job.error_message && (
-                            <div className="bg-destructive/10 border border-destructive/20 rounded-lg p-3 text-xs text-destructive font-mono whitespace-pre-wrap">
-                              {job.error_message}
-                            </div>
-                          )}
-                          {job.result_summary && (
-                            <div className="space-y-3">
-                              {(job.result_summary.time_from || job.result_summary.time_to) && (
-                                <div className="rounded-md border bg-background p-3 text-xs text-muted-foreground">
-                                  <span className="font-medium text-foreground">
-                                    {job.result_summary.mode === 'metrics_replay' ? 'Replay period' : 'Collection period'}
-                                  </span>
-                                  {job.result_summary.time_from && job.result_summary.time_to && (
-                                    <span> · {new Date(job.result_summary.time_from).toLocaleString()} - {new Date(job.result_summary.time_to).toLocaleString()}</span>
-                                  )}
-                                </div>
-                              )}
-                                {job.result_summary.catalog_sync_skipped && (
-                                  <div className="rounded-md border border-amber-300/60 bg-amber-50/80 p-3 text-xs text-amber-900">
-                                    Replay skipped event/variable catalog generation, but can still enrich observed variable values for existing templates.
-                                  </div>
-                                )}
-                                <ReplayChunkProgress summary={job.result_summary} />
-                                <div className="grid grid-cols-2 gap-3 text-xs md:grid-cols-3 xl:grid-cols-5">
-                              <Card className="p-3 text-center"><div className="text-lg font-bold text-green-600">{job.result_summary.events_created ?? 0}</div><div className="text-muted-foreground">Events created</div></Card>
-                              <Card className="p-3 text-center"><div className="text-lg font-bold text-blue-600">{job.result_summary.variables_created ?? 0}</div><div className="text-muted-foreground">Variables created</div></Card>
-                              {job.result_summary.variable_values_touched != null && (
-                                <Card className="p-3 text-center"><div className="text-lg font-bold text-indigo-600">{job.result_summary.variable_values_touched}</div><div className="text-muted-foreground">Variable values touched</div></Card>
-                              )}
-                              <Card className="p-3 text-center"><div className="text-lg font-bold text-foreground">{job.result_summary.events_skipped ?? 0}</div><div className="text-muted-foreground">Events skipped</div></Card>
-                              {job.result_summary.events_grouped != null && (
-                                <Card className="p-3 text-center">
-                                  <div className="text-lg font-bold text-foreground">{job.result_summary.events_grouped}</div>
-                                  <div className="text-muted-foreground">Events grouped</div>
-                                </Card>
-                              )}
-                              {job.result_summary.events_merged != null && (
-                                <Card className="p-3 text-center">
-                                  <div className="text-lg font-bold text-foreground">{job.result_summary.events_merged}</div>
-                                  <div className="text-muted-foreground">Events merged</div>
-                                </Card>
-                              )}
-                              <Card className="p-3 text-center"><div className="text-lg font-bold text-primary">{job.result_summary.columns_analyzed ?? 0}</div><div className="text-muted-foreground">Columns analyzed</div></Card>
-                              {job.result_summary.signals_added != null && (
-                                <Card className="p-3 text-center">
-                                  <div className="text-lg font-bold text-destructive">{job.result_summary.signals_added}</div>
-                                  <div className="text-muted-foreground">Signals added</div>
-                                </Card>
-                              )}
-                              {job.result_summary.signals_removed != null && (
-                                <Card className="p-3 text-center">
-                                  <div className="text-lg font-bold text-green-700">{job.result_summary.signals_removed}</div>
-                                  <div className="text-muted-foreground">Signals removed</div>
-                                </Card>
-                              )}
-                              {job.result_summary.metrics_deleted != null && (
-                                <Card className="p-3 text-center">
-                                  <div className="text-lg font-bold text-foreground">{job.result_summary.metrics_deleted}</div>
-                                  <div className="text-muted-foreground">Metrics replaced</div>
-                                </Card>
-                              )}
-                              {job.result_summary.breakdown_event_metrics != null && (
-                                <Card className="p-3 text-center">
-                                  <div className="text-lg font-bold text-foreground">{job.result_summary.breakdown_event_metrics}</div>
-                                  <div className="text-muted-foreground">Event breakdowns</div>
-                                </Card>
-                              )}
-                              {job.result_summary.breakdown_anomalies_detected != null && (
-                                <Card className="p-3 text-center">
-                                  <div className="text-lg font-bold text-destructive">{job.result_summary.breakdown_anomalies_detected}</div>
-                                  <div className="text-muted-foreground">Breakdown anomalies</div>
-                                </Card>
-                              )}
-                              {job.result_summary.distribution_drifts != null && (
-                                <Card className="p-3 text-center">
-                                  <div className="text-lg font-bold text-foreground">{job.result_summary.distribution_drifts}</div>
-                                  <div className="text-muted-foreground">Distribution rows</div>
-                                </Card>
-                              )}
-                              {job.result_summary.significant_distribution_drifts != null && (
-                                <Card className="p-3 text-center">
-                                  <div className="text-lg font-bold text-destructive">{job.result_summary.significant_distribution_drifts}</div>
-                                  <div className="text-muted-foreground">Distribution signals</div>
-                                </Card>
-                              )}
-                              {job.result_summary.contract_violations_detected != null && (
-                                <Card className="p-3 text-center">
-                                  <div className="text-lg font-bold text-destructive">{job.result_summary.contract_violations_detected}</div>
-                                  <div className="text-muted-foreground">Contract violations</div>
-                                </Card>
-                              )}
-                              {job.result_summary.alerts_queued != null && (
-                                <Card className="p-3 text-center">
-                                  <div className="text-lg font-bold text-amber-600">{job.result_summary.alerts_queued}</div>
-                                  <div className="text-muted-foreground">Alerts queued</div>
-                                </Card>
-                              )}
-                              </div>
-                            </div>
-                          )}
-                          {job.result_summary?.details && job.result_summary.details.length > 0 && (
-                            <div>
-                              <h5 className="text-xs font-semibold text-muted-foreground mb-1">Log</h5>
-                              <div className="rounded-lg border bg-background p-2 max-h-48 overflow-y-auto">
-                                {job.result_summary.details.map((detail, i) => (
-                                  <div key={i} className="text-xs font-mono text-muted-foreground py-0.5 border-b border-border/50 last:border-0">{detail}</div>
-                                ))}
-                              </div>
-                            </div>
-                          )}
-                        </div>
-                      </TableCell>
-                    </TableRow>
-                  )}
-                </Fragment>
-                )
-              })}
-            </TableBody>
-          </Table>
+function JobDetails({ job }: { job: ScanJob }) {
+  const summary = job.result_summary
+  return (
+    <div className="space-y-3 bg-muted/30 p-4">
+      <h4 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Job details</h4>
+      {job.error_message && (
+        <div className="mono whitespace-pre-wrap rounded-lg border border-destructive/20 bg-destructive/10 p-3 text-xs text-destructive">
+          {job.error_message}
         </div>
+      )}
+      {summary && (
+        <>
+          {(summary.time_from || summary.time_to) && (
+            <div className="rounded-md border bg-background p-3 text-xs text-muted-foreground">
+              <span className="font-medium text-foreground">
+                {summary.mode === 'metrics_replay' ? 'Replay period' : 'Collection period'}
+              </span>
+              {summary.time_from && summary.time_to && (
+                <span> · {new Date(summary.time_from).toLocaleString()} - {new Date(summary.time_to).toLocaleString()}</span>
+              )}
+            </div>
+          )}
+          <ReplayChunkProgress summary={summary} />
+          <div className="grid grid-cols-2 gap-3 text-xs md:grid-cols-3 xl:grid-cols-5">
+            <Card className="p-3 text-center"><div className="text-lg font-bold" style={{ color: 'var(--success)' }}>{summary.events_created ?? 0}</div><div className="text-muted-foreground">Events created</div></Card>
+            <Card className="p-3 text-center"><div className="text-lg font-bold" style={{ color: 'var(--info)' }}>{summary.variables_created ?? 0}</div><div className="text-muted-foreground">Variables created</div></Card>
+            <Card className="p-3 text-center"><div className="text-lg font-bold text-foreground">{summary.events_skipped ?? 0}</div><div className="text-muted-foreground">Events skipped</div></Card>
+            <Card className="p-3 text-center"><div className="text-lg font-bold" style={{ color: 'var(--accent)' }}>{summary.columns_analyzed ?? 0}</div><div className="text-muted-foreground">Columns analyzed</div></Card>
+            {summary.breakdown_event_metrics != null && (
+              <Card className="p-3 text-center"><div className="text-lg font-bold text-foreground">{summary.breakdown_event_metrics}</div><div className="text-muted-foreground">Event breakdowns</div></Card>
+            )}
+            {summary.distribution_drifts != null && (
+              <Card className="p-3 text-center"><div className="text-lg font-bold text-foreground">{summary.distribution_drifts}</div><div className="text-muted-foreground">Distribution rows</div></Card>
+            )}
+            {summary.signals_added != null && (
+              <Card className="p-3 text-center"><div className="text-lg font-bold" style={{ color: 'var(--danger)' }}>{summary.signals_added}</div><div className="text-muted-foreground">Signals added</div></Card>
+            )}
+            {summary.alerts_queued != null && (
+              <Card className="p-3 text-center"><div className="text-lg font-bold" style={{ color: 'var(--warning)' }}>{summary.alerts_queued}</div><div className="text-muted-foreground">Alerts queued</div></Card>
+            )}
+          </div>
+          {summary.details && summary.details.length > 0 && (
+            <div>
+              <h5 className="mb-1 text-xs font-semibold text-muted-foreground">Log</h5>
+              <div className="max-h-48 overflow-y-auto rounded-lg border bg-background p-2">
+                {summary.details.map((detail, i) => (
+                  <div key={i} className="mono border-b border-border/50 py-0.5 text-xs text-muted-foreground last:border-0">{detail}</div>
+                ))}
+              </div>
+            </div>
+          )}
+        </>
       )}
     </div>
   )

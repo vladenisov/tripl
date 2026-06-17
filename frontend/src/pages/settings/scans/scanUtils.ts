@@ -1,4 +1,39 @@
-import type { IntervalCode, ScanConfigPreview } from '@/types'
+import type { IntervalCode, ScanConfigPreview, ScanJob } from '@/types'
+import { formatRelativeTime } from '@/lib/datetime'
+import type { ScanStatus } from './scanLayoutConstants'
+
+// Derive a canonical scan status from its most recent job. The real ScanConfig
+// has no status column, so the latest job's state drives the dot/label.
+export interface ScanRunInfo {
+  status: ScanStatus
+  lastRunLabel: string
+  lastJob: ScanJob | null
+}
+
+export function deriveScanRunInfo(jobs: ScanJob[]): ScanRunInfo {
+  const lastJob = jobs[0] ?? null
+  if (!lastJob) return { status: 'idle', lastRunLabel: 'never', lastJob: null }
+  if (lastJob.status === 'running' || lastJob.status === 'pending') {
+    return { status: 'running', lastRunLabel: 'running', lastJob }
+  }
+  const stamp = lastJob.completed_at ?? lastJob.started_at ?? lastJob.created_at
+  const lastRunLabel = formatRelativeTime(stamp)
+  if (lastJob.status === 'failed') return { status: 'failed', lastRunLabel, lastJob }
+  return { status: 'ok', lastRunLabel, lastJob }
+}
+
+// Total scan rows from a job's result summary, falling back across the fields the
+// backend may populate (query rows scanned vs. processed).
+export function jobRowsScanned(job: ScanJob | null): number | null {
+  if (!job?.result_summary) return null
+  return job.result_summary.query_rows_scanned ?? job.result_summary.scan_rows_processed ?? null
+}
+
+export function jobDurationSeconds(job: ScanJob): number | null {
+  if (!job.started_at || !job.completed_at) return null
+  return (new Date(job.completed_at).getTime() - new Date(job.started_at).getTime()) / 1000
+}
+
 
 export function formatPreviewCell(value: unknown): string {
   if (value == null) return '—'

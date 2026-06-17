@@ -1,70 +1,108 @@
-import { ChevronRight, Trash2 } from 'lucide-react'
-import type { ScanConfig } from '@/types'
-import { Badge } from '@/components/ui/badge'
-import { Button } from '@/components/ui/button'
-import { Card } from '@/components/ui/card'
+import type { DataSource, ScanConfig } from '@/types'
+import { Chip } from '@/components/primitives/chip'
+import { Dot } from '@/components/primitives/dot'
+import { Clock } from 'lucide-react'
+import { SrcIcon } from './scanLayout'
+import type { ScanRunInfo } from './scanUtils'
 
-export function ScanConfigRow({
+// Config badges on the detail header (⏱ interval, lookback, caps, JSON, etc.).
+export function ScanBadges({
   sc,
-  dsName,
-  onNavigate,
-  onDelete,
+  intervalLabel,
 }: {
   sc: ScanConfig
-  dsName: string
-  onNavigate: () => void
-  onDelete: () => void
+  intervalLabel: Record<string, string>
 }) {
+  const items: string[] = []
+  if (sc.interval) items.push(`⏱ ${intervalLabel[sc.interval] ?? sc.interval}`)
+  if (sc.scan_lookback_hours) items.push(`Lookback ${sc.scan_lookback_hours}h`)
+  if (sc.scan_row_limit) items.push(`Scan cap ${sc.scan_row_limit.toLocaleString()}`)
+  if (sc.metrics_row_limit) items.push(`Metrics cap ${sc.metrics_row_limit.toLocaleString()}`)
+  if (sc.json_value_paths.length) items.push(`JSON keep ${sc.json_value_paths.length}`)
+  if (sc.metric_breakdown_columns.length) items.push(`Breakdowns ${sc.metric_breakdown_columns.length}`)
+  if (sc.distribution_drift_fields.length) items.push(`Distribution ${sc.distribution_drift_fields.length}`)
+  if (sc.app_version_column) {
+    items.push(`Version ${sc.app_version_column}${sc.app_version_keep_releases ? ` · keep ${sc.app_version_keep_releases}` : ''}`)
+  }
+  if (sc.event_group_rules.length) items.push(`Groups ${sc.event_group_rules.length}`)
+
+  if (items.length === 0) return null
   return (
-    <Card>
-      <div
-        className="flex items-center justify-between p-4 cursor-pointer hover:bg-muted/50 transition-colors"
-        onClick={onNavigate}
-      >
-        <div className="flex items-center gap-3">
-          <span className="font-semibold">{sc.name}</span>
-          <span className="text-muted-foreground text-sm">{dsName}</span>
-          {sc.interval && <Badge variant="outline" className="text-xs">⏱ {sc.interval}</Badge>}
-          {sc.scan_lookback_hours && (
-            <Badge variant="outline" className="text-xs">Lookback {sc.scan_lookback_hours}h</Badge>
-          )}
-          {sc.scan_row_limit && (
-            <Badge variant="outline" className="text-xs">Scan cap {sc.scan_row_limit}</Badge>
-          )}
-          {sc.metrics_row_limit && (
-            <Badge variant="outline" className="text-xs">Metrics cap {sc.metrics_row_limit}</Badge>
-          )}
-          {sc.json_value_paths.length > 0 && (
-            <Badge variant="outline" className="text-xs">JSON keep {sc.json_value_paths.length}</Badge>
-          )}
-          {sc.metric_breakdown_columns.length > 0 && (
-            <Badge variant="outline" className="text-xs">Breakdowns {sc.metric_breakdown_columns.length}</Badge>
-          )}
-          {sc.distribution_drift_fields.length > 0 && (
-            <Badge variant="outline" className="text-xs">Distribution {sc.distribution_drift_fields.length}</Badge>
-          )}
-          {sc.app_version_column && (
-            <Badge variant="outline" className="text-xs">
-              Version {sc.app_version_column}
-              {sc.app_version_keep_releases ? ` · keep ${sc.app_version_keep_releases}` : ''}
-            </Badge>
-          )}
-          {sc.event_group_rules.length > 0 && (
-            <Badge variant="outline" className="text-xs">Groups {sc.event_group_rules.length}</Badge>
-          )}
+    <div className="flex flex-wrap gap-1.5">
+      {items.map((label, i) => (
+        <Chip key={i} size="xs" variant="outline">{label}</Chip>
+      ))}
+    </div>
+  )
+}
+
+// One row in the "Scan configs" table.
+export function ScanListRow({
+  sc,
+  dataSource,
+  runInfo,
+  intervalLabel,
+  onNavigate,
+}: {
+  sc: ScanConfig
+  dataSource: DataSource | null
+  runInfo: ScanRunInfo
+  intervalLabel: Record<string, string>
+  onNavigate: () => void
+}) {
+  const firstQueryLine = sc.base_query.split('\n')[0]
+  const lastRunTone = runInfo.status === 'failed'
+    ? 'danger'
+    : runInfo.status === 'running'
+      ? 'info'
+      : runInfo.status === 'idle'
+        ? 'neutral'
+        : 'success'
+
+  return (
+    <tr
+      className="cursor-pointer border-t transition-colors hover:bg-[var(--surface-hover)]"
+      style={{ borderColor: 'var(--border-subtle)' }}
+      onClick={onNavigate}
+    >
+      <td className="px-3.5 py-2.5 align-middle">
+        <div className="flex items-center gap-2.5">
+          <SrcIcon dbType={dataSource?.db_type ?? null} size={28} />
+          <div className="min-w-0">
+            <div className="text-[13px] font-semibold">{sc.name}</div>
+            <div className="text-[11px]" style={{ color: 'var(--fg-subtle)' }}>
+              {dataSource?.name ?? 'Unknown source'}
+            </div>
+          </div>
         </div>
-        <div className="flex items-center gap-2">
-          <Button
-            variant="ghost"
-            size="icon"
-            className="h-7 w-7 text-muted-foreground hover:text-destructive"
-            onClick={e => { e.stopPropagation(); onDelete() }}
+      </td>
+      <td className="px-3.5 py-2.5 align-middle">
+        <span
+          className="mono inline-block max-w-[220px] overflow-hidden text-ellipsis whitespace-nowrap align-middle text-[11px]"
+          style={{ color: 'var(--fg-muted)' }}
+        >
+          {firstQueryLine}
+        </span>
+      </td>
+      <td className="px-3.5 py-2.5 align-middle">
+        {sc.interval ? (
+          <Chip size="xs" icon={<Clock className="size-2.5" />}>{intervalLabel[sc.interval] ?? sc.interval}</Chip>
+        ) : (
+          <span className="text-[11.5px]" style={{ color: 'var(--fg-faint)' }}>Manual</span>
+        )}
+      </td>
+      <td className="px-3.5 py-2.5 align-middle">
+        <span className="inline-flex items-center gap-1.5">
+          <Dot tone={lastRunTone} pulse={runInfo.status === 'running'} size={6} />
+          <span
+            className="mono text-[11.5px]"
+            style={{ color: runInfo.status === 'failed' ? 'var(--danger)' : 'var(--fg-subtle)' }}
           >
-            <Trash2 className="h-3 w-3" />
-          </Button>
-          <ChevronRight className="h-4 w-4 text-muted-foreground" />
-        </div>
-      </div>
-    </Card>
+            {runInfo.lastRunLabel}
+          </span>
+        </span>
+      </td>
+      <td className="w-10 px-3.5 py-2.5 align-middle text-[var(--fg-faint)]">›</td>
+    </tr>
   )
 }
