@@ -222,7 +222,6 @@ export default function EventsPage() {
         unreviewedCount={unreviewedCount}
         projectTotalSignal={projectTotalSignal}
         eventTypeSignals={eventTypeSignals}
-        onNewEvent={openNewEvent}
       />
 
       {blockingError && (
@@ -260,6 +259,7 @@ export default function EventsPage() {
             fieldColumns={fieldColumns}
             metaFields={metaFields}
             onToggleColumn={toggleColumn}
+            onNewEvent={openNewEvent}
           />
 
           <BulkActionBar

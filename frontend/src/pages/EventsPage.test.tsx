@@ -199,8 +199,10 @@ describe('EventsPage', () => {
     expect(screen.getByText('Hours')).toBeInTheDocument()
     const metricsButton = await screen.findByRole('button', { name: '1k' })
     expect(metricsButton).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'Edit event' })).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'More actions' })).toBeInTheDocument()
+    // Hover row actions are move up/down + a status select only — Edit/Metrics/
+    // Archive/Delete now live on the event detail page, not on the row.
+    expect(screen.queryByRole('button', { name: 'Edit event' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'More actions' })).not.toBeInTheDocument()
     expect(container.querySelector('a[href="/p/demo/monitoring/project-total/scan-1"]')).toBeInTheDocument()
     expect(container.querySelector('a[href="/p/demo/monitoring/event-type/type-1"]')).not.toBeInTheDocument()
     expect(container.querySelector('a[href="/p/demo/monitoring/event/event-1"]')).toBeInTheDocument()
@@ -211,14 +213,14 @@ describe('EventsPage', () => {
     expect((await screen.findAllByText('Last 48 hours')).length).toBeGreaterThan(0)
     expect(screen.getAllByText('1k events').length).toBeGreaterThan(0)
 
-    fireEvent.mouseEnter(screen.getByRole('button', { name: 'More actions' }))
-    const expandedPanel = await screen.findByRole('button', { name: 'Move event up' })
-    expect(expandedPanel.parentElement).toHaveClass('opacity-100')
+    // The hover cluster is an absolute overlay rendered for every row; it
+    // exposes move up/down + a status select, and nothing else.
     expect(screen.getByRole('button', { name: 'Move event up' })).toBeDisabled()
     expect(screen.getByRole('button', { name: 'Move event down' })).toBeDisabled()
-    expect(screen.getByRole('link', { name: 'View metrics' })).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'Archive event' })).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'Delete event' })).toBeInTheDocument()
+    expect(screen.getByRole('combobox', { name: 'Set event status' })).toBeInTheDocument()
+    expect(screen.queryByRole('link', { name: 'View metrics' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Archive event' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Delete event' })).not.toBeInTheDocument()
 
     fireEvent.click(screen.getByText('Show chart'))
     expect(await screen.findByText('View signal')).toBeInTheDocument()
@@ -384,7 +386,9 @@ describe('EventsPage', () => {
     fireEvent.click(screen.getByLabelText('Select Homepage View'))
     fireEvent.click(screen.getByLabelText('Select Settings View'))
 
-    expect(screen.getByText('2 selected')).toBeInTheDocument()
+    expect(
+      screen.getByText((_, node) => node?.textContent === '2 selected' && node.tagName === 'SPAN'),
+    ).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: 'Delete selected' }))
     fireEvent.click(await screen.findByRole('button', { name: 'Delete' }))
 

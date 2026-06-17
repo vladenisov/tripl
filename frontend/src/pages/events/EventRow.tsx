@@ -105,7 +105,12 @@ export const EventRow = memo(function EventRow({
   const statusTone = EVENT_STATUS_DOT_TONE[(ev.status as EventStatus) ?? 'draft'] ?? 'neutral'
 
   return (
-    <TableRow ref={setNodeRef} style={dragStyle} data-state={selected ? 'selected' : undefined}>
+    <TableRow
+      ref={setNodeRef}
+      style={dragStyle}
+      data-state={selected ? 'selected' : undefined}
+      className="group/row"
+    >
       <TableCell className="w-8 px-1">
         <button
           type="button"
@@ -117,14 +122,17 @@ export const EventRow = memo(function EventRow({
           <GripVertical className="h-3.5 w-3.5" />
         </button>
       </TableCell>
-      <TableCell className="tripl-pin-l pl-5">
+      <TableCell className="tripl-pin-l w-10 pl-5">
         <Checkbox
           checked={selected}
           onCheckedChange={(checked) => onToggleSelected(ev.id, checked === true)}
           aria-label={`Select ${ev.name}`}
         />
       </TableCell>
-      <TableCell className="font-medium">
+      <TableCell
+        className="border-r font-medium"
+        style={{ borderColor: 'var(--border-subtle)' }}
+      >
         <div className="inline-flex max-w-full items-center gap-2 align-middle">
           <Dot tone={signalTone ?? statusTone} pulse={!!signalTone} size={6} />
           <button
@@ -238,20 +246,17 @@ export const EventRow = memo(function EventRow({
           </TableCell>
         )
       })}
-      <TableCell className="sticky right-0 z-10 border-l bg-background/95 pl-3 pr-2 backdrop-blur-sm hover:z-40 focus-within:z-40">
-        <EventRowActions
-          event={ev}
-          slug={slug}
-          canMoveUp={canMoveUp}
-          canMoveDown={canMoveDown}
-          onEdit={() => onRowAction('edit', ev)}
-          onMoveUp={() => onRowAction('move-up', ev)}
-          onMoveDown={() => onRowAction('move-down', ev)}
-          onArchive={() => onRowAction('set-status-archived', ev)}
-          onRestore={() => onRowAction('set-status-draft', ev)}
-          onDelete={() => onRowAction('delete', ev)}
-          onSetStatus={status => onSetStatus(ev.id, status)}
-        />
+      <TableCell className="sticky right-0 z-10 w-6 min-w-6 max-w-6 border-l bg-background p-0 group-hover/row:z-40 focus-within:z-40">
+        <div className="relative h-full w-6">
+          <EventRowActions
+            event={ev}
+            canMoveUp={canMoveUp}
+            canMoveDown={canMoveDown}
+            onMoveUp={() => onRowAction('move-up', ev)}
+            onMoveDown={() => onRowAction('move-down', ev)}
+            onSetStatus={status => onSetStatus(ev.id, status)}
+          />
+        </div>
       </TableCell>
     </TableRow>
   )

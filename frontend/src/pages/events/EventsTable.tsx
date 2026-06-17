@@ -21,6 +21,7 @@ import {
   TableRow,
 } from '@/components/ui/table'
 import { TooltipProvider } from '@/components/ui/tooltip'
+import { Dot } from '@/components/primitives/dot'
 import { EmptyState } from '@/components/empty-state'
 import type {
   EventListItem,
@@ -169,7 +170,12 @@ export function EventsTable({
                       aria-label="Select all visible events"
                     />
                   </TableHead>
-                  <TableHead>Event</TableHead>
+                  <TableHead
+                    className="border-r"
+                    style={{ borderColor: 'var(--border)' }}
+                  >
+                    Event
+                  </TableHead>
                   {!activeEt && <TableHead>Type</TableHead>}
                   <TableHead className="w-32 text-right">{ROW_METRICS_LABEL}</TableHead>
                   {!hideTags && (
@@ -251,9 +257,10 @@ export function EventsTable({
                       />
                     )
                   })}
-                  <TableHead className="sticky right-0 z-20 w-[7.5rem] border-l bg-background text-right">
-                    Actions
-                  </TableHead>
+                  <TableHead
+                    aria-label="Actions"
+                    className="sticky right-0 z-20 w-6 min-w-6 max-w-6 border-l bg-[var(--bg-sunken)] p-0"
+                  />
                 </TableRow>
               </TableHeader>
               <TableBody>
@@ -326,16 +333,32 @@ export function EventsTable({
           </div>
           {events.length > 0 && (
             <div
-              className="flex items-center gap-2 border-t px-3 py-1.5 text-[11px]"
+              className="flex h-[30px] items-center gap-3.5 border-t px-5 text-[11px]"
               style={{
                 borderColor: 'var(--border)',
                 background: 'var(--bg-sunken)',
                 color: 'var(--fg-subtle)',
               }}
             >
-              <span className="mono tnum">
-                Showing {rangeLabel} of {total.toLocaleString()}
+              <span>
+                Showing{' '}
+                <span className="mono tnum" style={{ color: 'var(--fg-muted)' }}>
+                  {rangeLabel}
+                </span>{' '}
+                of{' '}
+                <span className="mono tnum" style={{ color: 'var(--fg)' }}>
+                  {total.toLocaleString()}
+                </span>
               </span>
+              <span style={{ color: 'var(--fg-faint)' }}>·</span>
+              <span className="mono tnum">{total.toLocaleString()} total in plan</span>
+              <div className="flex-1" />
+              {virtualize && (
+                <span className="inline-flex items-center gap-1.5">
+                  <Dot tone="accent" size={5} pulse />
+                  virtualized · row {firstVisible.toLocaleString()}
+                </span>
+              )}
             </div>
           )}
         </SortableContext>
