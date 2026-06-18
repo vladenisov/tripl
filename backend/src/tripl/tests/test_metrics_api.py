@@ -1628,3 +1628,56 @@ async def test_overview_top_events_ranks_by_volume(client: AsyncClient):
     assert rows[0]["total_count"] == 500
     assert rows[1]["total_count"] == 20
     assert rows[0]["name"] == "Big"
+
+
+@pytest.mark.asyncio
+async def test_data_source_stats_aggregates_recent_metrics(client: AsyncClient):
+    ctx = await _setup_metrics_project(client, slug="ds-stats")
+    recent = datetime.now(UTC) - timedelta(hours=1)
+    old = datetime.now(UTC) - timedelta(days=10)
+    ds_id = uuid.uuid4()
+    ev1, ev2 = uuid.uuid4(), uuid.uuid4()
+
+    async with TestSessionLocal() as session:
+        data_source = DataSource(
+            id=ds_id,
+            name="DS stats",
+            db_type="clickhouse",
+            host="localhost",
+            port=8123,
+            database_name="default",
+            username="default",
+            password_encrypted="",
+        )
+        scan_config = ScanConfig(
+            id=uuid.uuid4(),
+            data_source_id=ds_id,
+            project_id=uuid.UUID(ctx["project_id"]),
+            event_type_id=None,
+            name="DS Config",
+            base_query="SELECT time, event_name FROM events",
+            event_type_column="event_name",
+            time_column="time",
+            cardinality_threshold=100,
+            interval="1h",
+        )
+        session.add_all([data_source, scan_config])
+        session.add_all(
+            [
+                EventMetric(id=uuid.uuid4(), scan_config_id=scan_config.id, event_id=ev1,
+                            event_type_id=None, bucket=recent, count=100),
+                EventMetric(id=uuid.uuid4(), scan_config_id=scan_config.id, event_id=ev2,
+                            event_type_id=None, bucket=recent, count=50),
+                # Outside the window — excluded.
+                EventMetric(id=uuid.uuid4(), scan_config_id=scan_config.id, event_id=ev1,
+                            event_type_id=None, bucket=old, count=9999),
+            ]
+        )
+        await session.commit()
+
+    resp = await client.get(f"/api/v1/data-sources/{ds_id}/stats?window_hours=48")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["volume_window"] == 150
+    assert body["events_tracked"] == 2
+    assert len(body["throughput"]) == 1

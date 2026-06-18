@@ -6,10 +6,11 @@ from tripl.api.deps import OwnerUserDep, SessionDep, get_owner_user
 from tripl.schemas.data_source import (
     DataSourceCreate,
     DataSourceResponse,
+    DataSourceStatsResponse,
     DataSourceTestResponse,
     DataSourceUpdate,
 )
-from tripl.services import audit_service, datasource_service
+from tripl.services import audit_service, datasource_service, metrics_service
 
 router = APIRouter(
     prefix="/data-sources",
@@ -45,6 +46,13 @@ async def create_data_source(
 @router.get("/{ds_id}", response_model=DataSourceResponse)
 async def get_data_source(session: SessionDep, ds_id: uuid.UUID) -> DataSourceResponse:
     return await datasource_service.get_data_source(session, ds_id)
+
+
+@router.get("/{ds_id}/stats", response_model=DataSourceStatsResponse)
+async def get_data_source_stats(
+    session: SessionDep, ds_id: uuid.UUID, window_hours: int = 48
+) -> DataSourceStatsResponse:
+    return await metrics_service.get_data_source_stats(session, ds_id, window_hours=window_hours)
 
 
 @router.patch("/{ds_id}", response_model=DataSourceResponse)

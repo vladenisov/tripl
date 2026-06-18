@@ -19,6 +19,7 @@ from tripl.models.metric_breakdown_anomaly import MetricBreakdownAnomaly
 from tripl.models.project import Project
 from tripl.models.release_regression import ReleaseRegression
 from tripl.models.scan_config import ScanConfig
+from tripl.schemas.data_source import DataSourceStatsResponse, DataSourceThroughputPoint
 from tripl.schemas.event_metric import (
     AppVersionAdoptionResponse,
     AppVersionInfo,
@@ -1103,6 +1104,49 @@ async def get_top_events_by_volume(
         )
         for row in rows
     ]
+
+
+async def get_data_source_stats(
+    session: AsyncSession,
+    data_source_id: uuid.UUID,
+    *,
+    window_hours: int = 48,
+) -> DataSourceStatsResponse:
+    """Aggregate runtime activity for a data source from EventMetric rollups.
+
+    Volume + events-tracked + a bucketed throughput series over the recent
+    window, joined to the data source via ScanConfig. Backs the redesign's
+    data-source health/throughput cards.
+    """
+    time_from = datetime.now(UTC) - timedelta(hours=window_hours)
+    totals = (
+        await session.execute(
+            select(
+                func.coalesce(func.sum(EventMetric.count), 0),
+                func.count(func.distinct(EventMetric.event_id)),
+            )
+            .join(ScanConfig, ScanConfig.id == EventMetric.scan_config_id)
+            .where(ScanConfig.data_source_id == data_source_id, EventMetric.bucket >= time_from)
+        )
+    ).one()
+    series_rows = (
+        await session.execute(
+            select(EventMetric.bucket, func.coalesce(func.sum(EventMetric.count), 0))
+            .join(ScanConfig, ScanConfig.id == EventMetric.scan_config_id)
+            .where(ScanConfig.data_source_id == data_source_id, EventMetric.bucket >= time_from)
+            .group_by(EventMetric.bucket)
+            .order_by(EventMetric.bucket)
+        )
+    ).all()
+    return DataSourceStatsResponse(
+        events_tracked=int(totals[1] or 0),
+        volume_window=int(totals[0] or 0),
+        window_hours=window_hours,
+        throughput=[
+            DataSourceThroughputPoint(bucket=bucket, count=int(count or 0))
+            for bucket, count in series_rows
+        ],
+    )
 
 
 async def get_events_window_metrics(
