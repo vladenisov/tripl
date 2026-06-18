@@ -1,6 +1,7 @@
 import { ServerCog } from 'lucide-react'
 import type { SystemSettings } from '@/types'
-import { SectionCard, StatusBadge } from './ServiceSettingsPrimitives'
+import { Dot } from '@/components/primitives/dot'
+import { SectionCard } from './ServiceSettingsPrimitives'
 
 export function SystemCard({ system }: { system: SystemSettings }) {
   const rows: { label: string; active: boolean }[] = [
@@ -15,15 +16,28 @@ export function SystemCard({ system }: { system: SystemSettings }) {
 
   return (
     <SectionCard title="System" icon={ServerCog}>
-      <div className="grid gap-3 sm:grid-cols-2">
+      <div className="grid gap-2.5 sm:grid-cols-3">
         {rows.map(row => (
           <div
             key={row.label}
-            className="flex min-h-10 items-center justify-between gap-3 rounded-md border px-3"
-            style={{ borderColor: 'var(--border-subtle)' }}
+            className="flex flex-col gap-1.5 rounded-[10px] border px-3 py-2.5"
+            style={{ borderColor: 'var(--border-subtle)', background: 'var(--bg-sunken)' }}
           >
-            <span className="text-xs text-muted-foreground">{row.label}</span>
-            <StatusBadge active={row.active} label={row.active ? 'Configured' : 'Unset'} />
+            <div className="flex items-center gap-1.5">
+              <Dot tone={row.active ? 'success' : 'neutral'} pulse={row.active} size={7} />
+              <span
+                className="text-[10.5px] uppercase tracking-[0.05em]"
+                style={{ color: 'var(--fg-faint)' }}
+              >
+                {row.label}
+              </span>
+            </div>
+            <span
+              className="text-[12.5px] font-medium"
+              style={{ color: row.active ? 'var(--success)' : 'var(--fg-subtle)' }}
+            >
+              {row.active ? 'Configured' : 'Unset'}
+            </span>
           </div>
         ))}
       </div>
