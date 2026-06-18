@@ -91,9 +91,9 @@ export function BulkActionBar({
         </Select>
       )}
       <Button
-        variant="ghost"
+        variant="danger"
         size="sm"
-        className="h-7 text-xs text-[var(--danger)] hover:bg-[var(--danger-soft)] hover:text-[var(--danger)]"
+        className="h-7 text-xs"
         onClick={onDelete}
         disabled={disabled}
       >
