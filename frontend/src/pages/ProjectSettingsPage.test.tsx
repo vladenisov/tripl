@@ -150,6 +150,14 @@ describe('ProjectSettingsPage', () => {
     vi.spyOn(globalThis, 'fetch').mockImplementation(async input => {
       const url = String(input)
 
+      if (url.includes('/data-sources/') && url.includes('/schema')) {
+        return mockJsonResponse({
+          tables: [
+            { name: 'events', columns: [{ name: 'id', data_type: 'UInt64' }] },
+          ],
+        })
+      }
+
       if (url.endsWith('/api/v1/data-sources')) {
         return mockJsonResponse([
           {
@@ -276,6 +284,14 @@ describe('ProjectSettingsPage', () => {
       const url = String(input)
       calls.push(`${init?.method ?? 'GET'} ${url}`)
 
+      if (url.includes('/data-sources/') && url.includes('/schema')) {
+        return mockJsonResponse({
+          tables: [
+            { name: 'events', columns: [{ name: 'id', data_type: 'UInt64' }] },
+          ],
+        })
+      }
+
       if (url.endsWith('/api/v1/data-sources')) {
         return mockJsonResponse([
           {
@@ -394,6 +410,14 @@ describe('ProjectSettingsPage', () => {
 
     vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
       const url = String(input)
+
+      if (url.includes('/data-sources/') && url.includes('/schema')) {
+        return mockJsonResponse({
+          tables: [
+            { name: 'events', columns: [{ name: 'id', data_type: 'UInt64' }] },
+          ],
+        })
+      }
 
       if (url.endsWith('/api/v1/data-sources')) {
         return mockJsonResponse([
@@ -896,6 +920,14 @@ describe('ProjectSettingsPage', () => {
     vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
       const url = String(input)
 
+      if (url.includes('/data-sources/') && url.includes('/schema')) {
+        return mockJsonResponse({
+          tables: [
+            { name: 'events', columns: [{ name: 'id', data_type: 'UInt64' }] },
+          ],
+        })
+      }
+
       if (url.endsWith('/api/v1/data-sources')) {
         return mockJsonResponse([
           {
@@ -1093,6 +1125,14 @@ describe('ProjectSettingsPage', () => {
     vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
       const url = String(input)
 
+      if (url.includes('/data-sources/') && url.includes('/schema')) {
+        return mockJsonResponse({
+          tables: [
+            { name: 'events', columns: [{ name: 'id', data_type: 'UInt64' }] },
+          ],
+        })
+      }
+
       if (url.endsWith('/api/v1/data-sources')) {
         return mockJsonResponse([
           {
@@ -1234,6 +1274,14 @@ describe('ProjectSettingsPage', () => {
 
     vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
       const url = String(input)
+
+      if (url.includes('/data-sources/') && url.includes('/schema')) {
+        return mockJsonResponse({
+          tables: [
+            { name: 'events', columns: [{ name: 'id', data_type: 'UInt64' }] },
+          ],
+        })
+      }
 
       if (url.endsWith('/api/v1/data-sources')) {
         return mockJsonResponse([
@@ -1425,6 +1473,14 @@ describe('ProjectSettingsPage', () => {
 
     vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
       const url = String(input)
+
+      if (url.includes('/data-sources/') && url.includes('/schema')) {
+        return mockJsonResponse({
+          tables: [
+            { name: 'events', columns: [{ name: 'id', data_type: 'UInt64' }] },
+          ],
+        })
+      }
 
       if (url.endsWith('/api/v1/data-sources')) {
         return mockJsonResponse([

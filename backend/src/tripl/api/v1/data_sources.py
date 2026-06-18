@@ -10,7 +10,13 @@ from tripl.schemas.data_source import (
     DataSourceTestResponse,
     DataSourceUpdate,
 )
-from tripl.services import audit_service, datasource_service, metrics_service
+from tripl.schemas.data_source_schema import DataSourceSchemaResponse
+from tripl.services import (
+    audit_service,
+    datasource_schema_service,
+    datasource_service,
+    metrics_service,
+)
 
 router = APIRouter(
     prefix="/data-sources",
@@ -53,6 +59,13 @@ async def get_data_source_stats(
     session: SessionDep, ds_id: uuid.UUID, window_hours: int = 48
 ) -> DataSourceStatsResponse:
     return await metrics_service.get_data_source_stats(session, ds_id, window_hours=window_hours)
+
+
+@router.get("/{ds_id}/schema", response_model=DataSourceSchemaResponse)
+async def get_data_source_schema(
+    session: SessionDep, ds_id: uuid.UUID
+) -> DataSourceSchemaResponse:
+    return await datasource_schema_service.get_schema_tables(session, ds_id)
 
 
 @router.patch("/{ds_id}", response_model=DataSourceResponse)
