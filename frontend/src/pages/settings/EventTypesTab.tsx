@@ -1,6 +1,6 @@
 import { useState, type CSSProperties, type ReactNode } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useMutation, useQueries, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   ArrowLeft,
   ChevronDown,
@@ -79,6 +79,19 @@ export function EventTypesTab({ slug }: { slug: string }) {
     queryFn: () => eventTypesApi.list(slug, branchId),
   })
 
+  // Per-type owners drive the list's Owner column and the derived merge Status
+  // (no owners ⇒ anyone can merge ⇒ "open merge"; owners present ⇒ "gated").
+  const ownerQueries = useQueries({
+    queries: eventTypes.map((et) => ({
+      queryKey: ['eventTypeOwners', slug, et.id],
+      queryFn: () => eventTypeOwnersApi.list(slug, et.id),
+    })),
+  })
+  const ownersByType = new Map<string, EventTypeOwner[]>()
+  eventTypes.forEach((et, i) => {
+    ownersByType.set(et.id, ownerQueries[i]?.data ?? [])
+  })
+
   if (creating) {
     return <CreateEventTypeView slug={slug} branchId={branchId} onDone={() => setCreating(false)} />
   }
@@ -114,6 +127,8 @@ export function EventTypesTab({ slug }: { slug: string }) {
                 <Th>Fields</Th>
                 <Th align="right">Required</Th>
                 <Th>Sensitive</Th>
+                <Th>Owner</Th>
+                <Th>Status</Th>
                 <Th style={{ width: 40 }} />
               </tr>
             </thead>
@@ -152,6 +167,27 @@ export function EventTypesTab({ slug }: { slug: string }) {
                       </Chip>
                     ) : (
                       <span style={{ color: 'var(--fg-faint)' }}>—</span>
+                    )}
+                  </Td>
+                  <Td>
+                    {(() => {
+                      const owners = ownersByType.get(et.id) ?? []
+                      if (owners.length === 0) {
+                        return <span style={{ color: 'var(--fg-faint)' }}>—</span>
+                      }
+                      return (
+                        <span className="text-[12px]" style={{ color: 'var(--fg-subtle)' }}>
+                          {owners[0].user_name || owners[0].user_email}
+                          {owners.length > 1 ? ` +${owners.length - 1}` : ''}
+                        </span>
+                      )
+                    })()}
+                  </Td>
+                  <Td>
+                    {(ownersByType.get(et.id) ?? []).length > 0 ? (
+                      <Chip tone="accent" size="xs">gated</Chip>
+                    ) : (
+                      <Chip tone="neutral" size="xs">open merge</Chip>
                     )}
                   </Td>
                   <Td>
