@@ -119,6 +119,7 @@ export function SCard({
 // ───────── Field row ─────────
 export function Field({
   label,
+  labelRight,
   hint,
   children,
   stacked,
@@ -126,6 +127,8 @@ export function Field({
   htmlFor,
 }: {
   label: string
+  /** Optional node rendered inline to the right of the label (e.g. a source badge). */
+  labelRight?: ReactNode
   hint?: ReactNode
   children: ReactNode
   stacked?: boolean
@@ -145,9 +148,12 @@ export function Field({
           paddingTop: stacked ? 0 : 6,
         }}
       >
-        <label htmlFor={htmlFor} className="block text-[13px] font-medium" style={{ color: 'var(--fg)' }}>
-          {label}
-        </label>
+        <div className="flex items-center gap-2">
+          <label htmlFor={htmlFor} className="block text-[13px] font-medium" style={{ color: 'var(--fg)' }}>
+            {label}
+          </label>
+          {labelRight}
+        </div>
         {hint && (
           <div className="mt-[3px] text-[12px] leading-[1.45]" style={{ color: 'var(--fg-subtle)' }}>
             {hint}
@@ -162,6 +168,7 @@ export function Field({
 // ───────── Toggle row ─────────
 export function ToggleRow({
   label,
+  labelRight,
   hint,
   value,
   onChange,
@@ -169,6 +176,8 @@ export function ToggleRow({
   disabled,
 }: {
   label: string
+  /** Optional node rendered inline to the right of the label (e.g. a source badge). */
+  labelRight?: ReactNode
   hint?: ReactNode
   value: boolean
   onChange?: (value: boolean) => void
@@ -181,7 +190,10 @@ export function ToggleRow({
       style={{ borderBottom: last ? 'none' : '1px solid var(--border-subtle)' }}
     >
       <div className="min-w-0 flex-1">
-        <div className="text-[13px] font-medium">{label}</div>
+        <div className="flex items-center gap-2 text-[13px] font-medium">
+          <span>{label}</span>
+          {labelRight}
+        </div>
         {hint && (
           <div className="mt-[3px] text-[12px] leading-[1.45]" style={{ color: 'var(--fg-subtle)' }}>
             {hint}

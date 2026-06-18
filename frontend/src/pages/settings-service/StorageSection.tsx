@@ -1,7 +1,6 @@
-import { HardDrive } from 'lucide-react'
 import type { ServiceSettings } from '@/types'
-import { Input } from '@/components/ui/input'
-import { FieldRow, SectionCard, SelectRow, SwitchRow } from './ServiceSettingsPrimitives'
+import { Field, RadioCards, SCard, TextInput, ToggleRow } from '@/components/settings/kit'
+import { ResetRow, SourceBadge } from './ServiceSettingsPrimitives'
 import type { EditableSettings, SectionKey } from './serviceSettingsHelpers'
 import { sourceFor } from './serviceSettingsHelpers'
 
@@ -24,93 +23,110 @@ export function StorageSection({
   resetting: boolean
 }) {
   return (
-    <SectionCard
-      title="Storage"
-      icon={HardDrive}
-      onReset={onReset}
-      resetting={resetting}
-    >
-      <div className="grid gap-4 sm:grid-cols-2">
-        <SelectRow
+    <>
+      <SCard title="Backend" footer={<ResetRow onReset={onReset} resetting={resetting} />}>
+        <Field
           label="Photo storage backend"
-          source={sourceFor(settings, 'storage', 'photo_storage_backend')}
-          value={form.storage.photo_storage_backend}
-          options={PHOTO_STORAGE_BACKEND_OPTIONS}
-          onChange={value => setField('storage', 'photo_storage_backend', value)}
-        />
-        <FieldRow
-          label="Photo max size MB"
-          source={sourceFor(settings, 'storage', 'photo_max_size_mb')}
+          labelRight={
+            <SourceBadge source={sourceFor(settings, 'storage', 'photo_storage_backend')} />
+          }
+          stacked
         >
-          <Input
+          <RadioCards
+            value={form.storage.photo_storage_backend}
+            onChange={value => setField('storage', 'photo_storage_backend', value)}
+            options={PHOTO_STORAGE_BACKEND_OPTIONS}
+            columns={2}
+          />
+        </Field>
+        <Field
+          label="Photo max size"
+          labelRight={<SourceBadge source={sourceFor(settings, 'storage', 'photo_max_size_mb')} />}
+        >
+          <TextInput
             type="number"
-            min={1}
-            value={form.storage.photo_max_size_mb}
-            onChange={event =>
-              setField('storage', 'photo_max_size_mb', Number(event.target.value))
-            }
+            value={String(form.storage.photo_max_size_mb)}
+            onChange={value => setField('storage', 'photo_max_size_mb', Number(value))}
+            suffix="MB"
+            mono
           />
-        </FieldRow>
-      </div>
-      <FieldRow label="Local photo directory" source={sourceFor(settings, 'storage', 'photo_local_dir')}>
-        <Input
-          value={form.storage.photo_local_dir}
-          onChange={event => setField('storage', 'photo_local_dir', event.target.value)}
-        />
-      </FieldRow>
-      <FieldRow
-        label="Allowed MIME types"
-        source={sourceFor(settings, 'storage', 'photo_allowed_mime')}
-      >
-        <Input
-          value={form.storage.photo_allowed_mime}
-          onChange={event => setField('storage', 'photo_allowed_mime', event.target.value)}
-        />
-      </FieldRow>
-      <div className="grid gap-4 sm:grid-cols-2">
-        <FieldRow label="GCS bucket" source={sourceFor(settings, 'storage', 'gcs_photo_bucket')}>
-          <Input
+        </Field>
+        <Field
+          label="Allowed MIME types"
+          labelRight={<SourceBadge source={sourceFor(settings, 'storage', 'photo_allowed_mime')} />}
+          last
+        >
+          <TextInput
+            value={form.storage.photo_allowed_mime}
+            onChange={value => setField('storage', 'photo_allowed_mime', value)}
+            mono
+          />
+        </Field>
+      </SCard>
+
+      <SCard title="Local filesystem">
+        <Field
+          label="Local photo directory"
+          labelRight={<SourceBadge source={sourceFor(settings, 'storage', 'photo_local_dir')} />}
+          last
+        >
+          <TextInput
+            value={form.storage.photo_local_dir}
+            onChange={value => setField('storage', 'photo_local_dir', value)}
+            mono
+          />
+        </Field>
+      </SCard>
+
+      <SCard title="Google Cloud Storage">
+        <Field
+          label="GCS bucket"
+          labelRight={<SourceBadge source={sourceFor(settings, 'storage', 'gcs_photo_bucket')} />}
+        >
+          <TextInput
             value={form.storage.gcs_photo_bucket}
-            onChange={event => setField('storage', 'gcs_photo_bucket', event.target.value)}
+            onChange={value => setField('storage', 'gcs_photo_bucket', value)}
+            mono
           />
-        </FieldRow>
-        <SwitchRow
+        </Field>
+        <ToggleRow
           label="GCS public URLs"
-          source={sourceFor(settings, 'storage', 'gcs_photo_public')}
-          checked={form.storage.gcs_photo_public}
+          labelRight={<SourceBadge source={sourceFor(settings, 'storage', 'gcs_photo_public')} />}
+          value={form.storage.gcs_photo_public}
           onChange={value => setField('storage', 'gcs_photo_public', value)}
         />
-      </div>
-      <div className="grid gap-4 sm:grid-cols-[minmax(0,1fr)_180px]">
-        <FieldRow
+        <Field
           label="GCS credentials path"
-          source={sourceFor(settings, 'storage', 'gcs_photo_credentials_path')}
+          labelRight={
+            <SourceBadge source={sourceFor(settings, 'storage', 'gcs_photo_credentials_path')} />
+          }
         >
-          <Input
+          <TextInput
             value={form.storage.gcs_photo_credentials_path}
-            onChange={event =>
-              setField('storage', 'gcs_photo_credentials_path', event.target.value)
-            }
+            onChange={value => setField('storage', 'gcs_photo_credentials_path', value)}
+            mono
           />
-        </FieldRow>
-        <FieldRow
+        </Field>
+        <Field
           label="Signed URL TTL"
-          source={sourceFor(settings, 'storage', 'gcs_photo_signed_url_ttl_seconds')}
+          labelRight={
+            <SourceBadge
+              source={sourceFor(settings, 'storage', 'gcs_photo_signed_url_ttl_seconds')}
+            />
+          }
+          last
         >
-          <Input
+          <TextInput
             type="number"
-            min={1}
-            value={form.storage.gcs_photo_signed_url_ttl_seconds}
-            onChange={event =>
-              setField(
-                'storage',
-                'gcs_photo_signed_url_ttl_seconds',
-                Number(event.target.value),
-              )
+            value={String(form.storage.gcs_photo_signed_url_ttl_seconds)}
+            onChange={value =>
+              setField('storage', 'gcs_photo_signed_url_ttl_seconds', Number(value))
             }
+            suffix="seconds"
+            mono
           />
-        </FieldRow>
-      </div>
-    </SectionCard>
+        </Field>
+      </SCard>
+    </>
   )
 }
