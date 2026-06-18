@@ -83,6 +83,7 @@ export const eventsApi = {
       status?: string
       sunset_at?: string | null
       reviewed?: boolean
+      owner_id?: string | null
     },
     branchId?: string | null,
   ) => api.post<void>(

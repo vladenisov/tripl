@@ -53,6 +53,10 @@ export type EventsTableProps = {
   activeEt: EventType | null
   hideStatus: boolean
   hideReviewed: boolean
+  hideMonitor: boolean
+  hideOwner: boolean
+  hideDelta: boolean
+  usersById: Map<string, { name: string | null; email: string }>
   hideTags: boolean
   hideLastSeen: boolean
   allTags: string[]
@@ -99,6 +103,10 @@ export function EventsTable({
   activeEt,
   hideStatus,
   hideReviewed,
+  hideMonitor,
+  hideOwner,
+  hideDelta,
+  usersById,
   hideTags,
   hideLastSeen,
   allTags,
@@ -185,6 +193,10 @@ export function EventsTable({
                   {!hideReviewed && (
                     <TableHead className="w-20 text-center text-[11px]">Reviewed</TableHead>
                   )}
+                  {!hideMonitor && <TableHead className="w-24">Monitor</TableHead>}
+                  {!hideDelta && (
+                    <TableHead className="w-20 text-right text-[11px]">Δ · 24h</TableHead>
+                  )}
                   <TableHead className="w-32 text-right">{ROW_METRICS_LABEL}</TableHead>
                   {!hideTags && (
                     <FilterableHead
@@ -205,6 +217,7 @@ export function EventsTable({
                   {!hideLastSeen && (
                     <TableHead className="w-24 text-[11px]">Last seen</TableHead>
                   )}
+                  {!hideOwner && <TableHead className="w-28 text-[11px]">Owner</TableHead>}
                   {visibleFieldColumns.map((f) => {
                     const enumOpts = fieldEnumOptions[f.id]
                     const filterType: ColumnFilterType | null =
@@ -293,6 +306,10 @@ export function EventsTable({
                         hideType={!!activeEt}
                         hideStatus={hideStatus}
                         hideReviewed={hideReviewed}
+                        hideMonitor={hideMonitor}
+                        hideOwner={hideOwner}
+                        hideDelta={hideDelta}
+                        usersById={usersById}
                         hideTags={hideTags}
                         hideLastSeen={hideLastSeen}
                         fieldColumns={visibleFieldColumns}

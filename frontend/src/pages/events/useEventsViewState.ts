@@ -67,6 +67,9 @@ export function useEventsViewState({
   const hideLastSeen = hiddenColumns.has('last_seen')
   const hideStatus = hiddenColumns.has('status')
   const hideReviewed = hiddenColumns.has('reviewed')
+  const hideMonitor = hiddenColumns.has('monitor')
+  const hideOwner = hiddenColumns.has('owner')
+  const hideDelta = hiddenColumns.has('delta')
   const colCount =
     1 +
     1 +
@@ -74,9 +77,12 @@ export function useEventsViewState({
     (activeEt ? 0 : 1) +
     (hideStatus ? 0 : 1) +
     (hideReviewed ? 0 : 1) +
+    (hideMonitor ? 0 : 1) +
+    (hideDelta ? 0 : 1) +
     1 +
     (hideTags ? 0 : 1) +
     (hideLastSeen ? 0 : 1) +
+    (hideOwner ? 0 : 1) +
     visibleFieldColumns.length +
     visibleMetaFields.length +
     1
@@ -102,7 +108,10 @@ export function useEventsViewState({
     clearAllFilters,
     colCount,
     hasActiveFilters,
+    hideDelta,
     hideLastSeen,
+    hideMonitor,
+    hideOwner,
     hideReviewed,
     hideStatus,
     hideTags,
