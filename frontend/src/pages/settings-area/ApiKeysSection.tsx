@@ -196,19 +196,16 @@ export default function ApiKeysSection() {
         )}
       </SCard>
 
-      {/* Create dialog */}
-      <Dialog open={showForm} onOpenChange={setShowForm}>
-        <DialogContent>
+      {/* Create key — inline page-style form (no modal) */}
+      {showForm && (
+        <SCard title="New API key" description="Generate a long-lived bearer token for non-browser clients.">
           <form
             onSubmit={(e) => {
               e.preventDefault()
               createMut.mutate()
             }}
+            className="grid gap-4 px-[18px] py-4"
           >
-            <DialogHeader>
-              <DialogTitle>New API key</DialogTitle>
-            </DialogHeader>
-            <div className="grid gap-4 py-4">
               <div className="grid gap-2">
                 <Label>Name</Label>
                 <Input
@@ -258,18 +255,17 @@ export default function ApiKeysSection() {
               {createMut.isError && (
                 <p className="text-xs text-destructive">{getErrorMessage(createMut.error)}</p>
               )}
-            </div>
-            <DialogFooter>
+            <div className="flex justify-end gap-2">
               <Button type="button" variant="outline" onClick={() => setShowForm(false)}>
                 Cancel
               </Button>
               <Button type="submit" disabled={createMut.isPending || !name.trim()}>
                 Generate
               </Button>
-            </DialogFooter>
+            </div>
           </form>
-        </DialogContent>
-      </Dialog>
+        </SCard>
+      )}
 
       {/* One-time token reveal */}
       <Dialog open={revealed != null} onOpenChange={(open) => !open && setRevealed(null)}>
