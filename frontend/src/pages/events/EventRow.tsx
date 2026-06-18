@@ -41,6 +41,10 @@ export type EventRowProps = {
   hideType: boolean
   hideStatus: boolean
   hideReviewed: boolean
+  hideMonitor: boolean
+  hideOwner: boolean
+  hideDelta: boolean
+  usersById: Map<string, { name: string | null; email: string }>
   hideTags: boolean
   hideLastSeen: boolean
   fieldColumns: FieldDefinition[]
@@ -67,6 +71,10 @@ export const EventRow = memo(function EventRow({
   hideType,
   hideStatus,
   hideReviewed,
+  hideMonitor,
+  hideOwner,
+  hideDelta,
+  usersById,
   hideTags,
   hideLastSeen,
   fieldColumns,
@@ -182,6 +190,40 @@ export const EventRow = memo(function EventRow({
           )}
         </TableCell>
       )}
+      {!hideMonitor && (
+        <TableCell>
+          {rowSignal ? (
+            <Chip tone={signalTone ?? 'danger'} size="xs">
+              {signalTone === 'warning' ? 'Warning' : 'Firing'}
+            </Chip>
+          ) : (
+            <span className="text-[11px]" style={{ color: 'var(--fg-faint)' }}>—</span>
+          )}
+        </TableCell>
+      )}
+      {!hideDelta && (
+        <TableCell className="tnum text-right text-[11px]">
+          {(() => {
+            const last = windowData[windowData.length - 1]
+            if (!last || last.expected_count == null || last.expected_count === 0) {
+              return <span style={{ color: 'var(--fg-faint)' }}>—</span>
+            }
+            const pct = ((last.count - last.expected_count) / last.expected_count) * 100
+            const color =
+              Math.abs(pct) < 1
+                ? 'var(--fg-subtle)'
+                : pct >= 0
+                  ? 'var(--success)'
+                  : 'var(--danger)'
+            return (
+              <span style={{ color }}>
+                {pct >= 0 ? '+' : ''}
+                {pct.toFixed(0)}%
+              </span>
+            )
+          })()}
+        </TableCell>
+      )}
       <TableCell className="w-32 text-right">
         <div className="grid grid-cols-[14px_106px] items-center justify-end gap-2 align-middle">
           <span className="flex h-3.5 w-3.5 items-center justify-center">
@@ -216,6 +258,18 @@ export const EventRow = memo(function EventRow({
           title={ev.last_seen_at ?? 'Never observed in collected metrics'}
         >
           {formatRelativeTime(ev.last_seen_at)}
+        </TableCell>
+      )}
+      {!hideOwner && (
+        <TableCell className="text-[11px]">
+          {(() => {
+            const u = ev.owner_id ? usersById.get(ev.owner_id) : undefined
+            return u ? (
+              <span style={{ color: 'var(--fg-subtle)' }}>{u.name ?? u.email}</span>
+            ) : (
+              <span style={{ color: 'var(--fg-faint)' }}>—</span>
+            )
+          })()}
         </TableCell>
       )}
       {fieldColumns.map((f) => {

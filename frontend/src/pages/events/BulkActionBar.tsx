@@ -16,6 +16,8 @@ export function BulkActionBar({
   isUpdating,
   onSetStatus,
   onMarkReviewed,
+  onAssignOwner,
+  owners,
   onDelete,
   onClear,
 }: {
@@ -24,6 +26,8 @@ export function BulkActionBar({
   isUpdating: boolean
   onSetStatus: (status: EventStatus) => void
   onMarkReviewed: () => void
+  onAssignOwner: (userId: string) => void
+  owners: { id: string; name: string | null; email: string }[]
   onDelete: () => void
   onClear: () => void
 }) {
@@ -68,6 +72,24 @@ export function BulkActionBar({
         <CheckCheck className="mr-1 h-3.5 w-3.5" />
         Mark reviewed
       </Button>
+      {owners.length > 0 && (
+        <Select
+          value=""
+          onValueChange={v => { if (v) onAssignOwner(v) }}
+          disabled={disabled}
+        >
+          <SelectTrigger className="h-7 w-32 text-xs" aria-label="Assign owner">
+            <SelectValue placeholder="Assign owner…" />
+          </SelectTrigger>
+          <SelectContent>
+            {owners.map(u => (
+              <SelectItem key={u.id} value={u.id} className="text-xs">
+                {u.name ?? u.email}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      )}
       <Button
         variant="ghost"
         size="sm"

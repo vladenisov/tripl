@@ -1,5 +1,7 @@
 import { useCallback, useMemo, useState } from 'react'
 import { Navigate } from 'react-router-dom'
+import { useQuery } from '@tanstack/react-query'
+import { usersApi } from '@/api/users'
 import { useConfirm } from '@/hooks/useConfirm'
 import { useActiveBranchId } from '@/hooks/useBranch'
 import { ErrorState } from '@/components/error-state'
@@ -37,6 +39,14 @@ export default function EventsPage() {
     slug,
   } = useEventsRouteState()
   const branchId = useActiveBranchId()
+  const usersQuery = useQuery({ queryKey: ['users'], queryFn: () => usersApi.list() })
+  const usersById = useMemo(
+    () =>
+      new Map(
+        (usersQuery.data ?? []).map((u) => [u.id, { name: u.name, email: u.email }]),
+      ),
+    [usersQuery.data],
+  )
   const [expandedCell, setExpandedCell] = useState<string | null>(null)
   const { hiddenColumns, toggleColumn, colMenuOpen, setColMenuOpen } = useColumnVisibility()
   const {
@@ -114,7 +124,10 @@ export default function EventsPage() {
     clearAllFilters,
     colCount,
     hasActiveFilters,
+    hideDelta,
     hideLastSeen,
+    hideMonitor,
+    hideOwner,
     hideReviewed,
     hideStatus,
     hideTags,
@@ -193,6 +206,11 @@ export default function EventsPage() {
   const handleBulkMarkReviewed = useCallback(() => {
     if (!selectedVisibleEventIds.length) return
     bulkUpdateMut.mutate({ eventIds: selectedVisibleEventIds, reviewed: true })
+  }, [bulkUpdateMut, selectedVisibleEventIds])
+
+  const handleBulkAssignOwner = useCallback((userId: string) => {
+    if (!selectedVisibleEventIds.length) return
+    bulkUpdateMut.mutate({ eventIds: selectedVisibleEventIds, owner_id: userId })
   }, [bulkUpdateMut, selectedVisibleEventIds])
 
   const handleSetStatus = useCallback((id: string, status: EventStatus) => {
@@ -283,6 +301,8 @@ export default function EventsPage() {
             isUpdating={bulkUpdateMut.isPending}
             onSetStatus={handleBulkSetStatus}
             onMarkReviewed={handleBulkMarkReviewed}
+            onAssignOwner={handleBulkAssignOwner}
+            owners={usersQuery.data ?? []}
             onDelete={() => { void handleBulkDelete() }}
             onClear={clearSelection}
           />
@@ -316,6 +336,10 @@ export default function EventsPage() {
             activeEt={activeEt}
             hideStatus={hideStatus}
             hideReviewed={hideReviewed}
+            hideMonitor={hideMonitor}
+            hideOwner={hideOwner}
+            hideDelta={hideDelta}
+            usersById={usersById}
             hideTags={hideTags}
             hideLastSeen={hideLastSeen}
             allTags={allTags}
