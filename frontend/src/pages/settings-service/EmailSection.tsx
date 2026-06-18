@@ -1,8 +1,7 @@
-import { Mail } from 'lucide-react'
 import type { ServiceSettings } from '@/types'
 import { Button } from '@/components/ui/button'
-import { Input } from '@/components/ui/input'
-import { FieldRow, SectionCard, SwitchRow } from './ServiceSettingsPrimitives'
+import { Field, SCard, TextInput, ToggleRow } from '@/components/settings/kit'
+import { ResetRow, SourceBadge } from './ServiceSettingsPrimitives'
 import type { EditableSettings, SecretDrafts, SectionKey } from './serviceSettingsHelpers'
 import { sourceFor } from './serviceSettingsHelpers'
 
@@ -26,80 +25,88 @@ export function EmailSection({
   onClearSecret: (section: 'ai' | 'email', field: string) => void
 }) {
   return (
-    <SectionCard
-      title="Email"
-      icon={Mail}
-      onReset={onReset}
-      resetting={resetting}
-    >
-      <div className="grid gap-4 sm:grid-cols-[minmax(0,1fr)_120px]">
-        <FieldRow label="SMTP host" source={sourceFor(settings, 'email', 'smtp_host')}>
-          <Input
-            value={form.email.smtp_host}
-            onChange={event => setField('email', 'smtp_host', event.target.value)}
-          />
-        </FieldRow>
-        <FieldRow label="Port" source={sourceFor(settings, 'email', 'smtp_port')}>
-          <Input
-            type="number"
-            min={1}
-            max={65535}
-            value={form.email.smtp_port}
-            onChange={event => setField('email', 'smtp_port', Number(event.target.value))}
-          />
-        </FieldRow>
-      </div>
-      <FieldRow label="SMTP username" source={sourceFor(settings, 'email', 'smtp_username')}>
-        <Input
-          value={form.email.smtp_username}
-          onChange={event => setField('email', 'smtp_username', event.target.value)}
-        />
-      </FieldRow>
-      <FieldRow label="SMTP password" source={sourceFor(settings, 'email', 'smtp_password_configured' as never)}>
-        <div className="flex flex-col gap-2 sm:flex-row">
-          <Input
-            type="password"
-            value={secretDrafts.smtp_password}
-            onChange={event =>
-              setSecretDrafts(current => ({
-                ...current,
-                smtp_password: event.target.value,
-              }))
-            }
-            placeholder={
-              form.email.smtp_password_configured
-                ? 'Configured - leave blank to keep'
-                : 'Not configured'
-            }
-          />
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            onClick={() => onClearSecret('email', 'smtp_password')}
-            disabled={resetting}
-          >
-            Clear
-          </Button>
-        </div>
-      </FieldRow>
-      <div className="grid gap-4 sm:grid-cols-2">
-        <SwitchRow
-          label="Use TLS"
-          source={sourceFor(settings, 'email', 'smtp_use_tls')}
-          checked={form.email.smtp_use_tls}
-          onChange={value => setField('email', 'smtp_use_tls', value)}
-        />
-        <FieldRow
-          label="Default From address"
-          source={sourceFor(settings, 'email', 'smtp_from_address')}
+    <>
+      <SCard title="SMTP" footer={<ResetRow onReset={onReset} resetting={resetting} />}>
+        <Field
+          label="SMTP host"
+          labelRight={<SourceBadge source={sourceFor(settings, 'email', 'smtp_host')} />}
         >
-          <Input
-            value={form.email.smtp_from_address}
-            onChange={event => setField('email', 'smtp_from_address', event.target.value)}
+          <TextInput
+            value={form.email.smtp_host}
+            onChange={value => setField('email', 'smtp_host', value)}
+            mono
           />
-        </FieldRow>
-      </div>
-    </SectionCard>
+        </Field>
+        <Field
+          label="Port"
+          labelRight={<SourceBadge source={sourceFor(settings, 'email', 'smtp_port')} />}
+        >
+          <TextInput
+            type="number"
+            value={String(form.email.smtp_port)}
+            onChange={value => setField('email', 'smtp_port', Number(value))}
+            mono
+          />
+        </Field>
+        <Field
+          label="SMTP username"
+          labelRight={<SourceBadge source={sourceFor(settings, 'email', 'smtp_username')} />}
+        >
+          <TextInput
+            value={form.email.smtp_username}
+            onChange={value => setField('email', 'smtp_username', value)}
+            mono
+          />
+        </Field>
+        <Field label="SMTP password">
+          <div className="flex gap-2">
+            <div className="flex-1">
+              <TextInput
+                type="password"
+                value={secretDrafts.smtp_password}
+                onChange={value =>
+                  setSecretDrafts(current => ({ ...current, smtp_password: value }))
+                }
+                placeholder={
+                  form.email.smtp_password_configured
+                    ? 'Configured — leave blank to keep'
+                    : 'Not configured'
+                }
+              />
+            </div>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={() => onClearSecret('email', 'smtp_password')}
+              disabled={resetting}
+            >
+              Clear
+            </Button>
+          </div>
+        </Field>
+        <ToggleRow
+          label="Use TLS"
+          labelRight={<SourceBadge source={sourceFor(settings, 'email', 'smtp_use_tls')} />}
+          value={form.email.smtp_use_tls}
+          onChange={value => setField('email', 'smtp_use_tls', value)}
+          last
+        />
+      </SCard>
+
+      <SCard title="Sender">
+        <Field
+          label="Default From address"
+          labelRight={<SourceBadge source={sourceFor(settings, 'email', 'smtp_from_address')} />}
+          last
+        >
+          <TextInput
+            value={form.email.smtp_from_address}
+            onChange={value => setField('email', 'smtp_from_address', value)}
+            mono
+          />
+        </Field>
+      </SCard>
+    </>
   )
 }
