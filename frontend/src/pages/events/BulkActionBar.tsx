@@ -51,7 +51,7 @@ export function BulkActionBar({
         onValueChange={v => { if (v) onSetStatus(v as EventStatus) }}
         disabled={disabled}
       >
-        <SelectTrigger className="h-7 w-32 text-xs" aria-label="Set status">
+        <SelectTrigger className="h-7 w-auto min-w-[8rem] whitespace-nowrap border-[var(--border-strong)] text-xs data-[placeholder]:text-foreground [&_svg]:text-foreground/70" aria-label="Set status">
           <SelectValue placeholder="Set status…" />
         </SelectTrigger>
         <SelectContent>
@@ -63,7 +63,7 @@ export function BulkActionBar({
         </SelectContent>
       </Select>
       <Button
-        variant="ghost"
+        variant="outline"
         size="sm"
         className="h-7 text-xs"
         onClick={onMarkReviewed}
@@ -78,7 +78,7 @@ export function BulkActionBar({
           onValueChange={v => { if (v) onAssignOwner(v) }}
           disabled={disabled}
         >
-          <SelectTrigger className="h-7 w-32 text-xs" aria-label="Assign owner">
+          <SelectTrigger className="h-7 w-auto min-w-[9.5rem] whitespace-nowrap border-[var(--border-strong)] text-xs data-[placeholder]:text-foreground [&_svg]:text-foreground/70" aria-label="Assign owner">
             <SelectValue placeholder="Assign owner…" />
           </SelectTrigger>
           <SelectContent>
@@ -93,7 +93,7 @@ export function BulkActionBar({
       <Button
         variant="ghost"
         size="sm"
-        className="h-7 text-xs text-muted-foreground hover:text-destructive"
+        className="h-7 text-xs text-[var(--danger)] hover:bg-[var(--danger-soft)] hover:text-[var(--danger)]"
         onClick={onDelete}
         disabled={disabled}
       >

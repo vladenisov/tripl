@@ -155,7 +155,7 @@ function SummaryTab({ et }: { et: EventType }) {
     .slice(0, 7)
 
   return (
-    <div className="flex max-w-[1040px] flex-col gap-4">
+    <div className="flex flex-col gap-4">
       <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
         {stats.map((s) => (
           <div

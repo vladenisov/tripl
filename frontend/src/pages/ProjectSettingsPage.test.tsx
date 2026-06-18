@@ -5,6 +5,27 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { AuthContext, type AuthContextValue } from '@/components/auth-context'
 import ProjectSettingsPage from './ProjectSettingsPage'
 
+// CodeMirror needs real layout measurement that jsdom can't provide and
+// tokenizes SQL across many spans. Stub it with a plain textarea that exposes
+// the value, keeping the suite deterministic and editor content settable.
+vi.mock('@uiw/react-codemirror', () => ({
+  default: ({
+    value,
+    onChange,
+    placeholder,
+  }: {
+    value: string
+    onChange: (v: string) => void
+    placeholder?: string
+  }) => (
+    <textarea
+      value={value}
+      onChange={e => onChange(e.target.value)}
+      placeholder={placeholder}
+    />
+  ),
+}))
+
 function mockJsonResponse(body: unknown) {
   return new Response(JSON.stringify(body), {
     status: 200,

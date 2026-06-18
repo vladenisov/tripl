@@ -9,6 +9,27 @@ vi.mock('react-router-dom', () => ({
   useNavigate: () => navigateMock,
 }))
 
+// CodeMirror needs real layout measurement that jsdom can't provide and
+// tokenizes SQL across many spans. Stub it with a plain textarea that exposes
+// the value, keeping the suite deterministic and editor content queryable.
+vi.mock('@uiw/react-codemirror', () => ({
+  default: ({
+    value,
+    onChange,
+    placeholder,
+  }: {
+    value: string
+    onChange: (v: string) => void
+    placeholder?: string
+  }) => (
+    <textarea
+      value={value}
+      onChange={e => onChange(e.target.value)}
+      placeholder={placeholder}
+    />
+  ),
+}))
+
 vi.mock('@/hooks/useBranch', () => ({
   useActiveBranchId: () => null,
 }))
@@ -101,7 +122,7 @@ describe('ScansTab', () => {
     expect(screen.getByText('Scheduled')).toBeInTheDocument()
     expect(screen.getByText('Rows scanned · 24h')).toBeInTheDocument()
     // First query line shown in mono, schedule chip uses the long interval label.
-    expect(screen.getByText('SELECT * FROM analytics.events_v2')).toBeInTheDocument()
+    expect(screen.getByText(/SELECT \* FROM analytics\.events_v2/)).toBeInTheDocument()
     expect(screen.getByText('Every 15 min')).toBeInTheDocument()
   })
 

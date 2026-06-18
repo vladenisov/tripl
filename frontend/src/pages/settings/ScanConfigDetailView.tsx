@@ -69,7 +69,7 @@ export function ScanConfigDetail({ slug, scanConfigId }: { slug: string; scanCon
   const meta = STATUS_META[runInfo.status]
 
   return (
-    <div className="flex max-w-[1040px] flex-col gap-4">
+    <div className="flex flex-col gap-4">
       <BackLink onClick={goBack} />
 
       <div className="flex items-start gap-3">
