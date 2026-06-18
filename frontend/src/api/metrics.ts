@@ -8,6 +8,7 @@ import type {
   DistributionDriftsResponse,
   EventWindowMetrics,
   MonitoringSignal,
+  OverviewKpiSeries,
   ReleaseRegressionsResponse,
   SeasonalityHeatmap,
   TopEvent,
@@ -113,6 +114,9 @@ export const metricsApi = {
       `/projects/${slug}/scans/${scanConfigId}/top-movers?${sp.toString()}`,
     )
   },
+
+  getOverviewKpiSeries: (slug: string, days = 14) =>
+    api.get<OverviewKpiSeries>(`/projects/${slug}/overview/kpi-series?days=${days}`),
 
   getTopEvents: (slug: string, params?: { windowHours?: number; limit?: number }) => {
     const sp = new URLSearchParams()

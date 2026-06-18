@@ -1,7 +1,6 @@
 import { Link, useParams } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 import {
-  Activity,
   AlertTriangle,
   Bell,
   Check,
@@ -18,6 +17,7 @@ import { ErrorState } from '@/components/error-state'
 import { Dot } from '@/components/primitives/dot'
 import { MiniStat, MiniStatDivider, type MiniStatTone } from '@/components/primitives/mini-stat'
 import { Sparkline } from '@/components/primitives/sparkline'
+import { PageHead, Panel } from '@/components/settings/kit'
 import { useTheme } from '@/components/theme-provider'
 import { formatRelativeTime } from '@/lib/datetime'
 import { getMonitoringPath } from '@/lib/monitoring'
@@ -59,6 +59,12 @@ export default function OverviewPage() {
     enabled: !!slug,
     staleTime: 60_000,
   })
+  const kpiSeriesQuery = useQuery({
+    queryKey: ['overview', 'kpi-series', slug],
+    queryFn: () => metricsApi.getOverviewKpiSeries(slug!, 14),
+    enabled: !!slug,
+    staleTime: 60_000,
+  })
   const signalsQuery = useQuery({
     queryKey: ['overview', 'signals', slug],
     queryFn: () => metricsApi.getActiveSignals(slug!),
@@ -90,19 +96,13 @@ export default function OverviewPage() {
   const signalCount = summary?.monitoring_signal_count ?? signals.length
   const reviewCount = summary?.review_pending_event_count ?? 0
   const coveragePct = coverage?.coverage_pct
+  const activeEventsSeries = kpiSeriesQuery.data?.active_events ?? []
 
   return (
     <div className="min-w-0 space-y-8 pb-12">
       {/* Header */}
-      <div className="flex items-center gap-2">
-        <Activity className="h-5 w-5 shrink-0" style={{ color: 'var(--fg-subtle)' }} />
-        <h1 className="text-lg font-semibold tracking-tight">Overview</h1>
-        {projectQuery.data && (
-          <span className="text-[12px]" style={{ color: 'var(--fg-subtle)' }}>
-            {projectQuery.data.name}
-          </span>
-        )}
-      </div>
+      <PageHead eyebrow={projectQuery.data?.name ?? 'Project'} title="Overview" />
+
 
       {/* KPI strip */}
       {projectQuery.isError ? (
@@ -150,12 +150,26 @@ export default function OverviewPage() {
             value={coveragePct != null ? `${coveragePct.toFixed(1)}%` : '—'}
             tone={coverageTone(coveragePct)}
           />
+          {activeEventsSeries.length > 1 && (
+            <>
+              <MiniStatDivider />
+              <div className="flex items-center gap-2">
+                <span
+                  className="text-[10px] uppercase tracking-[0.06em]"
+                  style={{ color: 'var(--fg-faint)' }}
+                >
+                  Active · 14d
+                </span>
+                <Sparkline data={activeEventsSeries} variant={chartStyle} width={120} height={28} />
+              </div>
+            </>
+          )}
         </div>
       )}
 
       {/* Volume */}
-      <section>
-        <h2 className="mb-2 text-sm font-semibold">Volume · project total</h2>
+      <Panel title="Volume · project total">
+        <div className="p-4">
         {volumeQuery.isError && (
           <ErrorState
             title="Volume unavailable"
@@ -190,11 +204,12 @@ export default function OverviewPage() {
             />
           </div>
         )}
-      </section>
+        </div>
+      </Panel>
 
       {/* Top events by volume */}
-      <section>
-        <h2 className="mb-2 text-sm font-semibold">Top events · 48h</h2>
+      <Panel title="Top events · 48h">
+        <div className="p-4">
         {topEventsQuery.isError && (
           <ErrorState
             title="Top events unavailable"
@@ -240,11 +255,12 @@ export default function OverviewPage() {
             ))}
           </div>
         )}
-      </section>
+        </div>
+      </Panel>
 
       {/* Active signals */}
-      <section>
-        <h2 className="mb-2 text-sm font-semibold">Active signals</h2>
+      <Panel title="Active signals">
+        <div className="p-4">
         {signalsQuery.isError && (
           <ErrorState
             title="Signals unavailable"
@@ -268,11 +284,12 @@ export default function OverviewPage() {
             ))}
           </div>
         )}
-      </section>
+        </div>
+      </Panel>
 
       {/* Recent activity */}
-      <section>
-        <h2 className="mb-2 text-sm font-semibold">Recent activity</h2>
+      <Panel title="Recent activity">
+        <div className="p-4">
         {activityQuery.isError && (
           <ErrorState
             title="Activity unavailable"
@@ -296,11 +313,12 @@ export default function OverviewPage() {
             ))}
           </div>
         )}
-      </section>
+        </div>
+      </Panel>
 
       {/* Source health */}
-      <section>
-        <h2 className="mb-2 text-sm font-semibold">Source health</h2>
+      <Panel title="Source health">
+        <div className="p-4">
         {sourcesQuery.isError && (
           <ErrorState
             title="Data sources unavailable"
@@ -324,7 +342,8 @@ export default function OverviewPage() {
             ))}
           </div>
         )}
-      </section>
+        </div>
+      </Panel>
     </div>
   )
 }
