@@ -4,7 +4,6 @@ import { RotateCcw } from 'lucide-react'
 import { scansApi } from '@/api/scans'
 import type { ScanConfig } from '@/types'
 import { Button } from '@/components/ui/button'
-import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { getErrorMessage } from '@/lib/utils'
@@ -59,16 +58,17 @@ export function ReplayDialog({
     },
   })
 
+  if (!open) return null
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent>
-        <form
-          className="space-y-4"
-          onSubmit={e => { e.preventDefault(); replayMut.mutate() }}
-        >
-          <DialogHeader>
-            <DialogTitle>Replay metrics period</DialogTitle>
-          </DialogHeader>
+    <section
+      className="overflow-hidden rounded-xl border"
+      style={{ borderColor: 'var(--border)', background: 'var(--surface)' }}
+    >
+      <form
+        className="space-y-4 p-4"
+        onSubmit={e => { e.preventDefault(); replayMut.mutate() }}
+      >
+        <div className="text-[12.5px] font-semibold">Replay metrics period</div>
           <div className="grid gap-3 sm:grid-cols-2">
             <div className="grid gap-2">
               <Label>From</Label>
@@ -82,15 +82,14 @@ export function ReplayDialog({
           {replayMut.isError && (
             <p className="text-sm" style={{ color: 'var(--danger)' }}>{getErrorMessage(replayMut.error)}</p>
           )}
-          <DialogFooter>
+          <div className="flex justify-end gap-2">
             <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>Cancel</Button>
             <Button type="submit" disabled={replayMut.isPending}>
               <RotateCcw className="size-3" />
               {replayMut.isPending ? 'Starting…' : 'Replay period'}
             </Button>
-          </DialogFooter>
+          </div>
         </form>
-      </DialogContent>
-    </Dialog>
+      </section>
   )
 }
