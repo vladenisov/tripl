@@ -16,6 +16,7 @@ from tripl.schemas.event_metric import (
     EventWindowMetricsRequest,
     EventWindowMetricsResponse,
     MetricSignalResponse,
+    OverviewKpiSeriesResponse,
     ReleaseRegressionsResponse,
     SeasonalityHeatmapResponse,
     TopEventResponse,
@@ -72,6 +73,18 @@ async def get_events_window_metrics(
         time_from=data.time_from,
         time_to=data.time_to,
     )
+
+
+@router.get(
+    "/projects/{slug}/overview/kpi-series",
+    response_model=OverviewKpiSeriesResponse,
+)
+async def get_overview_kpi_series(
+    session: SessionDep,
+    slug: str,
+    days: int = 14,
+) -> OverviewKpiSeriesResponse:
+    return await metrics_service.get_overview_kpi_series(session, slug, days=days)
 
 
 @router.get(

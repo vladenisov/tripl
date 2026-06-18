@@ -245,3 +245,16 @@ class TopEventResponse(BaseModel):
     name: str
     event_type_id: uuid.UUID
     total_count: int
+
+
+class OverviewKpiSeriesResponse(BaseModel):
+    """Real daily series behind Overview KPI sparklines.
+
+    Only ``active_events`` (new events created per day, from Event.created_at)
+    has genuine history; other KPIs (open signals, review-pending) have no
+    time series until snapshotting is added, so they are intentionally omitted
+    rather than fabricated.
+    """
+
+    days: int
+    active_events: list[int]
