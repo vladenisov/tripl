@@ -11,6 +11,7 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { EmptyState } from "@/components/empty-state"
+import { Panel } from "@/components/settings/kit"
 import { getErrorMessage } from '@/lib/utils'
 
 export function VariablesTab({ slug }: { slug: string }) {
@@ -125,13 +126,7 @@ export function VariablesTab({ slug }: { slug: string }) {
   return (
     <div className="space-y-4">
       {dialog}
-      <div className="flex justify-between items-center">
-        <div>
-          <h2 className="text-lg font-semibold">Variables</h2>
-          <p className="text-xs text-muted-foreground mt-0.5">Define template placeholders. Use <code className="bg-muted px-1 rounded">{'${var_name}'}</code> in event field values.</p>
-        </div>
-        <Button onClick={() => setShowForm(true)}><Plus className="mr-2 h-4 w-4" />Add Variable</Button>
-      </div>
+      <p className="text-xs text-muted-foreground">Define template placeholders. Use <code className="bg-muted px-1 rounded">{'${var_name}'}</code> in event field values.</p>
 
       {/* Create dialog */}
       <Dialog open={showForm} onOpenChange={setShowForm}>
@@ -243,8 +238,16 @@ export function VariablesTab({ slug }: { slug: string }) {
         </DialogContent>
       </Dialog>
 
-      {rows.length > 0 ? (
-        <div className="rounded-lg border">
+      <Panel
+        title="Variables"
+        subtitle={`${rows.length} variable${rows.length === 1 ? '' : 's'}`}
+        right={
+          <Button size="sm" onClick={() => setShowForm(true)}>
+            <Plus className="mr-2 h-4 w-4" />Add variable
+          </Button>
+        }
+      >
+        {rows.length > 0 ? (
           <Table>
             <TableHeader>
               <TableRow>
@@ -296,10 +299,12 @@ export function VariablesTab({ slug }: { slug: string }) {
               )})}
             </TableBody>
           </Table>
-        </div>
-      ) : (
-        <EmptyState icon={VariableIcon} title="No variables" description="Define template placeholders to reuse across event field values." action={<Button onClick={() => setShowForm(true)}><Plus className="mr-2 h-4 w-4" />Add Variable</Button>} />
-      )}
+        ) : (
+          <div className="px-4 py-8">
+            <EmptyState icon={VariableIcon} title="No variables" description="Define template placeholders to reuse across event field values." />
+          </div>
+        )}
+      </Panel>
     </div>
   )
 }
