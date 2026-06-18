@@ -485,8 +485,8 @@ describe('ProjectSettingsPage', () => {
     fireEvent.change(inputs[0], { target: { value: '2026-04-01T00:00' } })
     fireEvent.change(inputs[1], { target: { value: '2026-04-02T00:00' } })
 
-    const dialog = screen.getByRole('dialog')
-    fireEvent.click(within(dialog).getByRole('button', { name: /Replay period/i }))
+    // Replay is now an inline page-style panel (no modal dialog).
+    fireEvent.click(screen.getByRole('button', { name: /Replay period/i }))
 
     await waitFor(() => {
       expect(replayBodies).toEqual([
@@ -556,7 +556,9 @@ describe('ProjectSettingsPage', () => {
       </QueryClientProvider>,
     )
 
-    expect(await screen.findByText('Main Slack')).toBeInTheDocument()
+    // Wait generously for the alerting tab's several concurrent queries to
+    // settle under full-suite load (this assertion was the flaky one).
+    expect(await screen.findByText('Main Slack', undefined, { timeout: 5000 })).toBeInTheDocument()
     expect(await screen.findByText('Ops Bot')).toBeInTheDocument()
     expect(await screen.findByText('chat -100123')).toBeInTheDocument()
   })
