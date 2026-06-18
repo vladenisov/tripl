@@ -11,6 +11,7 @@ import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "
 import { Label } from "@/components/ui/label"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { EmptyState } from "@/components/empty-state"
+import { Panel } from "@/components/settings/kit"
 import { getErrorMessage } from '@/lib/utils'
 
 export function RelationsTab({ slug }: { slug: string }) {
@@ -66,10 +67,6 @@ export function RelationsTab({ slug }: { slug: string }) {
   return (
     <div className="space-y-4">
       {dialog}
-      <div className="flex justify-between items-center">
-        <h2 className="text-lg font-semibold">Relations</h2>
-        <Button onClick={() => setShowForm(true)}><Plus className="mr-2 h-4 w-4" />Add Relation</Button>
-      </div>
 
       {/* Create dialog */}
       <Dialog open={showForm} onOpenChange={setShowForm}>
@@ -119,8 +116,16 @@ export function RelationsTab({ slug }: { slug: string }) {
         </DialogContent>
       </Dialog>
 
-      {relations.length > 0 ? (
-        <div className="rounded-lg border">
+      <Panel
+        title="Relations"
+        subtitle={`${relations.length} relation${relations.length === 1 ? '' : 's'}`}
+        right={
+          <Button size="sm" onClick={() => setShowForm(true)}>
+            <Plus className="mr-2 h-4 w-4" />Add relation
+          </Button>
+        }
+      >
+        {relations.length > 0 ? (
           <Table>
             <TableHeader>
               <TableRow>
@@ -145,10 +150,12 @@ export function RelationsTab({ slug }: { slug: string }) {
               ))}
             </TableBody>
           </Table>
-        </div>
-      ) : (
-        <EmptyState icon={Link2} title="No relations" description="Create relations to link event types by their fields." action={<Button onClick={() => setShowForm(true)}><Plus className="mr-2 h-4 w-4" />Add Relation</Button>} />
-      )}
+        ) : (
+          <div className="px-4 py-8">
+            <EmptyState icon={Link2} title="No relations" description="Create relations to link event types by their fields." />
+          </div>
+        )}
+      </Panel>
     </div>
   )
 }

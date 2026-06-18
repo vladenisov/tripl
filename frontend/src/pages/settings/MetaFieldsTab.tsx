@@ -15,6 +15,7 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { EmptyState } from "@/components/empty-state"
+import { Panel } from "@/components/settings/kit"
 import { META_FIELD_LINK_PLACEHOLDER } from "@/lib/metaFields"
 import { getErrorMessage } from '@/lib/utils'
 
@@ -124,10 +125,6 @@ export function MetaFieldsTab({ slug }: { slug: string }) {
   return (
     <div className="space-y-4">
       {dialog}
-      <div className="flex justify-between items-center">
-        <h2 className="text-lg font-semibold">Meta Fields</h2>
-        <Button onClick={() => setShowForm(true)}><Plus className="mr-2 h-4 w-4" />Add Meta Field</Button>
-      </div>
 
       {/* Create dialog */}
       <Dialog open={showForm} onOpenChange={setShowForm}>
@@ -286,8 +283,16 @@ export function MetaFieldsTab({ slug }: { slug: string }) {
         </DialogContent>
       </Dialog>
 
-      {metaFields.length > 0 ? (
-        <div className="rounded-lg border">
+      <Panel
+        title="Meta fields"
+        subtitle={`${metaFields.length} field${metaFields.length === 1 ? '' : 's'}`}
+        right={
+          <Button size="sm" onClick={() => setShowForm(true)}>
+            <Plus className="mr-2 h-4 w-4" />Add meta field
+          </Button>
+        }
+      >
+        {metaFields.length > 0 ? (
           <Table>
             <TableHeader>
                 <TableRow>
@@ -333,10 +338,12 @@ export function MetaFieldsTab({ slug }: { slug: string }) {
               ))}
             </TableBody>
           </Table>
-        </div>
-      ) : (
-        <EmptyState icon={List} title="No meta fields" description="Define meta fields to add structured metadata to your events." action={<Button onClick={() => setShowForm(true)}><Plus className="mr-2 h-4 w-4" />Add Meta Field</Button>} />
-      )}
+        ) : (
+          <div className="px-4 py-8">
+            <EmptyState icon={List} title="No meta fields" description="Define meta fields to add structured metadata to your events." />
+          </div>
+        )}
+      </Panel>
     </div>
   )
 }
