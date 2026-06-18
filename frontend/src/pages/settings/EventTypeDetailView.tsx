@@ -11,6 +11,7 @@ import { Button } from '@/components/ui/button'
 import { Textarea } from '@/components/ui/textarea'
 import { Chip } from '@/components/primitives/chip'
 import { getErrorMessage } from '@/lib/utils'
+import EventsPage from '@/pages/EventsPage'
 import {
   ColorPicker,
   FieldsEditor,
@@ -121,33 +122,18 @@ export function EventTypeDetail({ slug, eventTypeId }: { slug: string; eventType
       </div>
 
       <div className="pt-[18px]">
-        {tab === 'events' && <EventsTabPanel et={et} onOpen={goEvents} />}
+        {tab === 'events' && (
+          // The real, filterable events table embedded inline and scoped to this
+          // type (lockType decouples it from the URL :tab segment; embedded hides
+          // the page header + aggregate chart). No route change — matches mockup.
+          <EventsPage lockType={et.name} embedded />
+        )}
         {tab === 'summary' && <SummaryTab et={et} />}
         {tab === 'settings' && (
           <SettingsTab slug={slug} eventType={et} branchId={branchId} onDeleted={goBack} />
         )}
       </div>
     </div>
-  )
-}
-
-// The app already renders the real, filterable, type-scoped events table at
-// /p/:slug/events/:typeName. Rather than rebuild it inside settings, the Events
-// tab links straight to that scoped view (the global tab strip / aggregate chart
-// only exist on that surface, matching the mockup's "hidden" treatment here).
-function EventsTabPanel({ et, onOpen }: { et: EventType; onOpen: () => void }) {
-  return (
-    <SurfPanel title="Events" subtitle={`Scoped to ${et.display_name}`}>
-      <div className="flex flex-col items-center gap-3 px-4 py-9 text-center">
-        <p className="m-0 max-w-[420px] text-[12.5px]" style={{ color: 'var(--fg-subtle)' }}>
-          Open the events table filtered to this type, with its full filter bar and columns.
-        </p>
-        <Button variant="outline" size="sm" onClick={onOpen}>
-          <ExternalLink className="size-3" />
-          Open {et.name} events
-        </Button>
-      </div>
-    </SurfPanel>
   )
 }
 

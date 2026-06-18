@@ -28,7 +28,16 @@ import { useEventsTableVirtualization } from './events/useEventsTableVirtualizat
 import { useEventsViewState } from './events/useEventsViewState'
 import { useSavedViews } from './events/useSavedViews'
 
-export default function EventsPage() {
+interface EventsPageProps {
+  /** Lock the page to a single event type (by name), decoupling it from the
+   *  `:tab` route segment. Set when embedding the table in another surface. */
+  lockType?: string
+  /** Embedded mode: hide the page-level header + aggregate chart and drop the
+   *  full-height min-height so the table fits inside a host container/tab. */
+  embedded?: boolean
+}
+
+export default function EventsPage({ lockType, embedded = false }: EventsPageProps = {}) {
   const {
     activeTab,
     navigate,
@@ -37,7 +46,7 @@ export default function EventsPage() {
     openNewEvent,
     showForm,
     slug,
-  } = useEventsRouteState()
+  } = useEventsRouteState(lockType)
   const branchId = useActiveBranchId()
   const usersQuery = useQuery({ queryKey: ['users'], queryFn: () => usersApi.list() })
   const usersById = useMemo(
@@ -247,15 +256,17 @@ export default function EventsPage() {
   }
 
   return (
-    <div className="flex min-h-[calc(100vh-7rem)] flex-col">
+    <div className={embedded ? 'flex min-h-[420px] flex-col' : 'flex min-h-[calc(100vh-7rem)] flex-col'}>
       {dialog}
 
-      <EventsHeader
-        total={total}
-        unreviewedCount={unreviewedCount}
-        projectTotalSignal={projectTotalSignal}
-        eventTypeSignals={eventTypeSignals}
-      />
+      {!embedded && (
+        <EventsHeader
+          total={total}
+          unreviewedCount={unreviewedCount}
+          projectTotalSignal={projectTotalSignal}
+          eventTypeSignals={eventTypeSignals}
+        />
+      )}
 
       {blockingError && (
         <ErrorState
@@ -307,7 +318,7 @@ export default function EventsPage() {
             onClear={clearSelection}
           />
 
-          {slug && (
+          {slug && !embedded && (
             <TabMetricsCard
               slug={slug}
               activeEt={activeEt}
