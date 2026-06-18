@@ -3,7 +3,6 @@ import { CheckCircle2, RotateCcw, XCircle } from 'lucide-react'
 import type { SettingSource } from '@/types'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
-import { Card, CardContent } from '@/components/ui/card'
 import { Label } from '@/components/ui/label'
 import {
   Select,
@@ -52,31 +51,32 @@ export function SectionCard({
   resetting?: boolean
 }) {
   return (
-    <Card>
-      <CardContent className="p-0">
-        <div
-          className="flex items-center gap-2 border-b px-4 py-3"
-          style={{ borderColor: 'var(--border-subtle)' }}
-        >
-          <Icon className="h-4 w-4 text-muted-foreground" />
-          <h2 className="text-sm font-semibold">{title}</h2>
-          <div className="flex-1" />
-          {onReset && (
-            <Button
-              type="button"
-              variant="outline"
-              size="sm"
-              onClick={onReset}
-              disabled={resetting}
-            >
-              <RotateCcw className="h-3.5 w-3.5" />
-              Reset
-            </Button>
-          )}
-        </div>
-        <div className="grid gap-4 p-4">{children}</div>
-      </CardContent>
-    </Card>
+    <section
+      className="mb-5 overflow-hidden rounded-xl border"
+      style={{ borderColor: 'var(--border)', background: 'var(--surface)' }}
+    >
+      <div
+        className="flex items-center gap-2 border-b px-4 py-3"
+        style={{ borderColor: 'var(--border-subtle)', background: 'var(--bg-sunken)' }}
+      >
+        <Icon className="h-4 w-4 text-[color:var(--fg-subtle)]" />
+        <h2 className="text-[12.5px] font-semibold">{title}</h2>
+        <div className="flex-1" />
+        {onReset && (
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            onClick={onReset}
+            disabled={resetting}
+          >
+            <RotateCcw className="h-3.5 w-3.5" />
+            Reset
+          </Button>
+        )}
+      </div>
+      <div className="grid gap-4 p-4">{children}</div>
+    </section>
   )
 }
 
