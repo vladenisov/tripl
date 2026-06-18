@@ -14,6 +14,18 @@ class ColumnInfo:
 
 
 @dataclass(frozen=True)
+class SchemaColumn:
+    name: str
+    data_type: str
+
+
+@dataclass(frozen=True)
+class SchemaTable:
+    name: str
+    columns: list[SchemaColumn]
+
+
+@dataclass(frozen=True)
 class FieldContractExpectation:
     field_name: str
     drift_type: str
@@ -41,6 +53,17 @@ class BaseAdapter(abc.ABC):
 
     @abc.abstractmethod
     def get_columns(self, base_query: str) -> list[ColumnInfo]: ...
+
+    @abc.abstractmethod
+    def get_schema_tables(self) -> list[SchemaTable]:
+        """Read-only catalog introspection: list tables and their columns.
+
+        Returns the tables visible in the data source's configured database /
+        schema / dataset, each with its ordered columns. Used to power SQL
+        editor autocomplete; the query is a bounded, read-only catalog scan and
+        takes no user-supplied input.
+        """
+        ...
 
     @abc.abstractmethod
     def get_preview_rows(

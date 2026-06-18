@@ -1,5 +1,6 @@
 import { Play } from 'lucide-react'
 import type { DataSource, EventType, IntervalCode } from '@/types'
+import { toSQLNamespace, useDataSourceSchema } from '@/hooks/useDataSourceSchema'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { ErrorState } from '@/components/error-state'
@@ -46,6 +47,8 @@ export function SourceQuerySection({
   const { state, set, setBaseQuery, setDataSourceId, previewMut, discoverJsonMut } = form
   const selectedSource = dataSources.find(ds => ds.id === state.dataSourceId)
   const sourceName = selectedSource?.name ?? ''
+  const { data: schemaData } = useDataSourceSchema(state.dataSourceId || undefined)
+  const sqlNamespace = schemaData ? toSQLNamespace(schemaData.tables) : undefined
   return (
     <SCard title="Source & query" footer={footerFor?.()}>
       <Field label="Name">
@@ -77,6 +80,7 @@ export function SourceQuerySection({
           onChange={setBaseQuery}
           placeholder="SELECT * FROM analytics.events"
           dialect={selectedSource?.db_type}
+          schema={sqlNamespace}
         />
       </Field>
       <Field

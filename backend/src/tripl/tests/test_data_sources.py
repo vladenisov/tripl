@@ -1,7 +1,12 @@
 import pytest
 from httpx import AsyncClient
 
-from tripl.services import datasource_service
+from tripl.schemas.data_source_schema import (
+    ColumnSchema,
+    DataSourceSchemaResponse,
+    TableSchema,
+)
+from tripl.services import datasource_schema_service, datasource_service
 
 
 class TestDataSourcesCRUD:
@@ -218,3 +223,63 @@ class TestDataSourceHealth:
         assert body["message"] == "DNS lookup failed"
         assert body["data_source"]["last_test_status"] == "failed"
         assert body["data_source"]["last_test_message"] == "DNS lookup failed"
+
+
+class TestDataSourceSchema:
+    async def test_schema_returns_tables_and_columns(
+        self, client: AsyncClient, monkeypatch: pytest.MonkeyPatch
+    ):
+        create_resp = await client.post(
+            "/api/v1/data-sources",
+            json={
+                "name": "SchemaDS",
+                "db_type": "clickhouse",
+                "host": "h",
+                "port": 8123,
+                "database_name": "d",
+            },
+        )
+        ds_id = create_resp.json()["id"]
+
+        monkeypatch.setattr(
+            datasource_schema_service,
+            "_run_schema_introspection",
+            lambda _ds: DataSourceSchemaResponse(
+                tables=[
+                    TableSchema(
+                        name="events",
+                        columns=[
+                            ColumnSchema(name="id", data_type="UInt64"),
+                            ColumnSchema(name="name", data_type="String"),
+                        ],
+                    )
+                ]
+            ),
+        )
+
+        resp = await client.get(f"/api/v1/data-sources/{ds_id}/schema")
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        assert body == {
+            "tables": [
+                {
+                    "name": "events",
+                    "columns": [
+                        {"name": "id", "data_type": "UInt64"},
+                        {"name": "name", "data_type": "String"},
+                    ],
+                }
+            ]
+        }
+
+    async def test_schema_unknown_id_returns_404(self, client: AsyncClient):
+        resp = await client.get(
+            "/api/v1/data-sources/00000000-0000-0000-0000-000000000000/schema"
+        )
+        assert resp.status_code == 404
+
+    async def test_schema_requires_auth(self, anon_client: AsyncClient):
+        resp = await anon_client.get(
+            "/api/v1/data-sources/00000000-0000-0000-0000-000000000000/schema"
+        )
+        assert resp.status_code == 401

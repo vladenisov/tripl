@@ -89,6 +89,13 @@ const scanConfig = {
 function setupFetch() {
   vi.spyOn(globalThis, 'fetch').mockImplementation(async input => {
     const url = String(input)
+    if (url.includes('/data-sources/') && url.includes('/schema')) {
+      return mockJsonResponse({
+        tables: [
+          { name: 'events', columns: [{ name: 'id', data_type: 'UInt64' }] },
+        ],
+      })
+    }
     if (url.endsWith('/api/v1/data-sources')) return mockJsonResponse([dataSource])
     if (url.endsWith('/api/v1/projects/demo/scans')) return mockJsonResponse([scanConfig])
     if (url.includes('/scans/scan-1/jobs')) return mockJsonResponse([])

@@ -1,6 +1,6 @@
 import { useCallback } from 'react'
 import CodeMirror from '@uiw/react-codemirror'
-import { sql, StandardSQL, PostgreSQL, type SQLDialect } from '@codemirror/lang-sql'
+import { sql, StandardSQL, PostgreSQL, type SQLDialect, type SQLNamespace } from '@codemirror/lang-sql'
 import { format } from 'sql-formatter'
 import type { SqlLanguage } from 'sql-formatter'
 import { Button } from '@/components/ui/button'
@@ -27,12 +27,14 @@ export function SqlEditor({
   placeholder,
   minHeight,
   dialect,
+  schema,
 }: {
   value: string
   onChange: (v: string) => void
   placeholder?: string
   minHeight?: string
   dialect?: DbType
+  schema?: SQLNamespace
 }) {
   const handleFormat = useCallback(() => {
     try {
@@ -46,7 +48,7 @@ export function SqlEditor({
         value={value}
         onChange={onChange}
         placeholder={placeholder}
-        extensions={[sql({ dialect: dialect ? HIGHLIGHT_DIALECT[dialect] : StandardSQL })]}
+        extensions={[sql({ dialect: dialect ? HIGHLIGHT_DIALECT[dialect] : StandardSQL, schema })]}
         basicSetup={{ lineNumbers: true, foldGutter: false, highlightActiveLine: false }}
         minHeight={minHeight}
       />

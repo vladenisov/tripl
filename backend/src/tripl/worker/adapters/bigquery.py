@@ -10,13 +10,33 @@ from typing import Any, cast
 from google.cloud import bigquery
 from google.oauth2 import service_account
 
-from tripl.worker.adapters.base import BaseAdapter, ColumnInfo
+from tripl.worker.adapters.base import (
+    BaseAdapter,
+    ColumnInfo,
+    SchemaColumn,
+    SchemaTable,
+)
 
 logger = logging.getLogger(__name__)
 
 _IDENTIFIER_RE = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_.]*$")
 _IDENTIFIER_PART_RE = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*$")
 _INTERVAL_RE = re.compile(r"^(\d+)\s+(second|minute|hour|day|week|month)s?$", re.IGNORECASE)
+# GCP project ids allow letters/digits/hyphens; dataset ids allow
+# letters/digits/underscores. Validate the model-derived identifiers before
+# interpolating them into the catalog query as defense-in-depth.
+_BQ_PROJECT_RE = re.compile(r"^[a-zA-Z][a-zA-Z0-9-]*$")
+_BQ_DATASET_RE = re.compile(r"^[a-zA-Z0-9_]+$")
+# Sane upper bound so a pathologically long identifier can't reach logs/SQL.
+# This does not tighten the character class above; currently-valid ids still pass.
+_BQ_IDENTIFIER_MAX_LEN = 1024
+
+# Hard cap on catalog rows pulled for SQL-editor autocomplete.
+_SCHEMA_ROW_LIMIT = 5000
+
+# Wall-clock cap on the catalog introspection job so a hung BQ job can't block
+# the worker thread forever. Scoped to schema introspection only.
+_SCHEMA_QUERY_TIMEOUT_SECONDS = 30
 
 # TIMESTAMP_BIN accepts MICROSECOND..DAY. Week is normalized to 7 DAY.
 # Month is not BIN-able (variable width) so we route it to TIMESTAMP_TRUNC.
@@ -169,9 +189,35 @@ class BigQueryAdapter(BaseAdapter):
         self._allowed_columns = {c.name for c in columns}
         return columns
 
-    def _query_rows(self, sql: str) -> tuple[list[str], list[tuple[object, ...]]]:
+    def get_schema_tables(self) -> list[SchemaTable]:
+        # project/dataset come only from the validated DataSource model, never
+        # from a request; still validate before interpolating into the query.
+        if len(self._project) > _BQ_IDENTIFIER_MAX_LEN or not _BQ_PROJECT_RE.match(self._project):
+            raise ValueError(f"Invalid BigQuery project id: {self._project!r}")
+        if len(self._dataset) > _BQ_IDENTIFIER_MAX_LEN or not _BQ_DATASET_RE.match(self._dataset):
+            raise ValueError(f"Invalid BigQuery dataset id: {self._dataset!r}")
+        sql = (
+            "SELECT table_name, column_name, data_type "
+            f"FROM `{self._project}.{self._dataset}.INFORMATION_SCHEMA.COLUMNS` "
+            f"ORDER BY table_name, ordinal_position LIMIT {_SCHEMA_ROW_LIMIT}"
+        )
+        logger.debug("BQ schema introspection query: %s", sql)
+        _, rows = self._query_rows(sql, timeout=_SCHEMA_QUERY_TIMEOUT_SECONDS)
+        columns_by_table: dict[str, list[SchemaColumn]] = {}
+        for table_name, column_name, data_type in rows:
+            columns_by_table.setdefault(str(table_name), []).append(
+                SchemaColumn(name=str(column_name), data_type=str(data_type))
+            )
+        return [
+            SchemaTable(name=table, columns=columns)
+            for table, columns in columns_by_table.items()
+        ]
+
+    def _query_rows(
+        self, sql: str, *, timeout: float | None = None
+    ) -> tuple[list[str], list[tuple[object, ...]]]:
         job = self._client.query(sql)
-        iterator = job.result()
+        iterator = job.result() if timeout is None else job.result(timeout=timeout)
         names = [field.name for field in iterator.schema]
         rows = [tuple(row.values()) for row in iterator]
         return names, rows
