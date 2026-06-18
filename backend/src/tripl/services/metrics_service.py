@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import uuid
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 
 from fastapi import HTTPException
 from sqlalchemy import func, select
@@ -33,6 +33,7 @@ from tripl.schemas.event_metric import (
     EventWindowMetricsResponse,
     ForecastPoint,
     MetricSignalResponse,
+    OverviewKpiSeriesResponse,
     ReleaseRegressionItem,
     ReleaseRegressionsResponse,
     TopEventResponse,
@@ -1062,6 +1063,33 @@ async def get_events_metrics(
         interval=interval,
         data=[EventMetricPoint(bucket=bucket, count=count) for bucket, count in rows],
     )
+
+
+async def get_overview_kpi_series(
+    session: AsyncSession,
+    slug: str,
+    *,
+    days: int = 14,
+) -> OverviewKpiSeriesResponse:
+    """Daily new-event counts (from Event.created_at) for the Overview
+    'active events' KPI sparkline — the one KPI with genuine history."""
+    project = await _resolve_project(session, slug)
+    start_day = (datetime.now(UTC) - timedelta(days=days - 1)).date()
+    time_from = datetime(start_day.year, start_day.month, start_day.day, tzinfo=UTC)
+    created_ats = (
+        await session.execute(
+            select(Event.created_at).where(
+                Event.project_id == project.id,
+                Event.created_at >= time_from,
+            )
+        )
+    ).scalars().all()
+    counts: dict[date, int] = {}
+    for created in created_ats:
+        day = created.date()
+        counts[day] = counts.get(day, 0) + 1
+    series = [counts.get(start_day + timedelta(days=i), 0) for i in range(days)]
+    return OverviewKpiSeriesResponse(days=days, active_events=series)
 
 
 async def get_top_events_by_volume(

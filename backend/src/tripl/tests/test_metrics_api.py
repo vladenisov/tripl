@@ -1681,3 +1681,26 @@ async def test_data_source_stats_aggregates_recent_metrics(client: AsyncClient):
     assert body["volume_window"] == 150
     assert body["events_tracked"] == 2
     assert len(body["throughput"]) == 1
+
+
+@pytest.mark.asyncio
+async def test_overview_kpi_series(client: AsyncClient):
+    ctx = await _setup_metrics_project(client, slug="kpi-series")
+    for name in ("A", "B"):
+        resp = await client.post(
+            "/api/v1/projects/kpi-series/events",
+            json={
+                "event_type_id": ctx["page_type_id"],
+                "name": name,
+                "field_values": [{"field_definition_id": ctx["page_field_id"], "value": "x"}],
+            },
+        )
+        assert resp.status_code == 201
+
+    resp = await client.get("/api/v1/projects/kpi-series/overview/kpi-series?days=14")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["days"] == 14
+    assert len(body["active_events"]) == 14
+    assert sum(body["active_events"]) == 2
+    assert body["active_events"][-1] == 2  # both created today
