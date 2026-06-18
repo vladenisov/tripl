@@ -96,12 +96,6 @@ export function ScanConfigurationTab({
   return (
     <div className="flex flex-col">
       {dialog}
-      <ReplayDialog
-        slug={slug}
-        scanConfig={scanConfig}
-        open={replayOpen}
-        onOpenChange={setReplayOpen}
-      />
       {updateMut.isError && (
         <div className="mb-5">
           <ErrorState compact title="Could not save scan config" error={updateMut.error} />
@@ -128,16 +122,21 @@ export function ScanConfigurationTab({
           </div>
           <Button
             type="button"
-            variant="outline"
+            variant={replayOpen ? 'default' : 'outline'}
             size="sm"
             disabled={!canReplay}
             title={canReplay ? 'Replay metrics for a past period' : 'Requires time column and interval'}
-            onClick={() => setReplayOpen(true)}
+            onClick={() => setReplayOpen((o) => !o)}
           >
             <RotateCcw className="size-3" />
             Replay…
           </Button>
         </div>
+        {replayOpen && (
+          <div className="border-b px-[18px] py-3.5" style={{ borderColor: 'var(--border-subtle)' }}>
+            <ReplayDialog slug={slug} scanConfig={scanConfig} open={replayOpen} onOpenChange={setReplayOpen} />
+          </div>
+        )}
         <div className="flex items-center gap-[18px] px-[18px] py-3.5">
           <div className="flex-1">
             <div className="text-[13px] font-medium" style={{ color: 'var(--fg)' }}>

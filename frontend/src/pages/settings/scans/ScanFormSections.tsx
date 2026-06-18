@@ -2,7 +2,6 @@ import { Play } from 'lucide-react'
 import type { DataSource, EventType, IntervalCode } from '@/types'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
-import { Textarea } from '@/components/ui/textarea'
 import { ErrorState } from '@/components/error-state'
 import { AppVersionFields } from './AppVersionFields'
 import { CreateMissingFieldsButton } from './CreateMissingFieldsButton'
@@ -10,6 +9,7 @@ import { DistributionDriftPicker } from './DistributionDriftPicker'
 import { EventGroupRulesEditor } from './EventGroupRulesEditor'
 import { MetricBreakdownPicker } from './MetricBreakdownPicker'
 import { ScanPreviewPanel } from './ScanPreviewPanel'
+import { SqlEditor } from './SqlEditor'
 import { Field, SCard } from './scanLayout'
 import { CHUNK_LABELS, SELECT_CLASS, eligibleChunkIntervals } from './scanUtils'
 import type { UseScanFormResult } from './useScanForm'
@@ -44,7 +44,8 @@ export function SourceQuerySection({
   footerFor,
 }: SectionProps) {
   const { state, set, setBaseQuery, setDataSourceId, previewMut, discoverJsonMut } = form
-  const sourceName = dataSources.find(ds => ds.id === state.dataSourceId)?.name ?? ''
+  const selectedSource = dataSources.find(ds => ds.id === state.dataSourceId)
+  const sourceName = selectedSource?.name ?? ''
   return (
     <SCard title="Source & query" footer={footerFor?.()}>
       <Field label="Name">
@@ -71,12 +72,11 @@ export function SourceQuerySection({
         )}
       </Field>
       <Field label="Base query" hint="Used as a subquery. tripl wraps it to scan windows.">
-        <Textarea
+        <SqlEditor
           value={state.baseQuery}
-          onChange={e => setBaseQuery(e.target.value)}
-          className="font-mono text-sm"
-          rows={4}
+          onChange={setBaseQuery}
           placeholder="SELECT * FROM analytics.events"
+          dialect={selectedSource?.db_type}
         />
       </Field>
       <Field

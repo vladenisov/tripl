@@ -106,7 +106,7 @@ export function ScansTab({ slug }: { slug: string }) {
   const scheduledCount = scanConfigs.filter((sc: ScanConfig) => sc.interval).length
 
   return (
-    <div className="flex max-w-[1040px] flex-col gap-[18px]">
+    <div className="flex flex-col gap-[18px]">
       <div className="flex items-end justify-between gap-4">
         <div className="min-w-0">
           <h2 className="text-lg font-semibold">Scans</h2>

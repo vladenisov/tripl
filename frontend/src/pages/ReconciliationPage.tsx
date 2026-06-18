@@ -135,7 +135,7 @@ export default function ReconciliationPage() {
   const shadowHasItems = (shadow?.items.length ?? 0) > 0
 
   return (
-    <div className="min-w-0 max-w-[1100px] space-y-[18px] pb-12">
+    <div className="min-w-0 space-y-[18px] pb-12">
       {/* Header */}
       <div className="flex items-end justify-between gap-4">
         <div>
