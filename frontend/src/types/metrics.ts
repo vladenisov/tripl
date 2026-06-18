@@ -15,6 +15,11 @@ export interface TopEvent {
   total_count: number
 }
 
+export interface OverviewKpiSeries {
+  days: number
+  active_events: number[]
+}
+
 export interface MonitoringSignal {
   scan_config_id: string
   scope_type: 'project_total' | 'event_type' | 'event'
