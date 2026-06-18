@@ -536,6 +536,7 @@ describe('ProjectSettingsPage', () => {
       if (url.includes('/api/v1/projects/demo/events?')) return mockJsonResponse({ items: [], total: 0 })
       if (url.endsWith('/api/v1/projects/demo/scans')) return mockJsonResponse([])
       if (url.includes('/api/v1/projects/demo/alert-deliveries')) return mockJsonResponse({ items: [], total: 0 })
+      if (url.endsWith('/api/v1/projects/demo/monitors-summary')) return mockJsonResponse({ monitors: [], firing_count: 0, warning_count: 0, healthy_count: 0, total: 0 })
 
       throw new Error(`Unhandled fetch: ${url}`)
     })
@@ -583,6 +584,7 @@ describe('ProjectSettingsPage', () => {
       if (url.includes('/api/v1/projects/demo/events?')) return mockJsonResponse({ items: [], total: 0 })
       if (url.endsWith('/api/v1/projects/demo/scans')) return mockJsonResponse([])
       if (url.includes('/api/v1/projects/demo/alert-deliveries')) return mockJsonResponse({ items: [], total: 0 })
+      if (url.endsWith('/api/v1/projects/demo/monitors-summary')) return mockJsonResponse({ monitors: [], firing_count: 0, warning_count: 0, healthy_count: 0, total: 0 })
 
       throw new Error(`Unhandled fetch: ${url}`)
     })
@@ -668,6 +670,7 @@ describe('ProjectSettingsPage', () => {
       if (url.includes('/api/v1/projects/demo/events?')) return mockJsonResponse({ items: [], total: 0 })
       if (url.endsWith('/api/v1/projects/demo/scans')) return mockJsonResponse([])
       if (url.includes('/api/v1/projects/demo/alert-deliveries')) return mockJsonResponse({ items: [], total: 0 })
+      if (url.endsWith('/api/v1/projects/demo/monitors-summary')) return mockJsonResponse({ monitors: [], firing_count: 0, warning_count: 0, healthy_count: 0, total: 0 })
 
       throw new Error(`Unhandled fetch: ${url}`)
     })
@@ -838,7 +841,7 @@ describe('ProjectSettingsPage', () => {
       </QueryClientProvider>,
     )
 
-    fireEvent.click((await screen.findAllByRole('button', { name: 'Add Meta Field' }))[0])
+    fireEvent.click((await screen.findAllByRole('button', { name: 'Add meta field' }))[0])
 
     const dialog = await screen.findByRole('dialog')
     const inputs = within(dialog).getAllByRole('textbox')
