@@ -1,5 +1,5 @@
 import { useState, type ReactNode } from 'react'
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useMutation, useQueries, useQuery, useQueryClient } from '@tanstack/react-query'
 import { GitBranch, GitCompare, GitMerge, Plus, Trash2 } from 'lucide-react'
 
 import { planBranchesApi } from '@/api/planBranches'
@@ -130,6 +130,22 @@ export function BranchesTab({ slug }: { slug: string }) {
     enabled: !!selected && selected.kind !== 'main',
   })
 
+  // Fetch every feature branch's diff so the list can show ahead/behind on each
+  // row (the list endpoint carries no counts). react-query dedups the selected
+  // branch's diff with the query above by key.
+  const featureBranches = items.filter((b) => b.kind !== 'main')
+  const diffQueries = useQueries({
+    queries: featureBranches.map((b) => ({
+      queryKey: ['planBranchDiff', slug, b.id],
+      queryFn: () => planBranchesApi.diff(slug, b.id),
+    })),
+  })
+  const countsByBranch = new Map<string, { ahead: number; behind: number }>()
+  featureBranches.forEach((b, i) => {
+    const diff = diffQueries[i]?.data
+    countsByBranch.set(b.id, { ahead: aheadCount(diff), behind: diff?.behind_base ? 1 : 0 })
+  })
+
   return (
     <>
       {dialog}
@@ -156,8 +172,7 @@ export function BranchesTab({ slug }: { slug: string }) {
               items={items}
               defaultCount={defaultCount}
               selectedId={selected?.id ?? null}
-              selectedAhead={aheadCount(selectedDiff)}
-              selectedBehind={selectedDiff?.behind_base ? 1 : 0}
+              countsByBranch={countsByBranch}
               onSelect={(branch) => setActiveBranchId(branch.id)}
             />
             <BranchDetail
@@ -189,8 +204,7 @@ interface BranchListProps {
   items: PlanBranchSummary[]
   defaultCount: number
   selectedId: string | null
-  selectedAhead: number
-  selectedBehind: number
+  countsByBranch: Map<string, { ahead: number; behind: number }>
   onSelect: (branch: PlanBranchSummary) => void
 }
 
@@ -198,8 +212,7 @@ function BranchList({
   items,
   defaultCount,
   selectedId,
-  selectedAhead,
-  selectedBehind,
+  countsByBranch,
   onSelect,
 }: BranchListProps) {
   return (
@@ -235,9 +248,9 @@ function BranchList({
                   {branchSubtitle(branch)}
                 </div>
               </div>
-              {!isMain && isActive && (
+              {!isMain && (
                 <span className="mono shrink-0 text-[10.5px]" style={{ color: 'var(--fg-faint)' }}>
-                  ↑{selectedAhead} ↓{selectedBehind}
+                  ↑{countsByBranch.get(branch.id)?.ahead ?? 0} ↓{countsByBranch.get(branch.id)?.behind ?? 0}
                 </span>
               )}
             </button>
