@@ -791,6 +791,93 @@ async def test_get_app_version_series_returns_semver_ordered_versions(
 
 
 @pytest.mark.asyncio
+async def test_get_app_version_series_retention_is_window_stable(
+    client: AsyncClient,
+) -> None:
+    # Regression: latest-N retention + "Other" rollup must be decided once over
+    # the whole window, not per collection chunk. A high-volume older version
+    # must fold into "Other" consistently — even in buckets where the newer
+    # version is absent — instead of flipping between its own series and "Other".
+    setup = await _setup_metrics_project(client, "version-stable")
+
+    event_resp = await client.post(
+        "/api/v1/projects/version-stable/events",
+        json={
+            "event_type_id": setup["page_type_id"],
+            "name": "event_name=Login",
+            "status": "implemented",
+            "field_values": [{"field_definition_id": setup["page_field_id"], "value": "home"}],
+        },
+    )
+    event_id = event_resp.json()["id"]
+
+    async with TestSessionLocal() as session:
+        data_source = DataSource(
+            id=uuid.uuid4(),
+            name=f"Version Stable DS {uuid.uuid4().hex[:8]}",
+            db_type="clickhouse",
+            host="localhost",
+            port=8123,
+            database_name="default",
+            username="default",
+            password_encrypted="",
+        )
+        scan_config = ScanConfig(
+            id=uuid.uuid4(),
+            data_source_id=data_source.id,
+            project_id=uuid.UUID(setup["project_id"]),
+            event_type_id=uuid.UUID(setup["page_type_id"]),
+            name="Version Stable Config",
+            base_query="SELECT time, event_name, app_version FROM events",
+            time_column="time",
+            app_version_column="app_version",
+            app_version_keep_releases=1,
+            cardinality_threshold=100,
+            interval="1h",
+        )
+        session.add_all([data_source, scan_config])
+        # Every version stored verbatim (is_other=False), as the write path now does.
+        # 2.0.0 (newest) appears only in the first bucket; 1.0.0 dominates both.
+        for bucket, version, count in [
+            (datetime(2026, 1, 1, 10, tzinfo=UTC), "1.0.0", 100),
+            (datetime(2026, 1, 1, 10, tzinfo=UTC), "2.0.0", 5),
+            (datetime(2026, 1, 1, 11, tzinfo=UTC), "1.0.0", 80),
+        ]:
+            session.add(
+                EventMetricBreakdown(
+                    id=uuid.uuid4(),
+                    scan_config_id=scan_config.id,
+                    event_id=uuid.UUID(event_id),
+                    event_type_id=None,
+                    bucket=bucket,
+                    breakdown_column="app_version",
+                    breakdown_value=version,
+                    is_other=False,
+                    count=count,
+                )
+            )
+        await session.commit()
+        scan_config_id = str(scan_config.id)
+
+    resp = await client.get(
+        f"/api/v1/projects/version-stable/scans/{scan_config_id}/app-versions",
+        params={"scope_type": "event", "scope_ref": event_id},
+    )
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["latest_version"] == "2.0.0"
+    # keep_releases=1 → only the latest (2.0.0) stays explicit; 1.0.0 folds into
+    # "Other" in BOTH buckets, including the one where 2.0.0 is absent.
+    assert [item["version"] for item in body["versions"]] == ["2.0.0", "Other"]
+    series_by_version = {series["version"]: series for series in body["series"]}
+    assert set(series_by_version) == {"2.0.0", "Other"}
+    assert series_by_version["2.0.0"]["total_count"] == 5
+    assert series_by_version["Other"]["is_other"] is True
+    assert series_by_version["Other"]["total_count"] == 180
+
+
+@pytest.mark.asyncio
 async def test_get_app_version_adoption_returns_project_totals(client: AsyncClient) -> None:
     setup = await _setup_metrics_project(client, "version-adoption")
 

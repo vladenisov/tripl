@@ -38,7 +38,11 @@ from tripl.schemas.event_metric import (
     ReleaseRegressionsResponse,
     TopEventResponse,
 )
-from tripl.semver import order_versions
+from tripl.semver import (
+    APP_VERSION_OTHER_LABEL,
+    DEFAULT_APP_VERSION_KEEP_RELEASES,
+    order_versions,
+)
 from tripl.services.monitoring_utils import classify_signal_state
 from tripl.services.project_lookup import get_project_by_slug
 from tripl.worker.analyzers.anomaly_detector import (
@@ -750,8 +754,40 @@ def _build_app_version_series(
     interval: str | None,
     metric_rows_by_series: dict[tuple[str, bool], list[tuple[datetime, int]]],
     anomalies_by_series: dict[tuple[str, bool], list[MetricBreakdownAnomaly]],
+    keep_releases: int,
 ) -> tuple[str | None, list[AppVersionInfo], list[AppVersionMetricSeries]]:
-    keys = set(metric_rows_by_series) | set(anomalies_by_series)
+    # Retention is applied here, at read time, over every version present in the
+    # requested window: keep the latest ``keep_releases`` by SemVer as explicit
+    # series and roll the rest — plus any legacy stored ``is_other`` rows — into
+    # a single "Other" series. Deciding the kept set once over the whole window
+    # (rather than per collection chunk at write time) stops a version from
+    # flipping in and out of "Other" between chunks.
+    explicit_versions = {
+        version
+        for version, is_other in (set(metric_rows_by_series) | set(anomalies_by_series))
+        if not is_other
+    }
+    kept_versions = set(order_versions(explicit_versions, reverse=True)[:keep_releases])
+
+    def _display_key(version: str, is_other: bool) -> tuple[str, bool]:
+        if not is_other and version in kept_versions:
+            return (version, False)
+        return (APP_VERSION_OTHER_LABEL, True)
+
+    folded_metric_rows: dict[tuple[str, bool], dict[datetime, int]] = {}
+    for (version, is_other), rows in metric_rows_by_series.items():
+        bucket_counts = folded_metric_rows.setdefault(_display_key(version, is_other), {})
+        for bucket, count in rows:
+            bucket_counts[bucket] = bucket_counts.get(bucket, 0) + count
+    metric_rows_by_display: dict[tuple[str, bool], list[tuple[datetime, int]]] = {
+        key: sorted(counts.items()) for key, counts in folded_metric_rows.items()
+    }
+
+    folded_anomalies: dict[tuple[str, bool], list[MetricBreakdownAnomaly]] = {}
+    for (version, is_other), anomalies in anomalies_by_series.items():
+        folded_anomalies.setdefault(_display_key(version, is_other), []).extend(anomalies)
+
+    keys = set(metric_rows_by_display) | set(folded_anomalies)
     ordered_keys = _order_app_version_keys(keys)
     latest_version = _latest_app_version(keys)
 
@@ -769,8 +805,8 @@ def _build_app_version_series(
         key = (version, is_other)
         data = _build_metric_points(
             interval=interval,
-            metric_rows=metric_rows_by_series.get(key, []),
-            anomalies=anomalies_by_series.get(key, []),
+            metric_rows=metric_rows_by_display.get(key, []),
+            anomalies=folded_anomalies.get(key, []),
         )
         series.append(
             AppVersionMetricSeries(
@@ -852,6 +888,7 @@ async def get_app_version_series(
         interval=config.interval,
         metric_rows_by_series=metric_rows_by_series,
         anomalies_by_series=anomalies_by_series,
+        keep_releases=config.app_version_keep_releases or DEFAULT_APP_VERSION_KEEP_RELEASES,
     )
     return AppVersionSeriesResponse(
         scan_config_id=config.id,
@@ -911,6 +948,7 @@ async def get_app_version_adoption(
         interval=config.interval,
         metric_rows_by_series=metric_rows_by_series,
         anomalies_by_series=anomalies_by_series,
+        keep_releases=config.app_version_keep_releases or DEFAULT_APP_VERSION_KEEP_RELEASES,
     )
     return AppVersionAdoptionResponse(
         scan_config_id=config.id,
