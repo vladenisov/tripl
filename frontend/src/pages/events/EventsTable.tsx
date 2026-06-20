@@ -21,6 +21,7 @@ import {
   TableRow,
 } from '@/components/ui/table'
 import { TooltipProvider } from '@/components/ui/tooltip'
+import { Dot } from '@/components/primitives/dot'
 import { EmptyState } from '@/components/empty-state'
 import type {
   EventListItem,
@@ -32,7 +33,6 @@ import type {
   MonitoringSignal,
 } from '@/types'
 
-import type { EventStatus } from '@/lib/eventStatus'
 import { ColumnFilter, FilterableHead, type ColumnFilterType } from './ColumnFilter'
 import { EventRow, type RowAction } from './EventRow'
 import { EMPTY_WINDOW_POINTS, ROW_METRICS_LABEL } from './utils'
@@ -50,6 +50,12 @@ export type EventsTableProps = {
   someVisibleSelected: boolean
   toggleAllVisibleSelected: (checked: boolean) => void
   activeEt: EventType | null
+  hideStatus: boolean
+  hideReviewed: boolean
+  hideMonitor: boolean
+  hideOwner: boolean
+  hideDelta: boolean
+  usersById: Map<string, { name: string | null; email: string }>
   hideTags: boolean
   hideLastSeen: boolean
   allTags: string[]
@@ -76,12 +82,10 @@ export type EventsTableProps = {
   eventTypesById: Map<string, EventTypeBrief>
   slug: string
   selectedSet: Set<string>
-  visibleIndexById: Map<string, number>
   getFieldValue: (ev: EventListItem, col: FieldDefinition) => string
   toggleEventSelected: (id: string, checked: boolean) => void
   onToggleExpandedCell: (cellKey: string | null) => void
   onRowAction: (action: RowAction, ev: EventListItem) => void
-  onSetStatus: (id: string, status: EventStatus) => void
 }
 
 export function EventsTable({
@@ -94,6 +98,12 @@ export function EventsTable({
   someVisibleSelected,
   toggleAllVisibleSelected,
   activeEt,
+  hideStatus,
+  hideReviewed,
+  hideMonitor,
+  hideOwner,
+  hideDelta,
+  usersById,
   hideTags,
   hideLastSeen,
   allTags,
@@ -119,12 +129,10 @@ export function EventsTable({
   eventTypesById,
   slug,
   selectedSet,
-  visibleIndexById,
   getFieldValue,
   toggleEventSelected,
   onToggleExpandedCell,
   onRowAction,
-  onSetStatus,
 }: EventsTableProps) {
   // Visible window for the "Showing X–Y of N" footer. When virtualized this
   // tracks the rendered window as the user scrolls; otherwise all loaded rows
@@ -169,8 +177,21 @@ export function EventsTable({
                       aria-label="Select all visible events"
                     />
                   </TableHead>
-                  <TableHead>Event</TableHead>
+                  <TableHead
+                    className="border-r"
+                    style={{ borderColor: 'var(--border)' }}
+                  >
+                    Event
+                  </TableHead>
                   {!activeEt && <TableHead>Type</TableHead>}
+                  {!hideStatus && <TableHead>Status</TableHead>}
+                  {!hideReviewed && (
+                    <TableHead className="w-20 text-center text-[11px]">Reviewed</TableHead>
+                  )}
+                  {!hideMonitor && <TableHead className="w-24">Monitor</TableHead>}
+                  {!hideDelta && (
+                    <TableHead className="w-20 text-right text-[11px]">Δ · 24h</TableHead>
+                  )}
                   <TableHead className="w-32 text-right">{ROW_METRICS_LABEL}</TableHead>
                   {!hideTags && (
                     <FilterableHead
@@ -191,6 +212,7 @@ export function EventsTable({
                   {!hideLastSeen && (
                     <TableHead className="w-24 text-[11px]">Last seen</TableHead>
                   )}
+                  {!hideOwner && <TableHead className="w-28 text-[11px]">Owner</TableHead>}
                   {visibleFieldColumns.map((f) => {
                     const enumOpts = fieldEnumOptions[f.id]
                     const filterType: ColumnFilterType | null =
@@ -251,9 +273,6 @@ export function EventsTable({
                       />
                     )
                   })}
-                  <TableHead className="sticky right-0 z-20 w-[7.5rem] border-l bg-background text-right">
-                    Actions
-                  </TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
@@ -264,7 +283,6 @@ export function EventsTable({
                 )}
                 {(virtualize ? virtualItems.map((vi) => events[vi.index]) : events).map(
                   (ev: EventListItem) => {
-                    const idx = visibleIndexById.get(ev.id) ?? -1
                     const expandedFieldId =
                       expandedCell && expandedCell.startsWith(ev.id + '-')
                         ? expandedCell.slice(ev.id.length + 1)
@@ -276,13 +294,17 @@ export function EventsTable({
                         ev={ev}
                         selected={selectedSet.has(ev.id)}
                         hideType={!!activeEt}
+                        hideStatus={hideStatus}
+                        hideReviewed={hideReviewed}
+                        hideMonitor={hideMonitor}
+                        hideOwner={hideOwner}
+                        hideDelta={hideDelta}
+                        usersById={usersById}
                         hideTags={hideTags}
                         hideLastSeen={hideLastSeen}
                         fieldColumns={visibleFieldColumns}
                         metaFields={visibleMetaFields}
                         slug={slug}
-                        canMoveUp={idx > 0}
-                        canMoveDown={idx >= 0 && idx < visibleEventIds.length - 1}
                         expandedFieldId={expandedFieldId}
                         rowSignal={eventRowSignals.get(ev.id)}
                         windowTotal={windowMetric?.total_count}
@@ -293,7 +315,6 @@ export function EventsTable({
                         onToggleSelected={toggleEventSelected}
                         onToggleExpanded={onToggleExpandedCell}
                         onRowAction={onRowAction}
-                        onSetStatus={onSetStatus}
                       />
                     )
                   },
@@ -326,16 +347,32 @@ export function EventsTable({
           </div>
           {events.length > 0 && (
             <div
-              className="flex items-center gap-2 border-t px-3 py-1.5 text-[11px]"
+              className="flex h-[30px] items-center gap-3.5 border-t px-5 text-[11px]"
               style={{
                 borderColor: 'var(--border)',
                 background: 'var(--bg-sunken)',
                 color: 'var(--fg-subtle)',
               }}
             >
-              <span className="mono tnum">
-                Showing {rangeLabel} of {total.toLocaleString()}
+              <span>
+                Showing{' '}
+                <span className="mono tnum" style={{ color: 'var(--fg-muted)' }}>
+                  {rangeLabel}
+                </span>{' '}
+                of{' '}
+                <span className="mono tnum" style={{ color: 'var(--fg)' }}>
+                  {total.toLocaleString()}
+                </span>
               </span>
+              <span style={{ color: 'var(--fg-faint)' }}>·</span>
+              <span className="mono tnum">{total.toLocaleString()} total in plan</span>
+              <div className="flex-1" />
+              {virtualize && (
+                <span className="inline-flex items-center gap-1.5">
+                  <Dot tone="accent" size={5} pulse />
+                  virtualized · row {firstVisible.toLocaleString()}
+                </span>
+              )}
             </div>
           )}
         </SortableContext>

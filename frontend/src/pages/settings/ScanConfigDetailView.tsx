@@ -1,25 +1,38 @@
 import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { useQuery } from '@tanstack/react-query'
-import { ArrowLeft, Pencil } from 'lucide-react'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { Play, Sliders } from 'lucide-react'
+import { dataSourcesApi } from '@/api/dataSources'
 import { eventTypesApi } from '@/api/eventTypes'
 import { scansApi } from '@/api/scans'
 import { useActiveBranchId } from '@/hooks/useBranch'
-import { Badge } from '@/components/ui/badge'
+import type { DataSource, ScanConfig } from '@/types'
 import { Button } from '@/components/ui/button'
+import { Dot } from '@/components/primitives/dot'
+import { getErrorMessage } from '@/lib/utils'
 import { ScanDetail } from './ScanDetail'
-import { ScanEditDialog } from './scans/ScanConfigForm'
+import { ScanConfigurationTab } from './scans/ScanConfigForm'
+import { ScanBadges } from './scans/ScanConfigRow'
+import { BackLink, SrcIcon } from './scans/scanLayout'
+import { INTERVAL_LABEL, STATUS_META } from './scans/scanLayoutConstants'
+import { deriveScanRunInfo } from './scans/scanUtils'
+
+type DetailTab = 'overview' | 'configuration'
 
 export function ScanConfigDetail({ slug, scanConfigId }: { slug: string; scanConfigId: string }) {
   const navigate = useNavigate()
+  const qc = useQueryClient()
   const branchId = useActiveBranchId()
-  const [editOpen, setEditOpen] = useState(false)
+  const [tab, setTab] = useState<DetailTab>('overview')
 
   const { data: scanConfigs = [], isSuccess: scansLoaded } = useQuery({
     queryKey: ['scans', slug],
     queryFn: () => scansApi.list(slug),
   })
-
+  const { data: dataSources = [] } = useQuery({
+    queryKey: ['dataSources'],
+    queryFn: () => dataSourcesApi.list(),
+  })
   const { data: eventTypes = [] } = useQuery({
     queryKey: ['eventTypes', slug, branchId],
     queryFn: () => eventTypesApi.list(slug, branchId),
@@ -27,77 +40,102 @@ export function ScanConfigDetail({ slug, scanConfigId }: { slug: string; scanCon
 
   const sc = scanConfigs.find(s => s.id === scanConfigId)
 
+  const { data: jobs = [] } = useQuery({
+    queryKey: ['scanJobs', slug, scanConfigId],
+    queryFn: () => scansApi.listJobs(slug, scanConfigId),
+    refetchInterval: 5000,
+    enabled: !!sc,
+  })
+
+  const runMut = useMutation({
+    mutationFn: () => scansApi.run(slug, scanConfigId),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['scanJobs', slug, scanConfigId] }),
+  })
+
   const goBack = () => navigate(`/p/${slug}/settings/scans`)
 
   if (scansLoaded && !sc) {
     return (
       <div className="space-y-4">
-        <Button variant="ghost" size="sm" onClick={goBack} className="gap-1.5">
-          <ArrowLeft className="h-4 w-4" />
-          Back to Scans
-        </Button>
+        <BackLink onClick={goBack} />
         <p className="text-sm text-muted-foreground">Scan config not found.</p>
       </div>
     )
   }
+  if (!sc) return null
 
-  if (!sc) {
-    return null
-  }
+  const dataSource = (dataSources as DataSource[]).find(ds => ds.id === sc.data_source_id) ?? null
+  const runInfo = deriveScanRunInfo(jobs)
+  const meta = STATUS_META[runInfo.status]
 
   return (
-    <div className="space-y-4">
-      <Button variant="ghost" size="sm" onClick={goBack} className="gap-1.5">
-        <ArrowLeft className="h-4 w-4" />
-        Back to Scans
-      </Button>
+    <div className="flex flex-col gap-4">
+      <BackLink onClick={goBack} />
 
-      <ScanEditDialog
-        key={editOpen ? sc.id : 'none'}
-        slug={slug}
-        scanConfig={editOpen ? sc : null}
-        onClose={() => setEditOpen(false)}
-      />
-
-      <div className="flex items-start justify-between gap-3">
-        <div className="flex items-center gap-3 flex-wrap">
-          <h2 className="text-lg font-semibold">{sc.name}</h2>
-          {sc.interval && <Badge variant="outline" className="text-xs">⏱ {sc.interval}</Badge>}
-          {sc.scan_lookback_hours && (
-            <Badge variant="outline" className="text-xs">Lookback {sc.scan_lookback_hours}h</Badge>
-          )}
-          {sc.scan_row_limit && (
-            <Badge variant="outline" className="text-xs">Scan cap {sc.scan_row_limit}</Badge>
-          )}
-          {sc.metrics_row_limit && (
-            <Badge variant="outline" className="text-xs">Metrics cap {sc.metrics_row_limit}</Badge>
-          )}
-          {sc.json_value_paths.length > 0 && (
-            <Badge variant="outline" className="text-xs">JSON keep {sc.json_value_paths.length}</Badge>
-          )}
-          {sc.metric_breakdown_columns.length > 0 && (
-            <Badge variant="outline" className="text-xs">Breakdowns {sc.metric_breakdown_columns.length}</Badge>
-          )}
-          {sc.distribution_drift_fields.length > 0 && (
-            <Badge variant="outline" className="text-xs">Distribution {sc.distribution_drift_fields.length}</Badge>
-          )}
-          {sc.app_version_column && (
-            <Badge variant="outline" className="text-xs">
-              Version {sc.app_version_column}
-              {sc.app_version_keep_releases ? ` · keep ${sc.app_version_keep_releases}` : ''}
-            </Badge>
-          )}
-          {sc.event_group_rules.length > 0 && (
-            <Badge variant="outline" className="text-xs">Groups {sc.event_group_rules.length}</Badge>
-          )}
+      <div className="flex items-start gap-3">
+        <SrcIcon dbType={dataSource?.db_type ?? null} size={36} />
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center gap-2.5">
+            <h1 className="m-0 text-[21px] font-semibold tracking-tight">{sc.name}</h1>
+            <span className="inline-flex items-center gap-1.5">
+              <Dot tone={meta.tone} pulse={runInfo.status === 'running'} size={6} />
+              <span className="text-xs" style={{ color: `var(--${meta.tone === 'neutral' ? 'fg-subtle' : meta.tone})` }}>
+                {meta.label}
+              </span>
+            </span>
+          </div>
+          <p className="mt-1 text-[12.5px]" style={{ color: 'var(--fg-subtle)' }}>
+            Ingests from <span style={{ color: 'var(--fg-muted)' }}>{dataSource?.name ?? 'Unknown source'}</span>
+          </p>
         </div>
-        <Button variant="outline" size="sm" onClick={() => setEditOpen(true)} className="gap-1.5 shrink-0">
-          <Pencil className="h-3.5 w-3.5" />
+        <Button variant="secondary" size="sm" disabled={runMut.isPending} onClick={() => runMut.mutate()}>
+          <Play className="size-3" />
+          {runMut.isPending ? 'Starting…' : 'Run now'}
+        </Button>
+        <Button
+          variant={tab === 'configuration' ? 'default' : 'outline'}
+          size="sm"
+          onClick={() => setTab('configuration')}
+        >
+          <Sliders className="size-3.5" />
           Edit
         </Button>
       </div>
 
-      <ScanDetail slug={slug} scanConfig={sc} eventTypes={eventTypes} branchId={branchId} />
+      {runMut.isError && (
+        <p className="text-sm" style={{ color: 'var(--danger)' }}>{getErrorMessage(runMut.error)}</p>
+      )}
+
+      <ScanBadges sc={sc} intervalLabel={INTERVAL_LABEL} />
+
+      <div className="flex gap-1 border-b" style={{ borderColor: 'var(--border)' }}>
+        {(['overview', 'configuration'] as const).map(id => (
+          <button
+            key={id}
+            type="button"
+            onClick={() => setTab(id)}
+            className="-mb-px px-3 py-2 text-[12.5px] font-medium"
+            style={{
+              color: tab === id ? 'var(--fg)' : 'var(--fg-muted)',
+              borderBottom: tab === id ? '2px solid var(--accent)' : '2px solid transparent',
+            }}
+          >
+            {id === 'overview' ? 'Overview' : 'Configuration'}
+          </button>
+        ))}
+      </div>
+
+      {tab === 'overview' ? (
+        <ScanDetail
+          slug={slug}
+          scanConfig={sc as ScanConfig}
+          eventTypes={eventTypes}
+          branchId={branchId}
+          dataSource={dataSource}
+        />
+      ) : (
+        <ScanConfigurationTab slug={slug} scanConfig={sc as ScanConfig} onDeleted={goBack} />
+      )}
     </div>
   )
 }

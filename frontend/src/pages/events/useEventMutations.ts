@@ -91,6 +91,8 @@ export function useEventMutations({
       eventIds: string[]
       status?: string
       sunset_at?: string | null
+      reviewed?: boolean
+      owner_id?: string | null
     }) => eventsApi.bulkUpdate(slug!, eventIds, patch, branchId),
     onMutate: async ({ eventIds, ...patch }) => {
       await qc.cancelQueries({ queryKey: eventsKey })

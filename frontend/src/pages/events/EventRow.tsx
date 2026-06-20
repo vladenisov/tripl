@@ -1,7 +1,7 @@
 import { memo } from 'react'
 import { useSortable } from '@dnd-kit/sortable'
 import { CSS } from '@dnd-kit/utilities'
-import { GripVertical } from 'lucide-react'
+import { Check, GripVertical } from 'lucide-react'
 import type {
   EventListItem,
   EventMetricPoint,
@@ -15,12 +15,11 @@ import { Checkbox } from '@/components/ui/checkbox'
 import { TableCell, TableRow } from '@/components/ui/table'
 import { Chip } from '@/components/primitives/chip'
 import { Dot } from '@/components/primitives/dot'
-import { EVENT_STATUS_DOT_TONE } from '@/lib/eventStatus'
+import { EVENT_STATUS_DOT_TONE, EVENT_STATUS_LABELS } from '@/lib/eventStatus'
 import type { EventStatus } from '@/lib/eventStatus'
 import { resolveMetaFieldHref } from '@/lib/metaFields'
 import { VariableValueContextTrigger } from '@/components/variable-value-contexts'
 import { EventDriftBadge } from './EventDriftBadge'
-import { EventRowActions } from './EventRowActions'
 import { EventWindowMetricsCell } from './EventWindowMetricsCell'
 import { SignalLink } from './SignalLink'
 import { formatRelativeTime } from './utils'
@@ -39,13 +38,17 @@ export type EventRowProps = {
   eventType: EventTypeBrief | undefined
   selected: boolean
   hideType: boolean
+  hideStatus: boolean
+  hideReviewed: boolean
+  hideMonitor: boolean
+  hideOwner: boolean
+  hideDelta: boolean
+  usersById: Map<string, { name: string | null; email: string }>
   hideTags: boolean
   hideLastSeen: boolean
   fieldColumns: FieldDefinition[]
   metaFields: MetaFieldDefinition[]
   slug: string
-  canMoveUp: boolean
-  canMoveDown: boolean
   expandedFieldId: string | null
   rowSignal: MonitoringSignal | undefined
   windowTotal: number | undefined
@@ -55,7 +58,6 @@ export type EventRowProps = {
   onToggleSelected: (id: string, checked: boolean) => void
   onToggleExpanded: (cellKey: string | null) => void
   onRowAction: (action: RowAction, ev: EventListItem) => void
-  onSetStatus: (id: string, status: EventStatus) => void
 }
 
 export const EventRow = memo(function EventRow({
@@ -63,13 +65,17 @@ export const EventRow = memo(function EventRow({
   eventType,
   selected,
   hideType,
+  hideStatus,
+  hideReviewed,
+  hideMonitor,
+  hideOwner,
+  hideDelta,
+  usersById,
   hideTags,
   hideLastSeen,
   fieldColumns,
   metaFields,
   slug,
-  canMoveUp,
-  canMoveDown,
   expandedFieldId,
   rowSignal,
   windowTotal,
@@ -79,7 +85,6 @@ export const EventRow = memo(function EventRow({
   onToggleSelected,
   onToggleExpanded,
   onRowAction,
-  onSetStatus,
 }: EventRowProps) {
   const {
     attributes,
@@ -105,7 +110,12 @@ export const EventRow = memo(function EventRow({
   const statusTone = EVENT_STATUS_DOT_TONE[(ev.status as EventStatus) ?? 'draft'] ?? 'neutral'
 
   return (
-    <TableRow ref={setNodeRef} style={dragStyle} data-state={selected ? 'selected' : undefined}>
+    <TableRow
+      ref={setNodeRef}
+      style={dragStyle}
+      data-state={selected ? 'selected' : undefined}
+      className="group/row"
+    >
       <TableCell className="w-8 px-1">
         <button
           type="button"
@@ -117,14 +127,17 @@ export const EventRow = memo(function EventRow({
           <GripVertical className="h-3.5 w-3.5" />
         </button>
       </TableCell>
-      <TableCell className="tripl-pin-l pl-5">
+      <TableCell className="tripl-pin-l w-10 pl-5">
         <Checkbox
           checked={selected}
           onCheckedChange={(checked) => onToggleSelected(ev.id, checked === true)}
           aria-label={`Select ${ev.name}`}
         />
       </TableCell>
-      <TableCell className="font-medium">
+      <TableCell
+        className="border-r font-medium"
+        style={{ borderColor: 'var(--border-subtle)' }}
+      >
         <div className="inline-flex max-w-full items-center gap-2 align-middle">
           <Dot tone={signalTone ?? statusTone} pulse={!!signalTone} size={6} />
           <button
@@ -148,6 +161,60 @@ export const EventRow = memo(function EventRow({
             />
             {eventType?.name ?? ''}
           </Chip>
+        </TableCell>
+      )}
+      {!hideStatus && (
+        <TableCell>
+          <Chip tone={statusTone} size="xs">
+            {EVENT_STATUS_LABELS[(ev.status as EventStatus) ?? 'draft'] ?? ev.status}
+          </Chip>
+        </TableCell>
+      )}
+      {!hideReviewed && (
+        <TableCell className="text-center">
+          {ev.reviewed ? (
+            <Check
+              className="mx-auto h-3.5 w-3.5"
+              style={{ color: 'var(--success)' }}
+              aria-label="Reviewed"
+            />
+          ) : (
+            <span className="text-[11px]" style={{ color: 'var(--fg-faint)' }}>—</span>
+          )}
+        </TableCell>
+      )}
+      {!hideMonitor && (
+        <TableCell>
+          {rowSignal ? (
+            <Chip tone={signalTone ?? 'danger'} size="xs">
+              {signalTone === 'warning' ? 'Warning' : 'Firing'}
+            </Chip>
+          ) : (
+            <span className="text-[11px]" style={{ color: 'var(--fg-faint)' }}>—</span>
+          )}
+        </TableCell>
+      )}
+      {!hideDelta && (
+        <TableCell className="tnum text-right text-[11px]">
+          {(() => {
+            const last = windowData[windowData.length - 1]
+            if (!last || last.expected_count == null || last.expected_count === 0) {
+              return <span style={{ color: 'var(--fg-faint)' }}>—</span>
+            }
+            const pct = ((last.count - last.expected_count) / last.expected_count) * 100
+            const color =
+              Math.abs(pct) < 1
+                ? 'var(--fg-subtle)'
+                : pct >= 0
+                  ? 'var(--success)'
+                  : 'var(--danger)'
+            return (
+              <span style={{ color }}>
+                {pct >= 0 ? '+' : ''}
+                {pct.toFixed(0)}%
+              </span>
+            )
+          })()}
         </TableCell>
       )}
       <TableCell className="w-32 text-right">
@@ -184,6 +251,18 @@ export const EventRow = memo(function EventRow({
           title={ev.last_seen_at ?? 'Never observed in collected metrics'}
         >
           {formatRelativeTime(ev.last_seen_at)}
+        </TableCell>
+      )}
+      {!hideOwner && (
+        <TableCell className="text-[11px]">
+          {(() => {
+            const u = ev.owner_id ? usersById.get(ev.owner_id) : undefined
+            return u ? (
+              <span style={{ color: 'var(--fg-subtle)' }}>{u.name ?? u.email}</span>
+            ) : (
+              <span style={{ color: 'var(--fg-faint)' }}>—</span>
+            )
+          })()}
         </TableCell>
       )}
       {fieldColumns.map((f) => {
@@ -238,21 +317,6 @@ export const EventRow = memo(function EventRow({
           </TableCell>
         )
       })}
-      <TableCell className="sticky right-0 z-10 border-l bg-background/95 pl-3 pr-2 backdrop-blur-sm hover:z-40 focus-within:z-40">
-        <EventRowActions
-          event={ev}
-          slug={slug}
-          canMoveUp={canMoveUp}
-          canMoveDown={canMoveDown}
-          onEdit={() => onRowAction('edit', ev)}
-          onMoveUp={() => onRowAction('move-up', ev)}
-          onMoveDown={() => onRowAction('move-down', ev)}
-          onArchive={() => onRowAction('set-status-archived', ev)}
-          onRestore={() => onRowAction('set-status-draft', ev)}
-          onDelete={() => onRowAction('delete', ev)}
-          onSetStatus={status => onSetStatus(ev.id, status)}
-        />
-      </TableCell>
     </TableRow>
   )
 })

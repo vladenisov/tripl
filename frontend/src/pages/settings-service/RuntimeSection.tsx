@@ -1,7 +1,6 @@
-import { ServerCog } from 'lucide-react'
 import type { ServiceSettings } from '@/types'
-import { Input } from '@/components/ui/input'
-import { FieldRow, SectionCard } from './ServiceSettingsPrimitives'
+import { Field, SCard, TextInput } from '@/components/settings/kit'
+import { ResetRow, SourceBadge } from './ServiceSettingsPrimitives'
 import type { EditableSettings, SectionKey } from './serviceSettingsHelpers'
 import { sourceFor } from './serviceSettingsHelpers'
 
@@ -19,50 +18,50 @@ export function RuntimeSection({
   resetting: boolean
 }) {
   return (
-    <SectionCard
-      title="Runtime"
-      icon={ServerCog}
-      onReset={onReset}
-      resetting={resetting}
-    >
-      <FieldRow
-        label="App base URL"
-        source={sourceFor(settings, 'runtime', 'app_base_url')}
-      >
-        <Input
-          value={form.runtime.app_base_url}
-          onChange={event => setField('runtime', 'app_base_url', event.target.value)}
-          placeholder="https://tripl.example.com"
-        />
-      </FieldRow>
-      <div className="grid gap-4 sm:grid-cols-2">
-        <FieldRow
+    <>
+      <SCard title="Server" footer={<ResetRow onReset={onReset} resetting={resetting} />}>
+        <Field
+          label="App base URL"
+          hint="Used in emails, webhooks and the ingest endpoint."
+          labelRight={<SourceBadge source={sourceFor(settings, 'runtime', 'app_base_url')} />}
+          last
+        >
+          <TextInput
+            value={form.runtime.app_base_url}
+            onChange={value => setField('runtime', 'app_base_url', value)}
+            placeholder="https://tripl.example.com"
+            mono
+          />
+        </Field>
+      </SCard>
+
+      <SCard title="Query limits">
+        <Field
           label="Scan row limit default"
-          source={sourceFor(settings, 'runtime', 'scan_row_limit_default')}
+          labelRight={<SourceBadge source={sourceFor(settings, 'runtime', 'scan_row_limit_default')} />}
         >
-          <Input
+          <TextInput
             type="number"
-            min={1}
-            value={form.runtime.scan_row_limit_default}
-            onChange={event =>
-              setField('runtime', 'scan_row_limit_default', Number(event.target.value))
-            }
+            value={String(form.runtime.scan_row_limit_default)}
+            onChange={value => setField('runtime', 'scan_row_limit_default', Number(value))}
+            suffix="rows"
+            mono
           />
-        </FieldRow>
-        <FieldRow
+        </Field>
+        <Field
           label="Metrics row limit default"
-          source={sourceFor(settings, 'runtime', 'metrics_row_limit_default')}
+          labelRight={<SourceBadge source={sourceFor(settings, 'runtime', 'metrics_row_limit_default')} />}
+          last
         >
-          <Input
+          <TextInput
             type="number"
-            min={1}
-            value={form.runtime.metrics_row_limit_default}
-            onChange={event =>
-              setField('runtime', 'metrics_row_limit_default', Number(event.target.value))
-            }
+            value={String(form.runtime.metrics_row_limit_default)}
+            onChange={value => setField('runtime', 'metrics_row_limit_default', Number(value))}
+            suffix="rows"
+            mono
           />
-        </FieldRow>
-      </div>
-    </SectionCard>
+        </Field>
+      </SCard>
+    </>
   )
 }

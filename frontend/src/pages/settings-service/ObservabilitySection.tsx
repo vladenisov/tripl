@@ -1,7 +1,6 @@
-import { Activity } from 'lucide-react'
 import type { ServiceSettings } from '@/types'
-import { Input } from '@/components/ui/input'
-import { FieldRow, SectionCard, SelectRow, SwitchRow } from './ServiceSettingsPrimitives'
+import { Field, SCard, Select, TextInput, ToggleRow } from '@/components/settings/kit'
+import { ResetRow, SourceBadge } from './ServiceSettingsPrimitives'
 import type { EditableSettings, SectionKey } from './serviceSettingsHelpers'
 import { sourceFor } from './serviceSettingsHelpers'
 
@@ -27,70 +26,78 @@ export function ObservabilitySection({
   resetting: boolean
 }) {
   return (
-    <SectionCard
-      title="Observability"
-      icon={Activity}
-      onReset={onReset}
-      resetting={resetting}
-    >
-      <div className="grid gap-4 sm:grid-cols-2">
-        <FieldRow
-          label="Request ID header"
-          source={sourceFor(settings, 'observability', 'request_id_header')}
-        >
-          <Input
-            value={form.observability.request_id_header}
-            onChange={event =>
-              setField('observability', 'request_id_header', event.target.value)
-            }
-          />
-        </FieldRow>
-        <SelectRow
+    <>
+      <SCard title="Logging" footer={<ResetRow onReset={onReset} resetting={resetting} />}>
+        <Field
           label="Log level"
-          source={sourceFor(settings, 'observability', 'log_level')}
-          value={form.observability.log_level}
-          options={LOG_LEVEL_OPTIONS}
-          onChange={value => setField('observability', 'log_level', value)}
-        />
-      </div>
-      <div className="grid gap-4 sm:grid-cols-2">
-        <SwitchRow
+          labelRight={<SourceBadge source={sourceFor(settings, 'observability', 'log_level')} />}
+        >
+          <Select
+            value={form.observability.log_level}
+            onChange={value => setField('observability', 'log_level', value)}
+            options={LOG_LEVEL_OPTIONS}
+          />
+        </Field>
+        <ToggleRow
           label="JSON logs"
-          source={sourceFor(settings, 'observability', 'log_json')}
-          checked={form.observability.log_json}
+          labelRight={<SourceBadge source={sourceFor(settings, 'observability', 'log_json')} />}
+          value={form.observability.log_json}
           onChange={value => setField('observability', 'log_json', value)}
         />
-        <SwitchRow
+        <Field
+          label="Request ID header"
+          labelRight={
+            <SourceBadge source={sourceFor(settings, 'observability', 'request_id_header')} />
+          }
+          last
+        >
+          <TextInput
+            value={form.observability.request_id_header}
+            onChange={value => setField('observability', 'request_id_header', value)}
+            mono
+          />
+        </Field>
+      </SCard>
+
+      <SCard title="Metrics & tracing">
+        <ToggleRow
           label="Prometheus metrics"
-          source={sourceFor(settings, 'observability', 'prometheus_metrics_enabled')}
-          checked={form.observability.prometheus_metrics_enabled}
+          labelRight={
+            <SourceBadge
+              source={sourceFor(settings, 'observability', 'prometheus_metrics_enabled')}
+            />
+          }
+          value={form.observability.prometheus_metrics_enabled}
           onChange={value => setField('observability', 'prometheus_metrics_enabled', value)}
         />
-      </div>
-      <div className="grid gap-4 sm:grid-cols-2">
-        <FieldRow
+        <Field
           label="OTLP endpoint"
-          source={sourceFor(settings, 'observability', 'otel_exporter_otlp_endpoint')}
+          labelRight={
+            <SourceBadge
+              source={sourceFor(settings, 'observability', 'otel_exporter_otlp_endpoint')}
+            />
+          }
         >
-          <Input
+          <TextInput
             value={form.observability.otel_exporter_otlp_endpoint}
-            onChange={event =>
-              setField('observability', 'otel_exporter_otlp_endpoint', event.target.value)
-            }
+            onChange={value => setField('observability', 'otel_exporter_otlp_endpoint', value)}
+            mono
           />
-        </FieldRow>
-        <FieldRow
+        </Field>
+        <Field
           label="OTEL service name"
-          source={sourceFor(settings, 'observability', 'otel_service_name')}
+          labelRight={
+            <SourceBadge source={sourceFor(settings, 'observability', 'otel_service_name')} />
+          }
+          last
         >
-          <Input
+          <TextInput
             value={form.observability.otel_service_name}
-            onChange={event =>
-              setField('observability', 'otel_service_name', event.target.value)
-            }
+            onChange={value => setField('observability', 'otel_service_name', value)}
+            mono
           />
-        </FieldRow>
-      </div>
-    </SectionCard>
+        </Field>
+      </SCard>
+    </>
   )
 }

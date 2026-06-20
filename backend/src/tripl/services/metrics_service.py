@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import uuid
-from datetime import datetime
+from datetime import UTC, date, datetime, timedelta
 
 from fastapi import HTTPException
 from sqlalchemy import func, select
@@ -19,6 +19,7 @@ from tripl.models.metric_breakdown_anomaly import MetricBreakdownAnomaly
 from tripl.models.project import Project
 from tripl.models.release_regression import ReleaseRegression
 from tripl.models.scan_config import ScanConfig
+from tripl.schemas.data_source import DataSourceStatsResponse, DataSourceThroughputPoint
 from tripl.schemas.event_metric import (
     AppVersionAdoptionResponse,
     AppVersionInfo,
@@ -32,8 +33,10 @@ from tripl.schemas.event_metric import (
     EventWindowMetricsResponse,
     ForecastPoint,
     MetricSignalResponse,
+    OverviewKpiSeriesResponse,
     ReleaseRegressionItem,
     ReleaseRegressionsResponse,
+    TopEventResponse,
 )
 from tripl.semver import (
     APP_VERSION_OTHER_LABEL,
@@ -1097,6 +1100,118 @@ async def get_events_metrics(
         scope="events_total",
         interval=interval,
         data=[EventMetricPoint(bucket=bucket, count=count) for bucket, count in rows],
+    )
+
+
+async def get_overview_kpi_series(
+    session: AsyncSession,
+    slug: str,
+    *,
+    days: int = 14,
+) -> OverviewKpiSeriesResponse:
+    """Daily new-event counts (from Event.created_at) for the Overview
+    'active events' KPI sparkline — the one KPI with genuine history."""
+    project = await _resolve_project(session, slug)
+    start_day = (datetime.now(UTC) - timedelta(days=days - 1)).date()
+    time_from = datetime(start_day.year, start_day.month, start_day.day, tzinfo=UTC)
+    created_ats = (
+        await session.execute(
+            select(Event.created_at).where(
+                Event.project_id == project.id,
+                Event.created_at >= time_from,
+            )
+        )
+    ).scalars().all()
+    counts: dict[date, int] = {}
+    for created in created_ats:
+        day = created.date()
+        counts[day] = counts.get(day, 0) + 1
+    series = [counts.get(start_day + timedelta(days=i), 0) for i in range(days)]
+    return OverviewKpiSeriesResponse(days=days, active_events=series)
+
+
+async def get_top_events_by_volume(
+    session: AsyncSession,
+    slug: str,
+    *,
+    window_hours: int = 48,
+    limit: int = 6,
+) -> list[TopEventResponse]:
+    """Rank a project's events by total volume over a recent window.
+
+    Sums EventMetric.count per event (scoped to the project via ScanConfig) and
+    returns the top ``limit`` by volume — the data behind the Overview "Top
+    events by volume" widget, computed server-side so the client need not fetch
+    window metrics for every event just to show a handful.
+    """
+    project = await _resolve_project(session, slug)
+    time_from = datetime.now(UTC) - timedelta(hours=window_hours)
+    total = func.coalesce(func.sum(EventMetric.count), 0)
+    rows = (
+        await session.execute(
+            select(Event.id, Event.name, Event.event_type_id, total.label("total"))
+            .join(EventMetric, EventMetric.event_id == Event.id)
+            .join(ScanConfig, ScanConfig.id == EventMetric.scan_config_id)
+            .where(
+                ScanConfig.project_id == project.id,
+                EventMetric.bucket >= time_from,
+            )
+            .group_by(Event.id, Event.name, Event.event_type_id)
+            .order_by(total.desc())
+            .limit(limit)
+        )
+    ).all()
+    return [
+        TopEventResponse(
+            event_id=row.id,
+            name=row.name,
+            event_type_id=row.event_type_id,
+            total_count=int(row.total or 0),
+        )
+        for row in rows
+    ]
+
+
+async def get_data_source_stats(
+    session: AsyncSession,
+    data_source_id: uuid.UUID,
+    *,
+    window_hours: int = 48,
+) -> DataSourceStatsResponse:
+    """Aggregate runtime activity for a data source from EventMetric rollups.
+
+    Volume + events-tracked + a bucketed throughput series over the recent
+    window, joined to the data source via ScanConfig. Backs the redesign's
+    data-source health/throughput cards.
+    """
+    time_from = datetime.now(UTC) - timedelta(hours=window_hours)
+    totals = (
+        await session.execute(
+            select(
+                func.coalesce(func.sum(EventMetric.count), 0),
+                func.count(func.distinct(EventMetric.event_id)),
+            )
+            .join(ScanConfig, ScanConfig.id == EventMetric.scan_config_id)
+            .where(ScanConfig.data_source_id == data_source_id, EventMetric.bucket >= time_from)
+        )
+    ).one()
+    series_rows = (
+        await session.execute(
+            select(EventMetric.bucket, func.coalesce(func.sum(EventMetric.count), 0))
+            .join(ScanConfig, ScanConfig.id == EventMetric.scan_config_id)
+            .where(ScanConfig.data_source_id == data_source_id, EventMetric.bucket >= time_from)
+            .group_by(EventMetric.bucket)
+            .order_by(EventMetric.bucket)
+        )
+    ).all()
+    return DataSourceStatsResponse(
+        events_tracked=int(totals[1] or 0),
+        volume_window=int(totals[0] or 0),
+        window_hours=window_hours,
+        throughput=[
+            DataSourceThroughputPoint(bucket=bucket, count=int(count or 0))
+            for bucket, count in series_rows
+        ],
     )
 
 

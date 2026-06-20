@@ -29,10 +29,6 @@ vi.mock('@/components/app-sidebar', () => ({
   AppSidebar: () => <nav aria-label="sidebar" />,
 }))
 
-vi.mock('@/components/branch-switcher', () => ({
-  BranchSwitcher: () => <div data-testid="branch-switcher" />,
-}))
-
 vi.mock('@/components/command-palette', () => ({
   CommandPaletteProvider: ({ children }: { children: ReactNode }) => <>{children}</>,
 }))

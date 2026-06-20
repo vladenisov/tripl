@@ -1,6 +1,3 @@
-import { Plus } from 'lucide-react'
-
-import { Button } from '@/components/ui/button'
 import { MiniStat, MiniStatDivider } from '@/components/primitives/mini-stat'
 import type { MonitoringSignal } from '@/types'
 
@@ -9,13 +6,11 @@ export function EventsHeader({
   unreviewedCount,
   projectTotalSignal,
   eventTypeSignals,
-  onNewEvent,
 }: {
   total: number
   unreviewedCount: number
   projectTotalSignal: MonitoringSignal | null
   eventTypeSignals: Map<string, MonitoringSignal>
-  onNewEvent: () => void
 }) {
   const liveSignalCount = eventTypeSignals.size + (projectTotalSignal ? 1 : 0)
   const hasLiveSignal = eventTypeSignals.size > 0 || !!projectTotalSignal
@@ -30,23 +25,19 @@ export function EventsHeader({
         <MiniStat label="Total" value={String(total)} />
         <MiniStatDivider />
         <MiniStat
-          label="Review"
-          value={String(unreviewedCount)}
-          delta={unreviewedCount > 0 ? 'pending' : undefined}
-          tone={unreviewedCount > 0 ? 'warning' : 'success'}
-        />
-        <MiniStatDivider />
-        <MiniStat
-          label="Signals"
+          label="Active signals"
           value={String(liveSignalCount)}
           delta={hasLiveSignal ? 'live' : 'quiet'}
           tone={hasLiveSignal ? 'danger' : 'success'}
           pulse={hasLiveSignal}
         />
-        <Button onClick={onNewEvent} size="sm">
-          <Plus className="h-3.5 w-3.5" />
-          New Event
-        </Button>
+        <MiniStatDivider />
+        <MiniStat
+          label="Review"
+          value={String(unreviewedCount)}
+          delta={unreviewedCount > 0 ? 'pending' : undefined}
+          tone={unreviewedCount > 0 ? 'warning' : 'success'}
+        />
       </div>
     </div>
   )

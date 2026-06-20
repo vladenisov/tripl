@@ -239,6 +239,8 @@ async def create_event(
         order=await _get_next_event_order(session, project_id, branch_id),
         status=data.status,
         sunset_at=data.sunset_at,
+        owner_id=data.owner_id,
+        reviewed=data.reviewed,
         metric_breakdown_columns=data.metric_breakdown_columns,
     )
     session.add(event)
@@ -297,6 +299,10 @@ async def update_event(
         event.sunset_at = update_data["sunset_at"]
     if "metric_breakdown_columns" in update_data:
         event.metric_breakdown_columns = update_data["metric_breakdown_columns"]
+    if "owner_id" in update_data:
+        event.owner_id = update_data["owner_id"]
+    if "reviewed" in update_data:
+        event.reviewed = update_data["reviewed"]
 
     tracked_new = {f: update_data[f] for f in _TRACKED_FIELDS if f in update_data}
     _record_changes(

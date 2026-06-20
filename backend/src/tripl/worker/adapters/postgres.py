@@ -7,9 +7,18 @@ from datetime import datetime
 
 import psycopg
 
-from tripl.worker.adapters.base import BaseAdapter, ColumnInfo
+from tripl.worker.adapters.base import (
+    BaseAdapter,
+    ColumnInfo,
+    SchemaColumn,
+    SchemaTable,
+)
 
 logger = logging.getLogger(__name__)
+
+# Hard cap on catalog rows pulled for SQL-editor autocomplete so a schema with
+# thousands of wide tables can't blow up the response.
+_SCHEMA_ROW_LIMIT = 5000
 
 # Cap on how much user-supplied SQL (which may embed warehouse credentials or
 # PII column names) we ever emit to logs. Query logs go to DEBUG so the full
@@ -114,6 +123,27 @@ class PostgresAdapter(BaseAdapter):
                 columns.append(ColumnInfo(name=desc.name, type_name=type_name, is_nullable=True))
         self._allowed_columns = {c.name for c in columns}
         return columns
+
+    def get_schema_tables(self) -> list[SchemaTable]:
+        sql = (
+            "SELECT table_name, column_name, data_type "
+            "FROM information_schema.columns "
+            "WHERE table_schema = ANY(current_schemas(false)) "
+            f"ORDER BY table_name, ordinal_position LIMIT {_SCHEMA_ROW_LIMIT}"
+        )
+        logger.debug("PG schema introspection query: %s", _truncate_sql(sql))
+        with self._conn.cursor() as cur:
+            cur.execute(sql)
+            rows = cur.fetchall()
+        columns_by_table: dict[str, list[SchemaColumn]] = {}
+        for table_name, column_name, data_type in rows:
+            columns_by_table.setdefault(str(table_name), []).append(
+                SchemaColumn(name=str(column_name), data_type=str(data_type))
+            )
+        return [
+            SchemaTable(name=table, columns=columns)
+            for table, columns in columns_by_table.items()
+        ]
 
     def get_preview_rows(
         self,

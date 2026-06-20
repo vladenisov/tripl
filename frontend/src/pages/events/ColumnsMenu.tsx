@@ -23,7 +23,17 @@ export function ColumnsMenu({
   hiddenColumns: Set<string>
   onToggle: (key: string) => void
 }) {
+  const statusHidden = hiddenColumns.has('status')
+  const reviewedHidden = hiddenColumns.has('reviewed')
+  const monitorHidden = hiddenColumns.has('monitor')
+  const ownerHidden = hiddenColumns.has('owner')
+  const deltaHidden = hiddenColumns.has('delta')
   const totalHidden =
+    (statusHidden ? 1 : 0) +
+    (reviewedHidden ? 1 : 0) +
+    (monitorHidden ? 1 : 0) +
+    (ownerHidden ? 1 : 0) +
+    (deltaHidden ? 1 : 0) +
     (tagsHidden ? 1 : 0) +
     (lastSeenHidden ? 1 : 0) +
     fieldColumns.filter((f) => hiddenColumns.has(`f:${f.id}`)).length +
@@ -51,6 +61,36 @@ export function ColumnsMenu({
         >
           Toggle columns
         </div>
+        <ColumnToggle
+          label="Status"
+          pinned={false}
+          checked={!statusHidden}
+          onChange={() => onToggle('status')}
+        />
+        <ColumnToggle
+          label="Reviewed"
+          pinned={false}
+          checked={!reviewedHidden}
+          onChange={() => onToggle('reviewed')}
+        />
+        <ColumnToggle
+          label="Monitor"
+          pinned={false}
+          checked={!monitorHidden}
+          onChange={() => onToggle('monitor')}
+        />
+        <ColumnToggle
+          label="Owner"
+          pinned={false}
+          checked={!ownerHidden}
+          onChange={() => onToggle('owner')}
+        />
+        <ColumnToggle
+          label="Δ · 24h"
+          pinned={false}
+          checked={!deltaHidden}
+          onChange={() => onToggle('delta')}
+        />
         <ColumnToggle
           label="Tags"
           pinned={false}

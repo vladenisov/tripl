@@ -1,7 +1,8 @@
 import { Link, useParams } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
-import { Gauge, Settings2 } from 'lucide-react'
+import { AlertTriangle, Settings2 } from 'lucide-react'
 import { alertingApi } from '@/api/alerting'
+import { PageHead, Panel } from '@/components/settings/kit'
 import { ErrorState } from '@/components/error-state'
 import { Chip, type ChipTone } from '@/components/primitives/chip'
 import { Dot, type DotTone } from '@/components/primitives/dot'
@@ -21,6 +22,8 @@ const STATUS_LABEL: Record<MonitorStatus, string> = {
   healthy: 'Healthy',
 }
 
+const MONITOR_GRID = 'grid grid-cols-[1.4fr_1.6fr_1fr_84px_84px] items-center gap-3 px-4'
+
 export default function MonitorsPage() {
   const { slug } = useParams<{ slug: string }>()
 
@@ -38,21 +41,41 @@ export default function MonitorsPage() {
   return (
     <div className="min-w-0 space-y-6 pb-12">
       {/* Header */}
-      <div className="flex items-center gap-2">
-        <Gauge className="h-5 w-5 shrink-0" style={{ color: 'var(--fg-subtle)' }} />
-        <h1 className="text-lg font-semibold tracking-tight">Monitors</h1>
-        <div className="flex-1" />
-        {slug && (
-          <Link
-            to={`/p/${slug}/settings/monitoring`}
-            className="flex items-center gap-1.5 rounded-md px-2 py-1 text-[12px] no-underline transition-colors hover:bg-[var(--surface-hover)]"
-            style={{ color: 'var(--fg-muted)' }}
-          >
-            <Settings2 className="h-3.5 w-3.5" />
-            Detection settings
-          </Link>
-        )}
-      </div>
+      <PageHead
+        eyebrow="Observe"
+        title="Monitors"
+        right={
+          slug ? (
+            <Link
+              to={`/p/${slug}/settings/monitoring`}
+              className="flex items-center gap-1.5 rounded-md px-2 py-1 text-[12px] no-underline transition-colors hover:bg-[var(--surface-hover)]"
+              style={{ color: 'var(--fg-muted)' }}
+            >
+              <Settings2 className="h-3.5 w-3.5" />
+              Detection settings
+            </Link>
+          ) : undefined
+        }
+      />
+
+      {/* Firing banner */}
+      {summary && summary.firing_count > 0 && (
+        <div
+          className="flex items-center gap-2.5 rounded-[10px] px-4 py-3"
+          style={{
+            background: 'var(--danger-soft)',
+            border: '1px solid color-mix(in oklab, var(--danger) 35%, var(--border))',
+          }}
+        >
+          <AlertTriangle className="h-4 w-4 shrink-0" style={{ color: 'var(--danger)' }} />
+          <span className="text-[12.5px]" style={{ color: 'var(--fg-muted)' }}>
+            <span className="font-semibold" style={{ color: 'var(--fg)' }}>
+              {summary.firing_count}
+            </span>{' '}
+            monitor{summary.firing_count === 1 ? '' : 's'} firing right now.
+          </span>
+        </div>
+      )}
 
       {/* Rollup */}
       {monitorsQuery.isError ? (
@@ -94,44 +117,47 @@ export default function MonitorsPage() {
         </div>
       )}
 
-      {/* Monitors list */}
-      <section>
-        {monitorsQuery.isLoading && (
-          <div className="text-xs" style={{ color: 'var(--fg-subtle)' }}>
-            Loading…
-          </div>
-        )}
-        {!monitorsQuery.isLoading && !monitorsQuery.isError && monitors.length === 0 && (
-          <div
-            className="rounded-md border p-4 text-[12px]"
-            style={{
-              background: 'var(--surface)',
-              borderColor: 'var(--border-subtle)',
-              color: 'var(--fg-subtle)',
-            }}
-          >
-            No monitors yet. Monitors are alert rules attached to a destination — create one in{' '}
-            {slug ? (
-              <Link
-                to={`/p/${slug}/settings/alerting`}
-                className="font-medium text-primary hover:underline"
+      {/* Monitors table */}
+      {!monitorsQuery.isError && (
+        <Panel title="Monitors" subtitle={summary ? `${summary.total} total` : undefined}>
+          {monitorsQuery.isLoading ? (
+            <div className="px-4 py-6 text-[12px]" style={{ color: 'var(--fg-subtle)' }}>
+              Loading…
+            </div>
+          ) : monitors.length === 0 ? (
+            <div className="px-4 py-6 text-[12px]" style={{ color: 'var(--fg-subtle)' }}>
+              No monitors yet. Monitors are alert rules attached to a destination — create one in{' '}
+              {slug ? (
+                <Link
+                  to={`/p/${slug}/settings/alerting`}
+                  className="font-medium text-primary hover:underline"
+                >
+                  Alerting settings
+                </Link>
+              ) : (
+                'Alerting settings'
+              )}
+              .
+            </div>
+          ) : (
+            <div>
+              <div
+                className={`${MONITOR_GRID} border-b py-2 text-[10.5px] font-semibold uppercase tracking-[0.05em]`}
+                style={{ borderColor: 'var(--border-subtle)', color: 'var(--fg-faint)' }}
               >
-                Alerting settings
-              </Link>
-            ) : (
-              'Alerting settings'
-            )}
-            .
-          </div>
-        )}
-        {monitors.length > 0 && (
-          <div className="divide-y" style={{ borderColor: 'var(--border-subtle)' }}>
-            {monitors.map((monitor) => (
-              <MonitorRow key={monitor.rule_id} monitor={monitor} />
-            ))}
-          </div>
-        )}
-      </section>
+                <span>Monitor</span>
+                <span>Condition</span>
+                <span>Routes to</span>
+                <span>State</span>
+                <span className="text-right">Last fired</span>
+              </div>
+              {monitors.map((monitor) => (
+                <MonitorRow key={monitor.rule_id} monitor={monitor} />
+              ))}
+            </div>
+          )}
+        </Panel>
+      )}
     </div>
   )
 }
@@ -153,39 +179,38 @@ function MonitorRow({ monitor }: { monitor: MonitorSummaryItem }) {
     .join(' · ')
 
   return (
-    <div className="flex items-center gap-3 py-2.5">
-      <Dot tone={tone} pulse={monitor.status === 'firing'} size={8} />
-      <div className="min-w-0 flex-1">
-        <div className="flex items-center gap-2">
-          <span className="truncate text-[12.5px] font-medium">{monitor.rule_name}</span>
-          {!monitor.enabled && (
-            <Chip tone="neutral" size="xs">
-              disabled
-            </Chip>
-          )}
-        </div>
-        <div className="mono mt-0.5 truncate text-[11px]" style={{ color: 'var(--fg-subtle)' }}>
-          {condition}
-        </div>
-      </div>
-      <div className="hidden flex-col items-end gap-0.5 sm:flex">
+    <div
+      className={`${MONITOR_GRID} border-b py-2.5 last:border-0`}
+      style={{ borderColor: 'var(--border-subtle)' }}
+    >
+      <span className="flex min-w-0 items-center gap-2">
+        <Dot tone={tone} pulse={monitor.status === 'firing'} size={7} />
+        <span className="truncate text-[12.5px] font-medium">{monitor.rule_name}</span>
+        {!monitor.enabled && (
+          <Chip tone="neutral" size="xs">
+            off
+          </Chip>
+        )}
+      </span>
+      <span className="mono truncate text-[11px]" style={{ color: 'var(--fg-subtle)' }}>
+        {condition}
+      </span>
+      <span className="flex min-w-0 flex-col gap-0.5">
         <Chip tone="neutral" size="xs">
           {monitor.destination_type}
         </Chip>
-        <span className="truncate text-[10.5px]" style={{ color: 'var(--fg-faint)' }}>
+        <span className="truncate text-[10px]" style={{ color: 'var(--fg-faint)' }}>
           {monitor.destination_name}
         </span>
-      </div>
-      <div className="flex w-[88px] shrink-0 flex-col items-end gap-0.5">
+      </span>
+      <span>
         <Chip tone={tone} size="xs">
           {STATUS_LABEL[monitor.status]}
         </Chip>
-        {monitor.last_anomaly_at && (
-          <span className="mono text-[10px]" style={{ color: 'var(--fg-faint)' }}>
-            {formatRelativeTime(monitor.last_anomaly_at)}
-          </span>
-        )}
-      </div>
+      </span>
+      <span className="mono text-right text-[10.5px]" style={{ color: 'var(--fg-faint)' }}>
+        {monitor.last_anomaly_at ? formatRelativeTime(monitor.last_anomaly_at) : '—'}
+      </span>
     </div>
   )
 }

@@ -1,11 +1,13 @@
 import { useCallback, useMemo, useState } from 'react'
+import { Navigate } from 'react-router-dom'
+import { useQuery } from '@tanstack/react-query'
+import { usersApi } from '@/api/users'
 import { useConfirm } from '@/hooks/useConfirm'
 import { useActiveBranchId } from '@/hooks/useBranch'
 import { ErrorState } from '@/components/error-state'
 import type { EventStatus } from '@/lib/eventStatus'
 
 import { BulkActionBar } from './events/BulkActionBar'
-import { EventForm } from './events/EventForm'
 import { EventsHeader } from './events/EventsHeader'
 import { EventsTable } from './events/EventsTable'
 import { EventsToolbar } from './events/EventsToolbar'
@@ -26,19 +28,34 @@ import { useEventsTableVirtualization } from './events/useEventsTableVirtualizat
 import { useEventsViewState } from './events/useEventsViewState'
 import { useSavedViews } from './events/useSavedViews'
 
-export default function EventsPage() {
+interface EventsPageProps {
+  /** Lock the page to a single event type (by name), decoupling it from the
+   *  `:tab` route segment. Set when embedding the table in another surface. */
+  lockType?: string
+  /** Embedded mode: hide the page-level header + aggregate chart and drop the
+   *  full-height min-height so the table fits inside a host container/tab. */
+  embedded?: boolean
+}
+
+export default function EventsPage({ lockType, embedded = false }: EventsPageProps = {}) {
   const {
     activeTab,
-    closeEvent,
-    editingEvent,
     navigate,
     openEvent,
     openEventId,
     openNewEvent,
     showForm,
     slug,
-  } = useEventsRouteState()
+  } = useEventsRouteState(lockType)
   const branchId = useActiveBranchId()
+  const usersQuery = useQuery({ queryKey: ['users'], queryFn: () => usersApi.list() })
+  const usersById = useMemo(
+    () =>
+      new Map(
+        (usersQuery.data ?? []).map((u) => [u.id, { name: u.name, email: u.email }]),
+      ),
+    [usersQuery.data],
+  )
   const [expandedCell, setExpandedCell] = useState<string | null>(null)
   const { hiddenColumns, toggleColumn, colMenuOpen, setColMenuOpen } = useColumnVisibility()
   const {
@@ -54,10 +71,8 @@ export default function EventsPage() {
   const {
     eventTypes,
     metaFields,
-    variables,
     allTags,
     unreviewedCount,
-    urlEvent,
     dataError,
     refetchPageData,
   } = useEventsPageData({ slug, openEventId, branchId })
@@ -118,7 +133,12 @@ export default function EventsPage() {
     clearAllFilters,
     colCount,
     hasActiveFilters,
+    hideDelta,
     hideLastSeen,
+    hideMonitor,
+    hideOwner,
+    hideReviewed,
+    hideStatus,
     hideTags,
     isTabChartOpen,
     setIsTabChartOpen,
@@ -145,7 +165,6 @@ export default function EventsPage() {
     someVisibleSelected,
     selectedSet,
     visibleEventIds,
-    visibleIndexById,
     toggleEventSelected,
     toggleAllVisibleSelected,
     clearSelection,
@@ -157,11 +176,9 @@ export default function EventsPage() {
     onBulkDeleteOptimistic: clearSelection,
     onBulkUpdateOptimistic: clearSelection,
   })
-  const { bulkDeleteMut, bulkUpdateMut, setStatusMut } = mutations
+  const { bulkDeleteMut, bulkUpdateMut } = mutations
 
   const dndSensors = useEventsDndSensors()
-
-  const openedEvent = openEventId ? (urlEvent ?? null) : editingEvent
 
   const {
     tableScrollRef,
@@ -181,6 +198,7 @@ export default function EventsPage() {
     mutations,
     confirm,
     visibleEventIds,
+    selectedSet,
   })
 
   const handleBulkDelete = useEventsBulkDelete({
@@ -194,9 +212,15 @@ export default function EventsPage() {
     bulkUpdateMut.mutate({ eventIds: selectedVisibleEventIds, status })
   }, [bulkUpdateMut, selectedVisibleEventIds])
 
-  const handleSetStatus = useCallback((id: string, status: EventStatus) => {
-    setStatusMut.mutate({ id, status })
-  }, [setStatusMut])
+  const handleBulkMarkReviewed = useCallback(() => {
+    if (!selectedVisibleEventIds.length) return
+    bulkUpdateMut.mutate({ eventIds: selectedVisibleEventIds, reviewed: true })
+  }, [bulkUpdateMut, selectedVisibleEventIds])
+
+  const handleBulkAssignOwner = useCallback((userId: string) => {
+    if (!selectedVisibleEventIds.length) return
+    bulkUpdateMut.mutate({ eventIds: selectedVisibleEventIds, owner_id: userId })
+  }, [bulkUpdateMut, selectedVisibleEventIds])
 
   const { eventWindowMetricsByEvent, eventRowSignals } = useEventRowMetrics({
     slug,
@@ -213,17 +237,32 @@ export default function EventsPage() {
 
   const blockingError = eventsQuery.error ?? dataError
 
+  // Editing is a full page, not an inline Sheet. The "New event" action toggles
+  // showForm and "Edit"/row-edit navigates to /events/:tab/:eventId; both are
+  // redirected here to the dedicated new/edit routes.
+  // Always keep the :tab segment so the new/edit routes (/events/:tab/new and
+  // /events/:tab/:eventId/edit) match — '/events/new' would otherwise resolve to
+  // the /events/:tab list route with tab='new'. tab='all' is handled everywhere.
+  const eventsBase = `/p/${slug}/events/${activeTab}`
+  if (slug && showForm) {
+    return <Navigate to={`${eventsBase}/new`} replace />
+  }
+  if (slug && openEventId) {
+    return <Navigate to={`${eventsBase}/${openEventId}/edit`} replace />
+  }
+
   return (
-    <div className="flex min-h-[calc(100vh-7rem)] flex-col">
+    <div className={embedded ? 'flex min-h-[420px] flex-col' : 'flex min-h-[calc(100vh-7rem)] flex-col'}>
       {dialog}
 
-      <EventsHeader
-        total={total}
-        unreviewedCount={unreviewedCount}
-        projectTotalSignal={projectTotalSignal}
-        eventTypeSignals={eventTypeSignals}
-        onNewEvent={openNewEvent}
-      />
+      {!embedded && (
+        <EventsHeader
+          total={total}
+          unreviewedCount={unreviewedCount}
+          projectTotalSignal={projectTotalSignal}
+          eventTypeSignals={eventTypeSignals}
+        />
+      )}
 
       {blockingError && (
         <ErrorState
@@ -260,6 +299,7 @@ export default function EventsPage() {
             fieldColumns={fieldColumns}
             metaFields={metaFields}
             onToggleColumn={toggleColumn}
+            onNewEvent={openNewEvent}
           />
 
           <BulkActionBar
@@ -267,23 +307,14 @@ export default function EventsPage() {
             isDeleting={bulkDeleteMut.isPending}
             isUpdating={bulkUpdateMut.isPending}
             onSetStatus={handleBulkSetStatus}
+            onMarkReviewed={handleBulkMarkReviewed}
+            onAssignOwner={handleBulkAssignOwner}
+            owners={usersQuery.data ?? []}
             onDelete={() => { void handleBulkDelete() }}
             onClear={clearSelection}
           />
 
-          {(showForm || openedEvent) && slug && (
-            <EventForm
-              slug={slug}
-              eventTypes={eventTypes}
-              metaFields={metaFields}
-              projectVariables={variables}
-              event={openedEvent}
-              defaultEventTypeId={activeEt?.id}
-              onClose={closeEvent}
-            />
-          )}
-
-          {slug && (
+          {slug && !embedded && (
             <TabMetricsCard
               slug={slug}
               activeEt={activeEt}
@@ -300,48 +331,57 @@ export default function EventsPage() {
             />
           )}
 
-          <EventsTable
-            tableScrollRef={tableScrollRef}
-            isTabChartOpen={isTabChartOpen}
-            dndSensors={dndSensors}
-            handleDragEnd={handleDragEnd}
-            visibleEventIds={visibleEventIds}
-            allVisibleSelected={allVisibleSelected}
-            someVisibleSelected={someVisibleSelected}
-            toggleAllVisibleSelected={toggleAllVisibleSelected}
-            activeEt={activeEt}
-            hideTags={hideTags}
-            hideLastSeen={hideLastSeen}
-            allTags={allTags}
-            filterTag={filterTag}
-            setFilterTag={setFilterTag}
-            visibleFieldColumns={visibleFieldColumns}
-            fieldFilters={fieldFilters}
-            updateFieldFilter={updateFieldFilter}
-            fieldEnumOptions={fieldEnumOptions}
-            visibleMetaFields={visibleMetaFields}
-            metaFilters={metaFilters}
-            updateMetaFilter={updateMetaFilter}
-            events={events}
-            total={total}
-            virtualize={virtualize}
-            virtualItems={virtualItems}
-            totalVirtualSize={totalVirtualSize}
-            colCount={colCount}
-            expandedCell={expandedCell}
-            eventWindowMetricsByEvent={eventWindowMetricsByEvent}
-            eventRowSignals={eventRowSignals}
-            metaValuesByEvent={metaValuesByEvent}
-            eventTypesById={eventTypesById}
-            slug={slug!}
-            selectedSet={selectedSet}
-            visibleIndexById={visibleIndexById}
-            getFieldValue={getFieldValue}
-            toggleEventSelected={toggleEventSelected}
-            onToggleExpandedCell={onToggleExpandedCell}
-            onRowAction={onRowAction}
-            onSetStatus={handleSetStatus}
-          />
+          <div
+            className="rounded-[10px] border overflow-hidden"
+            style={{ borderColor: 'var(--border)' }}
+          >
+            <EventsTable
+              tableScrollRef={tableScrollRef}
+              isTabChartOpen={isTabChartOpen}
+              dndSensors={dndSensors}
+              handleDragEnd={handleDragEnd}
+              visibleEventIds={visibleEventIds}
+              allVisibleSelected={allVisibleSelected}
+              someVisibleSelected={someVisibleSelected}
+              toggleAllVisibleSelected={toggleAllVisibleSelected}
+              activeEt={activeEt}
+              hideStatus={hideStatus}
+              hideReviewed={hideReviewed}
+              hideMonitor={hideMonitor}
+              hideOwner={hideOwner}
+              hideDelta={hideDelta}
+              usersById={usersById}
+              hideTags={hideTags}
+              hideLastSeen={hideLastSeen}
+              allTags={allTags}
+              filterTag={filterTag}
+              setFilterTag={setFilterTag}
+              visibleFieldColumns={visibleFieldColumns}
+              fieldFilters={fieldFilters}
+              updateFieldFilter={updateFieldFilter}
+              fieldEnumOptions={fieldEnumOptions}
+              visibleMetaFields={visibleMetaFields}
+              metaFilters={metaFilters}
+              updateMetaFilter={updateMetaFilter}
+              events={events}
+              total={total}
+              virtualize={virtualize}
+              virtualItems={virtualItems}
+              totalVirtualSize={totalVirtualSize}
+              colCount={colCount}
+              expandedCell={expandedCell}
+              eventWindowMetricsByEvent={eventWindowMetricsByEvent}
+              eventRowSignals={eventRowSignals}
+              metaValuesByEvent={metaValuesByEvent}
+              eventTypesById={eventTypesById}
+              slug={slug!}
+              selectedSet={selectedSet}
+              getFieldValue={getFieldValue}
+              toggleEventSelected={toggleEventSelected}
+              onToggleExpandedCell={onToggleExpandedCell}
+              onRowAction={onRowAction}
+            />
+          </div>
         </>
       )}
     </div>

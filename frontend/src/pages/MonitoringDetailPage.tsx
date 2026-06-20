@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useMemo, useRef, useState, type ReactNode } from 'react'
 import { useLocation, useNavigate, useParams } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { chartAnnotationsApi } from '@/api/chartAnnotations'
@@ -7,13 +7,16 @@ import { eventsApi } from '@/api/events'
 import { metaFieldsApi } from '@/api/metaFields'
 import { metricsApi } from '@/api/metrics'
 import { scansApi } from '@/api/scans'
-import { variablesApi } from '@/api/variables'
-import { EVENT_STATUS_BADGE_VARIANT, EVENT_STATUS_LABELS } from '@/lib/eventStatus'
+import { EVENT_STATUS_LABELS, EVENT_STATUS_TONE } from '@/lib/eventStatus'
 import type { EventStatus } from '@/lib/eventStatus'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
+import { Chip } from '@/components/primitives/chip'
+import { Dot } from '@/components/primitives/dot'
+import { Sparkline } from '@/components/primitives/sparkline'
+import { SensitivityChip } from '@/components/primitives/sensitivity-chip'
 import { ErrorState } from '@/components/error-state'
 import EventPhotosSection from '@/components/event-photos-section'
 import { ReleaseRegressionPanel } from '@/components/monitoring/release-regression-panel'
@@ -27,26 +30,30 @@ import {
 import { Separator } from '@/components/ui/separator'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { useActiveBranchId } from '@/hooks/useBranch'
-import { formatTimestamp } from '@/lib/datetime'
+import { formatRelativeTime, formatTimestamp } from '@/lib/datetime'
 import { GRANULARITY_OPTIONS, RANGE_OPTIONS, aggregateMetricPoints, type MetricsGranularity } from '@/lib/metrics'
 import { resolveMetaFieldHref } from '@/lib/metaFields'
 import { routeScopeToApiScope } from '@/lib/monitoring'
 import type {
   DistributionDriftBand,
   DistributionDriftPoint,
+  Event as TEvent,
+  EventMetricPoint,
+  EventMetricsResponse,
   EventType,
   FieldDefinition,
   MetaFieldDefinition,
+  MonitoringSignal,
   AppVersionMetricSeries,
-  Variable,
 } from '@/types'
-import { EventForm } from './events/EventForm'
-import { AlertTriangle, ArrowLeft, CalendarPlus, GitBranch, GitCompareArrows, Layers, Pencil, Tag, Trash2 } from 'lucide-react'
+import {
+  AlertTriangle, ArrowDown, ArrowLeft, ArrowUp, CalendarPlus, ChevronDown, ChevronLeft, ChevronUp,
+  Code, Eye, GitBranch, GitCompareArrows, Layers, Pencil, Trash2, TrendingUp,
+} from 'lucide-react'
 
 // Stable empty reference so `metaFieldsQuery.data ?? EMPTY_META_FIELDS`
 // doesn't mint a new array each render and bust the memoized lookup map.
 const EMPTY_META_FIELDS: MetaFieldDefinition[] = []
-const EMPTY_VARIABLES: Variable[] = []
 
 type MonitoringDetailTab = 'volume' | 'versions' | 'distribution' | 'heatmap' | 'breakdowns'
 type VersionFilter = 'all' | 'latest'
@@ -92,10 +99,10 @@ export default function MonitoringDetailPage() {
   const [rangeDays, setRangeDays] = useState(30)
   const [granularity, setGranularity] = useState<MetricsGranularity>('hour')
   const [activeTab, setActiveTab] = useState<MonitoringDetailTab>('volume')
+  const metricsRef = useRef<HTMLSpanElement>(null)
   const [versionFilter, setVersionFilter] = useState<VersionFilter>('all')
   const [distributionField, setDistributionField] = useState('')
   const [breakdownColumn, setBreakdownColumn] = useState('')
-  const [isEditOpen, setIsEditOpen] = useState(false)
 
   const branchId = useActiveBranchId()
   const scope = routeScopeToApiScope(scopeParam)
@@ -134,13 +141,6 @@ export default function MonitoringDetailPage() {
     enabled: scope === 'event' && !!slug,
   })
   const metaFields = metaFieldsQuery.data ?? EMPTY_META_FIELDS
-
-  const variablesQuery = useQuery({
-    queryKey: ['variables', slug, branchId],
-    queryFn: () => variablesApi.list(slug!, branchId),
-    enabled: scope === 'event' && !!slug,
-  })
-  const projectVariables = variablesQuery.data ?? EMPTY_VARIABLES
 
   const metricsQuery = useQuery({
     queryKey: ['monitoringMetrics', slug, scope, scopeId, rangeDays],
@@ -441,157 +441,63 @@ export default function MonitoringDetailPage() {
     )
   }
 
+  const isEventDetail = scope === 'event' && !!event
+
   return (
-    <div className="space-y-6 p-6">
-      <div className="flex items-center justify-between gap-2">
-        <Button variant="ghost" size="sm" onClick={goBack}>
-          <ArrowLeft className="mr-2 h-4 w-4" /> Back to events
-        </Button>
-        {scope === 'event' && event && (
-          <Button variant="outline" size="sm" onClick={() => setIsEditOpen(true)}>
-            <Pencil className="mr-2 h-3.5 w-3.5" /> Edit
-          </Button>
-        )}
-      </div>
-
-      <div className="space-y-3">
-        <div className="flex items-center gap-3 flex-wrap">
-          <h1 className="text-2xl font-bold">{headerTitle}</h1>
-          {eventType && (
-            <Badge style={{ backgroundColor: eventType.color, color: '#fff' }}>
-              {eventType.display_name}
-            </Badge>
+    <div className={isEventDetail ? 'mx-auto max-w-[1000px] space-y-5 px-6 pb-12 pt-4' : 'space-y-6 p-6'}>
+      {isEventDetail && event ? (
+        <EventDetailHero
+          event={event}
+          eventType={eventType}
+          metrics={metrics}
+          history={eventHistory}
+          fieldDefMap={fieldDefMap}
+          metaFieldMap={metaFieldMap}
+          onBack={goBack}
+          onEdit={() => navigate(
+            `/p/${slug}/events/${event.event_type?.name ?? 'all'}/${event.id}/edit`,
           )}
-          {scope === 'project_total' && metrics?.scan_config_id && (
-            <Badge variant="outline" className="font-mono">
-              {metrics.scan_config_id.slice(0, 8)}
-            </Badge>
-          )}
-          {scope === 'event' && event?.status && (
-            <Badge variant={EVENT_STATUS_BADGE_VARIANT[event.status as EventStatus] ?? 'outline'}>
-              {EVENT_STATUS_LABELS[event.status as EventStatus] ?? event.status}
-            </Badge>
-          )}
-          {scope === 'event' && event?.sunset_at && (
-            <Badge variant="outline" className="gap-1 text-xs">
-              <CalendarPlus className="h-3 w-3" />
-              Sunset {formatTimestamp(event.sunset_at)}
-            </Badge>
-          )}
-          {latestSignal && latestSignalLabel && (
-            <Badge
-              variant={latestSignal.state === 'recent' ? 'outline' : 'destructive'}
-              className={latestSignalBadgeClassName}
-            >
-              <AlertTriangle className="h-3 w-3" />
-              {latestSignalLabel}
-            </Badge>
-          )}
-        </div>
-        <p className="text-muted-foreground">{headerDescription}</p>
-        {scope === 'event' && event?.tags.length ? (
-          <div className="flex gap-1.5 flex-wrap">
-            {event.tags.map(tag => (
-              <Badge key={tag.id} variant="secondary" className="gap-1 text-xs">
-                <Tag className="h-3 w-3" /> {tag.name}
-              </Badge>
-            ))}
-          </div>
-        ) : null}
-      </div>
-
-      <Separator />
-
-      {scope === 'event' && event && (
+          onMetrics={() => metricsRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })}
+        />
+      ) : (
         <>
-          {event.field_values.length > 0 && (
-            <Card>
-              <CardContent className="p-6">
-                <h2 className="text-lg font-semibold mb-4">Field Values</h2>
-                <div className="grid gap-3">
-                  {event.field_values.map(fieldValue => {
-                    const fieldDefinition = fieldDefMap.get(fieldValue.field_definition_id)
-                    return (
-                      <div key={fieldValue.id} className="flex gap-4 text-sm">
-                        <span className="text-muted-foreground min-w-[140px] font-medium">
-                          {fieldDefinition?.display_name ?? fieldDefinition?.name ?? 'Unknown'}
-                        </span>
-                        <span className="flex min-w-0 items-center gap-1.5 font-mono text-foreground/80">
-                          <span className="break-all">{fieldValue.value || '—'}</span>
-                          <VariableValueContextTrigger contexts={fieldValue.variable_values} />
-                        </span>
-                      </div>
-                    )
-                  })}
-                </div>
-              </CardContent>
-            </Card>
-          )}
+          <div className="flex items-center justify-between gap-2">
+            <Button variant="ghost" size="sm" onClick={goBack}>
+              <ArrowLeft className="mr-2 h-4 w-4" /> Back to events
+            </Button>
+          </div>
 
-          {event.meta_values.length > 0 && (
-            <Card>
-              <CardContent className="p-6">
-                <h2 className="text-lg font-semibold mb-4">Meta Fields</h2>
-                <div className="grid gap-3">
-                  {event.meta_values.map(metaValue => {
-                    const metaField = metaFieldMap.get(metaValue.meta_field_definition_id)
-                    const href = metaField ? resolveMetaFieldHref(metaField, metaValue.value) : null
-                    return (
-                      <div key={metaValue.id} className="flex gap-4 text-sm">
-                        <span className="text-muted-foreground min-w-[140px] font-medium">
-                          {metaField?.display_name ?? metaField?.name ?? 'Unknown'}
-                        </span>
-                        <span className="font-mono text-foreground/80 break-all">
-                          {href ? (
-                            <a
-                              href={href}
-                              target="_blank"
-                              rel="noopener noreferrer"
-                              className="text-primary underline"
-                            >
-                              {metaValue.value}
-                            </a>
-                          ) : metaField?.field_type === 'boolean' ? (
-                            metaValue.value === 'true' ? '✓' : '✗'
-                          ) : (
-                            metaValue.value || '—'
-                          )}
-                        </span>
-                      </div>
-                    )
-                  })}
-                </div>
-              </CardContent>
-            </Card>
-          )}
-        {eventHistory.length > 0 && (
-          <Card>
-            <CardContent className="p-6">
-              <h2 className="text-sm font-semibold mb-3">History</h2>
-              <div className="grid gap-2">
-                {eventHistory.map(change => (
-                  <div key={change.id} className="flex items-start gap-3 text-xs">
-                    <span className="shrink-0 text-muted-foreground tnum min-w-[120px]">
-                      {formatTimestamp(change.created_at)}
-                    </span>
-                    <span className="shrink-0 text-muted-foreground min-w-[80px] truncate">
-                      {change.user_email ?? 'system'}
-                    </span>
-                    <span className="font-mono text-muted-foreground shrink-0">{change.field}</span>
-                    <span className="min-w-0 truncate">
-                      <span className="text-muted-foreground">{change.old_value ?? '—'}</span>
-                      <span className="mx-1 text-muted-foreground">→</span>
-                      <span className="text-foreground">{change.new_value ?? '—'}</span>
-                    </span>
-                  </div>
-                ))}
-              </div>
-            </CardContent>
-          </Card>
-        )}
+          <div className="space-y-3">
+            <div className="flex items-center gap-3 flex-wrap">
+              <h1 className="text-2xl font-bold">{headerTitle}</h1>
+              {eventType && (
+                <Badge style={{ backgroundColor: eventType.color, color: '#fff' }}>
+                  {eventType.display_name}
+                </Badge>
+              )}
+              {scope === 'project_total' && metrics?.scan_config_id && (
+                <Badge variant="outline" className="font-mono">
+                  {metrics.scan_config_id.slice(0, 8)}
+                </Badge>
+              )}
+              {latestSignal && latestSignalLabel && (
+                <Badge
+                  variant={latestSignal.state === 'recent' ? 'outline' : 'destructive'}
+                  className={latestSignalBadgeClassName}
+                >
+                  <AlertTriangle className="h-3 w-3" />
+                  {latestSignalLabel}
+                </Badge>
+              )}
+            </div>
+            <p className="text-muted-foreground">{headerDescription}</p>
+          </div>
+
+          <Separator />
         </>
       )}
 
+      {isEventDetail && <span ref={metricsRef} aria-hidden className="-mt-5 block scroll-mt-4" />}
       <Tabs value={selectedTab} onValueChange={value => setActiveTab(value as MonitoringDetailTab)}>
         <TabsList>
           <TabsTrigger value="volume">Volume</TabsTrigger>
@@ -965,17 +871,6 @@ export default function MonitoringDetailPage() {
         </TabsContent>
       </Tabs>
 
-      {scope === 'event' && event && isEditOpen && slug && (
-        <EventForm
-          slug={slug}
-          eventTypes={eventTypes}
-          metaFields={metaFields}
-          projectVariables={projectVariables}
-          event={event}
-          onClose={() => setIsEditOpen(false)}
-        />
-      )}
-
       {scope === 'event' && scopeId && (
         <EventPhotosSection slug={slug!} eventId={scopeId} />
       )}
@@ -1275,6 +1170,455 @@ function DistributionDriftPanel({
           </div>
         </CardContent>
       </Card>
+    </div>
+  )
+}
+
+// ───────── Event detail (page-based, mockup EventDetailPage) ─────────
+
+const DAY_MS = 24 * 60 * 60 * 1000
+const SURFACE_CARD = 'overflow-hidden rounded-[10px] border'
+const SURFACE_STYLE = { background: 'var(--surface)', borderColor: 'var(--border)' } as const
+const EV_TH_CLASS = 'px-[14px] py-2 text-left text-[10.5px] font-semibold uppercase tracking-[0.04em] text-[var(--fg-subtle)]'
+const EV_TD_CLASS = 'px-[14px] py-[9px] text-[12.5px] align-middle'
+
+type EventDetailStats = {
+  volume24h: number | null
+  delta24h: number | null
+  series24h: number[]
+}
+
+type EventHistoryItem = { id: string; field: string; created_at: string; new_value: string | null }
+
+/**
+ * Derives the event-detail stat strip + trend from the real volume series.
+ * The mockup's error-rate/coverage have no API source, so the strip instead
+ * surfaces real fields (drift count, last seen) alongside 24h volume + delta.
+ */
+function computeEventStats(metrics: EventMetricsResponse | undefined): EventDetailStats {
+  const points = metrics?.data ?? []
+  if (points.length === 0) return { volume24h: null, delta24h: null, series24h: [] }
+  const hourly = aggregateMetricPoints(points, 'hour')
+  const latest = Date.parse(hourly[hourly.length - 1]?.bucket ?? '') || Date.now()
+  const recent = hourly.filter(p => latest - Date.parse(p.bucket) < DAY_MS)
+  const prior = hourly.filter(p => {
+    const age = latest - Date.parse(p.bucket)
+    return age >= DAY_MS && age < 2 * DAY_MS
+  })
+  const sum = (rows: EventMetricPoint[]) => rows.reduce((total, p) => total + p.count, 0)
+  const volume24h = sum(recent)
+  const priorVolume = sum(prior)
+  const delta24h = priorVolume > 0 ? ((volume24h - priorVolume) / priorVolume) * 100 : null
+  return { volume24h, delta24h, series24h: recent.map(p => p.count) }
+}
+
+function formatNum(value: number): string {
+  return value.toLocaleString()
+}
+
+function EventDetailHero({
+  event,
+  eventType,
+  metrics,
+  history,
+  fieldDefMap,
+  metaFieldMap,
+  onBack,
+  onEdit,
+  onMetrics,
+}: {
+  event: TEvent
+  eventType: EventType | undefined
+  metrics: EventMetricsResponse | undefined
+  history: EventHistoryItem[]
+  fieldDefMap: Map<string, FieldDefinition>
+  metaFieldMap: Map<string, MetaFieldDefinition>
+  onBack: () => void
+  onEdit: () => void
+  onMetrics: () => void
+}) {
+  const stats = computeEventStats(metrics)
+  const signal = metrics?.latest_signal ?? null
+  const signalTone: 'danger' | 'warning' = signal?.direction === 'drop' ? 'warning' : 'danger'
+  return (
+    <div className="space-y-[18px]">
+      <EventDetailBreadcrumb onBack={onBack} />
+      <EventDetailHeader event={event} eventType={eventType} signal={signal} onEdit={onEdit} onMetrics={onMetrics} />
+      {signal && <EventSignalBanner signal={signal} tone={signalTone} />}
+      <EventStatStrip event={event} stats={stats} />
+      {stats.series24h.length > 1 && (
+        <div className={SURFACE_CARD} style={SURFACE_STYLE}>
+          <div className="flex items-center justify-between px-4 py-[14px]">
+            <span className="text-[12.5px] font-semibold">Volume · 24h</span>
+            <span className="mono text-[11px]" style={{ color: 'var(--fg-subtle)' }}>hourly</span>
+          </div>
+          <div className="px-4 pb-[14px]">
+            <Sparkline
+              data={stats.series24h}
+              width={920}
+              height={64}
+              color={signal ? `var(--${signalTone})` : 'var(--accent)'}
+              className="w-full"
+            />
+          </div>
+        </div>
+      )}
+      <div className="grid items-start gap-[14px] lg:grid-cols-[1.5fr_1fr]">
+        <EventFieldsTable eventType={eventType} event={event} fieldDefMap={fieldDefMap} />
+        <EventSideColumn event={event} eventType={eventType} history={history} metaFieldMap={metaFieldMap} />
+      </div>
+    </div>
+  )
+}
+
+function EventDetailBreadcrumb({ onBack }: { onBack: () => void }) {
+  return (
+    <div className="flex items-center gap-2 text-[11.5px]">
+      <button
+        type="button"
+        onClick={onBack}
+        className="inline-flex items-center gap-1 transition-colors hover:text-[var(--fg)]"
+        style={{ color: 'var(--fg-muted)' }}
+      >
+        <ChevronLeft size={13} /> Events
+      </button>
+      <div className="flex-1" />
+      <button
+        type="button"
+        disabled
+        className="inline-flex h-6 items-center gap-1 rounded-[6px] px-2 text-[11px] opacity-40"
+        style={{ color: 'var(--fg-muted)' }}
+      >
+        <ChevronUp size={11} /> Prev
+      </button>
+      <button
+        type="button"
+        disabled
+        className="inline-flex h-6 items-center gap-1 rounded-[6px] px-2 text-[11px] opacity-40"
+        style={{ color: 'var(--fg-muted)' }}
+      >
+        <ChevronDown size={11} /> Next
+      </button>
+    </div>
+  )
+}
+
+function HeroAction({
+  icon,
+  label,
+  primary,
+  onClick,
+  disabled,
+}: {
+  icon: ReactNode
+  label: string
+  primary?: boolean
+  onClick?: () => void
+  disabled?: boolean
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={disabled}
+      className="inline-flex h-8 items-center gap-[6px] rounded-[7px] border px-[10px] text-[12px] font-medium transition-colors hover:bg-[var(--surface-hover)] disabled:opacity-40"
+      style={{
+        background: primary ? 'var(--accent)' : 'var(--surface)',
+        color: primary ? 'var(--accent-fg)' : 'var(--fg)',
+        borderColor: primary ? 'var(--accent)' : 'var(--border)',
+      }}
+    >
+      {icon} {label}
+    </button>
+  )
+}
+
+function EventDetailHeader({
+  event,
+  eventType,
+  signal,
+  onEdit,
+  onMetrics,
+}: {
+  event: TEvent
+  eventType: EventType | undefined
+  signal: MonitoringSignal | null
+  onEdit: () => void
+  onMetrics: () => void
+}) {
+  const status = event.status as EventStatus
+  const statusTone = EVENT_STATUS_TONE[status] ?? 'neutral'
+  const typeColor = eventType?.color ?? 'var(--fg-faint)'
+  const typeLabel = eventType?.display_name ?? event.event_type?.display_name ?? 'Event'
+  return (
+    <div className="flex flex-wrap items-start gap-[13px]">
+      <span className="mt-[7px] flex-shrink-0">
+        {signal
+          ? <Dot tone={signal.direction === 'drop' ? 'warning' : 'danger'} pulse size={8} />
+          : <Dot tone={statusTone} size={8} />}
+      </span>
+      <div className="min-w-0 flex-1">
+        <div className="flex flex-wrap items-center gap-[10px]">
+          <h1 className="mono m-0 text-[19px] font-semibold tracking-[-0.01em]">{event.name}</h1>
+          <Chip tone={statusTone} size="sm">{EVENT_STATUS_LABELS[status] ?? event.status}</Chip>
+          {event.tags.map(tag => <Chip key={tag.id} size="xs">{tag.name}</Chip>)}
+        </div>
+        <div className="mt-[7px] flex flex-wrap items-center gap-2 text-[12px]" style={{ color: 'var(--fg-subtle)' }}>
+          <span className="inline-flex items-center gap-[5px]">
+            <span className="h-[7px] w-[7px] rounded-[2px]" style={{ background: typeColor }} />
+            {typeLabel}
+          </span>
+          <span style={{ color: 'var(--fg-faint)' }}>·</span>
+          <span>updated {formatRelativeTime(event.updated_at)}</span>
+        </div>
+      </div>
+      <div className="flex flex-wrap items-center gap-2">
+        <HeroAction icon={<Eye size={12} />} label="Watch" disabled />
+        <HeroAction icon={<TrendingUp size={12} />} label="Metrics" onClick={onMetrics} />
+        <HeroAction icon={<Pencil size={12} />} label="Edit" onClick={onEdit} />
+        <HeroAction icon={<Code size={12} />} label="Implementation" primary disabled />
+      </div>
+    </div>
+  )
+}
+
+function EventSignalBanner({ signal, tone }: { signal: MonitoringSignal; tone: 'danger' | 'warning' }) {
+  const delta = signal.expected_count > 0
+    ? ((signal.actual_count - signal.expected_count) / signal.expected_count) * 100
+    : null
+  const Arrow = signal.direction === 'drop' ? ArrowDown : ArrowUp
+  return (
+    <div
+      className="flex items-center gap-[10px] rounded-[10px] px-[14px] py-[10px]"
+      style={{
+        background: `var(--${tone}-soft)`,
+        border: `1px solid color-mix(in oklab, var(--${tone}) 35%, var(--border))`,
+      }}
+    >
+      <Arrow size={15} style={{ color: `var(--${tone})` }} />
+      <span className="text-[12.5px]" style={{ color: 'var(--fg-muted)' }}>
+        {signal.direction === 'drop' ? 'Volume drop' : 'Volume spike'} detected
+        {delta != null && ` — ${delta > 0 ? '+' : ''}${delta.toFixed(0)}% vs. baseline`}
+        {` (z = ${signal.z_score.toFixed(1)}).`}
+      </span>
+      <div className="flex-1" />
+      <span className="text-[11px]" style={{ color: 'var(--fg-subtle)' }}>
+        {formatTimestamp(signal.bucket)}
+      </span>
+    </div>
+  )
+}
+
+function StatCard({ label, value, tone }: { label: string; value: string; tone?: 'danger' | 'warning' }) {
+  const color = tone === 'danger' ? 'var(--danger)' : tone === 'warning' ? 'var(--warning)' : 'var(--fg)'
+  return (
+    <div className="rounded-[10px] border px-[14px] py-[11px]" style={SURFACE_STYLE}>
+      <div className="text-[11px]" style={{ color: 'var(--fg-subtle)' }}>{label}</div>
+      <div className="mono tnum mt-1 text-[19px] font-medium" style={{ color }}>{value}</div>
+    </div>
+  )
+}
+
+function EventStatStrip({ event, stats }: { event: TEvent; stats: EventDetailStats }) {
+  const deltaTone: 'danger' | 'warning' | undefined = stats.delta24h == null
+    ? undefined
+    : stats.delta24h > 20 ? 'danger' : stats.delta24h < -20 ? 'warning' : undefined
+  return (
+    <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+      <StatCard label="Volume · 24h" value={stats.volume24h == null ? '—' : formatNum(stats.volume24h)} />
+      <StatCard
+        label="Δ · 24h"
+        value={stats.delta24h == null ? '—' : `${stats.delta24h > 0 ? '+' : ''}${stats.delta24h.toFixed(0)}%`}
+        tone={deltaTone}
+      />
+      <StatCard
+        label="Schema drifts"
+        value={formatNum(event.drift_count)}
+        tone={event.drift_count > 0 ? 'warning' : undefined}
+      />
+      <StatCard label="Last seen" value={event.last_seen_at ? formatRelativeTime(event.last_seen_at) : '—'} />
+    </div>
+  )
+}
+
+function EventFieldsTable({
+  eventType,
+  event,
+  fieldDefMap,
+}: {
+  eventType: EventType | undefined
+  event: TEvent
+  fieldDefMap: Map<string, FieldDefinition>
+}) {
+  const fields = [...(eventType?.field_definitions ?? [])].sort((a, b) => a.order - b.order)
+  const valueByField = new Map(event.field_values.map(fv => [fv.field_definition_id, fv]))
+  const requiredCount = fields.filter(f => f.is_required).length
+  return (
+    <div className={SURFACE_CARD} style={SURFACE_STYLE}>
+      <div className="flex items-center gap-2 border-b px-4 py-3" style={{ borderColor: 'var(--border-subtle)' }}>
+        <span className="flex-1 text-[12.5px] font-semibold">Fields</span>
+        <span className="mono text-[10.5px]" style={{ color: 'var(--fg-subtle)' }}>
+          {fields.length} · {requiredCount} required
+        </span>
+      </div>
+      {fields.length === 0 ? (
+        <div className="px-4 py-7 text-center text-[12px]" style={{ color: 'var(--fg-subtle)' }}>
+          No fields defined.
+        </div>
+      ) : (
+        <table className="w-full border-collapse">
+          <thead>
+            <tr style={{ background: 'var(--bg-sunken)' }}>
+              <th className={EV_TH_CLASS}>Field</th>
+              <th className={EV_TH_CLASS}>Type</th>
+              <th className={EV_TH_CLASS}>Value</th>
+              <th className={EV_TH_CLASS}>Sensitivity</th>
+            </tr>
+          </thead>
+          <tbody>
+            {fields.map(field => {
+              const fv = valueByField.get(field.id)
+              const def = fieldDefMap.get(field.id) ?? field
+              return (
+                <tr key={field.id} style={{ borderTop: '1px solid var(--border-subtle)' }}>
+                  <td className={EV_TD_CLASS}>
+                    <span className="mono text-[12px]">{def.name}</span>
+                    {def.is_required && <span className="ml-[3px]" style={{ color: 'var(--danger)' }}>*</span>}
+                  </td>
+                  <td className={EV_TD_CLASS}><Chip size="xs" variant="outline">{def.field_type}</Chip></td>
+                  <td className={EV_TD_CLASS}>
+                    <span className="mono inline-flex items-center gap-1.5 text-[11.5px]" style={{ color: 'var(--fg-muted)' }}>
+                      <span className="break-all">{fv?.value || '—'}</span>
+                      {fv?.variable_values?.length ? (
+                        <VariableValueContextTrigger contexts={fv.variable_values} />
+                      ) : null}
+                    </span>
+                  </td>
+                  <td className={EV_TD_CLASS}><SensitivityChip value={def.sensitivity} /></td>
+                </tr>
+              )
+            })}
+          </tbody>
+        </table>
+      )}
+    </div>
+  )
+}
+
+function PropertyRow({ label, value, mono }: { label: string; value: ReactNode; mono?: boolean }) {
+  return (
+    <div className="flex gap-3 px-4 py-[6px] text-[12px]">
+      <span className="w-[120px] flex-shrink-0" style={{ color: 'var(--fg-subtle)' }}>{label}</span>
+      <span className={`min-w-0 flex-1 break-words ${mono ? 'mono' : ''}`} style={{ color: 'var(--fg)' }}>
+        {value}
+      </span>
+    </div>
+  )
+}
+
+function EventMetaCard({
+  event,
+  metaFieldMap,
+}: {
+  event: TEvent
+  metaFieldMap: Map<string, MetaFieldDefinition>
+}) {
+  if (event.meta_values.length === 0) return null
+  return (
+    <div className={SURFACE_CARD} style={SURFACE_STYLE}>
+      <div className="border-b px-4 py-3 text-[12.5px] font-semibold" style={{ borderColor: 'var(--border-subtle)' }}>
+        Meta fields
+      </div>
+      <div className="py-[6px]">
+        {event.meta_values.map(mv => {
+          const def = metaFieldMap.get(mv.meta_field_definition_id)
+          const href = def ? resolveMetaFieldHref(def, mv.value) : null
+          const display = def?.field_type === 'boolean'
+            ? (mv.value === 'true' ? '✓' : '✗')
+            : (mv.value || '—')
+          return (
+            <PropertyRow
+              key={mv.id}
+              label={def?.display_name ?? def?.name ?? 'Unknown'}
+              value={href
+                ? <a href={href} target="_blank" rel="noopener noreferrer" className="underline" style={{ color: 'var(--accent)' }}>{mv.value}</a>
+                : display}
+              mono
+            />
+          )
+        })}
+      </div>
+    </div>
+  )
+}
+
+function EventSideColumn({
+  event,
+  eventType,
+  history,
+  metaFieldMap,
+}: {
+  event: TEvent
+  eventType: EventType | undefined
+  history: EventHistoryItem[]
+  metaFieldMap: Map<string, MetaFieldDefinition>
+}) {
+  const breakdowns = event.metric_breakdown_columns
+  return (
+    <div className="flex flex-col gap-[14px]">
+      <div className={SURFACE_CARD} style={SURFACE_STYLE}>
+        <div className="border-b px-4 py-3 text-[12.5px] font-semibold" style={{ borderColor: 'var(--border-subtle)' }}>
+          Properties
+        </div>
+        <div className="py-[6px]">
+          <PropertyRow label="Event type" value={eventType?.display_name ?? event.event_type?.display_name ?? '—'} />
+          <PropertyRow label="Status" value={EVENT_STATUS_LABELS[event.status as EventStatus] ?? event.status} />
+          <PropertyRow label="Event ID" value={event.id} mono />
+          <PropertyRow label="First seen" value={formatTimestamp(event.created_at)} />
+          <PropertyRow label="Updated" value={formatRelativeTime(event.updated_at)} />
+          <PropertyRow label="Last seen" value={event.last_seen_at ? formatTimestamp(event.last_seen_at) : '—'} />
+          {event.sunset_at && <PropertyRow label="Sunset" value={formatTimestamp(event.sunset_at)} />}
+        </div>
+      </div>
+
+      <EventMetaCard event={event} metaFieldMap={metaFieldMap} />
+
+      <div className={SURFACE_CARD} style={SURFACE_STYLE}>
+        <div className="border-b px-4 py-3 text-[12.5px] font-semibold" style={{ borderColor: 'var(--border-subtle)' }}>
+          Metric breakdowns
+        </div>
+        <div className="flex flex-wrap gap-[6px] px-4 py-[12px]">
+          {breakdowns.length > 0
+            ? breakdowns.map(column => <Chip key={column} size="xs" variant="outline">{column}</Chip>)
+            : <span className="text-[12px]" style={{ color: 'var(--fg-subtle)' }}>No event-level breakdowns</span>}
+        </div>
+      </div>
+
+      <div className={SURFACE_CARD} style={SURFACE_STYLE}>
+        <div className="border-b px-4 py-3 text-[12.5px] font-semibold" style={{ borderColor: 'var(--border-subtle)' }}>
+          Recent activity
+        </div>
+        <div className="py-[4px]">
+          {history.length === 0 ? (
+            <div className="px-4 py-5 text-center text-[11.5px]" style={{ color: 'var(--fg-subtle)' }}>
+              No recent changes
+            </div>
+          ) : history.slice(0, 4).map(change => (
+            <div key={change.id} className="flex gap-[10px] border-t px-4 py-2" style={{ borderColor: 'var(--border-subtle)' }}>
+              <Dot tone="neutral" size={6} className="mt-[5px]" />
+              <div className="min-w-0 flex-1">
+                <div className="text-[11.5px] font-medium">
+                  <span className="mono">{change.field}</span>
+                  {change.new_value != null && <span style={{ color: 'var(--fg-muted)' }}> → {change.new_value}</span>}
+                </div>
+                <div className="mt-[2px] text-[10.5px]" style={{ color: 'var(--fg-subtle)' }}>
+                  {formatRelativeTime(change.created_at)}
+                </div>
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
     </div>
   )
 }
