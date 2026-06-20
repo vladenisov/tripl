@@ -20,7 +20,6 @@ import type { EventStatus } from '@/lib/eventStatus'
 import { resolveMetaFieldHref } from '@/lib/metaFields'
 import { VariableValueContextTrigger } from '@/components/variable-value-contexts'
 import { EventDriftBadge } from './EventDriftBadge'
-import { EventRowActions } from './EventRowActions'
 import { EventWindowMetricsCell } from './EventWindowMetricsCell'
 import { SignalLink } from './SignalLink'
 import { formatRelativeTime } from './utils'
@@ -50,8 +49,6 @@ export type EventRowProps = {
   fieldColumns: FieldDefinition[]
   metaFields: MetaFieldDefinition[]
   slug: string
-  canMoveUp: boolean
-  canMoveDown: boolean
   expandedFieldId: string | null
   rowSignal: MonitoringSignal | undefined
   windowTotal: number | undefined
@@ -61,7 +58,6 @@ export type EventRowProps = {
   onToggleSelected: (id: string, checked: boolean) => void
   onToggleExpanded: (cellKey: string | null) => void
   onRowAction: (action: RowAction, ev: EventListItem) => void
-  onSetStatus: (id: string, status: EventStatus) => void
 }
 
 export const EventRow = memo(function EventRow({
@@ -80,8 +76,6 @@ export const EventRow = memo(function EventRow({
   fieldColumns,
   metaFields,
   slug,
-  canMoveUp,
-  canMoveDown,
   expandedFieldId,
   rowSignal,
   windowTotal,
@@ -91,7 +85,6 @@ export const EventRow = memo(function EventRow({
   onToggleSelected,
   onToggleExpanded,
   onRowAction,
-  onSetStatus,
 }: EventRowProps) {
   const {
     attributes,
@@ -324,18 +317,6 @@ export const EventRow = memo(function EventRow({
           </TableCell>
         )
       })}
-      <TableCell className="sticky right-0 z-10 w-6 min-w-6 max-w-6 border-l bg-background p-0 group-hover/row:z-40 focus-within:z-40">
-        <div className="relative h-full w-6">
-          <EventRowActions
-            event={ev}
-            canMoveUp={canMoveUp}
-            canMoveDown={canMoveDown}
-            onMoveUp={() => onRowAction('move-up', ev)}
-            onMoveDown={() => onRowAction('move-down', ev)}
-            onSetStatus={status => onSetStatus(ev.id, status)}
-          />
-        </div>
-      </TableCell>
     </TableRow>
   )
 })

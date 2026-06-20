@@ -33,7 +33,6 @@ import type {
   MonitoringSignal,
 } from '@/types'
 
-import type { EventStatus } from '@/lib/eventStatus'
 import { ColumnFilter, FilterableHead, type ColumnFilterType } from './ColumnFilter'
 import { EventRow, type RowAction } from './EventRow'
 import { EMPTY_WINDOW_POINTS, ROW_METRICS_LABEL } from './utils'
@@ -83,12 +82,10 @@ export type EventsTableProps = {
   eventTypesById: Map<string, EventTypeBrief>
   slug: string
   selectedSet: Set<string>
-  visibleIndexById: Map<string, number>
   getFieldValue: (ev: EventListItem, col: FieldDefinition) => string
   toggleEventSelected: (id: string, checked: boolean) => void
   onToggleExpandedCell: (cellKey: string | null) => void
   onRowAction: (action: RowAction, ev: EventListItem) => void
-  onSetStatus: (id: string, status: EventStatus) => void
 }
 
 export function EventsTable({
@@ -132,12 +129,10 @@ export function EventsTable({
   eventTypesById,
   slug,
   selectedSet,
-  visibleIndexById,
   getFieldValue,
   toggleEventSelected,
   onToggleExpandedCell,
   onRowAction,
-  onSetStatus,
 }: EventsTableProps) {
   // Visible window for the "Showing X–Y of N" footer. When virtualized this
   // tracks the rendered window as the user scrolls; otherwise all loaded rows
@@ -278,10 +273,6 @@ export function EventsTable({
                       />
                     )
                   })}
-                  <TableHead
-                    aria-label="Actions"
-                    className="sticky right-0 z-20 w-6 min-w-6 max-w-6 border-l bg-[var(--bg-sunken)] p-0"
-                  />
                 </TableRow>
               </TableHeader>
               <TableBody>
@@ -292,7 +283,6 @@ export function EventsTable({
                 )}
                 {(virtualize ? virtualItems.map((vi) => events[vi.index]) : events).map(
                   (ev: EventListItem) => {
-                    const idx = visibleIndexById.get(ev.id) ?? -1
                     const expandedFieldId =
                       expandedCell && expandedCell.startsWith(ev.id + '-')
                         ? expandedCell.slice(ev.id.length + 1)
@@ -315,8 +305,6 @@ export function EventsTable({
                         fieldColumns={visibleFieldColumns}
                         metaFields={visibleMetaFields}
                         slug={slug}
-                        canMoveUp={idx > 0}
-                        canMoveDown={idx >= 0 && idx < visibleEventIds.length - 1}
                         expandedFieldId={expandedFieldId}
                         rowSignal={eventRowSignals.get(ev.id)}
                         windowTotal={windowMetric?.total_count}
@@ -327,7 +315,6 @@ export function EventsTable({
                         onToggleSelected={toggleEventSelected}
                         onToggleExpanded={onToggleExpandedCell}
                         onRowAction={onRowAction}
-                        onSetStatus={onSetStatus}
                       />
                     )
                   },

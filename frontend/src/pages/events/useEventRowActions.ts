@@ -1,12 +1,12 @@
 import { useCallback, useEffect, useRef } from 'react'
 import type { NavigateFunction } from 'react-router-dom'
-import { arrayMove } from '@dnd-kit/sortable'
 import type { DragEndEvent } from '@dnd-kit/core'
 
 import type { EventListItem } from '@/types'
 
 import type { RowAction } from './EventRow'
 import type { EventMutations } from './useEventMutations'
+import { reorderWithSelection } from './utils'
 
 type ConfirmFn = (options: {
   title: string
@@ -27,6 +27,7 @@ export function useEventRowActions({
   mutations,
   confirm,
   visibleEventIds,
+  selectedSet,
 }: {
   slug: string | undefined
   navigate: NavigateFunction
@@ -34,6 +35,7 @@ export function useEventRowActions({
   mutations: EventMutations
   confirm: ConfirmFn
   visibleEventIds: string[]
+  selectedSet: Set<string>
 }) {
   const rowCtxRef = useRef({
     slug,
@@ -42,6 +44,7 @@ export function useEventRowActions({
     mutations,
     confirm,
     visibleEventIds,
+    selectedSet,
   })
   useEffect(() => {
     rowCtxRef.current = {
@@ -51,19 +54,25 @@ export function useEventRowActions({
       mutations,
       confirm,
       visibleEventIds,
+      selectedSet,
     }
   })
 
   const handleDragEnd = useCallback(
     (event: DragEndEvent) => {
       const { active, over } = event
-      if (!over || active.id === over.id) return
+      if (!over) return
       const ctx = rowCtxRef.current
-      const ids = ctx.visibleEventIds
-      const oldIndex = ids.indexOf(String(active.id))
-      const newIndex = ids.indexOf(String(over.id))
-      if (oldIndex < 0 || newIndex < 0) return
-      ctx.mutations.reorderEventsMut.mutate(arrayMove(ids, oldIndex, newIndex))
+      // Multi-select drag moves the whole selection as a block; a single row
+      // moves on its own. `reorderWithSelection` returns null when there is
+      // nothing to apply.
+      const next = reorderWithSelection(
+        ctx.visibleEventIds,
+        ctx.selectedSet,
+        String(active.id),
+        String(over.id),
+      )
+      if (next) ctx.mutations.reorderEventsMut.mutate(next)
     },
     [],
   )

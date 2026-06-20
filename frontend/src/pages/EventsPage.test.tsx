@@ -193,17 +193,18 @@ describe('EventsPage', () => {
     const eventHeader = screen.getByRole('columnheader', { name: 'Event' })
     const typeHeader = screen.getByRole('columnheader', { name: 'Type' })
     const metricsHeader = screen.getByRole('columnheader', { name: '48h' })
-    const actionsHeader = screen.getByRole('columnheader', { name: 'Actions' })
     expect(typeHeader.compareDocumentPosition(metricsHeader) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
     expect(eventHeader).toBeInTheDocument()
-    expect(actionsHeader.className).toContain('sticky')
+    // The trailing sticky "Actions" column and its hover cluster were removed;
+    // reordering is now drag-handle only.
+    expect(screen.queryByRole('columnheader', { name: 'Actions' })).not.toBeInTheDocument()
     expect(screen.getByText('48h')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: '7d' })).toBeInTheDocument()
     expect(screen.getByText('Hours')).toBeInTheDocument()
     const metricsButton = await screen.findByRole('button', { name: '1k' })
     expect(metricsButton).toBeInTheDocument()
-    // Hover row actions are move up/down + a status select only — Edit/Metrics/
-    // Archive/Delete now live on the event detail page, not on the row.
+    // The row exposes no inline action buttons — Edit/Metrics/Archive/Delete and
+    // move/status now live on the event detail page, not on the row.
     expect(screen.queryByRole('button', { name: 'Edit event' })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'More actions' })).not.toBeInTheDocument()
     expect(container.querySelector('a[href="/p/demo/monitoring/project-total/scan-1"]')).toBeInTheDocument()
@@ -216,11 +217,11 @@ describe('EventsPage', () => {
     expect((await screen.findAllByText('Last 48 hours')).length).toBeGreaterThan(0)
     expect(screen.getAllByText('1k events').length).toBeGreaterThan(0)
 
-    // The hover cluster is an absolute overlay rendered for every row; it
-    // exposes move up/down + a status select, and nothing else.
-    expect(screen.getByRole('button', { name: 'Move event up' })).toBeDisabled()
-    expect(screen.getByRole('button', { name: 'Move event down' })).toBeDisabled()
-    expect(screen.getByRole('combobox', { name: 'Set event status' })).toBeInTheDocument()
+    // The hover action cluster was removed entirely — no move up/down buttons
+    // and no per-row status select.
+    expect(screen.queryByRole('button', { name: 'Move event up' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Move event down' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('combobox', { name: 'Set event status' })).not.toBeInTheDocument()
     expect(screen.queryByRole('link', { name: 'View metrics' })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Archive event' })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Delete event' })).not.toBeInTheDocument()

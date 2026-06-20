@@ -1,3 +1,4 @@
+import { arrayMove } from '@dnd-kit/sortable'
 import type {
   EventMetricPoint,
   EventType,
@@ -38,6 +39,43 @@ const compactCountFormatter = new Intl.NumberFormat('en-US', {
 
 export function formatCompactCount(value: number) {
   return compactCountFormatter.format(value).toLowerCase()
+}
+
+/**
+ * Compute the new row order produced by a drag-reorder.
+ *
+ * When `activeId` belongs to a multi-row selection, the whole selection moves
+ * as a contiguous block to the drop target, preserving the selected rows'
+ * relative order. Otherwise a single row moves. Returns `null` when there is
+ * nothing to apply — unknown ids, a no-op drop, or the block dropped onto one
+ * of its own rows.
+ */
+export function reorderWithSelection(
+  ids: string[],
+  selectedSet: Set<string>,
+  activeId: string,
+  overId: string,
+): string[] | null {
+  if (activeId === overId) return null
+  const oldIndex = ids.indexOf(activeId)
+  const newIndex = ids.indexOf(overId)
+  if (oldIndex < 0 || newIndex < 0) return null
+
+  const isMultiDrag = selectedSet.size > 1 && selectedSet.has(activeId)
+  if (!isMultiDrag) {
+    return arrayMove(ids, oldIndex, newIndex)
+  }
+
+  const movingIds = ids.filter((id) => selectedSet.has(id))
+  const remaining = ids.filter((id) => !selectedSet.has(id))
+  const overInRemaining = remaining.indexOf(overId)
+  if (overInRemaining < 0) return null // dropped onto another selected row
+  const insertAt = oldIndex < newIndex ? overInRemaining + 1 : overInRemaining
+  return [
+    ...remaining.slice(0, insertAt),
+    ...movingIds,
+    ...remaining.slice(insertAt),
+  ]
 }
 
 export const LAST_SEEN_COL_KEY = 'last_seen'
