@@ -908,10 +908,13 @@ def test_collect_metrics_uses_database_grouped_breakdown_rows(
         }
 
 
-def test_collect_metrics_retains_latest_app_versions_by_semver(
+def test_collect_metrics_stores_every_app_version_without_collapse(
     sync_session_factory: sessionmaker[Session],
     monkeypatch: MonkeyPatch,
 ) -> None:
+    # Write path stores every version verbatim; SemVer latest-N retention and the
+    # "Other" rollup happen at read time (metrics_service.get_app_version_series),
+    # so the kept set stays stable across the whole window regardless of chunking.
     with sync_session_factory() as session:
         config = _create_scan_config(session, with_event_type=True)
         assert config.event_type_id is not None
@@ -1020,13 +1023,16 @@ def test_collect_metrics_retains_latest_app_versions_by_semver(
     # extra warehouse breakdown query is needed when generic breakdown columns
     # are absent.
     assert adapter.breakdown_calls == []
-    assert result["breakdown_event_metrics"] == 3
-    assert result["breakdown_type_metrics"] == 3
+    # Every version is stored verbatim (is_other=False); nothing is collapsed at
+    # write time regardless of app_version_keep_releases — retention is read-time.
+    assert result["breakdown_event_metrics"] == 4
+    assert result["breakdown_type_metrics"] == 4
 
     expected = {
         ("app_version", "2.2.0", False, 10),
         ("app_version", "2.1.0", False, 8),
-        ("app_version", "Other", True, 8),  # 2.0.0 (5) + 1.9.0 (3) folded together
+        ("app_version", "2.0.0", False, 5),
+        ("app_version", "1.9.0", False, 3),
     }
     with sync_session_factory() as session:
         event_breakdowns = (
@@ -2600,6 +2606,34 @@ def test_collect_metrics_uses_replay_safe_time_limit() -> None:
         metrics.collect_metrics.soft_time_limit == metrics.COLLECT_METRICS_SOFT_TIME_LIMIT_SECONDS
     )
     assert metrics.collect_metrics.time_limit == metrics.COLLECT_METRICS_TIME_LIMIT_SECONDS
+
+
+def test_rabbitmq_consumer_timeout_exceeds_collect_metrics_hard_limit() -> None:
+    """The broker must not force-requeue a still-running replay.
+
+    With task_acks_late=True a long metrics replay holds its delivery unacked for
+    the whole run (hours). If RabbitMQ's consumer_timeout is shorter than the
+    Celery hard task_time_limit, the broker force-closes the channel and requeues
+    the live task, spawning overlapping duplicate executions that corrupt chunk
+    progress (e.g. 19/24 -> 14/24) and never let the job finish. Keep the broker
+    timeout strictly above Celery's hard limit so Celery governs termination.
+    """
+    repo_root = Path(__file__).resolve().parents[4]
+    conf = repo_root / "infra" / "rabbitmq" / "rabbitmq.conf"
+    assert conf.is_file(), f"missing broker config at {conf}"
+
+    consumer_timeout_ms: int | None = None
+    for raw_line in conf.read_text().splitlines():
+        line = raw_line.split("#", 1)[0].strip()
+        if not line or "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        if key.strip() == "consumer_timeout":
+            consumer_timeout_ms = int(value.strip())
+            break
+
+    assert consumer_timeout_ms is not None, "consumer_timeout not set in rabbitmq.conf"
+    assert consumer_timeout_ms > metrics.COLLECT_METRICS_TIME_LIMIT_SECONDS * 1000
 
 
 def test_collect_metrics_splits_replay_into_interval_chunks(
