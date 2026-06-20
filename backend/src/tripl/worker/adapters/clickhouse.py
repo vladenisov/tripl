@@ -12,7 +12,18 @@ from tripl.worker.adapters.base import (
     ColumnInfo,
     FieldContractExpectation,
     FieldContractViolation,
+    SchemaColumn,
+    SchemaTable,
 )
+
+# Hard cap on rows pulled from the catalog so a warehouse with thousands of
+# wide tables can't blow up the autocomplete payload or the request.
+_SCHEMA_ROW_LIMIT = 5000
+
+# Per-query server-side execution cap for catalog introspection so a hung
+# schema query can't block the worker thread. Scoped to this query only via
+# clickhouse-connect per-query settings (does not touch the shared client).
+_SCHEMA_QUERY_TIMEOUT_SECONDS = 30
 
 logger = logging.getLogger(__name__)
 
@@ -56,6 +67,26 @@ class ClickHouseAdapter(BaseAdapter):
             columns.append(ColumnInfo(name=name, type_name=type_name, is_nullable=is_nullable))
         self._allowed_columns = {c.name for c in columns}
         return columns
+
+    def get_schema_tables(self) -> list[SchemaTable]:
+        sql = (
+            "SELECT table, name, type FROM system.columns "
+            "WHERE database = currentDatabase() "
+            f"ORDER BY table, position LIMIT {_SCHEMA_ROW_LIMIT}"
+        )
+        logger.debug("CH schema introspection query: %s", sql)
+        result = self._client.query(
+            sql, settings={"max_execution_time": _SCHEMA_QUERY_TIMEOUT_SECONDS}
+        )
+        columns_by_table: dict[str, list[SchemaColumn]] = {}
+        for table, name, type_name in result.result_rows:
+            columns_by_table.setdefault(str(table), []).append(
+                SchemaColumn(name=str(name), data_type=str(type_name))
+            )
+        return [
+            SchemaTable(name=table, columns=columns)
+            for table, columns in columns_by_table.items()
+        ]
 
     def get_preview_rows(
         self,

@@ -5,6 +5,27 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { AuthContext, type AuthContextValue } from '@/components/auth-context'
 import ProjectSettingsPage from './ProjectSettingsPage'
 
+// CodeMirror needs real layout measurement that jsdom can't provide and
+// tokenizes SQL across many spans. Stub it with a plain textarea that exposes
+// the value, keeping the suite deterministic and editor content settable.
+vi.mock('@uiw/react-codemirror', () => ({
+  default: ({
+    value,
+    onChange,
+    placeholder,
+  }: {
+    value: string
+    onChange: (v: string) => void
+    placeholder?: string
+  }) => (
+    <textarea
+      value={value}
+      onChange={e => onChange(e.target.value)}
+      placeholder={placeholder}
+    />
+  ),
+}))
+
 function mockJsonResponse(body: unknown) {
   return new Response(JSON.stringify(body), {
     status: 200,
@@ -35,42 +56,8 @@ function ownerAuthValue(): AuthContextValue {
 }
 
 describe('ProjectSettingsPage', () => {
-  it('rebuilds the search index from general settings', async () => {
-    const calls: string[] = []
-    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
-      const url = String(input)
-      calls.push(`${init?.method ?? 'GET'} ${url}`)
-
-      if (url.endsWith('/api/v1/projects/demo')) {
-        return mockJsonResponse({
-          id: 'project-1',
-          name: 'Demo',
-          slug: 'demo',
-          description: '',
-          created_at: '2026-01-01T00:00:00Z',
-          updated_at: '2026-01-01T00:00:00Z',
-          summary: {
-            event_type_count: 0,
-            event_count: 0,
-            active_event_count: 0,
-            implemented_event_count: 0,
-            review_pending_event_count: 0,
-            archived_event_count: 0,
-            variable_count: 0,
-            scan_count: 0,
-            alert_destination_count: 0,
-            monitoring_signal_count: 0,
-            latest_scan_job: null,
-            latest_signal: null,
-          },
-        })
-      }
-      if (url.endsWith('/api/v1/projects/demo/search/reindex') && init?.method === 'POST') {
-        return mockJsonResponse({ documents_indexed: 42, embeddings_scheduled: false })
-      }
-
-      throw new Error(`Unhandled fetch: ${url}`)
-    })
+  it('redirects the legacy general tab to the takeover settings area', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(mockJsonResponse({}))
 
     const queryClient = new QueryClient({
       defaultOptions: { queries: { retry: false } },
@@ -83,16 +70,14 @@ describe('ProjectSettingsPage', () => {
               <Route path="/p/:slug/settings/:tab/:itemId" element={<ProjectSettingsPage />} />
               <Route path="/p/:slug/settings/:tab" element={<ProjectSettingsPage />} />
               <Route path="/p/:slug/settings" element={<ProjectSettingsPage />} />
+              <Route path="/settings/project/general" element={<div>Takeover general</div>} />
             </Routes>
           </MemoryRouter>
         </AuthContext.Provider>
       </QueryClientProvider>,
     )
 
-    fireEvent.click(await screen.findByRole('button', { name: /Rebuild index/i }))
-
-    expect(await screen.findByText('Indexed 42 documents.')).toBeInTheDocument()
-    expect(calls).toContain('POST /api/v1/projects/demo/search/reindex')
+    expect(await screen.findByText('Takeover general')).toBeInTheDocument()
   })
 
   it('loads and updates shared monitoring settings on the monitoring tab', async () => {
@@ -164,6 +149,14 @@ describe('ProjectSettingsPage', () => {
   it('shows added signals in scan job results', async () => {
     vi.spyOn(globalThis, 'fetch').mockImplementation(async input => {
       const url = String(input)
+
+      if (url.includes('/data-sources/') && url.includes('/schema')) {
+        return mockJsonResponse({
+          tables: [
+            { name: 'events', columns: [{ name: 'id', data_type: 'UInt64' }] },
+          ],
+        })
+      }
 
       if (url.endsWith('/api/v1/data-sources')) {
         return mockJsonResponse([
@@ -274,8 +267,14 @@ describe('ProjectSettingsPage', () => {
 
     fireEvent.click(await screen.findByText('Main scan'))
 
-    expect(await screen.findByText('+2 signals')).toBeInTheDocument()
-    expect(await screen.findByText('+1 alerts')).toBeInTheDocument()
+    // Job result details (signals / alerts) live in the expandable job row.
+    const startedCell = await screen.findByText('Started')
+    const jobsTable = startedCell.closest('table')!
+    const expandButton = within(jobsTable).getAllByRole('button').slice(-1)[0]
+    fireEvent.click(expandButton)
+
+    expect(await screen.findByText('Signals added')).toBeInTheDocument()
+    expect(screen.getByText('Alerts queued')).toBeInTheDocument()
   })
 
   it('applies saved scan group rules to existing events', async () => {
@@ -284,6 +283,14 @@ describe('ProjectSettingsPage', () => {
     vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
       const url = String(input)
       calls.push(`${init?.method ?? 'GET'} ${url}`)
+
+      if (url.includes('/data-sources/') && url.includes('/schema')) {
+        return mockJsonResponse({
+          tables: [
+            { name: 'events', columns: [{ name: 'id', data_type: 'UInt64' }] },
+          ],
+        })
+      }
 
       if (url.endsWith('/api/v1/data-sources')) {
         return mockJsonResponse([
@@ -392,7 +399,7 @@ describe('ProjectSettingsPage', () => {
     )
 
     fireEvent.click(await screen.findByText('Main scan'))
-    fireEvent.click(await screen.findByRole('button', { name: 'Apply Groups' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Apply groups' }))
 
     expect(await screen.findByText('Group apply job queued.')).toBeInTheDocument()
     expect(calls).toContain('POST /api/v1/projects/demo/scans/scan-1/event-groups/apply')
@@ -403,6 +410,14 @@ describe('ProjectSettingsPage', () => {
 
     vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
       const url = String(input)
+
+      if (url.includes('/data-sources/') && url.includes('/schema')) {
+        return mockJsonResponse({
+          tables: [
+            { name: 'events', columns: [{ name: 'id', data_type: 'UInt64' }] },
+          ],
+        })
+      }
 
       if (url.endsWith('/api/v1/data-sources')) {
         return mockJsonResponse([
@@ -506,15 +521,17 @@ describe('ProjectSettingsPage', () => {
     )
 
     fireEvent.click(await screen.findByText('Main scan'))
-    fireEvent.click(await screen.findByRole('button', { name: /Replay Period/i }))
+    // Replay now lives in the Configuration tab's danger zone.
+    fireEvent.click(await screen.findByRole('button', { name: 'Edit' }))
+    fireEvent.click(await screen.findByRole('button', { name: /Replay…/i }))
 
     const inputs = document.querySelectorAll('input[type="datetime-local"]')
     expect(inputs).toHaveLength(2)
     fireEvent.change(inputs[0], { target: { value: '2026-04-01T00:00' } })
     fireEvent.change(inputs[1], { target: { value: '2026-04-02T00:00' } })
 
-    const dialog = screen.getByRole('dialog')
-    fireEvent.click(within(dialog).getByRole('button', { name: /Replay Period/i }))
+    // Replay is now an inline page-style panel (no modal dialog).
+    fireEvent.click(screen.getByRole('button', { name: /Replay period/i }))
 
     await waitFor(() => {
       expect(replayBodies).toEqual([
@@ -564,6 +581,7 @@ describe('ProjectSettingsPage', () => {
       if (url.includes('/api/v1/projects/demo/events?')) return mockJsonResponse({ items: [], total: 0 })
       if (url.endsWith('/api/v1/projects/demo/scans')) return mockJsonResponse([])
       if (url.includes('/api/v1/projects/demo/alert-deliveries')) return mockJsonResponse({ items: [], total: 0 })
+      if (url.endsWith('/api/v1/projects/demo/monitors-summary')) return mockJsonResponse({ monitors: [], firing_count: 0, warning_count: 0, healthy_count: 0, total: 0 })
 
       throw new Error(`Unhandled fetch: ${url}`)
     })
@@ -583,7 +601,9 @@ describe('ProjectSettingsPage', () => {
       </QueryClientProvider>,
     )
 
-    expect(await screen.findByText('Main Slack')).toBeInTheDocument()
+    // Wait generously for the alerting tab's several concurrent queries to
+    // settle under full-suite load (this assertion was the flaky one).
+    expect(await screen.findByText('Main Slack', undefined, { timeout: 5000 })).toBeInTheDocument()
     expect(await screen.findByText('Ops Bot')).toBeInTheDocument()
     expect(await screen.findByText('chat -100123')).toBeInTheDocument()
   })
@@ -611,6 +631,7 @@ describe('ProjectSettingsPage', () => {
       if (url.includes('/api/v1/projects/demo/events?')) return mockJsonResponse({ items: [], total: 0 })
       if (url.endsWith('/api/v1/projects/demo/scans')) return mockJsonResponse([])
       if (url.includes('/api/v1/projects/demo/alert-deliveries')) return mockJsonResponse({ items: [], total: 0 })
+      if (url.endsWith('/api/v1/projects/demo/monitors-summary')) return mockJsonResponse({ monitors: [], firing_count: 0, warning_count: 0, healthy_count: 0, total: 0 })
 
       throw new Error(`Unhandled fetch: ${url}`)
     })
@@ -696,6 +717,7 @@ describe('ProjectSettingsPage', () => {
       if (url.includes('/api/v1/projects/demo/events?')) return mockJsonResponse({ items: [], total: 0 })
       if (url.endsWith('/api/v1/projects/demo/scans')) return mockJsonResponse([])
       if (url.includes('/api/v1/projects/demo/alert-deliveries')) return mockJsonResponse({ items: [], total: 0 })
+      if (url.endsWith('/api/v1/projects/demo/monitors-summary')) return mockJsonResponse({ monitors: [], firing_count: 0, warning_count: 0, healthy_count: 0, total: 0 })
 
       throw new Error(`Unhandled fetch: ${url}`)
     })
@@ -866,7 +888,7 @@ describe('ProjectSettingsPage', () => {
       </QueryClientProvider>,
     )
 
-    fireEvent.click((await screen.findAllByRole('button', { name: 'Add Meta Field' }))[0])
+    fireEvent.click((await screen.findAllByRole('button', { name: 'Add meta field' }))[0])
 
     const dialog = await screen.findByRole('dialog')
     const inputs = within(dialog).getAllByRole('textbox')
@@ -897,6 +919,14 @@ describe('ProjectSettingsPage', () => {
 
     vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
       const url = String(input)
+
+      if (url.includes('/data-sources/') && url.includes('/schema')) {
+        return mockJsonResponse({
+          tables: [
+            { name: 'events', columns: [{ name: 'id', data_type: 'UInt64' }] },
+          ],
+        })
+      }
 
       if (url.endsWith('/api/v1/data-sources')) {
         return mockJsonResponse([
@@ -1023,38 +1053,39 @@ describe('ProjectSettingsPage', () => {
       </QueryClientProvider>,
     )
 
-    const addScanButton = await screen.findByRole('button', { name: /Add Scan Config/i })
+    const addScanButton = await screen.findByRole('button', { name: /New scan/i })
     await waitFor(() => expect(addScanButton).not.toBeDisabled())
     fireEvent.click(addScanButton)
 
-    const dialog = await screen.findByRole('dialog')
-    const textboxes = within(dialog).getAllByRole('textbox')
+    // Create flow is an in-place page (no dialog).
+    await screen.findByText('New scan config')
+    const textboxes = screen.getAllByRole('textbox')
     fireEvent.change(textboxes[0], { target: { value: 'Main scan' } })
     fireEvent.change(textboxes[1], { target: { value: 'SELECT * FROM analytics.events' } })
 
-    const selects = within(dialog).getAllByRole('combobox')
+    const selects = screen.getAllByRole('combobox')
     fireEvent.change(selects[0], { target: { value: 'ds-1' } })
 
-    fireEvent.click(within(dialog).getByRole('button', { name: 'Load Preview' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Load preview' }))
 
-    expect(await within(dialog).findByText('JSON values to keep as-is')).toBeInTheDocument()
+    expect(await screen.findByText('JSON values to keep as-is')).toBeInTheDocument()
 
-    const updatedSelects = within(dialog).getAllByRole('combobox')
+    const updatedSelects = screen.getAllByRole('combobox')
     fireEvent.change(updatedSelects[3], { target: { value: 'created_at' } })
 
     // JSON keys are discovered on demand via a separate job, not by the fast preview.
-    fireEvent.click(within(dialog).getByRole('button', { name: 'Discover JSON keys' }))
-    fireEvent.click(await within(dialog).findByText('extra.key'))
-    fireEvent.click(within(dialog).getByRole('checkbox', { name: 'event_name' }))
-    fireEvent.change(within(dialog).getByPlaceholderText('Unlimited'), { target: { value: '2' } })
-    fireEvent.click(within(dialog).getByRole('button', { name: 'Add Group Rule' }))
-    fireEvent.change(within(dialog).getByPlaceholderText('button events'), {
+    fireEvent.click(screen.getByRole('button', { name: 'Discover JSON keys' }))
+    fireEvent.click(await screen.findByText('extra.key'))
+    fireEvent.click(screen.getByRole('checkbox', { name: 'event_name' }))
+    fireEvent.change(screen.getByPlaceholderText('Unlimited'), { target: { value: '2' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Add Group Rule' }))
+    fireEvent.change(screen.getByPlaceholderText('button events'), {
       target: { value: 'product pages' },
     })
-    fireEvent.change(within(dialog).getByPlaceholderText('^button:'), {
+    fireEvent.change(screen.getByPlaceholderText('^button:'), {
       target: { value: '^product:' },
     })
-    fireEvent.click(within(dialog).getByRole('button', { name: 'Create' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Create scan' }))
 
     await waitFor(() => {
       expect(postBodies).toContainEqual({
@@ -1093,6 +1124,14 @@ describe('ProjectSettingsPage', () => {
 
     vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
       const url = String(input)
+
+      if (url.includes('/data-sources/') && url.includes('/schema')) {
+        return mockJsonResponse({
+          tables: [
+            { name: 'events', columns: [{ name: 'id', data_type: 'UInt64' }] },
+          ],
+        })
+      }
 
       if (url.endsWith('/api/v1/data-sources')) {
         return mockJsonResponse([
@@ -1198,26 +1237,26 @@ describe('ProjectSettingsPage', () => {
       </QueryClientProvider>,
     )
 
-    const addScanButton = await screen.findByRole('button', { name: /Add Scan Config/i })
+    const addScanButton = await screen.findByRole('button', { name: /New scan/i })
     await waitFor(() => expect(addScanButton).not.toBeDisabled())
     fireEvent.click(addScanButton)
 
-    const dialog = await screen.findByRole('dialog')
-    const textboxes = within(dialog).getAllByRole('textbox')
+    await screen.findByText('New scan config')
+    const textboxes = screen.getAllByRole('textbox')
     fireEvent.change(textboxes[0], { target: { value: 'Versioned scan' } })
     fireEvent.change(textboxes[1], { target: { value: 'SELECT * FROM analytics.events' } })
-    fireEvent.change(within(dialog).getAllByRole('combobox')[0], { target: { value: 'ds-1' } })
+    fireEvent.change(screen.getAllByRole('combobox')[0], { target: { value: 'ds-1' } })
 
-    fireEvent.click(within(dialog).getByRole('button', { name: 'Load Preview' }))
-    await within(dialog).findByText('Column pickers use the sample rows. JSON paths are discovered on demand to keep the preview fast.')
+    fireEvent.click(screen.getByRole('button', { name: 'Load preview' }))
+    await screen.findByText('Column pickers use the sample rows. JSON paths are discovered on demand to keep the preview fast.')
 
-    fireEvent.change(within(dialog).getByLabelText('App Version Column (optional)'), {
+    fireEvent.change(screen.getByLabelText('App Version Column (optional)'), {
       target: { value: 'app_version' },
     })
-    fireEvent.change(within(dialog).getByLabelText('Releases to keep'), {
+    fireEvent.change(screen.getByLabelText('Releases to keep'), {
       target: { value: '5' },
     })
-    fireEvent.click(within(dialog).getByRole('button', { name: 'Create' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Create scan' }))
 
     await waitFor(() => {
       expect(postBodies).toContainEqual(
@@ -1235,6 +1274,14 @@ describe('ProjectSettingsPage', () => {
 
     vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
       const url = String(input)
+
+      if (url.includes('/data-sources/') && url.includes('/schema')) {
+        return mockJsonResponse({
+          tables: [
+            { name: 'events', columns: [{ name: 'id', data_type: 'UInt64' }] },
+          ],
+        })
+      }
 
       if (url.endsWith('/api/v1/data-sources')) {
         return mockJsonResponse([
@@ -1378,30 +1425,30 @@ describe('ProjectSettingsPage', () => {
       </QueryClientProvider>,
     )
 
-    const addScanButton = await screen.findByRole('button', { name: /Add Scan Config/i })
+    const addScanButton = await screen.findByRole('button', { name: /New scan/i })
     await waitFor(() => expect(addScanButton).not.toBeDisabled())
     fireEvent.click(addScanButton)
 
-    const dialog = await screen.findByRole('dialog')
-    const textboxes = within(dialog).getAllByRole('textbox')
+    await screen.findByText('New scan config')
+    const textboxes = screen.getAllByRole('textbox')
     fireEvent.change(textboxes[0], { target: { value: 'Main scan' } })
     fireEvent.change(textboxes[1], { target: { value: 'SELECT * FROM analytics.events' } })
 
-    const selects = within(dialog).getAllByRole('combobox')
+    const selects = screen.getAllByRole('combobox')
     fireEvent.change(selects[0], { target: { value: 'ds-1' } })
-    fireEvent.click(within(dialog).getByRole('button', { name: 'Load Preview' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Load preview' }))
 
     expect(
-      await within(dialog).findByText(
+      await screen.findByText(
         'Column pickers use the sample rows. JSON paths are discovered on demand to keep the preview fast.',
       ),
     ).toBeInTheDocument()
 
-    const updatedSelects = within(dialog).getAllByRole('combobox')
+    const updatedSelects = screen.getAllByRole('combobox')
     fireEvent.change(updatedSelects[1], { target: { value: 'type-1' } })
 
-    expect(await within(dialog).findByText(/2 preview columns have no matching field/)).toBeInTheDocument()
-    fireEvent.click(within(dialog).getByRole('button', { name: 'Create 2 fields' }))
+    expect(await screen.findByText(/2 preview columns have no matching field/)).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Create 2 fields' }))
 
     await waitFor(() => {
       expect(bulkBodies).toContainEqual({
@@ -1426,6 +1473,14 @@ describe('ProjectSettingsPage', () => {
 
     vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
       const url = String(input)
+
+      if (url.includes('/data-sources/') && url.includes('/schema')) {
+        return mockJsonResponse({
+          tables: [
+            { name: 'events', columns: [{ name: 'id', data_type: 'UInt64' }] },
+          ],
+        })
+      }
 
       if (url.endsWith('/api/v1/data-sources')) {
         return mockJsonResponse([
@@ -1545,19 +1600,18 @@ describe('ProjectSettingsPage', () => {
       </QueryClientProvider>,
     )
 
-    // Edit now lives on the scan detail page, not the list row — open it there.
+    // Edit now lives on the scan detail page's Configuration tab (no dialog).
     fireEvent.click(await screen.findByText('Main scan'))
     fireEvent.click(await screen.findByRole('button', { name: 'Edit' }))
 
-    const dialog = await screen.findByRole('dialog')
-    fireEvent.click(within(dialog).getByRole('button', { name: 'Load Preview' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Load preview' }))
 
     // The saved json_value_paths stay visible immediately after the fast
     // preview, before any JSON key discovery runs.
-    expect(await within(dialog).findByText('extra.key')).toBeInTheDocument()
+    expect(await screen.findByText('extra.key')).toBeInTheDocument()
 
     // Discovering JSON keys is a separate job that carries the selected paths.
-    fireEvent.click(within(dialog).getByRole('button', { name: 'Discover JSON keys' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Discover JSON keys' }))
 
     await waitFor(() => {
       expect(previewBodies).toContainEqual({
@@ -1570,7 +1624,7 @@ describe('ProjectSettingsPage', () => {
       })
     })
 
-    expect(await within(dialog).findByText('locale')).toBeInTheDocument()
-    expect(within(dialog).getByText('extra.key')).toBeInTheDocument()
+    expect(await screen.findByText('locale')).toBeInTheDocument()
+    expect(screen.getByText('extra.key')).toBeInTheDocument()
   })
 })

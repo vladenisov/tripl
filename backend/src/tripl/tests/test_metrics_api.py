@@ -1630,3 +1630,164 @@ async def test_breakdown_timeline_returns_per_bucket_counts(client: AsyncClient)
     body = resp.json()
     assert body["breakdown_value"] == "US"
     assert [point["count"] for point in body["data"]] == [40, 50, 60]
+
+
+@pytest.mark.asyncio
+async def test_overview_top_events_ranks_by_volume(client: AsyncClient):
+    ctx = await _setup_metrics_project(client, slug="top-ev")
+
+    async def _make_event(name: str) -> str:
+        resp = await client.post(
+            "/api/v1/projects/top-ev/events",
+            json={
+                "event_type_id": ctx["page_type_id"],
+                "name": name,
+                "field_values": [{"field_definition_id": ctx["page_field_id"], "value": "x"}],
+            },
+        )
+        assert resp.status_code == 201
+        return resp.json()["id"]
+
+    big = await _make_event("Big")
+    small = await _make_event("Small")
+    recent = datetime.now(UTC) - timedelta(hours=1)
+    old = datetime.now(UTC) - timedelta(days=10)
+
+    async with TestSessionLocal() as session:
+        data_source = DataSource(
+            id=uuid.uuid4(),
+            name=f"Top DS {uuid.uuid4().hex[:8]}",
+            db_type="clickhouse",
+            host="localhost",
+            port=8123,
+            database_name="default",
+            username="default",
+            password_encrypted="",
+        )
+        scan_config = ScanConfig(
+            id=uuid.uuid4(),
+            data_source_id=data_source.id,
+            project_id=uuid.UUID(ctx["project_id"]),
+            event_type_id=None,
+            name="Top Config",
+            base_query="SELECT time, event_name FROM events",
+            event_type_column="event_name",
+            time_column="time",
+            cardinality_threshold=100,
+            interval="1h",
+        )
+        session.add_all([data_source, scan_config])
+        session.add_all(
+            [
+                EventMetric(
+                    id=uuid.uuid4(),
+                    scan_config_id=scan_config.id,
+                    event_id=uuid.UUID(big),
+                    event_type_id=None,
+                    bucket=recent,
+                    count=500,
+                ),
+                EventMetric(
+                    id=uuid.uuid4(),
+                    scan_config_id=scan_config.id,
+                    event_id=uuid.UUID(small),
+                    event_type_id=None,
+                    bucket=recent,
+                    count=20,
+                ),
+                # Outside the 48h window — must be excluded from the ranking.
+                EventMetric(
+                    id=uuid.uuid4(),
+                    scan_config_id=scan_config.id,
+                    event_id=uuid.UUID(small),
+                    event_type_id=None,
+                    bucket=old,
+                    count=99999,
+                ),
+            ]
+        )
+        await session.commit()
+
+    resp = await client.get("/api/v1/projects/top-ev/overview/top-events?window_hours=48&limit=6")
+    assert resp.status_code == 200
+    rows = resp.json()
+    assert [r["event_id"] for r in rows] == [big, small]
+    assert rows[0]["total_count"] == 500
+    assert rows[1]["total_count"] == 20
+    assert rows[0]["name"] == "Big"
+
+
+@pytest.mark.asyncio
+async def test_data_source_stats_aggregates_recent_metrics(client: AsyncClient):
+    ctx = await _setup_metrics_project(client, slug="ds-stats")
+    recent = datetime.now(UTC) - timedelta(hours=1)
+    old = datetime.now(UTC) - timedelta(days=10)
+    ds_id = uuid.uuid4()
+    ev1, ev2 = uuid.uuid4(), uuid.uuid4()
+
+    async with TestSessionLocal() as session:
+        data_source = DataSource(
+            id=ds_id,
+            name="DS stats",
+            db_type="clickhouse",
+            host="localhost",
+            port=8123,
+            database_name="default",
+            username="default",
+            password_encrypted="",
+        )
+        scan_config = ScanConfig(
+            id=uuid.uuid4(),
+            data_source_id=ds_id,
+            project_id=uuid.UUID(ctx["project_id"]),
+            event_type_id=None,
+            name="DS Config",
+            base_query="SELECT time, event_name FROM events",
+            event_type_column="event_name",
+            time_column="time",
+            cardinality_threshold=100,
+            interval="1h",
+        )
+        session.add_all([data_source, scan_config])
+        session.add_all(
+            [
+                EventMetric(id=uuid.uuid4(), scan_config_id=scan_config.id, event_id=ev1,
+                            event_type_id=None, bucket=recent, count=100),
+                EventMetric(id=uuid.uuid4(), scan_config_id=scan_config.id, event_id=ev2,
+                            event_type_id=None, bucket=recent, count=50),
+                # Outside the window — excluded.
+                EventMetric(id=uuid.uuid4(), scan_config_id=scan_config.id, event_id=ev1,
+                            event_type_id=None, bucket=old, count=9999),
+            ]
+        )
+        await session.commit()
+
+    resp = await client.get(f"/api/v1/data-sources/{ds_id}/stats?window_hours=48")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["volume_window"] == 150
+    assert body["events_tracked"] == 2
+    assert len(body["throughput"]) == 1
+
+
+@pytest.mark.asyncio
+async def test_overview_kpi_series(client: AsyncClient):
+    ctx = await _setup_metrics_project(client, slug="kpi-series")
+    for name in ("A", "B"):
+        resp = await client.post(
+            "/api/v1/projects/kpi-series/events",
+            json={
+                "event_type_id": ctx["page_type_id"],
+                "name": name,
+                "field_values": [{"field_definition_id": ctx["page_field_id"], "value": "x"}],
+            },
+        )
+        assert resp.status_code == 201
+
+    resp = await client.get("/api/v1/projects/kpi-series/overview/kpi-series?days=14")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["days"] == 14
+    assert len(body["active_events"]) == 14
+    assert sum(body["active_events"]) == 2
+    assert body["active_events"][-1] == 2  # both created today

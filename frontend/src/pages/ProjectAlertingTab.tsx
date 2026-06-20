@@ -9,7 +9,6 @@ import { scansApi } from '@/api/scans'
 import { EmptyState } from '@/components/empty-state'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
-import { Card, CardContent } from '@/components/ui/card'
 import { Checkbox } from '@/components/ui/checkbox'
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible'
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
@@ -22,6 +21,8 @@ import type { AlertDestination, AlertInboxGroup } from '@/types'
 
 import { AlertDeliveryRow } from './alerting/AlertDeliveryRow'
 import { DestinationCard } from './alerting/DestinationCard'
+import { RoutingRulesPanel } from './alerting/RoutingRulesPanel'
+import { PageHead, Panel } from '@/components/settings/kit'
 import {
   defaultDestinationForm,
   type DestinationChannel,
@@ -224,12 +225,13 @@ export default function ProjectAlertingTab({ slug }: { slug: string }) {
   return (
     <div className="space-y-6">
       {dialog}
-      <div>
-        <h2 className="text-lg font-semibold">Alerting</h2>
-        <p className="text-sm text-muted-foreground mt-1">
-          Route active anomaly signals to Slack, Telegram, or a generic webhook. Rules are project-level and apply to every scan in the project.
-        </p>
-      </div>
+      <PageHead
+        eyebrow="Observe"
+        title="Alerting"
+        description="Route active anomaly signals to Slack, Telegram, or a generic webhook. Rules are project-level and apply to every scan in the project."
+      />
+
+      <RoutingRulesPanel slug={slug} />
 
       <div className="grid gap-6">
         <div className="min-w-0 space-y-4">
@@ -311,14 +313,8 @@ export default function ProjectAlertingTab({ slug }: { slug: string }) {
         </div>
 
         <div className="min-w-0 space-y-4">
-          <div className="flex items-center justify-between">
-            <h3 className="text-sm font-semibold">Inbox</h3>
-            <Badge variant="outline" className="text-[10px]">
-              {inbox?.total ?? 0} groups
-            </Badge>
-          </div>
-          <Card className="min-w-0">
-            <CardContent className="space-y-3 p-4">
+          <Panel title="Inbox" subtitle={`${inbox?.total ?? 0} groups`}>
+            <div className="space-y-3 p-4">
               {!inbox || inbox.items.length === 0 ? (
                 <div className="rounded-lg border border-dashed p-4 text-sm text-muted-foreground">
                   No correlated alert groups.
@@ -387,18 +383,11 @@ export default function ProjectAlertingTab({ slug }: { slug: string }) {
               {inboxActionMut.isError && (
                 <p className="text-xs text-destructive">{getErrorMessage(inboxActionMut.error)}</p>
               )}
-            </CardContent>
-          </Card>
+            </div>
+          </Panel>
 
-          <div className="flex items-center justify-between">
-            <h3 className="text-sm font-semibold">Audit</h3>
-            <Badge variant="outline" className="text-[10px]">
-              {deliveries?.total ?? 0} deliveries
-            </Badge>
-          </div>
-
-          <Card className="min-w-0">
-            <CardContent className="min-w-0 space-y-4 p-4">
+          <Panel title="Audit" subtitle={`${deliveries?.total ?? 0} deliveries`}>
+            <div className="min-w-0 space-y-4 p-4">
               <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                 <div className="grid gap-2">
                   <Label>Status</Label>
@@ -501,8 +490,8 @@ export default function ProjectAlertingTab({ slug }: { slug: string }) {
                   </Table>
                 </div>
               )}
-            </CardContent>
-          </Card>
+            </div>
+          </Panel>
         </div>
       </div>
 

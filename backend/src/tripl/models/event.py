@@ -5,7 +5,7 @@ import uuid
 from datetime import datetime
 from typing import TYPE_CHECKING
 
-from sqlalchemy import JSON, DateTime, ForeignKey, Index, Integer, String, Text
+from sqlalchemy import JSON, Boolean, DateTime, ForeignKey, Index, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from tripl.models.base import Base, TimestampMixin, UUIDMixin
@@ -81,6 +81,14 @@ class Event(UUIDMixin, TimestampMixin, Base):
         JSON,
         default=list,
         server_default="[]",
+    )
+    # Per-event ownership (nullable) and review state. Owner is resolved to a
+    # user by the frontend from its own users list; we keep only the id here.
+    owner_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    reviewed: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default="false", nullable=False
     )
 
     event_type: Mapped[EventType] = relationship(lazy="selectin")

@@ -1,7 +1,6 @@
-import { Shield } from 'lucide-react'
 import type { ServiceSettings } from '@/types'
-import { Input } from '@/components/ui/input'
-import { FieldRow, PromptField, SectionCard, SwitchRow } from './ServiceSettingsPrimitives'
+import { Field, SCard, TextArea, TextInput, ToggleRow } from '@/components/settings/kit'
+import { ResetRow, SourceBadge } from './ServiceSettingsPrimitives'
 import type { EditableSettings, SectionKey } from './serviceSettingsHelpers'
 import { sourceFor } from './serviceSettingsHelpers'
 
@@ -19,129 +18,141 @@ export function SecuritySection({
   resetting: boolean
 }) {
   return (
-    <SectionCard
-      title="Security"
-      icon={Shield}
-      onReset={onReset}
-      resetting={resetting}
-    >
-      <FieldRow
-        label="CORS allow origins"
-        source={sourceFor(settings, 'security', 'cors_allow_origins')}
-      >
-        <Input
-          value={form.security.cors_allow_origins}
-          onChange={event => setField('security', 'cors_allow_origins', event.target.value)}
-          placeholder="https://app.example.com,https://admin.example.com"
-        />
-      </FieldRow>
-      <div className="grid gap-4 sm:grid-cols-3">
-        <FieldRow
+    <>
+      <SCard title="Sessions" footer={<ResetRow onReset={onReset} resetting={resetting} />}>
+        <Field
           label="Session cookie"
-          source={sourceFor(settings, 'security', 'session_cookie_name')}
+          labelRight={<SourceBadge source={sourceFor(settings, 'security', 'session_cookie_name')} />}
         >
-          <Input
+          <TextInput
             value={form.security.session_cookie_name}
-            onChange={event =>
-              setField('security', 'session_cookie_name', event.target.value)
-            }
+            onChange={value => setField('security', 'session_cookie_name', value)}
+            mono
           />
-        </FieldRow>
-        <FieldRow
-          label="Session TTL hours"
-          source={sourceFor(settings, 'security', 'session_ttl_hours')}
+        </Field>
+        <Field
+          label="Session TTL"
+          labelRight={<SourceBadge source={sourceFor(settings, 'security', 'session_ttl_hours')} />}
         >
-          <Input
+          <TextInput
             type="number"
-            min={1}
-            value={form.security.session_ttl_hours}
-            onChange={event =>
-              setField('security', 'session_ttl_hours', Number(event.target.value))
-            }
+            value={String(form.security.session_ttl_hours)}
+            onChange={value => setField('security', 'session_ttl_hours', Number(value))}
+            suffix="hours"
+            mono
           />
-        </FieldRow>
-        <SwitchRow
+        </Field>
+        <ToggleRow
           label="Secure cookie"
-          source={sourceFor(settings, 'security', 'session_cookie_secure')}
-          checked={form.security.session_cookie_secure}
+          labelRight={
+            <SourceBadge source={sourceFor(settings, 'security', 'session_cookie_secure')} />
+          }
+          value={form.security.session_cookie_secure}
           onChange={value => setField('security', 'session_cookie_secure', value)}
+          last
         />
-      </div>
-      <div className="grid gap-4 sm:grid-cols-3">
-        <SwitchRow
+      </SCard>
+
+      <SCard title="Network & headers">
+        <Field
+          label="CORS allow origins"
+          labelRight={<SourceBadge source={sourceFor(settings, 'security', 'cors_allow_origins')} />}
+        >
+          <TextInput
+            value={form.security.cors_allow_origins}
+            onChange={value => setField('security', 'cors_allow_origins', value)}
+            placeholder="https://app.example.com,https://admin.example.com"
+            mono
+          />
+        </Field>
+        <ToggleRow
           label="Security headers"
-          source={sourceFor(settings, 'security', 'security_headers_enabled')}
-          checked={form.security.security_headers_enabled}
+          labelRight={
+            <SourceBadge source={sourceFor(settings, 'security', 'security_headers_enabled')} />
+          }
+          value={form.security.security_headers_enabled}
           onChange={value => setField('security', 'security_headers_enabled', value)}
         />
-        <SwitchRow
+        <ToggleRow
           label="HSTS"
-          source={sourceFor(settings, 'security', 'hsts_enabled')}
-          checked={form.security.hsts_enabled}
+          labelRight={<SourceBadge source={sourceFor(settings, 'security', 'hsts_enabled')} />}
+          value={form.security.hsts_enabled}
           onChange={value => setField('security', 'hsts_enabled', value)}
         />
-        <FieldRow
+        <Field
           label="HSTS max age"
-          source={sourceFor(settings, 'security', 'hsts_max_age_seconds')}
+          labelRight={<SourceBadge source={sourceFor(settings, 'security', 'hsts_max_age_seconds')} />}
         >
-          <Input
+          <TextInput
             type="number"
-            min={0}
-            value={form.security.hsts_max_age_seconds}
-            onChange={event =>
-              setField('security', 'hsts_max_age_seconds', Number(event.target.value))
-            }
+            value={String(form.security.hsts_max_age_seconds)}
+            onChange={value => setField('security', 'hsts_max_age_seconds', Number(value))}
+            suffix="seconds"
+            mono
           />
-        </FieldRow>
-      </div>
-      <PromptField
-        label="Content Security Policy"
-        source={sourceFor(settings, 'security', 'content_security_policy')}
-        value={form.security.content_security_policy}
-        onChange={value => setField('security', 'content_security_policy', value)}
-      />
-      <div className="grid gap-4 sm:grid-cols-4">
-        <SwitchRow
+        </Field>
+        <Field
+          label="Content Security Policy"
+          labelRight={
+            <SourceBadge source={sourceFor(settings, 'security', 'content_security_policy')} />
+          }
+          stacked
+          last
+        >
+          <TextArea
+            value={form.security.content_security_policy}
+            onChange={value => setField('security', 'content_security_policy', value)}
+          />
+        </Field>
+      </SCard>
+
+      <SCard title="Rate limiting">
+        <ToggleRow
           label="Rate limiting"
-          source={sourceFor(settings, 'security', 'rate_limit_enabled')}
-          checked={form.security.rate_limit_enabled}
+          labelRight={<SourceBadge source={sourceFor(settings, 'security', 'rate_limit_enabled')} />}
+          value={form.security.rate_limit_enabled}
           onChange={value => setField('security', 'rate_limit_enabled', value)}
         />
-        <FieldRow
-          label="Login/min"
-          source={sourceFor(settings, 'security', 'rate_limit_login_per_minute')}
-        >
-          <Input
-            type="number"
-            min={0}
-            value={form.security.rate_limit_login_per_minute}
-            onChange={event =>
-              setField('security', 'rate_limit_login_per_minute', Number(event.target.value))
-            }
-          />
-        </FieldRow>
-        <FieldRow
-          label="Register/hour"
-          source={sourceFor(settings, 'security', 'rate_limit_register_per_hour')}
-        >
-          <Input
-            type="number"
-            min={0}
-            value={form.security.rate_limit_register_per_hour}
-            onChange={event =>
-              setField('security', 'rate_limit_register_per_hour', Number(event.target.value))
-            }
-          />
-        </FieldRow>
-        <SwitchRow
-          label="Trust XFF"
-          source={sourceFor(settings, 'security', 'rate_limit_trust_forwarded_for')}
-          checked={form.security.rate_limit_trust_forwarded_for}
-          onChange={value =>
-            setField('security', 'rate_limit_trust_forwarded_for', value)
+        <Field
+          label="Login limit"
+          labelRight={
+            <SourceBadge source={sourceFor(settings, 'security', 'rate_limit_login_per_minute')} />
           }
+        >
+          <TextInput
+            type="number"
+            value={String(form.security.rate_limit_login_per_minute)}
+            onChange={value => setField('security', 'rate_limit_login_per_minute', Number(value))}
+            suffix="/min"
+            mono
+          />
+        </Field>
+        <Field
+          label="Register limit"
+          labelRight={
+            <SourceBadge source={sourceFor(settings, 'security', 'rate_limit_register_per_hour')} />
+          }
+        >
+          <TextInput
+            type="number"
+            value={String(form.security.rate_limit_register_per_hour)}
+            onChange={value => setField('security', 'rate_limit_register_per_hour', Number(value))}
+            suffix="/hour"
+            mono
+          />
+        </Field>
+        <ToggleRow
+          label="Trust X-Forwarded-For"
+          labelRight={
+            <SourceBadge
+              source={sourceFor(settings, 'security', 'rate_limit_trust_forwarded_for')}
+            />
+          }
+          value={form.security.rate_limit_trust_forwarded_for}
+          onChange={value => setField('security', 'rate_limit_trust_forwarded_for', value)}
+          last
         />
-      </div>
-    </SectionCard>
+      </SCard>
+    </>
   )
 }

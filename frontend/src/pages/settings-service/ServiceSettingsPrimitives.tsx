@@ -1,20 +1,18 @@
-import { type ComponentType, type ReactNode } from 'react'
 import { CheckCircle2, RotateCcw, XCircle } from 'lucide-react'
 import type { SettingSource } from '@/types'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
-import { Card, CardContent } from '@/components/ui/card'
-import { Label } from '@/components/ui/label'
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from '@/components/ui/select'
-import { Switch } from '@/components/ui/switch'
-import { Textarea } from '@/components/ui/textarea'
 
+/**
+ * Small shared bits for the Instance (service) settings sections. The card
+ * chrome, fields and controls now come from the redesign kit
+ * (`@/components/settings/kit`): each section is composed of titled `SCard`
+ * sub-cards with `Field` / `ToggleRow` / `TextInput` / `Select` / `RadioCards`.
+ * What stays here is the override/env source badge, the AI connection-test
+ * status badge, and the per-section "reset to defaults" footer.
+ */
+
+/** Override vs. environment-default origin of a single setting. */
 export function SourceBadge({ source }: { source: SettingSource }) {
   return (
     <Badge variant={source === 'override' ? 'info' : 'outline'} className="text-[10px]">
@@ -23,6 +21,7 @@ export function SourceBadge({ source }: { source: SettingSource }) {
   )
 }
 
+/** Pass/fail result chip for the "Test AI" connection check. */
 export function StatusBadge({ active, label }: { active: boolean; label: string }) {
   return (
     <span
@@ -38,138 +37,29 @@ export function StatusBadge({ active, label }: { active: boolean; label: string 
   )
 }
 
-export function SectionCard({
-  title,
-  icon: Icon,
-  children,
+/**
+ * Footer content for an `SCard`: resets the whole section's overrides back to
+ * the environment defaults, with an explanatory note. Rendered once per
+ * section (on its first sub-card).
+ */
+export function ResetRow({
   onReset,
   resetting,
+  note = 'Unset fields fall back to environment variables.',
 }: {
-  title: string
-  icon: ComponentType<{ className?: string }>
-  children: ReactNode
-  onReset?: () => void
+  onReset: () => void
   resetting?: boolean
+  note?: string
 }) {
   return (
-    <Card>
-      <CardContent className="p-0">
-        <div
-          className="flex items-center gap-2 border-b px-4 py-3"
-          style={{ borderColor: 'var(--border-subtle)' }}
-        >
-          <Icon className="h-4 w-4 text-muted-foreground" />
-          <h2 className="text-sm font-semibold">{title}</h2>
-          <div className="flex-1" />
-          {onReset && (
-            <Button
-              type="button"
-              variant="outline"
-              size="sm"
-              onClick={onReset}
-              disabled={resetting}
-            >
-              <RotateCcw className="h-3.5 w-3.5" />
-              Reset
-            </Button>
-          )}
-        </div>
-        <div className="grid gap-4 p-4">{children}</div>
-      </CardContent>
-    </Card>
-  )
-}
-
-export function FieldRow({
-  label,
-  source,
-  children,
-}: {
-  label: string
-  source?: SettingSource
-  children: ReactNode
-}) {
-  return (
-    <div className="grid gap-1.5">
-      <div className="flex min-w-0 items-center gap-2">
-        <Label className="text-xs">{label}</Label>
-        {source && <SourceBadge source={source} />}
-      </div>
-      {children}
-    </div>
-  )
-}
-
-export function SwitchRow({
-  label,
-  source,
-  checked,
-  onChange,
-}: {
-  label: string
-  source?: SettingSource
-  checked: boolean
-  onChange: (value: boolean) => void
-}) {
-  return (
-    <FieldRow label={label} source={source}>
-      <div className="flex h-10 items-center">
-        <Switch checked={checked} onCheckedChange={onChange} />
-      </div>
-    </FieldRow>
-  )
-}
-
-export function SelectRow({
-  label,
-  source,
-  value,
-  options,
-  onChange,
-}: {
-  label: string
-  source?: SettingSource
-  value: string
-  options: readonly { value: string; label: string }[]
-  onChange: (value: string) => void
-}) {
-  return (
-    <FieldRow label={label} source={source}>
-      <Select value={value} onValueChange={onChange}>
-        <SelectTrigger>
-          <SelectValue />
-        </SelectTrigger>
-        <SelectContent>
-          {options.map(option => (
-            <SelectItem key={option.value} value={option.value}>
-              {option.label}
-            </SelectItem>
-          ))}
-        </SelectContent>
-      </Select>
-    </FieldRow>
-  )
-}
-
-export function PromptField({
-  label,
-  source,
-  value,
-  onChange,
-}: {
-  label: string
-  source?: SettingSource
-  value: string
-  onChange: (value: string) => void
-}) {
-  return (
-    <FieldRow label={label} source={source}>
-      <Textarea
-        value={value}
-        onChange={event => onChange(event.target.value)}
-        rows={4}
-        className="min-h-24 font-mono text-xs leading-relaxed"
-      />
-    </FieldRow>
+    <>
+      <Button type="button" variant="outline" size="sm" onClick={onReset} disabled={resetting}>
+        <RotateCcw className="h-3.5 w-3.5" />
+        Reset to defaults
+      </Button>
+      <span className="text-[11.5px]" style={{ color: 'var(--fg-subtle)' }}>
+        {note}
+      </span>
+    </>
   )
 }

@@ -5,6 +5,7 @@ import {
   formatRelativeTime,
   mapLatestSignals,
   pickLatestSignal,
+  reorderWithSelection,
 } from './utils'
 
 function metricPoint(
@@ -166,5 +167,41 @@ describe('deriveRowSignalFromMetrics', () => {
     ])
     expect(result?.expected_count).toBe(3)
     expect(result?.z_score).toBe(0)
+  })
+})
+
+describe('reorderWithSelection', () => {
+  const ids = ['a', 'b', 'c', 'd', 'e']
+
+  it('returns null for no-op and unknown drops', () => {
+    expect(reorderWithSelection(ids, new Set(), 'a', 'a')).toBeNull()
+    expect(reorderWithSelection(ids, new Set(), 'a', 'z')).toBeNull()
+    expect(reorderWithSelection(ids, new Set(), 'z', 'b')).toBeNull()
+  })
+
+  it('moves a single row when nothing (or only itself) is selected', () => {
+    expect(reorderWithSelection(ids, new Set(), 'a', 'c')).toEqual(['b', 'c', 'a', 'd', 'e'])
+    expect(reorderWithSelection(ids, new Set(), 'd', 'b')).toEqual(['a', 'd', 'b', 'c', 'e'])
+    // A selection of one still behaves as a single-row move.
+    expect(reorderWithSelection(ids, new Set(['a']), 'a', 'c')).toEqual(['b', 'c', 'a', 'd', 'e'])
+  })
+
+  it('moves the whole selection as a block when dragging downward', () => {
+    // Drag selected {a, c} onto d → block lands after d, preserving a-before-c.
+    expect(reorderWithSelection(ids, new Set(['a', 'c']), 'a', 'd')).toEqual(['b', 'd', 'a', 'c', 'e'])
+  })
+
+  it('moves the whole selection as a block when dragging upward', () => {
+    // Drag selected {c, e} onto b → block lands before b.
+    expect(reorderWithSelection(ids, new Set(['c', 'e']), 'e', 'b')).toEqual(['a', 'c', 'e', 'b', 'd'])
+  })
+
+  it('keeps the selected rows in their original relative order', () => {
+    // Dragging the lower member (e) still preserves c-before-e in the block.
+    expect(reorderWithSelection(ids, new Set(['c', 'e']), 'e', 'a')).toEqual(['c', 'e', 'a', 'b', 'd'])
+  })
+
+  it('returns null when the block is dropped onto one of its own rows', () => {
+    expect(reorderWithSelection(ids, new Set(['a', 'c']), 'a', 'c')).toBeNull()
   })
 })

@@ -2,6 +2,8 @@ import { useCallback, useState } from 'react'
 
 const STORAGE_KEY = 'tripl.eventsHiddenCols'
 const BOOTSTRAP_KEY = 'tripl.eventsHiddenColsBootstrap'
+const REVIEWED_BOOTSTRAP_KEY = 'tripl.eventsHiddenColsBootstrapReviewed'
+const SECONDARY_COLS_BOOTSTRAP_KEY = 'tripl.eventsHiddenColsBootstrapSecondary'
 
 /**
  * Persists which event-table columns the user has hidden via localStorage,
@@ -19,6 +21,21 @@ export function useColumnVisibility() {
       if (localStorage.getItem(BOOTSTRAP_KEY) !== '1') {
         initial.add('last_seen')
         localStorage.setItem(BOOTSTRAP_KEY, '1')
+        localStorage.setItem(STORAGE_KEY, JSON.stringify([...initial]))
+      }
+      // Reviewed is a secondary column — hidden by default (one-time, separate
+      // key so it doesn't re-hide last_seen for users who chose to show it).
+      if (localStorage.getItem(REVIEWED_BOOTSTRAP_KEY) !== '1') {
+        initial.add('reviewed')
+        localStorage.setItem(REVIEWED_BOOTSTRAP_KEY, '1')
+        localStorage.setItem(STORAGE_KEY, JSON.stringify([...initial]))
+      }
+      // Monitor / Owner / Δ are secondary columns — hidden by default (one-time).
+      if (localStorage.getItem(SECONDARY_COLS_BOOTSTRAP_KEY) !== '1') {
+        initial.add('monitor')
+        initial.add('owner')
+        initial.add('delta')
+        localStorage.setItem(SECONDARY_COLS_BOOTSTRAP_KEY, '1')
         localStorage.setItem(STORAGE_KEY, JSON.stringify([...initial]))
       }
       return initial

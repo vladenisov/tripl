@@ -2,9 +2,9 @@ import { describe, expect, it } from 'vitest'
 import { buildNavGroups, resolveNavLocation } from './navigation'
 
 describe('buildNavGroups', () => {
-  it('produces the four job-based groups in order', () => {
+  it('produces the three job-based groups in order', () => {
     const groups = buildNavGroups('demo', undefined)
-    expect(groups.map((g) => g.label)).toEqual(['Plan', 'Observe', 'Govern', 'Connect'])
+    expect(groups.map((g) => g.label)).toEqual(['Plan', 'Observe', 'Govern'])
   })
 
   it('maps each item to its first-class route for the active slug', () => {
@@ -20,8 +20,8 @@ describe('buildNavGroups', () => {
       monitoring: '/p/demo/monitors',
       alerting: '/p/demo/settings/alerting',
       reconciliation: '/p/demo/reconciliation',
+      scans: '/p/demo/settings/scans',
       audit: '/p/demo/settings/audit',
-      'data-sources': '/settings/data-sources',
     })
   })
 
@@ -60,7 +60,7 @@ describe('resolveNavLocation', () => {
     ['/p/demo/events', 'Plan', 'Events'],
     ['/p/demo', 'Plan', 'Events'],
     ['/p/demo/events/checkout', 'Plan', 'Events'],
-    ['/p/demo/overview', 'Observe', 'Overview'],
+    ['/p/demo/overview', 'Observe', 'Live activity'],
     ['/p/demo/settings/event-types', 'Plan', 'Event types'],
     ['/p/demo/settings/meta-fields', 'Plan', 'Schema & fields'],
     ['/p/demo/settings/branches', 'Plan', 'Plan branches'],
@@ -68,6 +68,7 @@ describe('resolveNavLocation', () => {
     ['/p/demo/settings/monitoring', 'Observe', 'Monitors'],
     ['/p/demo/settings/alerting', 'Observe', 'Alerting'],
     ['/p/demo/reconciliation', 'Govern', 'Reconciliation'],
+    ['/p/demo/settings/scans', 'Govern', 'Scans'],
     ['/p/demo/settings/audit', 'Govern', 'Audit log'],
   ])('maps %s to %s › %s', (path, area, label) => {
     expect(resolveNavLocation('demo', path)).toEqual({ area, label })

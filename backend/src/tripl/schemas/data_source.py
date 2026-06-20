@@ -55,3 +55,17 @@ class DataSourceTestResponse(BaseModel):
     message: str
     tested_at: datetime
     data_source: DataSourceResponse
+
+
+class DataSourceThroughputPoint(BaseModel):
+    bucket: datetime
+    count: int
+
+
+class DataSourceStatsResponse(BaseModel):
+    """Runtime activity for a data source, aggregated from EventMetric rollups."""
+
+    events_tracked: int
+    volume_window: int
+    window_hours: int
+    throughput: list[DataSourceThroughputPoint]

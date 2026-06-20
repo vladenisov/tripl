@@ -208,3 +208,131 @@ describe('MonitoringDetailPage app-version view', () => {
     expect(calls.some(url => url.includes('/version-adoption'))).toBe(false)
   })
 })
+
+function eventTypeFixture() {
+  return {
+    id: 'type-1',
+    project_id: 'project-1',
+    name: 'page',
+    display_name: 'Page',
+    description: '',
+    color: '#0ea5e9',
+    order: 0,
+    created_at: '2026-01-01T00:00:00Z',
+    updated_at: '2026-01-01T00:00:00Z',
+    field_definitions: [
+      {
+        id: 'field-country',
+        event_type_id: 'type-1',
+        name: 'country',
+        display_name: 'Country',
+        field_type: 'string',
+        is_required: true,
+        enum_options: null,
+        description: '',
+        order: 0,
+        sensitivity: 'pii',
+      },
+    ],
+  }
+}
+
+function eventFixture() {
+  return {
+    id: 'event-1',
+    project_id: 'project-1',
+    event_type_id: 'type-1',
+    event_type: { id: 'type-1', name: 'page', display_name: 'Page', color: '#0ea5e9' },
+    name: 'checkout_completed',
+    description: 'Fired on checkout.',
+    order: 0,
+    status: 'live',
+    sunset_at: null,
+    last_seen_at: '2026-01-02T00:00:00Z',
+    metric_breakdown_columns: ['platform'],
+    drift_count: 2,
+    tags: [{ id: 'tag-1', name: 'revenue' }],
+    field_values: [
+      { id: 'fv-1', field_definition_id: 'field-country', value: 'US', variable_values: [] },
+    ],
+    meta_values: [],
+    created_at: '2026-01-01T00:00:00Z',
+    updated_at: '2026-01-02T00:00:00Z',
+  }
+}
+
+function renderEventDetail() {
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+  return render(
+    <QueryClientProvider client={queryClient}>
+      <MemoryRouter initialEntries={['/p/demo/monitoring/event/event-1']}>
+        <Routes>
+          <Route path="/p/:slug/monitoring/:scope/:id" element={<MonitoringDetailPage />} />
+          <Route path="/p/:slug/events/:tab/:eventId/edit" element={<div>edit-page</div>} />
+        </Routes>
+      </MemoryRouter>
+    </QueryClientProvider>,
+  )
+}
+
+describe('MonitoringDetailPage event detail', () => {
+  it('renders the event-aware detail with signal banner and routes Edit to the edit page', async () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async input => {
+      const url = String(input)
+
+      if (url.endsWith('/api/v1/projects/demo/event-types')) {
+        return mockJsonResponse([eventTypeFixture()])
+      }
+      if (url.endsWith('/api/v1/projects/demo/meta-fields')) return mockJsonResponse([])
+      if (url.endsWith('/api/v1/projects/demo/variables')) return mockJsonResponse([])
+      if (url.includes('/api/v1/projects/demo/events/event-1/history')) return mockJsonResponse([])
+      if (url.includes('/api/v1/projects/demo/events/event-1/metrics')) {
+        return mockJsonResponse({
+          scope: 'event',
+          scan_config_id: 'scan-1',
+          event_id: 'event-1',
+          event_type_id: 'type-1',
+          interval: '1h',
+          latest_signal: {
+            scan_config_id: 'scan-1',
+            scope_type: 'event',
+            scope_ref: 'event-1',
+            state: 'recent',
+            event_id: 'event-1',
+            event_type_id: null,
+            bucket: '2026-01-02T00:00:00Z',
+            actual_count: 200,
+            expected_count: 100,
+            stddev: 10,
+            z_score: 4.2,
+            direction: 'spike',
+          },
+          data: [metricPoint('2026-01-02T00:00:00Z', 200)],
+          forecast: [],
+        })
+      }
+      if (url.includes('/api/v1/projects/demo/events/event-1/photos')) return mockJsonResponse([])
+      if (url.endsWith('/api/v1/projects/demo/events/event-1')) return mockJsonResponse(eventFixture())
+      if (url.endsWith('/api/v1/projects/demo/scans/scan-1')) {
+        return mockJsonResponse({ id: 'scan-1', app_version_column: null })
+      }
+      if (url.includes('/api/v1/projects/demo/annotations')) return mockJsonResponse([])
+
+      throw new Error(`Unhandled fetch: ${url}`)
+    })
+
+    renderEventDetail()
+
+    expect(await screen.findByRole('heading', { name: 'checkout_completed' })).toBeInTheDocument()
+    // Signal banner derived from latest_signal (spike, +100% vs baseline).
+    expect(screen.getByText(/Volume spike detected/)).toBeInTheDocument()
+    // Fields table shows the schema field with its sensitivity chip.
+    expect(screen.getByText('country')).toBeInTheDocument()
+    expect(screen.getByText('PII')).toBeInTheDocument()
+    // Real breakdown column from the event surfaces in the side column.
+    expect(screen.getByText('platform')).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: /Edit/ }))
+    expect(await screen.findByText('edit-page')).toBeInTheDocument()
+  })
+})

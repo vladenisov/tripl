@@ -1,9 +1,10 @@
 import type { ReactNode } from 'react'
-import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import EventsPage from './EventsPage'
+import EventEditPage from './events/EventForm'
 
 vi.mock('recharts', async () => {
   const actual = await vi.importActual<typeof import('recharts')>('recharts')
@@ -49,6 +50,8 @@ function renderEventsPage(initialEntries: string[] = ['/p/demo/events']) {
       <MemoryRouter initialEntries={initialEntries}>
         <Routes>
           <Route path="/p/:slug/events" element={<EventsPage />} />
+          <Route path="/p/:slug/events/:tab/new" element={<EventEditPage />} />
+          <Route path="/p/:slug/events/:tab/:eventId/edit" element={<EventEditPage />} />
           <Route path="/p/:slug/events/:tab" element={<EventsPage />} />
           <Route path="/p/:slug/events/:tab/:eventId" element={<EventsPage />} />
         </Routes>
@@ -190,17 +193,20 @@ describe('EventsPage', () => {
     const eventHeader = screen.getByRole('columnheader', { name: 'Event' })
     const typeHeader = screen.getByRole('columnheader', { name: 'Type' })
     const metricsHeader = screen.getByRole('columnheader', { name: '48h' })
-    const actionsHeader = screen.getByRole('columnheader', { name: 'Actions' })
     expect(typeHeader.compareDocumentPosition(metricsHeader) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
     expect(eventHeader).toBeInTheDocument()
-    expect(actionsHeader.className).toContain('sticky')
+    // The trailing sticky "Actions" column and its hover cluster were removed;
+    // reordering is now drag-handle only.
+    expect(screen.queryByRole('columnheader', { name: 'Actions' })).not.toBeInTheDocument()
     expect(screen.getByText('48h')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: '7d' })).toBeInTheDocument()
     expect(screen.getByText('Hours')).toBeInTheDocument()
     const metricsButton = await screen.findByRole('button', { name: '1k' })
     expect(metricsButton).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'Edit event' })).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'More actions' })).toBeInTheDocument()
+    // The row exposes no inline action buttons — Edit/Metrics/Archive/Delete and
+    // move/status now live on the event detail page, not on the row.
+    expect(screen.queryByRole('button', { name: 'Edit event' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'More actions' })).not.toBeInTheDocument()
     expect(container.querySelector('a[href="/p/demo/monitoring/project-total/scan-1"]')).toBeInTheDocument()
     expect(container.querySelector('a[href="/p/demo/monitoring/event-type/type-1"]')).not.toBeInTheDocument()
     expect(container.querySelector('a[href="/p/demo/monitoring/event/event-1"]')).toBeInTheDocument()
@@ -211,14 +217,14 @@ describe('EventsPage', () => {
     expect((await screen.findAllByText('Last 48 hours')).length).toBeGreaterThan(0)
     expect(screen.getAllByText('1k events').length).toBeGreaterThan(0)
 
-    fireEvent.mouseEnter(screen.getByRole('button', { name: 'More actions' }))
-    const expandedPanel = await screen.findByRole('button', { name: 'Move event up' })
-    expect(expandedPanel.parentElement).toHaveClass('opacity-100')
-    expect(screen.getByRole('button', { name: 'Move event up' })).toBeDisabled()
-    expect(screen.getByRole('button', { name: 'Move event down' })).toBeDisabled()
-    expect(screen.getByRole('link', { name: 'View metrics' })).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'Archive event' })).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'Delete event' })).toBeInTheDocument()
+    // The hover action cluster was removed entirely — no move up/down buttons
+    // and no per-row status select.
+    expect(screen.queryByRole('button', { name: 'Move event up' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Move event down' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('combobox', { name: 'Set event status' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('link', { name: 'View metrics' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Archive event' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Delete event' })).not.toBeInTheDocument()
 
     fireEvent.click(screen.getByText('Show chart'))
     expect(await screen.findByText('View signal')).toBeInTheDocument()
@@ -384,7 +390,9 @@ describe('EventsPage', () => {
     fireEvent.click(screen.getByLabelText('Select Homepage View'))
     fireEvent.click(screen.getByLabelText('Select Settings View'))
 
-    expect(screen.getByText('2 selected')).toBeInTheDocument()
+    expect(
+      screen.getByText((_, node) => node?.textContent === '2 selected' && node.tagName === 'SPAN'),
+    ).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: 'Delete selected' }))
     fireEvent.click(await screen.findByRole('button', { name: 'Delete' }))
 
@@ -544,19 +552,18 @@ describe('EventsPage', () => {
 
     renderEventsPage()
 
+    // "New event" navigates to the page-based editor (no Sheet/dialog).
     fireEvent.click(await screen.findByRole('button', { name: 'New Event' }))
-    const dialog = await screen.findByRole('dialog')
+    expect(await screen.findByRole('heading', { name: 'New event' })).toBeInTheDocument()
 
-    fireEvent.change(within(dialog).getAllByRole('combobox')[0], { target: { value: 'type-1' } })
-    fireEvent.change(within(dialog).getByPlaceholderText('e.g. Home Page View'), {
+    fireEvent.change(screen.getAllByRole('combobox')[0], { target: { value: 'type-1' } })
+    fireEvent.change(screen.getByPlaceholderText('e.g. checkout_completed'), {
       target: { value: 'Homepage View' },
     })
-    fireEvent.click(within(dialog).getAllByRole('checkbox')[0])
-    fireEvent.change(within(dialog).getByLabelText('Metric breakdown column name'), {
-      target: { value: 'platform' },
-    })
-    fireEvent.click(within(dialog).getByRole('button', { name: 'Add metric breakdown column' }))
-    fireEvent.click(within(dialog).getByRole('button', { name: 'Create' }))
+    // Metric breakdowns are fixed toggle chips; click country then platform.
+    fireEvent.click(screen.getByRole('button', { name: 'country' }))
+    fireEvent.click(screen.getByRole('button', { name: 'platform' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Create event' }))
 
     await waitFor(() => {
       expect(eventCreateBodies).toContainEqual(

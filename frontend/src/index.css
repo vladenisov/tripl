@@ -149,8 +149,6 @@
   position: relative;
   width: 100%;
   overflow-x: auto;
-  border-top: 1px solid var(--border);
-  border-bottom: 1px solid var(--border);
   background: var(--bg);
 }
 
@@ -158,7 +156,11 @@
   border-collapse: separate;
   border-spacing: 0;
   font-size: 12.5px;
-  width: 100%;
+  /* min-width (not width) so the table sizes to its content and only scrolls
+     horizontally when the columns genuinely overflow. Forcing width:100% with
+     table-layout:auto + nowrap cells produces a phantom horizontal scrollbar
+     even when the content fits. Mirrors the mockup's `minWidth: '100%'`. */
+  min-width: 100%;
 }
 
 .tripl-table thead tr {
@@ -403,4 +405,58 @@
   ::view-transition-new(root) {
     animation: none;
   }
+}
+
+/* ── CodeMirror SQL editor ─────────────────────────────────────────────── */
+
+/* Token-driven theme so the editor follows :root light mode and every accent
+   variant defined above. Mirrors the Textarea frame: rounded-md, 1px subtle
+   border, sunken background, teal focus ring. */
+.cm-editor {
+  background: var(--bg-sunken);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  font-family: var(--font-mono);
+  font-size: 13px;
+  color: var(--fg);
+}
+
+/* Clip the scrolled content — not .cm-editor — to the rounded frame. The
+   autocomplete tooltip is a child of .cm-editor (sibling of .cm-scroller), so
+   keeping overflow off .cm-editor lets suggestions overflow the editor box
+   instead of being clipped. */
+.cm-editor .cm-scroller {
+  border-radius: inherit;
+}
+
+.cm-editor.cm-focused {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+
+.cm-editor .cm-content {
+  color: var(--fg);
+  caret-color: var(--accent);
+}
+
+.cm-editor .cm-gutters {
+  background: var(--bg-sunken);
+  border-right: 1px solid var(--border-subtle);
+  color: var(--fg-faint);
+}
+
+.cm-editor .cm-cursor,
+.cm-editor .cm-dropCursor {
+  border-left-color: var(--accent);
+}
+
+.cm-editor .cm-selectionBackground,
+.cm-editor.cm-focused .cm-selectionBackground,
+.cm-editor ::selection {
+  background: var(--accent-soft);
+}
+
+.cm-editor .cm-activeLineGutter {
+  background: transparent;
 }

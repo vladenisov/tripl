@@ -59,3 +59,19 @@ pgdata/
 *.db
 .beads-credential-key
 .omc/
+
+graphify-out
+
+# Design handoff bundle from Claude Design (claude.ai/design).
+# Source-of-truth mockups for the data-first redesign. Kept locally, not committed.
+# Component map for agents: design/tripl/AGENTS.md
+design/
+# design-sync (claude.ai/design import) — generated/staged artifacts.
+# Durable inputs that ARE committed: .design-sync/config.json, NOTES.md,
+# conventions.md, previews/, overrides/, and frontend/.ds-entry.tsx (barrel).
+.ds-sync/
+ds-bundle/
+.design-sync/.cache/
+.design-sync/learnings/
+.design-sync/node_modules
+frontend/.ds-styles.css

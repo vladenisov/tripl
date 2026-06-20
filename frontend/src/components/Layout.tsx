@@ -5,7 +5,6 @@ import { projectsApi } from '@/api/projects'
 import { ActivityPanel } from '@/components/activity-panel'
 import { AppSidebar } from '@/components/app-sidebar'
 import { BranchProvider } from '@/components/branch-context'
-import { BranchSwitcher } from '@/components/branch-switcher'
 import { CommandPaletteProvider } from '@/components/command-palette'
 import { ErrorState } from '@/components/error-state'
 import { TopBar } from '@/components/top-bar'
@@ -140,7 +139,6 @@ export default function Layout() {
               activityOpen={activityOpen}
               onToggleActivity={() => setActivityOpen((o) => !o)}
               onOpenMobileNav={() => setMobileNavOpen(true)}
-              right={slug ? <BranchSwitcher slug={slug} /> : undefined}
             />
 
             <div className="flex flex-1 overflow-hidden">

@@ -1,7 +1,18 @@
-import { useState } from 'react'
+import { useState, type CSSProperties, type ReactNode } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { ArrowDown, ArrowUp, ChevronRight, Layers, Pencil, Plus, Trash2 } from 'lucide-react'
+import { useMutation, useQueries, useQuery, useQueryClient } from '@tanstack/react-query'
+import {
+  ArrowLeft,
+  ChevronDown,
+  ChevronRight,
+  ChevronUp,
+  Check,
+  Pencil,
+  Plus,
+  Save,
+  Trash2,
+  X,
+} from 'lucide-react'
 import { eventTypeOwnersApi } from '@/api/eventTypeOwners'
 import { eventTypesApi } from '@/api/eventTypes'
 import { fieldsApi } from '@/api/fields'
@@ -10,19 +21,27 @@ import { useActiveBranchId } from '@/hooks/useBranch'
 import type { EventType, EventTypeOwner, FieldDefinition, Sensitivity, UserListItem } from '@/types'
 import { SENSITIVITY_OPTIONS } from '@/types'
 import { useConfirm } from '@/hooks/useConfirm'
-import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
-import { Card, CardContent } from '@/components/ui/card'
-import { Checkbox } from '@/components/ui/checkbox'
-import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
-import { Label } from '@/components/ui/label'
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
-import { EmptyState } from '@/components/empty-state'
+import { Textarea } from '@/components/ui/textarea'
+import { Switch } from '@/components/ui/switch'
+import { Chip } from '@/components/primitives/chip'
 import { SensitivityChip } from '@/components/primitives/sensitivity-chip'
 import { getErrorMessage } from '@/lib/utils'
 
 const FIELD_TYPES = ['string', 'number', 'boolean', 'json', 'enum', 'url']
+const DEFAULT_COLOR = '#6366f1'
+
+const TH_STYLE: CSSProperties = {
+  textAlign: 'left',
+  padding: '8px 14px',
+  fontSize: 10.5,
+  fontWeight: 600,
+  color: 'var(--fg-subtle)',
+  textTransform: 'uppercase',
+  letterSpacing: '0.04em',
+}
+const TD_STYLE: CSSProperties = { padding: '10px 14px', fontSize: 12.5, verticalAlign: 'middle' }
 
 function parseOptionalNumberInput(value: string): number | null {
   const trimmed = value.trim()
@@ -31,7 +50,7 @@ function parseOptionalNumberInput(value: string): number | null {
   return Number.isFinite(parsed) ? parsed : null
 }
 
-function fieldContractRuleCount(field: FieldDefinition) {
+function fieldContractRuleCount(field: FieldDefinition): number {
   return [
     field.is_required,
     field.field_type === 'enum' && (field.enum_options?.length ?? 0) > 0,
@@ -40,309 +59,374 @@ function fieldContractRuleCount(field: FieldDefinition) {
   ].filter(Boolean).length
 }
 
-interface DraftField {
-  name: string
-  display_name: string
-  field_type: string
-  is_required: boolean
+function sensitiveFieldCount(eventType: EventType): number {
+  return eventType.field_definitions.filter((f) => f.sensitivity !== 'none').length
 }
 
+function requiredFieldCount(eventType: EventType): number {
+  return eventType.field_definitions.filter((f) => f.is_required).length
+}
+
+// ─────────────────────────── Event types list ───────────────────────────
+
 export function EventTypesTab({ slug }: { slug: string }) {
-  const qc = useQueryClient()
   const navigate = useNavigate()
   const branchId = useActiveBranchId()
-  const [showForm, setShowForm] = useState(false)
-  const [name, setName] = useState('')
-  const [displayName, setDisplayName] = useState('')
-  const [color, setColor] = useState('#6366f1')
-  const [draftFields, setDraftFields] = useState<DraftField[]>([])
-  const [editingEt, setEditingEt] = useState<EventType | null>(null)
-  const [editDisplayName, setEditDisplayName] = useState('')
-  const [editColor, setEditColor] = useState('')
-  const [editDescription, setEditDescription] = useState('')
-  const { confirm, dialog } = useConfirm()
+  const [creating, setCreating] = useState(false)
 
   const { data: eventTypes = [] } = useQuery({
     queryKey: ['eventTypes', slug, branchId],
     queryFn: () => eventTypesApi.list(slug, branchId),
   })
 
-  const createMut = useMutation({
-    mutationFn: () => {
-      const fields = draftFields
-        .map(f => ({ ...f, name: f.name.trim(), display_name: f.display_name.trim() || f.name.trim() }))
-        .filter(f => f.name)
-      return eventTypesApi.create(
-        slug,
-        { name, display_name: displayName, color, ...(fields.length > 0 ? { field_definitions: fields } : {}) },
-        branchId,
-      )
-    },
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ['eventTypes', slug, branchId] })
-      setShowForm(false); setName(''); setDisplayName(''); setColor('#6366f1'); setDraftFields([])
-    },
+  // Per-type owners drive the list's Owner column and the derived merge Status
+  // (no owners ⇒ anyone can merge ⇒ "open merge"; owners present ⇒ "gated").
+  const ownerQueries = useQueries({
+    queries: eventTypes.map((et) => ({
+      queryKey: ['eventTypeOwners', slug, et.id],
+      queryFn: () => eventTypeOwnersApi.list(slug, et.id),
+    })),
+  })
+  const ownersByType = new Map<string, EventTypeOwner[]>()
+  eventTypes.forEach((et, i) => {
+    ownersByType.set(et.id, ownerQueries[i]?.data ?? [])
   })
 
-  const updateMut = useMutation({
-    mutationFn: (id: string) => eventTypesApi.update(slug, id, { display_name: editDisplayName, color: editColor, description: editDescription }, branchId),
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ['eventTypes', slug, branchId] })
-      setEditingEt(null)
-    },
-  })
-
-  const deleteMut = useMutation({
-    mutationFn: (id: string) => eventTypesApi.del(slug, id, branchId),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['eventTypes', slug, branchId] }),
-  })
-
-  const handleDelete = async (et: EventType) => {
-    const ok = await confirm({
-      title: 'Delete event type',
-      message: `Delete "${et.display_name}"? All associated field definitions and events of this type will be removed.`,
-      confirmLabel: 'Delete',
-      variant: 'danger',
-    })
-    if (ok) deleteMut.mutate(et.id)
+  if (creating) {
+    return <CreateEventTypeView slug={slug} branchId={branchId} onDone={() => setCreating(false)} />
   }
 
-  const startEdit = (et: EventType) => {
-    setEditingEt(et)
-    setEditDisplayName(et.display_name)
-    setEditColor(et.color)
-    setEditDescription(et.description)
-  }
+  const sorted = [...eventTypes].sort((a, b) => a.order - b.order)
 
   return (
-    <div className="space-y-4">
-      {dialog}
-      <div className="flex justify-between items-center">
-        <h2 className="text-lg font-semibold">Event Types</h2>
-        <Button onClick={() => setShowForm(true)} size="sm">
-          <Plus className="mr-2 h-4 w-4" />
-          Add Event Type
+    <div className="flex flex-col gap-[18px]">
+      <div className="flex items-start justify-between gap-4">
+        <div>
+          <h2 className="text-lg font-semibold">Event types</h2>
+          <p className="mt-1 max-w-[560px] text-sm text-muted-foreground">
+            Categories that group your events and define their shared schema, ownership and
+            naming. Settings here apply to every event of that type.
+          </p>
+        </div>
+        <Button size="sm" onClick={() => setCreating(true)}>
+          <Plus className="size-3.5" />
+          New type
         </Button>
       </div>
 
-      {/* Create dialog */}
-      <Dialog open={showForm} onOpenChange={v => { setShowForm(v); if (!v) setDraftFields([]) }}>
-        <DialogContent>
-          <form onSubmit={e => { e.preventDefault(); createMut.mutate() }}>
-            <DialogHeader><DialogTitle>New Event Type</DialogTitle></DialogHeader>
-            <div className="grid gap-4 py-4">
-              <div className="grid grid-cols-5 gap-3">
-                <div className="col-span-2 grid gap-2">
-                  <Label>Name (e.g. pv)</Label>
-                  <Input value={name} onChange={e => setName(e.target.value)} required />
-                </div>
-                <div className="col-span-2 grid gap-2">
-                  <Label>Display Name</Label>
-                  <Input value={displayName} onChange={e => setDisplayName(e.target.value)} required />
-                </div>
-                <div className="grid gap-2">
-                  <Label>Color</Label>
-                  <input type="color" value={color} onChange={e => setColor(e.target.value)} className="h-9 w-full cursor-pointer rounded-md border border-input" />
-                </div>
-              </div>
-
-              <div className="space-y-2">
-                <div className="flex items-center justify-between">
-                  <Label className="text-xs uppercase tracking-wide text-muted-foreground">Fields</Label>
-                  <Button
-                    type="button" variant="ghost" size="sm" className="h-7 text-xs"
-                    onClick={() => setDraftFields(fs => [...fs, { name: '', display_name: '', field_type: 'string', is_required: false }])}
-                  >
-                    <Plus className="mr-1 h-3 w-3" />Add Field
-                  </Button>
-                </div>
-                {draftFields.length === 0 ? (
-                  <p className="text-xs text-muted-foreground">
-                    Add the fields the scan should populate. Field names must match the query columns
-                    (e.g. <span className="font-mono">event_name</span>), or the scan finds nothing.
-                  </p>
-                ) : (
-                  <div className="space-y-1.5">
-                    {draftFields.map((f, idx) => (
-                      <div key={idx} className="flex items-center gap-2">
-                        <Input
-                          value={f.name} placeholder="name (matches column)"
-                          className="h-8 flex-1 font-mono text-xs"
-                          onChange={e => setDraftFields(fs => fs.map((x, i) => i === idx ? { ...x, name: e.target.value } : x))}
-                        />
-                        <Input
-                          value={f.display_name} placeholder="display (optional)"
-                          className="h-8 flex-1 text-xs"
-                          onChange={e => setDraftFields(fs => fs.map((x, i) => i === idx ? { ...x, display_name: e.target.value } : x))}
-                        />
-                        <select
-                          value={f.field_type}
-                          className="h-8 w-24 rounded-md border border-input bg-transparent px-2 text-xs"
-                          onChange={e => setDraftFields(fs => fs.map((x, i) => i === idx ? { ...x, field_type: e.target.value } : x))}
-                        >
-                          {FIELD_TYPES.map(t => <option key={t}>{t}</option>)}
-                        </select>
-                        <div className="flex items-center gap-1" title="Required">
-                          <Checkbox
-                            checked={f.is_required}
-                            onCheckedChange={c => setDraftFields(fs => fs.map((x, i) => i === idx ? { ...x, is_required: !!c } : x))}
-                          />
-                          <span className="text-[10px] text-muted-foreground">Req</span>
+      <SurfPanel title="All types" subtitle={`${sorted.length} types`}>
+        {sorted.length === 0 ? (
+          <p className="px-4 py-7 text-center text-[12.5px]" style={{ color: 'var(--fg-subtle)' }}>
+            No event types yet. Create one to categorize your events.
+          </p>
+        ) : (
+          <table className="w-full border-collapse">
+            <thead>
+              <tr style={{ background: 'var(--bg-sunken)' }}>
+                <Th>Type</Th>
+                <Th>Fields</Th>
+                <Th align="right">Required</Th>
+                <Th>Sensitive</Th>
+                <Th>Owner</Th>
+                <Th>Status</Th>
+                <Th style={{ width: 40 }} />
+              </tr>
+            </thead>
+            <tbody>
+              {sorted.map((et) => (
+                <ListRow
+                  key={et.id}
+                  onClick={() => navigate(`/p/${slug}/settings/event-types/${et.id}`)}
+                >
+                  <Td>
+                    <div className="flex items-center gap-2.5">
+                      <span
+                        className="size-[9px] shrink-0 rounded-[3px]"
+                        style={{ background: et.color || DEFAULT_COLOR }}
+                      />
+                      <div className="min-w-0">
+                        <div className="text-[13px] font-semibold">{et.display_name}</div>
+                        <div className="mono text-[11px]" style={{ color: 'var(--fg-subtle)' }}>
+                          {et.name}_*
                         </div>
-                        <Button
-                          type="button" variant="ghost" size="icon" className="h-7 w-7 text-muted-foreground hover:text-destructive"
-                          onClick={() => setDraftFields(fs => fs.filter((_, i) => i !== idx))}
-                        >
-                          <Trash2 className="h-3.5 w-3.5" />
-                        </Button>
                       </div>
-                    ))}
-                  </div>
-                )}
-              </div>
-              {createMut.isError && <p className="text-sm text-destructive">{getErrorMessage(createMut.error)}</p>}
-            </div>
-            <DialogFooter>
-              <Button type="button" variant="outline" onClick={() => { setShowForm(false); setDraftFields([]) }}>Cancel</Button>
-              <Button type="submit" disabled={createMut.isPending}>Create</Button>
-            </DialogFooter>
-          </form>
-        </DialogContent>
-      </Dialog>
-
-      {/* Edit dialog */}
-      <Dialog open={!!editingEt} onOpenChange={v => { if (!v) setEditingEt(null) }}>
-        <DialogContent>
-          <form onSubmit={e => { e.preventDefault(); if (editingEt) updateMut.mutate(editingEt.id) }}>
-            <DialogHeader><DialogTitle>Edit Event Type</DialogTitle></DialogHeader>
-            <div className="grid gap-4 py-4">
-              <div className="grid grid-cols-5 gap-3">
-                <div className="col-span-2 grid gap-2">
-                  <Label>Display Name</Label>
-                  <Input value={editDisplayName} onChange={e => setEditDisplayName(e.target.value)} />
-                </div>
-                <div className="col-span-2 grid gap-2">
-                  <Label>Description</Label>
-                  <Input value={editDescription} onChange={e => setEditDescription(e.target.value)} />
-                </div>
-                <div className="grid gap-2">
-                  <Label>Color</Label>
-                  <input type="color" value={editColor} onChange={e => setEditColor(e.target.value)} className="h-9 w-full cursor-pointer rounded-md border border-input" />
-                </div>
-              </div>
-              {updateMut.isError && <p className="text-sm text-destructive">{getErrorMessage(updateMut.error)}</p>}
-            </div>
-            <DialogFooter>
-              <Button type="button" variant="outline" onClick={() => setEditingEt(null)}>Cancel</Button>
-              <Button type="submit" disabled={updateMut.isPending}>Save</Button>
-            </DialogFooter>
-          </form>
-        </DialogContent>
-      </Dialog>
-
-      {eventTypes.length === 0 && (
-        <EmptyState icon={Layers} title="No event types" description="Create event types to categorize your events." />
-      )}
-
-      {eventTypes.map((et: EventType) => (
-        <Card key={et.id}>
-          <CardContent
-            className="flex items-center justify-between p-4 cursor-pointer hover:bg-muted/50 transition-colors"
-            onClick={() => navigate(`/p/${slug}/settings/event-types/${et.id}`)}
-          >
-            <div className="flex items-center gap-3">
-              <span className="h-3.5 w-3.5 rounded-full shrink-0" style={{ backgroundColor: et.color }} />
-              <span className="font-mono text-sm font-semibold">{et.name}</span>
-              <span className="text-muted-foreground text-sm">{et.display_name}</span>
-              <Badge variant="secondary" className="text-[10px]">{et.field_definitions.length} fields</Badge>
-            </div>
-            <div className="flex items-center gap-2">
-              <Button variant="ghost" size="icon" className="h-7 w-7" onClick={e => { e.stopPropagation(); startEdit(et) }}>
-                <Pencil className="h-3.5 w-3.5" />
-              </Button>
-              <Button variant="ghost" size="icon" className="h-7 w-7 text-muted-foreground hover:text-destructive" onClick={e => { e.stopPropagation(); handleDelete(et) }}>
-                <Trash2 className="h-3.5 w-3.5" />
-              </Button>
-              <ChevronRight className="h-4 w-4 text-muted-foreground" />
-            </div>
-          </CardContent>
-        </Card>
-      ))}
+                    </div>
+                  </Td>
+                  <Td>
+                    <span className="mono tnum">{et.field_definitions.length}</span>
+                  </Td>
+                  <Td align="right">
+                    <span className="mono tnum" style={{ color: 'var(--fg-muted)' }}>
+                      {requiredFieldCount(et)}
+                    </span>
+                  </Td>
+                  <Td>
+                    {sensitiveFieldCount(et) > 0 ? (
+                      <Chip tone="warning" size="xs">
+                        {sensitiveFieldCount(et)}
+                      </Chip>
+                    ) : (
+                      <span style={{ color: 'var(--fg-faint)' }}>—</span>
+                    )}
+                  </Td>
+                  <Td>
+                    {(() => {
+                      const owners = ownersByType.get(et.id) ?? []
+                      if (owners.length === 0) {
+                        return <span style={{ color: 'var(--fg-faint)' }}>—</span>
+                      }
+                      return (
+                        <span className="text-[12px]" style={{ color: 'var(--fg-subtle)' }}>
+                          {owners[0].user_name || owners[0].user_email}
+                          {owners.length > 1 ? ` +${owners.length - 1}` : ''}
+                        </span>
+                      )
+                    })()}
+                  </Td>
+                  <Td>
+                    {(ownersByType.get(et.id) ?? []).length > 0 ? (
+                      <Chip tone="accent" size="xs">gated</Chip>
+                    ) : (
+                      <Chip tone="neutral" size="xs">open merge</Chip>
+                    )}
+                  </Td>
+                  <Td>
+                    <ChevronRight className="size-3.5" style={{ color: 'var(--fg-faint)' }} />
+                  </Td>
+                </ListRow>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </SurfPanel>
     </div>
   )
 }
 
-export function FieldsEditor({ slug, eventType, branchId }: { slug: string; eventType: EventType; branchId: string | null }) {
+// ─────────────────────── New event type (page-style) ───────────────────────
+
+interface CreateEventTypeViewProps {
+  slug: string
+  branchId: string | null
+  onDone: () => void
+}
+
+function CreateEventTypeView({ slug, branchId, onDone }: CreateEventTypeViewProps) {
   const qc = useQueryClient()
-  const [showForm, setShowForm] = useState(false)
   const [name, setName] = useState('')
   const [displayName, setDisplayName] = useState('')
-  const [fieldType, setFieldType] = useState('string')
-  const [isRequired, setIsRequired] = useState(false)
-  const [enumOptions, setEnumOptions] = useState<string[]>([])
-  const [enumInput, setEnumInput] = useState('')
-  const [sensitivity, setSensitivity] = useState<Sensitivity>('none')
-  const [requiredNullRate, setRequiredNullRate] = useState('')
-  const [contractRegex, setContractRegex] = useState('')
-  const [contractMinValue, setContractMinValue] = useState('')
-  const [contractMaxValue, setContractMaxValue] = useState('')
-  const [contractBadRate, setContractBadRate] = useState('0')
-  const [editingField, setEditingField] = useState<FieldDefinition | null>(null)
-  const [editDisplayName, setEditDisplayName] = useState('')
-  const [editFieldType, setEditFieldType] = useState('')
-  const [editIsRequired, setEditIsRequired] = useState(false)
-  const [editDescription, setEditDescription] = useState('')
-  const [editEnumOptions, setEditEnumOptions] = useState<string[]>([])
-  const [editEnumInput, setEditEnumInput] = useState('')
-  const [editSensitivity, setEditSensitivity] = useState<Sensitivity>('none')
-  const [editRequiredNullRate, setEditRequiredNullRate] = useState('')
-  const [editContractRegex, setEditContractRegex] = useState('')
-  const [editContractMinValue, setEditContractMinValue] = useState('')
-  const [editContractMaxValue, setEditContractMaxValue] = useState('')
-  const [editContractBadRate, setEditContractBadRate] = useState('0')
+  const [description, setDescription] = useState('')
+  const [color, setColor] = useState(DEFAULT_COLOR)
+
+  const createMut = useMutation({
+    mutationFn: () =>
+      eventTypesApi.create(
+        slug,
+        { name: name.trim(), display_name: displayName.trim() || name.trim(), description, color },
+        branchId,
+      ),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['eventTypes', slug, branchId] })
+      onDone()
+    },
+  })
+
+  return (
+    <div className="max-w-[880px]">
+      <BackLink label="Event types" onClick={onDone} />
+      <h2 className="mb-[18px] text-lg font-semibold">New event type</h2>
+      <form
+        onSubmit={(e) => {
+          e.preventDefault()
+          if (name.trim()) createMut.mutate()
+        }}
+      >
+        <SCard
+          title="General"
+          footer={
+            <SaveFooter onCancel={onDone} pending={createMut.isPending} submitLabel="Create type" />
+          }
+        >
+          <SField label="Name" hint="Used in queries and ingestion — can't be changed later.">
+            <SInput value={name} onChange={setName} mono placeholder="e.g. checkout" />
+          </SField>
+          <SField label="Display name">
+            <SInput value={displayName} onChange={setDisplayName} placeholder="Checkout" />
+          </SField>
+          <SField label="Description">
+            <Textarea value={description} rows={2} onChange={(e) => setDescription(e.target.value)} />
+          </SField>
+          <SField label="Color" last>
+            <ColorPicker value={color} onChange={setColor} />
+          </SField>
+        </SCard>
+        {createMut.isError && (
+          <p className="mt-2 text-sm" style={{ color: 'var(--danger)' }}>
+            {getErrorMessage(createMut.error)}
+          </p>
+        )}
+      </form>
+    </div>
+  )
+}
+
+export function ColorPicker({ value, onChange }: { value: string; onChange: (v: string) => void }) {
+  return (
+    <div className="flex items-center gap-2.5">
+      <input
+        type="color"
+        value={value || DEFAULT_COLOR}
+        onChange={(e) => onChange(e.target.value)}
+        aria-label="Color"
+        className="cursor-pointer rounded-[7px] p-0.5"
+        style={{ width: 40, height: 34, border: '1px solid var(--border)', background: 'none' }}
+      />
+      <span className="mono text-[12.5px]" style={{ color: 'var(--fg-muted)' }}>
+        {value || DEFAULT_COLOR}
+      </span>
+    </div>
+  )
+}
+
+// ─────────────────────────── Fields editor ───────────────────────────
+
+interface FieldDraft {
+  name: string
+  display_name: string
+  field_type: string
+  is_required: boolean
+  description: string
+  enum_options: string[]
+  sensitivity: Sensitivity
+  contract_max_bad_rate: string
+  contract_required_max_null_rate: string
+  contract_regex: string
+  contract_min_value: string
+  contract_max_value: string
+}
+
+function emptyDraft(): FieldDraft {
+  return {
+    name: '',
+    display_name: '',
+    field_type: 'string',
+    is_required: false,
+    description: '',
+    enum_options: [],
+    sensitivity: 'none',
+    contract_max_bad_rate: '0',
+    contract_required_max_null_rate: '',
+    contract_regex: '',
+    contract_min_value: '',
+    contract_max_value: '',
+  }
+}
+
+function draftFromField(f: FieldDefinition): FieldDraft {
+  return {
+    name: f.name,
+    display_name: f.display_name,
+    field_type: f.field_type,
+    is_required: f.is_required,
+    description: f.description,
+    enum_options: f.enum_options ?? [],
+    sensitivity: f.sensitivity,
+    contract_max_bad_rate: String(f.contract_max_bad_rate ?? 0),
+    contract_required_max_null_rate:
+      f.contract_required_max_null_rate == null ? '' : String(f.contract_required_max_null_rate),
+    contract_regex: f.contract_regex ?? '',
+    contract_min_value: f.contract_min_value == null ? '' : String(f.contract_min_value),
+    contract_max_value: f.contract_max_value == null ? '' : String(f.contract_max_value),
+  }
+}
+
+function draftContract(draft: FieldDraft) {
+  return {
+    contract_required_max_null_rate: parseOptionalNumberInput(draft.contract_required_max_null_rate),
+    contract_regex: draft.contract_regex.trim() || null,
+    contract_min_value: parseOptionalNumberInput(draft.contract_min_value),
+    contract_max_value: parseOptionalNumberInput(draft.contract_max_value),
+    contract_max_bad_rate: parseOptionalNumberInput(draft.contract_max_bad_rate) ?? 0,
+  }
+}
+
+export function FieldsEditor({
+  slug,
+  eventType,
+  branchId,
+}: {
+  slug: string
+  eventType: EventType
+  branchId: string | null
+}) {
+  const qc = useQueryClient()
+  // editing view-state: null = list, 'new' = add subpage, field = edit subpage.
+  const [editing, setEditing] = useState<FieldDefinition | 'new' | null>(null)
   const { confirm, dialog } = useConfirm()
 
   const sortedFields = [...eventType.field_definitions].sort((a, b) => a.order - b.order)
+  const invalidate = () => qc.invalidateQueries({ queryKey: ['eventTypes', slug, branchId] })
 
   const createMut = useMutation({
-    mutationFn: () => fieldsApi.create(slug, eventType.id, {
-      name, display_name: displayName, field_type: fieldType, is_required: isRequired,
-      ...(fieldType === 'enum' && enumOptions.length > 0 ? { enum_options: enumOptions } : {}),
-      order: sortedFields.length,
-      sensitivity,
-      contract_required_max_null_rate: parseOptionalNumberInput(requiredNullRate),
-      contract_regex: contractRegex.trim() || null,
-      contract_min_value: parseOptionalNumberInput(contractMinValue),
-      contract_max_value: parseOptionalNumberInput(contractMaxValue),
-      contract_max_bad_rate: parseOptionalNumberInput(contractBadRate) ?? 0,
-    }, branchId),
+    mutationFn: (draft: FieldDraft) =>
+      fieldsApi.create(
+        slug,
+        eventType.id,
+        {
+          name: draft.name.trim(),
+          display_name: draft.display_name.trim() || draft.name.trim(),
+          field_type: draft.field_type,
+          is_required: draft.is_required,
+          description: draft.description,
+          ...(draft.field_type === 'enum' && draft.enum_options.length > 0
+            ? { enum_options: draft.enum_options }
+            : {}),
+          order: sortedFields.length,
+          sensitivity: draft.sensitivity,
+          ...draftContract(draft),
+        },
+        branchId,
+      ),
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ['eventTypes', slug, branchId] })
-      setShowForm(false); setName(''); setDisplayName(''); setFieldType('string'); setIsRequired(false)
-      setEnumOptions([]); setEnumInput(''); setSensitivity('none')
-      setRequiredNullRate(''); setContractRegex(''); setContractMinValue(''); setContractMaxValue(''); setContractBadRate('0')
+      invalidate()
+      setEditing(null)
     },
   })
 
   const updateMut = useMutation({
-    mutationFn: ({ fid, data }: { fid: string; data: Partial<FieldDefinition> }) => fieldsApi.update(slug, eventType.id, fid, data, branchId),
+    mutationFn: ({ id, draft }: { id: string; draft: FieldDraft }) =>
+      fieldsApi.update(
+        slug,
+        eventType.id,
+        id,
+        {
+          display_name: draft.display_name.trim() || draft.name,
+          field_type: draft.field_type as FieldDefinition['field_type'],
+          is_required: draft.is_required,
+          description: draft.description,
+          enum_options: draft.field_type === 'enum' ? draft.enum_options : null,
+          sensitivity: draft.sensitivity,
+          ...draftContract(draft),
+        },
+        branchId,
+      ),
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ['eventTypes', slug, branchId] })
-      setEditingField(null)
+      invalidate()
+      setEditing(null)
     },
   })
 
   const reorderMut = useMutation({
     mutationFn: (fieldIds: string[]) => fieldsApi.reorder(slug, eventType.id, fieldIds, branchId),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['eventTypes', slug, branchId] }),
+    onSuccess: invalidate,
   })
 
   const deleteMut = useMutation({
-    mutationFn: (fid: string) => fieldsApi.del(slug, eventType.id, fid, branchId),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['eventTypes', slug, branchId] }),
+    mutationFn: (id: string) => fieldsApi.del(slug, eventType.id, id, branchId),
+    onSuccess: invalidate,
   })
 
-  const handleDeleteField = async (f: FieldDefinition) => {
+  const handleDelete = async (f: FieldDefinition) => {
     const ok = await confirm({
       title: 'Delete field',
       message: `Delete "${f.display_name}" from ${eventType.display_name}?`,
@@ -352,342 +436,351 @@ export function FieldsEditor({ slug, eventType, branchId }: { slug: string; even
     if (ok) deleteMut.mutate(f.id)
   }
 
-  const startEdit = (f: FieldDefinition) => {
-    setEditingField(f)
-    setEditDisplayName(f.display_name)
-    setEditFieldType(f.field_type)
-    setEditIsRequired(f.is_required)
-    setEditDescription(f.description)
-    setEditEnumOptions(f.enum_options ?? [])
-    setEditEnumInput('')
-    setEditSensitivity(f.sensitivity)
-    setEditRequiredNullRate(f.contract_required_max_null_rate == null ? '' : String(f.contract_required_max_null_rate))
-    setEditContractRegex(f.contract_regex ?? '')
-    setEditContractMinValue(f.contract_min_value == null ? '' : String(f.contract_min_value))
-    setEditContractMaxValue(f.contract_max_value == null ? '' : String(f.contract_max_value))
-    setEditContractBadRate(String(f.contract_max_bad_rate ?? 0))
-  }
-
-  const addEnumOption = (option: string, target: 'create' | 'edit') => {
-    const trimmed = option.trim()
-    if (!trimmed) return
-    if (target === 'create') {
-      if (!enumOptions.includes(trimmed)) setEnumOptions([...enumOptions, trimmed])
-      setEnumInput('')
-    } else {
-      if (!editEnumOptions.includes(trimmed)) setEditEnumOptions([...editEnumOptions, trimmed])
-      setEditEnumInput('')
-    }
-  }
-
-  const saveEdit = (fid: string) => {
-    updateMut.mutate({ fid, data: {
-      display_name: editDisplayName, field_type: editFieldType as FieldDefinition['field_type'],
-      is_required: editIsRequired, description: editDescription,
-      ...(editFieldType === 'enum' ? { enum_options: editEnumOptions } : { enum_options: null }),
-      sensitivity: editSensitivity,
-      contract_required_max_null_rate: parseOptionalNumberInput(editRequiredNullRate),
-      contract_regex: editContractRegex.trim() || null,
-      contract_min_value: parseOptionalNumberInput(editContractMinValue),
-      contract_max_value: parseOptionalNumberInput(editContractMaxValue),
-      contract_max_bad_rate: parseOptionalNumberInput(editContractBadRate) ?? 0,
-    } })
-  }
-
   const moveField = (idx: number, direction: -1 | 1) => {
     const newIdx = idx + direction
     if (newIdx < 0 || newIdx >= sortedFields.length) return
     const reordered = [...sortedFields]
     const [moved] = reordered.splice(idx, 1)
     reordered.splice(newIdx, 0, moved)
-    reorderMut.mutate(reordered.map(f => f.id))
+    reorderMut.mutate(reordered.map((f) => f.id))
   }
 
-  const fieldTypes = FIELD_TYPES
+  if (editing) {
+    const field = editing === 'new' ? null : editing
+    const pending = createMut.isPending || updateMut.isPending
+    const error = createMut.isError
+      ? getErrorMessage(createMut.error)
+      : updateMut.isError
+        ? getErrorMessage(updateMut.error)
+        : null
+    return (
+      <FieldEditPage
+        field={field}
+        pending={pending}
+        error={error}
+        onCancel={() => setEditing(null)}
+        onSubmit={(draft) => {
+          if (field) updateMut.mutate({ id: field.id, draft })
+          else createMut.mutate(draft)
+        }}
+      />
+    )
+  }
 
   return (
-    <div className="border-t px-4 py-4 bg-muted/30 space-y-3">
+    <SCard
+      title="Fields"
+      description={`${sortedFields.length} field definitions applied to every ${eventType.display_name.toLowerCase()} event.`}
+      right={
+        <Button variant="outline" size="sm" onClick={() => setEditing('new')}>
+          <Plus className="size-3" />
+          Add field
+        </Button>
+      }
+    >
       {dialog}
-      <div className="flex justify-between items-center">
-        <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Fields</span>
-        <Button variant="ghost" size="sm" onClick={() => setShowForm(!showForm)} className="h-7 text-xs">
-          <Plus className="mr-1 h-3 w-3" />
-          Add Field
+      {sortedFields.length === 0 ? (
+        <p className="px-[18px] py-3.5 text-[12.5px]" style={{ color: 'var(--fg-subtle)' }}>
+          No fields defined yet.
+        </p>
+      ) : (
+        <table className="w-full border-collapse">
+          <thead>
+            <tr style={{ background: 'var(--bg-sunken)' }}>
+              <Th style={{ width: 34 }} />
+              <Th>Name</Th>
+              <Th>Display</Th>
+              <Th>Type</Th>
+              <Th>PII</Th>
+              <Th>Req</Th>
+              <Th>Contract</Th>
+              <Th style={{ width: 66 }} />
+            </tr>
+          </thead>
+          <tbody>
+            {sortedFields.map((f, idx) => (
+              <FieldRow
+                key={f.id}
+                field={f}
+                isFirst={idx === 0}
+                isLast={idx === sortedFields.length - 1}
+                reordering={reorderMut.isPending}
+                onMoveUp={() => moveField(idx, -1)}
+                onMoveDown={() => moveField(idx, 1)}
+                onEdit={() => setEditing(f)}
+                onDelete={() => handleDelete(f)}
+              />
+            ))}
+          </tbody>
+        </table>
+      )}
+    </SCard>
+  )
+}
+
+interface FieldRowProps {
+  field: FieldDefinition
+  isFirst: boolean
+  isLast: boolean
+  reordering: boolean
+  onMoveUp: () => void
+  onMoveDown: () => void
+  onEdit: () => void
+  onDelete: () => void
+}
+
+function FieldRow({
+  field,
+  isFirst,
+  isLast,
+  reordering,
+  onMoveUp,
+  onMoveDown,
+  onEdit,
+  onDelete,
+}: FieldRowProps) {
+  const contractCount = fieldContractRuleCount(field)
+  return (
+    <ListRow onClick={onEdit}>
+      <Td className="pr-0" onClick={(e) => e.stopPropagation()}>
+        <div className="flex flex-col gap-px">
+          <IconButton title="Move up" disabled={isFirst || reordering} onClick={onMoveUp}>
+            <ChevronUp className="size-3" />
+          </IconButton>
+          <IconButton title="Move down" disabled={isLast || reordering} onClick={onMoveDown}>
+            <ChevronDown className="size-3" />
+          </IconButton>
+        </div>
+      </Td>
+      <Td>
+        <span className="mono text-[12px]">{field.name}</span>
+      </Td>
+      <Td>
+        <span className="text-[12px]" style={{ color: 'var(--fg-muted)' }}>
+          {field.display_name}
+        </span>
+      </Td>
+      <Td>
+        <Chip variant="outline" size="xs">
+          {field.field_type}
+        </Chip>
+        {field.field_type === 'enum' && field.enum_options && (
+          <span className="ml-1 text-[10px]" style={{ color: 'var(--fg-faint)' }}>
+            ({field.enum_options.length})
+          </span>
+        )}
+      </Td>
+      <Td>
+        <SensitivityChip value={field.sensitivity} />
+      </Td>
+      <Td>
+        {field.is_required ? (
+          <Check className="size-3.5" style={{ color: 'var(--success)' }} />
+        ) : (
+          <span style={{ color: 'var(--fg-faint)' }}>—</span>
+        )}
+      </Td>
+      <Td>
+        {contractCount > 0 ? (
+          <Chip variant="outline" size="xs">
+            {contractCount}
+          </Chip>
+        ) : (
+          <span style={{ color: 'var(--fg-faint)' }}>—</span>
+        )}
+      </Td>
+      <Td onClick={(e) => e.stopPropagation()}>
+        <div className="flex justify-end gap-0.5">
+          <IconButton title="Edit field" onClick={onEdit}>
+            <Pencil className="size-3.5" />
+          </IconButton>
+          <IconButton title="Delete field" danger onClick={onDelete}>
+            <Trash2 className="size-3.5" />
+          </IconButton>
+        </div>
+      </Td>
+    </ListRow>
+  )
+}
+
+// ───────────────────── Field edit subpage (in-place view) ─────────────────────
+
+interface FieldEditPageProps {
+  field: FieldDefinition | null
+  pending: boolean
+  error: string | null
+  onCancel: () => void
+  onSubmit: (draft: FieldDraft) => void
+}
+
+function FieldEditPage({ field, pending, error, onCancel, onSubmit }: FieldEditPageProps) {
+  const isEdit = !!field
+  const [draft, setDraft] = useState<FieldDraft>(field ? draftFromField(field) : emptyDraft())
+  const [enumInput, setEnumInput] = useState('')
+  const set = <K extends keyof FieldDraft>(key: K, value: FieldDraft[K]) =>
+    setDraft((d) => ({ ...d, [key]: value }))
+
+  const addEnum = () => {
+    const v = enumInput.trim()
+    if (v && !draft.enum_options.includes(v)) set('enum_options', [...draft.enum_options, v])
+    setEnumInput('')
+  }
+
+  const submit = () => {
+    if (!isEdit && !draft.name.trim()) return
+    onSubmit(draft)
+  }
+
+  return (
+    <div className="max-w-[880px]">
+      <BackLink label="Fields" onClick={onCancel} />
+      <h2 className="mb-[18px] text-[19px] font-semibold tracking-[-0.01em]">
+        {isEdit ? `Edit field · ${field.name}` : 'New field'}
+      </h2>
+
+      <SCard title="Field">
+        {!isEdit && (
+          <SField label="Name" hint="Matches the query column the scan populates.">
+            <SInput value={draft.name} onChange={(v) => set('name', v)} mono placeholder="e.g. order_id" />
+          </SField>
+        )}
+        <SField label="Display name">
+          <SInput
+            value={draft.display_name}
+            onChange={(v) => set('display_name', v)}
+            placeholder="Optional"
+          />
+        </SField>
+        <SField label="Type">
+          <SSelect
+            value={draft.field_type}
+            onChange={(v) => set('field_type', v)}
+            options={FIELD_TYPES.map((t) => ({ value: t, label: t }))}
+          />
+        </SField>
+        <SField label="Sensitivity">
+          <SSelect
+            value={draft.sensitivity}
+            onChange={(v) => set('sensitivity', v as Sensitivity)}
+            options={SENSITIVITY_OPTIONS.map((o) => ({ value: o.value, label: o.label }))}
+          />
+        </SField>
+        <SField label="Required">
+          <div className="flex items-center gap-2.5">
+            <Switch
+              checked={draft.is_required}
+              onCheckedChange={(c) => set('is_required', c)}
+              aria-label="Required"
+            />
+            <span className="text-[12px]" style={{ color: 'var(--fg-muted)' }}>
+              Must be present on every event
+            </span>
+          </div>
+        </SField>
+        <SField label="Description" last={draft.field_type !== 'enum'}>
+          <SInput
+            value={draft.description}
+            onChange={(v) => set('description', v)}
+            placeholder="Optional"
+          />
+        </SField>
+        {draft.field_type === 'enum' && (
+          <SField label="Enum options" last>
+            <div className="flex flex-col gap-2">
+              <div className="flex max-w-[360px] gap-2">
+                <Input
+                  className="mono"
+                  value={enumInput}
+                  placeholder="Type option, press Enter"
+                  onChange={(e) => setEnumInput(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') {
+                      e.preventDefault()
+                      addEnum()
+                    }
+                  }}
+                />
+                <Button type="button" variant="outline" size="sm" onClick={addEnum}>
+                  Add
+                </Button>
+              </div>
+              {draft.enum_options.length > 0 && (
+                <div className="flex flex-wrap gap-1.5">
+                  {draft.enum_options.map((opt) => (
+                    <span
+                      key={opt}
+                      className="mono inline-flex items-center gap-1.5 rounded-full pr-1.5 pl-2.5 text-[11.5px]"
+                      style={{ height: 22, background: 'var(--surface-hover)' }}
+                    >
+                      {opt}
+                      <IconButton
+                        title="Remove option"
+                        danger
+                        onClick={() =>
+                          set(
+                            'enum_options',
+                            draft.enum_options.filter((o) => o !== opt),
+                          )
+                        }
+                      >
+                        <X className="size-3" />
+                      </IconButton>
+                    </span>
+                  ))}
+                </div>
+              )}
+            </div>
+          </SField>
+        )}
+      </SCard>
+
+      <SCard title="Data contract" description="Quality rules tripl checks on every scan of this field.">
+        <SField label="Bad share" hint="Max fraction of values allowed to fail the contract (0–1).">
+          <SInput value={draft.contract_max_bad_rate} onChange={(v) => set('contract_max_bad_rate', v)} mono />
+        </SField>
+        <SField label="Null share" hint="Max fraction allowed to be null (0–1).">
+          <SInput
+            value={draft.contract_required_max_null_rate}
+            onChange={(v) => set('contract_required_max_null_rate', v)}
+            mono
+            placeholder="—"
+          />
+        </SField>
+        <SField label="Regex" hint="Values must match this pattern.">
+          <SInput
+            value={draft.contract_regex}
+            onChange={(v) => set('contract_regex', v)}
+            mono
+            placeholder="^[a-z0-9_]+$"
+          />
+        </SField>
+        <SField label="Min">
+          <SInput value={draft.contract_min_value} onChange={(v) => set('contract_min_value', v)} mono placeholder="—" />
+        </SField>
+        <SField label="Max" last>
+          <SInput value={draft.contract_max_value} onChange={(v) => set('contract_max_value', v)} mono placeholder="—" />
+        </SField>
+      </SCard>
+
+      {error && (
+        <p className="mt-2 text-sm" style={{ color: 'var(--danger)' }}>
+          {error}
+        </p>
+      )}
+      <div className="mt-1 flex justify-end gap-2.5">
+        <Button variant="ghost" size="sm" onClick={onCancel}>
+          Cancel
+        </Button>
+        <Button size="sm" disabled={pending} onClick={submit}>
+          {isEdit ? <Save className="size-3" /> : <Plus className="size-3" />}
+          {isEdit ? 'Save field' : 'Add field'}
         </Button>
       </div>
-
-      {/* Create dialog */}
-      <Dialog open={showForm} onOpenChange={setShowForm}>
-        <DialogContent>
-          <form onSubmit={e => { e.preventDefault(); createMut.mutate() }}>
-            <DialogHeader><DialogTitle>New Field</DialogTitle></DialogHeader>
-            <div className="grid gap-4 py-4">
-              <div className="grid grid-cols-2 gap-3">
-                <div className="grid gap-2"><Label>Name</Label><Input value={name} onChange={e => setName(e.target.value)} required /></div>
-                <div className="grid gap-2"><Label>Display Name</Label><Input value={displayName} onChange={e => setDisplayName(e.target.value)} required /></div>
-              </div>
-              <div className="grid grid-cols-3 gap-3">
-                <div className="grid gap-2">
-                  <Label>Type</Label>
-                  <select value={fieldType} onChange={e => setFieldType(e.target.value)} className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm">
-                    {fieldTypes.map(t => <option key={t}>{t}</option>)}
-                  </select>
-                </div>
-                <div className="grid gap-2">
-                  <Label>Sensitivity</Label>
-                  <select value={sensitivity} onChange={e => setSensitivity(e.target.value as Sensitivity)} className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm">
-                    {SENSITIVITY_OPTIONS.map(opt => <option key={opt.value} value={opt.value}>{opt.label}</option>)}
-                  </select>
-                </div>
-                <div className="flex items-end pb-2">
-                  <div className="flex items-center gap-2">
-                    <Checkbox id="field-req" checked={isRequired} onCheckedChange={c => setIsRequired(!!c)} />
-                    <Label htmlFor="field-req" className="cursor-pointer">Required</Label>
-                  </div>
-                </div>
-              </div>
-              {fieldType === 'enum' && (
-                <div className="grid gap-2">
-                  <Label>Enum Options</Label>
-                  <div className="flex gap-2">
-                    <Input
-                      value={enumInput}
-                      onChange={e => setEnumInput(e.target.value)}
-                      onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); addEnumOption(enumInput, 'create') } }}
-                      placeholder="Type option and press Enter" className="flex-1"
-                    />
-                    <Button type="button" variant="outline" size="sm" onClick={() => addEnumOption(enumInput, 'create')}>Add</Button>
-                  </div>
-                  {enumOptions.length > 0 && (
-                    <div className="flex flex-wrap gap-1.5">
-                      {enumOptions.map(opt => (
-                        <Badge key={opt} variant="secondary" className="gap-1">
-                          {opt}
-                          <button type="button" onClick={() => setEnumOptions(enumOptions.filter(o => o !== opt))} className="hover:text-destructive">×</button>
-                        </Badge>
-                      ))}
-                    </div>
-                  )}
-                </div>
-              )}
-              <div className="grid gap-3 rounded-md border p-3">
-                <div className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Data contract</div>
-                <div className="grid grid-cols-2 gap-3">
-                  <div className="grid gap-2">
-                    <Label>Bad share</Label>
-                    <Input
-                      value={contractBadRate}
-                      onChange={e => setContractBadRate(e.target.value)}
-                      type="number"
-                      min="0"
-                      max="1"
-                      step="0.01"
-                    />
-                  </div>
-                  <div className="grid gap-2">
-                    <Label>Null share</Label>
-                    <Input
-                      value={requiredNullRate}
-                      onChange={e => setRequiredNullRate(e.target.value)}
-                      type="number"
-                      min="0"
-                      max="1"
-                      step="0.01"
-                    />
-                  </div>
-                </div>
-                <div className="grid gap-2">
-                  <Label>Regex</Label>
-                  <Input value={contractRegex} onChange={e => setContractRegex(e.target.value)} />
-                </div>
-                <div className="grid grid-cols-2 gap-3">
-                  <div className="grid gap-2">
-                    <Label>Min</Label>
-                    <Input value={contractMinValue} onChange={e => setContractMinValue(e.target.value)} type="number" />
-                  </div>
-                  <div className="grid gap-2">
-                    <Label>Max</Label>
-                    <Input value={contractMaxValue} onChange={e => setContractMaxValue(e.target.value)} type="number" />
-                  </div>
-                </div>
-              </div>
-              {createMut.isError && <p className="text-sm text-destructive">{getErrorMessage(createMut.error)}</p>}
-            </div>
-            <DialogFooter>
-              <Button type="button" variant="outline" onClick={() => setShowForm(false)}>Cancel</Button>
-              <Button type="submit" disabled={createMut.isPending}>Add</Button>
-            </DialogFooter>
-          </form>
-        </DialogContent>
-      </Dialog>
-
-      {/* Edit dialog */}
-      <Dialog open={!!editingField} onOpenChange={v => { if (!v) setEditingField(null) }}>
-        <DialogContent>
-          <form onSubmit={e => { e.preventDefault(); if (editingField) saveEdit(editingField.id) }}>
-            <DialogHeader><DialogTitle>Edit Field</DialogTitle></DialogHeader>
-            <div className="grid gap-4 py-4">
-              <div className="grid grid-cols-2 gap-3">
-                <div className="grid gap-2"><Label>Display Name</Label><Input value={editDisplayName} onChange={e => setEditDisplayName(e.target.value)} /></div>
-                <div className="grid gap-2">
-                  <Label>Type</Label>
-                  <select value={editFieldType} onChange={e => setEditFieldType(e.target.value)} className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm">
-                    {fieldTypes.map(t => <option key={t}>{t}</option>)}
-                  </select>
-                </div>
-              </div>
-              <div className="grid grid-cols-3 gap-3">
-                <div className="grid gap-2"><Label>Description</Label><Input value={editDescription} onChange={e => setEditDescription(e.target.value)} placeholder="Optional" /></div>
-                <div className="grid gap-2">
-                  <Label>Sensitivity</Label>
-                  <select value={editSensitivity} onChange={e => setEditSensitivity(e.target.value as Sensitivity)} className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm">
-                    {SENSITIVITY_OPTIONS.map(opt => <option key={opt.value} value={opt.value}>{opt.label}</option>)}
-                  </select>
-                </div>
-                <div className="flex items-end pb-2">
-                  <div className="flex items-center gap-2">
-                    <Checkbox id="edit-field-req" checked={editIsRequired} onCheckedChange={c => setEditIsRequired(!!c)} />
-                    <Label htmlFor="edit-field-req" className="cursor-pointer">Required</Label>
-                  </div>
-                </div>
-              </div>
-              {editFieldType === 'enum' && (
-                <div className="grid gap-2">
-                  <Label>Enum Options</Label>
-                  <div className="flex gap-2">
-                    <Input
-                      value={editEnumInput}
-                      onChange={e => setEditEnumInput(e.target.value)}
-                      onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); addEnumOption(editEnumInput, 'edit') } }}
-                      placeholder="Type option and press Enter" className="flex-1"
-                    />
-                    <Button type="button" variant="outline" size="sm" onClick={() => addEnumOption(editEnumInput, 'edit')}>Add</Button>
-                  </div>
-                  {editEnumOptions.length > 0 && (
-                    <div className="flex flex-wrap gap-1.5">
-                      {editEnumOptions.map(opt => (
-                        <Badge key={opt} variant="secondary" className="gap-1">
-                          {opt}
-                          <button type="button" onClick={() => setEditEnumOptions(editEnumOptions.filter(o => o !== opt))} className="hover:text-destructive">×</button>
-                        </Badge>
-                      ))}
-                    </div>
-                  )}
-                </div>
-              )}
-              <div className="grid gap-3 rounded-md border p-3">
-                <div className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Data contract</div>
-                <div className="grid grid-cols-2 gap-3">
-                  <div className="grid gap-2">
-                    <Label>Bad share</Label>
-                    <Input
-                      value={editContractBadRate}
-                      onChange={e => setEditContractBadRate(e.target.value)}
-                      type="number"
-                      min="0"
-                      max="1"
-                      step="0.01"
-                    />
-                  </div>
-                  <div className="grid gap-2">
-                    <Label>Null share</Label>
-                    <Input
-                      value={editRequiredNullRate}
-                      onChange={e => setEditRequiredNullRate(e.target.value)}
-                      type="number"
-                      min="0"
-                      max="1"
-                      step="0.01"
-                    />
-                  </div>
-                </div>
-                <div className="grid gap-2">
-                  <Label>Regex</Label>
-                  <Input value={editContractRegex} onChange={e => setEditContractRegex(e.target.value)} />
-                </div>
-                <div className="grid grid-cols-2 gap-3">
-                  <div className="grid gap-2">
-                    <Label>Min</Label>
-                    <Input value={editContractMinValue} onChange={e => setEditContractMinValue(e.target.value)} type="number" />
-                  </div>
-                  <div className="grid gap-2">
-                    <Label>Max</Label>
-                    <Input value={editContractMaxValue} onChange={e => setEditContractMaxValue(e.target.value)} type="number" />
-                  </div>
-                </div>
-              </div>
-              {updateMut.isError && <p className="text-sm text-destructive">{getErrorMessage(updateMut.error)}</p>}
-            </div>
-            <DialogFooter>
-              <Button type="button" variant="outline" onClick={() => setEditingField(null)}>Cancel</Button>
-              <Button type="submit" disabled={updateMut.isPending}>Save</Button>
-            </DialogFooter>
-          </form>
-        </DialogContent>
-      </Dialog>
-
-      {sortedFields.length > 0 ? (
-        <div className="rounded-lg border bg-background">
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead className="w-10"></TableHead>
-                <TableHead>Name</TableHead>
-                <TableHead>Display</TableHead>
-                <TableHead className="w-20">Type</TableHead>
-                <TableHead className="w-24">PII</TableHead>
-                <TableHead className="w-16">Req</TableHead>
-                <TableHead className="w-24">Contract</TableHead>
-                <TableHead className="w-24"></TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {sortedFields.map((f: FieldDefinition, idx: number) => (
-                <TableRow key={f.id}>
-                  <TableCell className="py-1">
-                    <div className="flex flex-col gap-0.5">
-                      <Button variant="ghost" size="icon" className="h-5 w-5" onClick={() => moveField(idx, -1)} disabled={idx === 0 || reorderMut.isPending}>
-                        <ArrowUp className="h-3 w-3" />
-                      </Button>
-                      <Button variant="ghost" size="icon" className="h-5 w-5" onClick={() => moveField(idx, 1)} disabled={idx === sortedFields.length - 1 || reorderMut.isPending}>
-                        <ArrowDown className="h-3 w-3" />
-                      </Button>
-                    </div>
-                  </TableCell>
-                  <TableCell className="font-mono text-xs">{f.name}</TableCell>
-                  <TableCell className="text-xs text-muted-foreground">{f.display_name}</TableCell>
-                  <TableCell>
-                    <Badge variant="outline" className="text-[10px]">{f.field_type}</Badge>
-                    {f.field_type === 'enum' && f.enum_options && <span className="text-muted-foreground text-[10px] ml-1">({f.enum_options.length})</span>}
-                  </TableCell>
-                  <TableCell>
-                    <SensitivityChip value={f.sensitivity} />
-                  </TableCell>
-                  <TableCell>{f.is_required ? <span className="text-green-600 font-medium text-xs">✓</span> : <span className="text-muted-foreground">—</span>}</TableCell>
-                  <TableCell>
-                    {fieldContractRuleCount(f) > 0 ? (
-                      <Badge variant="outline" className="text-[10px]">{fieldContractRuleCount(f)}</Badge>
-                    ) : (
-                      <span className="text-muted-foreground">—</span>
-                    )}
-                  </TableCell>
-                  <TableCell>
-                    <div className="flex gap-1 justify-end">
-                      <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => startEdit(f)}><Pencil className="h-3 w-3" /></Button>
-                      <Button variant="ghost" size="icon" className="h-7 w-7 text-muted-foreground hover:text-destructive" onClick={() => handleDeleteField(f)}><Trash2 className="h-3 w-3" /></Button>
-                    </div>
-                  </TableCell>
-                </TableRow>
-              ))}
-            </TableBody>
-          </Table>
-        </div>
-      ) : (
-        <p className="text-xs text-muted-foreground py-2">No fields defined yet.</p>
-      )}
     </div>
   )
 }
+
+// ─────────────────────────── Owners editor ───────────────────────────
 
 export function OwnersEditor({ slug, eventType }: { slug: string; eventType: EventType }) {
   const qc = useQueryClient()
@@ -712,74 +805,392 @@ export function OwnersEditor({ slug, eventType }: { slug: string; eventType: Eve
 
   const removeMut = useMutation({
     mutationFn: (ownerId: string) => eventTypeOwnersApi.remove(slug, eventType.id, ownerId),
-    onSuccess: () =>
-      qc.invalidateQueries({ queryKey: ['eventTypeOwners', slug, eventType.id] }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['eventTypeOwners', slug, eventType.id] }),
   })
 
   const ownerUserIds = new Set(owners.map((o: EventTypeOwner) => o.user_id))
   const availableUsers = users.filter((u: UserListItem) => !ownerUserIds.has(u.id))
 
   return (
-    <div className="px-4 pb-4 space-y-2 border-t">
-      <div className="flex items-center justify-between pt-3">
-        <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">
-          Owners
-        </span>
-        <Badge variant="secondary" className="text-[10px]">
-          gates branch merge
-        </Badge>
-      </div>
-      {owners.length === 0 ? (
-        <p className="text-xs text-muted-foreground py-2">
-          No owners. Anyone can merge a branch touching this event type until at least one
-          owner is assigned.
-        </p>
-      ) : (
-        <div className="flex flex-wrap gap-2">
-          {owners.map((owner: EventTypeOwner) => (
-            <span
-              key={owner.id}
-              className="inline-flex items-center gap-1.5 rounded-md border bg-muted/40 px-2 py-1 text-xs"
-            >
-              <span className="font-medium">{owner.user_name}</span>
-              <span className="text-muted-foreground">{owner.user_email}</span>
-              <Button
-                variant="ghost"
-                size="icon"
-                className="h-5 w-5 text-muted-foreground hover:text-destructive"
-                onClick={() => removeMut.mutate(owner.id)}
-                disabled={removeMut.isPending}
+    <SCard
+      title="Owners"
+      description="Owners gate branch merges that touch this event type."
+      right={
+        <Chip tone="accent" size="xs">
+          gates merge
+        </Chip>
+      }
+    >
+      <div className="flex flex-col gap-3 px-[18px] py-3.5">
+        {owners.length === 0 ? (
+          <p className="m-0 text-[12.5px]" style={{ color: 'var(--fg-subtle)' }}>
+            No owners — anyone can merge a branch touching this type.
+          </p>
+        ) : (
+          <div className="flex flex-wrap gap-2">
+            {owners.map((owner: EventTypeOwner) => (
+              <span
+                key={owner.id}
+                className="inline-flex items-center gap-1.5 rounded-lg px-2 py-1"
+                style={{ border: '1px solid var(--border)', background: 'var(--bg)' }}
               >
-                <Trash2 className="h-3 w-3" />
-              </Button>
-            </span>
-          ))}
-        </div>
-      )}
-      {availableUsers.length > 0 && (
-        <div className="flex gap-2 pt-1">
-          <select
-            value={selectedUserId}
-            onChange={e => setSelectedUserId(e.target.value)}
-            className="h-8 rounded-md border bg-background px-2 text-xs"
-          >
-            <option value="">Select user…</option>
-            {availableUsers.map((u: UserListItem) => (
-              <option key={u.id} value={u.id}>
-                {u.name || u.email} ({u.email})
-              </option>
+                <Avatar name={owner.user_name || owner.user_email} />
+                <span className="text-[12px] font-medium">{owner.user_name || owner.user_email}</span>
+                <span className="mono text-[10.5px]" style={{ color: 'var(--fg-subtle)' }}>
+                  {owner.user_email}
+                </span>
+                <IconButton
+                  title="Remove owner"
+                  danger
+                  disabled={removeMut.isPending}
+                  onClick={() => removeMut.mutate(owner.id)}
+                >
+                  <X className="size-3" />
+                </IconButton>
+              </span>
             ))}
-          </select>
-          <Button
-            size="sm"
-            disabled={!selectedUserId || addMut.isPending}
-            onClick={() => addMut.mutate(selectedUserId)}
-          >
-            <Plus className="h-3.5 w-3.5 mr-1" />
-            Add owner
-          </Button>
+          </div>
+        )}
+        {availableUsers.length > 0 && (
+          <div className="flex gap-2">
+            <div className="max-w-[320px] flex-1">
+              <SSelect
+                value={selectedUserId}
+                onChange={setSelectedUserId}
+                options={[
+                  { value: '', label: 'Select user…' },
+                  ...availableUsers.map((u: UserListItem) => ({
+                    value: u.id,
+                    label: `${u.name || u.email} · ${u.email}`,
+                  })),
+                ]}
+              />
+            </div>
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={!selectedUserId || addMut.isPending}
+              onClick={() => addMut.mutate(selectedUserId)}
+            >
+              <Plus className="size-3" />
+              Add owner
+            </Button>
+          </div>
+        )}
+      </div>
+    </SCard>
+  )
+}
+
+// ─────────────────── Shared page-style UI primitives ───────────────────
+// Composed from design tokens; exported for EventTypeDetailView to reuse so the
+// settings surface stays visually consistent without a separate shared module.
+
+export function SurfPanel({
+  title,
+  subtitle,
+  right,
+  children,
+}: {
+  title: string
+  subtitle?: string
+  right?: ReactNode
+  children: ReactNode
+}) {
+  return (
+    <section
+      className="overflow-hidden rounded-[10px] border"
+      style={{ borderColor: 'var(--border)', background: 'var(--surface)' }}
+    >
+      <header
+        className="flex items-center gap-2.5 border-b px-4 py-3"
+        style={{ borderColor: 'var(--border-subtle)' }}
+      >
+        <div className="min-w-0 flex-1">
+          <div className="text-[12.5px] font-semibold" style={{ color: 'var(--fg)' }}>
+            {title}
+          </div>
+          {subtitle && (
+            <div className="mt-0.5 text-[10.5px]" style={{ color: 'var(--fg-subtle)' }}>
+              {subtitle}
+            </div>
+          )}
         </div>
+        {right}
+      </header>
+      {children}
+    </section>
+  )
+}
+
+export function SCard({
+  title,
+  description,
+  right,
+  footer,
+  tone,
+  children,
+}: {
+  title: string
+  description?: string
+  right?: ReactNode
+  footer?: ReactNode
+  tone?: 'danger'
+  children: ReactNode
+}) {
+  const headBg = tone === 'danger' ? 'var(--danger-soft)' : 'transparent'
+  const titleColor = tone === 'danger' ? 'var(--danger)' : 'var(--fg)'
+  return (
+    <section
+      className="mb-3 overflow-hidden rounded-xl border"
+      style={{ borderColor: 'var(--border)', background: 'var(--surface)' }}
+    >
+      <header
+        className="flex items-center gap-2.5 border-b px-4 py-3"
+        style={{ borderColor: 'var(--border-subtle)', background: headBg }}
+      >
+        <div className="min-w-0 flex-1">
+          <div className="text-[12.5px] font-semibold" style={{ color: titleColor }}>
+            {title}
+          </div>
+          {description && (
+            <div className="mt-0.5 text-[10.5px]" style={{ color: 'var(--fg-subtle)' }}>
+              {description}
+            </div>
+          )}
+        </div>
+        {right}
+      </header>
+      {children}
+      {footer}
+    </section>
+  )
+}
+
+export function SaveFooter({
+  onCancel,
+  pending,
+  submitLabel = 'Save changes',
+}: {
+  onCancel?: () => void
+  pending?: boolean
+  submitLabel?: string
+}) {
+  return (
+    <div
+      className="flex items-center justify-end gap-2.5 border-t px-4 py-3"
+      style={{ borderColor: 'var(--border-subtle)', background: 'var(--bg-sunken)' }}
+    >
+      {onCancel && (
+        <Button type="button" variant="ghost" size="sm" onClick={onCancel}>
+          Cancel
+        </Button>
       )}
+      <Button type="submit" size="sm" disabled={pending}>
+        {submitLabel}
+      </Button>
     </div>
+  )
+}
+
+export function SField({
+  label,
+  hint,
+  last,
+  children,
+}: {
+  label: string
+  hint?: string
+  last?: boolean
+  children: ReactNode
+}) {
+  return (
+    <div
+      className="grid grid-cols-[180px_1fr] items-start gap-4 px-[18px] py-3.5"
+      style={{ borderBottom: last ? 'none' : '1px solid var(--border-subtle)' }}
+    >
+      <div className="pt-1.5">
+        <div className="text-[12.5px] font-medium" style={{ color: 'var(--fg)' }}>
+          {label}
+        </div>
+        {hint && (
+          <div className="mt-1 text-[11px] leading-snug" style={{ color: 'var(--fg-subtle)' }}>
+            {hint}
+          </div>
+        )}
+      </div>
+      <div className="min-w-0">{children}</div>
+    </div>
+  )
+}
+
+export function SInput({
+  value,
+  onChange,
+  mono,
+  placeholder,
+  disabled,
+}: {
+  value: string
+  onChange: (v: string) => void
+  mono?: boolean
+  placeholder?: string
+  disabled?: boolean
+}) {
+  return (
+    <Input
+      className={mono ? 'mono max-w-[420px]' : 'max-w-[420px]'}
+      value={value}
+      placeholder={placeholder}
+      disabled={disabled}
+      onChange={(e) => onChange(e.target.value)}
+    />
+  )
+}
+
+export function SSelect({
+  value,
+  onChange,
+  options,
+}: {
+  value: string
+  onChange: (v: string) => void
+  options: { value: string; label: string }[]
+}) {
+  return (
+    <select
+      value={value}
+      onChange={(e) => onChange(e.target.value)}
+      className="flex h-9 w-full max-w-[420px] rounded-md border bg-transparent px-3 py-1 text-sm"
+      style={{ borderColor: 'var(--border)' }}
+    >
+      {options.map((o) => (
+        <option key={o.value} value={o.value}>
+          {o.label}
+        </option>
+      ))}
+    </select>
+  )
+}
+
+function BackLink({ label, onClick }: { label: string; onClick: () => void }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className="mb-3.5 inline-flex items-center gap-1 text-[11.5px] transition-colors hover:text-[var(--fg)]"
+      style={{ color: 'var(--fg-muted)' }}
+    >
+      <ArrowLeft className="size-3" />
+      {label}
+    </button>
+  )
+}
+
+function Th({
+  children,
+  align,
+  style,
+}: {
+  children?: ReactNode
+  align?: 'right'
+  style?: CSSProperties
+}) {
+  return (
+    <th style={{ ...TH_STYLE, ...(align === 'right' ? { textAlign: 'right' } : {}), ...style }}>
+      {children}
+    </th>
+  )
+}
+
+function Td({
+  children,
+  align,
+  className,
+  onClick,
+}: {
+  children?: ReactNode
+  align?: 'right'
+  className?: string
+  onClick?: (e: React.MouseEvent<HTMLTableCellElement>) => void
+}) {
+  return (
+    <td
+      className={className}
+      style={{ ...TD_STYLE, ...(align === 'right' ? { textAlign: 'right' } : {}) }}
+      onClick={onClick}
+    >
+      {children}
+    </td>
+  )
+}
+
+function ListRow({ children, onClick }: { children: ReactNode; onClick: () => void }) {
+  return (
+    <tr
+      className="cursor-pointer border-t transition-colors hover:bg-[var(--surface-hover)]"
+      style={{ borderColor: 'var(--border-subtle)' }}
+      onClick={onClick}
+    >
+      {children}
+    </tr>
+  )
+}
+
+export function IconButton({
+  children,
+  title,
+  disabled,
+  danger,
+  onClick,
+}: {
+  children: ReactNode
+  title: string
+  disabled?: boolean
+  danger?: boolean
+  onClick: () => void
+}) {
+  return (
+    <button
+      type="button"
+      title={title}
+      disabled={disabled}
+      onClick={onClick}
+      className="flex items-center justify-center p-1 transition-colors disabled:opacity-40"
+      style={{ color: 'var(--fg-subtle)' }}
+      onMouseEnter={(e) => {
+        if (!disabled) e.currentTarget.style.color = danger ? 'var(--danger)' : 'var(--fg)'
+      }}
+      onMouseLeave={(e) => {
+        e.currentTarget.style.color = 'var(--fg-subtle)'
+      }}
+    >
+      {children}
+    </button>
+  )
+}
+
+export function Avatar({ name, size = 18 }: { name: string; size?: number }) {
+  const initials = name
+    .split(/\s+/)
+    .slice(0, 2)
+    .map((p) => p[0]?.toUpperCase() ?? '')
+    .join('')
+  // Stable hue from the name so avatars are consistent across renders.
+  let hash = 0
+  for (let i = 0; i < name.length; i += 1) hash = (hash * 31 + name.charCodeAt(i)) % 360
+  return (
+    <span
+      title={name}
+      className="inline-flex shrink-0 items-center justify-center rounded-full font-semibold text-white"
+      style={{
+        width: size,
+        height: size,
+        fontSize: size * 0.42,
+        background: `oklch(0.62 0.12 ${hash})`,
+      }}
+    >
+      {initials || '?'}
+    </span>
   )
 }

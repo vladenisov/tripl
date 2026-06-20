@@ -1,0 +1,7 @@
+/* design-sync Tailwind v4 compile input.
+   Pulls in the app's real token layer + custom utilities (index.css) and
+   scans both the component sources and the authored preview cards so every
+   utility class used by either is generated into the shipped stylesheet. */
+@import "../frontend/src/index.css";
+@source "../frontend/src";
+@source "./previews";

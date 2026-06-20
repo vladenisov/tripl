@@ -1,37 +1,54 @@
-import { useState } from 'react'
+import { useState, type ReactNode } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { ChevronDown, GitCompare } from 'lucide-react'
-import { reconciliationApi, type DeadEvent, type ShadowEventStatus } from '@/api/reconciliation'
+import { Calendar } from 'lucide-react'
+import {
+  reconciliationApi,
+  type CoverageBucket,
+  type DeadEvent,
+  type ShadowEvent,
+  type ShadowEventStatus,
+} from '@/api/reconciliation'
 import { eventTypesApi } from '@/api/eventTypes'
+import { Chip } from '@/components/primitives/chip'
+import { Dot } from '@/components/primitives/dot'
 import { ErrorState } from '@/components/error-state'
-import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { useActiveBranchId } from '@/hooks/useBranch'
-import { formatDate, formatDateTime, formatRelativeTime } from '@/lib/datetime'
+import { formatRelativeTime } from '@/lib/datetime'
 import { getMonitoringPath } from '@/lib/monitoring'
 
-const COVERAGE_DAY_OPTIONS = [7, 14, 30] as const
-const DEAD_DAY_OPTIONS = [7, 30, 90] as const
-type CoverageDays = (typeof COVERAGE_DAY_OPTIONS)[number]
-type DeadDays = (typeof DEAD_DAY_OPTIONS)[number]
+const COVERAGE_DAYS = 14 as const
+const DEAD_DAYS = 30 as const
+const SHADOW_TABS: readonly ShadowEventStatus[] = ['new', 'accepted', 'dismissed']
+
+const COVERAGE_GOOD = 90
+const COVERAGE_WARN = 70
+
+function coverageTone(pct: number): string {
+  if (pct >= COVERAGE_GOOD) return 'var(--accent)'
+  if (pct >= COVERAGE_WARN) return 'var(--warning)'
+  return 'var(--danger)'
+}
+
+function bucketPct(bucket: CoverageBucket): number {
+  if (bucket.total_count <= 0) return 0
+  return Math.min(100, (bucket.matched_count / bucket.total_count) * 100)
+}
 
 export default function ReconciliationPage() {
   const { slug } = useParams<{ slug: string }>()
   const branchId = useActiveBranchId()
   const qc = useQueryClient()
 
-  const [coverageDays, setCoverageDays] = useState<CoverageDays>(14)
-  const [deadDays, setDeadDays] = useState<DeadDays>(30)
   const [shadowStatus, setShadowStatus] = useState<ShadowEventStatus>('new')
   const [acceptingId, setAcceptingId] = useState<string | null>(null)
   const [selectedEventType, setSelectedEventType] = useState<Record<string, string>>({})
   const [rowError, setRowError] = useState<Record<string, string>>({})
-  const [expandedDeadId, setExpandedDeadId] = useState<string | null>(null)
 
   const coverageQuery = useQuery({
-    queryKey: ['reconciliation', 'coverage', slug, coverageDays],
-    queryFn: () => reconciliationApi.coverage(slug!, coverageDays),
+    queryKey: ['reconciliation', 'coverage', slug, COVERAGE_DAYS],
+    queryFn: () => reconciliationApi.coverage(slug!, COVERAGE_DAYS),
     enabled: !!slug,
   })
 
@@ -43,8 +60,8 @@ export default function ReconciliationPage() {
   })
 
   const deadQuery = useQuery({
-    queryKey: ['reconciliation', 'dead', slug, deadDays],
-    queryFn: () => reconciliationApi.deadEvents(slug!, deadDays),
+    queryKey: ['reconciliation', 'dead', slug, DEAD_DAYS],
+    queryFn: () => reconciliationApi.deadEvents(slug!, DEAD_DAYS),
     enabled: !!slug,
   })
 
@@ -61,6 +78,13 @@ export default function ReconciliationPage() {
     void qc.invalidateQueries({ queryKey: ['events', slug] })
   }
 
+  const clearRowError = (id: string) =>
+    setRowError((prev) => {
+      const next = { ...prev }
+      delete next[id]
+      return next
+    })
+
   const acceptMutation = useMutation({
     mutationFn: ({
       id,
@@ -72,11 +96,7 @@ export default function ReconciliationPage() {
       name?: string
     }) => reconciliationApi.acceptShadowEvent(slug!, id, { event_type_id: eventTypeId, name }, branchId),
     onSuccess: (_data, { id }) => {
-      setRowError((prev) => {
-        const next = { ...prev }
-        delete next[id]
-        return next
-      })
+      clearRowError(id)
       invalidateShadow()
     },
     onError: (err: unknown, { id }) => {
@@ -86,14 +106,9 @@ export default function ReconciliationPage() {
   })
 
   const dismissMutation = useMutation({
-    mutationFn: (id: string) =>
-      reconciliationApi.dismissShadowEvent(slug!, id, branchId),
+    mutationFn: (id: string) => reconciliationApi.dismissShadowEvent(slug!, id, branchId),
     onSuccess: (_data, id) => {
-      setRowError((prev) => {
-        const next = { ...prev }
-        delete next[id]
-        return next
-      })
+      clearRowError(id)
       invalidateShadow()
     },
     onError: (err: unknown, id) => {
@@ -102,14 +117,14 @@ export default function ReconciliationPage() {
     },
   })
 
-  const handleAccept = (id: string, eventTypeId: string | null, eventTypeName: string | null) => {
-    if (!eventTypeName && !selectedEventType[id]) {
-      setAcceptingId(id)
+  const handleAccept = (item: ShadowEvent) => {
+    if (!item.event_type_name && !selectedEventType[item.id]) {
+      setAcceptingId(item.id)
       return
     }
     acceptMutation.mutate({
-      id,
-      eventTypeId: eventTypeId ?? selectedEventType[id] ?? undefined,
+      id: item.id,
+      eventTypeId: item.event_type_id ?? selectedEventType[item.id] ?? undefined,
     })
   }
 
@@ -117,419 +132,399 @@ export default function ReconciliationPage() {
   const shadow = shadowQuery.data
   const dead = deadQuery.data
   const eventTypes = eventTypesQuery.data ?? []
+  const shadowHasItems = (shadow?.items.length ?? 0) > 0
 
   return (
-    <div className="min-w-0 space-y-8 pb-12">
+    <div className="min-w-0 space-y-[18px] pb-12">
       {/* Header */}
-      <div className="flex items-center gap-2">
-        <GitCompare className="h-5 w-5 shrink-0" style={{ color: 'var(--fg-subtle)' }} />
-        <h1 className="text-lg font-semibold tracking-tight">Reconciliation</h1>
+      <div className="flex items-end justify-between gap-4">
+        <div>
+          <div
+            className="text-[11px] font-semibold uppercase tracking-[0.08em]"
+            style={{ color: 'var(--fg-subtle)' }}
+          >
+            Govern
+          </div>
+          <h1 className="mt-1 text-[22px] font-semibold tracking-[-0.01em]">Reconciliation</h1>
+          <p className="mt-1.5 max-w-[560px] text-[12px]" style={{ color: 'var(--fg-subtle)' }}>
+            Compare what your plan defines against what your data sources actually send.
+          </p>
+        </div>
+        <Button variant="outline" size="sm" disabled>
+          <Calendar className="h-3 w-3" />
+          Last {COVERAGE_DAYS} days
+        </Button>
       </div>
 
-      {/* Coverage section */}
-      <section>
-        <div className="mb-2 flex items-center justify-between gap-2">
-          <h2 className="text-sm font-semibold">Coverage</h2>
-          <DaySelector
-            options={COVERAGE_DAY_OPTIONS}
-            value={coverageDays}
-            onChange={(v) => setCoverageDays(v as CoverageDays)}
-          />
-        </div>
+      {/* Coverage */}
+      <Panel
+        title="Coverage"
+        subtitle={
+          coverage
+            ? `${coverage.summary.matched_count} of ${coverage.summary.total_count} planned events seen in data · ${coverage.days}d`
+            : undefined
+        }
+      >
         {coverageQuery.isError && (
-          <ErrorState
-            title="Coverage unavailable"
-            error={coverageQuery.error}
-            onRetry={() => { void coverageQuery.refetch() }}
-            retryLabel="Retry"
-            compact
-          />
+          <div className="p-4">
+            <ErrorState
+              title="Coverage unavailable"
+              error={coverageQuery.error}
+              onRetry={() => {
+                void coverageQuery.refetch()
+              }}
+              retryLabel="Retry"
+              compact
+            />
+          </div>
         )}
         {coverageQuery.isLoading && (
-          <div className="text-xs" style={{ color: 'var(--fg-subtle)' }}>Loading…</div>
+          <div className="p-4 text-[12px]" style={{ color: 'var(--fg-subtle)' }}>
+            Loading…
+          </div>
         )}
         {coverage && (
-          <div className="space-y-2">
-            <div className="flex items-baseline gap-2">
-              <span className="text-2xl font-bold tabular-nums">
-                {coverage.summary.coverage_pct.toFixed(1)}%
+          <div className="flex items-center gap-6 p-4">
+            <div className="flex min-w-[120px] flex-col gap-0.5">
+              <span
+                className="mono tnum text-[38px] font-semibold leading-none tracking-[-0.02em]"
+                style={{ color: 'var(--accent)' }}
+              >
+                {coverage.summary.coverage_pct.toFixed(0)}%
               </span>
-              <span className="text-xs" style={{ color: 'var(--fg-subtle)' }}>
-                {coverage.summary.matched_count.toLocaleString()} / {coverage.summary.total_count.toLocaleString()} events over {coverage.days}d
+              <span className="text-[11px]" style={{ color: 'var(--fg-subtle)' }}>
+                matched coverage
               </span>
             </div>
-            {coverage.items.length > 0 && (
-              <div className="space-y-[3px]">
-                {coverage.items.map((item) => {
-                  const pct = item.total_count > 0
-                    ? (item.matched_count / item.total_count) * 100
-                    : 0
-                  return (
-                    <div key={item.bucket} className="flex items-center gap-2">
-                      <span
-                        className="w-[90px] shrink-0 truncate text-[11px] tabular-nums"
-                        style={{ color: 'var(--fg-subtle)' }}
-                      >
-                        {item.bucket}
-                      </span>
-                      <div
-                        className="h-[6px] flex-1 overflow-hidden rounded-full"
-                        style={{ background: 'var(--border)' }}
-                      >
-                        <div
-                          className="h-full rounded-full"
-                          style={{
-                            width: `${pct}%`,
-                            background: pct >= 80
-                              ? 'var(--accent)'
-                              : pct >= 50
-                                ? 'var(--warning, oklch(0.75 0.15 80))'
-                                : 'var(--danger, oklch(0.65 0.2 25))',
-                          }}
-                        />
-                      </div>
-                      <span
-                        className="w-[38px] shrink-0 text-right text-[11px] tabular-nums"
-                        style={{ color: 'var(--fg-subtle)' }}
-                      >
-                        {pct.toFixed(0)}%
-                      </span>
-                    </div>
-                  )
-                })}
-              </div>
-            )}
+            <CoverageStrip items={coverage.items} days={coverage.days} />
           </div>
         )}
-      </section>
+      </Panel>
 
-      {/* Shadow events inbox */}
-      <section>
-        <div className="mb-2 flex items-center gap-2">
-          <h2 className="text-sm font-semibold">Shadow events inbox</h2>
-          {shadow && shadow.new_count > 0 && (
-            <Badge variant="warning" className="text-[10px] px-1.5 py-0">
-              {shadow.new_count}
-            </Badge>
+      <div className="grid grid-cols-1 gap-3 lg:grid-cols-[1.5fr_1fr]">
+        {/* Shadow events inbox */}
+        <Panel
+          title="Shadow events inbox"
+          subtitle="Seen in data, missing from plan"
+          tone={shadowHasItems ? 'warning' : undefined}
+          right={
+            <div className="flex gap-0.5">
+              {SHADOW_TABS.map((tab) => (
+                <button
+                  key={tab}
+                  type="button"
+                  onClick={() => setShadowStatus(tab)}
+                  className="rounded-[5px] px-[9px] py-[3px] text-[11px] font-medium capitalize transition-colors"
+                  style={{
+                    background: shadowStatus === tab ? 'var(--surface-active)' : 'transparent',
+                    color: shadowStatus === tab ? 'var(--fg)' : 'var(--fg-subtle)',
+                  }}
+                >
+                  {tab}
+                </button>
+              ))}
+            </div>
+          }
+        >
+          {shadowQuery.isError && (
+            <div className="p-4">
+              <ErrorState
+                title="Shadow events unavailable"
+                error={shadowQuery.error}
+                onRetry={() => {
+                  void shadowQuery.refetch()
+                }}
+                retryLabel="Retry"
+                compact
+              />
+            </div>
+          )}
+          {shadowQuery.isLoading && (
+            <div className="px-4 py-7 text-center text-[12px]" style={{ color: 'var(--fg-subtle)' }}>
+              Loading…
+            </div>
+          )}
+          {shadow && shadow.items.length === 0 && !shadowQuery.isError && (
+            <div className="px-4 py-7 text-center text-[12px]" style={{ color: 'var(--fg-subtle)' }}>
+              No {shadowStatus} events.
+            </div>
+          )}
+          {shadow?.items.map((item) => {
+            const isActing =
+              (acceptMutation.isPending && acceptMutation.variables?.id === item.id) ||
+              (dismissMutation.isPending && dismissMutation.variables === item.id)
+            const needsEventTypeSelect = acceptingId === item.id && !item.event_type_name
+            return (
+              <ShadowRow
+                key={item.id}
+                item={item}
+                isActing={isActing}
+                needsEventTypeSelect={needsEventTypeSelect}
+                eventTypes={eventTypes}
+                selectedEventTypeId={selectedEventType[item.id] ?? ''}
+                error={rowError[item.id]}
+                onAccept={() => handleAccept(item)}
+                onDismiss={() => {
+                  setAcceptingId(null)
+                  dismissMutation.mutate(item.id)
+                }}
+                onSelectEventType={(value) =>
+                  setSelectedEventType((prev) => ({ ...prev, [item.id]: value }))
+                }
+                onConfirm={() => {
+                  const eventTypeId = selectedEventType[item.id]
+                  if (!eventTypeId) return
+                  acceptMutation.mutate({ id: item.id, eventTypeId })
+                  setAcceptingId(null)
+                }}
+                onCancel={() => setAcceptingId(null)}
+                confirmDisabled={!selectedEventType[item.id] || acceptMutation.isPending}
+              />
+            )
+          })}
+        </Panel>
+
+        {/* Dead events */}
+        <Panel title="Dead events" subtitle="In plan, not seen recently">
+          {deadQuery.isError && (
+            <div className="p-4">
+              <ErrorState
+                title="Dead events unavailable"
+                error={deadQuery.error}
+                onRetry={() => {
+                  void deadQuery.refetch()
+                }}
+                retryLabel="Retry"
+                compact
+              />
+            </div>
+          )}
+          {deadQuery.isLoading && (
+            <div className="px-4 py-7 text-center text-[12px]" style={{ color: 'var(--fg-subtle)' }}>
+              Loading…
+            </div>
+          )}
+          {dead && dead.items.length === 0 && !deadQuery.isError && (
+            <div className="px-4 py-7 text-center text-[12px]" style={{ color: 'var(--fg-subtle)' }}>
+              No dead events in the last {dead.days} days.
+            </div>
+          )}
+          {dead?.items.map((item) => (
+            <DeadRow key={item.event_id} item={item} slug={slug} />
+          ))}
+        </Panel>
+      </div>
+    </div>
+  )
+}
+
+function Panel({
+  title,
+  subtitle,
+  right,
+  tone,
+  children,
+}: {
+  title: string
+  subtitle?: string
+  right?: ReactNode
+  tone?: 'warning' | 'danger'
+  children: ReactNode
+}) {
+  const headerBg = tone ? `var(--${tone}-soft)` : 'transparent'
+  const titleColor = tone ? `var(--${tone})` : 'var(--fg)'
+  return (
+    <div
+      className="overflow-hidden rounded-[10px] border"
+      style={{ background: 'var(--surface)', borderColor: 'var(--border)' }}
+    >
+      <div
+        className="flex items-center gap-2.5 border-b px-4 py-3"
+        style={{ borderColor: 'var(--border-subtle)', background: headerBg }}
+      >
+        <div className="flex-1">
+          <div className="text-[12.5px] font-semibold" style={{ color: titleColor }}>
+            {title}
+          </div>
+          {subtitle && (
+            <div className="mt-0.5 text-[10.5px]" style={{ color: 'var(--fg-subtle)' }}>
+              {subtitle}
+            </div>
           )}
         </div>
-        <div className="mb-3 flex gap-1">
-          {(['new', 'accepted', 'dismissed'] as ShadowEventStatus[]).map((s) => (
-            <button
-              key={s}
-              type="button"
-              onClick={() => setShadowStatus(s)}
-              className="rounded px-2 py-0.5 text-[11px] font-medium capitalize transition-colors"
-              style={{
-                background: shadowStatus === s ? 'var(--surface-hover)' : 'transparent',
-                color: shadowStatus === s ? 'var(--fg)' : 'var(--fg-subtle)',
-              }}
-            >
-              {s}
-            </button>
-          ))}
-        </div>
-        {shadowQuery.isError && (
-          <ErrorState
-            title="Shadow events unavailable"
-            error={shadowQuery.error}
-            onRetry={() => { void shadowQuery.refetch() }}
-            retryLabel="Retry"
-            compact
-          />
-        )}
-        {shadowQuery.isLoading && (
-          <div className="text-xs" style={{ color: 'var(--fg-subtle)' }}>Loading…</div>
-        )}
-        {shadow && shadow.items.length === 0 && (
-          <div className="text-xs" style={{ color: 'var(--fg-subtle)' }}>No {shadowStatus} events.</div>
-        )}
-        {shadow && shadow.items.length > 0 && (
-          <div className="divide-y" style={{ borderColor: 'var(--border-subtle)' }}>
-            {shadow.items.map((item) => {
-              const isActing =
-                (acceptMutation.isPending && acceptMutation.variables?.id === item.id) ||
-                (dismissMutation.isPending && dismissMutation.variables === item.id)
-              const needsEventTypeSelect =
-                acceptingId === item.id && !item.event_type_name
-
-              return (
-                <div
-                  key={item.id}
-                  className="flex flex-col gap-1 py-2"
-                >
-                  <div className="flex items-center gap-2">
-                    <span
-                      className="mono flex-1 truncate text-[12px]"
-                      style={{ color: 'var(--fg)' }}
-                    >
-                      {item.event_name}
-                    </span>
-                    {item.event_type_name ? (
-                      <Badge variant="secondary" className="shrink-0 text-[10px]">
-                        {item.event_type_name}
-                      </Badge>
-                    ) : (
-                      <span className="shrink-0 text-[11px]" style={{ color: 'var(--fg-faint)' }}>
-                        no type
-                      </span>
-                    )}
-                    <span
-                      className="shrink-0 text-[11px]"
-                      style={{ color: 'var(--fg-subtle)' }}
-                    >
-                      {item.scan_config_name}
-                    </span>
-                    <span
-                      className="mono w-[48px] shrink-0 text-right text-[11px]"
-                      style={{ color: 'var(--fg-subtle)' }}
-                    >
-                      {item.observed_count.toLocaleString()}
-                    </span>
-                    <span
-                      className="w-[56px] shrink-0 text-right text-[11px]"
-                      style={{ color: 'var(--fg-faint)' }}
-                    >
-                      {formatRelativeTime(item.last_seen_at)}
-                    </span>
-                    {item.status === 'new' && (
-                      <div className="flex shrink-0 items-center gap-1">
-                        <Button
-                          size="sm"
-                          variant="default"
-                          className="h-6 px-2 text-[11px]"
-                          disabled={isActing}
-                          onClick={() =>
-                            handleAccept(item.id, item.event_type_id, item.event_type_name)
-                          }
-                        >
-                          Accept
-                        </Button>
-                        <Button
-                          size="sm"
-                          variant="ghost"
-                          className="h-6 px-2 text-[11px]"
-                          disabled={isActing}
-                          onClick={() => {
-                            setAcceptingId(null)
-                            dismissMutation.mutate(item.id)
-                          }}
-                        >
-                          Dismiss
-                        </Button>
-                      </div>
-                    )}
-                  </div>
-                  {needsEventTypeSelect && (
-                    <div className="ml-1 flex items-center gap-2">
-                      <span className="text-[11px]" style={{ color: 'var(--fg-subtle)' }}>
-                        Choose event type:
-                      </span>
-                      <select
-                        className="rounded border px-1.5 py-0.5 text-[11px]"
-                        style={{
-                          background: 'var(--surface)',
-                          borderColor: 'var(--border)',
-                          color: 'var(--fg)',
-                        }}
-                        value={selectedEventType[item.id] ?? ''}
-                        onChange={(e) =>
-                          setSelectedEventType((prev) => ({ ...prev, [item.id]: e.target.value }))
-                        }
-                      >
-                        <option value="">Select…</option>
-                        {eventTypes.map((et) => (
-                          <option key={et.id} value={et.id}>
-                            {et.display_name}
-                          </option>
-                        ))}
-                      </select>
-                      <Button
-                        size="sm"
-                        variant="default"
-                        className="h-6 px-2 text-[11px]"
-                        disabled={!selectedEventType[item.id] || acceptMutation.isPending}
-                        onClick={() => {
-                          if (selectedEventType[item.id]) {
-                            acceptMutation.mutate({
-                              id: item.id,
-                              eventTypeId: selectedEventType[item.id],
-                            })
-                            setAcceptingId(null)
-                          }
-                        }}
-                      >
-                        Confirm
-                      </Button>
-                      <button
-                        type="button"
-                        className="text-[11px]"
-                        style={{ color: 'var(--fg-subtle)' }}
-                        onClick={() => setAcceptingId(null)}
-                      >
-                        Cancel
-                      </button>
-                    </div>
-                  )}
-                  {rowError[item.id] && (
-                    <span className="text-[11px] text-destructive">{rowError[item.id]}</span>
-                  )}
-                </div>
-              )
-            })}
-          </div>
-        )}
-      </section>
-
-      {/* Dead events */}
-      <section>
-        <div className="mb-2 flex items-center justify-between gap-2">
-          <h2 className="text-sm font-semibold">Dead events</h2>
-          <DaySelector
-            options={DEAD_DAY_OPTIONS}
-            value={deadDays}
-            onChange={(v) => setDeadDays(v as DeadDays)}
-          />
-        </div>
-        {deadQuery.isError && (
-          <ErrorState
-            title="Dead events unavailable"
-            error={deadQuery.error}
-            onRetry={() => { void deadQuery.refetch() }}
-            retryLabel="Retry"
-            compact
-          />
-        )}
-        {deadQuery.isLoading && (
-          <div className="text-xs" style={{ color: 'var(--fg-subtle)' }}>Loading…</div>
-        )}
-        {dead && dead.items.length === 0 && (
-          <div className="text-xs" style={{ color: 'var(--fg-subtle)' }}>
-            No dead events in the last {dead.days} days.
-          </div>
-        )}
-        {dead && dead.items.length > 0 && (
-          <div className="divide-y" style={{ borderColor: 'var(--border-subtle)' }}>
-            {dead.items.map((item) => (
-              <DeadEventRow
-                key={item.event_id}
-                item={item}
-                slug={slug}
-                expanded={expandedDeadId === item.event_id}
-                onToggle={() =>
-                  setExpandedDeadId((prev) => (prev === item.event_id ? null : item.event_id))
-                }
-              />
-            ))}
-          </div>
-        )}
-      </section>
-    </div>
-  )
-}
-
-function DaySelector({
-  options,
-  value,
-  onChange,
-}: {
-  options: readonly number[]
-  value: number
-  onChange: (v: number) => void
-}) {
-  return (
-    <div className="flex gap-0.5">
-      {options.map((opt) => (
-        <button
-          key={opt}
-          type="button"
-          onClick={() => onChange(opt)}
-          className="rounded px-2 py-0.5 text-[11px] font-medium transition-colors"
-          style={{
-            background: value === opt ? 'var(--surface-hover)' : 'transparent',
-            color: value === opt ? 'var(--fg)' : 'var(--fg-subtle)',
-          }}
-        >
-          {opt}d
-        </button>
-      ))}
-    </div>
-  )
-}
-
-function DeadEventRow({
-  item,
-  slug,
-  expanded,
-  onToggle,
-}: {
-  item: DeadEvent
-  slug: string | undefined
-  expanded: boolean
-  onToggle: () => void
-}) {
-  return (
-    <div className="py-1.5">
-      <div className="flex items-center gap-2">
-        <Link
-          to={slug ? getMonitoringPath(slug, { scope_type: 'event', scope_ref: item.event_id }) : '#'}
-          className="mono flex-1 truncate text-[12px] text-primary hover:underline"
-        >
-          {item.name}
-        </Link>
-        {item.event_type_name && (
-          <Badge variant="secondary" className="shrink-0 text-[10px]">
-            {item.event_type_name}
-          </Badge>
-        )}
-        <span className="w-[60px] shrink-0 text-right text-[11px]" style={{ color: 'var(--fg-faint)' }}>
-          {item.last_seen_at ? formatRelativeTime(item.last_seen_at) : 'never'}
-        </span>
-        <button
-          type="button"
-          onClick={onToggle}
-          aria-expanded={expanded}
-          aria-label={expanded ? 'Hide details' : 'Show details'}
-          className="flex h-5 w-5 shrink-0 items-center justify-center rounded transition-colors hover:bg-[var(--surface-hover)]"
-          style={{ color: 'var(--fg-subtle)' }}
-        >
-          <ChevronDown
-            className="h-3.5 w-3.5 transition-transform"
-            style={{ transform: expanded ? 'rotate(180deg)' : 'none' }}
-          />
-        </button>
+        {right}
       </div>
-      {expanded && (
-        <div
-          className="ml-1 mt-1.5 grid grid-cols-2 gap-x-6 gap-y-1.5 pb-1 text-[11px]"
-          style={{ color: 'var(--fg-subtle)' }}
-        >
-          <DeadEventDetail
-            label="Last observed"
-            value={item.last_seen_at ? formatDateTime(item.last_seen_at) : 'never'}
-          />
-          <DeadEventDetail
-            label="Last activity"
-            value={item.last_seen_at ? formatRelativeTime(item.last_seen_at) : 'never seen'}
-          />
-          <DeadEventDetail label="Tracked since" value={formatDate(item.created_at)} />
-          <DeadEventDetail label="Event type" value={item.event_type_name || '—'} />
-        </div>
-      )}
+      {children}
     </div>
   )
 }
 
-function DeadEventDetail({ label, value }: { label: string; value: string }) {
+function CoverageStrip({ items, days }: { items: CoverageBucket[]; days: number }) {
+  if (items.length === 0) {
+    return (
+      <div className="flex-1 text-[11px]" style={{ color: 'var(--fg-subtle)' }}>
+        No coverage data yet.
+      </div>
+    )
+  }
   return (
-    <div className="flex flex-col gap-px">
-      <span
-        className="text-[10px] font-semibold uppercase tracking-[0.06em]"
+    <div className="flex-1">
+      <div className="flex h-14 items-end gap-0.5">
+        {items.map((bucket) => {
+          const pct = bucketPct(bucket)
+          return (
+            <div
+              key={bucket.bucket}
+              title={`${bucket.bucket}: ${pct.toFixed(0)}%`}
+              className="flex-1 rounded-[2px]"
+              style={{
+                height: `${Math.max(pct, 2)}%`,
+                background: coverageTone(pct),
+                opacity: 0.85,
+              }}
+            />
+          )
+        })}
+      </div>
+      <div
+        className="mono mt-1.5 flex justify-between text-[10px]"
         style={{ color: 'var(--fg-faint)' }}
       >
-        {label}
+        <span>−{days}d</span>
+        <span>today</span>
+      </div>
+    </div>
+  )
+}
+
+function ShadowRow({
+  item,
+  isActing,
+  needsEventTypeSelect,
+  eventTypes,
+  selectedEventTypeId,
+  error,
+  onAccept,
+  onDismiss,
+  onSelectEventType,
+  onConfirm,
+  onCancel,
+  confirmDisabled,
+}: {
+  item: ShadowEvent
+  isActing: boolean
+  needsEventTypeSelect: boolean
+  eventTypes: ReadonlyArray<{ id: string; display_name: string }>
+  selectedEventTypeId: string
+  error?: string
+  onAccept: () => void
+  onDismiss: () => void
+  onSelectEventType: (value: string) => void
+  onConfirm: () => void
+  onCancel: () => void
+  confirmDisabled: boolean
+}) {
+  return (
+    <div
+      className="flex flex-col gap-2 border-t px-4 py-2.5"
+      style={{ borderColor: 'var(--border-subtle)' }}
+    >
+      <div className="flex items-center gap-2.5">
+        <div className="min-w-0 flex-1">
+          <span className="mono text-[12.5px]" style={{ color: 'var(--fg)' }}>
+            {item.event_name}
+          </span>
+          <div
+            className="mt-0.5 flex flex-wrap items-center gap-2 text-[10.5px]"
+            style={{ color: 'var(--fg-subtle)' }}
+          >
+            <span>{item.scan_config_name}</span>
+            <span>·</span>
+            <span className="mono">{item.observed_count.toLocaleString()} seen</span>
+            <span>·</span>
+            <span>{formatRelativeTime(item.last_seen_at)}</span>
+          </div>
+        </div>
+        {item.event_type_name ? (
+          <Chip size="xs">{item.event_type_name}</Chip>
+        ) : (
+          <span className="shrink-0 text-[10.5px]" style={{ color: 'var(--fg-faint)' }}>
+            no type
+          </span>
+        )}
+        {item.status === 'new' && (
+          <div className="flex shrink-0 gap-1.5">
+            <Button size="sm" variant="default" disabled={isActing} onClick={onAccept}>
+              Accept
+            </Button>
+            <Button size="sm" variant="ghost" disabled={isActing} onClick={onDismiss}>
+              Dismiss
+            </Button>
+          </div>
+        )}
+      </div>
+      {needsEventTypeSelect && (
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="text-[11px]" style={{ color: 'var(--fg-subtle)' }}>
+            Choose event type:
+          </span>
+          <select
+            className="rounded border px-1.5 py-0.5 text-[11px]"
+            style={{
+              background: 'var(--surface)',
+              borderColor: 'var(--border)',
+              color: 'var(--fg)',
+            }}
+            value={selectedEventTypeId}
+            onChange={(e) => onSelectEventType(e.target.value)}
+          >
+            <option value="">Select…</option>
+            {eventTypes.map((et) => (
+              <option key={et.id} value={et.id}>
+                {et.display_name}
+              </option>
+            ))}
+          </select>
+          <Button size="sm" variant="default" disabled={confirmDisabled} onClick={onConfirm}>
+            Confirm
+          </Button>
+          <button
+            type="button"
+            className="text-[11px]"
+            style={{ color: 'var(--fg-subtle)' }}
+            onClick={onCancel}
+          >
+            Cancel
+          </button>
+        </div>
+      )}
+      {error && <span className="text-[11px] text-destructive">{error}</span>}
+    </div>
+  )
+}
+
+function DeadRow({ item, slug }: { item: DeadEvent; slug: string | undefined }) {
+  const isNever = !item.last_seen_at
+  return (
+    <div
+      className="flex items-center gap-2.5 border-t px-4 py-2.5"
+      style={{ borderColor: 'var(--border-subtle)' }}
+    >
+      <Dot tone="neutral" size={6} />
+      <Link
+        to={slug ? getMonitoringPath(slug, { scope_type: 'event', scope_ref: item.event_id }) : '#'}
+        className="mono min-w-0 flex-1 truncate text-[12px] hover:underline"
+        style={{ color: 'var(--fg-muted)' }}
+      >
+        {item.name}
+      </Link>
+      {item.event_type_name && <Chip size="xs">{item.event_type_name}</Chip>}
+      <span
+        className="mono shrink-0 text-[10.5px]"
+        style={{ color: isNever ? 'var(--danger)' : 'var(--fg-faint)' }}
+      >
+        {formatRelativeTime(item.last_seen_at)}
       </span>
-      <span style={{ color: 'var(--fg)' }}>{value}</span>
     </div>
   )
 }

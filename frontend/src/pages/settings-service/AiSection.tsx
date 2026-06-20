@@ -1,10 +1,10 @@
-import { Bot, KeyRound } from 'lucide-react'
+import { KeyRound } from 'lucide-react'
 import { useMutation } from '@tanstack/react-query'
 import { serviceSettingsApi } from '@/api/serviceSettings'
 import type { ServiceSettings } from '@/types'
 import { Button } from '@/components/ui/button'
-import { Input } from '@/components/ui/input'
-import { FieldRow, PromptField, SectionCard, StatusBadge, SwitchRow } from './ServiceSettingsPrimitives'
+import { Field, SCard, TextArea, TextInput, ToggleRow } from '@/components/settings/kit'
+import { ResetRow, SourceBadge, StatusBadge } from './ServiceSettingsPrimitives'
 import type { EditableSettings, SecretDrafts, SectionKey } from './serviceSettingsHelpers'
 import { sourceFor } from './serviceSettingsHelpers'
 
@@ -32,181 +32,209 @@ export function AiSection({
   })
 
   return (
-    <SectionCard
-      title="AI and embeddings"
-      icon={Bot}
-      onReset={onReset}
-      resetting={resetting}
-    >
-      <div className="grid gap-4 sm:grid-cols-2">
-        <SwitchRow
+    <>
+      <SCard title="Provider" footer={<ResetRow onReset={onReset} resetting={resetting} />}>
+        <ToggleRow
           label="AI enabled"
-          source={sourceFor(settings, 'ai', 'ai_enabled')}
-          checked={form.ai.ai_enabled}
+          labelRight={<SourceBadge source={sourceFor(settings, 'ai', 'ai_enabled')} />}
+          value={form.ai.ai_enabled}
           onChange={value => setField('ai', 'ai_enabled', value)}
         />
-        <div className="flex items-end gap-2">
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            onClick={() => aiTestMut.mutate()}
-            disabled={aiTestMut.isPending}
-          >
-            <KeyRound className="h-3.5 w-3.5" />
-            {aiTestMut.isPending ? 'Testing...' : 'Test AI'}
-          </Button>
-          {aiTestMut.data && (
-            <StatusBadge active={aiTestMut.data.ok} label={aiTestMut.data.message} />
-          )}
-        </div>
-      </div>
-      <div className="grid gap-4 sm:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]">
-        <FieldRow label="Base URL" source={sourceFor(settings, 'ai', 'ai_base_url')}>
-          <Input
+        <Field
+          label="Base URL"
+          labelRight={<SourceBadge source={sourceFor(settings, 'ai', 'ai_base_url')} />}
+        >
+          <TextInput
             value={form.ai.ai_base_url}
-            onChange={event => setField('ai', 'ai_base_url', event.target.value)}
+            onChange={value => setField('ai', 'ai_base_url', value)}
+            mono
           />
-        </FieldRow>
-        <FieldRow label="Model" source={sourceFor(settings, 'ai', 'ai_model')}>
-          <Input
+        </Field>
+        <Field
+          label="Model"
+          labelRight={<SourceBadge source={sourceFor(settings, 'ai', 'ai_model')} />}
+        >
+          <TextInput
             value={form.ai.ai_model}
-            onChange={event => setField('ai', 'ai_model', event.target.value)}
+            onChange={value => setField('ai', 'ai_model', value)}
+            mono
           />
-        </FieldRow>
-      </div>
-      <FieldRow label="AI API key" source={sourceFor(settings, 'ai', 'ai_api_key_configured' as never)}>
-        <div className="flex flex-col gap-2 sm:flex-row">
-          <Input
-            type="password"
-            value={secretDrafts.ai_api_key}
-            onChange={event =>
-              setSecretDrafts(current => ({
-                ...current,
-                ai_api_key: event.target.value,
-              }))
-            }
-            placeholder={
-              form.ai.ai_api_key_configured
-                ? 'Configured - leave blank to keep'
-                : 'Not configured'
-            }
-          />
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            onClick={() => onClearSecret('ai', 'ai_api_key')}
-            disabled={resetting}
-          >
-            Clear
-          </Button>
-        </div>
-      </FieldRow>
-      <div className="grid gap-4 sm:grid-cols-2">
-        <FieldRow label="Timeout seconds" source={sourceFor(settings, 'ai', 'ai_timeout_seconds')}>
-          <Input
+        </Field>
+        <Field label="AI API key">
+          <div className="flex gap-2">
+            <div className="flex-1">
+              <TextInput
+                type="password"
+                value={secretDrafts.ai_api_key}
+                onChange={value =>
+                  setSecretDrafts(current => ({ ...current, ai_api_key: value }))
+                }
+                placeholder={
+                  form.ai.ai_api_key_configured
+                    ? 'Configured — leave blank to keep'
+                    : 'Not configured'
+                }
+              />
+            </div>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={() => onClearSecret('ai', 'ai_api_key')}
+              disabled={resetting}
+            >
+              Clear
+            </Button>
+          </div>
+        </Field>
+        <Field label="Connection" last>
+          <div className="flex items-center gap-2">
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={() => aiTestMut.mutate()}
+              disabled={aiTestMut.isPending}
+            >
+              <KeyRound className="h-3.5 w-3.5" />
+              {aiTestMut.isPending ? 'Testing...' : 'Test AI'}
+            </Button>
+            {aiTestMut.data && (
+              <StatusBadge active={aiTestMut.data.ok} label={aiTestMut.data.message} />
+            )}
+          </div>
+        </Field>
+      </SCard>
+
+      <SCard title="Generation">
+        <Field
+          label="Timeout seconds"
+          labelRight={<SourceBadge source={sourceFor(settings, 'ai', 'ai_timeout_seconds')} />}
+        >
+          <TextInput
             type="number"
-            min={1}
-            value={form.ai.ai_timeout_seconds}
-            onChange={event => setField('ai', 'ai_timeout_seconds', Number(event.target.value))}
+            value={String(form.ai.ai_timeout_seconds)}
+            onChange={value => setField('ai', 'ai_timeout_seconds', Number(value))}
+            suffix="seconds"
+            mono
           />
-        </FieldRow>
-        <FieldRow label="Max output tokens" source={sourceFor(settings, 'ai', 'ai_max_output_tokens')}>
-          <Input
+        </Field>
+        <Field
+          label="Max output tokens"
+          labelRight={<SourceBadge source={sourceFor(settings, 'ai', 'ai_max_output_tokens')} />}
+        >
+          <TextInput
             type="number"
-            min={1}
-            value={form.ai.ai_max_output_tokens}
-            onChange={event => setField('ai', 'ai_max_output_tokens', Number(event.target.value))}
+            value={String(form.ai.ai_max_output_tokens)}
+            onChange={value => setField('ai', 'ai_max_output_tokens', Number(value))}
+            mono
           />
-        </FieldRow>
-      </div>
-      <div className="grid gap-4">
-        <PromptField
+        </Field>
+        <Field
           label="Describe prompt"
-          source={sourceFor(settings, 'ai', 'describe_system_prompt')}
-          value={form.ai.describe_system_prompt}
-          onChange={value => setField('ai', 'describe_system_prompt', value)}
-        />
-        <PromptField
+          labelRight={<SourceBadge source={sourceFor(settings, 'ai', 'describe_system_prompt')} />}
+          stacked
+        >
+          <TextArea
+            value={form.ai.describe_system_prompt}
+            onChange={value => setField('ai', 'describe_system_prompt', value)}
+            mono
+          />
+        </Field>
+        <Field
           label="Ask prompt"
-          source={sourceFor(settings, 'ai', 'ask_system_prompt')}
-          value={form.ai.ask_system_prompt}
-          onChange={value => setField('ai', 'ask_system_prompt', value)}
-        />
-        <PromptField
+          labelRight={<SourceBadge source={sourceFor(settings, 'ai', 'ask_system_prompt')} />}
+          stacked
+        >
+          <TextArea
+            value={form.ai.ask_system_prompt}
+            onChange={value => setField('ai', 'ask_system_prompt', value)}
+            mono
+          />
+        </Field>
+        <Field
           label="Alert explanation prompt"
-          source={sourceFor(settings, 'ai', 'alert_explanation_system_prompt')}
-          value={form.ai.alert_explanation_system_prompt}
-          onChange={value => setField('ai', 'alert_explanation_system_prompt', value)}
-        />
-      </div>
-      <div className="grid gap-4 sm:grid-cols-2">
-        <SwitchRow
+          labelRight={
+            <SourceBadge source={sourceFor(settings, 'ai', 'alert_explanation_system_prompt')} />
+          }
+          stacked
+          last
+        >
+          <TextArea
+            value={form.ai.alert_explanation_system_prompt}
+            onChange={value => setField('ai', 'alert_explanation_system_prompt', value)}
+            mono
+          />
+        </Field>
+      </SCard>
+
+      <SCard title="Search embeddings">
+        <ToggleRow
           label="Search embeddings"
-          source={sourceFor(settings, 'ai', 'search_embeddings_enabled')}
-          checked={form.ai.search_embeddings_enabled}
+          labelRight={
+            <SourceBadge source={sourceFor(settings, 'ai', 'search_embeddings_enabled')} />
+          }
+          value={form.ai.search_embeddings_enabled}
           onChange={value => setField('ai', 'search_embeddings_enabled', value)}
         />
-        <FieldRow label="Embedding dimensions">
-          <Input value={form.ai.search_embedding_dimensions} disabled readOnly />
-        </FieldRow>
-      </div>
-      <div className="grid gap-4 sm:grid-cols-2">
-        <FieldRow
+        <Field label="Embedding dimensions">
+          <TextInput
+            value={String(form.ai.search_embedding_dimensions)}
+            disabled
+            mono
+          />
+        </Field>
+        <Field
           label="Embedding provider"
-          source={sourceFor(settings, 'ai', 'search_embedding_provider')}
+          labelRight={<SourceBadge source={sourceFor(settings, 'ai', 'search_embedding_provider')} />}
         >
-          <Input
+          <TextInput
             value={form.ai.search_embedding_provider}
-            onChange={event =>
-              setField('ai', 'search_embedding_provider', event.target.value)
-            }
+            onChange={value => setField('ai', 'search_embedding_provider', value)}
+            mono
           />
-        </FieldRow>
-        <FieldRow
+        </Field>
+        <Field
           label="Embedding model"
-          source={sourceFor(settings, 'ai', 'search_embedding_model')}
+          labelRight={<SourceBadge source={sourceFor(settings, 'ai', 'search_embedding_model')} />}
         >
-          <Input
+          <TextInput
             value={form.ai.search_embedding_model}
-            onChange={event =>
-              setField('ai', 'search_embedding_model', event.target.value)
-            }
+            onChange={value => setField('ai', 'search_embedding_model', value)}
+            mono
           />
-        </FieldRow>
-      </div>
-      <FieldRow
-        label="Embedding API key"
-        source={sourceFor(settings, 'ai', 'search_embedding_api_key_configured' as never)}
-      >
-        <div className="flex flex-col gap-2 sm:flex-row">
-          <Input
-            type="password"
-            value={secretDrafts.search_embedding_api_key}
-            onChange={event =>
-              setSecretDrafts(current => ({
-                ...current,
-                search_embedding_api_key: event.target.value,
-              }))
-            }
-            placeholder={
-              form.ai.search_embedding_api_key_configured
-                ? 'Configured - leave blank to keep'
-                : 'Not configured'
-            }
-          />
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            onClick={() => onClearSecret('ai', 'search_embedding_api_key')}
-            disabled={resetting}
-          >
-            Clear
-          </Button>
-        </div>
-      </FieldRow>
-    </SectionCard>
+        </Field>
+        <Field label="Embedding API key" last>
+          <div className="flex gap-2">
+            <div className="flex-1">
+              <TextInput
+                type="password"
+                value={secretDrafts.search_embedding_api_key}
+                onChange={value =>
+                  setSecretDrafts(current => ({
+                    ...current,
+                    search_embedding_api_key: value,
+                  }))
+                }
+                placeholder={
+                  form.ai.search_embedding_api_key_configured
+                    ? 'Configured — leave blank to keep'
+                    : 'Not configured'
+                }
+              />
+            </div>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={() => onClearSecret('ai', 'search_embedding_api_key')}
+              disabled={resetting}
+            >
+              Clear
+            </Button>
+          </div>
+        </Field>
+      </SCard>
+    </>
   )
 }

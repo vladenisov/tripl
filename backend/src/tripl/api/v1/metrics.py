@@ -16,8 +16,10 @@ from tripl.schemas.event_metric import (
     EventWindowMetricsRequest,
     EventWindowMetricsResponse,
     MetricSignalResponse,
+    OverviewKpiSeriesResponse,
     ReleaseRegressionsResponse,
     SeasonalityHeatmapResponse,
+    TopEventResponse,
     TopMoverItem,
 )
 from tripl.services import metrics_insights_service, metrics_service
@@ -70,6 +72,36 @@ async def get_events_window_metrics(
         event_ids=data.event_ids,
         time_from=data.time_from,
         time_to=data.time_to,
+    )
+
+
+@router.get(
+    "/projects/{slug}/overview/kpi-series",
+    response_model=OverviewKpiSeriesResponse,
+)
+async def get_overview_kpi_series(
+    session: SessionDep,
+    slug: str,
+    days: int = 14,
+) -> OverviewKpiSeriesResponse:
+    return await metrics_service.get_overview_kpi_series(session, slug, days=days)
+
+
+@router.get(
+    "/projects/{slug}/overview/top-events",
+    response_model=list[TopEventResponse],
+)
+async def get_overview_top_events(
+    session: SessionDep,
+    slug: str,
+    window_hours: int = 48,
+    limit: int = 6,
+) -> list[TopEventResponse]:
+    return await metrics_service.get_top_events_by_volume(
+        session,
+        slug,
+        window_hours=window_hours,
+        limit=limit,
     )
 
 
