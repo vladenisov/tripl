@@ -84,8 +84,7 @@ export function useEventsViewState({
     (hideLastSeen ? 0 : 1) +
     (hideOwner ? 0 : 1) +
     visibleFieldColumns.length +
-    visibleMetaFields.length +
-    1
+    visibleMetaFields.length
 
   const hasActiveFilters = filterStatuses.length > 0 || filterTag !== '' || filterSilentDays !== undefined ||
     Object.values(fieldFilters).some(v => v !== '') ||

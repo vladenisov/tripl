@@ -165,7 +165,6 @@ export default function EventsPage({ lockType, embedded = false }: EventsPagePro
     someVisibleSelected,
     selectedSet,
     visibleEventIds,
-    visibleIndexById,
     toggleEventSelected,
     toggleAllVisibleSelected,
     clearSelection,
@@ -177,7 +176,7 @@ export default function EventsPage({ lockType, embedded = false }: EventsPagePro
     onBulkDeleteOptimistic: clearSelection,
     onBulkUpdateOptimistic: clearSelection,
   })
-  const { bulkDeleteMut, bulkUpdateMut, setStatusMut } = mutations
+  const { bulkDeleteMut, bulkUpdateMut } = mutations
 
   const dndSensors = useEventsDndSensors()
 
@@ -199,6 +198,7 @@ export default function EventsPage({ lockType, embedded = false }: EventsPagePro
     mutations,
     confirm,
     visibleEventIds,
+    selectedSet,
   })
 
   const handleBulkDelete = useEventsBulkDelete({
@@ -221,10 +221,6 @@ export default function EventsPage({ lockType, embedded = false }: EventsPagePro
     if (!selectedVisibleEventIds.length) return
     bulkUpdateMut.mutate({ eventIds: selectedVisibleEventIds, owner_id: userId })
   }, [bulkUpdateMut, selectedVisibleEventIds])
-
-  const handleSetStatus = useCallback((id: string, status: EventStatus) => {
-    setStatusMut.mutate({ id, status })
-  }, [setStatusMut])
 
   const { eventWindowMetricsByEvent, eventRowSignals } = useEventRowMetrics({
     slug,
@@ -380,12 +376,10 @@ export default function EventsPage({ lockType, embedded = false }: EventsPagePro
               eventTypesById={eventTypesById}
               slug={slug!}
               selectedSet={selectedSet}
-              visibleIndexById={visibleIndexById}
               getFieldValue={getFieldValue}
               toggleEventSelected={toggleEventSelected}
               onToggleExpandedCell={onToggleExpandedCell}
               onRowAction={onRowAction}
-              onSetStatus={handleSetStatus}
             />
           </div>
         </>
