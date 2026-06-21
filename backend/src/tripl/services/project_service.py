@@ -5,6 +5,11 @@ from sqlalchemy import String, case, cast, func, literal, select, union_all
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from tripl import cache
+from tripl.core.analyzers.anomaly_detector import (
+    SCOPE_EVENT,
+    SCOPE_EVENT_TYPE,
+    SCOPE_PROJECT_TOTAL,
+)
 from tripl.models.alert_destination import AlertDestination
 from tripl.models.event import Event
 from tripl.models.event_metric import EventMetric
@@ -29,11 +34,6 @@ from tripl.services.project_lookup import (
 )
 from tripl.services.project_lookup import (
     get_project_id_by_slug as _lookup_project_id_by_slug,
-)
-from tripl.worker.analyzers.anomaly_detector import (
-    SCOPE_EVENT,
-    SCOPE_EVENT_TYPE,
-    SCOPE_PROJECT_TOTAL,
 )
 
 

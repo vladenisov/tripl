@@ -23,6 +23,11 @@ from tripl.alerting_matching import (
     SchemaDriftAlertCandidate,
     distribution_drift_scope_ref,
 )
+from tripl.core.analyzers.anomaly_detector import (
+    SCOPE_EVENT,
+    SCOPE_EVENT_TYPE,
+    SCOPE_PROJECT_TOTAL,
+)
 from tripl.models.distribution_drift import DistributionDrift
 from tripl.models.event import Event
 from tripl.models.event_metric import EventMetric
@@ -31,11 +36,6 @@ from tripl.models.metric_anomaly import MetricAnomaly
 from tripl.models.release_regression import ReleaseRegression
 from tripl.models.scan_config import ScanConfig
 from tripl.models.schema_drift import SchemaDrift
-from tripl.worker.analyzers.anomaly_detector import (
-    SCOPE_EVENT,
-    SCOPE_EVENT_TYPE,
-    SCOPE_PROJECT_TOTAL,
-)
 
 from ._helpers import RECENT_SIGNAL_WINDOW, SCOPE_SCHEMA_DRIFT
 from .urls import _trim_alert_text

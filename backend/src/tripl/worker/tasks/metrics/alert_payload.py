@@ -16,16 +16,16 @@ from tripl.alerting_matching import (
     SCOPE_RELEASE_REGRESSION,
     AlertMatchCandidate,
 )
+from tripl.core.analyzers.anomaly_detector import (
+    SCOPE_EVENT,
+    SCOPE_EVENT_TYPE,
+    SCOPE_PROJECT_TOTAL,
+)
 from tripl.models.alert_destination import AlertDestination
 from tripl.models.alert_rule import AlertRule
 from tripl.models.event import Event
 from tripl.models.event_type import EventType
 from tripl.models.scan_config import ScanConfig
-from tripl.worker.analyzers.anomaly_detector import (
-    SCOPE_EVENT,
-    SCOPE_EVENT_TYPE,
-    SCOPE_PROJECT_TOTAL,
-)
 
 from ._helpers import SCOPE_SCHEMA_DRIFT
 from .urls import _build_event_details_url, _build_monitoring_url

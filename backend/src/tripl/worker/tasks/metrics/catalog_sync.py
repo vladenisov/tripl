@@ -18,14 +18,14 @@ from typing import TYPE_CHECKING, Protocol
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from tripl.core.adapters.base import BaseAdapter, ColumnInfo
+from tripl.core.analyzers.cardinality import BreakdownAnalysis
+from tripl.core.analyzers.event_generator import GenerationResult
 from tripl.models.event import Event
 from tripl.models.event_type import EventType
 from tripl.models.field_definition import FieldDefinition
 from tripl.models.scan_config import ScanConfig
 from tripl.models.variable import Variable
-from tripl.worker.adapters.base import BaseAdapter, ColumnInfo
-from tripl.worker.analyzers.cardinality import BreakdownAnalysis
-from tripl.worker.analyzers.event_generator import GenerationResult
 from tripl.worker.tasks.metrics.generation import (
     _build_variable_lookup,
     _ensure_event_type_with_fields,

@@ -9,15 +9,7 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.orm import Session
 
-from tripl.models.event import Event
-from tripl.models.event_metric import EventMetric
-from tripl.models.event_metric_breakdown import EventMetricBreakdown
-from tripl.models.metric_anomaly import MetricAnomaly
-from tripl.models.metric_breakdown_anomaly import MetricBreakdownAnomaly
-from tripl.models.project_anomaly_settings import ProjectAnomalySettings
-from tripl.models.scan_config import ScanConfig
-from tripl.observability.metrics import anomalies_detected_total
-from tripl.worker.analyzers.anomaly_detector import (
+from tripl.core.analyzers.anomaly_detector import (
     SCOPE_EVENT,
     SCOPE_EVENT_TYPE,
     SCOPE_PROJECT_TOTAL,
@@ -27,7 +19,15 @@ from tripl.worker.analyzers.anomaly_detector import (
     detect_anomalies,
     required_history_buckets,
 )
-from tripl.worker.utils.intervals import get_interval
+from tripl.core.intervals import get_interval
+from tripl.models.event import Event
+from tripl.models.event_metric import EventMetric
+from tripl.models.event_metric_breakdown import EventMetricBreakdown
+from tripl.models.metric_anomaly import MetricAnomaly
+from tripl.models.metric_breakdown_anomaly import MetricBreakdownAnomaly
+from tripl.models.project_anomaly_settings import ProjectAnomalySettings
+from tripl.models.scan_config import ScanConfig
+from tripl.observability.metrics import anomalies_detected_total
 
 
 def _build_anomaly_settings(

@@ -14,6 +14,10 @@ from typing import NotRequired, TypedDict, cast
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from tripl.core.analyzers.anomaly_detector import (
+    SCOPE_EVENT,
+    SCOPE_PROJECT_TOTAL,
+)
 from tripl.models.data_source import DataSource
 from tripl.models.distribution_drift import DistributionDrift
 from tripl.models.event import Event
@@ -33,10 +37,6 @@ from tripl.schemas.project import ProjectCreate, ProjectResponse
 from tripl.services import plan_branch_service, project_service
 from tripl.services.project_service import demo_data_source_name
 from tripl.services.search_service import reindex_project_branch
-from tripl.worker.analyzers.anomaly_detector import (
-    SCOPE_EVENT,
-    SCOPE_PROJECT_TOTAL,
-)
 
 # ---------------------------------------------------------------------------
 # helpers

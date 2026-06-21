@@ -6,9 +6,9 @@ from httpx import AsyncClient
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
+from tripl.core.adapters.base import ColumnInfo
+from tripl.core.analyzers.preview import build_json_paths_payload, build_preview_payload
 from tripl.models import Base, DataSource, Project, ScanPreviewJob
-from tripl.worker.adapters.base import ColumnInfo
-from tripl.worker.analyzers.preview import build_json_paths_payload, build_preview_payload
 from tripl.worker.tasks import metrics
 from tripl.worker.tasks import scan as scan_tasks
 

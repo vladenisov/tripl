@@ -8,7 +8,7 @@ from typing import override
 
 import clickhouse_connect  # type: ignore[import-untyped]
 
-from tripl.worker.adapters.base import (
+from tripl.core.adapters.base import (
     BaseAdapter,
     ColumnInfo,
     FieldContractExpectation,

@@ -9,6 +9,15 @@ from fastapi import HTTPException
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from tripl.core.analyzers.anomaly_detector import (
+    SCOPE_EVENT,
+    SCOPE_EVENT_TYPE,
+    SCOPE_PROJECT_TOTAL,
+    SeriesPoint,
+    expand_series,
+    forecast_next_buckets,
+)
+from tripl.core.intervals import get_interval
 from tripl.models.event import Event
 from tripl.models.event_metric import EventMetric
 from tripl.models.event_metric_breakdown import EventMetricBreakdown
@@ -45,15 +54,6 @@ from tripl.semver import (
 )
 from tripl.services.monitoring_utils import classify_signal_state
 from tripl.services.project_lookup import get_project_by_slug
-from tripl.worker.analyzers.anomaly_detector import (
-    SCOPE_EVENT,
-    SCOPE_EVENT_TYPE,
-    SCOPE_PROJECT_TOTAL,
-    SeriesPoint,
-    expand_series,
-    forecast_next_buckets,
-)
-from tripl.worker.utils.intervals import get_interval
 
 
 async def _resolve_project(session: AsyncSession, slug: str) -> Project:

@@ -19,6 +19,10 @@ from typing import cast
 from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
 
+from tripl.core.adapters.base import ColumnInfo
+from tripl.core.analyzers.cardinality import _is_json_type
+from tripl.core.analyzers.event_generator import GenerationResult
+from tripl.core.intervals import get_interval
 from tripl.json_paths import format_json_path_value
 from tripl.models.event import Event
 from tripl.models.event_field_value import EventFieldValue
@@ -28,11 +32,7 @@ from tripl.models.scan_config import ScanConfig
 from tripl.models.scan_job import ScanJob, ScanJobStatus
 from tripl.models.variable import Variable
 from tripl.models.variable_value import VariableValue, VariableValueKind
-from tripl.worker.adapters.base import ColumnInfo
-from tripl.worker.analyzers.cardinality import _is_json_type
-from tripl.worker.analyzers.event_generator import GenerationResult
 from tripl.worker.tasks.metrics.metric_rows import _get_scan_json_value_path_map
-from tripl.worker.utils.intervals import get_interval
 
 logger = logging.getLogger(__name__)
 

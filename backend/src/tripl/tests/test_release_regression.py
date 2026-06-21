@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from tripl.worker.analyzers.release_regression import (
+from tripl.core.analyzers.release_regression import (
     KIND_MISSING,
     KIND_VOLUME_DROP,
     RegressionSettings,

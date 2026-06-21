@@ -7,16 +7,16 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.orm import Session
 
-from tripl.models.event_type import EventType
-from tripl.models.schema_drift import SchemaDrift
-from tripl.observability.metrics import schema_drifts_detected_total
-from tripl.worker.adapters.base import (
+from tripl.core.adapters.base import (
     BaseAdapter,
     ColumnInfo,
     FieldContractExpectation,
     FieldContractViolation,
 )
-from tripl.worker.analyzers.cardinality import CardinalityResult, _is_json_type
+from tripl.core.analyzers.cardinality import CardinalityResult, _is_json_type
+from tripl.models.event_type import EventType
+from tripl.models.schema_drift import SchemaDrift
+from tripl.observability.metrics import schema_drifts_detected_total
 
 # Logical FieldDefinition.field_type values that `_ensure_event_type_with_fields`
 # can create automatically. type_changed drift only fires when the previously

@@ -5,7 +5,7 @@ from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import datetime
 
-from tripl.worker.adapters.base import BaseAdapter, ColumnInfo
+from tripl.core.adapters.base import BaseAdapter, ColumnInfo
 
 logger = logging.getLogger(__name__)
 

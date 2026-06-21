@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from tripl.worker.adapters.clickhouse import ClickHouseAdapter
+from tripl.core.adapters.clickhouse import ClickHouseAdapter
 
 
 class FakeQueryResult:

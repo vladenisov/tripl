@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from tripl.worker.analyzers.distribution_drift import (
+from tripl.core.analyzers.distribution_drift import (
     PSI_BAND_MINOR,
     PSI_BAND_SIGNIFICANT,
     compute_psi,

@@ -59,6 +59,15 @@ Locally, all of the above (except the warehouses) run under Docker Compose:
 - **Pydantic v2** schemas as the request/response contract.
 - Routers live under `src/tripl/api/v1` and stay thin; business rules live in
   `src/tripl/services`.
+- Shared compute that both the request path and the worker need — warehouse
+  **adapters**, **analyzers** (anomaly/drift/scan logic), and interval helpers —
+  lives in a neutral `src/tripl/core` kernel that imports neither `services` nor
+  `worker`. This keeps `services` from importing `worker` at module level; the
+  request path reaches the worker only via lazy, runtime Celery dispatch.
+- DB engine and pool configuration is centralized in `src/tripl/db_config.py`
+  (an async pooled engine for the API, a sync pooled engine for Celery; the
+  worker→async bridge uses a throwaway NullPool engine — see
+  `worker/search_reindex.py`).
 - Migrations are applied by the deployment entrypoint (the Compose `api` command
   runs `alembic upgrade head`) before the API starts serving requests, so the
   schema is current. The app process itself does not run migrations on startup;
@@ -82,9 +91,11 @@ Locally, all of the above (except the warehouses) run under Docker Compose:
 ## Worker (`backend/src/tripl/worker/`)
 
 - **Celery** app with a **RabbitMQ** broker.
-- **Warehouse adapters** (`worker/adapters`) provide a common interface over
+- **Warehouse adapters** (`core/adapters`) provide a common interface over
   **ClickHouse**, **BigQuery**, and **PostgreSQL** source databases.
-- **Analyzers** (`worker/analyzers`) hold the scan, anomaly, and drift logic.
+- **Analyzers** (`core/analyzers`) hold the scan, anomaly, and drift logic.
+  (Both live in the shared `core` kernel — see the Backend section — so the
+  request path can reuse them without importing the worker package.)
 - **Tasks** (`worker/tasks`) are the Celery entrypoints for scans, metrics,
   anomalies, and alert delivery.
 

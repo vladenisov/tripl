@@ -5,9 +5,9 @@ from typing import Literal
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
+from tripl.core.intervals import get_interval
 from tripl.json_paths import normalize_json_value_paths
 from tripl.models.domain_enums import ScanInterval
-from tripl.worker.utils.intervals import get_interval
 
 
 class EventGroupCondition(BaseModel):

@@ -5,6 +5,11 @@ from datetime import datetime
 from sqlalchemy import desc, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from tripl.core.analyzers.anomaly_detector import (
+    SCOPE_EVENT,
+    SCOPE_EVENT_TYPE,
+    SCOPE_PROJECT_TOTAL,
+)
 from tripl.models.alert_delivery import AlertDelivery
 from tripl.models.alert_destination import AlertDestination
 from tripl.models.alert_rule import AlertRule
@@ -16,11 +21,6 @@ from tripl.models.scan_config import ScanConfig
 from tripl.models.scan_job import ScanJob
 from tripl.schemas.activity import ActivityItemResponse
 from tripl.services.project_lookup import get_project_id_by_slug
-from tripl.worker.analyzers.anomaly_detector import (
-    SCOPE_EVENT,
-    SCOPE_EVENT_TYPE,
-    SCOPE_PROJECT_TOTAL,
-)
 
 
 async def list_activity(

@@ -26,18 +26,19 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from tripl import cache
+from tripl.core.analyzers.cardinality import (
+    _is_json_type,
+    analyze_cardinality,
+    analyze_cardinality_grouped,
+)
+from tripl.core.analyzers.event_generator import generate_events
+from tripl.core.intervals import get_interval
 from tripl.models.data_source import DataSource
 from tripl.models.event_metric import EventMetric
 from tripl.models.event_type import EventType
 from tripl.models.scan_config import ScanConfig
 from tripl.models.scan_job import ScanJob, ScanJobStatus
 from tripl.services import app_settings_service
-from tripl.worker.analyzers.cardinality import (
-    _is_json_type,
-    analyze_cardinality,
-    analyze_cardinality_grouped,
-)
-from tripl.worker.analyzers.event_generator import generate_events
 from tripl.worker.celery_app import celery_app
 from tripl.worker.search_reindex import reindex_main_branch_from_worker
 from tripl.worker.tasks.alerts import send_alert_delivery
@@ -69,7 +70,6 @@ from tripl.worker.tasks.metrics.regression import _recalculate_release_regressio
 from tripl.worker.tasks.metrics.signals import (
     _get_visible_signal_scope_keys,
 )
-from tripl.worker.utils.intervals import get_interval
 from tripl.worker.utils.query_windows import TimeWindow, resolve_lookback_window
 
 logger = logging.getLogger(__name__)

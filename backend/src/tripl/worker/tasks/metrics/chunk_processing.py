@@ -17,14 +17,14 @@ from typing import Protocol, cast
 
 from sqlalchemy.orm import Session
 
+from tripl.core.adapters.base import BaseAdapter
+from tripl.core.analyzers.event_generator import GenerationResult
 from tripl.models.distribution_drift import DistributionDrift
 from tripl.models.event import Event
 from tripl.models.event_type import EventType
 from tripl.models.scan_config import ScanConfig
 from tripl.models.shadow_event_candidate import SHADOW_STATUS_NEW
 from tripl.models.variable import Variable
-from tripl.worker.adapters.base import BaseAdapter
-from tripl.worker.analyzers.event_generator import GenerationResult
 from tripl.worker.tasks.metrics.collect import _bump_event_last_seen
 from tripl.worker.tasks.metrics.generation import (
     _accumulate_replay_variable_samples,

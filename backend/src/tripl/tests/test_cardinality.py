@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from tripl.worker.adapters.base import ColumnInfo
-from tripl.worker.analyzers.cardinality import analyze_cardinality, analyze_cardinality_grouped
+from tripl.core.adapters.base import ColumnInfo
+from tripl.core.analyzers.cardinality import analyze_cardinality, analyze_cardinality_grouped
 
 
 class FakeBreakdownAdapter:

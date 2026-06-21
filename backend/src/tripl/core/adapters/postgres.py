@@ -7,7 +7,7 @@ from datetime import datetime
 
 import psycopg
 
-from tripl.worker.adapters.base import (
+from tripl.core.adapters.base import (
     BaseAdapter,
     ColumnInfo,
     SchemaColumn,
