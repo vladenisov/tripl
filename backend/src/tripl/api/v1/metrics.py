@@ -82,7 +82,7 @@ async def get_events_window_metrics(
 async def get_overview_kpi_series(
     session: SessionDep,
     slug: str,
-    days: int = 14,
+    days: int = Query(14, ge=1, le=365),
 ) -> OverviewKpiSeriesResponse:
     return await metrics_service.get_overview_kpi_series(session, slug, days=days)
 
@@ -94,8 +94,8 @@ async def get_overview_kpi_series(
 async def get_overview_top_events(
     session: SessionDep,
     slug: str,
-    window_hours: int = 48,
-    limit: int = 6,
+    window_hours: int = Query(48, ge=1, le=720),
+    limit: int = Query(6, ge=1, le=100),
 ) -> list[TopEventResponse]:
     return await metrics_service.get_top_events_by_volume(
         session,
@@ -217,7 +217,7 @@ async def get_top_movers(
     scope_type: str,
     scope_ref: str,
     bucket: datetime,
-    limit: int = 10,
+    limit: int = Query(10, ge=1, le=100),
 ) -> list[TopMoverItem]:
     """Top-N breakdown rows that "moved" a given anomaly bucket, |z| desc."""
     return await metrics_insights_service.get_top_movers(

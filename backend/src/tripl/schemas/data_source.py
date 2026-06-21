@@ -1,9 +1,29 @@
+import re
 import uuid
 from datetime import datetime
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from tripl.models.data_source import DBType, TestStatus
+
+# Bare hostname / IPv4 / bracketed IPv6 characters. Format-only guard: we do NOT
+# block private/loopback addresses here on purpose — data sources legitimately
+# point at private DBs (RFC1918 / VPC) and localhost. This only rejects values
+# that are clearly not a host (a full URL, a path, or embedded whitespace).
+_HOST_FORMAT_RE = re.compile(r"^[A-Za-z0-9._:\-\[\]]+$")
+
+
+def _validate_host_format(value: str | None) -> str | None:
+    if value is None:
+        return value
+    trimmed = value.strip()
+    if "://" in trimmed or "/" in trimmed or any(ch.isspace() for ch in trimmed):
+        raise ValueError(
+            "host must be a bare hostname or IP address (no scheme, path, or whitespace)"
+        )
+    if not _HOST_FORMAT_RE.match(trimmed):
+        raise ValueError("host contains invalid characters")
+    return trimmed
 
 
 class DataSourceCreate(BaseModel):
@@ -17,6 +37,13 @@ class DataSourceCreate(BaseModel):
     timeout_seconds: int | None = Field(None, ge=1)
     extra_params: dict[str, object] | None = None
 
+    @field_validator("host")
+    @classmethod
+    def _check_host(cls, value: str) -> str:
+        validated = _validate_host_format(value)
+        assert validated is not None  # host is required on create
+        return validated
+
 
 class DataSourceUpdate(BaseModel):
     name: str | None = Field(None, min_length=1, max_length=255)
@@ -28,6 +55,11 @@ class DataSourceUpdate(BaseModel):
     password: str | None = None
     timeout_seconds: int | None = Field(None, ge=1)
     extra_params: dict[str, object] | None = None
+
+    @field_validator("host")
+    @classmethod
+    def _check_host(cls, value: str | None) -> str | None:
+        return _validate_host_format(value)
 
 
 class DataSourceResponse(BaseModel):

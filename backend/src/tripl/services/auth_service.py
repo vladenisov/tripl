@@ -14,6 +14,7 @@ from tripl.auth_utils import (
     hash_session_token,
     new_session_token,
     normalize_email,
+    password_hash_needs_rehash,
     verify_password,
 )
 from tripl.config import settings
@@ -88,6 +89,11 @@ async def authenticate_user(session: AsyncSession, data: LoginRequest) -> tuple[
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid email or password",
         )
+
+    # Opportunistic rehash: if the stored hash predates a scrypt-cost bump, we
+    # have the plaintext in hand, so upgrade it to the current parameters now.
+    if password_hash_needs_rehash(user.password_hash):
+        user.password_hash = hash_password(data.password)
 
     await session.execute(
         delete(UserSession)

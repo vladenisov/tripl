@@ -2,10 +2,13 @@ import uuid
 from datetime import UTC, datetime, timedelta
 
 import pytest
-from httpx import AsyncClient
+from httpx import ASGITransport, AsyncClient
+from sqlalchemy import func, select
 
+from tripl.main import app
 from tripl.models.event import Event
 from tripl.models.event_change import create_event_change
+from tripl.models.search_document import SearchDocument
 from tripl.models.variable import Variable
 from tripl.models.variable_value import VariableValue
 from tripl.tests.conftest import TestSessionLocal
@@ -847,3 +850,176 @@ async def test_event_owner_and_reviewed(client: AsyncClient):
     item = next(e for e in listed["items"] if e["id"] == event_id)
     assert item["reviewed"] is False
     assert item["owner_id"] == owner_id
+
+
+async def _count_search_docs(slug: str, *, title: str | None = None) -> int:
+    async with TestSessionLocal() as session:
+        statement = (
+            select(func.count(SearchDocument.id))
+            .join_from(SearchDocument, Event, SearchDocument.parent_event_id == Event.id)
+            .where(SearchDocument.entity_type == "event")
+        )
+        if title is not None:
+            statement = statement.where(SearchDocument.title == title)
+        return int((await session.execute(statement)).scalar() or 0)
+
+
+@pytest.mark.asyncio
+async def test_create_event_indexes_synchronously(client: AsyncClient):
+    """A freshly created event is immediately searchable — the reindex runs
+    inline (not deferred to Celery), so the global search reflects it at once."""
+    et_id, field_id, _ = await _setup_events(client, "ev-sync-index")
+    create = await client.post(
+        "/api/v1/projects/ev-sync-index/events",
+        json={
+            "event_type_id": et_id,
+            "name": "Immediately Searchable",
+            "field_values": [{"field_definition_id": field_id, "value": "home"}],
+        },
+    )
+    assert create.status_code == 201
+
+    found = await client.get("/api/v1/projects/ev-sync-index/search?q=Immediately Searchable")
+    assert found.status_code == 200
+    titles = [item["title"] for item in found.json()["items"]]
+    assert "Immediately Searchable" in titles
+
+
+@pytest.mark.asyncio
+async def test_update_then_delete_reflected_in_search_immediately(client: AsyncClient):
+    """Update and delete each rebuild the index in the same transaction, so the
+    new/removed state is visible to search right away."""
+    et_id, field_id, _ = await _setup_events(client, "ev-sync-mut")
+    create = await client.post(
+        "/api/v1/projects/ev-sync-mut/events",
+        json={
+            "event_type_id": et_id,
+            "name": "Before Rename",
+            "field_values": [{"field_definition_id": field_id, "value": "home"}],
+        },
+    )
+    event_id = create.json()["id"]
+
+    await client.patch(
+        f"/api/v1/projects/ev-sync-mut/events/{event_id}",
+        json={"name": "After Rename"},
+    )
+    renamed = await client.get("/api/v1/projects/ev-sync-mut/search?q=After Rename")
+    titles = [item["title"] for item in renamed.json()["items"]]
+    assert "After Rename" in titles
+    assert "Before Rename" not in titles
+
+    await client.delete(f"/api/v1/projects/ev-sync-mut/events/{event_id}")
+    gone = await client.get("/api/v1/projects/ev-sync-mut/search?q=After Rename")
+    assert all(item["title"] != "After Rename" for item in gone.json()["items"])
+
+
+@pytest.mark.asyncio
+async def test_create_event_is_atomic_with_reindex(client: AsyncClient, monkeypatch):
+    """If the reindex raises, the whole request rolls back: the event row is NOT
+    persisted and no orphan search document is left behind. This proves the data
+    write and the index rebuild share a single transaction."""
+    et_id, field_id, _ = await _setup_events(client, "ev-atomic")
+
+    from tripl.services import event_service
+
+    async def _boom(*_args: object, **_kwargs: object) -> None:
+        raise RuntimeError("reindex failed")
+
+    monkeypatch.setattr(event_service, "_reindex_branch_documents", _boom)
+
+    before = await _count_search_docs("ev-atomic")
+    # The shared `client` fixture's transport re-raises app exceptions, so issue
+    # this request through a transport that lets the global handler turn the
+    # injected reindex error into a 500 (same pattern as test_error_handling).
+    transport = ASGITransport(app=app, raise_app_exceptions=False)
+    async with AsyncClient(
+        transport=transport,
+        base_url="http://test",
+        cookies=client.cookies,
+    ) as boom_client:
+        resp = await boom_client.post(
+            "/api/v1/projects/ev-atomic/events",
+            json={
+                "event_type_id": et_id,
+                "name": "Should Roll Back",
+                "field_values": [{"field_definition_id": field_id, "value": "home"}],
+            },
+        )
+    # The reindex failure surfaces as a 500 (caught by the global handler) and
+    # the whole request rolls back — there is no committed half-state.
+    assert resp.status_code == 500
+
+    # Neither the event nor any search document survived the failed reindex.
+    async with TestSessionLocal() as session:
+        events = (
+            await session.execute(
+                select(func.count(Event.id)).where(Event.name == "Should Roll Back")
+            )
+        ).scalar()
+        assert events == 0
+    assert await _count_search_docs("ev-atomic") == before
+
+
+@pytest.mark.asyncio
+async def test_bulk_create_across_multiple_event_types_validates_per_type(client: AsyncClient):
+    """Bulk create groups field definitions per event type from a single IN-list
+    SELECT: each event is still validated against its OWN type's required
+    fields, so a required field missing for one type is rejected even when other
+    events of a different type are valid."""
+    slug = "ev-bulk-multi"
+    await client.post("/api/v1/projects", json={"name": "BM", "slug": slug})
+
+    # Type A has a required "screen" field; type B has an optional "label".
+    et_a = (
+        await client.post(
+            f"/api/v1/projects/{slug}/event-types",
+            json={"name": "type_a", "display_name": "Type A"},
+        )
+    ).json()["id"]
+    field_a = (
+        await client.post(
+            f"/api/v1/projects/{slug}/event-types/{et_a}/fields",
+            json={
+                "name": "screen",
+                "display_name": "Screen",
+                "field_type": "string",
+                "is_required": True,
+            },
+        )
+    ).json()["id"]
+    et_b = (
+        await client.post(
+            f"/api/v1/projects/{slug}/event-types",
+            json={"name": "type_b", "display_name": "Type B"},
+        )
+    ).json()["id"]
+    await client.post(
+        f"/api/v1/projects/{slug}/event-types/{et_b}/fields",
+        json={"name": "label", "display_name": "Label", "field_type": "string"},
+    )
+
+    # Valid mixed-type batch: A provides its required field, B needs none.
+    ok = await client.post(
+        f"/api/v1/projects/{slug}/events/bulk",
+        json=[
+            {
+                "event_type_id": et_a,
+                "name": "A Event",
+                "field_values": [{"field_definition_id": field_a, "value": "home"}],
+            },
+            {"event_type_id": et_b, "name": "B Event", "field_values": []},
+        ],
+    )
+    assert ok.status_code == 201
+    assert {e["name"] for e in ok.json()} == {"A Event", "B Event"}
+
+    # A's required field omitted -> rejected, even though B is valid.
+    bad = await client.post(
+        f"/api/v1/projects/{slug}/events/bulk",
+        json=[
+            {"event_type_id": et_a, "name": "A Missing", "field_values": []},
+            {"event_type_id": et_b, "name": "B Ok", "field_values": []},
+        ],
+    )
+    assert bad.status_code == 422

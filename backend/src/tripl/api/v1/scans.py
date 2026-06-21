@@ -3,6 +3,9 @@ import uuid
 from fastapi import APIRouter, Depends
 
 from tripl.api.deps import EditorUserDep, SessionDep, get_editor_user
+from tripl.models.scan_config import ScanConfig
+from tripl.models.scan_job import ScanJob
+from tripl.models.scan_preview_job import ScanPreviewJob
 from tripl.schemas.scan_config import (
     ScanConfigCreate,
     ScanConfigPreviewRequest,
@@ -13,6 +16,11 @@ from tripl.schemas.scan_config import (
 from tripl.schemas.scan_job import ScanJobResponse, ScanPreviewJobResponse
 from tripl.services import audit_service, scan_service
 
+# Handlers return ORM models; FastAPI serializes them through each route's
+# ``response_model=...Response`` (the OpenAPI contract). The return annotations
+# below name the ORM type actually returned so mypy matches the runtime, while
+# response_model still drives schema generation and output validation.
+
 router = APIRouter(
     prefix="/projects/{slug}/scans",
     tags=["scans"],
@@ -21,7 +29,7 @@ _editor_required = [Depends(get_editor_user)]
 
 
 @router.get("", response_model=list[ScanConfigResponse])
-async def list_scan_configs(session: SessionDep, slug: str) -> object:
+async def list_scan_configs(session: SessionDep, slug: str) -> list[ScanConfig]:
     return await scan_service.list_scan_configs(session, slug)
 
 
@@ -31,7 +39,7 @@ async def create_scan_config(
     slug: str,
     data: ScanConfigCreate,
     current_user: EditorUserDep,
-) -> object:
+) -> ScanConfig:
     cfg = await scan_service.create_scan_config(session, slug, data)
     await audit_service.record(
         session,
@@ -56,7 +64,7 @@ async def preview_scan_config(
     session: SessionDep,
     slug: str,
     data: ScanConfigPreviewRequest,
-) -> object:
+) -> ScanPreviewJob:
     """Enqueue a preview job; poll GET /preview-jobs/{job_id} for the result."""
     return await scan_service.trigger_preview(session, slug, data)
 
@@ -70,12 +78,14 @@ async def get_scan_preview_job(
     session: SessionDep,
     slug: str,
     job_id: uuid.UUID,
-) -> object:
+) -> ScanPreviewJob:
     return await scan_service.get_preview_job(session, slug, job_id)
 
 
 @router.get("/{scan_id}", response_model=ScanConfigResponse)
-async def get_scan_config(session: SessionDep, slug: str, scan_id: uuid.UUID) -> object:
+async def get_scan_config(
+    session: SessionDep, slug: str, scan_id: uuid.UUID
+) -> ScanConfig:
     return await scan_service.get_scan_config(session, slug, scan_id)
 
 
@@ -86,7 +96,7 @@ async def update_scan_config(
     scan_id: uuid.UUID,
     data: ScanConfigUpdate,
     current_user: EditorUserDep,
-) -> object:
+) -> ScanConfig:
     cfg = await scan_service.update_scan_config(session, slug, scan_id, data)
     await audit_service.record(
         session,
@@ -128,7 +138,7 @@ async def delete_scan_config(
     status_code=201,
     dependencies=_editor_required,
 )
-async def run_scan(session: SessionDep, slug: str, scan_id: uuid.UUID) -> object:
+async def run_scan(session: SessionDep, slug: str, scan_id: uuid.UUID) -> ScanJob:
     return await scan_service.trigger_scan(session, slug, scan_id)
 
 
@@ -142,7 +152,7 @@ async def apply_scan_event_groups(
     slug: str,
     scan_id: uuid.UUID,
     current_user: EditorUserDep,
-) -> object:
+) -> ScanJob:
     job = await scan_service.trigger_event_groups_apply(session, slug, scan_id)
     cfg = await scan_service.get_scan_config(session, slug, scan_id)
     await audit_service.record(
@@ -169,12 +179,14 @@ async def replay_scan_metrics(
     slug: str,
     scan_id: uuid.UUID,
     data: ScanMetricsReplayRequest,
-) -> object:
+) -> ScanJob:
     return await scan_service.trigger_metrics_replay(session, slug, scan_id, data)
 
 
 @router.get("/{scan_id}/jobs", response_model=list[ScanJobResponse])
-async def list_scan_jobs(session: SessionDep, slug: str, scan_id: uuid.UUID) -> object:
+async def list_scan_jobs(
+    session: SessionDep, slug: str, scan_id: uuid.UUID
+) -> list[ScanJob]:
     return await scan_service.list_scan_jobs(session, slug, scan_id)
 
 
@@ -184,7 +196,7 @@ async def get_scan_job(
     slug: str,
     scan_id: uuid.UUID,
     job_id: uuid.UUID,
-) -> object:
+) -> ScanJob:
     return await scan_service.get_scan_job(session, slug, scan_id, job_id)
 
 
@@ -195,7 +207,7 @@ async def cancel_scan_job(
     scan_id: uuid.UUID,
     job_id: uuid.UUID,
     current_user: EditorUserDep,
-) -> object:
+) -> ScanJob:
     job = await scan_service.cancel_scan_job(session, slug, scan_id, job_id)
     await audit_service.record(
         session,

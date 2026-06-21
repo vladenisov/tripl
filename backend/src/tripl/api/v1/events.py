@@ -35,6 +35,9 @@ async def list_events(
     field_value: str | None = None,
     meta_value: str | None = None,
     offset: int = Query(0, ge=0),
+    # NOTE: ceiling kept at 10000 (not lowered to 1000) because the frontend
+    # ProjectAlertingTab.tsx fetches the full event roster with limit=10000;
+    # lowering it would 422 that caller. See deferred note in Lane E.
     limit: int = Query(200, ge=1, le=10000),
 ) -> EventListResponse:
     items, total = await event_service.list_events(
