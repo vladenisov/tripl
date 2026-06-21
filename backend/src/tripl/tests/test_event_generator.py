@@ -60,9 +60,12 @@ def sync_session():
     Base.metadata.create_all(engine)
     factory = sessionmaker(engine, expire_on_commit=False)
     session = factory()
-    yield session
-    session.close()
-    Base.metadata.drop_all(engine)
+    try:
+        yield session
+    finally:
+        session.close()
+        Base.metadata.drop_all(engine)
+        engine.dispose()
 
 
 @pytest.fixture

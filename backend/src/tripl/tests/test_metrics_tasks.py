@@ -47,9 +47,11 @@ def sync_session_factory(tmp_path: Path) -> Iterator[sessionmaker[Session]]:
     engine = create_engine(f"sqlite:///{tmp_path / 'metrics_tasks.db'}")
     Base.metadata.create_all(engine)
     factory = sessionmaker(engine, expire_on_commit=False)
-    yield factory
-    Base.metadata.drop_all(engine)
-    engine.dispose()
+    try:
+        yield factory
+        Base.metadata.drop_all(engine)
+    finally:
+        engine.dispose()
 
 
 def _create_scan_config(session: Session, *, with_event_type: bool = False) -> ScanConfig:
