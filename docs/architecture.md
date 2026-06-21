@@ -59,8 +59,10 @@ Locally, all of the above (except the warehouses) run under Docker Compose:
 - **Pydantic v2** schemas as the request/response contract.
 - Routers live under `src/tripl/api/v1` and stay thin; business rules live in
   `src/tripl/services`.
-- On startup the api runs `alembic upgrade head` before serving requests, so the
-  schema is always current.
+- Migrations are applied by the deployment entrypoint (the Compose `api` command
+  runs `alembic upgrade head`) before the API starts serving requests, so the
+  schema is current. The app process itself does not run migrations on startup;
+  its lifespan only configures logging and asserts production readiness.
 - Health check: `GET /health`.
 
 ### Authentication & access

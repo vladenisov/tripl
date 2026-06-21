@@ -1,3 +1,7 @@
+# This compose stack targets the `dev` Docker stage (hot-reload, root user) for
+# local development. Production deploys should build the `runtime` stage instead,
+# which runs as a non-root user with a HEALTHCHECK (see backend/Dockerfile and
+# frontend/Dockerfile).
 x-backend-build: &backend-build
   context: ./backend
   target: dev
