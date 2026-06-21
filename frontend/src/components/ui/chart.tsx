@@ -32,6 +32,7 @@ interface MiniMetricsChartProps {
   className?: string
   color?: string
   height?: number
+  label?: string
 }
 
 interface MetricsMultiSeriesChartProps {
@@ -304,6 +305,7 @@ export function MetricsChart({
   const { chartStyle } = useTheme()
   const chartColor = color || 'var(--chart-1)'
   const gradientId = useId().replace(/:/g, '')
+  const descId = useId()
   const chartData = useMemo(() => buildChartData(data, forecast), [data, forecast])
   const snappedAnnotations = useMemo(
     () => snapAnnotationsToBuckets(annotations, chartData),
@@ -318,9 +320,18 @@ export function MetricsChart({
     )
   }
 
+  const anomalyCount = data.filter(point => point.is_anomaly).length
+
   return (
-    <div className={cn('w-full', className)} style={{ height }}>
-      <div className="sr-only">
+    <div
+      role="img"
+      aria-label={`${seriesLabel} over time`}
+      aria-describedby={descId}
+      className={cn('w-full', className)}
+      style={{ height }}
+    >
+      <div id={descId} className="sr-only">
+        {data.length} data points.{anomalyCount > 0 ? ` ${anomalyCount} anomalies detected.` : ''}
         {data.filter(point => point.is_anomaly).map(point => (
           <span key={point.bucket} data-testid="anomaly-dot">
             {point.bucket}
@@ -488,8 +499,24 @@ export function MetricsMultiSeriesChart({
     )
   }
 
+  const multiSeriesLabel = seriesLabel
+
   return (
-    <div className={cn('w-full', className)} style={{ height }}>
+    <div
+      role="img"
+      aria-label={`${multiSeriesLabel} breakdown over time`}
+      className={cn('w-full', className)}
+      style={{ height }}
+    >
+      <div className="sr-only">
+        <p>Chart with {chartSeries.length} series: {chartSeries.map(s => s.label).join(', ')}.</p>
+        {chartSeries.map(item => {
+          const anomalies = item.data.filter(point => point.is_anomaly)
+          return anomalies.length > 0 ? (
+            <p key={item.key}>{item.label}: {anomalies.length} anomalies detected.</p>
+          ) : null
+        })}
+      </div>
       <ResponsiveContainer width="100%" height="100%">
         <ComposedChart data={chartData} margin={{ top: 8, right: 8, bottom: 0, left: 0 }}>
           <CartesianGrid strokeDasharray="3 3" className="stroke-border" vertical={false} />
@@ -635,6 +662,7 @@ export function MiniMetricsChart({
   className,
   color,
   height = 72,
+  label,
 }: MiniMetricsChartProps) {
   const { chartStyle } = useTheme()
   const chartColor = color || 'var(--chart-1)'
@@ -651,8 +679,19 @@ export function MiniMetricsChart({
     )
   }
 
+  const anomalyCount = data.filter(point => point.is_anomaly).length
+  const chartLabel = label ?? 'Metric trend chart'
+
   return (
-    <div className={cn('w-full', className)} style={{ height }}>
+    <div
+      role="img"
+      aria-label={chartLabel}
+      className={cn('w-full', className)}
+      style={{ height }}
+    >
+      <span className="sr-only">
+        {chartLabel}: {data.length} data points{anomalyCount > 0 ? `, ${anomalyCount} anomalies` : ''}.
+      </span>
       <ResponsiveContainer width="100%" height="100%">
         <ComposedChart data={data} margin={{ top: 4, right: 2, bottom: 2, left: 2 }}>
           <defs>

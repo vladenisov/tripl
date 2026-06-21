@@ -72,8 +72,9 @@ export function EventsToolbar({
   return (
     <div className="mb-3 flex items-center gap-2 overflow-x-auto">
       <div className="relative max-w-[320px] flex-1 shrink-0">
-        <Search className="absolute left-2.5 top-2 h-3.5 w-3.5 text-muted-foreground" />
+        <Search className="absolute left-2.5 top-2 h-3.5 w-3.5 text-muted-foreground" aria-hidden="true" />
         <Input
+          aria-label="Filter events by name, tag, or field"
           placeholder="Filter by name, tag, field…"
           value={search}
           onChange={event => onSearchChange(event.target.value)}

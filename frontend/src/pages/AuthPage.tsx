@@ -83,7 +83,7 @@ export default function AuthPage() {
           <CardHeader className="border-b border-white/10 px-6 py-6">
             <div className="flex items-center justify-between gap-3">
               <div>
-                <CardTitle className="text-2xl text-white">Sign in to tripl</CardTitle>
+                <CardTitle as="h2" className="text-2xl text-white">Sign in to tripl</CardTitle>
                 <CardDescription className="mt-2 text-slate-400">
                   Use your account to access the workspace and monitoring tools.
                 </CardDescription>
@@ -101,6 +101,7 @@ export default function AuthPage() {
             <div className="grid grid-cols-2 gap-2 rounded-xl border border-white/10 bg-white/5 p-1">
               <button
                 type="button"
+                aria-pressed={mode === 'login'}
                 className={cn(
                   'rounded-lg px-3 py-2 text-sm font-medium transition-colors',
                   mode === 'login'
@@ -113,6 +114,7 @@ export default function AuthPage() {
               </button>
               <button
                 type="button"
+                aria-pressed={mode === 'register'}
                 className={cn(
                   'rounded-lg px-3 py-2 text-sm font-medium transition-colors',
                   mode === 'register'
@@ -181,7 +183,10 @@ export default function AuthPage() {
               </div>
 
               {authMutation.isError && (
-                <div className="rounded-lg border border-rose-500/25 bg-rose-500/10 px-3 py-2 text-sm text-rose-200">
+                <div
+                  role="alert"
+                  className="rounded-lg border border-rose-500/25 bg-rose-500/10 px-3 py-2 text-sm text-rose-200"
+                >
                   {authMutation.error.message}
                 </div>
               )}

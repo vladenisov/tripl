@@ -69,7 +69,7 @@ export function ScanConfigurationTab({
 
   const footerFor = () => (
     <>
-      <span className="flex-1 text-xs" style={{ color: 'var(--fg-subtle)' }}>
+      <span role="status" className="flex-1 text-xs" style={{ color: 'var(--fg-subtle)' }}>
         {updateMut.isError ? '' : updateMut.isSuccess ? 'Saved.' : ''}
       </span>
       <Button

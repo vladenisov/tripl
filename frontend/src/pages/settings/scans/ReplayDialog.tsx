@@ -71,16 +71,16 @@ export function ReplayDialog({
         <div className="text-[12.5px] font-semibold">Replay metrics period</div>
           <div className="grid gap-3 sm:grid-cols-2">
             <div className="grid gap-2">
-              <Label>From</Label>
-              <Input type="datetime-local" value={from} onChange={e => setFrom(e.target.value)} required />
+              <Label htmlFor="replay-from">From</Label>
+              <Input id="replay-from" type="datetime-local" value={from} onChange={e => setFrom(e.target.value)} required />
             </div>
             <div className="grid gap-2">
-              <Label>To</Label>
-              <Input type="datetime-local" value={to} onChange={e => setTo(e.target.value)} required />
+              <Label htmlFor="replay-to">To</Label>
+              <Input id="replay-to" type="datetime-local" value={to} onChange={e => setTo(e.target.value)} required />
             </div>
           </div>
           {replayMut.isError && (
-            <p className="text-sm" style={{ color: 'var(--danger)' }}>{getErrorMessage(replayMut.error)}</p>
+            <p role="alert" className="text-sm" style={{ color: 'var(--danger)' }}>{getErrorMessage(replayMut.error)}</p>
           )}
           <div className="flex justify-end gap-2">
             <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>Cancel</Button>

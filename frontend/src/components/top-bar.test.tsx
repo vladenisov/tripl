@@ -112,7 +112,7 @@ describe('TopBar notifications', () => {
 
     renderTopBar()
 
-    fireEvent.click(screen.getByTitle('Notifications'))
+    fireEvent.click(screen.getByRole('button', { name: /Notifications/ }))
 
     await waitFor(() => {
       expect(screen.getByText('Spike on event type type-123')).toBeInTheDocument()

@@ -33,7 +33,7 @@ function SparklineInner({
   if (variant === "bar") {
     const barW = Math.max(1.5, width / data.length - 1)
     return (
-      <svg width={width} height={height} className={className} style={{ display: "block", ...style }}>
+      <svg width={width} height={height} aria-hidden="true" className={className} style={{ display: "block", ...style }}>
         {data.map((v, i) => {
           const h = Math.max(1, ((v - min) / range) * (height - 2))
           const isAnom = anomalyIdx === i
@@ -68,6 +68,7 @@ function SparklineInner({
     <svg
       width={width}
       height={height}
+      aria-hidden="true"
       className={className}
       style={{ display: "block", overflow: "visible", ...style }}
     >

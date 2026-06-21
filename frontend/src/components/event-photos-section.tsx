@@ -4,7 +4,7 @@ import { eventPhotosApi } from '@/api/eventPhotos'
 import type { EventPhoto, EventPhotoComment } from '@/types'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
-import { Dialog, DialogContent } from '@/components/ui/dialog'
+import { Dialog, DialogContent, DialogTitle } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
 import { Frame, ImagePlus, Loader2, MessageCircle, Trash2, Upload, X } from 'lucide-react'
 
@@ -135,14 +135,18 @@ export default function EventPhotosSection({ slug, eventId }: Props) {
         </div>
 
         <div className="mb-4 flex flex-wrap items-center gap-2 rounded-md border bg-muted/30 px-3 py-2">
-          <Frame className="h-4 w-4 text-muted-foreground" />
+          <Frame className="h-4 w-4 text-muted-foreground" aria-hidden="true" />
+          <label htmlFor="figma-url" className="sr-only">Figma URL</label>
           <Input
+            id="figma-url"
             placeholder="https://www.figma.com/file/…"
             value={figmaUrl}
             onChange={event => setFigmaUrl(event.target.value)}
             className="h-8 max-w-md"
           />
+          <label htmlFor="figma-title" className="sr-only">Title (optional)</label>
           <Input
+            id="figma-title"
             placeholder="Title (optional)"
             value={figmaTitle}
             onChange={event => setFigmaTitle(event.target.value)}
@@ -162,6 +166,8 @@ export default function EventPhotosSection({ slug, eventId }: Props) {
         </div>
 
         <div
+          role="region"
+          aria-label="Photo upload area"
           onDragOver={event => {
             event.preventDefault()
             setDragOver(true)
@@ -206,7 +212,7 @@ export default function EventPhotosSection({ slug, eventId }: Props) {
         </div>
 
         {error && (
-          <div className="mt-3 rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive">
+          <div role="alert" className="mt-3 rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive">
             {error}
           </div>
         )}
@@ -214,6 +220,9 @@ export default function EventPhotosSection({ slug, eventId }: Props) {
 
       <Dialog open={opened !== null} onOpenChange={open => !open && setOpened(null)}>
         <DialogContent className="max-w-5xl bg-background p-2">
+          <DialogTitle className="sr-only">
+            {opened?.original_filename ?? 'Photo viewer'}
+          </DialogTitle>
           {opened && (
             <PhotoViewer
               photo={opened}
@@ -267,6 +276,7 @@ function PhotoTile({
         <Button
           size="icon"
           variant="destructive"
+          aria-label="Delete photo"
           className="h-7 w-7 shrink-0"
           disabled={deleting}
           onClick={event => {
@@ -274,7 +284,7 @@ function PhotoTile({
             onDelete()
           }}
         >
-          <Trash2 className="h-3.5 w-3.5" />
+          <Trash2 className="h-3.5 w-3.5" aria-hidden="true" />
         </Button>
       </div>
       <div className="absolute right-1 top-1 rounded bg-black/50 px-1.5 py-0.5 text-[10px] text-white">
@@ -441,7 +451,9 @@ function CommentThread({
             </button>
           </div>
         )}
+        <label htmlFor="comment-body" className="sr-only">Write a comment</label>
         <textarea
+          id="comment-body"
           value={body}
           onChange={event => setBody(event.target.value)}
           placeholder="Write a comment…"
@@ -490,10 +502,11 @@ function CommentItem({
             </button>
             <button
               type="button"
+              aria-label="Delete comment"
               className="hover:text-destructive"
               onClick={() => onDelete(comment.id)}
             >
-              <Trash2 className="h-3 w-3" />
+              <Trash2 className="h-3 w-3" aria-hidden="true" />
             </button>
           </div>
         </div>
@@ -507,10 +520,11 @@ function CommentItem({
                 <span>{new Date(reply.created_at).toLocaleString()}</span>
                 <button
                   type="button"
+                  aria-label="Delete comment"
                   className="hover:text-destructive"
                   onClick={() => onDelete(reply.id)}
                 >
-                  <Trash2 className="h-3 w-3" />
+                  <Trash2 className="h-3 w-3" aria-hidden="true" />
                 </button>
               </div>
               <p className="whitespace-pre-wrap text-sm">{reply.body}</p>

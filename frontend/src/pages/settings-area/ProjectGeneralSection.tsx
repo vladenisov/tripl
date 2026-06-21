@@ -17,13 +17,13 @@ import {
   TextInput,
 } from '@/components/settings/kit'
 
-const ACCENT_COLORS = [
-  'oklch(0.72 0.14 192)',
-  'oklch(0.72 0.16 290)',
-  'oklch(0.74 0.16 152)',
-  'oklch(0.78 0.15 75)',
-  'oklch(0.74 0.17 15)',
-  'oklch(0.72 0.14 240)',
+const ACCENT_COLORS: { value: string; label: string }[] = [
+  { value: 'oklch(0.72 0.14 192)', label: 'Cyan' },
+  { value: 'oklch(0.72 0.16 290)', label: 'Purple' },
+  { value: 'oklch(0.74 0.16 152)', label: 'Green' },
+  { value: 'oklch(0.78 0.15 75)', label: 'Yellow' },
+  { value: 'oklch(0.74 0.17 15)', label: 'Red' },
+  { value: 'oklch(0.72 0.14 240)', label: 'Blue' },
 ]
 
 function DangerRow({
@@ -82,7 +82,7 @@ function ProjectGeneralBody({ slug }: { slug: string }) {
   const [name, setName] = useState('')
   const [slugDraft, setSlugDraft] = useState('')
   const [description, setDescription] = useState('')
-  const [accent, setAccent] = useState(ACCENT_COLORS[0])
+  const [accent, setAccent] = useState(ACCENT_COLORS[0].value)
   const [hydratedFor, setHydratedFor] = useState<string | null>(null)
 
   if (projectQuery.data && hydratedFor !== projectQuery.data.id) {
@@ -215,14 +215,14 @@ function ProjectGeneralBody({ slug }: { slug: string }) {
               <div className="flex gap-2">
                 {ACCENT_COLORS.map((c) => (
                   <button
-                    key={c}
+                    key={c.value}
                     type="button"
-                    onClick={() => setAccent(c)}
-                    aria-label={`Accent ${c}`}
+                    onClick={() => setAccent(c.value)}
+                    aria-label={`Accent color: ${c.label}${accent === c.value ? ', selected' : ''}`}
                     className="h-7 w-7 rounded-[7px]"
                     style={{
-                      background: c,
-                      border: accent === c ? '2px solid var(--fg)' : '2px solid transparent',
+                      background: c.value,
+                      border: accent === c.value ? '2px solid var(--fg)' : '2px solid transparent',
                       outline: '1px solid var(--border)',
                     }}
                   />

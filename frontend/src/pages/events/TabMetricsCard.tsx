@@ -129,7 +129,7 @@ export function TabMetricsCard({
               value={granularity}
               onValueChange={value => setGranularity(value as MetricsGranularity)}
             >
-              <SelectTrigger className="h-7 w-28 text-xs">
+              <SelectTrigger className="h-7 w-28 text-xs" aria-label="Time granularity">
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>

@@ -207,8 +207,9 @@ export default function ApiKeysSection() {
             className="grid gap-4 px-[18px] py-4"
           >
               <div className="grid gap-2">
-                <Label>Name</Label>
+                <Label htmlFor="key-name">Name</Label>
                 <Input
+                  id="key-name"
                   value={name}
                   onChange={(e) => setName(e.target.value)}
                   placeholder="e.g. claude-agent"
@@ -216,8 +217,9 @@ export default function ApiKeysSection() {
                 />
               </div>
               <div className="grid gap-2">
-                <Label>Scope</Label>
+                <Label htmlFor="key-scope">Scope</Label>
                 <select
+                  id="key-scope"
                   value={scope}
                   onChange={(e) => setScope(e.target.value as ApiKeyScope)}
                   className="h-9 rounded-md border bg-background px-2 text-sm"
@@ -227,8 +229,9 @@ export default function ApiKeysSection() {
                 </select>
               </div>
               <div className="grid gap-2">
-                <Label>Project (optional)</Label>
+                <Label htmlFor="key-project">Project (optional)</Label>
                 <select
+                  id="key-project"
                   value={projectSlug}
                   onChange={(e) => setProjectSlug(e.target.value)}
                   className="h-9 rounded-md border bg-background px-2 text-sm"
@@ -242,8 +245,9 @@ export default function ApiKeysSection() {
                 </select>
               </div>
               <div className="grid gap-2">
-                <Label>Expires in (days, optional)</Label>
+                <Label htmlFor="key-expires">Expires in (days, optional)</Label>
                 <Input
+                  id="key-expires"
                   type="number"
                   min={1}
                   max={3650}
@@ -253,7 +257,7 @@ export default function ApiKeysSection() {
                 />
               </div>
               {createMut.isError && (
-                <p className="text-xs text-destructive">{getErrorMessage(createMut.error)}</p>
+                <p role="alert" className="text-xs text-destructive">{getErrorMessage(createMut.error)}</p>
               )}
             <div className="flex justify-end gap-2">
               <Button type="button" variant="outline" onClick={() => setShowForm(false)}>
@@ -283,11 +287,12 @@ export default function ApiKeysSection() {
                 size="icon"
                 variant="ghost"
                 className="h-7 w-7"
+                aria-label="Copy API key"
                 onClick={() => {
                   if (revealed) void navigator.clipboard.writeText(revealed.token)
                 }}
               >
-                <Copy className="h-3.5 w-3.5" />
+                <Copy aria-hidden="true" className="h-3.5 w-3.5" />
               </Button>
             </div>
           </div>

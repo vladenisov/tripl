@@ -201,7 +201,7 @@ describe('EventsPage', () => {
     expect(screen.getByText('48h')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: '7d' })).toBeInTheDocument()
     expect(screen.getByText('Hours')).toBeInTheDocument()
-    const metricsButton = await screen.findByRole('button', { name: '1k' })
+    const metricsButton = await screen.findByRole('button', { name: /Homepage View metrics: 1k events in last 48 hours/ })
     expect(metricsButton).toBeInTheDocument()
     // The row exposes no inline action buttons — Edit/Metrics/Archive/Delete and
     // move/status now live on the event detail page, not on the row.

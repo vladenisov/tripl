@@ -31,7 +31,7 @@ export function StatusBadge({ active, label }: { active: boolean; label: string 
           : 'inline-flex items-center gap-1 text-xs text-muted-foreground'
       }
     >
-      {active ? <CheckCircle2 className="h-3 w-3" /> : <XCircle className="h-3 w-3" />}
+      {active ? <CheckCircle2 className="h-3 w-3" aria-hidden="true" /> : <XCircle className="h-3 w-3" aria-hidden="true" />}
       {label}
     </span>
   )

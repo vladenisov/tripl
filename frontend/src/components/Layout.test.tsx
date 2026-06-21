@@ -110,7 +110,7 @@ describe('Layout activity panel', () => {
     expect(await screen.findByText('Monitoring detail')).toBeInTheDocument()
     expect(screen.queryByTestId('activity-panel')).toBeNull()
 
-    fireEvent.click(screen.getByRole('button', { name: 'Now' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Toggle activity panel' }))
 
     expect(await screen.findByTestId('activity-panel')).toHaveTextContent('Now demo')
   })

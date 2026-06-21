@@ -33,6 +33,7 @@ export function StorageSection({
           stacked
         >
           <RadioCards
+            groupLabel="Photo storage backend"
             value={form.storage.photo_storage_backend}
             onChange={value => setField('storage', 'photo_storage_backend', value)}
             options={PHOTO_STORAGE_BACKEND_OPTIONS}

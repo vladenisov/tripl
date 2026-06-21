@@ -37,8 +37,9 @@ export function MetricBreakdownPicker({
           </p>
         </div>
         <div className="grid w-40 gap-1">
-          <Label className="text-xs">Value limit</Label>
+          <Label htmlFor="breakdown-value-limit" className="text-xs">Value limit</Label>
           <Input
+            id="breakdown-value-limit"
             type="number"
             min={1}
             value={valuesLimit}
@@ -64,6 +65,7 @@ export function MetricBreakdownPicker({
               <Checkbox
                 checked={selectedColumns.includes(column.name)}
                 disabled={disabled}
+                aria-label={`Breakdown by ${column.name}`}
                 onCheckedChange={() => {
                   if (!disabled) onToggleColumn(column.name)
                 }}

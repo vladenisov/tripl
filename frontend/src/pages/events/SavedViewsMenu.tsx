@@ -80,10 +80,11 @@ export function SavedViewsMenu({
                 >
                   <button
                     type="button"
+                    aria-pressed={isActive}
                     onClick={() => onApply(view)}
                     className="flex min-w-0 flex-1 items-center gap-2 rounded px-1 py-1 text-left text-[12px]"
                   >
-                    <span className="inline-flex h-3.5 w-3.5 shrink-0 items-center justify-center">
+                    <span className="inline-flex h-3.5 w-3.5 shrink-0 items-center justify-center" aria-hidden="true">
                       {isActive && <Check className="h-3 w-3" />}
                     </span>
                     <span className="min-w-0 flex-1 truncate">{view.name}</span>

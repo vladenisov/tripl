@@ -61,9 +61,13 @@ export function ScanListRow({
 
   return (
     <tr
+      role="button"
+      tabIndex={0}
+      aria-label={`View scan config ${sc.name}`}
       className="cursor-pointer border-t transition-colors hover:bg-[var(--surface-hover)]"
       style={{ borderColor: 'var(--border-subtle)' }}
       onClick={onNavigate}
+      onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onNavigate() } }}
     >
       <td className="px-3.5 py-2.5 align-middle">
         <div className="flex items-center gap-2.5">
@@ -102,7 +106,7 @@ export function ScanListRow({
           </span>
         </span>
       </td>
-      <td className="w-10 px-3.5 py-2.5 align-middle text-[var(--fg-faint)]">›</td>
+      <td className="w-10 px-3.5 py-2.5 align-middle text-[var(--fg-faint)]" aria-hidden="true">›</td>
     </tr>
   )
 }

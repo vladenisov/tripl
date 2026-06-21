@@ -48,6 +48,7 @@ export function SqlEditor({
         value={value}
         onChange={onChange}
         placeholder={placeholder}
+        aria-label="SQL base query"
         extensions={[sql({ dialect: dialect ? HIGHLIGHT_DIALECT[dialect] : StandardSQL, schema })]}
         basicSetup={{ lineNumbers: true, foldGutter: false, highlightActiveLine: false }}
         minHeight={minHeight}

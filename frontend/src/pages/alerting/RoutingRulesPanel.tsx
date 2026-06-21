@@ -18,7 +18,6 @@ const STATUS_LABEL: Record<MonitorStatus, string> = {
   healthy: 'Healthy',
 }
 
-const GRID = 'grid grid-cols-[1.4fr_1.6fr_1fr_84px_72px] items-center gap-3 px-4'
 
 function conditionOf(m: MonitorSummaryItem): string {
   const directions = [
@@ -66,54 +65,66 @@ export function RoutingRulesPanel({ slug }: { slug: string }) {
           {query.isLoading ? 'Loading…' : 'No monitors route to a destination yet.'}
         </div>
       ) : (
-        <div>
-          <div
-            className={`${GRID} border-b py-2 text-[10.5px] font-semibold uppercase tracking-[0.05em]`}
-            style={{ borderColor: 'var(--border-subtle)', color: 'var(--fg-faint)' }}
-          >
-            <span>Monitor</span>
-            <span>Condition</span>
-            <span>Routes to</span>
-            <span>State</span>
-            <span className="text-right">Last fired</span>
-          </div>
-          {monitors.map((m) => (
-            <div
-              key={m.rule_id}
-              className={`${GRID} border-b py-2.5 last:border-0`}
-              style={{ borderColor: 'var(--border-subtle)' }}
+        <table className="w-full border-collapse">
+          <thead>
+            <tr
+              className="border-b text-[10.5px] font-semibold uppercase tracking-[0.05em]"
+              style={{ borderColor: 'var(--border-subtle)', color: 'var(--fg-faint)' }}
             >
-              <span className="flex min-w-0 items-center gap-2">
-                <Dot tone={STATUS_TONE[m.status]} pulse={m.status === 'firing'} size={7} />
-                <span className="truncate text-[12.5px] font-medium">{m.rule_name}</span>
-                {!m.enabled && (
-                  <Chip tone="neutral" size="xs">
-                    off
+              <th scope="col" className="px-4 py-2 text-left font-semibold">Monitor</th>
+              <th scope="col" className="px-4 py-2 text-left font-semibold">Condition</th>
+              <th scope="col" className="px-4 py-2 text-left font-semibold">Routes to</th>
+              <th scope="col" className="px-4 py-2 text-left font-semibold">State</th>
+              <th scope="col" className="px-4 py-2 text-right font-semibold">Last fired</th>
+            </tr>
+          </thead>
+          <tbody>
+            {monitors.map((m) => (
+              <tr
+                key={m.rule_id}
+                className="border-b last:border-0"
+                style={{ borderColor: 'var(--border-subtle)' }}
+              >
+                <td className="px-4 py-2.5">
+                  <span className="flex min-w-0 items-center gap-2">
+                    <Dot tone={STATUS_TONE[m.status]} pulse={m.status === 'firing'} size={7} />
+                    <span className="truncate text-[12.5px] font-medium">{m.rule_name}</span>
+                    {!m.enabled && (
+                      <Chip tone="neutral" size="xs">
+                        off
+                      </Chip>
+                    )}
+                  </span>
+                </td>
+                <td className="px-4 py-2.5">
+                  <span className="mono truncate text-[11px]" style={{ color: 'var(--fg-subtle)' }}>
+                    {conditionOf(m)}
+                  </span>
+                </td>
+                <td className="px-4 py-2.5">
+                  <span className="flex min-w-0 flex-col gap-0.5">
+                    <Chip tone="neutral" size="xs">
+                      {m.destination_type}
+                    </Chip>
+                    <span className="truncate text-[10px]" style={{ color: 'var(--fg-faint)' }}>
+                      {m.destination_name}
+                    </span>
+                  </span>
+                </td>
+                <td className="px-4 py-2.5">
+                  <Chip tone={STATUS_TONE[m.status]} size="xs">
+                    {STATUS_LABEL[m.status]}
                   </Chip>
-                )}
-              </span>
-              <span className="mono truncate text-[11px]" style={{ color: 'var(--fg-subtle)' }}>
-                {conditionOf(m)}
-              </span>
-              <span className="flex min-w-0 flex-col gap-0.5">
-                <Chip tone="neutral" size="xs">
-                  {m.destination_type}
-                </Chip>
-                <span className="truncate text-[10px]" style={{ color: 'var(--fg-faint)' }}>
-                  {m.destination_name}
-                </span>
-              </span>
-              <span>
-                <Chip tone={STATUS_TONE[m.status]} size="xs">
-                  {STATUS_LABEL[m.status]}
-                </Chip>
-              </span>
-              <span className="mono text-right text-[10.5px]" style={{ color: 'var(--fg-faint)' }}>
-                {m.last_anomaly_at ? formatRelativeTime(m.last_anomaly_at) : '—'}
-              </span>
-            </div>
-          ))}
-        </div>
+                </td>
+                <td className="px-4 py-2.5 text-right">
+                  <span className="mono text-[10.5px]" style={{ color: 'var(--fg-faint)' }}>
+                    {m.last_anomaly_at ? formatRelativeTime(m.last_anomaly_at) : '—'}
+                  </span>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
       )}
     </Panel>
   )
