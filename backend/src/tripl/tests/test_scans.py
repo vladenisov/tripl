@@ -729,338 +729,350 @@ class TestScanConfigsCRUD:
 
     def test_preview_scan_config_async_completes_job(self, tmp_path, monkeypatch) -> None:
         engine = create_engine(f"sqlite:///{tmp_path / 'preview.db'}")
-        Base.metadata.create_all(engine)
-        sync_session_factory = sessionmaker(engine, expire_on_commit=False)
+        try:
+            Base.metadata.create_all(engine)
+            sync_session_factory = sessionmaker(engine, expire_on_commit=False)
 
-        project_id = uuid.uuid4()
-        data_source_id = uuid.uuid4()
-        job_id = uuid.uuid4()
-        with sync_session_factory() as session:
-            session.add_all(
-                [
-                    Project(id=project_id, name="P", slug="p", description=""),
-                    DataSource(
-                        id=data_source_id,
-                        name="DS",
-                        db_type="clickhouse",
-                        host="localhost",
-                        port=8123,
-                        database_name="default",
-                        username="default",
-                        password_encrypted="",
-                    ),
-                    ScanPreviewJob(
-                        id=job_id,
-                        project_id=project_id,
-                        data_source_id=data_source_id,
-                        base_query="SELECT * FROM events",
-                        json_value_paths=[],
-                        row_limit=5,
-                        time_column="created_at",
-                        scan_lookback_hours=24,
-                        status="pending",
-                    ),
-                ]
+            project_id = uuid.uuid4()
+            data_source_id = uuid.uuid4()
+            job_id = uuid.uuid4()
+            with sync_session_factory() as session:
+                session.add_all(
+                    [
+                        Project(id=project_id, name="P", slug="p", description=""),
+                        DataSource(
+                            id=data_source_id,
+                            name="DS",
+                            db_type="clickhouse",
+                            host="localhost",
+                            port=8123,
+                            database_name="default",
+                            username="default",
+                            password_encrypted="",
+                        ),
+                        ScanPreviewJob(
+                            id=job_id,
+                            project_id=project_id,
+                            data_source_id=data_source_id,
+                            base_query="SELECT * FROM events",
+                            json_value_paths=[],
+                            row_limit=5,
+                            time_column="created_at",
+                            scan_lookback_hours=24,
+                            status="pending",
+                        ),
+                    ]
+                )
+                session.commit()
+
+            preview_kwargs: dict[str, object] = {}
+
+            class FakeAdapter:
+                def test_connection(self) -> bool:
+                    return True
+
+                def get_columns(self, base_query: str) -> list[ColumnInfo]:
+                    return [
+                        ColumnInfo(name="event_name", type_name="String"),
+                        ColumnInfo(name="payload", type_name="JSON"),
+                    ]
+
+                def get_preview_rows(
+                    self,
+                    base_query: str,
+                    limit: int = 10,
+                    **_kwargs: object,
+                ) -> tuple[list[str], list[tuple[object, ...]]]:
+                    preview_kwargs.update(_kwargs)
+                    return (["event_name", "payload"], [("purchase", {"locale": "en"})])
+
+                def get_json_path_samples(
+                    self,
+                    base_query: str,
+                    json_columns: list[str],
+                    *,
+                    time_column: str | None = None,
+                    time_from: datetime | None = None,
+                    time_to: datetime | None = None,
+                    path_limit: int,
+                    sample_limit: int,
+                    sample_row_limit: int,
+                ) -> dict[str, dict[str, list[object]]]:
+                    return {"payload": {"locale": ['"en"']}}
+
+                def close(self) -> None:
+                    return None
+
+            monkeypatch.setitem(
+                scan_tasks.preview_scan_config_async.run.__globals__,
+                "_get_sync_session",
+                sync_session_factory,
             )
-            session.commit()
+            monkeypatch.setitem(
+                scan_tasks.preview_scan_config_async.run.__globals__,
+                "_build_adapter",
+                lambda ds: FakeAdapter(),
+            )
 
-        preview_kwargs: dict[str, object] = {}
+            result = scan_tasks.preview_scan_config_async.run(str(job_id))
 
-        class FakeAdapter:
-            def test_connection(self) -> bool:
-                return True
+            assert [column["name"] for column in result["columns"]] == ["event_name", "payload"]
+            assert result["rows"][0]["payload"] == {"locale": "en"}
+            assert preview_kwargs["time_column"] == "created_at"
+            assert preview_kwargs["time_from"] is not None
+            assert preview_kwargs["time_to"] is not None
 
-            def get_columns(self, base_query: str) -> list[ColumnInfo]:
-                return [
-                    ColumnInfo(name="event_name", type_name="String"),
-                    ColumnInfo(name="payload", type_name="JSON"),
-                ]
-
-            def get_preview_rows(
-                self,
-                base_query: str,
-                limit: int = 10,
-                **_kwargs: object,
-            ) -> tuple[list[str], list[tuple[object, ...]]]:
-                preview_kwargs.update(_kwargs)
-                return (["event_name", "payload"], [("purchase", {"locale": "en"})])
-
-            def get_json_path_samples(
-                self,
-                base_query: str,
-                json_columns: list[str],
-                *,
-                time_column: str | None = None,
-                time_from: datetime | None = None,
-                time_to: datetime | None = None,
-                path_limit: int,
-                sample_limit: int,
-                sample_row_limit: int,
-            ) -> dict[str, dict[str, list[object]]]:
-                return {"payload": {"locale": ['"en"']}}
-
-            def close(self) -> None:
-                return None
-
-        monkeypatch.setitem(
-            scan_tasks.preview_scan_config_async.run.__globals__,
-            "_get_sync_session",
-            sync_session_factory,
-        )
-        monkeypatch.setitem(
-            scan_tasks.preview_scan_config_async.run.__globals__,
-            "_build_adapter",
-            lambda ds: FakeAdapter(),
-        )
-
-        result = scan_tasks.preview_scan_config_async.run(str(job_id))
-
-        assert [column["name"] for column in result["columns"]] == ["event_name", "payload"]
-        assert result["rows"][0]["payload"] == {"locale": "en"}
-        assert preview_kwargs["time_column"] == "created_at"
-        assert preview_kwargs["time_from"] is not None
-        assert preview_kwargs["time_to"] is not None
-
-        with sync_session_factory() as session:
-            job = session.get(ScanPreviewJob, job_id)
-            assert job.status == "completed"
-            assert job.started_at is not None
-            assert job.completed_at is not None
-            assert job.error_message is None
-            assert job.result_summary["rows"][0]["event_name"] == "purchase"
+            with sync_session_factory() as session:
+                job = session.get(ScanPreviewJob, job_id)
+                assert job.status == "completed"
+                assert job.started_at is not None
+                assert job.completed_at is not None
+                assert job.error_message is None
+                assert job.result_summary["rows"][0]["event_name"] == "purchase"
+        finally:
+            engine.dispose()
 
     def test_preview_scan_config_async_discovers_json_paths_when_flagged(
         self, tmp_path, monkeypatch
     ) -> None:
         engine = create_engine(f"sqlite:///{tmp_path / 'preview_json.db'}")
-        Base.metadata.create_all(engine)
-        sync_session_factory = sessionmaker(engine, expire_on_commit=False)
+        try:
+            Base.metadata.create_all(engine)
+            sync_session_factory = sessionmaker(engine, expire_on_commit=False)
 
-        project_id = uuid.uuid4()
-        data_source_id = uuid.uuid4()
-        job_id = uuid.uuid4()
-        with sync_session_factory() as session:
-            session.add_all(
-                [
-                    Project(id=project_id, name="P", slug="p", description=""),
-                    DataSource(
-                        id=data_source_id,
-                        name="DS",
-                        db_type="clickhouse",
-                        host="localhost",
-                        port=8123,
-                        database_name="default",
-                        username="default",
-                        password_encrypted="",
-                    ),
-                    ScanPreviewJob(
-                        id=job_id,
-                        project_id=project_id,
-                        data_source_id=data_source_id,
-                        base_query="SELECT * FROM events",
-                        json_value_paths=[],
-                        row_limit=5,
-                        time_column="created_at",
-                        scan_lookback_hours=24,
-                        include_json_paths=True,
-                        status="pending",
-                    ),
-                ]
+            project_id = uuid.uuid4()
+            data_source_id = uuid.uuid4()
+            job_id = uuid.uuid4()
+            with sync_session_factory() as session:
+                session.add_all(
+                    [
+                        Project(id=project_id, name="P", slug="p", description=""),
+                        DataSource(
+                            id=data_source_id,
+                            name="DS",
+                            db_type="clickhouse",
+                            host="localhost",
+                            port=8123,
+                            database_name="default",
+                            username="default",
+                            password_encrypted="",
+                        ),
+                        ScanPreviewJob(
+                            id=job_id,
+                            project_id=project_id,
+                            data_source_id=data_source_id,
+                            base_query="SELECT * FROM events",
+                            json_value_paths=[],
+                            row_limit=5,
+                            time_column="created_at",
+                            scan_lookback_hours=24,
+                            include_json_paths=True,
+                            status="pending",
+                        ),
+                    ]
+                )
+                session.commit()
+
+            discovery_kwargs: dict[str, object] = {}
+            preview_rows_called = False
+
+            class FakeAdapter:
+                def test_connection(self) -> bool:
+                    return True
+
+                def get_columns(self, base_query: str) -> list[ColumnInfo]:
+                    return [
+                        ColumnInfo(name="event_name", type_name="String"),
+                        ColumnInfo(name="payload", type_name="JSON"),
+                    ]
+
+                def get_preview_rows(
+                    self,
+                    base_query: str,
+                    limit: int = 10,
+                    **_kwargs: object,
+                ) -> tuple[list[str], list[tuple[object, ...]]]:
+                    nonlocal preview_rows_called
+                    preview_rows_called = True
+                    return (["event_name", "payload"], [("purchase", {"locale": "en"})])
+
+                def get_json_path_samples(
+                    self,
+                    base_query: str,
+                    json_columns: list[str],
+                    **kwargs: object,
+                ) -> dict[str, dict[str, list[object]]]:
+                    discovery_kwargs.update(kwargs)
+                    assert json_columns == ["payload"]
+                    return {"payload": {"locale": ['"en"']}}
+
+                def close(self) -> None:
+                    return None
+
+            monkeypatch.setitem(
+                scan_tasks.preview_scan_config_async.run.__globals__,
+                "_get_sync_session",
+                sync_session_factory,
             )
-            session.commit()
+            monkeypatch.setitem(
+                scan_tasks.preview_scan_config_async.run.__globals__,
+                "_build_adapter",
+                lambda ds: FakeAdapter(),
+            )
 
-        discovery_kwargs: dict[str, object] = {}
-        preview_rows_called = False
+            result = scan_tasks.preview_scan_config_async.run(str(job_id))
 
-        class FakeAdapter:
-            def test_connection(self) -> bool:
-                return True
+            # Discovery mode returns only json_columns (no columns/rows preview).
+            assert "columns" not in result
+            assert "rows" not in result
+            assert result["json_columns"] == [
+                {
+                    "column": "payload",
+                    "paths": [
+                        {
+                            "full_path": "payload.locale",
+                            "path": "locale",
+                            "sample_values": ["en"],
+                        },
+                    ],
+                }
+            ]
+            # The native discovery path is used; we do not fall back to sampling rows.
+            assert preview_rows_called is False
+            assert discovery_kwargs["time_column"] == "created_at"
+            assert discovery_kwargs["time_from"] is not None
+            assert discovery_kwargs["time_to"] is not None
 
-            def get_columns(self, base_query: str) -> list[ColumnInfo]:
-                return [
-                    ColumnInfo(name="event_name", type_name="String"),
-                    ColumnInfo(name="payload", type_name="JSON"),
-                ]
-
-            def get_preview_rows(
-                self,
-                base_query: str,
-                limit: int = 10,
-                **_kwargs: object,
-            ) -> tuple[list[str], list[tuple[object, ...]]]:
-                nonlocal preview_rows_called
-                preview_rows_called = True
-                return (["event_name", "payload"], [("purchase", {"locale": "en"})])
-
-            def get_json_path_samples(
-                self,
-                base_query: str,
-                json_columns: list[str],
-                **kwargs: object,
-            ) -> dict[str, dict[str, list[object]]]:
-                discovery_kwargs.update(kwargs)
-                assert json_columns == ["payload"]
-                return {"payload": {"locale": ['"en"']}}
-
-            def close(self) -> None:
-                return None
-
-        monkeypatch.setitem(
-            scan_tasks.preview_scan_config_async.run.__globals__,
-            "_get_sync_session",
-            sync_session_factory,
-        )
-        monkeypatch.setitem(
-            scan_tasks.preview_scan_config_async.run.__globals__,
-            "_build_adapter",
-            lambda ds: FakeAdapter(),
-        )
-
-        result = scan_tasks.preview_scan_config_async.run(str(job_id))
-
-        # Discovery mode returns only json_columns (no columns/rows preview).
-        assert "columns" not in result
-        assert "rows" not in result
-        assert result["json_columns"] == [
-            {
-                "column": "payload",
-                "paths": [
-                    {
-                        "full_path": "payload.locale",
-                        "path": "locale",
-                        "sample_values": ["en"],
-                    },
-                ],
-            }
-        ]
-        # The native discovery path is used; we do not fall back to sampling rows.
-        assert preview_rows_called is False
-        assert discovery_kwargs["time_column"] == "created_at"
-        assert discovery_kwargs["time_from"] is not None
-        assert discovery_kwargs["time_to"] is not None
-
-        with sync_session_factory() as session:
-            job = session.get(ScanPreviewJob, job_id)
-            assert job.status == "completed"
-            assert job.result_summary["json_columns"][0]["column"] == "payload"
+            with sync_session_factory() as session:
+                job = session.get(ScanPreviewJob, job_id)
+                assert job.status == "completed"
+                assert job.result_summary["json_columns"][0]["column"] == "payload"
+        finally:
+            engine.dispose()
 
     def test_preview_scan_config_async_marks_job_failed(self, tmp_path, monkeypatch) -> None:
         engine = create_engine(f"sqlite:///{tmp_path / 'preview_fail.db'}")
-        Base.metadata.create_all(engine)
-        sync_session_factory = sessionmaker(engine, expire_on_commit=False)
+        try:
+            Base.metadata.create_all(engine)
+            sync_session_factory = sessionmaker(engine, expire_on_commit=False)
 
-        project_id = uuid.uuid4()
-        data_source_id = uuid.uuid4()
-        job_id = uuid.uuid4()
-        with sync_session_factory() as session:
-            session.add_all(
-                [
-                    Project(id=project_id, name="P", slug="p", description=""),
-                    DataSource(
-                        id=data_source_id,
-                        name="DS",
-                        db_type="clickhouse",
-                        host="localhost",
-                        port=8123,
-                        database_name="default",
-                        username="default",
-                        password_encrypted="",
-                    ),
-                    ScanPreviewJob(
-                        id=job_id,
-                        project_id=project_id,
-                        data_source_id=data_source_id,
-                        base_query="SELECT * FROM events",
-                        json_value_paths=[],
-                        row_limit=5,
-                        status="pending",
-                    ),
-                ]
+            project_id = uuid.uuid4()
+            data_source_id = uuid.uuid4()
+            job_id = uuid.uuid4()
+            with sync_session_factory() as session:
+                session.add_all(
+                    [
+                        Project(id=project_id, name="P", slug="p", description=""),
+                        DataSource(
+                            id=data_source_id,
+                            name="DS",
+                            db_type="clickhouse",
+                            host="localhost",
+                            port=8123,
+                            database_name="default",
+                            username="default",
+                            password_encrypted="",
+                        ),
+                        ScanPreviewJob(
+                            id=job_id,
+                            project_id=project_id,
+                            data_source_id=data_source_id,
+                            base_query="SELECT * FROM events",
+                            json_value_paths=[],
+                            row_limit=5,
+                            status="pending",
+                        ),
+                    ]
+                )
+                session.commit()
+
+            class BrokenAdapter:
+                def test_connection(self) -> bool:
+                    raise RuntimeError("connection refused")
+
+                def close(self) -> None:
+                    return None
+
+            monkeypatch.setitem(
+                scan_tasks.preview_scan_config_async.run.__globals__,
+                "_get_sync_session",
+                sync_session_factory,
             )
-            session.commit()
+            monkeypatch.setitem(
+                scan_tasks.preview_scan_config_async.run.__globals__,
+                "_build_adapter",
+                lambda ds: BrokenAdapter(),
+            )
 
-        class BrokenAdapter:
-            def test_connection(self) -> bool:
-                raise RuntimeError("connection refused")
+            with pytest.raises(RuntimeError):
+                scan_tasks.preview_scan_config_async.run(str(job_id))
 
-            def close(self) -> None:
-                return None
-
-        monkeypatch.setitem(
-            scan_tasks.preview_scan_config_async.run.__globals__,
-            "_get_sync_session",
-            sync_session_factory,
-        )
-        monkeypatch.setitem(
-            scan_tasks.preview_scan_config_async.run.__globals__,
-            "_build_adapter",
-            lambda ds: BrokenAdapter(),
-        )
-
-        with pytest.raises(RuntimeError):
-            scan_tasks.preview_scan_config_async.run(str(job_id))
-
-        with sync_session_factory() as session:
-            job = session.get(ScanPreviewJob, job_id)
-            assert job.status == "failed"
-            assert "connection refused" in job.error_message
-            assert job.result_summary is None
+            with sync_session_factory() as session:
+                job = session.get(ScanPreviewJob, job_id)
+                assert job.status == "failed"
+                assert "connection refused" in job.error_message
+                assert job.result_summary is None
+        finally:
+            engine.dispose()
 
     def test_worker_test_connection_persists_and_invalidates_cache(
         self, tmp_path, monkeypatch
     ) -> None:
         engine = create_engine(f"sqlite:///{tmp_path / 'test_conn.db'}")
-        Base.metadata.create_all(engine)
-        sync_session_factory = sessionmaker(engine, expire_on_commit=False)
+        try:
+            Base.metadata.create_all(engine)
+            sync_session_factory = sessionmaker(engine, expire_on_commit=False)
 
-        data_source_id = uuid.uuid4()
-        with sync_session_factory() as session:
-            session.add(
-                DataSource(
-                    id=data_source_id,
-                    name="DS",
-                    db_type="clickhouse",
-                    host="localhost",
-                    port=8123,
-                    database_name="default",
-                    username="default",
-                    password_encrypted="",
+            data_source_id = uuid.uuid4()
+            with sync_session_factory() as session:
+                session.add(
+                    DataSource(
+                        id=data_source_id,
+                        name="DS",
+                        db_type="clickhouse",
+                        host="localhost",
+                        port=8123,
+                        database_name="default",
+                        username="default",
+                        password_encrypted="",
+                    )
                 )
+                session.commit()
+
+            class FakeAdapter:
+                def test_connection(self) -> bool:
+                    return True
+
+                def close(self) -> None:
+                    return None
+
+            invalidated: list[str] = []
+            monkeypatch.setitem(
+                scan_tasks.test_connection.run.__globals__,
+                "_get_sync_session",
+                sync_session_factory,
             )
-            session.commit()
+            monkeypatch.setitem(
+                scan_tasks.test_connection.run.__globals__,
+                "_build_adapter",
+                lambda ds: FakeAdapter(),
+            )
+            monkeypatch.setattr(
+                scan_tasks.cache,
+                "sync_delete_prefix",
+                lambda prefix: invalidated.append(prefix),
+            )
 
-        class FakeAdapter:
-            def test_connection(self) -> bool:
-                return True
+            result = scan_tasks.test_connection.run(str(data_source_id))
 
-            def close(self) -> None:
-                return None
+            assert result["success"] is True
+            assert result["error"] is None
+            assert invalidated == [scan_tasks.cache.prefix_data_sources()]
 
-        invalidated: list[str] = []
-        monkeypatch.setitem(
-            scan_tasks.test_connection.run.__globals__,
-            "_get_sync_session",
-            sync_session_factory,
-        )
-        monkeypatch.setitem(
-            scan_tasks.test_connection.run.__globals__,
-            "_build_adapter",
-            lambda ds: FakeAdapter(),
-        )
-        monkeypatch.setattr(
-            scan_tasks.cache,
-            "sync_delete_prefix",
-            lambda prefix: invalidated.append(prefix),
-        )
-
-        result = scan_tasks.test_connection.run(str(data_source_id))
-
-        assert result["success"] is True
-        assert result["error"] is None
-        assert invalidated == [scan_tasks.cache.prefix_data_sources()]
-
-        with sync_session_factory() as session:
-            ds = session.get(DataSource, data_source_id)
-            assert ds.last_test_status == "success"
-            assert ds.last_test_at is not None
-            assert ds.last_test_message == "Connection successful"
+            with sync_session_factory() as session:
+                ds = session.get(DataSource, data_source_id)
+                assert ds.last_test_status == "success"
+                assert ds.last_test_at is not None
+                assert ds.last_test_message == "Connection successful"
+        finally:
+            engine.dispose()

@@ -29,9 +29,11 @@ def sync_session_factory(tmp_path: Path) -> Iterator[sessionmaker[Session]]:
     engine = create_engine(f"sqlite:///{tmp_path / 'reconciliation_metrics.db'}")
     Base.metadata.create_all(engine)
     factory = sessionmaker(engine, expire_on_commit=False)
-    yield factory
-    Base.metadata.drop_all(engine)
-    engine.dispose()
+    try:
+        yield factory
+    finally:
+        Base.metadata.drop_all(engine)
+        engine.dispose()
 
 
 async def _setup_project(client: AsyncClient, slug: str) -> tuple[str, str]:
@@ -463,52 +465,55 @@ async def test_shadow_upsert_does_not_resurrect_dismissed(client: AsyncClient):
     from tripl.worker.tasks.metrics.metric_rows import _upsert_shadow_event_candidates
 
     engine = create_engine("sqlite://")
-    Base.metadata.create_all(engine)
-    sync_session = sessionmaker(engine)()
+    try:
+        Base.metadata.create_all(engine)
+        sync_session = sessionmaker(engine)()
 
-    project_id = uuid.uuid4()
-    scan_id = uuid.uuid4()
-    first_rows = [
-        {
-            "id": uuid.uuid4(),
-            "project_id": project_id,
-            "scan_config_id": scan_id,
-            "event_type_id": None,
-            "event_name": "shadow | x",
-            "observed_count": 10,
-            "first_seen_at": NOW - timedelta(days=3),
-            "last_seen_at": NOW - timedelta(days=1),
-            "status": SHADOW_STATUS_NEW,
-        }
-    ]
-    _upsert_shadow_event_candidates(sync_session, rows=first_rows)
-    sync_session.commit()
+        project_id = uuid.uuid4()
+        scan_id = uuid.uuid4()
+        first_rows = [
+            {
+                "id": uuid.uuid4(),
+                "project_id": project_id,
+                "scan_config_id": scan_id,
+                "event_type_id": None,
+                "event_name": "shadow | x",
+                "observed_count": 10,
+                "first_seen_at": NOW - timedelta(days=3),
+                "last_seen_at": NOW - timedelta(days=1),
+                "status": SHADOW_STATUS_NEW,
+            }
+        ]
+        _upsert_shadow_event_candidates(sync_session, rows=first_rows)
+        sync_session.commit()
 
-    candidate = sync_session.execute(select(ShadowEventCandidate)).scalar_one()
-    candidate.status = SHADOW_STATUS_DISMISSED
-    sync_session.commit()
+        candidate = sync_session.execute(select(ShadowEventCandidate)).scalar_one()
+        candidate.status = SHADOW_STATUS_DISMISSED
+        sync_session.commit()
 
-    # Re-collection: count refreshes, last_seen never rewinds, status survives.
-    second_rows = [
-        {
-            "id": uuid.uuid4(),
-            "project_id": project_id,
-            "scan_config_id": scan_id,
-            "event_type_id": None,
-            "event_name": "shadow | x",
-            "observed_count": 7,
-            "first_seen_at": NOW - timedelta(days=10),
-            "last_seen_at": NOW - timedelta(days=5),
-            "status": SHADOW_STATUS_NEW,
-        }
-    ]
-    _upsert_shadow_event_candidates(sync_session, rows=second_rows)
-    sync_session.commit()
+        # Re-collection: count refreshes, last_seen never rewinds, status survives.
+        second_rows = [
+            {
+                "id": uuid.uuid4(),
+                "project_id": project_id,
+                "scan_config_id": scan_id,
+                "event_type_id": None,
+                "event_name": "shadow | x",
+                "observed_count": 7,
+                "first_seen_at": NOW - timedelta(days=10),
+                "last_seen_at": NOW - timedelta(days=5),
+                "status": SHADOW_STATUS_NEW,
+            }
+        ]
+        _upsert_shadow_event_candidates(sync_session, rows=second_rows)
+        sync_session.commit()
 
-    refreshed = sync_session.execute(select(ShadowEventCandidate)).scalar_one()
-    assert refreshed.status == SHADOW_STATUS_DISMISSED
-    assert refreshed.observed_count == 7
-    # Stored without tz on sqlite; compare naive.
-    assert refreshed.last_seen_at.replace(tzinfo=UTC) == NOW - timedelta(days=1)
-    assert refreshed.first_seen_at.replace(tzinfo=UTC) == NOW - timedelta(days=3)
-    sync_session.close()
+        refreshed = sync_session.execute(select(ShadowEventCandidate)).scalar_one()
+        assert refreshed.status == SHADOW_STATUS_DISMISSED
+        assert refreshed.observed_count == 7
+        # Stored without tz on sqlite; compare naive.
+        assert refreshed.last_seen_at.replace(tzinfo=UTC) == NOW - timedelta(days=1)
+        assert refreshed.first_seen_at.replace(tzinfo=UTC) == NOW - timedelta(days=3)
+        sync_session.close()
+    finally:
+        engine.dispose()

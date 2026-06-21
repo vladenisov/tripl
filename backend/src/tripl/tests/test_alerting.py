@@ -632,6 +632,9 @@ def test_send_alert_delivery_fails_with_invalid_stored_telegram_token(
     assert result["status"] == "failed"
     assert "Telegram destination configuration is invalid" in result["error"]
 
+    Base.metadata.drop_all(engine)
+    engine.dispose()
+
 
 def test_send_alert_delivery_renders_telegram_html_template(
     tmp_path,
