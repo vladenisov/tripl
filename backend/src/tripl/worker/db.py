@@ -19,8 +19,8 @@ from tripl.config import settings
 from tripl.db_config import MAX_OVERFLOW, POOL_PRE_PING, POOL_RECYCLE_SECONDS, POOL_SIZE
 
 if TYPE_CHECKING:
+    from tripl.core.adapters.base import BaseAdapter
     from tripl.models.data_source import DataSource
-    from tripl.worker.adapters.base import BaseAdapter
 
 _engine: Engine | None = None
 _session_local: sessionmaker[Session] | None = None
@@ -57,6 +57,6 @@ def _get_sync_session() -> Session:
 
 def _build_adapter(ds: DataSource) -> BaseAdapter:
     """Canonical warehouse-adapter builder shared by Celery task modules."""
-    from tripl.worker.adapters.registry import build_adapter
+    from tripl.core.adapters.registry import build_adapter
 
     return build_adapter(ds)

@@ -9,6 +9,14 @@ from sqlalchemy import create_engine, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, sessionmaker
 
+from tripl.core.adapters.base import ColumnInfo
+from tripl.core.analyzers.cardinality import BreakdownAnalysis, CardinalityResult
+from tripl.core.analyzers.event_generator import (
+    _ensure_variable,
+    _resolve_main_branch_id,
+    generate_events,
+    merge_existing_events_for_group_rules,
+)
 from tripl.models import Base
 from tripl.models.event import Event
 from tripl.models.event_field_value import EventFieldValue
@@ -19,14 +27,6 @@ from tripl.models.plan_branch import BranchKind, BranchStatus, PlanBranch
 from tripl.models.project import Project
 from tripl.models.variable import Variable
 from tripl.models.variable_value import VariableValue
-from tripl.worker.adapters.base import ColumnInfo
-from tripl.worker.analyzers.cardinality import BreakdownAnalysis, CardinalityResult
-from tripl.worker.analyzers.event_generator import (
-    _ensure_variable,
-    _resolve_main_branch_id,
-    generate_events,
-    merge_existing_events_for_group_rules,
-)
 
 
 def _make_analysis(

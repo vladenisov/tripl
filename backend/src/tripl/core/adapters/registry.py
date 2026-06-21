@@ -2,9 +2,9 @@ from __future__ import annotations
 
 from collections.abc import Callable
 
+from tripl.core.adapters.base import BaseAdapter
 from tripl.crypto import decrypt_value
 from tripl.models.data_source import DataSource
-from tripl.worker.adapters.base import BaseAdapter
 
 AdapterFactory = Callable[[DataSource, str], BaseAdapter]
 
@@ -41,7 +41,7 @@ def build_adapter(ds: DataSource) -> BaseAdapter:
 
 
 def _build_clickhouse(ds: DataSource, password: str) -> BaseAdapter:
-    from tripl.worker.adapters.clickhouse import ClickHouseAdapter
+    from tripl.core.adapters.clickhouse import ClickHouseAdapter
 
     timeout = _effective_timeout_seconds(ds)
     # connect_timeout bounds the TCP/handshake; send_receive_timeout bounds the
@@ -62,7 +62,7 @@ def _build_clickhouse(ds: DataSource, password: str) -> BaseAdapter:
 
 
 def _build_postgres(ds: DataSource, password: str) -> BaseAdapter:
-    from tripl.worker.adapters.postgres import PostgresAdapter
+    from tripl.core.adapters.postgres import PostgresAdapter
 
     return PostgresAdapter(
         host=ds.host,
@@ -75,7 +75,7 @@ def _build_postgres(ds: DataSource, password: str) -> BaseAdapter:
 
 
 def _build_bigquery(ds: DataSource, password: str) -> BaseAdapter:
-    from tripl.worker.adapters.bigquery import BigQueryAdapter
+    from tripl.core.adapters.bigquery import BigQueryAdapter
 
     location: str | None = None
     if isinstance(ds.extra_params, dict):

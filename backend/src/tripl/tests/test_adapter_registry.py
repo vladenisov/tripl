@@ -2,12 +2,12 @@ from __future__ import annotations
 
 import pytest
 
-from tripl.models.data_source import DataSource
-from tripl.worker.adapters.registry import (
+from tripl.core.adapters.registry import (
     build_adapter,
     register_adapter,
     supported_db_types,
 )
+from tripl.models.data_source import DataSource
 
 
 def _make_ds(db_type: str) -> DataSource:
@@ -48,13 +48,13 @@ def test_register_adapter_can_inject_factory() -> None:
         result = build_adapter(ds)
         assert result is sentinel
     finally:
-        from tripl.worker.adapters import registry as registry_module
+        from tripl.core.adapters import registry as registry_module
 
         registry_module._REGISTRY.pop("__test_dummy__", None)
 
 
 def test_clickhouse_timeout_maps_to_send_receive_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
-    from tripl.worker.adapters import clickhouse as clickhouse_module
+    from tripl.core.adapters import clickhouse as clickhouse_module
 
     captured: dict[str, object] = {}
 
@@ -76,8 +76,8 @@ def test_clickhouse_timeout_maps_to_send_receive_timeout(monkeypatch: pytest.Mon
 
 
 def test_clickhouse_falls_back_to_default_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
-    from tripl.worker.adapters import clickhouse as clickhouse_module
-    from tripl.worker.adapters.registry import _DEFAULT_TIMEOUT_SECONDS
+    from tripl.core.adapters import clickhouse as clickhouse_module
+    from tripl.core.adapters.registry import _DEFAULT_TIMEOUT_SECONDS
 
     captured: dict[str, object] = {}
 
@@ -97,7 +97,7 @@ def test_clickhouse_falls_back_to_default_timeout(monkeypatch: pytest.MonkeyPatc
 
 
 def test_postgres_wires_timeout_and_tls(monkeypatch: pytest.MonkeyPatch) -> None:
-    from tripl.worker.adapters import postgres as postgres_module
+    from tripl.core.adapters import postgres as postgres_module
 
     captured: dict[str, object] = {}
 
@@ -126,8 +126,8 @@ def test_postgres_wires_timeout_and_tls(monkeypatch: pytest.MonkeyPatch) -> None
 def test_postgres_localhost_skips_tls_and_uses_default_timeout(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from tripl.worker.adapters import postgres as postgres_module
-    from tripl.worker.adapters.registry import _DEFAULT_TIMEOUT_SECONDS
+    from tripl.core.adapters import postgres as postgres_module
+    from tripl.core.adapters.registry import _DEFAULT_TIMEOUT_SECONDS
 
     captured: dict[str, object] = {}
 

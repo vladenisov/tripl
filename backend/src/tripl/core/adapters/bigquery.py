@@ -10,7 +10,7 @@ from typing import Any, cast
 from google.cloud import bigquery
 from google.oauth2 import service_account
 
-from tripl.worker.adapters.base import (
+from tripl.core.adapters.base import (
     BaseAdapter,
     ColumnInfo,
     SchemaColumn,

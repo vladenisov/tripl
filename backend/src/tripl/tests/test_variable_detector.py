@@ -2,7 +2,7 @@
 
 import json
 
-from tripl.worker.analyzers.variable_detector import (
+from tripl.core.analyzers.variable_detector import (
     detect_variables,
     expand_json_low_cardinality,
 )

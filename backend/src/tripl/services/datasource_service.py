@@ -123,7 +123,7 @@ def _to_response(ds: DataSource) -> DataSourceResponse:
 
 def _run_adapter_test(ds: DataSource) -> tuple[bool, str]:
     """Open a sync adapter, run a probe, return (ok, message). Always closes."""
-    from tripl.worker.adapters.registry import build_adapter
+    from tripl.core.adapters.registry import build_adapter
 
     try:
         adapter = build_adapter(ds)

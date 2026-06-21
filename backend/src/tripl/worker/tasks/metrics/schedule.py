@@ -17,6 +17,7 @@ from sqlalchemy import func as sa_func
 from sqlalchemy import select, text
 from sqlalchemy.engine import Engine
 
+from tripl.core.intervals import get_interval
 from tripl.models.event_metric import EventMetric
 from tripl.models.scan_config import ScanConfig
 from tripl.models.scan_job import ScanJob, ScanJobStatus
@@ -28,7 +29,6 @@ from tripl.worker.tasks.metrics._helpers import (
     _get_sync_session,
 )
 from tripl.worker.tasks.metrics.tasks import collect_metrics
-from tripl.worker.utils.intervals import get_interval
 
 logger = logging.getLogger(__name__)
 

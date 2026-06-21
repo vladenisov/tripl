@@ -14,16 +14,16 @@ from datetime import datetime, timedelta
 from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
-from tripl.models.event_metric_breakdown import EventMetricBreakdown
-from tripl.models.project_anomaly_settings import ProjectAnomalySettings
-from tripl.models.release_regression import ReleaseRegression
-from tripl.models.scan_config import ScanConfig
-from tripl.worker.analyzers.anomaly_detector import SCOPE_EVENT, SCOPE_EVENT_TYPE
-from tripl.worker.analyzers.release_regression import (
+from tripl.core.analyzers.anomaly_detector import SCOPE_EVENT, SCOPE_EVENT_TYPE
+from tripl.core.analyzers.release_regression import (
     RegressionSettings,
     ReleaseRegressionResult,
     detect_release_regressions,
 )
+from tripl.models.event_metric_breakdown import EventMetricBreakdown
+from tripl.models.project_anomaly_settings import ProjectAnomalySettings
+from tripl.models.release_regression import ReleaseRegression
+from tripl.models.scan_config import ScanConfig
 
 
 def _build_regression_settings(session: Session, config: ScanConfig) -> RegressionSettings:

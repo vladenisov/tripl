@@ -8,12 +8,12 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from tripl.alerting_matching import SCOPE_DISTRIBUTION_DRIFT
-from tripl.models.project import Project
-from tripl.services import app_settings_service
-from tripl.worker.analyzers.anomaly_detector import (
+from tripl.core.analyzers.anomaly_detector import (
     SCOPE_EVENT_TYPE,
     SCOPE_PROJECT_TOTAL,
 )
+from tripl.models.project import Project
+from tripl.services import app_settings_service
 
 from ._helpers import SCOPE_SCHEMA_DRIFT
 

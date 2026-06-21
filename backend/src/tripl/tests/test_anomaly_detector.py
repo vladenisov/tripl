@@ -1,6 +1,6 @@
 from datetime import UTC, datetime, timedelta
 
-from tripl.worker.analyzers.anomaly_detector import (
+from tripl.core.analyzers.anomaly_detector import (
     AnomalyDetectionSettings,
     SeriesPoint,
     detect_anomalies,

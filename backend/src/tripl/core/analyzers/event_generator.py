@@ -22,6 +22,44 @@ from typing import Any
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from tripl.core.analyzers._event_generator_merge import (
+    EventGroupMatch,
+    _merge_existing_grouped_events,
+    apply_event_group_rules,
+    merge_existing_events_for_group_rules,
+)
+from tripl.core.analyzers._event_generator_variables import (
+    VariableObservation,
+)
+from tripl.core.analyzers._event_generator_variables import (
+    delete_variable_contexts_for_event_type as _delete_variable_contexts_for_event_type,
+)
+from tripl.core.analyzers._event_generator_variables import (
+    ensure_variable as _ensure_variable,
+)
+from tripl.core.analyzers._event_generator_variables import (
+    insert_variable_contexts as _insert_variable_contexts,
+)
+from tripl.core.analyzers._event_generator_variables import (
+    load_variables_for_contexts as _load_variables_for_contexts,
+)
+from tripl.core.analyzers._event_generator_variables import (
+    preserve_existing_variable_context_values as _preserve_existing_variable_context_values,
+)
+from tripl.core.analyzers._event_generator_variables import (
+    record_variable_contexts as _record_variable_contexts,
+)
+from tripl.core.analyzers._event_generator_variables import (
+    resolve_main_branch_id as _resolve_main_branch_id,
+)
+from tripl.core.analyzers._event_generator_variables import (
+    sample_variable_values as _sample_variable_values,
+)
+from tripl.core.analyzers.cardinality import BreakdownAnalysis
+from tripl.core.analyzers.variable_detector import (
+    DetectedPattern,
+    detect_variables,
+)
 from tripl.json_paths import (
     build_json_value,
     decode_json_path_value,
@@ -31,44 +69,6 @@ from tripl.models.event import Event
 from tripl.models.event_field_value import EventFieldValue
 from tripl.models.field_definition import FieldDefinition
 from tripl.models.variable_value import VariableValueKind
-from tripl.worker.analyzers._event_generator_merge import (
-    EventGroupMatch,
-    _merge_existing_grouped_events,
-    apply_event_group_rules,
-    merge_existing_events_for_group_rules,
-)
-from tripl.worker.analyzers._event_generator_variables import (
-    VariableObservation,
-)
-from tripl.worker.analyzers._event_generator_variables import (
-    delete_variable_contexts_for_event_type as _delete_variable_contexts_for_event_type,
-)
-from tripl.worker.analyzers._event_generator_variables import (
-    ensure_variable as _ensure_variable,
-)
-from tripl.worker.analyzers._event_generator_variables import (
-    insert_variable_contexts as _insert_variable_contexts,
-)
-from tripl.worker.analyzers._event_generator_variables import (
-    load_variables_for_contexts as _load_variables_for_contexts,
-)
-from tripl.worker.analyzers._event_generator_variables import (
-    preserve_existing_variable_context_values as _preserve_existing_variable_context_values,
-)
-from tripl.worker.analyzers._event_generator_variables import (
-    record_variable_contexts as _record_variable_contexts,
-)
-from tripl.worker.analyzers._event_generator_variables import (
-    resolve_main_branch_id as _resolve_main_branch_id,
-)
-from tripl.worker.analyzers._event_generator_variables import (
-    sample_variable_values as _sample_variable_values,
-)
-from tripl.worker.analyzers.cardinality import BreakdownAnalysis
-from tripl.worker.analyzers.variable_detector import (
-    DetectedPattern,
-    detect_variables,
-)
 
 logger = logging.getLogger(__name__)
 

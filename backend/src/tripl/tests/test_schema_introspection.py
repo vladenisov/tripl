@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-from tripl.worker.adapters.base import SchemaColumn, SchemaTable
-from tripl.worker.adapters.bigquery import BigQueryAdapter
-from tripl.worker.adapters.clickhouse import ClickHouseAdapter
-from tripl.worker.adapters.postgres import PostgresAdapter
+from tripl.core.adapters.base import SchemaColumn, SchemaTable
+from tripl.core.adapters.bigquery import BigQueryAdapter
+from tripl.core.adapters.clickhouse import ClickHouseAdapter
+from tripl.core.adapters.postgres import PostgresAdapter
 
 # Rows shaped as the catalog queries return them: (table, column, type),
 # already ordered by (table, position) so grouping preserves column order.

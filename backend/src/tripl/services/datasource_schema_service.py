@@ -17,7 +17,7 @@ logger = logging.getLogger(__name__)
 
 def _run_schema_introspection(ds: DataSource) -> DataSourceSchemaResponse:
     """Open a sync adapter, read the catalog, return the schema. Always closes."""
-    from tripl.worker.adapters.registry import build_adapter
+    from tripl.core.adapters.registry import build_adapter
 
     adapter = build_adapter(ds)
     try:

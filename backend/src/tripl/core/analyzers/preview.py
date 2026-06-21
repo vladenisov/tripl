@@ -12,14 +12,14 @@ from __future__ import annotations
 from datetime import datetime
 from math import inf
 
+from tripl.core.adapters.base import BaseAdapter, ColumnInfo
+from tripl.core.analyzers.cardinality import _is_json_type
 from tripl.json_paths import (
     decode_json_path_value,
     flatten_json_paths,
     format_json_path_value,
     group_json_value_paths,
 )
-from tripl.worker.adapters.base import BaseAdapter, ColumnInfo
-from tripl.worker.analyzers.cardinality import _is_json_type
 
 JSON_PATH_DISCOVERY_LIMIT = 1000
 JSON_PATH_SAMPLE_LIMIT = 3

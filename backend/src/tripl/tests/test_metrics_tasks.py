@@ -8,6 +8,8 @@ from _pytest.monkeypatch import MonkeyPatch
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session, sessionmaker
 
+from tripl.core.adapters.base import ColumnInfo, FieldContractViolation
+from tripl.core.analyzers.event_generator import GenerationResult
 from tripl.models import Base
 from tripl.models.alert_delivery import AlertDelivery
 from tripl.models.alert_delivery_item import AlertDeliveryItem
@@ -32,8 +34,6 @@ from tripl.models.scan_job import ScanJob, ScanJobStatus
 from tripl.models.schema_drift import SchemaDrift
 from tripl.models.variable import Variable
 from tripl.models.variable_value import VariableValue, VariableValueKind
-from tripl.worker.adapters.base import ColumnInfo, FieldContractViolation
-from tripl.worker.analyzers.event_generator import GenerationResult
 from tripl.worker.tasks.metrics import collect as metrics_collect
 from tripl.worker.tasks.metrics import dispatch as metrics_dispatch
 from tripl.worker.tasks.metrics import schedule as metrics_schedule
@@ -398,7 +398,7 @@ def test_replace_scope_anomalies_upserts_on_conflict(
     delete + re-insert the same window; a plain INSERT then tripped
     uq_metric_anomaly_scope_bucket and failed the whole job.
     """
-    from tripl.worker.analyzers.anomaly_detector import SCOPE_EVENT, DetectedAnomaly
+    from tripl.core.analyzers.anomaly_detector import SCOPE_EVENT, DetectedAnomaly
     from tripl.worker.tasks.metrics.detect import _replace_scope_anomalies
 
     bucket = datetime(2026, 6, 15, 9, 0, tzinfo=UTC)
@@ -2337,7 +2337,7 @@ def test_diff_event_type_schema_detects_three_drift_kinds(
 def test_diff_event_type_schema_attaches_sample_value(
     sync_session_factory: sessionmaker[Session],
 ) -> None:
-    from tripl.worker.analyzers.cardinality import CardinalityResult
+    from tripl.core.analyzers.cardinality import CardinalityResult
 
     with sync_session_factory() as session:
         config = _create_scan_config(session)

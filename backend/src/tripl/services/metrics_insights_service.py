@@ -9,6 +9,11 @@ from sqlalchemy import func, literal, select, union_all
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from tripl import cache
+from tripl.core.analyzers.anomaly_detector import (
+    SCOPE_EVENT,
+    SCOPE_EVENT_TYPE,
+    SCOPE_PROJECT_TOTAL,
+)
 from tripl.models.distribution_drift import DistributionDrift
 from tripl.models.event_metric import EventMetric
 from tripl.models.event_metric_breakdown import EventMetricBreakdown
@@ -36,11 +41,6 @@ from tripl.services.metrics_service import (
     _signal_from_anomaly,
 )
 from tripl.services.monitoring_utils import classify_signal_state
-from tripl.worker.analyzers.anomaly_detector import (
-    SCOPE_EVENT,
-    SCOPE_EVENT_TYPE,
-    SCOPE_PROJECT_TOTAL,
-)
 
 
 async def _get_latest_anomaly_rows_multi(
