@@ -68,12 +68,15 @@ graphify-out
 design/
 # design-sync (claude.ai/design import) — generated/staged artifacts.
 # Durable inputs that ARE committed: .design-sync/config.json, NOTES.md,
-# conventions.md, previews/, overrides/, and frontend/.ds-entry.tsx (barrel).
+# conventions.md, overrides/, and frontend/.ds-entry.tsx (barrel).
+# previews/ are design-handoff artifacts nothing in frontend/src imports, with
+# case-only filename collisions; kept locally, not committed.
 .ds-sync/
 ds-bundle/
 .design-sync/.cache/
 .design-sync/learnings/
 .design-sync/node_modules
+.design-sync/previews/
 frontend/.ds-styles.css
 
 # Codex CLI local workspace

@@ -1,3 +1,14 @@
+// Exhaustive scope-type union mirroring the backend MetricScopeType enum
+// (backend/src/tripl/models/domain_enums.py). Keep all six members in sync;
+// narrowing this to a subset silently mis-routes the omitted scopes.
+export type MetricScopeType =
+  | 'project_total'
+  | 'event_type'
+  | 'event'
+  | 'schema'
+  | 'distribution'
+  | 'release_regression'
+
 export interface EventMetricPoint {
   bucket: string
   count: number
@@ -22,7 +33,7 @@ export interface OverviewKpiSeries {
 
 export interface MonitoringSignal {
   scan_config_id: string
-  scope_type: 'project_total' | 'event_type' | 'event'
+  scope_type: MetricScopeType
   scope_ref: string
   state: 'latest_scan' | 'recent'
   event_id: string | null
@@ -104,7 +115,7 @@ export interface SeasonalityCell {
 
 export interface SeasonalityHeatmap {
   scan_config_id: string
-  scope_type: string
+  scope_type: MetricScopeType
   scope_ref: string
   cells: SeasonalityCell[]
   max_count: number
@@ -118,7 +129,7 @@ export interface BreakdownTimelinePoint {
 
 export interface BreakdownTimeline {
   scan_config_id: string
-  scope_type: string
+  scope_type: MetricScopeType
   scope_ref: string
   breakdown_column: string
   breakdown_value: string
@@ -170,7 +181,7 @@ export interface AppVersionMetricSeries {
 
 export interface AppVersionSeriesResponse {
   scan_config_id: string
-  scope_type: 'project_total' | 'event_type' | 'event'
+  scope_type: MetricScopeType
   scope_ref: string
   event_id: string | null
   event_type_id: string | null
@@ -186,7 +197,7 @@ export interface AppVersionAdoptionResponse extends AppVersionSeriesResponse {
 }
 
 export interface ReleaseRegressionItem {
-  scope_type: string
+  scope_type: MetricScopeType
   scope_ref: string
   scope_name: string
   event_id: string | null

@@ -30,28 +30,32 @@ describe('getBucketStart', () => {
       .toBe('2026-06-01T00:00:00.000Z')
   })
 
-  // Week start is Monday via (getUTCDay()+6)%7. 2026-06-08 is a Monday.
-  it('keeps a Monday as its own week start', () => {
+  // Weekly buckets anchor to the Unix epoch (1970-01-01, a Thursday) on a
+  // fixed 7-day grid, matching the backend toStartOfInterval/date_bin stores.
+  // Every week boundary therefore lands on a Thursday at UTC midnight.
+  it('snaps to the epoch-anchored Thursday that starts the week', () => {
+    // 2026-06-08 is a Monday -> back to Thursday 2026-06-04.
     expect(getBucketStart('2026-06-08T10:00:00Z', 'week'))
-      .toBe('2026-06-08T00:00:00.000Z')
+      .toBe('2026-06-04T00:00:00.000Z')
   })
 
-  it('rolls a mid-week day back to the preceding Monday', () => {
-    // 2026-06-10 is a Wednesday -> back to Monday 2026-06-08.
+  it('rolls a mid-week day back to the epoch-anchored Thursday', () => {
+    // 2026-06-10 is a Wednesday -> back to Thursday 2026-06-04.
     expect(getBucketStart('2026-06-10T23:59:59Z', 'week'))
-      .toBe('2026-06-08T00:00:00.000Z')
+      .toBe('2026-06-04T00:00:00.000Z')
   })
 
-  it('rolls Sunday back to the preceding Monday (not forward)', () => {
-    // 2026-06-14 is a Sunday -> Monday 2026-06-08, six days earlier.
+  it('starts a new week on the grid Thursday (2026-06-11)', () => {
+    // 2026-06-14 is a Sunday -> back to Thursday 2026-06-11, the start of the
+    // next 7-day grid cell after 2026-06-04.
     expect(getBucketStart('2026-06-14T12:00:00Z', 'week'))
-      .toBe('2026-06-08T00:00:00.000Z')
+      .toBe('2026-06-11T00:00:00.000Z')
   })
 
-  it('crosses a month boundary when the Monday is in the previous month', () => {
-    // 2026-07-01 is a Wednesday -> Monday 2026-06-29.
+  it('crosses a month boundary when the grid Thursday is in the previous month', () => {
+    // 2026-07-01 is a Wednesday -> back to Thursday 2026-06-25.
     expect(getBucketStart('2026-07-01T00:00:00Z', 'week'))
-      .toBe('2026-06-29T00:00:00.000Z')
+      .toBe('2026-06-25T00:00:00.000Z')
   })
 })
 

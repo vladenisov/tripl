@@ -53,6 +53,20 @@ def _build_tracer_provider() -> Any:  # pragma: no cover — exercised at runtim
     return provider
 
 
+def _bind_request_id(span: Any, _scope: Any) -> None:  # pragma: no cover — hook
+    """Bind the per-request id onto the server span so trace_id ⇆ request_id correlate.
+
+    Runs as the FastAPI server-request hook once the span is created. Reads the
+    id from the request_id contextvar (set by RequestIDMiddleware from the
+    ``X-Request-ID`` header). No-op when there's no id or no recording span.
+    """
+    from tripl.middleware.request_id import current_request_id
+
+    request_id = current_request_id()
+    if request_id and span is not None and span.is_recording():
+        span.set_attribute("request.id", request_id)
+
+
 def setup_api_tracing(app: FastAPI) -> bool:
     """Wire FastAPI + SQLAlchemy instrumentation. Returns True if attached."""
     if not _tracing_enabled():
@@ -64,7 +78,7 @@ def setup_api_tracing(app: FastAPI) -> bool:
 
         from tripl.database import engine
 
-        FastAPIInstrumentor.instrument_app(app)
+        FastAPIInstrumentor.instrument_app(app, server_request_hook=_bind_request_id)
         SQLAlchemyInstrumentor().instrument(engine=engine.sync_engine)
     except ImportError as exc:
         logger.warning(

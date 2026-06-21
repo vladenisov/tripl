@@ -309,6 +309,7 @@ async def _apply_merge(
         et_name, _ev_name = key
         if key in main_event_by_key:
             m_ev = main_event_by_key[key]
+            m_ev.source_name = b_ev.source_name
             m_ev.description = b_ev.description
             b_status = _ES(b_ev.status)
             m_status = _ES(m_ev.status)
@@ -357,6 +358,7 @@ async def _apply_merge(
                     branch_id=main_branch_id,
                     event_type_id=main_et_name_to_id[et_name],
                     name=b_ev.name,
+                    source_name=b_ev.source_name,
                     description=b_ev.description,
                     order=b_ev.order,
                     status=b_ev.status,

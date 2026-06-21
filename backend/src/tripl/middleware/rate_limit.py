@@ -83,17 +83,25 @@ class TokenBucketLimiter:
 
 
 def _client_key(request: Request, route: str) -> str:
-    # By default ignore X-Forwarded-For: it's attacker-controlled, so honouring
-    # it lets a caller rotate the header per request and land each one in a fresh
-    # bucket, fully bypassing the limit. Only trust it when explicitly enabled,
-    # and even then only behind a proxy that *overwrites* the header.
-    forwarded = request.headers.get("x-forwarded-for", "")
-    if settings.rate_limit_trust_forwarded_for and forwarded:
-        ip = forwarded.split(",")[0].strip()
-    elif request.client is not None:
-        ip = request.client.host
-    else:
-        ip = "unknown"
+    # By default ignore proxy-supplied client-IP headers: a raw X-Forwarded-For
+    # is attacker-controlled, so honouring it lets a caller rotate the header per
+    # request and land each one in a fresh bucket, fully bypassing the limit.
+    # Only trust proxy headers when explicitly enabled (rate_limit_trust_-
+    # forwarded_for), and even then only behind a proxy that *overwrites* them.
+    #
+    # When trust is enabled we prefer X-Real-IP: the shipped nginx config sets it
+    # to $remote_addr on every request, so it carries exactly one value the
+    # client cannot influence. We fall back to the leftmost X-Forwarded-For entry
+    # (the original client as recorded by the trusted proxy) only when X-Real-IP
+    # is absent.
+    if settings.rate_limit_trust_forwarded_for:
+        real_ip = request.headers.get("x-real-ip", "").strip()
+        if real_ip:
+            return f"{route}:{real_ip}"
+        forwarded = request.headers.get("x-forwarded-for", "")
+        if forwarded:
+            return f"{route}:{forwarded.split(',')[0].strip()}"
+    ip = request.client.host if request.client is not None else "unknown"
     return f"{route}:{ip}"
 
 

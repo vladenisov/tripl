@@ -950,3 +950,109 @@ async def test_router_branch_param_threads_meta_fields(client: AsyncClient) -> N
         await client.get(f"/api/v1/projects/branch-route-meta/meta-fields?branch={branch_id}")
     ).json()
     assert [mf["name"] for mf in branch_mf] == ["owner"]
+
+
+# --- event merge: source_name preservation (scan dedup integrity) -----------
+
+
+@pytest.mark.asyncio
+async def test_merge_preserves_event_source_name(client: AsyncClient) -> None:
+    """Merge must carry an event's ``source_name`` from branch to main on BOTH
+    the update-existing and create-new paths.
+
+    Scan dedup (worker event_generator) keys on ``source_name``; if a merged
+    event lands with ``source_name`` unset it gets backfilled to ``name`` and
+    re-duplicates as a shadow row, detaching metrics. This guards that data
+    integrity invariant.
+    """
+    await _seed_plan(client, "merge-source-name")
+
+    main_branch_id_str = None
+    async with TestSessionLocal() as session:
+        main_branch = (
+            (await session.execute(select(PlanBranch).where(PlanBranch.name == "main")))
+            .scalars()
+            .first()
+        )
+        main_branch_id_str = main_branch.id
+        # Give the live main event a runtime-distinct source_name (as the scan
+        # worker would have stamped it: differs from the editable display name).
+        main_event = (
+            (
+                await session.execute(
+                    select(Event).where(
+                        Event.branch_id == main_branch.id, Event.name == "purchase:success"
+                    )
+                )
+            )
+            .scalars()
+            .first()
+        )
+        main_event.source_name = "purchase_success_raw"
+        await session.commit()
+
+    branch_id = await _create_branch(client, "merge-source-name")
+    branch_uuid = uuid.UUID(branch_id)
+
+    async with TestSessionLocal() as session:
+        # update-existing path: stamp the branch event's source_name (mirrors a
+        # scan having run against the branch) and mutate it so the merge writes
+        # back to the existing main row.
+        branch_event = (
+            (
+                await session.execute(
+                    select(Event).where(
+                        Event.branch_id == branch_uuid, Event.name == "purchase:success"
+                    )
+                )
+            )
+            .scalars()
+            .first()
+        )
+        branch_event.source_name = "purchase_success_raw"
+        branch_event.description = "edited on branch"
+
+        # create-new path: add a brand-new event on the branch with its own
+        # source_name that diverges from its display name.
+        branch_et = (
+            (
+                await session.execute(
+                    select(EventType).where(
+                        EventType.name == "track", EventType.branch_id == branch_uuid
+                    )
+                )
+            )
+            .scalars()
+            .first()
+        )
+        session.add(
+            Event(
+                id=uuid.uuid4(),
+                project_id=branch_et.project_id,
+                branch_id=branch_uuid,
+                event_type_id=branch_et.id,
+                name="signup:done",
+                source_name="signup_done_raw",
+            )
+        )
+        await session.commit()
+
+    resp = await _approve_and_merge(client, "merge-source-name", branch_id)
+    assert resp.status_code == 200, resp.text
+
+    async with TestSessionLocal() as session:
+        merged = {
+            e.name: e
+            for e in (
+                await session.execute(
+                    select(Event).where(Event.branch_id == main_branch_id_str)
+                )
+            )
+            .scalars()
+            .all()
+        }
+        # update-existing path kept the source_name (not backfilled to name),
+        # so scan dedup re-attaches metrics instead of spawning a shadow row.
+        assert merged["purchase:success"].source_name == "purchase_success_raw"
+        # create-new path carried the source_name across too.
+        assert merged["signup:done"].source_name == "signup_done_raw"

@@ -46,11 +46,15 @@ class Settings(BaseSettings):
     rate_limit_enabled: bool = True
     rate_limit_login_per_minute: int = 5
     rate_limit_register_per_hour: int = 3
-    # Whether to derive the client IP from the X-Forwarded-For header. Default
-    # is False (deny): an unauthenticated attacker can rotate XFF per request to
-    # spray each request into a fresh bucket and bypass the limit entirely. Only
-    # enable this behind a trusted proxy/LB that *overwrites* the header.
-    rate_limit_trust_forwarded_for: bool = False
+    # Whether to derive the client IP from proxy-supplied headers (X-Real-IP,
+    # then leftmost X-Forwarded-For) for rate-limit bucketing. Defaults to True
+    # because the shipped frontend nginx config sits in front of the API and
+    # *overwrites* X-Real-IP with $remote_addr on every request, so the value is
+    # not attacker-controlled. Set this to False if you expose the API directly
+    # (no trusted proxy in front): a raw X-Forwarded-For is attacker-controlled,
+    # and an unauthenticated caller could rotate it per request to spray each one
+    # into a fresh bucket and bypass the limit entirely.
+    rate_limit_trust_forwarded_for: bool = True
 
     # Event photo uploads. Backend can be "local" (filesystem) or "gcs"
     # (Google Cloud Storage). Local files are served through an authenticated

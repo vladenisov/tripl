@@ -36,14 +36,18 @@ export function getBucketStart(dateStr: string, granularity: MetricsGranularity)
       ))
       break
     case 'week': {
-      const start = new Date(Date.UTC(
+      // Anchor weekly buckets to the Unix epoch (1970-01-01, a Thursday) on a
+      // fixed 7-day grid, matching the backend stores
+      // (toStartOfInterval(col, INTERVAL 7 day) / date_bin(INTERVAL 7 day,
+      // ..., epoch)). Floor the UTC midnight of this day to that grid so chart
+      // weeks line up with server-computed anomaly buckets.
+      const dayStartMs = Date.UTC(
         date.getUTCFullYear(),
         date.getUTCMonth(),
         date.getUTCDate(),
-      ))
-      const daysFromMonday = (start.getUTCDay() + 6) % 7
-      start.setUTCDate(start.getUTCDate() - daysFromMonday)
-      normalized = start
+      )
+      const WEEK_MS = 7 * 24 * 60 * 60 * 1000
+      normalized = new Date(Math.floor(dayStartMs / WEEK_MS) * WEEK_MS)
       break
     }
     case 'month':

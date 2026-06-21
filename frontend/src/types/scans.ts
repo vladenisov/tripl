@@ -1,3 +1,5 @@
+import type { MetricScopeType } from './metrics'
+
 export interface ScanJobResultSummary {
   mode?: 'metrics_collection' | 'metrics_replay'
   catalog_sync_skipped?: boolean
@@ -56,7 +58,7 @@ export interface ProjectLatestScanJob {
 export interface ProjectLatestSignal {
   scan_config_id: string
   scan_name: string
-  scope_type: 'project_total' | 'event_type' | 'event'
+  scope_type: MetricScopeType
   scope_ref: string
   scope_name: string
   state: 'latest_scan' | 'recent'

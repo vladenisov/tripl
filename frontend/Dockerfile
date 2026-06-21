@@ -34,13 +34,26 @@ RUN --mount=type=cache,id=pnpm,target=/pnpm/store \
 # and the brotli module in lockstep.
 FROM alpine:3.24 AS runtime
 
-RUN apk add --no-cache nginx nginx-mod-http-brotli
+RUN apk add --no-cache nginx nginx-mod-http-brotli wget
 
 COPY --from=build /app/dist /usr/share/nginx/html
 # Our nginx.conf has top-level load_module directives for brotli and fully
 # replaces the packaged config.
 COPY nginx.conf /etc/nginx/nginx.conf
 
+# Run nginx as the non-root `nginx` user (shipped by the alpine package). The
+# master writes its pid and temp/cache files plus logs, so make those paths
+# owned by that user. Listening on 5173 (>1024) needs no extra capabilities.
+RUN mkdir -p /var/cache/nginx /var/lib/nginx/tmp \
+    && touch /var/run/nginx.pid \
+    && chown -R nginx:nginx /var/cache/nginx /var/lib/nginx /var/log/nginx \
+        /var/run/nginx.pid /usr/share/nginx/html
+USER nginx
+
 EXPOSE 5173
+
+# Probe the SPA document; nginx serves it at the root path.
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+    CMD ["wget", "--quiet", "--tries=1", "--spider", "http://localhost:5173/"]
 
 CMD ["nginx", "-g", "daemon off;"]
