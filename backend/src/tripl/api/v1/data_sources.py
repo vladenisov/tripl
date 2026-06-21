@@ -1,6 +1,6 @@
 import uuid
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Query
 
 from tripl.api.deps import OwnerUserDep, SessionDep, get_owner_user
 from tripl.schemas.data_source import (
@@ -56,7 +56,7 @@ async def get_data_source(session: SessionDep, ds_id: uuid.UUID) -> DataSourceRe
 
 @router.get("/{ds_id}/stats", response_model=DataSourceStatsResponse)
 async def get_data_source_stats(
-    session: SessionDep, ds_id: uuid.UUID, window_hours: int = 48
+    session: SessionDep, ds_id: uuid.UUID, window_hours: int = Query(48, ge=1, le=720)
 ) -> DataSourceStatsResponse:
     return await metrics_service.get_data_source_stats(session, ds_id, window_hours=window_hours)
 

@@ -73,6 +73,8 @@ __all__ = [
     "_clean",
     "_finalize_results",
     "_join",
+    "_queue_embedding_refresh",
+    "_reindex_branch_documents",
     "_token_boundary_regex",
     "document_to_result",
     "fallback_score",
@@ -134,14 +136,23 @@ async def reindex_branch(
     )
 
 
-async def reindex_project_branch(
+async def _reindex_branch_documents(
     session: AsyncSession,
     *,
     project_id: uuid.UUID,
     branch_id: uuid.UUID,
     slug: str | None = None,
-    schedule_embeddings: bool = True,
-) -> int:
+) -> tuple[int, AiConfig]:
+    """Rebuild the branch's search index in-place WITHOUT committing.
+
+    Performs the DELETE + rebuild + flush (and the Postgres text-vector
+    refresh) so the new index participates in the caller's transaction. The
+    caller owns the commit; callers that mutate primary data first can thus
+    cover the data write and the index rebuild in a single atomic transaction.
+
+    Returns the document count and the resolved ``AiConfig`` so the caller can
+    schedule the fire-and-forget embedding refresh *after* its commit succeeds.
+    """
     project_slug = slug or await _project_slug(session, project_id)
     documents = await _build_documents(session, project_id, branch_id, project_slug)
     ai_config = await app_settings_service.get_ai_config(session)
@@ -167,11 +178,28 @@ async def reindex_project_branch(
     await session.flush()
     if _is_postgres(session):
         await _refresh_text_vectors(session, project_id, branch_id)
+    return len(documents), ai_config
+
+
+async def reindex_project_branch(
+    session: AsyncSession,
+    *,
+    project_id: uuid.UUID,
+    branch_id: uuid.UUID,
+    slug: str | None = None,
+    schedule_embeddings: bool = True,
+) -> int:
+    count, ai_config = await _reindex_branch_documents(
+        session,
+        project_id=project_id,
+        branch_id=branch_id,
+        slug=slug,
+    )
     await session.commit()
 
     if schedule_embeddings:
         _queue_embedding_refresh(project_id, branch_id, ai_config=ai_config)
-    return len(documents)
+    return count
 
 
 async def search_project(

@@ -46,7 +46,7 @@ def _safe_limit(limit: int) -> int:
 
 
 def _is_postgres(session: AsyncSession) -> bool:
-    return session.get_bind().dialect.name == "postgresql"
+    return session.bind.dialect.name == "postgresql"
 
 
 async def postgres_search(
@@ -101,9 +101,8 @@ async def postgres_lexical_search(
 ) -> list[SearchResult]:
     token_regex = token_boundary_regex(query)
     has_token_regex = bool(token_regex)
-    type_clause = "AND d.entity_type IN :entity_types" if entity_types else ""
     statement = text(
-        f"""
+        """
         WITH q AS (
             SELECT websearch_to_tsquery('tripl_search', :query) AS tsq
         ),
@@ -141,7 +140,7 @@ async def postgres_lexical_search(
             WHERE d.project_id = :project_id
               AND d.branch_id = :branch_id
               AND (:include_archived OR d.archived IS FALSE)
-              {type_clause}
+              AND (:filter_entity_types IS FALSE OR d.entity_type IN :entity_types)
               AND (
                 d.text_vector @@ q.tsq
                 OR d.title % :query
@@ -168,6 +167,8 @@ async def postgres_lexical_search(
         LIMIT :limit
         """
     )
+    filter_entity_types = bool(entity_types)
+    statement = statement.bindparams(bindparam("entity_types", expanding=True))
     params: dict[str, object] = {
         "project_id": project_id,
         "branch_id": branch_id,
@@ -177,11 +178,13 @@ async def postgres_lexical_search(
         "token_regex": token_regex,
         "has_token_regex": has_token_regex,
         "include_archived": include_archived,
+        "filter_entity_types": filter_entity_types,
+        # An expanding bindparam cannot expand an empty list, so feed a single
+        # placeholder when no type filter is active — the boolean flag above
+        # short-circuits the IN clause, so the placeholder is never compared.
+        "entity_types": list(entity_types) if entity_types else [""],
         "limit": limit,
     }
-    if entity_types:
-        statement = statement.bindparams(bindparam("entity_types", expanding=True))
-        params["entity_types"] = list(entity_types)
     rows = (await session.execute(statement, params)).mappings().all()
     return [row_to_result(row, query, semantic_used=False) for row in rows]
 
@@ -197,9 +200,8 @@ async def postgres_semantic_search(
     limit: int,
 ) -> list[SearchResult]:
     vector = "[" + ",".join(f"{value:.8f}" for value in embedding) + "]"
-    type_clause = "AND d.entity_type IN :entity_types" if entity_types else ""
     statement = text(
-        f"""
+        """
         SELECT
             d.id,
             d.entity_type,
@@ -218,22 +220,24 @@ async def postgres_semantic_search(
           AND (:include_archived OR d.archived IS FALSE)
           AND d.embedding IS NOT NULL
           AND d.embedding_status = 'ready'
-          {type_clause}
+          AND (:filter_entity_types IS FALSE OR d.entity_type IN :entity_types)
         ORDER BY d.embedding <=> CAST(:embedding AS vector)
         LIMIT :limit
         """
     )
-    if entity_types:
-        statement = statement.bindparams(bindparam("entity_types", expanding=True))
+    filter_entity_types = bool(entity_types)
+    statement = statement.bindparams(bindparam("entity_types", expanding=True))
     params: dict[str, object] = {
         "project_id": project_id,
         "branch_id": branch_id,
         "embedding": vector,
         "include_archived": include_archived,
+        "filter_entity_types": filter_entity_types,
+        # See postgres_lexical_search: a placeholder list keeps the expanding
+        # bindparam valid; the boolean flag short-circuits the IN clause.
+        "entity_types": list(entity_types) if entity_types else [""],
         "limit": limit,
     }
-    if entity_types:
-        params["entity_types"] = list(entity_types)
     rows = (await session.execute(statement, params)).mappings().all()
     return [row_to_result(row, "", semantic_used=True) for row in rows]
 

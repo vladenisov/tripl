@@ -297,7 +297,14 @@ def ensure_variable(
     except IntegrityError:
         logger.info(
             "Variable already inserted concurrently; skipping duplicate",
-            extra={"project_id": str(project_id), "name": name, "branch_id": str(branch_id)},
+            # "name" is a reserved LogRecord attribute (the logger name); using it
+            # as an extra raises KeyError, so log the variable name as
+            # "variable_name".
+            extra={
+                "project_id": str(project_id),
+                "variable_name": name,
+                "branch_id": str(branch_id),
+            },
         )
         return 0
     return 1

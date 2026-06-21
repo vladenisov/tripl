@@ -15,8 +15,24 @@ from tripl.schemas.audit import AuditEntryResponse, AuditListResponse
 
 # Fields that must never make it into the audit payload — credentials, hashes,
 # anything you would not want to read back from the audit UI in cleartext.
+# Matching is exact-key (no substring); the alerting destination secrets below
+# don't fit the generic password/token/secret names, so they're listed by name.
 _REDACTED_KEYS = frozenset(
-    {"password", "password_encrypted", "password_hash", "secret", "token", "credentials"}
+    {
+        "password",
+        "password_encrypted",
+        "password_hash",
+        "secret",
+        "token",
+        "credentials",
+        # Alerting destination secrets (AlertDestinationCreate).
+        "webhook_url",
+        "bot_token",
+        "target_url",
+        "webhook_header_value",
+        "jira_api_token",
+        "linear_api_key",
+    }
 )
 
 

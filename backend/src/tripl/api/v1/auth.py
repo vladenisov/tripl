@@ -48,6 +48,7 @@ async def register(
 @router.post(
     "/login",
     response_model=AuthUserResponse,
+    status_code=status.HTTP_200_OK,
     dependencies=[Depends(enforce(login_rate_limiter))],
 )
 async def login(response: Response, session: SessionDep, data: LoginRequest) -> AuthUserResponse:

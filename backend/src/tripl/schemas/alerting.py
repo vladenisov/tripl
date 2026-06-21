@@ -155,6 +155,8 @@ class AlertRuleResponse(BaseModel):
     created_at: datetime
     updated_at: datetime
 
+    model_config = {"from_attributes": True}
+
 
 class AlertDestinationCreate(BaseModel):
     type: AlertDestinationType
@@ -421,6 +423,8 @@ class AlertDestinationResponse(BaseModel):
     rules: list[AlertRuleResponse]
     created_at: datetime
     updated_at: datetime
+
+    model_config = {"from_attributes": True}
 
 
 class AlertDeliveryItemResponse(BaseModel):
