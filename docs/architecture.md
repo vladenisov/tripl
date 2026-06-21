@@ -133,6 +133,17 @@ Locally, all of the above (except the warehouses) run under Docker Compose:
 - The information architecture is four job-based groups — **Plan / Observe /
   Govern / Connect** — defined once in `src/lib/navigation.ts` and consumed by
   both the sidebar and the breadcrumbs so they never drift apart.
+- **Serving.** In development the **Vite dev server** serves the SPA with HMR and
+  proxies `/api` to the backend. In production there are two options: **(a)
+  consolidated single container** — FastAPI serves the built SPA itself via
+  `app.frontend()` (FastAPI 0.138+) when `SERVE_FRONTEND=true`, so one image
+  serves API + SPA (root `Dockerfile` + `compose.prod.yaml`, **no nginx**); or
+  **(b) standalone static tier** — `frontend/Dockerfile` serves the build through
+  nginx (`frontend/nginx.conf`) next to the API. Consolidated mode routes the SPA
+  through the API's `SecurityHeadersMiddleware`/`BrotliMiddleware`, so it inherits
+  the same CSP/headers and compression; because the app is then the network edge,
+  `rate_limit_trust_forwarded_for` stays `False` (don't trust client-sent
+  forwarded headers) unless a trusted proxy is added in front.
 - Plan branch context travels as a `?branch=` query parameter threaded through
   every plan API call and the React Query keys; the active branch is persisted
   in `localStorage` per project slug.
