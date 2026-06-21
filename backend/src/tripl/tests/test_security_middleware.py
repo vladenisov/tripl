@@ -77,42 +77,39 @@ def test_token_bucket_separate_keys_have_separate_quota() -> None:
         bucket.acquire("a")
 
 
-def test_client_key_ignores_spoofed_forwarded_for_by_default() -> None:
+def test_client_key_ignores_spoofed_forwarded_for_by_default(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     # Default-deny: a caller rotating X-Forwarded-For must not escape the bucket.
     # Every spoofed value has to collapse onto the real client.host key.
-    original = settings.rate_limit_trust_forwarded_for
-    settings.rate_limit_trust_forwarded_for = False
-    try:
-        keys = {
-            _client_key(
-                _FakeRequest(client_host="10.0.0.1", forwarded_for=spoofed),  # type: ignore[arg-type]
-                "login",
-            )
-            for spoofed in ("1.1.1.1", "2.2.2.2", "3.3.3.3, 4.4.4.4")
-        }
-        assert keys == {"login:10.0.0.1"}
-    finally:
-        settings.rate_limit_trust_forwarded_for = original
+    # monkeypatch restores the setting on teardown even if the assert fails.
+    monkeypatch.setattr(settings, "rate_limit_trust_forwarded_for", False)
+    keys = {
+        _client_key(
+            _FakeRequest(client_host="10.0.0.1", forwarded_for=spoofed),  # type: ignore[arg-type]
+            "login",
+        )
+        for spoofed in ("1.1.1.1", "2.2.2.2", "3.3.3.3, 4.4.4.4")
+    }
+    assert keys == {"login:10.0.0.1"}
 
 
-def test_client_key_trusts_forwarded_for_when_enabled() -> None:
+def test_client_key_trusts_forwarded_for_when_enabled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     # When explicitly enabled (behind a trusted proxy), distinct XFF client IPs
     # legitimately get distinct buckets.
-    original = settings.rate_limit_trust_forwarded_for
-    settings.rate_limit_trust_forwarded_for = True
-    try:
-        key_a = _client_key(
-            _FakeRequest(client_host="10.0.0.1", forwarded_for="1.1.1.1"),  # type: ignore[arg-type]
-            "login",
-        )
-        key_b = _client_key(
-            _FakeRequest(client_host="10.0.0.1", forwarded_for="2.2.2.2"),  # type: ignore[arg-type]
-            "login",
-        )
-        assert key_a == "login:1.1.1.1"
-        assert key_b == "login:2.2.2.2"
-    finally:
-        settings.rate_limit_trust_forwarded_for = original
+    monkeypatch.setattr(settings, "rate_limit_trust_forwarded_for", True)
+    key_a = _client_key(
+        _FakeRequest(client_host="10.0.0.1", forwarded_for="1.1.1.1"),  # type: ignore[arg-type]
+        "login",
+    )
+    key_b = _client_key(
+        _FakeRequest(client_host="10.0.0.1", forwarded_for="2.2.2.2"),  # type: ignore[arg-type]
+        "login",
+    )
+    assert key_a == "login:1.1.1.1"
+    assert key_b == "login:2.2.2.2"
 
 
 @pytest.mark.asyncio
