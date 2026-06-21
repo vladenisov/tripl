@@ -1,6 +1,33 @@
 import pytest
 from httpx import AsyncClient
 
+from tripl.services import audit_service
+
+
+def test_redact_masks_alerting_destination_secrets() -> None:
+    """Alerting destination secrets carry key names that are not the generic
+    password/token/secret set, so _redact must mask them explicitly."""
+    payload = {
+        "webhook_url": "https://hooks.slack.com/services/T/B/XXXX",
+        "bot_token": "123456:ABCDEF-telegram-token",
+        "target_url": "https://example.com/webhook?auth=zzz",
+        "webhook_header_value": "Bearer header-secret",
+        "jira_api_token": "jira-token-value",
+        "linear_api_key": "lin_api_key_value",
+        "name": "Prod Slack",
+    }
+
+    redacted = audit_service._redact(payload)
+
+    assert redacted["webhook_url"] == "***"
+    assert redacted["bot_token"] == "***"
+    assert redacted["target_url"] == "***"
+    assert redacted["webhook_header_value"] == "***"
+    assert redacted["jira_api_token"] == "***"
+    assert redacted["linear_api_key"] == "***"
+    # Benign fields pass through untouched.
+    assert redacted["name"] == "Prod Slack"
+
 
 async def _setup_project(client: AsyncClient, slug: str = "audit-proj") -> str:
     await client.post("/api/v1/projects", json={"name": "A", "slug": slug})

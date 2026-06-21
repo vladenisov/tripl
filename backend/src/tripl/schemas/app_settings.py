@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 from typing import Literal
+from urllib.parse import urlparse
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 SettingSource = Literal["env", "override"]
 
@@ -129,6 +130,22 @@ class AiSettingsUpdate(BaseModel):
     ai_base_url: str | None = None
     ai_model: str | None = None
     ai_api_key: str | None = Field(default=None, max_length=4096)
+
+    @field_validator("ai_base_url")
+    @classmethod
+    def _check_ai_base_url(cls, value: str | None) -> str | None:
+        # Format-only guard: must be a well-formed http(s) URL with a host.
+        # We intentionally allow http and private/localhost hosts so that
+        # self-hosted/local LLM endpoints (e.g. http://localhost:11434) work.
+        if value is None:
+            return value
+        trimmed = value.strip()
+        if not trimmed:
+            return trimmed
+        parsed = urlparse(trimmed)
+        if parsed.scheme not in ("http", "https") or not parsed.netloc:
+            raise ValueError("ai_base_url must be a valid http(s) URL")
+        return trimmed
     ai_timeout_seconds: int | None = Field(default=None, ge=1)
     ai_max_output_tokens: int | None = Field(default=None, ge=1)
     describe_system_prompt: str | None = Field(default=None, min_length=1)

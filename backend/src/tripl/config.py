@@ -3,6 +3,11 @@ from __future__ import annotations
 from pydantic import field_validator
 from pydantic_settings import BaseSettings
 
+# Credential fragments shipped in the dev-default connection URLs. If any of
+# these survive into a non-debug deploy, the operator forgot to set real
+# secrets — refuse to start. See the `*_url` defaults below.
+_DEV_CREDENTIAL_MARKERS = ("tripl:tripl", "guest:guest")
+
 
 class Settings(BaseSettings):
     database_url: str = "postgresql+asyncpg://tripl:tripl@localhost:5432/tripl"
@@ -11,6 +16,10 @@ class Settings(BaseSettings):
     # Empty string disables caching — every read falls through to DB.
     redis_url: str = ""
     encryption_key: str = ""  # Fernet key for encrypting data source secrets
+    # Application secret used to key HMAC over session tokens (see
+    # auth_utils.hash_session_token). Required in production; rotating it
+    # invalidates all existing sessions (users re-login once).
+    secret_key: str = ""
     app_base_url: str = ""
     session_cookie_name: str = "tripl_session"
     session_ttl_hours: int = 24 * 7
@@ -181,11 +190,38 @@ class Settings(BaseSettings):
                 "sent over HTTP. Set SESSION_COOKIE_SECURE=true when serving over HTTPS."
             )
 
-        if not self.cors_origins():
+        if not self.secret_key:
+            problems.append(
+                "SECRET_KEY is empty: session token hashes would be unkeyed and "
+                "guessable. Set SECRET_KEY to a long random value (e.g. "
+                "`python -c 'import secrets; print(secrets.token_urlsafe(32))'`)."
+            )
+
+        resolved_cors = self.cors_origins()
+        if not resolved_cors:
             problems.append(
                 "CORS origins are empty: no browser can call the API. Set "
                 "CORS_ALLOW_ORIGINS or APP_BASE_URL to your frontend origin."
             )
+        elif resolved_cors == ["*"]:
+            problems.append(
+                "CORS origins resolve to the wildcard '*' in production: browsers "
+                "reject credentialed (cookie) requests against a wildcard origin, "
+                "so session auth would break. Set CORS_ALLOW_ORIGINS or "
+                "APP_BASE_URL to an explicit frontend origin."
+            )
+
+        for label, url in (
+            ("DATABASE_URL", self.database_url),
+            ("SYNC_DATABASE_URL", self.sync_database_url),
+            ("RABBITMQ_URL", self.rabbitmq_url),
+        ):
+            if any(marker in url for marker in _DEV_CREDENTIAL_MARKERS):
+                problems.append(
+                    f"{label} still uses the dev-default credentials "
+                    f"({' / '.join(_DEV_CREDENTIAL_MARKERS)}): set a real "
+                    "connection string before deploying."
+                )
 
         if problems:
             raise RuntimeError("Production startup checks failed:\n  - " + "\n  - ".join(problems))

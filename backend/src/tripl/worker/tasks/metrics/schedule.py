@@ -50,8 +50,8 @@ def check_metrics_due() -> dict[str, int]:
     session = _get_sync_session()
     lock_conn = None
     try:
-        bind = session.get_bind()
-        if getattr(getattr(bind, "dialect", None), "name", "") == "postgresql":
+        bind = session.bind
+        if bind is not None and bind.dialect.name == "postgresql":
             engine = bind if isinstance(bind, Engine) else bind.engine
             lock_conn = engine.connect().execution_options(isolation_level="AUTOCOMMIT")
             acquired = bool(

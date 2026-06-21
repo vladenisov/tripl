@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import uuid
 
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, HTTPException, Query, status
 from sqlalchemy import delete, select
 
 from tripl.api.deps import CurrentUserDep, OwnerUserDep, SessionDep
@@ -15,9 +15,16 @@ router = APIRouter(prefix="/users", tags=["users"])
 
 
 @router.get("", response_model=list[UserListItem])
-async def list_users(session: SessionDep, current_user: CurrentUserDep) -> list[User]:
+async def list_users(
+    session: SessionDep,
+    current_user: CurrentUserDep,
+    limit: int = Query(200, ge=1, le=1000),
+    offset: int = Query(0, ge=0),
+) -> list[User]:
     del current_user  # any authenticated user can see the roster
-    rows = await session.scalars(select(User).order_by(User.created_at))
+    rows = await session.scalars(
+        select(User).order_by(User.created_at).limit(limit).offset(offset)
+    )
     return list(rows)
 
 
