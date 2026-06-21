@@ -1056,3 +1056,84 @@ async def test_merge_preserves_event_source_name(client: AsyncClient) -> None:
         assert merged["purchase:success"].source_name == "purchase_success_raw"
         # create-new path carried the source_name across too.
         assert merged["signup:done"].source_name == "signup_done_raw"
+
+
+@pytest.mark.asyncio
+async def test_deep_copy_carries_event_source_name_so_merge_preserves_it(
+    client: AsyncClient,
+) -> None:
+    """Deep-copy must carry an event's ``source_name`` onto the branch copy.
+
+    If the deep-copy left the branch event's ``source_name`` as ``None`` and no
+    scan re-stamped it, merge's update-existing path would copy that ``None``
+    back over main's good value — re-introducing the orphaned-metrics/shadow-row
+    bug. Here the branch event's ``source_name`` is deliberately NOT touched after
+    branch creation (no scan), so the only way main keeps its value is if the
+    deep-copy carried it.
+    """
+    await _seed_plan(client, "merge-deepcopy-srcname")
+
+    main_branch_id_str = None
+    async with TestSessionLocal() as session:
+        main_branch = (
+            (await session.execute(select(PlanBranch).where(PlanBranch.name == "main")))
+            .scalars()
+            .first()
+        )
+        main_branch_id_str = main_branch.id
+        main_event = (
+            (
+                await session.execute(
+                    select(Event).where(
+                        Event.branch_id == main_branch.id,
+                        Event.name == "purchase:success",
+                    )
+                )
+            )
+            .scalars()
+            .first()
+        )
+        main_event.source_name = "purchase_success_raw"
+        await session.commit()
+
+    branch_id = await _create_branch(client, "merge-deepcopy-srcname")
+    branch_uuid = uuid.UUID(branch_id)
+
+    # The deep-copy must have carried source_name onto the branch event copy.
+    async with TestSessionLocal() as session:
+        branch_event = (
+            (
+                await session.execute(
+                    select(Event).where(
+                        Event.branch_id == branch_uuid,
+                        Event.name == "purchase:success",
+                    )
+                )
+            )
+            .scalars()
+            .first()
+        )
+        assert branch_event.source_name == "purchase_success_raw"
+        # Mutate something unrelated so the merge hits the update-existing path
+        # without re-stamping source_name (i.e. as if no scan ran on the branch).
+        branch_event.description = "edited on branch"
+        await session.commit()
+
+    resp = await _approve_and_merge(client, "merge-deepcopy-srcname", branch_id)
+    assert resp.status_code == 200, resp.text
+
+    async with TestSessionLocal() as session:
+        merged_main_event = (
+            (
+                await session.execute(
+                    select(Event).where(
+                        Event.branch_id == main_branch_id_str,
+                        Event.name == "purchase:success",
+                    )
+                )
+            )
+            .scalars()
+            .first()
+        )
+        # Merge must not have written None over main's good source_name.
+        assert merged_main_event.source_name == "purchase_success_raw"

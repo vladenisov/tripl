@@ -16,6 +16,7 @@ from sqlalchemy import Engine, create_engine
 from sqlalchemy.orm import Session, sessionmaker
 
 from tripl.config import settings
+from tripl.db_config import MAX_OVERFLOW, POOL_PRE_PING, POOL_RECYCLE_SECONDS, POOL_SIZE
 
 if TYPE_CHECKING:
     from tripl.models.data_source import DataSource
@@ -31,10 +32,10 @@ def _ensure_initialized() -> sessionmaker[Session]:
         _engine = create_engine(
             settings.sync_database_url,
             echo=settings.debug,
-            pool_size=5,
-            max_overflow=10,
-            pool_pre_ping=True,
-            pool_recycle=1800,
+            pool_size=POOL_SIZE,
+            max_overflow=MAX_OVERFLOW,
+            pool_pre_ping=POOL_PRE_PING,
+            pool_recycle=POOL_RECYCLE_SECONDS,
         )
         _session_local = sessionmaker(_engine, expire_on_commit=False)
     return _session_local

@@ -3,14 +3,15 @@ from collections.abc import AsyncGenerator
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from tripl.config import settings
+from tripl.db_config import MAX_OVERFLOW, POOL_PRE_PING, POOL_RECYCLE_SECONDS, POOL_SIZE
 
 engine = create_async_engine(
     settings.database_url,
     echo=settings.debug,
-    pool_size=5,
-    max_overflow=10,
-    pool_pre_ping=True,
-    pool_recycle=1800,
+    pool_size=POOL_SIZE,
+    max_overflow=MAX_OVERFLOW,
+    pool_pre_ping=POOL_PRE_PING,
+    pool_recycle=POOL_RECYCLE_SECONDS,
 )
 async_session = async_sessionmaker(engine, expire_on_commit=False)
 
