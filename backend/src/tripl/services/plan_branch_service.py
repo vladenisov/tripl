@@ -375,6 +375,7 @@ async def _deep_copy_plan(
                 branch_id=target_branch_id,
                 event_type_id=et_map[ev.event_type_id],
                 name=ev.name,
+                source_name=ev.source_name,
                 description=ev.description,
                 order=ev.order,
                 status=ev.status,

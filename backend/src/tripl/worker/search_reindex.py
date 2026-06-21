@@ -42,7 +42,10 @@ def reindex_main_branch_from_worker(session: Session, project_id: uuid.UUID) -> 
         # connection created under an already-closed loop ("got Future attached
         # to a different loop"). Build a throwaway NullPool engine whose
         # connections live and die entirely inside this loop, and dispose it
-        # before the loop closes.
+        # before the loop closes. See tripl.db_config for the documented
+        # async(api)/sync(Celery)/async-NullPool(worker-bridge) split — this is
+        # the worker-bridge case, so it intentionally skips the shared pool
+        # constants and uses NullPool.
         engine = create_async_engine(settings.database_url, poolclass=NullPool)
         try:
             session_factory = async_sessionmaker(engine, expire_on_commit=False)

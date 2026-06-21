@@ -13,7 +13,8 @@
     "build": "tsc -b && vite build",
     "lint": "eslint . --max-warnings 0",
     "preview": "vite preview",
-    "test": "vitest run"
+    "test": "vitest run",
+    "gen:api": "npx --yes openapi-typescript@7.13.0 ../backend/openapi.json -o src/types/api.gen.ts"
   },
   "dependencies": {
     "@codemirror/lang-sql": "^6.10.0",
