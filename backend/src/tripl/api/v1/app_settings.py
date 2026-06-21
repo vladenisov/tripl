@@ -68,6 +68,10 @@ async def put_service_settings(
     _current_user: OwnerUserDep,
     payload: ServiceSettingsUpdate,
 ) -> ServiceSettingsResponse:
+    """Upsert service overrides. Intentionally identical to PATCH: unset fields
+    are left untouched (partial update), not reset. Kept as a stable alias for
+    clients that issue PUT; settings are a sparse override map with no full
+    "replace all" semantics."""
     return await patch_service_settings(session, _current_user, payload)
 
 
@@ -85,6 +89,9 @@ async def put_ai_settings(
     _current_user: OwnerUserDep,
     payload: AiSettingsUpdate,
 ) -> AiSettingsResponse:
+    """Upsert AI overrides (partial: only fields present in the request body are
+    applied, via exclude_unset). PUT — not PATCH — because the frontend AI
+    settings form calls this endpoint; semantics are upsert, not replace-all."""
     changes = payload.model_dump(exclude_unset=True)
     settings_payload = app_settings_service.public_service_settings(
         await app_settings_service.update_ai_overrides(session, changes)

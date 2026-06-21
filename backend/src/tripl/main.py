@@ -19,12 +19,18 @@ from tripl.middleware import RequestIDMiddleware, SecurityHeadersMiddleware
 from tripl.middleware.request_id import current_request_id
 from tripl.observability.metrics import render_metrics
 
+# Configure logging at import time so every log line — including those emitted
+# while building the app and importing routers, before the async lifespan runs —
+# uses the structured handler. configure_logging() is idempotent, so the call in
+# the lifespan below simply re-applies the current settings.
+configure_logging()
+
 logger = logging.getLogger(__name__)
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-    """Startup: configure logging, fail fast on misconfigured production deploys."""
+    """Startup: re-apply logging config, fail fast on misconfigured production deploys."""
     configure_logging()
     settings.assert_production_ready()
     logger.info(
@@ -38,11 +44,48 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     yield
 
 
+# One entry per tag actually used across the v1 routers (see api/v1/*.py).
+# Drives the grouping and short blurbs in the generated OpenAPI docs.
+_OPENAPI_TAGS = [
+    {"name": "auth", "description": "Login, registration, logout, and current-user lookup."},
+    {"name": "users", "description": "User administration and role management."},
+    {"name": "projects", "description": "Projects (tracking plans) and their lifecycle."},
+    {"name": "events", "description": "Tracked events within a project's plan."},
+    {"name": "event-types", "description": "Event type definitions and metadata."},
+    {"name": "event-type-owners", "description": "Ownership assignments for event types."},
+    {"name": "fields", "description": "Field definitions attached to event types."},
+    {"name": "meta-fields", "description": "Project-wide meta/context fields."},
+    {"name": "variables", "description": "Reusable variables referenced by the plan."},
+    {"name": "relations", "description": "Relationships between plan entities."},
+    {"name": "scans", "description": "Scan configs and warehouse scan/preview jobs."},
+    {"name": "metrics", "description": "Computed metrics and metric definitions."},
+    {"name": "reconciliation", "description": "Plan-vs-warehouse reconciliation runs."},
+    {"name": "plan-branches", "description": "Working branches of a tracking plan."},
+    {"name": "plan-revisions", "description": "Committed plan revisions and history."},
+    {"name": "chart-annotations", "description": "Annotations overlaid on metric charts."},
+    {"name": "anomaly-settings", "description": "Per-project anomaly detection settings."},
+    {"name": "alerting", "description": "Alert rules and delivery destinations."},
+    {"name": "data-sources", "description": "Warehouse/data-source connections and secrets."},
+    {"name": "event-photos", "description": "Photo attachments for events."},
+    {"name": "search", "description": "Hybrid lexical/semantic search over plan content."},
+    {"name": "ai", "description": "AI-assisted descriptions and Q&A."},
+    {"name": "activity", "description": "Recent activity feed."},
+    {"name": "audit", "description": "Audit log of mutating actions."},
+    {"name": "api-keys", "description": "Personal API keys for programmatic access."},
+    {"name": "settings", "description": "Instance-level application settings."},
+]
+
+# Advertise the deployed base URL in the OpenAPI `servers` block when known so
+# generated clients and the Swagger "Try it out" panel target the right origin.
+_OPENAPI_SERVERS = [{"url": settings.app_base_url}] if settings.app_base_url else None
+
 app = FastAPI(
     title="tripl",
     version="0.1.0",
     description="Analytics tracking plan service",
     lifespan=lifespan,
+    openapi_tags=_OPENAPI_TAGS,
+    servers=_OPENAPI_SERVERS,
 )
 
 # Opt-in OpenTelemetry tracing — gated on OTEL_EXPORTER_OTLP_ENDPOINT env;
@@ -111,10 +154,14 @@ async def health() -> JSONResponse:
         async with asyncio.timeout(1.0):
             async with engine.connect() as conn:
                 await conn.execute(text("SELECT 1"))
-    except Exception as exc:  # noqa: BLE001  — any DB failure should down the probe
+    except Exception:  # noqa: BLE001  — any DB failure should down the probe
+        # Log the underlying error server-side, but return a generic body: the
+        # /health probe is unauthenticated and the exception text can leak the
+        # DSN, driver, and host details.
+        logger.exception("health check: database unreachable")
         return JSONResponse(
             status_code=503,
-            content={"status": "error", "component": "database", "detail": str(exc)},
+            content={"status": "error", "component": "database"},
         )
     return JSONResponse(content={"status": "ok"})
 

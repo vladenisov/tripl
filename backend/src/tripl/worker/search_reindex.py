@@ -16,7 +16,8 @@ logger = logging.getLogger(__name__)
 
 
 def reindex_main_branch_from_worker(session: Session, project_id: uuid.UUID) -> None:
-    if session.get_bind().dialect.name != "postgresql":
+    bind = session.bind
+    if bind is None or bind.dialect.name != "postgresql":
         return
 
     project = session.get(Project, project_id)
