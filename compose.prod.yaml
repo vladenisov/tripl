@@ -1,0 +1,114 @@
+# Production stack — ONE `app` container serves the API *and* the built SPA
+# (FastAPI app.frontend()), so there is NO separate frontend/nginx container.
+#
+#     docker compose -f compose.prod.yaml up --build -d
+#
+# Schema upgrades run once via the `migrate` one-shot before `app`/workers start,
+# so a multi-worker deploy never races the upgrade (see tripl-u65h.9 / .18).
+x-app-build: &app-build
+  context: .
+  dockerfile: Dockerfile
+  target: runtime
+
+x-app-environment: &app-environment
+  DATABASE_URL: postgresql+asyncpg://tripl:tripl@postgres:5432/tripl
+  SYNC_DATABASE_URL: postgresql+psycopg://tripl:tripl@postgres:5432/tripl
+  RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672//
+  REDIS_URL: redis://redis:6379/0
+  ENCRYPTION_KEY: ${ENCRYPTION_KEY:?set ENCRYPTION_KEY}
+  SECRET_KEY: ${SECRET_KEY:?set SECRET_KEY}
+  APP_BASE_URL: ${APP_BASE_URL:?set APP_BASE_URL e.g. https://tripl.example.com}
+  SESSION_COOKIE_SECURE: ${SESSION_COOKIE_SECURE:-true}
+  SECURITY_HEADERS_ENABLED: "true"
+  HSTS_ENABLED: ${HSTS_ENABLED:-true}
+  RATE_LIMIT_ENABLED: "true"
+  # SERVE_FRONTEND/FRONTEND_DIST_DIR are baked into the image. The app is the
+  # edge here, so rate_limit_trust_forwarded_for stays at its False default —
+  # set it (and uvicorn --forwarded-allow-ips) true only behind a trusted proxy.
+  LOG_JSON: ${LOG_JSON:-true}
+
+services:
+  postgres:
+    image: pgvector/pgvector:0.8.2-pg18-trixie
+    environment:
+      POSTGRES_USER: tripl
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-tripl}
+      POSTGRES_DB: tripl
+      PGDATA: /var/lib/postgresql/18/docker
+    volumes:
+      - pgdata18:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U tripl"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  rabbitmq:
+    image: rabbitmq:3.13-management
+    volumes:
+      - ./infra/rabbitmq/rabbitmq.conf:/etc/rabbitmq/rabbitmq.conf:ro
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 10s
+      timeout: 10s
+      retries: 10
+      start_period: 30s
+
+  redis:
+    image: redis:8.6.2-alpine
+    command: ["redis-server", "--maxmemory", "256mb", "--maxmemory-policy", "allkeys-lru", "--save", ""]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # One-shot schema upgrade; app + workers wait for it to complete.
+  migrate:
+    build: *app-build
+    command: ["alembic", "upgrade", "head"]
+    environment: *app-environment
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  # The ONE app container: JSON API + built SPA on a single port.
+  app:
+    build: *app-build
+    environment: *app-environment
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+
+  celery-worker:
+    build: *app-build
+    command: ["celery", "-A", "tripl.worker.celery_app", "worker", "--loglevel=info"]
+    environment: *app-environment
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+
+  celery-beat:
+    build: *app-build
+    command: ["celery", "-A", "tripl.worker.celery_app", "beat", "--loglevel=info"]
+    environment: *app-environment
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+
+volumes:
+  pgdata18:

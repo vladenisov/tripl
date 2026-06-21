@@ -36,8 +36,20 @@ class Settings(BaseSettings):
     hsts_enabled: bool = False
     hsts_max_age_seconds: int = 31_536_000  # 1 year
     # Optional Content-Security-Policy. Default leaves it unset so the app
-    # doesn't break before a CSP is reviewed for the deployed origin.
+    # doesn't break before a CSP is reviewed for the deployed origin. When
+    # serve_frontend is on and this is empty, a SPA-appropriate CSP is applied
+    # automatically (see SecurityHeadersMiddleware) so consolidating doesn't drop
+    # the policy the standalone static tier used to set.
     content_security_policy: str = ""
+
+    # Frontend serving. When serve_frontend is true the API also serves the built
+    # SPA from frontend_dist_dir via app.frontend() (FastAPI 0.138+; API path
+    # operations are checked first, SPA files are the low-priority fallback), so
+    # production can run a single container instead of api + a separate static
+    # tier. Off by default: in development the Vite dev server serves the SPA with
+    # HMR and proxies /api to the backend.
+    serve_frontend: bool = False
+    frontend_dist_dir: str = ""
 
     # Rate limiting for auth endpoints. Counts are per (ip, route).
     # 0 disables rate limiting on that route. Backed by in-memory token bucket
@@ -47,14 +59,15 @@ class Settings(BaseSettings):
     rate_limit_login_per_minute: int = 5
     rate_limit_register_per_hour: int = 3
     # Whether to derive the client IP from proxy-supplied headers (X-Real-IP,
-    # then leftmost X-Forwarded-For) for rate-limit bucketing. Defaults to True
-    # because the shipped frontend nginx config sits in front of the API and
-    # *overwrites* X-Real-IP with $remote_addr on every request, so the value is
-    # not attacker-controlled. Set this to False if you expose the API directly
-    # (no trusted proxy in front): a raw X-Forwarded-For is attacker-controlled,
-    # and an unauthenticated caller could rotate it per request to spray each one
-    # into a fresh bucket and bypass the limit entirely.
-    rate_limit_trust_forwarded_for: bool = True
+    # then leftmost X-Forwarded-For) for rate-limit bucketing. Defaults to FALSE:
+    # use the direct socket peer (request.client.host), which is correct when the
+    # API is the edge — including the consolidated single container where FastAPI
+    # serves the SPA itself (serve_frontend) with no proxy in front. Enable this
+    # ONLY when a trusted proxy/LB sits in front and *overwrites* X-Real-IP with
+    # the real client address on every request; a raw X-Forwarded-For is
+    # attacker-controlled, so trusting it on a directly-exposed API lets an
+    # unauthenticated caller rotate it per request to bypass the limit entirely.
+    rate_limit_trust_forwarded_for: bool = False
 
     # Event photo uploads. Backend can be "local" (filesystem) or "gcs"
     # (Google Cloud Storage). Local files are served through an authenticated

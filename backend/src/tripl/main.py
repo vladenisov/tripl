@@ -125,6 +125,16 @@ app.add_middleware(
 
 app.include_router(v1_router)
 
+# Serve the built SPA from this same process when enabled — a single-container
+# production deploy (no separate static/nginx tier). app.frontend() (FastAPI
+# 0.138+) registers low-priority routes: the path operations above are matched
+# first, so /api/v1/*, /health, /metrics, and /docs keep precedence; only
+# unmatched paths fall through to the SPA, with fallback="index.html" serving
+# client-side routes. The SPA responses pass through SecurityHeadersMiddleware
+# and BrotliMiddleware like any other. Off in dev (Vite serves the SPA with HMR).
+if settings.serve_frontend and settings.frontend_dist_dir:
+    app.frontend("/", directory=settings.frontend_dist_dir, fallback="index.html")
+
 
 @app.exception_handler(Exception)
 async def unhandled_exception_handler(request: Request, exc: Exception) -> JSONResponse:

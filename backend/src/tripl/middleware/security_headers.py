@@ -11,6 +11,17 @@ from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from tripl.config import settings
 
+# Applied when the API serves the SPA itself (serve_frontend) and no explicit
+# content_security_policy is configured, so the consolidated single container
+# keeps the policy the standalone static tier used to set. Tuned for a Vite
+# React SPA (Radix/Tailwind/recharts/codemirror need inline styles; scripts are
+# bundled and same-origin).
+_DEFAULT_SPA_CSP = (
+    "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; "
+    "img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self'; "
+    "frame-ancestors 'none'; base-uri 'self'; form-action 'self'"
+)
+
 
 def _build_static_headers() -> list[tuple[bytes, bytes]]:
     headers: list[tuple[bytes, bytes]] = [
@@ -20,8 +31,11 @@ def _build_static_headers() -> list[tuple[bytes, bytes]]:
         # No camera, microphone, geolocation, payment APIs.
         (b"permissions-policy", b"camera=(), microphone=(), geolocation=(), payment=()"),
     ]
-    if settings.content_security_policy:
-        headers.append((b"content-security-policy", settings.content_security_policy.encode()))
+    csp = settings.content_security_policy or (
+        _DEFAULT_SPA_CSP if settings.serve_frontend else ""
+    )
+    if csp:
+        headers.append((b"content-security-policy", csp.encode()))
     if settings.hsts_enabled:
         headers.append(
             (
