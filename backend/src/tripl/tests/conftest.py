@@ -1,4 +1,3 @@
-import asyncio
 from collections.abc import AsyncGenerator
 
 import pytest
@@ -22,11 +21,17 @@ engine = create_async_engine(TEST_DATABASE_URL)
 TestSessionLocal = async_sessionmaker(engine, expire_on_commit=False)
 
 
-@pytest.fixture(scope="session")
-def event_loop():
-    loop = asyncio.new_event_loop()
-    yield loop
-    loop.close()
+@pytest.fixture(scope="session", autouse=True)
+async def _dispose_engine() -> AsyncGenerator[None]:
+    """Close the shared async engine at session end.
+
+    pytest-asyncio 1.x ignores a custom ``event_loop`` fixture; loop scope is
+    pinned to ``session`` in pyproject so every test and fixture shares one loop
+    and the StaticPool's single in-memory sqlite connection stays put. Disposing
+    it here closes that connection deterministically (no ``ResourceWarning``).
+    """
+    yield
+    await engine.dispose()
 
 
 @pytest.fixture(autouse=True)

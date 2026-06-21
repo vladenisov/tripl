@@ -43,6 +43,12 @@ packages = ["src/tripl"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
+# pytest-asyncio 1.x ignores a custom event_loop fixture; pin loop scope to the
+# whole session so every test/fixture shares one loop. This keeps the in-memory
+# sqlite StaticPool connection stable across tests (no per-loop reconnect churn /
+# ResourceWarnings) and mirrors the old session-scoped event_loop behavior.
+asyncio_default_fixture_loop_scope = "session"
+asyncio_default_test_loop_scope = "session"
 testpaths = ["src/tripl/tests"]
 filterwarnings = [
     # Third-party deprecations we don't control — keep the run summary clean

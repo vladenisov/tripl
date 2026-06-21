@@ -18,7 +18,6 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import os
 from abc import ABC, abstractmethod
 from datetime import timedelta
 from pathlib import Path
@@ -193,7 +192,7 @@ def get_photo_storage() -> PhotoStorage:
             signed_url_ttl_seconds=settings.gcs_photo_signed_url_ttl_seconds,
         )
     elif backend == "local":
-        root = settings.photo_local_dir or os.path.join(os.getcwd(), "var", "photos")
+        root = settings.photo_local_dir or str(Path.cwd() / "var" / "photos")
         _INSTANCE = LocalPhotoStorage(root)
     else:
         raise RuntimeError(

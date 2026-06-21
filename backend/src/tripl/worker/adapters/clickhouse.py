@@ -4,6 +4,7 @@ import logging
 import re
 import time
 from datetime import datetime
+from typing import override
 
 import clickhouse_connect  # type: ignore[import-untyped]
 
@@ -103,6 +104,7 @@ class ClickHouseAdapter(BaseAdapter):
         result = self._client.query(sql)
         return list(result.column_names), result.result_rows
 
+    @override
     def get_json_path_samples(
         self,
         base_query: str,
@@ -335,6 +337,7 @@ class ClickHouseAdapter(BaseAdapter):
             f"AND (bad_count / total_count) > {threshold:.12g}"
         )
 
+    @override
     def validate_field_contracts(
         self,
         base_query: str,
