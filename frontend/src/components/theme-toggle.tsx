@@ -13,17 +13,18 @@ export function ThemeToggle() {
 
   return (
     <button
+      type="button"
       onClick={next}
       className={cn(
         "inline-flex items-center justify-center rounded-md p-2 text-sm",
         "text-sidebar-muted-foreground hover:text-sidebar-foreground",
         "hover:bg-sidebar-accent transition-colors"
       )}
-      title={`Theme: ${theme}`}
+      aria-label={`Switch theme — current: ${theme}`}
     >
-      {theme === "light" && <Sun className="h-4 w-4" />}
-      {theme === "dark" && <Moon className="h-4 w-4" />}
-      {theme === "system" && <Monitor className="h-4 w-4" />}
+      {theme === "light" && <Sun className="h-4 w-4" aria-hidden="true" />}
+      {theme === "dark" && <Moon className="h-4 w-4" aria-hidden="true" />}
+      {theme === "system" && <Monitor className="h-4 w-4" aria-hidden="true" />}
     </button>
   )
 }

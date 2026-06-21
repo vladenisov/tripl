@@ -157,8 +157,8 @@ export function DestinationCard({
                 onCheckedChange={checked => updateDestinationMut.mutate({ enabled: checked })}
                 aria-label={`Toggle ${destination.name}`}
               />
-              <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => onEditDestination(destination)}>
-                <Pencil className="h-4 w-4" />
+              <Button variant="ghost" size="icon" className="h-8 w-8" aria-label={`Edit destination ${destination.name}`} onClick={() => onEditDestination(destination)}>
+                <Pencil aria-hidden="true" className="h-4 w-4" />
               </Button>
             </div>
           </div>
@@ -220,16 +220,17 @@ export function DestinationCard({
                       >
                         <History className="h-4 w-4" />
                       </Button>
-                      <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => openEditRule(rule)}>
-                        <Pencil className="h-4 w-4" />
+                      <Button variant="ghost" size="icon" className="h-8 w-8" aria-label={`Edit rule ${rule.name}`} onClick={() => openEditRule(rule)}>
+                        <Pencil aria-hidden="true" className="h-4 w-4" />
                       </Button>
                       <Button
                         variant="ghost"
                         size="icon"
                         className="h-8 w-8 text-muted-foreground hover:text-destructive"
+                        aria-label={`Delete rule ${rule.name}`}
                         onClick={() => handleDeleteRule(rule)}
                       >
-                        <Trash2 className="h-4 w-4" />
+                        <Trash2 aria-hidden="true" className="h-4 w-4" />
                       </Button>
                     </div>
                   </div>
@@ -249,17 +250,18 @@ export function DestinationCard({
             <div className="grid gap-4 py-4">
               <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                 <div className="grid gap-2">
-                  <Label>Name</Label>
+                  <Label htmlFor="rule-name">Name</Label>
                   <Input
-                    aria-label="Rule Name"
+                    id="rule-name"
                     value={ruleForm.name}
                     onChange={event => setRuleForm(current => ({ ...current, name: event.target.value }))}
                     required
                   />
                 </div>
                 <div className="grid gap-2">
-                  <Label>Cooldown Minutes</Label>
+                  <Label htmlFor="rule-cooldown">Cooldown Minutes</Label>
                   <Input
+                    id="rule-cooldown"
                     type="number"
                     min={1}
                     value={ruleForm.cooldown_minutes}
@@ -352,8 +354,9 @@ export function DestinationCard({
 
               <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
                 <div className="grid gap-2">
-                  <Label>Min Percent Delta</Label>
+                  <Label htmlFor="rule-min-pct">Min Percent Delta</Label>
                   <Input
+                    id="rule-min-pct"
                     type="number"
                     min={0}
                     step="0.1"
@@ -362,8 +365,9 @@ export function DestinationCard({
                   />
                 </div>
                 <div className="grid gap-2">
-                  <Label>Min Absolute Delta</Label>
+                  <Label htmlFor="rule-min-abs">Min Absolute Delta</Label>
                   <Input
+                    id="rule-min-abs"
                     type="number"
                     min={0}
                     step="0.1"
@@ -372,8 +376,9 @@ export function DestinationCard({
                   />
                 </div>
                 <div className="grid gap-2">
-                  <Label>Min Expected Count</Label>
+                  <Label htmlFor="rule-min-expected">Min Expected Count</Label>
                   <Input
+                    id="rule-min-expected"
                     type="number"
                     min={0}
                     step="0.1"
@@ -435,7 +440,7 @@ export function DestinationCard({
               />
 
               {ruleMutation.isError && (
-                <p className="text-sm text-destructive">{getErrorMessage(ruleMutation.error)}</p>
+                <p role="alert" className="text-sm text-destructive">{getErrorMessage(ruleMutation.error)}</p>
               )}
             </div>
             <DialogFooter>

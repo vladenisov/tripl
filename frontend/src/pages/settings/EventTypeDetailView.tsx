@@ -100,15 +100,29 @@ export function EventTypeDetail({ slug, eventTypeId }: { slug: string; eventType
         className="flex gap-1 border-b"
         style={{ borderColor: 'var(--border)' }}
       >
-        {TABS.map((t) => {
+        {TABS.map((t, idx) => {
           const active = t.id === tab
           return (
             <button
               key={t.id}
+              id={`et-tab-${t.id}`}
               type="button"
               role="tab"
               aria-selected={active}
+              aria-controls={`et-tabpanel-${t.id}`}
               onClick={() => setTab(t.id)}
+              onKeyDown={(e) => {
+                if (e.key === 'ArrowRight') {
+                  const next = TABS[(idx + 1) % TABS.length]
+                  setTab(next.id)
+                  document.getElementById(`et-tab-${next.id}`)?.focus()
+                } else if (e.key === 'ArrowLeft') {
+                  const prev = TABS[(idx - 1 + TABS.length) % TABS.length]
+                  setTab(prev.id)
+                  document.getElementById(`et-tab-${prev.id}`)?.focus()
+                }
+              }}
+              tabIndex={active ? 0 : -1}
               className="-mb-px px-3 py-2 text-[12.5px] font-medium transition-colors"
               style={{
                 color: active ? 'var(--fg)' : 'var(--fg-muted)',
@@ -121,7 +135,12 @@ export function EventTypeDetail({ slug, eventTypeId }: { slug: string; eventType
         })}
       </div>
 
-      <div className="pt-[18px]">
+      <div
+        id={`et-tabpanel-${tab}`}
+        role="tabpanel"
+        aria-labelledby={`et-tab-${tab}`}
+        className="pt-[18px]"
+      >
         {tab === 'events' && (
           // The real, filterable events table embedded inline and scoped to this
           // type (lockType decouples it from the URL :tab segment; embedded hides

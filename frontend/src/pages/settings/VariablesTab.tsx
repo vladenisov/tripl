@@ -1,4 +1,4 @@
-import { useState } from "react"
+import { useId, useState } from "react"
 import { useMutation, useQueries, useQuery, useQueryClient } from "@tanstack/react-query"
 import { Pencil, Plus, Trash2, Variable as VariableIcon } from "lucide-react"
 import { variablesApi } from "@/api/variables"
@@ -26,6 +26,16 @@ export function VariablesTab({ slug }: { slug: string }) {
   const [editVarType, setEditVarType] = useState<VariableType>('string')
   const [editDescription, setEditDescription] = useState('')
   const { confirm, dialog } = useConfirm()
+
+  // IDs for create dialog
+  const createNameId = useId()
+  const createTypeId = useId()
+  const createDescriptionId = useId()
+
+  // IDs for edit dialog
+  const editNameId = useId()
+  const editTypeId = useId()
+  const editDescriptionId = useId()
 
   const variableTypes: VariableType[] = ['string', 'number', 'boolean', 'date', 'datetime', 'json', 'string_array', 'number_array']
   const typeLabels: Record<VariableType, string> = {
@@ -135,19 +145,19 @@ export function VariablesTab({ slug }: { slug: string }) {
             <DialogHeader><DialogTitle>New Variable</DialogTitle></DialogHeader>
             <div className="grid gap-4 py-4">
               <div className="grid gap-2">
-                <Label>Name (lowercase, e.g. spot_id)</Label>
-                <Input value={name} onChange={e => setName(e.target.value)} required placeholder="my_variable" pattern="^[a-z][a-z0-9_]*$" />
+                <Label htmlFor={createNameId}>Name (lowercase, e.g. spot_id)</Label>
+                <Input id={createNameId} value={name} onChange={e => setName(e.target.value)} required placeholder="my_variable" pattern="^[a-z][a-z0-9_]*$" />
               </div>
               <div className="grid grid-cols-2 gap-3">
                 <div className="grid gap-2">
-                  <Label>Type</Label>
-                  <select value={varType} onChange={e => setVarType(e.target.value as VariableType)} className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm">
+                  <Label htmlFor={createTypeId}>Type</Label>
+                  <select id={createTypeId} value={varType} onChange={e => setVarType(e.target.value as VariableType)} className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm">
                     {variableTypes.map(t => <option key={t} value={t}>{typeLabels[t]}</option>)}
                   </select>
                 </div>
                 <div className="grid gap-2">
-                  <Label>Description</Label>
-                  <Input value={description} onChange={e => setDescription(e.target.value)} placeholder="Optional" />
+                  <Label htmlFor={createDescriptionId}>Description</Label>
+                  <Input id={createDescriptionId} value={description} onChange={e => setDescription(e.target.value)} placeholder="Optional" />
                 </div>
               </div>
               {createMut.isError && <p className="text-sm text-destructive">{getErrorMessage(createMut.error)}</p>}
@@ -167,19 +177,19 @@ export function VariablesTab({ slug }: { slug: string }) {
             <DialogHeader><DialogTitle>Edit: {editingVar?.name}</DialogTitle></DialogHeader>
             <div className="grid gap-4 py-4">
               <div className="grid gap-2">
-                <Label>Name</Label>
-                <Input value={editVarName} onChange={e => setEditVarName(e.target.value)} required pattern="^[a-z][a-z0-9_.]*$" placeholder="variable_name" />
+                <Label htmlFor={editNameId}>Name</Label>
+                <Input id={editNameId} value={editVarName} onChange={e => setEditVarName(e.target.value)} required pattern="^[a-z][a-z0-9_.]*$" placeholder="variable_name" />
               </div>
               <div className="grid grid-cols-2 gap-3">
                 <div className="grid gap-2">
-                  <Label>Type</Label>
-                  <select value={editVarType} onChange={e => setEditVarType(e.target.value as VariableType)} className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm">
+                  <Label htmlFor={editTypeId}>Type</Label>
+                  <select id={editTypeId} value={editVarType} onChange={e => setEditVarType(e.target.value as VariableType)} className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm">
                     {variableTypes.map(t => <option key={t} value={t}>{typeLabels[t]}</option>)}
                   </select>
                 </div>
                 <div className="grid gap-2">
-                  <Label>Description</Label>
-                  <Input value={editDescription} onChange={e => setEditDescription(e.target.value)} />
+                  <Label htmlFor={editDescriptionId}>Description</Label>
+                  <Input id={editDescriptionId} value={editDescription} onChange={e => setEditDescription(e.target.value)} />
                 </div>
               </div>
               {editingVar && (
@@ -291,8 +301,8 @@ export function VariablesTab({ slug }: { slug: string }) {
                   </TableCell>
                   <TableCell>
                     <div className="flex gap-1 justify-end">
-                      <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => startEdit(v)}><Pencil className="h-3 w-3" /></Button>
-                      <Button variant="ghost" size="icon" className="h-7 w-7 text-muted-foreground hover:text-destructive" onClick={() => handleDelete(v)}><Trash2 className="h-3 w-3" /></Button>
+                      <Button variant="ghost" size="icon" className="h-7 w-7" aria-label={`Edit variable ${v.name}`} onClick={() => startEdit(v)}><Pencil className="h-3 w-3" aria-hidden="true" /></Button>
+                      <Button variant="ghost" size="icon" className="h-7 w-7 text-muted-foreground hover:text-destructive" aria-label={`Delete variable ${v.name}`} onClick={() => handleDelete(v)}><Trash2 className="h-3 w-3" aria-hidden="true" /></Button>
                     </div>
                   </TableCell>
                 </TableRow>

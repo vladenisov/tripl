@@ -37,6 +37,7 @@ export function ScanPreviewPanel({
 
       <div className="rounded-lg border bg-background overflow-auto">
         <Table>
+          <caption className="sr-only">Query preview — sample rows</caption>
           <TableHeader>
             <TableRow>
               {preview.columns.map(column => (
@@ -102,6 +103,7 @@ export function ScanPreviewPanel({
                           <Checkbox
                             checked={selectedJsonValuePaths.includes(path.full_path)}
                             onCheckedChange={() => onToggleJsonValuePath(path.full_path)}
+                            aria-label={`Keep JSON path ${path.path} as value`}
                           />
                           <span className="space-y-1">
                             <span className="block font-mono text-xs">{path.path}</span>

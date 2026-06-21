@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react'
 import { Button } from '@/components/ui/button'
 import { Textarea } from '@/components/ui/textarea'
 import { getErrorMessage } from '@/lib/utils'
@@ -15,16 +15,20 @@ function validateJsonWithVars(text: string): string | null {
 }
 
 export function JsonEditor({
+  id,
   value,
   onChange,
   required,
   variables = [],
 }: {
+  id?: string
   value: string
   onChange: (v: string) => void
   required?: boolean
   variables?: { name: string; label: string }[]
 }) {
+  const uid = useId()
+  const listboxId = `json-var-listbox-${uid}`
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const wrapperRef = useRef<HTMLDivElement>(null)
   const [error, setError] = useState<string | null>(null)
@@ -156,6 +160,7 @@ export function JsonEditor({
       <div ref={wrapperRef} className="relative">
         <Textarea
           ref={textareaRef}
+          id={id}
           value={raw}
           onChange={e => handleChange(e.target.value)}
           onKeyDown={handleKeyDown}
@@ -164,6 +169,12 @@ export function JsonEditor({
           placeholder='{ "key": "value" }'
           required={required}
           spellCheck={false}
+          role="combobox"
+          aria-expanded={showMenu && filtered.length > 0}
+          aria-haspopup="listbox"
+          aria-autocomplete="list"
+          aria-controls={listboxId}
+          aria-activedescendant={showMenu && filtered.length > 0 ? `${listboxId}-opt-${highlightIdx}` : undefined}
         />
         <Button
           type="button"
@@ -175,11 +186,14 @@ export function JsonEditor({
           Format
         </Button>
         {showMenu && filtered.length > 0 && (
-          <div className="absolute z-50 mt-1 w-full rounded-md border bg-popover p-1 shadow-md">
+          <div id={listboxId} role="listbox" className="absolute z-50 mt-1 w-full rounded-md border bg-popover p-1 shadow-md">
             {filtered.map((v, i) => (
               <button
                 key={v.name}
+                id={`${listboxId}-opt-${i}`}
                 type="button"
+                role="option"
+                aria-selected={i === highlightIdx}
                 onMouseDown={e => { e.preventDefault(); insertVar(v.name) }}
                 className={`flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-xs ${i === highlightIdx ? 'bg-accent text-accent-foreground' : 'text-popover-foreground hover:bg-accent/50'}`}
               >

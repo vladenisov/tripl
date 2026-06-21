@@ -176,11 +176,13 @@ export function SCard({
 export function Field({
   label,
   hint,
+  id,
   children,
   last,
 }: {
   label: string
   hint?: string
+  id?: string
   children: ReactNode
   last?: boolean
 }) {
@@ -190,7 +192,7 @@ export function Field({
       style={{ borderColor: 'var(--border-subtle)' }}
     >
       <div className="w-[232px] shrink-0 pt-1.5">
-        <label className="block text-[13px] font-medium" style={{ color: 'var(--fg)' }}>
+        <label htmlFor={id} className="block text-[13px] font-medium" style={{ color: 'var(--fg)' }}>
           {label}
         </label>
         {hint && (

@@ -132,7 +132,7 @@ function TopMoverRow({
       aria-expanded={isExpanded}
     >
       <div className="flex min-w-0 flex-1 items-center gap-2">
-        <ChevronIcon className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+        <ChevronIcon aria-hidden="true" className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
         <div className="min-w-0">
           <p className="truncate text-sm font-medium">
             <span className="text-muted-foreground">{item.breakdown_column}=</span>
@@ -154,7 +154,7 @@ function TopMoverRow({
               : 'bg-rose-500/15 text-rose-700 dark:text-rose-300',
           )}
         >
-          <Icon className="h-3 w-3" />
+          <Icon aria-hidden="true" className="h-3 w-3" />
           {delta > 0 ? '+' : ''}{formatCount(delta)}
         </span>
         {pct && <span className="text-muted-foreground">{pct}</span>}
@@ -231,7 +231,11 @@ function BreakdownDrilldown({
 
   return (
     <div className="px-2 pb-3 pt-1" data-testid="breakdown-drilldown">
-      <div className="h-[120px] w-full">
+      <div
+        role="img"
+        aria-label={`Timeline for ${breakdownColumn}=${isOther ? '(other)' : breakdownValue}`}
+        className="h-[120px] w-full"
+      >
         <ResponsiveContainer width="100%" height="100%">
           <ComposedChart data={points} margin={{ top: 4, right: 4, bottom: 0, left: 0 }}>
             <XAxis

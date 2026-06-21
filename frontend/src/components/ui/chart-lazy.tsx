@@ -31,12 +31,12 @@ function ChartFallback({
 }) {
   return (
     <div
+      role="status"
       className={cn(
         'flex items-center justify-center text-xs text-muted-foreground',
         className,
       )}
       style={{ height }}
-      aria-hidden
     >
       Loading…
     </div>

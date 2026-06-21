@@ -34,6 +34,7 @@ export const EventWindowMetricsCell = memo(function EventWindowMetricsCell({
       <TooltipTrigger asChild>
         <button
           type="button"
+          aria-label={`${eventName} metrics: ${label} events in last 48 hours`}
           className="tnum mono grid w-[106px] grid-cols-[60px_38px] items-center gap-2 text-[11.5px] font-medium hover:text-foreground"
           style={{ color: signalTone ? sparkColor : 'var(--fg-muted)' }}
         >
@@ -63,7 +64,7 @@ export const EventWindowMetricsCell = memo(function EventWindowMetricsCell({
               <span>{formatCompactCount(totalCount ?? 0)} events</span>
             </div>
           </div>
-          <MiniMetricsChart data={data} color={color} height={104} />
+          <MiniMetricsChart data={data} color={color} height={104} label="Event volume trend" />
         </div>
       </TooltipContent>
     </Tooltip>

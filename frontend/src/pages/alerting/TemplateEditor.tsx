@@ -67,14 +67,14 @@ export function TemplateEditor({
     <div className="grid gap-3">
       <div className="grid grid-cols-1 md:grid-cols-[220px_1fr] gap-3">
         <div className="grid gap-2">
-          <Label>Message Format</Label>
+          <Label id="msg-format-label">Message Format</Label>
           {showFormatSelector !== false ? (
             <>
               <Select
                 value={messageFormat}
                 onValueChange={nextValue => onMessageFormatChange(nextValue as AlertMessageFormat)}
               >
-                <SelectTrigger>
+                <SelectTrigger aria-labelledby="msg-format-label">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
@@ -102,7 +102,7 @@ export function TemplateEditor({
 
         <div className="grid gap-2">
           <div className="flex items-center justify-between gap-2">
-            <Label>{title}</Label>
+            <Label htmlFor={`template-${title.replace(/\s+/g, '-').toLowerCase()}`}>{title}</Label>
             <Popover>
               <PopoverTrigger asChild>
                 <Button type="button" variant="outline" size="sm">Variables</Button>
@@ -128,6 +128,11 @@ export function TemplateEditor({
           <div className="relative">
             <Textarea
               ref={textareaRef}
+              id={`template-${title.replace(/\s+/g, '-').toLowerCase()}`}
+              role="combobox"
+              aria-expanded={activeToken !== null && suggestions.length > 0}
+              aria-autocomplete="list"
+              aria-controls={`template-${title.replace(/\s+/g, '-').toLowerCase()}-suggestions`}
               value={value}
               rows={8}
               placeholder={placeholder}
@@ -139,11 +144,18 @@ export function TemplateEditor({
               onKeyUp={event => updateToken(event.currentTarget.value, event.currentTarget.selectionStart ?? event.currentTarget.value.length)}
             />
             {activeToken && suggestions.length > 0 && (
-              <div className="absolute inset-x-0 top-full z-50 mt-2 rounded-md border bg-popover p-1 shadow-md">
+              <div
+                id={`template-${title.replace(/\s+/g, '-').toLowerCase()}-suggestions`}
+                role="listbox"
+                aria-label="Variable suggestions"
+                className="absolute inset-x-0 top-full z-50 mt-2 rounded-md border bg-popover p-1 shadow-md"
+              >
                 {suggestions.map(option => (
                   <button
                     key={option.name}
                     type="button"
+                    role="option"
+                    aria-selected={false}
                     className="flex w-full items-start justify-between gap-3 rounded-sm px-2 py-1.5 text-left hover:bg-muted"
                     onMouseDown={event => event.preventDefault()}
                     onClick={() => insertVariable(option.name)}

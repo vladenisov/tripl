@@ -95,6 +95,7 @@ export function SettingsLayout({
                 <button
                   key={o.v}
                   type="button"
+                  aria-pressed={selected}
                   onClick={() => setCtx(o.v)}
                   className="flex-1 rounded-md px-2 py-[5px] text-[12px] font-semibold transition-colors"
                   style={{
@@ -133,6 +134,7 @@ export function SettingsLayout({
                     <button
                       key={item.id}
                       type="button"
+                      aria-current={active ? 'page' : undefined}
                       onClick={() => onNavigate(item.path)}
                       className="flex items-center gap-2 rounded-md px-[9px] py-[7px] text-left text-[12.5px] font-medium transition-colors"
                       style={{

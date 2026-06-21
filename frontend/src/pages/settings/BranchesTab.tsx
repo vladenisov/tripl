@@ -1,4 +1,4 @@
-import { useState, type ReactNode } from 'react'
+import { useId, useState, type ReactNode } from 'react'
 import { useMutation, useQueries, useQuery, useQueryClient } from '@tanstack/react-query'
 import { GitBranch, GitCompare, GitMerge, Plus, Trash2 } from 'lucide-react'
 
@@ -364,8 +364,9 @@ function FeatureBranchDetail({ slug, branch, diff, confirm }: FeatureBranchDetai
               className="size-8 text-muted-foreground hover:text-[var(--danger)]"
               onClick={handleDelete}
               title="Delete branch"
+              aria-label="Delete branch"
             >
-              <Trash2 className="size-3.5" />
+              <Trash2 className="size-3.5" aria-hidden="true" />
             </Button>
           </div>
         }
@@ -630,6 +631,7 @@ function CommentsPanel({ slug, branchId }: { slug: string; branchId: string }) {
           }}
         >
           <Input
+            aria-label="Comment"
             value={commentBody}
             onChange={(event) => setCommentBody(event.target.value)}
             placeholder="Write a comment…"
@@ -702,6 +704,8 @@ function CreateBranchDialog({
   onOpenChange,
   onSubmit,
 }: CreateBranchDialogProps) {
+  const nameId = useId()
+  const descriptionId = useId()
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-w-lg">
@@ -716,8 +720,9 @@ function CreateBranchDialog({
           </DialogHeader>
           <div className="grid gap-4 py-4">
             <div className="grid gap-2">
-              <Label>Name</Label>
+              <Label htmlFor={nameId}>Name</Label>
               <Input
+                id={nameId}
                 required
                 value={name}
                 onChange={(event) => onName(event.target.value)}
@@ -725,8 +730,9 @@ function CreateBranchDialog({
               />
             </div>
             <div className="grid gap-2">
-              <Label>Description (optional)</Label>
+              <Label htmlFor={descriptionId}>Description (optional)</Label>
               <Textarea
+                id={descriptionId}
                 value={description}
                 rows={3}
                 onChange={(event) => onDescription(event.target.value)}

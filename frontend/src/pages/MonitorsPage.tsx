@@ -140,20 +140,25 @@ export default function MonitorsPage() {
               .
             </div>
           ) : (
-            <div>
-              <div
-                className={`${MONITOR_GRID} border-b py-2 text-[10.5px] font-semibold uppercase tracking-[0.05em]`}
-                style={{ borderColor: 'var(--border-subtle)', color: 'var(--fg-faint)' }}
-              >
-                <span>Monitor</span>
-                <span>Condition</span>
-                <span>Routes to</span>
-                <span>State</span>
-                <span className="text-right">Last fired</span>
+            <div role="table" aria-label="Monitors">
+              <div role="rowgroup">
+                <div
+                  role="row"
+                  className={`${MONITOR_GRID} border-b py-2 text-[10.5px] font-semibold uppercase tracking-[0.05em]`}
+                  style={{ borderColor: 'var(--border-subtle)', color: 'var(--fg-faint)' }}
+                >
+                  <span role="columnheader">Monitor</span>
+                  <span role="columnheader">Condition</span>
+                  <span role="columnheader">Routes to</span>
+                  <span role="columnheader">State</span>
+                  <span role="columnheader" className="text-right">Last fired</span>
+                </div>
               </div>
-              {monitors.map((monitor) => (
-                <MonitorRow key={monitor.rule_id} monitor={monitor} />
-              ))}
+              <div role="rowgroup">
+                {monitors.map((monitor) => (
+                  <MonitorRow key={monitor.rule_id} monitor={monitor} />
+                ))}
+              </div>
             </div>
           )}
         </Panel>
@@ -180,10 +185,11 @@ function MonitorRow({ monitor }: { monitor: MonitorSummaryItem }) {
 
   return (
     <div
+      role="row"
       className={`${MONITOR_GRID} border-b py-2.5 last:border-0`}
       style={{ borderColor: 'var(--border-subtle)' }}
     >
-      <span className="flex min-w-0 items-center gap-2">
+      <span role="cell" className="flex min-w-0 items-center gap-2">
         <Dot tone={tone} pulse={monitor.status === 'firing'} size={7} />
         <span className="truncate text-[12.5px] font-medium">{monitor.rule_name}</span>
         {!monitor.enabled && (
@@ -192,10 +198,10 @@ function MonitorRow({ monitor }: { monitor: MonitorSummaryItem }) {
           </Chip>
         )}
       </span>
-      <span className="mono truncate text-[11px]" style={{ color: 'var(--fg-subtle)' }}>
+      <span role="cell" className="mono truncate text-[11px]" style={{ color: 'var(--fg-subtle)' }}>
         {condition}
       </span>
-      <span className="flex min-w-0 flex-col gap-0.5">
+      <span role="cell" className="flex min-w-0 flex-col gap-0.5">
         <Chip tone="neutral" size="xs">
           {monitor.destination_type}
         </Chip>
@@ -203,12 +209,12 @@ function MonitorRow({ monitor }: { monitor: MonitorSummaryItem }) {
           {monitor.destination_name}
         </span>
       </span>
-      <span>
+      <span role="cell">
         <Chip tone={tone} size="xs">
           {STATUS_LABEL[monitor.status]}
         </Chip>
       </span>
-      <span className="mono text-right text-[10.5px]" style={{ color: 'var(--fg-faint)' }}>
+      <span role="cell" className="mono text-right text-[10.5px]" style={{ color: 'var(--fg-faint)' }}>
         {monitor.last_anomaly_at ? formatRelativeTime(monitor.last_anomaly_at) : '—'}
       </span>
     </div>

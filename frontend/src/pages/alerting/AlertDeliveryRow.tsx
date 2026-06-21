@@ -57,8 +57,15 @@ export function AlertDeliveryRow({ slug, delivery }: { slug: string; delivery: A
           ) : '—')}
         </TableCell>
         <TableCell>
-          <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => setOpen(current => !current)}>
-            <ChevronDown className={`h-4 w-4 transition-transform ${open ? 'rotate-180' : ''}`} />
+          <Button
+            variant="ghost"
+            size="icon"
+            className="h-7 w-7"
+            aria-label={open ? 'Collapse delivery details' : 'Expand delivery details'}
+            aria-expanded={open}
+            onClick={() => setOpen(current => !current)}
+          >
+            <ChevronDown aria-hidden="true" className={`h-4 w-4 transition-transform ${open ? 'rotate-180' : ''}`} />
           </Button>
         </TableCell>
       </TableRow>
@@ -127,12 +134,12 @@ export function AlertDeliveryRow({ slug, delivery }: { slug: string; delivery: A
                           <TableCell className="text-xs">
                             <div className="flex gap-3">
                               {item.details_path && (
-                                <a href={item.details_path} className="text-primary underline" target="_blank" rel="noreferrer">
+                                <a href={item.details_path} aria-label={`Details for ${item.scope_name}`} className="text-primary underline" target="_blank" rel="noreferrer">
                                   details
                                 </a>
                               )}
                               {item.monitoring_path && (
-                                <a href={item.monitoring_path} className="text-primary underline" target="_blank" rel="noreferrer">
+                                <a href={item.monitoring_path} aria-label={`Monitoring for ${item.scope_name}`} className="text-primary underline" target="_blank" rel="noreferrer">
                                   monitoring
                                 </a>
                               )}

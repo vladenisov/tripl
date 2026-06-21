@@ -213,6 +213,7 @@ export default function ReconciliationPage() {
                 <button
                   key={tab}
                   type="button"
+                  aria-pressed={shadowStatus === tab}
                   onClick={() => setShadowStatus(tab)}
                   className="rounded-[5px] px-[9px] py-[3px] text-[11px] font-medium capitalize transition-colors"
                   style={{
@@ -465,10 +466,15 @@ function ShadowRow({
       </div>
       {needsEventTypeSelect && (
         <div className="flex flex-wrap items-center gap-2">
-          <span className="text-[11px]" style={{ color: 'var(--fg-subtle)' }}>
+          <label
+            htmlFor={`event-type-select-${item.id}`}
+            className="text-[11px]"
+            style={{ color: 'var(--fg-subtle)' }}
+          >
             Choose event type:
-          </span>
+          </label>
           <select
+            id={`event-type-select-${item.id}`}
             className="rounded border px-1.5 py-0.5 text-[11px]"
             style={{
               background: 'var(--surface)',
@@ -498,7 +504,7 @@ function ShadowRow({
           </button>
         </div>
       )}
-      {error && <span className="text-[11px] text-destructive">{error}</span>}
+      {error && <span role="alert" className="text-[11px] text-destructive">{error}</span>}
     </div>
   )
 }

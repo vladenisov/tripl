@@ -74,12 +74,12 @@ export function TopBar({
         <NotificationsMenu projectSlug={projectSlug} />
         <button
           type="button"
-          title="Command palette"
+          aria-label="Command palette"
           onClick={() => palette.setOpen(true)}
           className="flex h-7 items-center gap-1.5 rounded-md px-2 transition-colors hover:bg-[var(--surface-hover)]"
           style={{ color: 'var(--fg-muted)' }}
         >
-          <Search className="h-[13px] w-[13px]" />
+          <Search className="h-[13px] w-[13px]" aria-hidden="true" />
           <span className="hidden sm:inline-flex">
             <Kbd>⌘K</Kbd>
           </span>
@@ -90,7 +90,8 @@ export function TopBar({
             <button
               type="button"
               onClick={onToggleActivity}
-              title="Toggle activity panel"
+              aria-label="Toggle activity panel"
+              aria-pressed={activityOpen}
               className="flex h-7 items-center gap-1.5 rounded-md px-2 text-[12.5px] font-medium transition-colors"
               style={{
                 background: activityOpen ? 'var(--surface)' : 'transparent',
@@ -136,17 +137,18 @@ function NotificationsMenu({ projectSlug }: { projectSlug?: string }) {
       <PopoverTrigger asChild>
         <button
           type="button"
-          title="Notifications"
+          aria-label={badgeCount > 0 ? `Notifications — ${badgeCount} active` : 'Notifications'}
           className="relative flex h-7 w-7 items-center justify-center rounded-md transition-colors hover:bg-[var(--surface-hover)]"
           style={{ color: badgeCount > 0 ? 'var(--fg)' : 'var(--fg-muted)' }}
         >
           {isLoading && projectSlug ? (
-            <Loader2 className="h-[13px] w-[13px] animate-spin" />
+            <Loader2 className="h-[13px] w-[13px] animate-spin" aria-hidden="true" />
           ) : (
-            <Bell className="h-[13px] w-[13px]" />
+            <Bell className="h-[13px] w-[13px]" aria-hidden="true" />
           )}
           {badgeCount > 0 && (
             <span
+              aria-hidden="true"
               className="absolute -right-0.5 -top-0.5 flex h-3.5 min-w-3.5 items-center justify-center rounded-full px-1 text-[9px] font-semibold leading-none"
               style={{ background: 'var(--danger)', color: 'var(--destructive-foreground)' }}
             >

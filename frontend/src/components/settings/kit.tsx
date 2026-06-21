@@ -2,6 +2,7 @@ import {
   type CSSProperties,
   type ReactNode,
   type TextareaHTMLAttributes,
+  useId,
 } from 'react'
 import { ChevronDown } from 'lucide-react'
 
@@ -135,6 +136,8 @@ export function Field({
   last?: boolean
   htmlFor?: string
 }) {
+  const generatedId = useId()
+  const effectiveFor = htmlFor ?? generatedId
   return (
     <div
       className={stacked ? 'block px-[18px] py-[15px]' : 'flex items-start gap-6 px-[18px] py-[15px]'}
@@ -149,7 +152,7 @@ export function Field({
         }}
       >
         <div className="flex items-center gap-2">
-          <label htmlFor={htmlFor} className="block text-[13px] font-medium" style={{ color: 'var(--fg)' }}>
+          <label htmlFor={effectiveFor} className="block text-[13px] font-medium" style={{ color: 'var(--fg)' }}>
             {label}
           </label>
           {labelRight}
@@ -184,6 +187,7 @@ export function ToggleRow({
   last?: boolean
   disabled?: boolean
 }) {
+  const labelId = useId()
   return (
     <div
       className="flex items-center gap-[18px] px-[18px] py-[14px]"
@@ -191,7 +195,7 @@ export function ToggleRow({
     >
       <div className="min-w-0 flex-1">
         <div className="flex items-center gap-2 text-[13px] font-medium">
-          <span>{label}</span>
+          <span id={labelId}>{label}</span>
           {labelRight}
         </div>
         {hint && (
@@ -200,7 +204,7 @@ export function ToggleRow({
           </div>
         )}
       </div>
-      <Toggle value={value} onChange={onChange} disabled={disabled} />
+      <Toggle value={value} onChange={onChange} disabled={disabled} aria-labelledby={labelId} />
     </div>
   )
 }
@@ -240,17 +244,22 @@ export function Toggle({
   value,
   onChange,
   disabled,
+  'aria-labelledby': ariaLabelledby,
+  'aria-label': ariaLabel,
 }: {
   value: boolean
   onChange?: (value: boolean) => void
   disabled?: boolean
+  'aria-labelledby'?: string
+  'aria-label'?: string
 }) {
   return (
     <button
       type="button"
       role="switch"
       aria-checked={value}
-      aria-pressed={value}
+      aria-labelledby={ariaLabelledby}
+      aria-label={ariaLabel}
       disabled={disabled}
       onClick={() => onChange?.(!value)}
       className="relative inline-flex h-[20px] w-[34px] shrink-0 items-center rounded-full transition-colors disabled:cursor-not-allowed disabled:opacity-50"
@@ -460,21 +469,31 @@ export function RadioCards({
   options,
   columns = 1,
   disabled,
+  groupLabel,
 }: {
   value: string
   onChange?: (value: string) => void
   options: readonly RadioCardOption[]
   columns?: number
   disabled?: boolean
+  /** Accessible name for the radio group (required for WCAG 4.1.2). */
+  groupLabel?: string
 }) {
   return (
-    <div className="grid gap-2" style={{ gridTemplateColumns: `repeat(${columns}, 1fr)` }}>
+    <div
+      role="radiogroup"
+      aria-label={groupLabel}
+      className="grid gap-2"
+      style={{ gridTemplateColumns: `repeat(${columns}, 1fr)` }}
+    >
       {options.map((o) => {
         const active = value === o.value
         return (
           <button
             key={o.value}
             type="button"
+            role="radio"
+            aria-checked={active}
             disabled={disabled}
             onClick={() => onChange?.(o.value)}
             className="flex items-start gap-2.5 rounded-[9px] px-[13px] py-[11px] text-left transition-colors disabled:cursor-not-allowed disabled:opacity-60"

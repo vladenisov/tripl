@@ -73,16 +73,18 @@ export function EventGroupRulesEditor({
         <div key={rule._uid} className="space-y-3 rounded-md border bg-background p-3">
           <div className="grid gap-3 sm:grid-cols-[minmax(0,1fr)_8rem_auto]">
             <div className="grid gap-1">
-              <Label>Group name</Label>
+              <Label htmlFor={`group-name-${rule._uid}`}>Group name</Label>
               <Input
+                id={`group-name-${rule._uid}`}
                 value={rule.name}
                 onChange={event => updateRule(ruleIndex, { name: event.target.value })}
                 placeholder="button events"
               />
             </div>
             <div className="grid gap-1">
-              <Label>Match</Label>
+              <Label htmlFor={`match-${rule._uid}`}>Match</Label>
               <select
+                id={`match-${rule._uid}`}
                 value={rule.condition_logic}
                 onChange={event => updateRule(ruleIndex, {
                   condition_logic: event.target.value as EventGroupRule['condition_logic'],
@@ -98,18 +100,19 @@ export function EventGroupRulesEditor({
               variant="ghost"
               size="icon"
               className="self-end text-muted-foreground hover:text-destructive"
-              title="Remove group rule"
+              aria-label={`Remove group rule "${rule.name}"`}
               onClick={() => onChange(rules.filter((_, index) => index !== ruleIndex))}
             >
-              <Trash2 className="h-4 w-4" />
+              <Trash2 className="h-4 w-4" aria-hidden />
             </Button>
           </div>
           <div className="space-y-2">
             {rule.conditions.map((condition, conditionIndex) => (
               <div key={condition._uid} className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto]">
                 <div className="grid gap-1">
-                  <Label>Field</Label>
+                  <Label htmlFor={`field-${rule._uid}-${condition._uid}`}>Field</Label>
                   <select
+                    id={`field-${rule._uid}-${condition._uid}`}
                     value={condition.field}
                     onChange={event => updateCondition(ruleIndex, conditionIndex, {
                       field: event.target.value,
@@ -122,8 +125,9 @@ export function EventGroupRulesEditor({
                   </select>
                 </div>
                 <div className="grid gap-1">
-                  <Label>Regex</Label>
+                  <Label htmlFor={`regex-${rule._uid}-${condition._uid}`}>Regex</Label>
                   <Input
+                    id={`regex-${rule._uid}-${condition._uid}`}
                     value={condition.pattern}
                     onChange={event => updateCondition(ruleIndex, conditionIndex, {
                       pattern: event.target.value,
@@ -136,13 +140,13 @@ export function EventGroupRulesEditor({
                   variant="ghost"
                   size="icon"
                   className="self-end text-muted-foreground hover:text-destructive"
-                  title="Remove condition"
+                  aria-label="Remove condition"
                   disabled={rule.conditions.length === 1}
                   onClick={() => updateRule(ruleIndex, {
                     conditions: rule.conditions.filter((_, index) => index !== conditionIndex),
                   })}
                 >
-                  <Trash2 className="h-4 w-4" />
+                  <Trash2 className="h-4 w-4" aria-hidden />
                 </Button>
               </div>
             ))}

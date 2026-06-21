@@ -246,9 +246,15 @@ export function ScanDetail({
         {cancelMut.isError && (
           <p className="px-4 py-2 text-sm" style={{ color: 'var(--danger)' }}>{getErrorMessage(cancelMut.error)}</p>
         )}
-        {applyGroupsMessage && (
-          <p className="px-4 py-2 text-sm" style={{ color: 'var(--fg-subtle)' }}>{applyGroupsMessage}</p>
-        )}
+        <p
+          role="status"
+          aria-live="polite"
+          aria-atomic="true"
+          className="px-4 py-2 text-sm"
+          style={{ color: 'var(--fg-subtle)' }}
+        >
+          {applyGroupsMessage}
+        </p>
         {isLoading && <p className="px-4 py-3 text-sm text-muted-foreground">Loading jobs…</p>}
         {jobs.length === 0 && !isLoading && (
           <p className="px-4 py-3 text-sm text-muted-foreground">No jobs yet. Use “Run now” to start.</p>
@@ -342,15 +348,23 @@ function JobRow({
                 size="icon"
                 className="size-6 text-muted-foreground hover:text-[var(--danger)]"
                 title="Stop job"
+                aria-label="Stop job"
                 disabled={cancelPending}
                 onClick={onCancel}
               >
-                <Ban className="size-3" />
+                <Ban className="size-3" aria-hidden="true" />
               </Button>
             )}
             {(job.result_summary || job.error_message) && (
-              <Button variant="ghost" size="icon" className="size-6" onClick={onToggle}>
-                <ChevronDown className={`size-3 transition-transform ${expanded ? 'rotate-180' : ''}`} />
+              <Button
+                variant="ghost"
+                size="icon"
+                className="size-6"
+                aria-label={expanded ? 'Collapse job details' : 'Expand job details'}
+                aria-expanded={expanded}
+                onClick={onToggle}
+              >
+                <ChevronDown className={`size-3 transition-transform ${expanded ? 'rotate-180' : ''}`} aria-hidden="true" />
               </Button>
             )}
           </div>

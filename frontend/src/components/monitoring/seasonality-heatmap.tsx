@@ -97,6 +97,7 @@ export function SeasonalityHeatmap({
                 {HOURS_FULL.map(hour => (
                   <th
                     key={hour}
+                    scope="col"
                     className="px-0 pb-1 text-center font-normal text-muted-foreground"
                   >
                     {hour % HOUR_LABEL_EVERY === 0 ? hour.toString().padStart(2, '0') : ''}
@@ -107,21 +108,23 @@ export function SeasonalityHeatmap({
             <tbody>
               {WEEKDAYS_SHORT.map((label, weekday) => (
                 <tr key={label}>
-                  <td className="pr-2 text-right text-muted-foreground">{label}</td>
+                  <th scope="row" className="pr-2 text-right font-normal text-muted-foreground">{label}</th>
                   {HOURS_FULL.map(hour => {
                     const key = `${weekday}:${hour}`
                     const cell = cellsByKey.get(key)
                     const count = cell?.count ?? 0
                     const intensity = data.max_count === 0 ? 0 : count / data.max_count
                     const hasAnomaly = (cell?.anomaly_count ?? 0) > 0
+                    const tooltipText = `${label} ${hour.toString().padStart(2, '0')}:00 — ${formatCount(count)} events${
+                      hasAnomaly ? ` · ${cell?.anomaly_count} anomaly bucket(s)` : ''
+                    }`
                     return (
                       <td
                         key={hour}
                         className="p-[1px]"
-                        title={`${label} ${hour.toString().padStart(2, '0')}:00 — ${formatCount(count)} events${
-                          hasAnomaly ? ` · ${cell?.anomaly_count} anomaly bucket(s)` : ''
-                        }`}
+                        title={tooltipText}
                       >
+                        <span className="sr-only">{tooltipText}</span>
                         <div
                           className={cn(
                             'h-6 w-full rounded-sm',

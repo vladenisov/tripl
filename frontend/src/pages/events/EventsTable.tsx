@@ -354,6 +354,9 @@ export function EventsTable({
                 color: 'var(--fg-subtle)',
               }}
             >
+              <span aria-live="polite" aria-atomic="true" className="sr-only">
+                Showing {rangeLabel} of {total.toLocaleString()} events
+              </span>
               <span>
                 Showing{' '}
                 <span className="mono tnum" style={{ color: 'var(--fg-muted)' }}>

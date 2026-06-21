@@ -141,6 +141,7 @@ export const EventRow = memo(function EventRow({
         <div className="inline-flex max-w-full items-center gap-2 align-middle">
           <Dot tone={signalTone ?? statusTone} pulse={!!signalTone} size={6} />
           <button
+            type="button"
             className="mono truncate text-left text-[12.5px] hover:underline underline-offset-4"
             onClick={() => onRowAction('navigate-monitoring', ev)}
             title={ev.name}
@@ -171,15 +172,15 @@ export const EventRow = memo(function EventRow({
         </TableCell>
       )}
       {!hideReviewed && (
-        <TableCell className="text-center">
+        <TableCell className="text-center" aria-label={ev.reviewed ? 'Reviewed' : 'Not reviewed'}>
           {ev.reviewed ? (
             <Check
               className="mx-auto h-3.5 w-3.5"
+              aria-hidden="true"
               style={{ color: 'var(--success)' }}
-              aria-label="Reviewed"
             />
           ) : (
-            <span className="text-[11px]" style={{ color: 'var(--fg-faint)' }}>—</span>
+            <span aria-hidden="true" className="text-[11px]" style={{ color: 'var(--fg-faint)' }}>—</span>
           )}
         </TableCell>
       )}
@@ -274,19 +275,39 @@ export const EventRow = memo(function EventRow({
         return (
           <TableCell
             key={f.id}
-            className={`text-xs ${isLong ? 'cursor-pointer' : ''} ${isExpanded ? '' : 'max-w-40'}`}
-            onClick={isLong ? () => onToggleExpanded(cellKey) : undefined}
+            className={`text-xs ${isExpanded ? '' : 'max-w-40'}`}
           >
             {isExpanded ? (
               <div className="flex items-start gap-1.5">
-                <pre className="max-w-sm whitespace-pre-wrap break-all font-mono text-[11px]">{(() => {
-                  try { return JSON.stringify(JSON.parse(val), null, 2) } catch { return val }
-                })()}</pre>
+                <button
+                  type="button"
+                  className="block min-w-0 text-left"
+                  onClick={() => onToggleExpanded(cellKey)}
+                  aria-expanded={true}
+                  aria-label={`Collapse ${f.display_name}`}
+                >
+                  <pre className="max-w-sm whitespace-pre-wrap break-all font-mono text-[11px]">{(() => {
+                    try { return JSON.stringify(JSON.parse(val), null, 2) } catch { return val }
+                  })()}</pre>
+                </button>
                 <VariableValueContextTrigger contexts={fieldValue?.variable_values} />
               </div>
+            ) : isLong ? (
+              <span className="flex min-w-0 items-center gap-1.5">
+                <button
+                  type="button"
+                  className="block min-w-0 truncate text-left"
+                  onClick={() => onToggleExpanded(cellKey)}
+                  aria-expanded={false}
+                  aria-label={`Expand ${f.display_name}`}
+                >
+                  {val}
+                </button>
+                <VariableValueContextTrigger contexts={fieldValue?.variable_values} />
+              </span>
             ) : (
               <span className="flex min-w-0 items-center gap-1.5">
-                <span className={isLong ? 'block min-w-0 truncate' : 'min-w-0'}>{val}</span>
+                <span className="min-w-0">{val}</span>
                 <VariableValueContextTrigger contexts={fieldValue?.variable_values} />
               </span>
             )}
