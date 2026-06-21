@@ -162,6 +162,7 @@ export function AppSidebar() {
 
   return (
     <aside
+      aria-label="Main navigation"
       className="flex h-screen w-[240px] flex-col border-r flex-shrink-0"
       style={{ background: 'var(--bg-sunken)', borderColor: 'var(--border)' }}
     >
@@ -186,10 +187,11 @@ export function AppSidebar() {
           type="button"
           onClick={() => setCollapsed(true)}
           title="Collapse sidebar"
+          aria-label="Collapse sidebar"
           className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md transition-colors hover:bg-[var(--surface-hover)]"
           style={{ color: 'var(--fg-subtle)' }}
         >
-          <ChevronLeft className="h-3.5 w-3.5" />
+          <ChevronLeft className="h-3.5 w-3.5" aria-hidden="true" />
         </button>
       </div>
 
@@ -300,7 +302,7 @@ export function AppSidebar() {
               color: currentPath.startsWith('/settings') ? 'var(--fg)' : 'var(--fg-subtle)',
             }}
           >
-            <Settings className="h-3.5 w-3.5" />
+            <Settings className="h-3.5 w-3.5" aria-hidden="true" />
           </Link>
           <button
             type="button"
@@ -313,7 +315,7 @@ export function AppSidebar() {
             className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md transition-colors hover:bg-[var(--surface-hover)] disabled:opacity-50"
             style={{ color: 'var(--fg-subtle)' }}
           >
-            <LogOut className="h-3.5 w-3.5" />
+            <LogOut className="h-3.5 w-3.5" aria-hidden="true" />
           </button>
         </div>
       </div>
@@ -440,7 +442,7 @@ function EventTypesNavCategory({
           className="flex h-5 w-5 shrink-0 items-center justify-center rounded-[4px] no-underline transition-colors hover:bg-[var(--surface)]"
           style={{ color: settingsActive ? 'var(--accent)' : 'var(--fg-subtle)' }}
         >
-          <Settings className="h-3.5 w-3.5" />
+          <Settings className="h-3.5 w-3.5" aria-hidden="true" />
         </Link>
       </div>
       {eventTypes.length > 0 && (
@@ -524,6 +526,7 @@ function CollapsedSidebar({
 }) {
   return (
     <aside
+      aria-label="Main navigation"
       className="flex h-screen w-[52px] flex-shrink-0 flex-col items-center border-r py-2.5"
       style={{ background: 'var(--bg-sunken)', borderColor: 'var(--border)' }}
     >
@@ -537,12 +540,12 @@ function CollapsedSidebar({
       </Link>
       <button
         type="button"
-        title="Search · ⌘K"
+        aria-label="Search or jump — ⌘K"
         onClick={onOpenPalette}
         className="flex h-8 w-8 items-center justify-center rounded-md transition-colors hover:bg-[var(--surface-hover)]"
         style={{ color: 'var(--fg-muted)' }}
       >
-        <Search className="h-3.5 w-3.5" />
+        <Search className="h-3.5 w-3.5" aria-hidden="true" />
       </button>
       <div className="mt-1 flex min-h-0 flex-1 flex-col items-center gap-0.5 overflow-y-auto">
         {navGroups.map((group, gi) => (
@@ -560,14 +563,14 @@ function CollapsedSidebar({
                 <Link
                   key={item.id}
                   to={item.href}
-                  title={item.label}
+                  aria-label={item.label}
                   className="relative flex h-8 w-8 items-center justify-center rounded-md no-underline"
                   style={{
                     background: active ? 'var(--surface-hover)' : 'transparent',
                     color: active ? 'var(--fg)' : 'var(--fg-muted)',
                   }}
                 >
-                  <Icon className="h-[15px] w-[15px]" />
+                  <Icon className="h-[15px] w-[15px]" aria-hidden="true" />
                   {item.tone === 'danger' && (
                     <span
                       className="absolute right-1.5 top-1.5 h-1.5 w-1.5 rounded-full"
@@ -590,10 +593,11 @@ function CollapsedSidebar({
         type="button"
         onClick={onExpand}
         title="Expand sidebar"
+        aria-label="Expand sidebar"
         className="mb-1.5 flex h-8 w-8 items-center justify-center rounded-md transition-colors hover:bg-[var(--surface-hover)]"
         style={{ color: 'var(--fg-subtle)' }}
       >
-        <ChevronRight className="h-3.5 w-3.5" />
+        <ChevronRight className="h-3.5 w-3.5" aria-hidden="true" />
       </button>
       <div
         className="flex h-[26px] w-[26px] items-center justify-center rounded-full text-[10px] font-semibold text-white"

@@ -108,12 +108,28 @@ export function ScanConfigDetail({ slug, scanConfigId }: { slug: string; scanCon
 
       <ScanBadges sc={sc} intervalLabel={INTERVAL_LABEL} />
 
-      <div className="flex gap-1 border-b" style={{ borderColor: 'var(--border)' }}>
-        {(['overview', 'configuration'] as const).map(id => (
+      <div role="tablist" aria-label="Scan detail sections" className="flex gap-1 border-b" style={{ borderColor: 'var(--border)' }}>
+        {(['overview', 'configuration'] as const).map((id, idx, arr) => (
           <button
             key={id}
+            id={`scan-tab-${id}`}
+            role="tab"
+            aria-selected={tab === id}
+            aria-controls={`scan-tabpanel-${id}`}
+            tabIndex={tab === id ? 0 : -1}
             type="button"
             onClick={() => setTab(id)}
+            onKeyDown={(e) => {
+              if (e.key === 'ArrowRight') {
+                const next = arr[(idx + 1) % arr.length]
+                setTab(next)
+                document.getElementById(`scan-tab-${next}`)?.focus()
+              } else if (e.key === 'ArrowLeft') {
+                const prev = arr[(idx - 1 + arr.length) % arr.length]
+                setTab(prev)
+                document.getElementById(`scan-tab-${prev}`)?.focus()
+              }
+            }}
             className="-mb-px px-3 py-2 text-[12.5px] font-medium"
             style={{
               color: tab === id ? 'var(--fg)' : 'var(--fg-muted)',
@@ -126,15 +142,19 @@ export function ScanConfigDetail({ slug, scanConfigId }: { slug: string; scanCon
       </div>
 
       {tab === 'overview' ? (
-        <ScanDetail
-          slug={slug}
-          scanConfig={sc as ScanConfig}
-          eventTypes={eventTypes}
-          branchId={branchId}
-          dataSource={dataSource}
-        />
+        <div id="scan-tabpanel-overview" role="tabpanel" aria-labelledby="scan-tab-overview">
+          <ScanDetail
+            slug={slug}
+            scanConfig={sc as ScanConfig}
+            eventTypes={eventTypes}
+            branchId={branchId}
+            dataSource={dataSource}
+          />
+        </div>
       ) : (
-        <ScanConfigurationTab slug={slug} scanConfig={sc as ScanConfig} onDeleted={goBack} />
+        <div id="scan-tabpanel-configuration" role="tabpanel" aria-labelledby="scan-tab-configuration">
+          <ScanConfigurationTab slug={slug} scanConfig={sc as ScanConfig} onDeleted={goBack} />
+        </div>
       )}
     </div>
   )

@@ -99,9 +99,11 @@ export function AiSection({
               <KeyRound className="h-3.5 w-3.5" />
               {aiTestMut.isPending ? 'Testing...' : 'Test AI'}
             </Button>
-            {aiTestMut.data && (
-              <StatusBadge active={aiTestMut.data.ok} label={aiTestMut.data.message} />
-            )}
+            <span role="status" aria-live="polite" aria-atomic="true" className="inline-flex">
+              {aiTestMut.data && (
+                <StatusBadge active={aiTestMut.data.ok} label={aiTestMut.data.message} />
+              )}
+            </span>
           </div>
         </Field>
       </SCard>

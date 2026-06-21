@@ -51,18 +51,20 @@ export function SourceQuerySection({
   const sqlNamespace = schemaData ? toSQLNamespace(schemaData.tables) : undefined
   return (
     <SCard title="Source & query" footer={footerFor?.()}>
-      <Field label="Name">
+      <Field label="Name" id="scan-name">
         <Input
+          id="scan-name"
           value={state.name}
           onChange={e => set('name', e.target.value)}
           placeholder="e.g. Main events scan"
         />
       </Field>
-      <Field label="Data source">
+      <Field label="Data source" id="scan-data-source">
         {sourceLocked ? (
-          <Input value={sourceName} disabled className="max-w-[280px]" />
+          <Input id="scan-data-source" value={sourceName} disabled className="max-w-[280px]" />
         ) : (
           <select
+            id="scan-data-source"
             value={state.dataSourceId}
             onChange={e => setDataSourceId(e.target.value)}
             className={`${SELECT_CLASS} max-w-[280px]`}
@@ -120,8 +122,9 @@ export function EventMappingSection({
   } = form
   return (
     <SCard title="Event mapping" footer={footerFor?.()}>
-      <Field label="Event type" hint="Leave on auto-detect to derive from the data.">
+      <Field label="Event type" id="scan-event-type" hint="Leave on auto-detect to derive from the data.">
         <select
+          id="scan-event-type"
           value={state.eventTypeId}
           onChange={e => set('eventTypeId', e.target.value)}
           className={`${SELECT_CLASS} max-w-[280px]`}
@@ -130,8 +133,9 @@ export function EventMappingSection({
           {eventTypes.map(et => <option key={et.id} value={et.id}>{et.display_name}</option>)}
         </select>
       </Field>
-      <Field label="Event type column">
+      <Field label="Event type column" id="scan-event-type-column">
         <select
+          id="scan-event-type-column"
           value={state.eventTypeColumn}
           onChange={e => setEventTypeColumn(e.target.value)}
           className={`${SELECT_CLASS} max-w-[280px]`}
@@ -143,8 +147,9 @@ export function EventMappingSection({
           ))}
         </select>
       </Field>
-      <Field label="Time column">
+      <Field label="Time column" id="scan-time-column">
         <select
+          id="scan-time-column"
           value={state.timeColumn}
           onChange={e => setTimeColumn(e.target.value)}
           className={`${SELECT_CLASS} max-w-[280px]`}
@@ -156,8 +161,9 @@ export function EventMappingSection({
           ))}
         </select>
       </Field>
-      <Field label="Event name format" hint="Template, e.g. {action}:{category}." last>
+      <Field label="Event name format" id="scan-event-name-format" hint="Template, e.g. {action}:{category}." last>
         <Input
+          id="scan-event-name-format"
           value={state.eventNameFormat}
           onChange={e => set('eventNameFormat', e.target.value)}
           className="font-mono max-w-[280px]"
@@ -256,10 +262,11 @@ export function MetricsDriftSection({ form, footerFor }: SectionProps) {
           onChange={rules => set('eventGroupRules', rules)}
         />
         <div className="grid max-w-[280px] gap-1.5">
-          <label className="text-[13px] font-medium" style={{ color: 'var(--fg)' }}>
+          <label htmlFor="cardinality-threshold" className="text-[13px] font-medium" style={{ color: 'var(--fg)' }}>
             Cardinality threshold
           </label>
           <Input
+            id="cardinality-threshold"
             type="number"
             min={1}
             value={state.cardinalityThreshold}
@@ -276,8 +283,9 @@ export function ScheduleLimitsSection({ form, footerFor }: SectionProps) {
   const { state, set, setInterval } = form
   return (
     <SCard title="Schedule & limits" footer={footerFor?.()}>
-      <Field label="Collection interval">
+      <Field label="Collection interval" id="scan-interval">
         <select
+          id="scan-interval"
           value={state.interval}
           onChange={e => setInterval(e.target.value)}
           className={`${SELECT_CLASS} max-w-[280px]`}
@@ -290,9 +298,11 @@ export function ScheduleLimitsSection({ form, footerFor }: SectionProps) {
       {state.interval && (
         <Field
           label="Replay chunk size"
+          id="scan-chunk-interval"
           hint="Splits long replays into smaller warehouse queries. Must be ≥ the interval."
         >
           <select
+            id="scan-chunk-interval"
             value={state.chunkInterval}
             onChange={e => set('chunkInterval', e.target.value)}
             className={`${SELECT_CLASS} max-w-[280px]`}
@@ -304,8 +314,9 @@ export function ScheduleLimitsSection({ form, footerFor }: SectionProps) {
           </select>
         </Field>
       )}
-      <Field label="Scan lookback (h)">
+      <Field label="Scan lookback (h)" id="scan-lookback-hours">
         <Input
+          id="scan-lookback-hours"
           type="number"
           min={1}
           value={state.scanLookbackHours}
@@ -314,8 +325,9 @@ export function ScheduleLimitsSection({ form, footerFor }: SectionProps) {
           placeholder="Default"
         />
       </Field>
-      <Field label="Scan row cap">
+      <Field label="Scan row cap" id="scan-row-limit">
         <Input
+          id="scan-row-limit"
           type="number"
           min={1}
           value={state.scanRowLimit}
@@ -324,8 +336,9 @@ export function ScheduleLimitsSection({ form, footerFor }: SectionProps) {
           placeholder="Default"
         />
       </Field>
-      <Field label="Metrics row cap" last>
+      <Field label="Metrics row cap" id="scan-metrics-row-limit" last>
         <Input
+          id="scan-metrics-row-limit"
           type="number"
           min={1}
           value={state.metricsRowLimit}

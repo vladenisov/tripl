@@ -227,6 +227,7 @@ function CommandPalette() {
               <>
                 <Search className="h-3.5 w-3.5" style={{ color: 'var(--fg-subtle)' }} />
                 <Command.Input
+                  // eslint-disable-next-line jsx-a11y/no-autofocus -- command palette search: focus on explicit ⌘K invocation is expected UX
                   autoFocus
                   value={query}
                   onValueChange={setQuery}

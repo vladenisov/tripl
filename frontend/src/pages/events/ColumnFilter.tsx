@@ -62,6 +62,7 @@ export function ColumnFilter({
         </div>
         {type === 'text' && (
           <Input
+            // eslint-disable-next-line jsx-a11y/no-autofocus -- filter popover opened by explicit user action; focusing its input is expected
             autoFocus
             value={value}
             placeholder="Contains…"

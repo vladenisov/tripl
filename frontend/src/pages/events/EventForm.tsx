@@ -150,12 +150,13 @@ type FieldValueControlProps = {
   value: string
   onChange: (value: string) => void
   variables: { name: string; label: string }[]
+  inputId?: string
 }
 
-function FieldValueControl({ field, value, onChange, variables }: FieldValueControlProps) {
+function FieldValueControl({ field, value, onChange, variables, inputId }: FieldValueControlProps) {
   if (field.field_type === 'boolean') {
     return (
-      <SelectControl value={value} onChange={onChange} required={field.is_required} maxWidth={160}>
+      <SelectControl id={inputId} value={value} onChange={onChange} required={field.is_required} maxWidth={160}>
         <option value="">—</option>
         <option value="true">true</option>
         <option value="false">false</option>
@@ -164,7 +165,7 @@ function FieldValueControl({ field, value, onChange, variables }: FieldValueCont
   }
   if (field.field_type === 'enum' && field.enum_options) {
     return (
-      <SelectControl value={value} onChange={onChange} required={field.is_required} maxWidth={240}>
+      <SelectControl id={inputId} value={value} onChange={onChange} required={field.is_required} maxWidth={240}>
         <option value="">—</option>
         {field.enum_options.map(opt => <option key={opt} value={opt}>{opt}</option>)}
       </SelectControl>
@@ -172,12 +173,13 @@ function FieldValueControl({ field, value, onChange, variables }: FieldValueCont
   }
   if (field.field_type === 'json') {
     return (
-      <JsonEditor value={value} onChange={onChange} required={field.is_required} variables={variables} />
+      <JsonEditor id={inputId} value={value} onChange={onChange} required={field.is_required} variables={variables} />
     )
   }
   return (
     <div className="max-w-[320px]">
       <VariableInput
+        id={inputId}
         value={value}
         onChange={onChange}
         variables={variables}
@@ -193,15 +195,17 @@ function MetaFieldControl({
   value,
   onChange,
   variables,
+  inputId,
 }: {
   metaField: MetaFieldDefinition
   value: string
   onChange: (value: string) => void
   variables: { name: string; label: string }[]
+  inputId?: string
 }) {
   if (metaField.field_type === 'boolean') {
     return (
-      <SelectControl value={value} onChange={onChange} maxWidth={160}>
+      <SelectControl id={inputId} value={value} onChange={onChange} maxWidth={160}>
         <option value="">—</option>
         <option value="true">true</option>
         <option value="false">false</option>
@@ -210,7 +214,7 @@ function MetaFieldControl({
   }
   if (metaField.field_type === 'enum' && metaField.enum_options) {
     return (
-      <SelectControl value={value} onChange={onChange} maxWidth={240}>
+      <SelectControl id={inputId} value={value} onChange={onChange} maxWidth={240}>
         <option value="">—</option>
         {metaField.enum_options.map(opt => <option key={opt} value={opt}>{opt}</option>)}
       </SelectControl>
@@ -219,6 +223,7 @@ function MetaFieldControl({
   return (
     <div className="max-w-[320px]">
       <VariableInput
+        id={inputId}
         value={value}
         onChange={onChange}
         variables={variables}
@@ -479,6 +484,7 @@ export function EventForm({
                   <button
                     key={c}
                     type="button"
+                    aria-pressed={on}
                     onClick={() => toggleBreakdown(c)}
                     className="mono rounded-full px-[9px] py-1 text-[11.5px]"
                     style={{
@@ -501,12 +507,14 @@ export function EventForm({
               <EvField
                 key={f.id}
                 label={f.display_name}
+                htmlFor={`field-${f.id}`}
                 required={f.is_required}
                 hint={<span className="mono">{f.name} · {f.field_type}</span>}
                 last={i === sortedFields.length - 1}
               >
                 <FieldValueControl
                   field={f}
+                  inputId={`field-${f.id}`}
                   value={fieldValues[f.id] ?? ''}
                   onChange={v => setFieldValues({ ...fieldValues, [f.id]: v })}
                   variables={varSuggestions}
@@ -522,11 +530,13 @@ export function EventForm({
               <EvField
                 key={mf.id}
                 label={mf.display_name}
+                htmlFor={`meta-${mf.id}`}
                 required={mf.is_required}
                 last={i === metaFields.length - 1}
               >
                 <MetaFieldControl
                   metaField={mf}
+                  inputId={`meta-${mf.id}`}
                   value={metaValues[mf.id] ?? ''}
                   onChange={v => setMetaValues({ ...metaValues, [mf.id]: v })}
                   variables={varSuggestions}

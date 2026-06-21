@@ -1,4 +1,4 @@
-import { useState } from "react"
+import { useId, useState } from "react"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { List, Pencil, Plus, Trash2 } from "lucide-react"
 import { metaFieldsApi } from "@/api/metaFields"
@@ -44,6 +44,23 @@ export function MetaFieldsTab({ slug }: { slug: string }) {
   const [editLinkTemplate, setEditLinkTemplate] = useState('')
   const [editSensitivity, setEditSensitivity] = useState<Sensitivity>('none')
   const { confirm, dialog } = useConfirm()
+
+  // IDs for create dialog form controls
+  const createNameId = useId()
+  const createDisplayNameId = useId()
+  const createTypeId = useId()
+  const createSensitivityId = useId()
+  const createEnumOptionsId = useId()
+  const createLinkTemplateId = useId()
+  const createDefaultValueId = useId()
+
+  // IDs for edit dialog form controls
+  const editDisplayNameId = useId()
+  const editTypeId = useId()
+  const editDefaultValueId = useId()
+  const editSensitivityId = useId()
+  const editEnumOptionsId = useId()
+  const editLinkTemplateId = useId()
 
   const metaFieldTypes = ['string', 'url', 'boolean', 'enum', 'date']
 
@@ -133,19 +150,19 @@ export function MetaFieldsTab({ slug }: { slug: string }) {
             <DialogHeader><DialogTitle>New Meta Field</DialogTitle></DialogHeader>
             <div className="grid gap-4 py-4">
               <div className="grid grid-cols-2 gap-3">
-                <div className="grid gap-2"><Label>Name (e.g. jira_link)</Label><Input value={name} onChange={e => setName(e.target.value)} required /></div>
-                <div className="grid gap-2"><Label>Display Name</Label><Input value={displayName} onChange={e => setDisplayName(e.target.value)} required /></div>
+                <div className="grid gap-2"><Label htmlFor={createNameId}>Name (e.g. jira_link)</Label><Input id={createNameId} value={name} onChange={e => setName(e.target.value)} required /></div>
+                <div className="grid gap-2"><Label htmlFor={createDisplayNameId}>Display Name</Label><Input id={createDisplayNameId} value={displayName} onChange={e => setDisplayName(e.target.value)} required /></div>
               </div>
               <div className="grid grid-cols-3 gap-3">
                 <div className="grid gap-2">
-                  <Label>Type</Label>
-                  <select value={fieldType} onChange={e => setFieldType(e.target.value)} className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm">
+                  <Label htmlFor={createTypeId}>Type</Label>
+                  <select id={createTypeId} value={fieldType} onChange={e => setFieldType(e.target.value)} className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm">
                     {metaFieldTypes.map(t => <option key={t}>{t}</option>)}
                   </select>
                 </div>
                 <div className="grid gap-2">
-                  <Label>Sensitivity</Label>
-                  <select value={sensitivity} onChange={e => setSensitivity(e.target.value as Sensitivity)} className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm">
+                  <Label htmlFor={createSensitivityId}>Sensitivity</Label>
+                  <select id={createSensitivityId} value={sensitivity} onChange={e => setSensitivity(e.target.value as Sensitivity)} className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm">
                     {SENSITIVITY_OPTIONS.map(opt => <option key={opt.value} value={opt.value}>{opt.label}</option>)}
                   </select>
                 </div>
@@ -158,9 +175,9 @@ export function MetaFieldsTab({ slug }: { slug: string }) {
               </div>
               {fieldType === 'enum' && (
                 <div className="grid gap-2">
-                  <Label>Enum Options</Label>
+                  <Label htmlFor={createEnumOptionsId}>Enum Options</Label>
                   <div className="flex gap-2">
-                    <Input value={enumInput} onChange={e => setEnumInput(e.target.value)}
+                    <Input id={createEnumOptionsId} value={enumInput} onChange={e => setEnumInput(e.target.value)}
                       onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); addMetaEnumOption(enumInput, 'create') } }}
                       placeholder="Type option and press Enter" className="flex-1" />
                     <Button type="button" variant="outline" size="sm" onClick={() => addMetaEnumOption(enumInput, 'create')}>Add</Button>
@@ -168,7 +185,7 @@ export function MetaFieldsTab({ slug }: { slug: string }) {
                   {enumOptions.length > 0 && (
                     <div className="flex flex-wrap gap-1.5">
                       {enumOptions.map(opt => (
-                        <Badge key={opt} variant="secondary" className="gap-1">{opt}<button type="button" onClick={() => setEnumOptions(enumOptions.filter(o => o !== opt))} className="hover:text-destructive">×</button></Badge>
+                        <Badge key={opt} variant="secondary" className="gap-1">{opt}<button type="button" aria-label={`Remove option ${opt}`} onClick={() => setEnumOptions(enumOptions.filter(o => o !== opt))} className="hover:text-destructive"><span aria-hidden="true">×</span></button></Badge>
                       ))}
                     </div>
                   )}
@@ -181,8 +198,9 @@ export function MetaFieldsTab({ slug }: { slug: string }) {
                 </div>
                 {displayAsLink && (
                   <div className="mt-3 grid gap-2">
-                    <Label>Link Template</Label>
+                    <Label htmlFor={createLinkTemplateId}>Link Template</Label>
                     <Input
+                      id={createLinkTemplateId}
                       value={linkTemplate}
                       onChange={e => setLinkTemplate(e.target.value)}
                       placeholder={`https://tracker.example.com/issues/${META_FIELD_LINK_PLACEHOLDER}`}
@@ -194,7 +212,7 @@ export function MetaFieldsTab({ slug }: { slug: string }) {
                   </div>
                 )}
               </div>
-              <div className="grid gap-2"><Label>Default Value (optional)</Label><Input value={defaultValue} onChange={e => setDefaultValue(e.target.value)} placeholder="Optional default" /></div>
+              <div className="grid gap-2"><Label htmlFor={createDefaultValueId}>Default Value (optional)</Label><Input id={createDefaultValueId} value={defaultValue} onChange={e => setDefaultValue(e.target.value)} placeholder="Optional default" /></div>
               {createMut.isError && <p className="text-sm text-destructive">{getErrorMessage(createMut.error)}</p>}
             </div>
             <DialogFooter>
@@ -212,19 +230,19 @@ export function MetaFieldsTab({ slug }: { slug: string }) {
             <DialogHeader><DialogTitle>Edit: {editingMf?.name}</DialogTitle></DialogHeader>
             <div className="grid gap-4 py-4">
               <div className="grid grid-cols-2 gap-3">
-                <div className="grid gap-2"><Label>Display Name</Label><Input value={editDisplayName} onChange={e => setEditDisplayName(e.target.value)} /></div>
+                <div className="grid gap-2"><Label htmlFor={editDisplayNameId}>Display Name</Label><Input id={editDisplayNameId} value={editDisplayName} onChange={e => setEditDisplayName(e.target.value)} /></div>
                 <div className="grid gap-2">
-                  <Label>Type</Label>
-                  <select value={editFieldType} onChange={e => setEditFieldType(e.target.value)} className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm">
+                  <Label htmlFor={editTypeId}>Type</Label>
+                  <select id={editTypeId} value={editFieldType} onChange={e => setEditFieldType(e.target.value)} className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm">
                     {metaFieldTypes.map(t => <option key={t}>{t}</option>)}
                   </select>
                 </div>
               </div>
               <div className="grid grid-cols-3 gap-3">
-                <div className="grid gap-2"><Label>Default Value</Label><Input value={editDefaultValue} onChange={e => setEditDefaultValue(e.target.value)} placeholder="Optional" /></div>
+                <div className="grid gap-2"><Label htmlFor={editDefaultValueId}>Default Value</Label><Input id={editDefaultValueId} value={editDefaultValue} onChange={e => setEditDefaultValue(e.target.value)} placeholder="Optional" /></div>
                 <div className="grid gap-2">
-                  <Label>Sensitivity</Label>
-                  <select value={editSensitivity} onChange={e => setEditSensitivity(e.target.value as Sensitivity)} className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm">
+                  <Label htmlFor={editSensitivityId}>Sensitivity</Label>
+                  <select id={editSensitivityId} value={editSensitivity} onChange={e => setEditSensitivity(e.target.value as Sensitivity)} className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm">
                     {SENSITIVITY_OPTIONS.map(opt => <option key={opt.value} value={opt.value}>{opt.label}</option>)}
                   </select>
                 </div>
@@ -237,9 +255,9 @@ export function MetaFieldsTab({ slug }: { slug: string }) {
               </div>
               {editFieldType === 'enum' && (
                 <div className="grid gap-2">
-                  <Label>Enum Options</Label>
+                  <Label htmlFor={editEnumOptionsId}>Enum Options</Label>
                   <div className="flex gap-2">
-                    <Input value={editEnumInput} onChange={e => setEditEnumInput(e.target.value)}
+                    <Input id={editEnumOptionsId} value={editEnumInput} onChange={e => setEditEnumInput(e.target.value)}
                       onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); addMetaEnumOption(editEnumInput, 'edit') } }}
                       placeholder="Type option and press Enter" className="flex-1" />
                     <Button type="button" variant="outline" size="sm" onClick={() => addMetaEnumOption(editEnumInput, 'edit')}>Add</Button>
@@ -247,7 +265,7 @@ export function MetaFieldsTab({ slug }: { slug: string }) {
                   {editEnumOptions.length > 0 && (
                     <div className="flex flex-wrap gap-1.5">
                       {editEnumOptions.map(opt => (
-                        <Badge key={opt} variant="secondary" className="gap-1">{opt}<button type="button" onClick={() => setEditEnumOptions(editEnumOptions.filter(o => o !== opt))} className="hover:text-destructive">×</button></Badge>
+                        <Badge key={opt} variant="secondary" className="gap-1">{opt}<button type="button" aria-label={`Remove option ${opt}`} onClick={() => setEditEnumOptions(editEnumOptions.filter(o => o !== opt))} className="hover:text-destructive"><span aria-hidden="true">×</span></button></Badge>
                       ))}
                     </div>
                   )}
@@ -260,8 +278,9 @@ export function MetaFieldsTab({ slug }: { slug: string }) {
                 </div>
                 {editDisplayAsLink && (
                   <div className="mt-3 grid gap-2">
-                    <Label>Link Template</Label>
+                    <Label htmlFor={editLinkTemplateId}>Link Template</Label>
                     <Input
+                      id={editLinkTemplateId}
                       value={editLinkTemplate}
                       onChange={e => setEditLinkTemplate(e.target.value)}
                       placeholder={`https://tracker.example.com/issues/${META_FIELD_LINK_PLACEHOLDER}`}
@@ -330,8 +349,8 @@ export function MetaFieldsTab({ slug }: { slug: string }) {
                   <TableCell className="text-xs text-muted-foreground">{mf.default_value ?? '—'}</TableCell>
                   <TableCell>
                     <div className="flex gap-1 justify-end">
-                      <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => startEdit(mf)}><Pencil className="h-3 w-3" /></Button>
-                      <Button variant="ghost" size="icon" className="h-7 w-7 text-muted-foreground hover:text-destructive" onClick={() => handleDelete(mf)}><Trash2 className="h-3 w-3" /></Button>
+                      <Button variant="ghost" size="icon" className="h-7 w-7" aria-label={`Edit ${mf.display_name}`} onClick={() => startEdit(mf)}><Pencil className="h-3 w-3" aria-hidden="true" /></Button>
+                      <Button variant="ghost" size="icon" className="h-7 w-7 text-muted-foreground hover:text-destructive" aria-label={`Delete ${mf.display_name}`} onClick={() => handleDelete(mf)}><Trash2 className="h-3 w-3" aria-hidden="true" /></Button>
                     </div>
                   </TableCell>
                 </TableRow>

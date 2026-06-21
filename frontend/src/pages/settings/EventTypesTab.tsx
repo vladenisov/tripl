@@ -1128,9 +1128,17 @@ function Td({
 function ListRow({ children, onClick }: { children: ReactNode; onClick: () => void }) {
   return (
     <tr
+      role="button"
+      tabIndex={0}
       className="cursor-pointer border-t transition-colors hover:bg-[var(--surface-hover)]"
       style={{ borderColor: 'var(--border-subtle)' }}
       onClick={onClick}
+      onKeyDown={(e) => {
+        if (e.key === 'Enter' || e.key === ' ') {
+          e.preventDefault()
+          onClick()
+        }
+      }}
     >
       {children}
     </tr>
@@ -1154,6 +1162,7 @@ export function IconButton({
     <button
       type="button"
       title={title}
+      aria-label={title}
       disabled={disabled}
       onClick={onClick}
       className="flex items-center justify-center p-1 transition-colors disabled:opacity-40"

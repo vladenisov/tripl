@@ -21,6 +21,7 @@ type DotProps = {
 export function Dot({ tone = "neutral", pulse = false, size = 7, className }: DotProps) {
   return (
     <span
+      aria-hidden="true"
       className={cn("inline-block rounded-full shrink-0", pulse && "pulse-dot", className)}
       style={{ width: size, height: size, background: COLORS[tone] }}
     />

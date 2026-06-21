@@ -257,8 +257,8 @@ function ConnectionsTab({ openDsId }: { openDsId?: string }) {
             <div className="grid gap-4 py-4">
               <div className="grid grid-cols-3 gap-3">
                 <div className="col-span-2 grid gap-2">
-                  <Label>Name</Label>
-                  <Input value={name} onChange={(e) => setName(e.target.value)} required placeholder="Production ClickHouse" />
+                  <Label htmlFor="ds-name">Name</Label>
+                  <Input id="ds-name" value={name} onChange={(e) => setName(e.target.value)} required placeholder="Production ClickHouse" />
                 </div>
                 <div className="grid gap-2">
                   <Label htmlFor="ds-type">Type</Label>
@@ -280,17 +280,18 @@ function ConnectionsTab({ openDsId }: { openDsId?: string }) {
                 <>
                   <div className="grid grid-cols-2 gap-3">
                     <div className="grid gap-2">
-                      <Label>Project ID</Label>
-                      <Input value={host} onChange={(e) => setHost(e.target.value)} required placeholder="my-gcp-project" />
+                      <Label htmlFor="ds-project-id">Project ID</Label>
+                      <Input id="ds-project-id" value={host} onChange={(e) => setHost(e.target.value)} required placeholder="my-gcp-project" />
                     </div>
                     <div className="grid gap-2">
-                      <Label>Default dataset</Label>
-                      <Input value={databaseName} onChange={(e) => setDatabaseName(e.target.value)} required placeholder="analytics" />
+                      <Label htmlFor="ds-default-dataset">Default dataset</Label>
+                      <Input id="ds-default-dataset" value={databaseName} onChange={(e) => setDatabaseName(e.target.value)} required placeholder="analytics" />
                     </div>
                   </div>
                   <div className="grid gap-2">
-                    <Label>Service account JSON</Label>
+                    <Label htmlFor="ds-service-account-json">Service account JSON</Label>
                     <textarea
+                      id="ds-service-account-json"
                       value={password}
                       onChange={(e) => setPassword(e.target.value)}
                       required
@@ -304,31 +305,32 @@ function ConnectionsTab({ openDsId }: { openDsId?: string }) {
                 <>
                   <div className="grid grid-cols-5 gap-3">
                     <div className="col-span-2 grid gap-2">
-                      <Label>Host</Label>
-                      <Input value={host} onChange={(e) => setHost(e.target.value)} required placeholder="localhost" />
+                      <Label htmlFor="ds-host">Host</Label>
+                      <Input id="ds-host" value={host} onChange={(e) => setHost(e.target.value)} required placeholder="localhost" />
                     </div>
                     <div className="grid gap-2">
-                      <Label>Port</Label>
-                      <Input type="number" value={port} onChange={(e) => setPort(Number(e.target.value))} required />
+                      <Label htmlFor="ds-port">Port</Label>
+                      <Input id="ds-port" type="number" value={port} onChange={(e) => setPort(Number(e.target.value))} required />
                     </div>
                     <div className="col-span-2 grid gap-2">
-                      <Label>Database</Label>
-                      <Input value={databaseName} onChange={(e) => setDatabaseName(e.target.value)} required placeholder="default" />
+                      <Label htmlFor="ds-database">Database</Label>
+                      <Input id="ds-database" value={databaseName} onChange={(e) => setDatabaseName(e.target.value)} required placeholder="default" />
                     </div>
                   </div>
                   <div className={dbType === 'clickhouse' ? 'grid grid-cols-3 gap-3' : 'grid grid-cols-2 gap-3'}>
                     <div className="grid gap-2">
-                      <Label>Username</Label>
-                      <Input value={username} onChange={(e) => setUsername(e.target.value)} placeholder="default" />
+                      <Label htmlFor="ds-username">Username</Label>
+                      <Input id="ds-username" value={username} onChange={(e) => setUsername(e.target.value)} placeholder="default" />
                     </div>
                     <div className="grid gap-2">
-                      <Label>Password</Label>
-                      <Input type="password" value={password} onChange={(e) => setPassword(e.target.value)} placeholder="••••••••" />
+                      <Label htmlFor="ds-password">Password</Label>
+                      <Input id="ds-password" type="password" value={password} onChange={(e) => setPassword(e.target.value)} placeholder="••••••••" />
                     </div>
                     {dbType === 'clickhouse' && (
                       <div className="grid gap-2">
-                        <Label>Timeout, s</Label>
+                        <Label htmlFor="ds-timeout">Timeout, s</Label>
                         <Input
+                          id="ds-timeout"
                           type="number"
                           min={1}
                           step={1}
@@ -362,36 +364,37 @@ function ConnectionsTab({ openDsId }: { openDsId?: string }) {
             </DialogHeader>
             <div className="grid gap-4 py-4">
               <div className="grid gap-2">
-                <Label>Name</Label>
-                <Input value={editName} onChange={(e) => setEditName(e.target.value)} />
+                <Label htmlFor="edit-ds-name">Name</Label>
+                <Input id="edit-ds-name" value={editName} onChange={(e) => setEditName(e.target.value)} />
               </div>
               <div className="grid grid-cols-5 gap-3">
                 <div className="col-span-2 grid gap-2">
-                  <Label>Host</Label>
-                  <Input value={editHost} onChange={(e) => setEditHost(e.target.value)} />
+                  <Label htmlFor="edit-ds-host">Host</Label>
+                  <Input id="edit-ds-host" value={editHost} onChange={(e) => setEditHost(e.target.value)} />
                 </div>
                 <div className="grid gap-2">
-                  <Label>Port</Label>
-                  <Input type="number" value={editPort} onChange={(e) => setEditPort(Number(e.target.value))} />
+                  <Label htmlFor="edit-ds-port">Port</Label>
+                  <Input id="edit-ds-port" type="number" value={editPort} onChange={(e) => setEditPort(Number(e.target.value))} />
                 </div>
                 <div className="col-span-2 grid gap-2">
-                  <Label>Database</Label>
-                  <Input value={editDatabaseName} onChange={(e) => setEditDatabaseName(e.target.value)} />
+                  <Label htmlFor="edit-ds-database">Database</Label>
+                  <Input id="edit-ds-database" value={editDatabaseName} onChange={(e) => setEditDatabaseName(e.target.value)} />
                 </div>
               </div>
               <div className={editingDs?.db_type === 'clickhouse' ? 'grid grid-cols-3 gap-3' : 'grid grid-cols-2 gap-3'}>
                 <div className="grid gap-2">
-                  <Label>Username</Label>
-                  <Input value={editUsername} onChange={(e) => setEditUsername(e.target.value)} />
+                  <Label htmlFor="edit-ds-username">Username</Label>
+                  <Input id="edit-ds-username" value={editUsername} onChange={(e) => setEditUsername(e.target.value)} />
                 </div>
                 <div className="grid gap-2">
-                  <Label>Password</Label>
-                  <Input type="password" value={editPassword} onChange={(e) => setEditPassword(e.target.value)} placeholder="Leave empty to keep" />
+                  <Label htmlFor="edit-ds-password">Password</Label>
+                  <Input id="edit-ds-password" type="password" value={editPassword} onChange={(e) => setEditPassword(e.target.value)} placeholder="Leave empty to keep" />
                 </div>
                 {editingDs?.db_type === 'clickhouse' && (
                   <div className="grid gap-2">
-                    <Label>Timeout, s</Label>
+                    <Label htmlFor="edit-ds-timeout">Timeout, s</Label>
                     <Input
+                      id="edit-ds-timeout"
                       type="number"
                       min={1}
                       step={1}
@@ -583,8 +586,9 @@ function DataSourceCard({
             size="icon"
             className="text-muted-foreground hover:text-destructive"
             onClick={onDelete}
+            aria-label={`Delete data source ${ds.name}`}
           >
-            <Trash2 className="h-3.5 w-3.5" />
+            <Trash2 aria-hidden="true" className="h-3.5 w-3.5" />
           </Button>
         </div>
       )}

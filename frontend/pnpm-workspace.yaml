@@ -1,2 +1,7 @@
 minimumReleaseAgeExclude:
   - "@csstools/css-color-parser@4.1.4"
+# eslint-plugin-jsx-a11y declares a peer of eslint ^9, but this repo runs
+# eslint 10. Its flat-config API is compatible with eslint 10, so allow it.
+peerDependencyRules:
+  allowedVersions:
+    "eslint-plugin-jsx-a11y>eslint": "10"

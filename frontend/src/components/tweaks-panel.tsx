@@ -49,7 +49,7 @@ function TweaksPanel({
       <button
         type="button"
         onClick={() => onOpenChange(true)}
-        title="Tweaks"
+        aria-label="Open tweaks panel"
         className="fixed bottom-5 right-5 z-50 flex h-9 w-9 items-center justify-center rounded-full border shadow-md transition-colors hover:bg-[var(--surface-hover)]"
         style={{
           background: 'var(--bg-elevated)',
@@ -57,7 +57,7 @@ function TweaksPanel({
           color: 'var(--accent)',
         }}
       >
-        <Sliders className="h-4 w-4" />
+        <Sliders className="h-4 w-4" aria-hidden="true" />
       </button>
     )
   }
@@ -88,10 +88,11 @@ function TweaksPanel({
         <button
           type="button"
           onClick={() => onOpenChange(false)}
+          aria-label="Close tweaks panel"
           className="p-0.5"
           style={{ color: 'var(--fg-subtle)' }}
         >
-          <X className="h-3.5 w-3.5" />
+          <X className="h-3.5 w-3.5" aria-hidden="true" />
         </button>
       </div>
       <div className="flex flex-col gap-3.5 p-3.5">

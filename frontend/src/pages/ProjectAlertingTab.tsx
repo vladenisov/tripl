@@ -10,7 +10,6 @@ import { EmptyState } from '@/components/empty-state'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Checkbox } from '@/components/ui/checkbox'
-import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible'
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
@@ -282,31 +281,26 @@ export default function ProjectAlertingTab({ slug }: { slug: string }) {
                 </Badge>
               </div>
               {groupedDestinations[channel].map(destination => (
-                <Collapsible key={destination.id} defaultOpen>
-                  <CollapsibleTrigger asChild>
-                    <div className="hidden" />
-                  </CollapsibleTrigger>
-                  <CollapsibleContent>
-                    <DestinationCard
-                      slug={slug}
-                      destination={destination}
-                      eventTypes={eventTypes}
-                      events={events}
-                      onEditDestination={openEdit}
-                    />
-                    <div className="mt-2 flex justify-end">
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        className="text-muted-foreground hover:text-destructive"
-                        onClick={() => handleDeleteDestination(destination)}
-                      >
-                        <Trash2 className="mr-2 h-4 w-4" />
-                        Delete destination
-                      </Button>
-                    </div>
-                  </CollapsibleContent>
-                </Collapsible>
+                <div key={destination.id}>
+                  <DestinationCard
+                    slug={slug}
+                    destination={destination}
+                    eventTypes={eventTypes}
+                    events={events}
+                    onEditDestination={openEdit}
+                  />
+                  <div className="mt-2 flex justify-end">
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      className="text-muted-foreground hover:text-destructive"
+                      onClick={() => handleDeleteDestination(destination)}
+                    >
+                      <Trash2 className="mr-2 h-4 w-4" />
+                      Delete destination
+                    </Button>
+                  </div>
+                </div>
               ))}
             </div>
           ))}
@@ -381,7 +375,7 @@ export default function ProjectAlertingTab({ slug }: { slug: string }) {
                 </div>
               )}
               {inboxActionMut.isError && (
-                <p className="text-xs text-destructive">{getErrorMessage(inboxActionMut.error)}</p>
+                <p role="alert" className="text-xs text-destructive">{getErrorMessage(inboxActionMut.error)}</p>
               )}
             </div>
           </Panel>
@@ -390,9 +384,9 @@ export default function ProjectAlertingTab({ slug }: { slug: string }) {
             <div className="min-w-0 space-y-4 p-4">
               <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                 <div className="grid gap-2">
-                  <Label>Status</Label>
+                  <Label htmlFor="filter-status">Status</Label>
                   <Select value={deliveryFilters.status || 'all'} onValueChange={value => setDeliveryFilters(current => ({ ...current, status: value === 'all' ? '' : value }))}>
-                    <SelectTrigger><SelectValue /></SelectTrigger>
+                    <SelectTrigger id="filter-status"><SelectValue /></SelectTrigger>
                     <SelectContent>
                       <SelectItem value="all">All</SelectItem>
                       <SelectItem value="pending">Pending</SelectItem>
@@ -402,9 +396,9 @@ export default function ProjectAlertingTab({ slug }: { slug: string }) {
                   </Select>
                 </div>
                 <div className="grid gap-2">
-                  <Label>Channel</Label>
+                  <Label htmlFor="filter-channel">Channel</Label>
                   <Select value={deliveryFilters.channel || 'all'} onValueChange={value => setDeliveryFilters(current => ({ ...current, channel: value === 'all' ? '' : value }))}>
-                    <SelectTrigger><SelectValue /></SelectTrigger>
+                    <SelectTrigger id="filter-channel"><SelectValue /></SelectTrigger>
                     <SelectContent>
                       <SelectItem value="all">All</SelectItem>
                       <SelectItem value="slack">Slack</SelectItem>
@@ -417,9 +411,9 @@ export default function ProjectAlertingTab({ slug }: { slug: string }) {
                   </Select>
                 </div>
                 <div className="grid gap-2">
-                  <Label>Destination</Label>
+                  <Label htmlFor="filter-destination">Destination</Label>
                   <Select value={deliveryFilters.destination_id || 'all'} onValueChange={value => setDeliveryFilters(current => ({ ...current, destination_id: value === 'all' ? '' : value, rule_id: '' }))}>
-                    <SelectTrigger><SelectValue /></SelectTrigger>
+                    <SelectTrigger id="filter-destination"><SelectValue /></SelectTrigger>
                     <SelectContent>
                       <SelectItem value="all">All</SelectItem>
                       {destinations.map(destination => (
@@ -431,9 +425,9 @@ export default function ProjectAlertingTab({ slug }: { slug: string }) {
                   </Select>
                 </div>
                 <div className="grid gap-2">
-                  <Label>Rule</Label>
+                  <Label htmlFor="filter-rule">Rule</Label>
                   <Select value={deliveryFilters.rule_id || 'all'} onValueChange={value => setDeliveryFilters(current => ({ ...current, rule_id: value === 'all' ? '' : value }))}>
-                    <SelectTrigger><SelectValue /></SelectTrigger>
+                    <SelectTrigger id="filter-rule"><SelectValue /></SelectTrigger>
                     <SelectContent>
                       <SelectItem value="all">All</SelectItem>
                       {allRules
@@ -447,9 +441,9 @@ export default function ProjectAlertingTab({ slug }: { slug: string }) {
                   </Select>
                 </div>
                 <div className="grid gap-2">
-                  <Label>Scan</Label>
+                  <Label htmlFor="filter-scan">Scan</Label>
                   <Select value={deliveryFilters.scan_config_id || 'all'} onValueChange={value => setDeliveryFilters(current => ({ ...current, scan_config_id: value === 'all' ? '' : value }))}>
-                    <SelectTrigger><SelectValue /></SelectTrigger>
+                    <SelectTrigger id="filter-scan"><SelectValue /></SelectTrigger>
                     <SelectContent>
                       <SelectItem value="all">All</SelectItem>
                       {scans.map(scan => (
@@ -504,22 +498,22 @@ export default function ProjectAlertingTab({ slug }: { slug: string }) {
             <div className="grid gap-4 py-4">
               <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                 <div className="grid gap-2">
-                  <Label>Name</Label>
+                  <Label htmlFor="dest-name">Name</Label>
                   <Input
-                    aria-label="Destination Name"
+                    id="dest-name"
                     value={destinationForm.name}
                     onChange={event => setDestinationForm(current => ({ ...current, name: event.target.value }))}
                     required
                   />
                 </div>
                 <div className="grid gap-2">
-                  <Label>Channel</Label>
+                  <Label htmlFor="dest-channel">Channel</Label>
                   <Select
                     value={destinationForm.type}
                     onValueChange={value => setDestinationForm(current => ({ ...defaultDestinationForm(value as DestinationChannel), name: current.name }))}
                     disabled={!!editingDestination}
                   >
-                    <SelectTrigger><SelectValue /></SelectTrigger>
+                    <SelectTrigger id="dest-channel"><SelectValue /></SelectTrigger>
                     <SelectContent>
                       <SelectItem value="slack">Slack</SelectItem>
                       <SelectItem value="telegram">Telegram</SelectItem>
@@ -534,10 +528,10 @@ export default function ProjectAlertingTab({ slug }: { slug: string }) {
 
               {destinationForm.type === 'slack' ? (
                 <div className="grid gap-2">
-                  <Label>Webhook URL</Label>
+                  <Label htmlFor="dest-webhook-url">Webhook URL</Label>
                   <Input
+                    id="dest-webhook-url"
                     type="password"
-                    aria-label="Webhook URL"
                     placeholder={editingDestination?.webhook_set ? 'Leave empty to keep current webhook' : 'https://hooks.slack.com/...'}
                     value={destinationForm.webhook_url}
                     onChange={event => setDestinationForm(current => ({ ...current, webhook_url: event.target.value }))}
@@ -547,10 +541,10 @@ export default function ProjectAlertingTab({ slug }: { slug: string }) {
               ) : destinationForm.type === 'telegram' ? (
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                   <div className="grid gap-2">
-                    <Label>Bot Token</Label>
+                    <Label htmlFor="dest-bot-token">Bot Token</Label>
                     <Input
+                      id="dest-bot-token"
                       type="password"
-                      aria-label="Bot Token"
                       placeholder={editingDestination?.bot_token_set ? 'Leave empty to keep current token' : '123456:ABC...'}
                       value={destinationForm.bot_token}
                       onChange={event => setDestinationForm(current => ({ ...current, bot_token: event.target.value }))}
@@ -558,9 +552,9 @@ export default function ProjectAlertingTab({ slug }: { slug: string }) {
                     />
                   </div>
                   <div className="grid gap-2">
-                    <Label>Chat ID</Label>
+                    <Label htmlFor="dest-chat-id">Chat ID</Label>
                     <Input
-                      aria-label="Chat ID"
+                      id="dest-chat-id"
                       value={destinationForm.chat_id}
                       onChange={event => setDestinationForm(current => ({ ...current, chat_id: event.target.value }))}
                       required
@@ -570,9 +564,9 @@ export default function ProjectAlertingTab({ slug }: { slug: string }) {
               ) : destinationForm.type === 'webhook' ? (
                 <div className="grid gap-3">
                   <div className="grid gap-2">
-                    <Label>Target URL</Label>
+                    <Label htmlFor="dest-target-url">Target URL</Label>
                     <Input
-                      aria-label="Target URL"
+                      id="dest-target-url"
                       placeholder={editingDestination?.target_url_set ? 'Leave empty to keep current URL' : 'https://example.com/webhook'}
                       value={destinationForm.target_url}
                       onChange={event => setDestinationForm(current => ({ ...current, target_url: event.target.value }))}
@@ -581,19 +575,19 @@ export default function ProjectAlertingTab({ slug }: { slug: string }) {
                   </div>
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                     <div className="grid gap-2">
-                      <Label>Secret Header Name</Label>
+                      <Label htmlFor="dest-header-name">Secret Header Name</Label>
                       <Input
-                        aria-label="Webhook Header Name"
+                        id="dest-header-name"
                         placeholder="Authorization (optional)"
                         value={destinationForm.webhook_header_name}
                         onChange={event => setDestinationForm(current => ({ ...current, webhook_header_name: event.target.value }))}
                       />
                     </div>
                     <div className="grid gap-2">
-                      <Label>Secret Header Value</Label>
+                      <Label htmlFor="dest-header-value">Secret Header Value</Label>
                       <Input
+                        id="dest-header-value"
                         type="password"
-                        aria-label="Webhook Header Value"
                         placeholder={editingDestination?.webhook_header_name ? 'Leave empty to keep current value' : 'Bearer … (optional)'}
                         value={destinationForm.webhook_header_value}
                         onChange={event => setDestinationForm(current => ({ ...current, webhook_header_value: event.target.value }))}
@@ -607,9 +601,9 @@ export default function ProjectAlertingTab({ slug }: { slug: string }) {
               ) : destinationForm.type === 'email' ? (
                 <div className="grid gap-3">
                   <div className="grid gap-2">
-                    <Label>Recipients</Label>
+                    <Label htmlFor="dest-email-recipients">Recipients</Label>
                     <Input
-                      aria-label="Email Recipients"
+                      id="dest-email-recipients"
                       placeholder="alice@example.com, bob@example.com"
                       value={destinationForm.email_recipients}
                       onChange={event => setDestinationForm(current => ({ ...current, email_recipients: event.target.value }))}
@@ -618,18 +612,18 @@ export default function ProjectAlertingTab({ slug }: { slug: string }) {
                   </div>
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                     <div className="grid gap-2">
-                      <Label>From Address (optional)</Label>
+                      <Label htmlFor="dest-email-from">From Address (optional)</Label>
                       <Input
-                        aria-label="Email From Address"
+                        id="dest-email-from"
                         placeholder="alerts@tripl.example (defaults to SMTP_FROM_ADDRESS)"
                         value={destinationForm.email_from_address}
                         onChange={event => setDestinationForm(current => ({ ...current, email_from_address: event.target.value }))}
                       />
                     </div>
                     <div className="grid gap-2">
-                      <Label>Subject Template (optional)</Label>
+                      <Label htmlFor="dest-email-subject">Subject Template (optional)</Label>
                       <Input
-                        aria-label="Email Subject Template"
+                        id="dest-email-subject"
                         placeholder="[${'$'}{project_name}] ${'$'}{rule_name}"
                         value={destinationForm.email_subject_template}
                         onChange={event => setDestinationForm(current => ({ ...current, email_subject_template: event.target.value }))}
@@ -644,9 +638,9 @@ export default function ProjectAlertingTab({ slug }: { slug: string }) {
                 <div className="grid gap-3">
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                     <div className="grid gap-2">
-                      <Label>Base URL</Label>
+                      <Label htmlFor="dest-jira-base-url">Base URL</Label>
                       <Input
-                        aria-label="Jira Base URL"
+                        id="dest-jira-base-url"
                         placeholder="https://acme.atlassian.net"
                         value={destinationForm.jira_base_url}
                         onChange={event => setDestinationForm(current => ({ ...current, jira_base_url: event.target.value }))}
@@ -654,9 +648,9 @@ export default function ProjectAlertingTab({ slug }: { slug: string }) {
                       />
                     </div>
                     <div className="grid gap-2">
-                      <Label>Auth Email</Label>
+                      <Label htmlFor="dest-jira-auth-email">Auth Email</Label>
                       <Input
-                        aria-label="Jira Auth Email"
+                        id="dest-jira-auth-email"
                         placeholder="alice@example.com"
                         value={destinationForm.jira_auth_email}
                         onChange={event => setDestinationForm(current => ({ ...current, jira_auth_email: event.target.value }))}
@@ -665,10 +659,10 @@ export default function ProjectAlertingTab({ slug }: { slug: string }) {
                     </div>
                   </div>
                   <div className="grid gap-2">
-                    <Label>API Token</Label>
+                    <Label htmlFor="dest-jira-api-token">API Token</Label>
                     <Input
+                      id="dest-jira-api-token"
                       type="password"
-                      aria-label="Jira API Token"
                       placeholder={editingDestination?.jira_api_token_set ? 'Leave empty to keep current token' : 'Atlassian API token'}
                       value={destinationForm.jira_api_token}
                       onChange={event => setDestinationForm(current => ({ ...current, jira_api_token: event.target.value }))}
@@ -677,9 +671,9 @@ export default function ProjectAlertingTab({ slug }: { slug: string }) {
                   </div>
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                     <div className="grid gap-2">
-                      <Label>Project Key</Label>
+                      <Label htmlFor="dest-jira-project-key">Project Key</Label>
                       <Input
-                        aria-label="Jira Project Key"
+                        id="dest-jira-project-key"
                         placeholder="ENG"
                         value={destinationForm.jira_project_key}
                         onChange={event => setDestinationForm(current => ({ ...current, jira_project_key: event.target.value.toUpperCase() }))}
@@ -687,9 +681,9 @@ export default function ProjectAlertingTab({ slug }: { slug: string }) {
                       />
                     </div>
                     <div className="grid gap-2">
-                      <Label>Issue Type</Label>
+                      <Label htmlFor="dest-jira-issue-type">Issue Type</Label>
                       <Input
-                        aria-label="Jira Issue Type"
+                        id="dest-jira-issue-type"
                         placeholder="Task"
                         value={destinationForm.jira_issue_type}
                         onChange={event => setDestinationForm(current => ({ ...current, jira_issue_type: event.target.value }))}
@@ -703,10 +697,10 @@ export default function ProjectAlertingTab({ slug }: { slug: string }) {
               ) : (
                 <div className="grid gap-3">
                   <div className="grid gap-2">
-                    <Label>API Key</Label>
+                    <Label htmlFor="dest-linear-api-key">API Key</Label>
                     <Input
+                      id="dest-linear-api-key"
                       type="password"
-                      aria-label="Linear API Key"
                       placeholder={editingDestination?.linear_api_key_set ? 'Leave empty to keep current key' : 'lin_api_…'}
                       value={destinationForm.linear_api_key}
                       onChange={event => setDestinationForm(current => ({ ...current, linear_api_key: event.target.value }))}
@@ -715,9 +709,9 @@ export default function ProjectAlertingTab({ slug }: { slug: string }) {
                   </div>
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                     <div className="grid gap-2">
-                      <Label>Team ID</Label>
+                      <Label htmlFor="dest-linear-team-id">Team ID</Label>
                       <Input
-                        aria-label="Linear Team ID"
+                        id="dest-linear-team-id"
                         placeholder="team-uuid or short id"
                         value={destinationForm.linear_team_id}
                         onChange={event => setDestinationForm(current => ({ ...current, linear_team_id: event.target.value }))}
@@ -725,9 +719,9 @@ export default function ProjectAlertingTab({ slug }: { slug: string }) {
                       />
                     </div>
                     <div className="grid gap-2">
-                      <Label>State ID (optional)</Label>
+                      <Label htmlFor="dest-linear-state-id">State ID (optional)</Label>
                       <Input
-                        aria-label="Linear State ID"
+                        id="dest-linear-state-id"
                         placeholder="state-uuid"
                         value={destinationForm.linear_state_id}
                         onChange={event => setDestinationForm(current => ({ ...current, linear_state_id: event.target.value }))}
@@ -735,9 +729,9 @@ export default function ProjectAlertingTab({ slug }: { slug: string }) {
                     </div>
                   </div>
                   <div className="grid gap-2">
-                    <Label>Label IDs (optional, comma-separated)</Label>
+                    <Label htmlFor="dest-linear-label-ids">Label IDs (optional, comma-separated)</Label>
                     <Input
-                      aria-label="Linear Label IDs"
+                      id="dest-linear-label-ids"
                       placeholder="label-1, label-2"
                       value={destinationForm.linear_label_ids}
                       onChange={event => setDestinationForm(current => ({ ...current, linear_label_ids: event.target.value }))}

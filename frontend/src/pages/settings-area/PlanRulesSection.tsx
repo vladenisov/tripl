@@ -59,6 +59,7 @@ export default function PlanRulesSection() {
         />
         <Field label="Case style">
           <RadioCards
+            groupLabel="Case style"
             value={caseStyle}
             onChange={setCaseStyle}
             columns={3}

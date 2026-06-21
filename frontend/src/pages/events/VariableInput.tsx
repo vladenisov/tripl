@@ -1,19 +1,23 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react'
 import { Input } from '@/components/ui/input'
 
 export function VariableInput({
+  id,
   value,
   onChange,
   variables,
   required,
   type,
 }: {
+  id?: string
   value: string
   onChange: (v: string) => void
   variables: { name: string; label: string }[]
   required?: boolean
   type?: string
 }) {
+  const uid = useId()
+  const listboxId = `variable-listbox-${uid}`
   const ref = useRef<HTMLInputElement>(null)
   const wrapperRef = useRef<HTMLDivElement>(null)
   const [showMenu, setShowMenu] = useState(false)
@@ -93,18 +97,28 @@ export function VariableInput({
     <div ref={wrapperRef} className="relative">
       <Input
         ref={ref}
+        id={id}
         value={value}
         onChange={handleChange}
         onKeyDown={handleKeyDown}
         required={required}
         type={type}
+        role="combobox"
+        aria-expanded={showMenu && filtered.length > 0}
+        aria-haspopup="listbox"
+        aria-autocomplete="list"
+        aria-controls={listboxId}
+        aria-activedescendant={showMenu && filtered.length > 0 ? `${listboxId}-opt-${highlightIdx}` : undefined}
       />
       {showMenu && filtered.length > 0 && (
-        <div className="absolute z-50 mt-1 w-full rounded-md border bg-popover p-1 shadow-md">
+        <div id={listboxId} role="listbox" className="absolute z-50 mt-1 w-full rounded-md border bg-popover p-1 shadow-md">
           {filtered.map((v, i) => (
             <button
               key={v.name}
+              id={`${listboxId}-opt-${i}`}
               type="button"
+              role="option"
+              aria-selected={i === highlightIdx}
               onMouseDown={e => { e.preventDefault(); insert(v.name) }}
               className={`flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-xs ${i === highlightIdx ? 'bg-accent text-accent-foreground' : 'text-popover-foreground hover:bg-accent/50'}`}
             >

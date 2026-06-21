@@ -13,6 +13,7 @@ import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
+import { Label } from '@/components/ui/label'
 import { Chip } from '@/components/primitives/chip'
 import { Dot } from '@/components/primitives/dot'
 import { Sparkline } from '@/components/primitives/sparkline'
@@ -612,13 +613,17 @@ export default function MonitoringDetailPage() {
                   createAnnotationMut.mutate()
                 }}
               >
+                <Label htmlFor="annotation-bucket" className="sr-only">Date and time</Label>
                 <Input
+                  id="annotation-bucket"
                   type="datetime-local"
                   value={annotationBucket}
                   onChange={event => setAnnotationBucket(event.target.value)}
                   className="h-8 w-[200px]"
                 />
+                <Label htmlFor="annotation-label" className="sr-only">Label</Label>
                 <Input
+                  id="annotation-label"
                   placeholder="Label (e.g. v1.4 deploy)"
                   value={annotationLabel}
                   onChange={event => setAnnotationLabel(event.target.value)}
@@ -637,6 +642,13 @@ export default function MonitoringDetailPage() {
                   Add
                 </Button>
               </form>
+              {createAnnotationMut.isError && (
+                <p role="alert" className="text-xs text-destructive">
+                  {createAnnotationMut.error instanceof Error
+                    ? createAnnotationMut.error.message
+                    : 'Failed to add annotation.'}
+                </p>
+              )}
               {annotations.length > 0 && (
                 <ul className="divide-y divide-border text-xs">
                   {annotations.map(annotation => (
@@ -663,8 +675,9 @@ export default function MonitoringDetailPage() {
                         className="h-7 w-7 text-muted-foreground hover:text-destructive"
                         onClick={() => deleteAnnotationMut.mutate(annotation.id)}
                         disabled={deleteAnnotationMut.isPending}
+                        aria-label={`Delete annotation ${annotation.label}`}
                       >
-                        <Trash2 className="h-3.5 w-3.5" />
+                        <Trash2 aria-hidden="true" className="h-3.5 w-3.5" />
                       </Button>
                     </li>
                   ))}

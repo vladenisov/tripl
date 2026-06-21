@@ -655,7 +655,7 @@ describe('ProjectSettingsPage', () => {
 
     const dialog = await screen.findByRole('dialog')
     const templateField = within(dialog)
-      .getAllByRole('textbox')
+      .getAllByRole('combobox')
       .find(element => element instanceof HTMLTextAreaElement)
 
     expect(templateField).toBeDefined()
@@ -1076,7 +1076,7 @@ describe('ProjectSettingsPage', () => {
     // JSON keys are discovered on demand via a separate job, not by the fast preview.
     fireEvent.click(screen.getByRole('button', { name: 'Discover JSON keys' }))
     fireEvent.click(await screen.findByText('extra.key'))
-    fireEvent.click(screen.getByRole('checkbox', { name: 'event_name' }))
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Breakdown by event_name' }))
     fireEvent.change(screen.getByPlaceholderText('Unlimited'), { target: { value: '2' } })
     fireEvent.click(screen.getByRole('button', { name: 'Add Group Rule' }))
     fireEvent.change(screen.getByPlaceholderText('button events'), {

@@ -138,7 +138,7 @@ function FilterRow({
     <div className="rounded-md border p-2 space-y-2">
       <div className="flex items-center gap-2">
         <Select value={filter.field} onValueChange={value => onFieldChange(value as AlertRuleFilterField)}>
-          <SelectTrigger className="w-36"><SelectValue /></SelectTrigger>
+          <SelectTrigger aria-label="Filter field" className="w-36"><SelectValue /></SelectTrigger>
           <SelectContent>
             {FILTER_FIELD_OPTIONS.map(option => (
               <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>
@@ -146,7 +146,7 @@ function FilterRow({
           </SelectContent>
         </Select>
         <Select value={filter.operator} onValueChange={value => onOperatorChange(value as AlertRuleFilterOperator)}>
-          <SelectTrigger className="w-24"><SelectValue /></SelectTrigger>
+          <SelectTrigger aria-label="Filter operator" className="w-24"><SelectValue /></SelectTrigger>
           <SelectContent>
             {FILTER_OPERATOR_OPTIONS.map(option => (
               <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>
@@ -227,6 +227,7 @@ function FilterValuePicker({
       </PopoverTrigger>
       <PopoverContent className="w-80 space-y-2" align="start">
         <Input
+          aria-label="Search values"
           placeholder="Search…"
           value={search}
           onChange={event => setSearch(event.target.value)}

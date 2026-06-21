@@ -1,4 +1,4 @@
-import { useState } from "react"
+import { useId, useState } from "react"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { Link2, Plus, Trash2 } from "lucide-react"
 import { eventTypesApi } from "@/api/eventTypes"
@@ -23,6 +23,11 @@ export function RelationsTab({ slug }: { slug: string }) {
   const [srcFieldId, setSrcFieldId] = useState('')
   const [tgtFieldId, setTgtFieldId] = useState('')
   const { confirm, dialog } = useConfirm()
+
+  const srcEtLabelId = useId()
+  const tgtEtLabelId = useId()
+  const srcFieldLabelId = useId()
+  const tgtFieldLabelId = useId()
 
   const { data: eventTypes = [] } = useQuery({
     queryKey: ['eventTypes', slug, branchId],
@@ -76,15 +81,15 @@ export function RelationsTab({ slug }: { slug: string }) {
             <div className="grid gap-4 py-4">
               <div className="grid grid-cols-2 gap-3">
                 <div className="grid gap-2">
-                  <Label>Source Event Type</Label>
-                  <select value={srcEtId} onChange={e => { setSrcEtId(e.target.value); setSrcFieldId('') }} className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm">
+                  <Label htmlFor={srcEtLabelId}>Source Event Type</Label>
+                  <select id={srcEtLabelId} value={srcEtId} onChange={e => { setSrcEtId(e.target.value); setSrcFieldId('') }} className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm">
                     <option value="">Select...</option>
                     {eventTypes.map((et: EventType) => <option key={et.id} value={et.id}>{et.display_name}</option>)}
                   </select>
                 </div>
                 <div className="grid gap-2">
-                  <Label>Target Event Type</Label>
-                  <select value={tgtEtId} onChange={e => { setTgtEtId(e.target.value); setTgtFieldId('') }} className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm">
+                  <Label htmlFor={tgtEtLabelId}>Target Event Type</Label>
+                  <select id={tgtEtLabelId} value={tgtEtId} onChange={e => { setTgtEtId(e.target.value); setTgtFieldId('') }} className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm">
                     <option value="">Select...</option>
                     {eventTypes.map((et: EventType) => <option key={et.id} value={et.id}>{et.display_name}</option>)}
                   </select>
@@ -92,15 +97,15 @@ export function RelationsTab({ slug }: { slug: string }) {
               </div>
               <div className="grid grid-cols-2 gap-3">
                 <div className="grid gap-2">
-                  <Label>Source Field</Label>
-                  <select value={srcFieldId} onChange={e => setSrcFieldId(e.target.value)} className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm">
+                  <Label htmlFor={srcFieldLabelId}>Source Field</Label>
+                  <select id={srcFieldLabelId} value={srcFieldId} onChange={e => setSrcFieldId(e.target.value)} className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm">
                     <option value="">Select...</option>
                     {srcEt?.field_definitions.map(f => <option key={f.id} value={f.id}>{f.display_name}</option>)}
                   </select>
                 </div>
                 <div className="grid gap-2">
-                  <Label>Target Field</Label>
-                  <select value={tgtFieldId} onChange={e => setTgtFieldId(e.target.value)} className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm">
+                  <Label htmlFor={tgtFieldLabelId}>Target Field</Label>
+                  <select id={tgtFieldLabelId} value={tgtFieldId} onChange={e => setTgtFieldId(e.target.value)} className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm">
                     <option value="">Select...</option>
                     {tgtEt?.field_definitions.map(f => <option key={f.id} value={f.id}>{f.display_name}</option>)}
                   </select>
@@ -144,7 +149,7 @@ export function RelationsTab({ slug }: { slug: string }) {
                   <TableCell className="font-mono text-xs">{etMap[r.target_event_type_id]?.name ?? '?'}</TableCell>
                   <TableCell className="text-muted-foreground text-xs">{r.relation_type}</TableCell>
                   <TableCell>
-                    <Button variant="ghost" size="icon" className="h-7 w-7 text-muted-foreground hover:text-destructive" onClick={() => handleDelete(r)}><Trash2 className="h-3 w-3" /></Button>
+                    <Button variant="ghost" size="icon" className="h-7 w-7 text-muted-foreground hover:text-destructive" aria-label={`Delete relation between ${etMap[r.source_event_type_id]?.name ?? '?'} and ${etMap[r.target_event_type_id]?.name ?? '?'}`} onClick={() => handleDelete(r)}><Trash2 className="h-3 w-3" aria-hidden="true" /></Button>
                   </TableCell>
                 </TableRow>
               ))}

@@ -96,6 +96,7 @@ export default function UsersPage() {
                 {isOwner && u.id !== currentUser?.id ? (
                   <select
                     value={u.role}
+                    aria-label={`Role for ${u.name ?? u.email}`}
                     onChange={(e) => updateMut.mutate({ userId: u.id, role: e.target.value as Role })}
                     disabled={updateMut.isPending}
                     className="h-7 w-full rounded-md border px-2 text-xs"
@@ -119,7 +120,7 @@ export default function UsersPage() {
           ))
         )}
         {updateMut.isError && (
-          <p className="px-4 py-3 text-xs text-destructive">{getErrorMessage(updateMut.error)}</p>
+          <p role="alert" className="px-4 py-3 text-xs text-destructive">{getErrorMessage(updateMut.error)}</p>
         )}
       </div>
     </div>

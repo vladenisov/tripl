@@ -50,6 +50,7 @@ export function ActivityPanel({ open, slug }: { open: boolean; slug?: string }) 
 
   return (
     <aside
+      aria-label="Activity feed"
       className="flex w-[304px] flex-shrink-0 flex-col border-l"
       style={{ background: 'var(--bg-sunken)', borderColor: 'var(--border)' }}
     >
@@ -73,9 +74,9 @@ export function ActivityPanel({ open, slug }: { open: boolean; slug?: string }) 
           }}
           className="p-1"
           style={{ color: 'var(--fg-subtle)' }}
-          title="Refresh activity"
+          aria-label="Refresh activity"
         >
-          <RefreshCw className="h-[13px] w-[13px]" />
+          <RefreshCw className="h-[13px] w-[13px]" aria-hidden="true" />
         </button>
       </div>
       <div className="flex-1 overflow-y-auto py-2">

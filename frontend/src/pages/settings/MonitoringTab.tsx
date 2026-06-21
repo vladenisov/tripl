@@ -1,3 +1,4 @@
+import { useId } from "react"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { anomalySettingsApi } from "@/api/anomalySettings"
 import type { ProjectAnomalySettings } from "@/types"
@@ -21,6 +22,11 @@ export function MonitoringTab({ slug }: { slug: string }) {
       qc.invalidateQueries({ queryKey: ['projectAnomalySettings', slug] })
     },
   })
+
+  const baselineWindowId = useId()
+  const minHistoryId = useId()
+  const sigmaThresholdId = useId()
+  const minExpectedCountId = useId()
 
   if (!settings) {
     return <div className="text-sm text-muted-foreground">Loading monitoring settings…</div>
@@ -83,8 +89,9 @@ export function MonitoringTab({ slug }: { slug: string }) {
 
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             <div className="grid gap-2">
-              <Label>Baseline Window</Label>
+              <Label htmlFor={baselineWindowId}>Baseline Window</Label>
               <Input
+                id={baselineWindowId}
                 type="number"
                 min={1}
                 value={settings.baseline_window_buckets}
@@ -92,8 +99,9 @@ export function MonitoringTab({ slug }: { slug: string }) {
               />
             </div>
             <div className="grid gap-2">
-              <Label>Min History</Label>
+              <Label htmlFor={minHistoryId}>Min History</Label>
               <Input
+                id={minHistoryId}
                 type="number"
                 min={1}
                 value={settings.min_history_buckets}
@@ -101,8 +109,9 @@ export function MonitoringTab({ slug }: { slug: string }) {
               />
             </div>
             <div className="grid gap-2">
-              <Label>Sigma Threshold</Label>
+              <Label htmlFor={sigmaThresholdId}>Sigma Threshold</Label>
               <Input
+                id={sigmaThresholdId}
                 type="number"
                 min={0.1}
                 step="0.1"
@@ -111,8 +120,9 @@ export function MonitoringTab({ slug }: { slug: string }) {
               />
             </div>
             <div className="grid gap-2">
-              <Label>Min Expected Count</Label>
+              <Label htmlFor={minExpectedCountId}>Min Expected Count</Label>
               <Input
+                id={minExpectedCountId}
                 type="number"
                 min={0}
                 value={settings.min_expected_count}

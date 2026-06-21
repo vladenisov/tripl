@@ -134,11 +134,11 @@ export function RuleReplayDialog({
         <div className="space-y-3">
           <div className="flex flex-wrap items-end gap-3">
             <div className="space-y-1">
-              <div className="text-[11px] uppercase tracking-wide text-muted-foreground">
+              <div className="text-[11px] uppercase tracking-wide text-muted-foreground" aria-hidden="true">
                 Window
               </div>
               <Select value={String(days)} onValueChange={(v) => setDays(Number(v))}>
-                <SelectTrigger className="h-8 w-32 text-xs">
+                <SelectTrigger aria-label="Replay window" className="h-8 w-32 text-xs">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
@@ -151,10 +151,11 @@ export function RuleReplayDialog({
               </Select>
             </div>
             <div className="space-y-1">
-              <div className="text-[11px] uppercase tracking-wide text-muted-foreground">
+              <div className="text-[11px] uppercase tracking-wide text-muted-foreground" aria-hidden="true">
                 Cooldown override (min)
               </div>
               <Input
+                aria-label="Cooldown override in minutes"
                 type="number"
                 min={0}
                 placeholder={`saved: ${rule.cooldown_minutes}`}
@@ -196,7 +197,7 @@ export function RuleReplayDialog({
           </div>
 
           {simulateMut.isError && (
-            <div className="rounded-md border border-destructive/40 bg-destructive/5 p-3 text-sm text-destructive">
+            <div role="alert" className="rounded-md border border-destructive/40 bg-destructive/5 p-3 text-sm text-destructive">
               Replay failed: {getErrorMessage(simulateMut.error)}
             </div>
           )}
