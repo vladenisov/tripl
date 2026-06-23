@@ -92,6 +92,8 @@ services:
     build: *app-build
     command: ["celery", "-A", "tripl.worker.celery_app", "worker", "--loglevel=info"]
     environment: *app-environment
+    healthcheck:
+      disable: true
     depends_on:
       rabbitmq:
         condition: service_healthy
@@ -102,8 +104,10 @@ services:
 
   celery-beat:
     build: *app-build
-    command: ["celery", "-A", "tripl.worker.celery_app", "beat", "--loglevel=info"]
+    command: ["celery", "-A", "tripl.worker.celery_app", "beat", "--loglevel=info", "--schedule", "/tmp/celerybeat-schedule"]
     environment: *app-environment
+    healthcheck:
+      disable: true
     depends_on:
       rabbitmq:
         condition: service_healthy
