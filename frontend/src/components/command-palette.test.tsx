@@ -184,6 +184,27 @@ describe('CommandPalette', () => {
     })
   })
 
+  it('labels navigation with the same terms as the sidebar and settings nav', async () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = String(input)
+      if (url.endsWith('/api/v1/projects')) return mockJsonResponse([])
+      if (url.endsWith('/api/v1/projects/demo/event-types')) return mockJsonResponse([])
+      throw new Error(`Unhandled fetch: ${url}`)
+    })
+
+    renderHarness('/p/demo/events')
+
+    fireEvent.click(screen.getByTestId('open-palette'))
+
+    // Canonical terms shared with the settings nav.
+    expect(await screen.findByText('Members')).toBeInTheDocument()
+    expect(screen.getByText('Runtime')).toBeInTheDocument()
+
+    // The old, divergent palette-only labels are gone.
+    expect(screen.queryByText('Users')).toBeNull()
+    expect(screen.queryByText('Service settings')).toBeNull()
+  })
+
   it('toggles via ⌘K keyboard shortcut', async () => {
     vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
       const url = String(input)

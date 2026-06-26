@@ -35,6 +35,53 @@ from tripl.worker.utils.query_windows import TimeWindow, resolve_lookback_window
 logger = logging.getLogger(__name__)
 
 
+class ScanError(Exception):
+    """A scan failure whose message is safe to surface to end users verbatim.
+
+    Raised for controlled, user-actionable conditions (a configuration problem,
+    a hit row limit, ...). Anything that is *not* a ``ScanError`` is treated as
+    an internal failure: the raw exception is logged in full but only a generic,
+    sanitized summary is persisted on the scan run — raw driver/ORM exceptions
+    leak hostnames, ports, library names, and SQLAlchemy hints that must never
+    reach the user-facing field.
+    """
+
+
+# Substrings that identify the failure category from an exception's text without
+# echoing the (host/port/library-laden) text itself back to the user.
+_TIMEOUT_HINTS = ("timeout", "timed out", "time out")
+_CONNECTION_HINTS = (
+    "connection refused",
+    "could not connect",
+    "connection reset",
+    "connection aborted",
+    "network is unreachable",
+    "no route to host",
+    "host is unreachable",
+    "name or service not known",
+    "getaddrinfo",
+    "failed to resolve",
+)
+
+
+def _user_facing_error(exc: Exception) -> str:
+    """Map an exception to a message safe to persist on a scan run.
+
+    ``ScanError`` messages are author-curated and surfaced verbatim. For every
+    other exception the raw text is dropped (it carries hostnames, ports, driver
+    names, or ORM autoflush hints — see ``logger.exception`` for the full
+    detail) and replaced with a generic, categorized summary.
+    """
+    if isinstance(exc, ScanError):
+        return str(exc)
+    text = str(exc).lower()
+    if any(hint in text for hint in _TIMEOUT_HINTS):
+        return "Scan failed: the data source did not respond in time."
+    if any(hint in text for hint in _CONNECTION_HINTS):
+        return "Scan failed: could not connect to the data source."
+    return "Scan failed due to an internal error. Please try again or contact support."
+
+
 def _serialize_generation_result(result: GenerationResult) -> dict[str, object]:
     branch_id = None
     events: list[dict[str, object]] = []
@@ -182,7 +229,7 @@ def run_scan(self: object, scan_config_id: str, job_id: str) -> dict[str, object
                     "Scan query reached configured row limit "
                     f"({scan_row_limit}); increase scan_row_limit to avoid partial generation"
                 )
-                raise ValueError(msg)
+                raise ScanError(msg)
 
             event_type = session.get(EventType, event_type_id)
             if event_type is None:
@@ -207,7 +254,7 @@ def run_scan(self: object, scan_config_id: str, job_id: str) -> dict[str, object
             scan_truncated = analysis.row_limit_reached
         else:
             msg = "Either event_type_id or event_type_column must be specified"
-            raise ValueError(msg)
+            raise ScanError(msg)
 
         session.commit()
         reindex_main_branch_from_worker(session, config.project_id)
@@ -256,7 +303,7 @@ def run_scan(self: object, scan_config_id: str, job_id: str) -> dict[str, object
             if job:
                 job.status = ScanJobStatus.failed.value
                 job.completed_at = datetime.now(UTC)
-                job.error_message = str(e)
+                job.error_message = _user_facing_error(e)
                 session.commit()
         except Exception:
             logger.exception("Failed to update job status after error")
@@ -305,7 +352,7 @@ def _scan_with_grouping(
             "Grouped scan query reached configured row limit "
             f"({row_limit}); increase scan_row_limit to avoid partial generation"
         )
-        raise ValueError(msg)
+        raise ScanError(msg)
     logger.info(f"Grouped scan: {len(group_values)} groups found for {col_name!r}")
     scan_rows_processed = sum(len(analysis.rows) for analysis in grouped_results.values())
     scan_truncated = any(analysis.row_limit_reached for analysis in grouped_results.values())
@@ -373,7 +420,7 @@ def apply_event_groups(self: object, scan_config_id: str, job_id: str) -> dict[s
             raise ValueError(msg)
         if not config.event_group_rules:
             msg = "Scan config has no event group rules"
-            raise ValueError(msg)
+            raise ScanError(msg)
 
         job.status = ScanJobStatus.running.value
         job.started_at = datetime.now(UTC)
@@ -422,7 +469,7 @@ def apply_event_groups(self: object, scan_config_id: str, job_id: str) -> dict[s
             if job:
                 job.status = ScanJobStatus.failed.value
                 job.completed_at = datetime.now(UTC)
-                job.error_message = str(e)
+                job.error_message = _user_facing_error(e)
                 session.commit()
         except Exception:
             logger.exception("Failed to update event group apply job status after error")
@@ -535,7 +582,7 @@ def preview_scan_config_async(self: object, job_id: str) -> dict[str, object]:
             if job:
                 job.status = ScanJobStatus.failed.value
                 job.completed_at = datetime.now(UTC)
-                job.error_message = str(e)
+                job.error_message = _user_facing_error(e)
                 session.commit()
         except Exception:
             logger.exception("Failed to update scan preview job status after error")

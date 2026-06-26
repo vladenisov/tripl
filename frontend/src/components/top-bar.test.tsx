@@ -59,56 +59,67 @@ describe('TopBar mobile nav', () => {
   })
 })
 
+type DeliveryOverrides = {
+  status?: 'pending' | 'sent' | 'failed'
+  error_message?: string | null
+}
+
+function mockSignal() {
+  return {
+    scan_config_id: 'scan-1',
+    scope_type: 'event_type',
+    scope_ref: 'type-12345678',
+    state: 'latest_scan',
+    event_id: null,
+    event_type_id: 'type-12345678',
+    bucket: '2026-01-01T00:00:00Z',
+    actual_count: 42,
+    expected_count: 21,
+    stddev: 3,
+    z_score: 7,
+    direction: 'spike',
+  }
+}
+
+function mockDelivery(overrides: DeliveryOverrides = {}) {
+  return {
+    id: 'delivery-1',
+    project_id: 'project-1',
+    scan_config_id: 'scan-1',
+    scan_job_id: null,
+    destination_id: 'destination-1',
+    rule_id: 'rule-1',
+    destination_name: 'Ops',
+    rule_name: 'Spike alerts',
+    scan_name: 'Main scan',
+    status: 'failed',
+    channel: 'slack',
+    matched_count: 1,
+    payload_snapshot: null,
+    error_message: 'Webhook failed',
+    created_at: '2026-01-01T00:00:00Z',
+    updated_at: '2026-01-01T00:00:00Z',
+    sent_at: null,
+    ...overrides,
+  }
+}
+
+function mockNotificationsFetch(signals: unknown[], deliveries: unknown[]) {
+  vi.spyOn(globalThis, 'fetch').mockImplementation(async input => {
+    const url = String(input)
+    if (url.endsWith('/api/v1/projects/demo/anomalies/signals')) {
+      return mockJsonResponse(signals)
+    }
+    if (url.endsWith('/api/v1/projects/demo/alert-deliveries?limit=5')) {
+      return mockJsonResponse({ items: deliveries, total: deliveries.length })
+    }
+    throw new Error(`Unhandled fetch: ${url}`)
+  })
+}
+
 describe('TopBar notifications', () => {
   it('opens real project notifications from signals and alert deliveries', async () => {
-    vi.spyOn(globalThis, 'fetch').mockImplementation(async input => {
-      const url = String(input)
-      if (url.endsWith('/api/v1/projects/demo/anomalies/signals')) {
-        return mockJsonResponse([
-          {
-            scan_config_id: 'scan-1',
-            scope_type: 'event_type',
-            scope_ref: 'type-12345678',
-            state: 'latest_scan',
-            event_id: null,
-            event_type_id: 'type-12345678',
-            bucket: '2026-01-01T00:00:00Z',
-            actual_count: 42,
-            expected_count: 21,
-            stddev: 3,
-            z_score: 7,
-            direction: 'spike',
-          },
-        ])
-      }
-      if (url.endsWith('/api/v1/projects/demo/alert-deliveries?limit=5')) {
-        return mockJsonResponse({
-          items: [
-            {
-              id: 'delivery-1',
-              project_id: 'project-1',
-              scan_config_id: 'scan-1',
-              scan_job_id: null,
-              destination_id: 'destination-1',
-              rule_id: 'rule-1',
-              destination_name: 'Ops',
-              rule_name: 'Spike alerts',
-              scan_name: 'Main scan',
-              status: 'failed',
-              channel: 'slack',
-              matched_count: 1,
-              payload_snapshot: null,
-              error_message: 'Webhook failed',
-              created_at: '2026-01-01T00:00:00Z',
-              updated_at: '2026-01-01T00:00:00Z',
-              sent_at: null,
-            },
-          ],
-          total: 1,
-        })
-      }
-      throw new Error(`Unhandled fetch: ${url}`)
-    })
+    mockNotificationsFetch([mockSignal()], [mockDelivery()])
 
     renderTopBar()
 
@@ -120,5 +131,57 @@ describe('TopBar notifications', () => {
     expect(screen.getByText('Active Signals')).toBeInTheDocument()
     expect(screen.getByText('Recent Alert Deliveries')).toBeInTheDocument()
     expect(screen.getByText('Spike alerts')).toBeInTheDocument()
+  })
+
+  it('header "N active" equals the active signals list length, never signals + deliveries', async () => {
+    // 1 active signal + 1 (failed) delivery. Old bug summed these to "2 active".
+    mockNotificationsFetch([mockSignal()], [mockDelivery({ status: 'failed' })])
+
+    renderTopBar()
+
+    fireEvent.click(screen.getByRole('button', { name: /Notifications/ }))
+
+    await waitFor(() => {
+      expect(screen.getByText('Spike on event type type-123')).toBeInTheDocument()
+    })
+    // Header reads 1 active (signals.length), not 2 (signals + delivery).
+    expect(screen.getByText('1 active')).toBeInTheDocument()
+    expect(screen.queryByText('2 active')).toBeNull()
+    // Bell aria-label is bound to the same active-signal count.
+    expect(
+      screen.getByRole('button', { name: 'Notifications — 1 active' }),
+    ).toBeInTheDocument()
+  })
+
+  it('does not report deliveries as "active" when there are no open signals (H1 regression)', async () => {
+    // Canonical H1 scenario: 0 signals + 1 pending delivery must NOT read "1 active".
+    mockNotificationsFetch([], [mockDelivery({ status: 'pending', error_message: null })])
+
+    renderTopBar()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Notifications' }))
+
+    // The delivery is still listed as history once it loads.
+    await waitFor(() => {
+      expect(screen.getByText('Spike alerts')).toBeInTheDocument()
+    })
+    expect(screen.getByText('No active monitoring signals.')).toBeInTheDocument()
+    // No "active" indicator at all — header span and bell badge are both hidden.
+    expect(screen.queryByText(/\d+ active/)).toBeNull()
+    expect(screen.getByRole('button', { name: 'Notifications' })).toBeInTheDocument()
+  })
+
+  it('surfaces a failed-delivery count badge distinct from the active count', async () => {
+    mockNotificationsFetch([], [mockDelivery({ status: 'failed' })])
+
+    renderTopBar()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Notifications' }))
+
+    // Failed deliveries are visibly distinguished without being counted as active.
+    await waitFor(() => {
+      expect(screen.getByText('1 failed')).toBeInTheDocument()
+    })
+    expect(screen.queryByText(/\d+ active/)).toBeNull()
   })
 })

@@ -135,6 +135,7 @@ export function SettingsLayout({
                       key={item.id}
                       type="button"
                       aria-current={active ? 'page' : undefined}
+                      aria-label={item.label}
                       onClick={() => onNavigate(item.path)}
                       className="flex items-center gap-2 rounded-md px-[9px] py-[7px] text-left text-[12.5px] font-medium transition-colors"
                       style={{

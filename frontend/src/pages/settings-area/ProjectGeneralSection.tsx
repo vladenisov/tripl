@@ -26,6 +26,22 @@ const ACCENT_COLORS: { value: string; label: string }[] = [
   { value: 'oklch(0.72 0.14 240)', label: 'Blue' },
 ]
 
+/** Inline badge marking a control that is intentionally inert (not wired yet). */
+function ComingSoon() {
+  return (
+    <span
+      className="rounded-full px-[7px] py-px text-[10px] font-semibold uppercase tracking-[0.05em]"
+      style={{
+        background: 'var(--bg-sunken)',
+        color: 'var(--fg-subtle)',
+        border: '1px solid var(--border)',
+      }}
+    >
+      Coming soon
+    </span>
+  )
+}
+
 function DangerRow({
   title,
   hint,
@@ -56,9 +72,10 @@ function DangerRow({
 /**
  * Project · General. Identity (name / slug / description) and the search-index
  * rebuild reuse the real projectsApi + searchApi wiring lifted from GeneralTab;
- * the accent colour and defaults are presentation-only (no backing fields yet)
- * and the danger zone keeps the wired Delete plus not-yet-wired Archive /
- * Transfer actions.
+ * the accent colour and defaults are not configurable yet, so they render as
+ * disabled "Coming soon" controls (no backing fields) rather than interactive
+ * inputs that silently no-op, and the danger zone keeps the wired Delete plus
+ * not-yet-wired Archive / Transfer actions.
  */
 export default function ProjectGeneralSection({ slug }: { slug: string | undefined }) {
   if (!slug) {
@@ -82,7 +99,6 @@ function ProjectGeneralBody({ slug }: { slug: string }) {
   const [name, setName] = useState('')
   const [slugDraft, setSlugDraft] = useState('')
   const [description, setDescription] = useState('')
-  const [accent, setAccent] = useState(ACCENT_COLORS[0].value)
   const [hydratedFor, setHydratedFor] = useState<string | null>(null)
 
   if (projectQuery.data && hydratedFor !== projectQuery.data.id) {
@@ -211,19 +227,26 @@ function ProjectGeneralBody({ slug }: { slug: string }) {
             <Field label="Description" htmlFor="proj-desc">
               <TextArea id="proj-desc" value={description} onChange={setDescription} rows={2} disabled={!canEdit} />
             </Field>
-            <Field label="Accent color" hint="Tints charts and the project mark (preview only)." last>
+            <Field
+              label="Accent color"
+              labelRight={<ComingSoon />}
+              hint="Will tint charts and the project mark. Theming is not configurable yet."
+              last
+            >
               <div className="flex gap-2">
                 {ACCENT_COLORS.map((c) => (
                   <button
                     key={c.value}
                     type="button"
-                    onClick={() => setAccent(c.value)}
-                    aria-label={`Accent color: ${c.label}${accent === c.value ? ', selected' : ''}`}
+                    disabled
+                    aria-label={`Accent color: ${c.label} (coming soon)`}
                     className="h-7 w-7 rounded-[7px]"
                     style={{
                       background: c.value,
-                      border: accent === c.value ? '2px solid var(--fg)' : '2px solid transparent',
+                      border: '2px solid transparent',
                       outline: '1px solid var(--border)',
+                      opacity: 0.5,
+                      cursor: 'not-allowed',
                     }}
                   />
                 ))}
@@ -233,16 +256,32 @@ function ProjectGeneralBody({ slug }: { slug: string }) {
 
           <SCard
             title="Defaults"
-            description="Where the project opens and how new work is scoped (preview only)."
+            description="Where the project opens and how new work is scoped. Not configurable yet — these defaults are fixed for now."
           >
-            <Field label="Default branch" hint="The branch new sessions land on.">
-              <Select value="main" options={['main']} disabled />
+            <Field
+              label="Default branch"
+              labelRight={<ComingSoon />}
+              hint="The branch new sessions land on."
+              htmlFor="proj-default-branch"
+            >
+              <Select id="proj-default-branch" value="main" options={['main']} disabled />
             </Field>
-            <Field label="Default environment">
-              <Select value="production" options={['production', 'staging', 'development']} disabled />
+            <Field label="Default environment" labelRight={<ComingSoon />} htmlFor="proj-default-env">
+              <Select
+                id="proj-default-env"
+                value="production"
+                options={['production', 'staging', 'development']}
+                disabled
+              />
             </Field>
-            <Field label="Timezone" hint="Used for charts, schedules and digests." last>
-              <Select value="Europe/Berlin" options={['Europe/Berlin', 'UTC']} disabled />
+            <Field
+              label="Timezone"
+              labelRight={<ComingSoon />}
+              hint="Used for charts, schedules and digests."
+              last
+              htmlFor="proj-timezone"
+            >
+              <Select id="proj-timezone" value="Europe/Berlin" options={['Europe/Berlin', 'UTC']} disabled />
             </Field>
           </SCard>
 

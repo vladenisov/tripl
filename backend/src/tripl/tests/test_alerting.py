@@ -517,7 +517,7 @@ async def test_alert_delivery_list_and_detail(client: AsyncClient) -> None:
             expected_count=20,
             absolute_delta=10,
             percent_delta=50,
-            details_path="http://localhost:5173/p/alert-audit/events/detail/event-1",
+            details_path="http://localhost:5173/p/alert-audit/monitoring/event/event-1",
             monitoring_path="http://localhost:5173/p/alert-audit/monitoring/event/event-1",
         )
         session.add_all([data_source, scan_config, destination, rule, delivery, item])

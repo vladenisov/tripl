@@ -50,7 +50,12 @@ function mockProjectsFetch() {
             variable_count: 5,
             scan_count: 4,
             alert_destination_count: 1,
-            monitoring_signal_count: 2,
+            // H1: monitoring_signal_count is the OPEN-SIGNAL population (anomalies
+            // across project_total + event_type + event scope). It must NOT drive
+            // the "Monitors" nav badge, which counts MONITOR configs needing
+            // attention. firing_monitor_count is the canonical source for that badge.
+            monitoring_signal_count: 9,
+            firing_monitor_count: 3,
             latest_scan_job: null,
             latest_signal: null,
           },
@@ -214,7 +219,7 @@ describe('AppSidebar', () => {
     expect(eventTypeLink).toHaveStyle({ background: 'var(--surface-hover)' })
   })
 
-  it('surfaces project-summary counts and an attention tone on monitors', async () => {
+  it('surfaces project-summary counts without leaking the open-signal count onto Monitors', async () => {
     mockProjectsFetch()
 
     renderSidebar('/p/demo/events')
@@ -222,10 +227,33 @@ describe('AppSidebar', () => {
     // once the projects query resolves the active project's summary.
     await screen.findByText('10')
 
-    // Events active count (10) + event-type count (2) + monitoring signals (2) + destinations (1).
+    // Events active count (10), event-type count (2) and alerting destinations (1)
+    // are unambiguous project-summary stats and always render as nav badges.
     expect(screen.getByText('10')).toBeInTheDocument()
+    expect(screen.getByText('2')).toBeInTheDocument()
     expect(screen.getByText('1')).toBeInTheDocument()
-    expect(screen.getAllByText('2').length).toBeGreaterThanOrEqual(2)
+
+    // H1: the "Monitors" nav item counts MONITORS needing attention (firing
+    // monitors), so it must never surface the open-signal population
+    // (monitoring_signal_count === 9 here). Whether navigation.ts binds the badge
+    // to the firing-monitor count or omits it, the stale signal number must not
+    // appear on the Monitors row.
+    const monitorsLink = screen.getByRole('link', { name: /Monitors/ })
+    expect(monitorsLink).not.toHaveTextContent('9')
+  })
+
+  it('surfaces Variables and Relations as discoverable Plan nav items (M6)', async () => {
+    mockProjectsFetch()
+
+    renderSidebar('/p/demo/events')
+    await screen.findByText('Events')
+
+    // M6: Variables and Relations must be reachable from the sidebar (not only
+    // via the command palette), pointing at their project-scoped settings routes.
+    const variables = await screen.findByRole('link', { name: /Variables/ })
+    expect(variables).toHaveAttribute('href', '/p/demo/settings/variables')
+    const relations = screen.getByRole('link', { name: /Relations/ })
+    expect(relations).toHaveAttribute('href', '/p/demo/settings/relations')
   })
 
   it('marks the active surface based on the current route', async () => {

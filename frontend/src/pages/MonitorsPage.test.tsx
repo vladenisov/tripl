@@ -75,6 +75,81 @@ describe('MonitorsPage', () => {
     expect(screen.getByText('slack')).toBeInTheDocument()
   })
 
+  it('explains the destination name with a tooltip (L7)', async () => {
+    mockSummary({
+      monitors: [
+        {
+          rule_id: 'rule-1',
+          rule_name: 'payment_failed spike',
+          destination_id: 'dest-1',
+          destination_name: 'Dev',
+          destination_type: 'telegram',
+          enabled: true,
+          status: 'firing',
+          active_scope_count: 1,
+          firing_scope_count: 1,
+          last_anomaly_at: null,
+          last_notified_at: null,
+          notify_on_spike: true,
+          notify_on_drop: false,
+          min_percent_delta: 0,
+          min_expected_count: 0,
+          cooldown_minutes: 30,
+        },
+      ],
+      firing_count: 1,
+      warning_count: 0,
+      healthy_count: 0,
+      total: 1,
+    })
+
+    renderMonitors()
+
+    const destination = await screen.findByText('Dev')
+    expect(destination).toHaveAttribute(
+      'title',
+      'Routes to the "Dev" telegram destination',
+    )
+  })
+
+  it('renders monitor rows as non-interactive (H8: no detail route yet)', async () => {
+    mockSummary({
+      monitors: [
+        {
+          rule_id: 'rule-1',
+          rule_name: 'payment_failed spike',
+          destination_id: 'dest-1',
+          destination_name: 'Main Slack',
+          destination_type: 'slack',
+          enabled: true,
+          status: 'firing',
+          active_scope_count: 1,
+          firing_scope_count: 1,
+          last_anomaly_at: null,
+          last_notified_at: null,
+          notify_on_spike: true,
+          notify_on_drop: false,
+          min_percent_delta: 0,
+          min_expected_count: 0,
+          cooldown_minutes: 30,
+        },
+      ],
+      firing_count: 1,
+      warning_count: 0,
+      healthy_count: 0,
+      total: 1,
+    })
+
+    renderMonitors()
+
+    const row = (await screen.findByText('payment_failed spike')).closest('[role="row"]')
+    expect(row).not.toBeNull()
+    // No drill-in target exists, so the row must not imply interactivity.
+    expect(row).toHaveClass('cursor-default')
+    expect(row?.tagName).toBe('DIV')
+    expect(row?.querySelector('a, button')).toBeNull()
+  })
+
   it('shows an empty state with a link to alerting settings', async () => {
     mockSummary({
       monitors: [],

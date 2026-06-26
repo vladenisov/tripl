@@ -8,7 +8,7 @@ from sqlalchemy.orm import sessionmaker
 
 from tripl.core.adapters.base import ColumnInfo
 from tripl.core.analyzers.preview import build_json_paths_payload, build_preview_payload
-from tripl.models import Base, DataSource, Project, ScanPreviewJob
+from tripl.models import Base, DataSource, Project, ScanConfig, ScanJob, ScanPreviewJob
 from tripl.worker.tasks import metrics
 from tripl.worker.tasks import scan as scan_tasks
 
@@ -1010,8 +1010,123 @@ class TestScanConfigsCRUD:
             with sync_session_factory() as session:
                 job = session.get(ScanPreviewJob, job_id)
                 assert job.status == "failed"
-                assert "connection refused" in job.error_message
+                # The raw driver text never reaches the user-facing field; it is
+                # mapped to a friendly, category-specific summary instead.
+                assert job.error_message == "Scan failed: could not connect to the data source."
+                assert "connection refused" not in job.error_message
                 assert job.result_summary is None
+        finally:
+            engine.dispose()
+
+    def test_user_facing_error_sanitizes_internals_but_keeps_curated_messages(self) -> None:
+        # Curated ScanError messages are user-actionable and surfaced verbatim.
+        curated = scan_tasks.ScanError(
+            "Scan query reached configured row limit (60000); increase scan_row_limit"
+        )
+        assert scan_tasks._user_facing_error(curated) == str(curated)
+
+        # A ClickHouse read-timeout carries host/port — replace with a summary.
+        timeout = TimeoutError(
+            "HTTPConnectionPool(host='warehouse.internal', port=8123): Read timed out."
+        )
+        timeout_msg = scan_tasks._user_facing_error(timeout)
+        assert timeout_msg == "Scan failed: the data source did not respond in time."
+        assert "warehouse.internal" not in timeout_msg
+        assert "8123" not in timeout_msg
+
+        # A connection failure (ClickHouse driver text) -> friendly summary.
+        refused = ConnectionError("clickhouse-connect: Connection refused to 10.0.0.4:9000")
+        refused_msg = scan_tasks._user_facing_error(refused)
+        assert refused_msg == "Scan failed: could not connect to the data source."
+        assert "10.0.0.4" not in refused_msg
+        assert "clickhouse" not in refused_msg.lower()
+
+        # A SQLAlchemy autoflush hint (ORM internals) -> generic summary only.
+        orm = RuntimeError(
+            "This Session's transaction has been rolled back due to a previous "
+            "exception during flush. (Background on this error at: "
+            "https://sqlalche.me/e/20/7s2a)"
+        )
+        orm_msg = scan_tasks._user_facing_error(orm)
+        assert orm_msg == (
+            "Scan failed due to an internal error. Please try again or contact support."
+        )
+        assert "sqlalche" not in orm_msg.lower()
+        assert "flush" not in orm_msg.lower()
+
+    def test_run_scan_persists_friendly_error_and_hides_internals(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        engine = create_engine(f"sqlite:///{tmp_path / 'run_scan_fail.db'}")
+        try:
+            Base.metadata.create_all(engine)
+            sync_session_factory = sessionmaker(engine, expire_on_commit=False)
+
+            project_id = uuid.uuid4()
+            data_source_id = uuid.uuid4()
+            config_id = uuid.uuid4()
+            job_id = uuid.uuid4()
+            with sync_session_factory() as session:
+                session.add_all(
+                    [
+                        Project(id=project_id, name="P", slug="p", description=""),
+                        DataSource(
+                            id=data_source_id,
+                            name="DS",
+                            db_type="clickhouse",
+                            host="warehouse.internal",
+                            port=8123,
+                            database_name="default",
+                            username="default",
+                            password_encrypted="",
+                        ),
+                        ScanConfig(
+                            id=config_id,
+                            project_id=project_id,
+                            data_source_id=data_source_id,
+                            name="Daily",
+                            base_query="SELECT * FROM events",
+                        ),
+                        ScanJob(id=job_id, scan_config_id=config_id, status="pending"),
+                    ]
+                )
+                session.commit()
+
+            class TimingOutAdapter:
+                def test_connection(self) -> bool:
+                    raise TimeoutError(
+                        "clickhouse-connect: HTTPConnectionPool("
+                        "host='warehouse.internal', port=8123): Read timed out. "
+                        "(read timeout=30)"
+                    )
+
+                def close(self) -> None:
+                    return None
+
+            monkeypatch.setitem(
+                scan_tasks.run_scan.run.__globals__,
+                "_get_sync_session",
+                sync_session_factory,
+            )
+            monkeypatch.setitem(
+                scan_tasks.run_scan.run.__globals__,
+                "_build_adapter",
+                lambda ds: TimingOutAdapter(),
+            )
+
+            with pytest.raises(TimeoutError):
+                scan_tasks.run_scan.run(str(config_id), str(job_id))
+
+            with sync_session_factory() as session:
+                job = session.get(ScanJob, job_id)
+                assert job.status == "failed"
+                assert job.completed_at is not None
+                # User sees a friendly summary; raw driver detail goes to logs only.
+                assert job.error_message == "Scan failed: the data source did not respond in time."
+                assert "warehouse.internal" not in job.error_message
+                assert "8123" not in job.error_message
+                assert "clickhouse" not in job.error_message.lower()
+                assert "read timed out" not in job.error_message.lower()
         finally:
             engine.dispose()
 

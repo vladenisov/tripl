@@ -1,4 +1,4 @@
-import { useState, type ReactNode } from 'react'
+import { Fragment, useState, type ReactNode } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Calendar } from 'lucide-react'
@@ -156,9 +156,9 @@ export default function ReconciliationPage() {
         </Button>
       </div>
 
-      {/* Coverage */}
+      {/* Data match — share of planned events actually seen in data (distinct from plan coverage) */}
       <Panel
-        title="Coverage"
+        title="Data match"
         subtitle={
           coverage
             ? `${coverage.summary.matched_count} of ${coverage.summary.total_count} planned events seen in data · ${coverage.days}d`
@@ -168,7 +168,7 @@ export default function ReconciliationPage() {
         {coverageQuery.isError && (
           <div className="p-4">
             <ErrorState
-              title="Coverage unavailable"
+              title="Data match unavailable"
               error={coverageQuery.error}
               onRetry={() => {
                 void coverageQuery.refetch()
@@ -193,7 +193,7 @@ export default function ReconciliationPage() {
                 {coverage.summary.coverage_pct.toFixed(0)}%
               </span>
               <span className="text-[11px]" style={{ color: 'var(--fg-subtle)' }}>
-                matched coverage
+                data-match coverage
               </span>
             </div>
             <CoverageStrip items={coverage.items} days={coverage.days} />
@@ -364,7 +364,7 @@ function CoverageStrip({ items, days }: { items: CoverageBucket[]; days: number 
   if (items.length === 0) {
     return (
       <div className="flex-1 text-[11px]" style={{ color: 'var(--fg-subtle)' }}>
-        No coverage data yet.
+        No data-match history yet.
       </div>
     )
   }
@@ -509,6 +509,36 @@ function ShadowRow({
   )
 }
 
+const NAME_SEGMENT_SEPARATOR = ':'
+
+// Event names are colon-delimited (e.g. "buoy:copy:coordinates"). Render each
+// segment explicitly so that names with an empty segment — like ":forecast_for_4"
+// or a trailing colon — read as intentional structure rather than a glitch.
+function DeadEventName({ name }: { name: string }) {
+  const segments = name.split(NAME_SEGMENT_SEPARATOR)
+  if (segments.length === 1) return <>{name}</>
+  return (
+    <>
+      {segments.map((segment, index) => (
+        <Fragment key={index}>
+          {index > 0 && (
+            <span aria-hidden style={{ color: 'var(--fg-faint)' }}>
+              {NAME_SEGMENT_SEPARATOR}
+            </span>
+          )}
+          {segment ? (
+            <span>{segment}</span>
+          ) : (
+            <span title="empty segment" style={{ color: 'var(--fg-faint)' }}>
+              ∅
+            </span>
+          )}
+        </Fragment>
+      ))}
+    </>
+  )
+}
+
 function DeadRow({ item, slug }: { item: DeadEvent; slug: string | undefined }) {
   const isNever = !item.last_seen_at
   return (
@@ -522,7 +552,7 @@ function DeadRow({ item, slug }: { item: DeadEvent; slug: string | undefined }) 
         className="mono min-w-0 flex-1 truncate text-[12px] hover:underline"
         style={{ color: 'var(--fg-muted)' }}
       >
-        {item.name}
+        <DeadEventName name={item.name} />
       </Link>
       {item.event_type_name && <Chip size="xs">{item.event_type_name}</Chip>}
       <span

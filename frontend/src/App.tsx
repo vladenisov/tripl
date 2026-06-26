@@ -105,6 +105,17 @@ function DataSourceRedirect() {
   return <Navigate to={`/settings/data-sources/${dsId}`} replace />
 }
 
+/**
+ * Legacy `/p/:slug/events/detail/:eventId` → canonical event monitoring detail.
+ * The legacy URL mounted MonitoringDetailPage with no `:scope` segment, which
+ * crashed scope resolution; redirecting keeps every entry point on the
+ * canonical `/monitoring/event/:id` route.
+ */
+function EventDetailRedirect() {
+  const { slug, eventId } = useParams<{ slug: string; eventId: string }>()
+  return <Navigate to={`/p/${slug}/monitoring/event/${eventId}`} replace />
+}
+
 const SETTINGS_STORAGE_KEY = 'tripl.settings'
 
 /**
@@ -180,7 +191,7 @@ export default function App() {
             <Route path="/account" element={<Navigate to="/settings/profile" replace />} />
             <Route path="/p/:slug/monitoring" element={<ProjectSettingsRedirect tab="monitoring" />} />
             <Route path="/p/:slug/alerting" element={<ProjectSettingsRedirect tab="alerting" />} />
-            <Route path="/p/:slug/events/detail/:eventId" element={withSuspense(<MonitoringDetailPage />)} />
+            <Route path="/p/:slug/events/detail/:eventId" element={<EventDetailRedirect />} />
             <Route path="/p/:slug/monitoring/:scope/:id" element={withSuspense(<MonitoringDetailPage />)} />
             <Route path="/p/:slug/events/:tab/new" element={withSuspense(<EventEditPage />)} />
             <Route path="/p/:slug/events/:tab/:eventId/edit" element={withSuspense(<EventEditPage />)} />

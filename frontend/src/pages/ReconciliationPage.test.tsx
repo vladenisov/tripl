@@ -121,7 +121,10 @@ describe('ReconciliationPage', () => {
       ),
     ).toBeInTheDocument()
     expect(await screen.findByText('94%')).toBeInTheDocument()
-    expect(screen.getByText('matched coverage')).toBeInTheDocument()
+    // The data-match metric is labelled distinctly from the dashboard's "Plan coverage".
+    expect(screen.getByText('Data match')).toBeInTheDocument()
+    expect(screen.getByText('data-match coverage')).toBeInTheDocument()
+    expect(screen.queryByText('matched coverage')).not.toBeInTheDocument()
     expect(screen.getByText('124 of 132 planned events seen in data · 14d')).toBeInTheDocument()
   })
 
@@ -144,6 +147,47 @@ describe('ReconciliationPage', () => {
     expect(screen.getByText('promo_code_invalid')).toBeInTheDocument()
     const neverRows = screen.getAllByText('never')
     expect(neverRows.length).toBeGreaterThan(0)
+  })
+
+  it('renders colon-delimited dead-event names with a placeholder for empty segments', async () => {
+    const deadColon: DeadEventsResponse = {
+      days: 30,
+      total: 2,
+      items: [
+        {
+          event_id: 'c1',
+          name: ':forecast_for_4',
+          event_type_id: '',
+          event_type_name: '',
+          last_seen_at: '2026-05-01T00:00:00Z',
+          created_at: '2026-01-01T00:00:00Z',
+        },
+        {
+          event_id: 'c2',
+          name: 'buoy:copy:coordinates(main)',
+          event_type_id: '',
+          event_type_name: '',
+          last_seen_at: '2026-05-02T00:00:00Z',
+          created_at: '2026-01-01T00:00:00Z',
+        },
+      ],
+    }
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = String(input)
+      if (url.includes('/reconciliation/coverage')) return jsonResponse(coverage)
+      if (url.includes('/reconciliation/dead-events')) return jsonResponse(deadColon)
+      if (url.includes('/reconciliation/shadow-events')) return jsonResponse(emptyShadow)
+      if (url.includes('/event-types')) return jsonResponse([])
+      throw new Error(`Unhandled fetch: ${url}`)
+    })
+    renderPage()
+
+    // Non-empty segments still render their own text.
+    expect(await screen.findByText('forecast_for_4')).toBeInTheDocument()
+    expect(screen.getByText('buoy')).toBeInTheDocument()
+    expect(screen.getByText('coordinates(main)')).toBeInTheDocument()
+    // The leading empty segment renders an intentional placeholder, not a blank.
+    expect(screen.getByTitle('empty segment')).toBeInTheDocument()
   })
 
   it('switches shadow tabs to show the per-tab empty state', async () => {

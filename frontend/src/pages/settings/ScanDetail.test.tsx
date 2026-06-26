@@ -1,4 +1,4 @@
-import { render, screen } from '@testing-library/react'
+import { fireEvent, render, screen } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { ScanConfig } from '@/types'
@@ -125,5 +125,52 @@ describe('ScanDetail', () => {
     expect(screen.getByText('created_at')).toBeInTheDocument()
     expect(screen.getByText('Auto-detect')).toBeInTheDocument()
     expect(await screen.findByText(/No jobs yet/)).toBeInTheDocument()
+  })
+
+  it('labels a failed job, offers a retry, and never shows raw scan internals', async () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async input => {
+      const url = String(input)
+      if (url.endsWith('/api/v1/projects/demo/scans/scan-1/jobs')) {
+        return mockJsonResponse([
+          {
+            id: 'job-fail',
+            scan_config_id: 'scan-1',
+            status: 'failed',
+            // 381.8s elapsed — a silent timeout under the old red-dot UI.
+            started_at: '2026-01-01T00:00:00Z',
+            completed_at: '2026-01-01T00:06:21Z',
+            result_summary: null,
+            error_message:
+              "HTTPSConnectionPool(host='clickhouse.internal', port=8443): Read timed out. (read timeout=30)",
+            created_at: '2026-01-01T00:00:00Z',
+            updated_at: '2026-01-01T00:06:21Z',
+          },
+        ])
+      }
+      throw new Error(`Unhandled fetch: ${url}`)
+    })
+
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    })
+
+    render(
+      <QueryClientProvider client={queryClient}>
+        <ScanDetail slug="demo" scanConfig={scanConfig} eventTypes={[]} branchId={null} />
+      </QueryClientProvider>,
+    )
+
+    // Status is readable as text (not a bare red dot) and a retry is wired.
+    expect(await screen.findByText('Failed')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Retry scan' })).toBeInTheDocument()
+    // Raw host/port never reaches the DOM, collapsed or expanded.
+    expect(screen.queryByText(/clickhouse\.internal/)).not.toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Expand job details' }))
+    expect(
+      screen.getByText('Scan failed: the data source did not respond in time.'),
+    ).toBeInTheDocument()
+    expect(screen.queryByText(/clickhouse\.internal/)).not.toBeInTheDocument()
+    expect(screen.queryByText(/8443/)).not.toBeInTheDocument()
   })
 })

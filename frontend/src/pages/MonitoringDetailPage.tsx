@@ -34,7 +34,7 @@ import { useActiveBranchId } from '@/hooks/useBranch'
 import { formatRelativeTime, formatTimestamp } from '@/lib/datetime'
 import { GRANULARITY_OPTIONS, RANGE_OPTIONS, aggregateMetricPoints, type MetricsGranularity } from '@/lib/metrics'
 import { resolveMetaFieldHref } from '@/lib/metaFields'
-import { routeScopeToApiScope } from '@/lib/monitoring'
+import { resolveDetailScope } from '@/lib/monitoring'
 import type {
   DistributionDriftBand,
   DistributionDriftPoint,
@@ -106,7 +106,10 @@ export default function MonitoringDetailPage() {
   const [breakdownColumn, setBreakdownColumn] = useState('')
 
   const branchId = useActiveBranchId()
-  const scope = routeScopeToApiScope(scopeParam)
+  // The legacy `/events/detail/:eventId` route carries no `:scope`; default to
+  // the event scope when an eventId is present so the page never crashes on an
+  // undefined scope (it now redirects to the canonical URL, but stay defensive).
+  const scope = resolveDetailScope(scopeParam, eventId)
   const scopeId = id ?? eventId ?? ''
 
   const timeRange = useMemo(() => {
@@ -1255,7 +1258,7 @@ function EventDetailHero({
   const signalTone: 'danger' | 'warning' = signal?.direction === 'drop' ? 'warning' : 'danger'
   return (
     <div className="space-y-[18px]">
-      <EventDetailBreadcrumb onBack={onBack} />
+      <EventDetailBreadcrumb name={event.name} onBack={onBack} />
       <EventDetailHeader event={event} eventType={eventType} signal={signal} onEdit={onEdit} onMetrics={onMetrics} />
       {signal && <EventSignalBanner signal={signal} tone={signalTone} />}
       <EventStatStrip event={event} stats={stats} />
@@ -1284,21 +1287,35 @@ function EventDetailHero({
   )
 }
 
-function EventDetailBreadcrumb({ onBack }: { onBack: () => void }) {
+function EventDetailBreadcrumb({ name, onBack }: { name: string; onBack: () => void }) {
   return (
-    <div className="flex items-center gap-2 text-[11.5px]">
+    <nav aria-label="Breadcrumb" className="flex items-center gap-2 text-[11.5px]">
       <button
         type="button"
         onClick={onBack}
         className="inline-flex items-center gap-1 transition-colors hover:text-[var(--fg)]"
         style={{ color: 'var(--fg-muted)' }}
       >
-        <ChevronLeft size={13} /> Events
+        <ChevronLeft size={13} /> Plan
       </button>
+      <span aria-hidden style={{ color: 'var(--fg-faint)' }}>/</span>
+      <button
+        type="button"
+        onClick={onBack}
+        className="transition-colors hover:text-[var(--fg)]"
+        style={{ color: 'var(--fg-muted)' }}
+      >
+        Events
+      </button>
+      <span aria-hidden style={{ color: 'var(--fg-faint)' }}>/</span>
+      <span aria-current="page" className="mono min-w-0 truncate" style={{ color: 'var(--fg)' }}>
+        {name}
+      </span>
       <div className="flex-1" />
       <button
         type="button"
         disabled
+        title="Coming soon"
         className="inline-flex h-6 items-center gap-1 rounded-[6px] px-2 text-[11px] opacity-40"
         style={{ color: 'var(--fg-muted)' }}
       >
@@ -1307,12 +1324,13 @@ function EventDetailBreadcrumb({ onBack }: { onBack: () => void }) {
       <button
         type="button"
         disabled
+        title="Coming soon"
         className="inline-flex h-6 items-center gap-1 rounded-[6px] px-2 text-[11px] opacity-40"
         style={{ color: 'var(--fg-muted)' }}
       >
         <ChevronDown size={11} /> Next
       </button>
-    </div>
+    </nav>
   )
 }
 
@@ -1322,19 +1340,23 @@ function HeroAction({
   primary,
   onClick,
   disabled,
+  title,
 }: {
   icon: ReactNode
   label: string
   primary?: boolean
   onClick?: () => void
   disabled?: boolean
+  /** Hover/long-press hint — used to explain why a disabled action is inert. */
+  title?: string
 }) {
   return (
     <button
       type="button"
       onClick={onClick}
       disabled={disabled}
-      className="inline-flex h-8 items-center gap-[6px] rounded-[7px] border px-[10px] text-[12px] font-medium transition-colors hover:bg-[var(--surface-hover)] disabled:opacity-40"
+      title={title}
+      className="inline-flex h-8 items-center gap-[6px] rounded-[7px] border px-[10px] text-[12px] font-medium transition-colors hover:bg-[var(--surface-hover)] disabled:cursor-not-allowed disabled:opacity-40"
       style={{
         background: primary ? 'var(--accent)' : 'var(--surface)',
         color: primary ? 'var(--accent-fg)' : 'var(--fg)',
@@ -1386,10 +1408,10 @@ function EventDetailHeader({
         </div>
       </div>
       <div className="flex flex-wrap items-center gap-2">
-        <HeroAction icon={<Eye size={12} />} label="Watch" disabled />
+        <HeroAction icon={<Eye size={12} />} label="Watch" disabled title="Coming soon" />
         <HeroAction icon={<TrendingUp size={12} />} label="Metrics" onClick={onMetrics} />
         <HeroAction icon={<Pencil size={12} />} label="Edit" onClick={onEdit} />
-        <HeroAction icon={<Code size={12} />} label="Implementation" primary disabled />
+        <HeroAction icon={<Code size={12} />} label="Implementation" primary disabled title="Coming soon" />
       </div>
     </div>
   )
@@ -1422,10 +1444,21 @@ function EventSignalBanner({ signal, tone }: { signal: MonitoringSignal; tone: '
   )
 }
 
-function StatCard({ label, value, tone }: { label: string; value: string; tone?: 'danger' | 'warning' }) {
+function StatCard({
+  label,
+  value,
+  tone,
+  hint,
+}: {
+  label: string
+  value: string
+  tone?: 'danger' | 'warning'
+  /** Hover/long-press explanation, e.g. for an empty "—" value. */
+  hint?: string
+}) {
   const color = tone === 'danger' ? 'var(--danger)' : tone === 'warning' ? 'var(--warning)' : 'var(--fg)'
   return (
-    <div className="rounded-[10px] border px-[14px] py-[11px]" style={SURFACE_STYLE}>
+    <div className="rounded-[10px] border px-[14px] py-[11px]" style={SURFACE_STYLE} title={hint}>
       <div className="text-[11px]" style={{ color: 'var(--fg-subtle)' }}>{label}</div>
       <div className="mono tnum mt-1 text-[19px] font-medium" style={{ color }}>{value}</div>
     </div>
@@ -1438,11 +1471,16 @@ function EventStatStrip({ event, stats }: { event: TEvent; stats: EventDetailSta
     : stats.delta24h > 20 ? 'danger' : stats.delta24h < -20 ? 'warning' : undefined
   return (
     <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-      <StatCard label="Volume · 24h" value={stats.volume24h == null ? '—' : formatNum(stats.volume24h)} />
+      <StatCard
+        label="Volume · 24h"
+        value={stats.volume24h == null ? '—' : formatNum(stats.volume24h)}
+        hint={stats.volume24h == null ? 'No events in the last 24h' : undefined}
+      />
       <StatCard
         label="Δ · 24h"
         value={stats.delta24h == null ? '—' : `${stats.delta24h > 0 ? '+' : ''}${stats.delta24h.toFixed(0)}%`}
         tone={deltaTone}
+        hint={stats.delta24h == null ? 'No prior 24h window to compare against' : undefined}
       />
       <StatCard
         label="Schema drifts"
@@ -1479,13 +1517,13 @@ function EventFieldsTable({
           No fields defined.
         </div>
       ) : (
-        <table className="w-full border-collapse">
+        <table className="w-full border-collapse" aria-label="Fields">
           <thead>
             <tr style={{ background: 'var(--bg-sunken)' }}>
-              <th className={EV_TH_CLASS}>Field</th>
-              <th className={EV_TH_CLASS}>Type</th>
-              <th className={EV_TH_CLASS}>Value</th>
-              <th className={EV_TH_CLASS}>Sensitivity</th>
+              <th scope="col" className={EV_TH_CLASS}>Field</th>
+              <th scope="col" className={EV_TH_CLASS}>Type</th>
+              <th scope="col" className={EV_TH_CLASS}>Value</th>
+              <th scope="col" className={EV_TH_CLASS}>Sensitivity</th>
             </tr>
           </thead>
           <tbody>
@@ -1520,9 +1558,9 @@ function EventFieldsTable({
 
 function PropertyRow({ label, value, mono }: { label: string; value: ReactNode; mono?: boolean }) {
   return (
-    <div className="flex gap-3 px-4 py-[6px] text-[12px]">
-      <span className="w-[120px] flex-shrink-0" style={{ color: 'var(--fg-subtle)' }}>{label}</span>
-      <span className={`min-w-0 flex-1 break-words ${mono ? 'mono' : ''}`} style={{ color: 'var(--fg)' }}>
+    <div role="row" className="flex gap-3 px-4 py-[6px] text-[12px]">
+      <span role="rowheader" className="w-[120px] flex-shrink-0" style={{ color: 'var(--fg-subtle)' }}>{label}</span>
+      <span role="cell" className={`min-w-0 flex-1 break-words ${mono ? 'mono' : ''}`} style={{ color: 'var(--fg)' }}>
         {value}
       </span>
     </div>
@@ -1542,7 +1580,7 @@ function EventMetaCard({
       <div className="border-b px-4 py-3 text-[12.5px] font-semibold" style={{ borderColor: 'var(--border-subtle)' }}>
         Meta fields
       </div>
-      <div className="py-[6px]">
+      <div role="table" aria-label="Meta fields" className="py-[6px]">
         {event.meta_values.map(mv => {
           const def = metaFieldMap.get(mv.meta_field_definition_id)
           const href = def ? resolveMetaFieldHref(def, mv.value) : null
@@ -1583,7 +1621,7 @@ function EventSideColumn({
         <div className="border-b px-4 py-3 text-[12.5px] font-semibold" style={{ borderColor: 'var(--border-subtle)' }}>
           Properties
         </div>
-        <div className="py-[6px]">
+        <div role="table" aria-label="Properties" className="py-[6px]">
           <PropertyRow label="Event type" value={eventType?.display_name ?? event.event_type?.display_name ?? '—'} />
           <PropertyRow label="Status" value={EVENT_STATUS_LABELS[event.status as EventStatus] ?? event.status} />
           <PropertyRow label="Event ID" value={event.id} mono />

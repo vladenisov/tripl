@@ -140,7 +140,7 @@ describe('ProjectsPage', () => {
     expect(screen.getByText('Analytics workspace')).toBeInTheDocument()
     expect(screen.getByText('Project portfolio')).toBeInTheDocument()
     expect(screen.getByText('Landing coverage and funnel events.')).toBeInTheDocument()
-    expect(screen.getByText('67% implemented')).toBeInTheDocument()
+    expect(screen.getByText('66.7% implemented')).toBeInTheDocument()
     expect(screen.getByText('2 pending review')).toBeInTheDocument()
     expect(screen.getByText('Latest scan')).toBeInTheDocument()
     expect(screen.getByText('Production scan')).toBeInTheDocument()
@@ -198,6 +198,112 @@ describe('ProjectsPage', () => {
 
     expect(await screen.findByText('Alpha')).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: /Delete Alpha/i })).not.toBeInTheDocument()
+  })
+
+  const RAW_SCAN_ERROR =
+    "HTTPSConnectionPool(host='clickhouse.internal', port=8443): Read timed out. (read timeout=30)"
+
+  function mockSingleProject() {
+    vi.spyOn(globalThis, 'fetch').mockImplementation((input: RequestInfo | URL) => {
+      const url =
+        typeof input === 'string'
+          ? input
+          : input instanceof URL
+            ? input.toString()
+            : input.url
+
+      if (url.endsWith('/api/v1/projects')) {
+        return Promise.resolve(jsonResponse([
+          {
+            id: 'proj-2',
+            name: 'Beta',
+            slug: 'beta',
+            description: 'Near-complete plan with one failed scan.',
+            created_at: '2026-05-01T09:00:00Z',
+            updated_at: '2026-05-10T09:00:00Z',
+            summary: {
+              event_type_count: 4,
+              event_count: 400,
+              active_event_count: 323,
+              implemented_event_count: 320,
+              review_pending_event_count: 1,
+              archived_event_count: 0,
+              variable_count: 3,
+              scan_count: 1,
+              alert_destination_count: 1,
+              monitoring_signal_count: 1,
+              latest_scan_job: {
+                id: 'job-2',
+                scan_config_id: 'scan-2',
+                scan_name: 'Nightly scan',
+                status: 'failed',
+                started_at: '2026-05-10T08:00:00Z',
+                completed_at: '2026-05-10T08:01:00Z',
+                result_summary: null,
+                error_message: RAW_SCAN_ERROR,
+                created_at: '2026-05-10T08:01:00Z',
+              },
+              latest_signal: null,
+            },
+          },
+        ]))
+      }
+
+      if (url.endsWith('/api/v1/data-sources')) {
+        return Promise.resolve(jsonResponse([]))
+      }
+
+      return Promise.reject(new Error(`Unexpected request: ${url}`))
+    })
+  }
+
+  it('formats coverage like Live activity and pluralizes counts (H2, M10, L1)', async () => {
+    mockSingleProject()
+
+    renderProjectsPage('owner')
+
+    expect(await screen.findByText('Beta')).toBeInTheDocument()
+    // H2: 320/323 renders as "99.1%", never "99%".
+    expect(screen.getByText('99.1% implemented')).toBeInTheDocument()
+    expect(screen.getAllByText('99.1%').length).toBeGreaterThan(0)
+    expect(screen.queryByText('99% implemented')).not.toBeInTheDocument()
+    // L1 + M10: singular, unit-aware copy.
+    expect(screen.getByText('1 project has a failed latest scan job')).toBeInTheDocument()
+    expect(screen.getByText('across 1 project')).toBeInTheDocument()
+    expect(screen.getByText('1 scan configured')).toBeInTheDocument()
+    expect(screen.getByText('1 recent signal')).toBeInTheDocument()
+    expect(screen.getByText('1 monitoring signal')).toBeInTheDocument()
+    expect(
+      screen.getByText('1 project currently has active or recent signals'),
+    ).toBeInTheDocument()
+  })
+
+  it('shows a friendly scan error with an owner-only technical expander (H3)', async () => {
+    mockSingleProject()
+
+    renderProjectsPage('owner')
+
+    expect(await screen.findByText('Beta')).toBeInTheDocument()
+    expect(
+      screen.getByText('Scan failed: the data source did not respond in time.'),
+    ).toBeInTheDocument()
+    // Owner can drill into the raw exception behind an expander.
+    expect(screen.getByText('View technical details')).toBeInTheDocument()
+    expect(screen.getByText(/HTTPSConnectionPool/)).toBeInTheDocument()
+  })
+
+  it('hides raw scan internals from non-owners (H3)', async () => {
+    mockSingleProject()
+
+    renderProjectsPage('viewer')
+
+    expect(await screen.findByText('Beta')).toBeInTheDocument()
+    expect(
+      screen.getByText('Scan failed: the data source did not respond in time.'),
+    ).toBeInTheDocument()
+    // The raw host/port exception and the expander must not exist for viewers.
+    expect(screen.queryByText('View technical details')).not.toBeInTheDocument()
+    expect(screen.queryByText(/HTTPSConnectionPool/)).not.toBeInTheDocument()
   })
 
   it('shows an error instead of the empty state when the backend is unavailable', async () => {

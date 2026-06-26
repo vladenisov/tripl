@@ -127,8 +127,10 @@ function NotificationsMenu({ projectSlug }: { projectSlug?: string }) {
 
   const signals = signalsQuery.data ?? []
   const deliveries = deliveriesQuery.data?.items ?? []
-  const actionableDeliveryCount = deliveries.filter(delivery => delivery.status !== 'sent').length
-  const badgeCount = signals.length + actionableDeliveryCount
+  // "Active" semantics belong to currently-firing signals only. Deliveries are
+  // history (see Recent Alert Deliveries below) and must never be folded in.
+  const activeSignalCount = signals.length
+  const failedDeliveryCount = deliveries.filter(delivery => delivery.status === 'failed').length
   const isLoading = signalsQuery.isFetching || deliveriesQuery.isFetching
   const isError = signalsQuery.isError || deliveriesQuery.isError
 
@@ -137,22 +139,22 @@ function NotificationsMenu({ projectSlug }: { projectSlug?: string }) {
       <PopoverTrigger asChild>
         <button
           type="button"
-          aria-label={badgeCount > 0 ? `Notifications — ${badgeCount} active` : 'Notifications'}
+          aria-label={activeSignalCount > 0 ? `Notifications — ${activeSignalCount} active` : 'Notifications'}
           className="relative flex h-7 w-7 items-center justify-center rounded-md transition-colors hover:bg-[var(--surface-hover)]"
-          style={{ color: badgeCount > 0 ? 'var(--fg)' : 'var(--fg-muted)' }}
+          style={{ color: activeSignalCount > 0 ? 'var(--fg)' : 'var(--fg-muted)' }}
         >
           {isLoading && projectSlug ? (
             <Loader2 className="h-[13px] w-[13px] animate-spin" aria-hidden="true" />
           ) : (
             <Bell className="h-[13px] w-[13px]" aria-hidden="true" />
           )}
-          {badgeCount > 0 && (
+          {activeSignalCount > 0 && (
             <span
               aria-hidden="true"
               className="absolute -right-0.5 -top-0.5 flex h-3.5 min-w-3.5 items-center justify-center rounded-full px-1 text-[9px] font-semibold leading-none"
               style={{ background: 'var(--danger)', color: 'var(--destructive-foreground)' }}
             >
-              {badgeCount > 9 ? '9+' : badgeCount}
+              {activeSignalCount > 9 ? '9+' : activeSignalCount}
             </span>
           )}
         </button>
@@ -165,9 +167,9 @@ function NotificationsMenu({ projectSlug }: { projectSlug?: string }) {
           <Bell className="h-3.5 w-3.5" style={{ color: 'var(--fg-muted)' }} />
           <span className="text-[12.5px] font-semibold">Notifications</span>
           <div className="flex-1" />
-          {projectSlug && badgeCount > 0 && (
+          {projectSlug && activeSignalCount > 0 && (
             <span className="mono text-[10.5px]" style={{ color: 'var(--fg-faint)' }}>
-              {badgeCount} active
+              {activeSignalCount} active
             </span>
           )}
         </div>
@@ -188,7 +190,21 @@ function NotificationsMenu({ projectSlug }: { projectSlug?: string }) {
               )}
             </NotificationSection>
 
-            <NotificationSection title="Recent Alert Deliveries" count={deliveries.length}>
+            <NotificationSection
+              title="Recent Alert Deliveries"
+              count={deliveries.length}
+              accent={
+                failedDeliveryCount > 0 ? (
+                  <span
+                    className="mono inline-flex items-center gap-1 rounded-full px-1.5 py-px text-[9.5px] font-semibold"
+                    style={{ background: 'var(--danger-soft)', color: 'var(--danger)' }}
+                  >
+                    <XCircle className="h-2.5 w-2.5" aria-hidden="true" />
+                    {failedDeliveryCount} failed
+                  </span>
+                ) : null
+              }
+            >
               {deliveries.length === 0 ? (
                 <EmptySectionText>No alert deliveries yet.</EmptySectionText>
               ) : (
@@ -222,10 +238,12 @@ function NotificationsMenu({ projectSlug }: { projectSlug?: string }) {
 function NotificationSection({
   title,
   count,
+  accent,
   children,
 }: {
   title: string
   count: number
+  accent?: ReactNode
   children: ReactNode
 }) {
   return (
@@ -240,6 +258,12 @@ function NotificationSection({
         <span className="mono text-[10px]" style={{ color: 'var(--fg-faint)' }}>
           {count}
         </span>
+        {accent && (
+          <>
+            <div className="flex-1" />
+            {accent}
+          </>
+        )}
       </div>
       <div className="flex flex-col gap-px">{children}</div>
     </section>

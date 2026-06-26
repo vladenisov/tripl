@@ -27,8 +27,10 @@ import { Label } from '@/components/ui/label'
 import { Skeleton } from '@/components/ui/skeleton'
 import { Textarea } from '@/components/ui/textarea'
 import { useConfirm } from '@/hooks/useConfirm'
+import { formatPlanCoverage, planCoverageRatio } from '@/lib/coverage'
 import { formatDate, formatDateTime } from '@/lib/datetime'
 import { getMonitoringPath } from '@/lib/monitoring'
+import { friendlyScanError } from '@/lib/scanError'
 import type {
   Project,
   ProjectLatestScanJob,
@@ -100,9 +102,14 @@ export default function MainPage() {
     },
   )
 
-  const coveragePercent = portfolio.activeEventCount
-    ? Math.round((portfolio.implementedEventCount / portfolio.activeEventCount) * 100)
-    : 0
+  const coverageDisplay = formatPlanCoverage(
+    portfolio.implementedEventCount,
+    portfolio.activeEventCount,
+  )
+  const coverageRatio = planCoverageRatio(
+    portfolio.implementedEventCount,
+    portfolio.activeEventCount,
+  )
   const projectsWithScans = projects.filter((project) => project.summary.scan_count > 0).length
   const projectsWithSignals = projects.filter(
     (project) => project.summary.monitoring_signal_count > 0,
@@ -163,8 +170,9 @@ export default function MainPage() {
     : dataSourcesQuery.isLoading
       ? '...'
       : String(dataSourceCount)
+  const isOwner = user?.role === 'owner'
   const canCreateProject = user?.role === 'owner' || user?.role === 'editor'
-  const canDeleteProject = user?.role === 'owner'
+  const canDeleteProject = isOwner
 
   return (
     <div className="space-y-6">
@@ -191,9 +199,9 @@ export default function MainPage() {
           <MiniStatDivider />
           <MiniStat
             label="Coverage"
-            value={`${coveragePercent}%`}
+            value={coverageDisplay}
             delta={portfolio.activeEventCount > 0 ? `${portfolio.implementedEventCount}/${portfolio.activeEventCount}` : undefined}
-            tone={coveragePercent >= 80 ? 'success' : coveragePercent >= 50 ? 'warning' : 'neutral'}
+            tone={coverageRatio >= 0.8 ? 'success' : coverageRatio >= 0.5 ? 'warning' : 'neutral'}
           />
           <MiniStatDivider />
           <MiniStat
@@ -314,30 +322,32 @@ export default function MainPage() {
               icon={FolderKanban}
               label="Projects"
               value={String(portfolio.projectCount)}
+              unit={pluralize(portfolio.projectCount, 'project', 'projects')}
               hint={
                 portfolio.projectCount > 0
-                  ? `${projectsReady} fully implemented`
+                  ? `${pluralize(projectsReady, '1 project', `${projectsReady} projects`)} fully implemented`
                   : 'Create a project to start your catalog'
               }
             />
             <PortfolioCard
               icon={BadgeCheck}
               label="Coverage"
-              value={`${coveragePercent}%`}
+              value={coverageDisplay}
               hint={
                 portfolio.activeEventCount > 0
-                  ? `${portfolio.implementedEventCount} of ${portfolio.activeEventCount} active events`
+                  ? `${portfolio.implementedEventCount} of ${portfolio.activeEventCount} active ${pluralize(portfolio.activeEventCount, 'event', 'events')} implemented`
                   : 'Coverage starts with your first active event'
               }
-              tone={coveragePercent >= 80 ? 'success' : coveragePercent >= 50 ? 'warning' : 'neutral'}
+              tone={coverageRatio >= 0.8 ? 'success' : coverageRatio >= 0.5 ? 'warning' : 'neutral'}
             />
             <PortfolioCard
               icon={BellRing}
               label="Review queue"
               value={String(portfolio.reviewPendingEventCount)}
+              unit={pluralize(portfolio.reviewPendingEventCount, 'event', 'events')}
               hint={
                 portfolio.reviewPendingEventCount > 0
-                  ? `${projectsNeedingReview} projects need review`
+                  ? `across ${pluralize(projectsNeedingReview, '1 project', `${projectsNeedingReview} projects`)}`
                   : 'No pending event reviews'
               }
               tone={portfolio.reviewPendingEventCount > 0 ? 'warning' : 'success'}
@@ -346,11 +356,20 @@ export default function MainPage() {
               icon={PlayCircle}
               label="Latest jobs"
               value={String(projectsWithLatestScanJob)}
+              unit={pluralize(projectsWithLatestScanJob, 'project', 'projects')}
               hint={
                 projectsWithFailedScan > 0
-                  ? `${projectsWithFailedScan} projects have a failed latest scan job`
+                  ? pluralize(
+                      projectsWithFailedScan,
+                      '1 project has a failed latest scan job',
+                      `${projectsWithFailedScan} projects have a failed latest scan job`,
+                    )
                   : projectsWithRunningScan > 0
-                    ? `${projectsWithRunningScan} projects are currently running scans`
+                    ? pluralize(
+                        projectsWithRunningScan,
+                        '1 project is currently running a scan',
+                        `${projectsWithRunningScan} projects are currently running scans`,
+                      )
                     : projectsWithLatestScanJob > 0
                       ? 'Latest scan jobs are healthy'
                       : 'No project has run a scan yet'
@@ -384,6 +403,7 @@ export default function MainPage() {
                     key={project.id}
                     project={project}
                     canDelete={canDeleteProject}
+                    isOwner={isOwner}
                     onDelete={() => { void handleDelete(project) }}
                   />
                 ))}
@@ -441,12 +461,14 @@ function PortfolioCard({
   icon: Icon,
   label,
   value,
+  unit,
   hint,
   tone = 'neutral',
 }: {
   icon: ElementType
   label: string
   value: string
+  unit?: string
   hint: string
   tone?: PortfolioTone
 }) {
@@ -475,28 +497,37 @@ function PortfolioCard({
       className="rounded-lg border p-4"
       style={{ background: 'var(--bg-elevated)', borderColor: 'var(--border)' }}
     >
-      <div className="flex items-start justify-between gap-3">
-        <div className="min-w-0 space-y-0.5">
-          <p
-            className="text-[10px] font-semibold uppercase tracking-[0.08em]"
-            style={{ color: 'var(--fg-faint)' }}
+      <dl className="m-0">
+        <div className="flex items-start justify-between gap-3">
+          <div className="min-w-0 space-y-0.5">
+            <dt
+              className="text-[10px] font-semibold uppercase tracking-[0.08em]"
+              style={{ color: 'var(--fg-faint)' }}
+            >
+              {label}
+            </dt>
+            <dd className="m-0 flex items-baseline gap-1">
+              <span className="mono tnum text-[24px] font-medium leading-[1.1] tracking-[-0.01em]">
+                {value}
+              </span>
+              {unit ? (
+                <span className="text-[11px]" style={{ color: 'var(--fg-faint)' }}>
+                  {unit}
+                </span>
+              ) : null}
+            </dd>
+          </div>
+          <div
+            className="flex h-7 w-7 items-center justify-center rounded-md"
+            style={{ background: toneSoft, color: toneColor }}
           >
-            {label}
-          </p>
-          <p className="mono tnum text-[24px] font-medium leading-[1.1] tracking-[-0.01em]">
-            {value}
-          </p>
+            <Icon className="h-3.5 w-3.5" />
+          </div>
         </div>
-        <div
-          className="flex h-7 w-7 items-center justify-center rounded-md"
-          style={{ background: toneSoft, color: toneColor }}
-        >
-          <Icon className="h-3.5 w-3.5" />
-        </div>
-      </div>
-      <p className="mt-2 text-[11.5px] leading-[1.4]" style={{ color: 'var(--fg-subtle)' }}>
-        {hint}
-      </p>
+        <dd className="m-0 mt-2 text-[11.5px] leading-[1.4]" style={{ color: 'var(--fg-subtle)' }}>
+          {hint}
+        </dd>
+      </dl>
     </div>
   )
 }
@@ -528,7 +559,7 @@ function SignalsBanner({
           <div className="text-[12.5px] font-semibold">Automation</div>
           <div className="text-[11px]" style={{ color: 'var(--fg-subtle)' }}>
             {scanCount > 0
-              ? `${scanCount} scans · ${projectsWithScans} projects covered`
+              ? `${pluralize(scanCount, '1 scan', `${scanCount} scans`)} · ${pluralize(projectsWithScans, '1 project', `${projectsWithScans} projects`)} covered`
               : 'No scans configured yet'}
           </div>
         </div>
@@ -538,11 +569,13 @@ function SignalsBanner({
         <Dot tone={signalCount > 0 ? 'danger' : 'success'} pulse={signalCount > 0} size={8} />
         <div>
           <div className="text-[12.5px] font-semibold">
-            {signalCount > 0 ? `${signalCount} monitoring signals` : 'No recent signals'}
+            {signalCount > 0
+              ? pluralize(signalCount, '1 monitoring signal', `${signalCount} monitoring signals`)
+              : 'No recent signals'}
           </div>
           <div className="text-[11px]" style={{ color: 'var(--fg-subtle)' }}>
             {signalCount > 0
-              ? `${projectsWithSignals} projects currently have active or recent signals`
+              ? `${pluralize(projectsWithSignals, '1 project currently has', `${projectsWithSignals} projects currently have`)} active or recent signals`
               : 'Monitoring is quiet across the workspace'}
           </div>
         </div>
@@ -554,18 +587,23 @@ function SignalsBanner({
 function ProjectCard({
   project,
   canDelete,
+  isOwner,
   onDelete,
 }: {
   project: Project
   canDelete: boolean
+  isOwner: boolean
   onDelete: () => void
 }) {
   const status = getProjectStatus(project.summary)
-  const coverage = project.summary.active_event_count
-    ? Math.round(
-        (project.summary.implemented_event_count / project.summary.active_event_count) * 100,
-      )
-    : 0
+  const coverageDisplay = formatPlanCoverage(
+    project.summary.implemented_event_count,
+    project.summary.active_event_count,
+  )
+  const coverageRatio = planCoverageRatio(
+    project.summary.implemented_event_count,
+    project.summary.active_event_count,
+  )
   const hasSignals = project.summary.monitoring_signal_count > 0
   const needsReview = project.summary.review_pending_event_count > 0
 
@@ -626,10 +664,10 @@ function ProjectCard({
       <CardContent className="space-y-4 px-4 py-4">
         <div className="flex flex-wrap gap-1.5">
           <Chip
-            tone={coverage === 100 && project.summary.active_event_count > 0 ? 'success' : 'info'}
+            tone={coverageRatio === 1 ? 'success' : 'info'}
             size="xs"
           >
-            {project.summary.active_event_count > 0 ? `${coverage}% implemented` : 'No active events'}
+            {project.summary.active_event_count > 0 ? `${coverageDisplay} implemented` : 'No active events'}
           </Chip>
           <Chip tone={needsReview ? 'warning' : 'neutral'} size="xs">
             {needsReview
@@ -638,12 +676,20 @@ function ProjectCard({
           </Chip>
           <Chip tone={project.summary.scan_count > 0 ? 'accent' : 'neutral'} size="xs">
             {project.summary.scan_count > 0
-              ? `${project.summary.scan_count} scans configured`
+              ? pluralize(
+                  project.summary.scan_count,
+                  '1 scan configured',
+                  `${project.summary.scan_count} scans configured`,
+                )
               : 'No scan coverage'}
           </Chip>
           <Chip tone={hasSignals ? 'danger' : 'neutral'} size="xs">
             {hasSignals
-              ? `${project.summary.monitoring_signal_count} recent signals`
+              ? pluralize(
+                  project.summary.monitoring_signal_count,
+                  '1 recent signal',
+                  `${project.summary.monitoring_signal_count} recent signals`,
+                )
               : 'No recent signals'}
           </Chip>
         </div>
@@ -661,7 +707,7 @@ function ProjectCard({
           >
             <div
               className="h-full rounded-full transition-[width]"
-              style={{ width: `${coverage}%`, background: 'var(--accent)' }}
+              style={{ width: `${coverageRatio * 100}%`, background: 'var(--accent)' }}
             />
           </div>
         </div>
@@ -674,7 +720,7 @@ function ProjectCard({
             <Metric label="Alerts" value={String(project.summary.alert_destination_count)} />
           </div>
           <Panel icon={PlayCircle} title="Latest scan">
-            <LatestScanJobSummary job={project.summary.latest_scan_job} />
+            <LatestScanJobSummary job={project.summary.latest_scan_job} isOwner={isOwner} />
           </Panel>
           <Panel icon={AlertTriangle} title="Monitoring">
             <LatestSignalSummary
@@ -706,18 +752,18 @@ function ProjectCard({
 
 function Metric({ label, value }: { label: string; value: string }) {
   return (
-    <div
-      className="rounded-md border px-2.5 py-2"
+    <dl
+      className="m-0 rounded-md border px-2.5 py-2"
       style={{ background: 'var(--bg-sunken)', borderColor: 'var(--border-subtle)' }}
     >
-      <p
+      <dt
         className="text-[10px] font-semibold uppercase tracking-[0.06em]"
         style={{ color: 'var(--fg-faint)' }}
       >
         {label}
-      </p>
-      <p className="mono tnum mt-0.5 text-[18px] font-medium tracking-[-0.01em]">{value}</p>
-    </div>
+      </dt>
+      <dd className="mono tnum m-0 mt-0.5 text-[18px] font-medium tracking-[-0.01em]">{value}</dd>
+    </dl>
   )
 }
 
@@ -749,7 +795,13 @@ function Panel({
   )
 }
 
-function LatestScanJobSummary({ job }: { job: ProjectLatestScanJob | null }) {
+function LatestScanJobSummary({
+  job,
+  isOwner,
+}: {
+  job: ProjectLatestScanJob | null
+  isOwner: boolean
+}) {
   if (!job) {
     return (
       <div className="text-[11.5px]" style={{ color: 'var(--fg-subtle)' }}>
@@ -759,6 +811,8 @@ function LatestScanJobSummary({ job }: { job: ProjectLatestScanJob | null }) {
     )
   }
 
+  const scanError = job.error_message ? friendlyScanError(job.error_message) : null
+
   return (
     <div className="space-y-2">
       <div className="flex flex-wrap items-center gap-2">
@@ -767,10 +821,18 @@ function LatestScanJobSummary({ job }: { job: ProjectLatestScanJob | null }) {
       </div>
       <div className="space-y-0.5 text-[11.5px]" style={{ color: 'var(--fg-subtle)' }}>
         <p>{describeScanJobTiming(job)}</p>
-        {job.error_message && (
-          <p className="line-clamp-2" style={{ color: 'var(--danger)' }}>
-            {job.error_message}
-          </p>
+        {scanError && (
+          <div className="space-y-1">
+            <p className="line-clamp-2" style={{ color: 'var(--danger)' }}>
+              {scanError.message}
+            </p>
+            {isOwner && scanError.technical && (
+              <details className="text-[11px]" style={{ color: 'var(--fg-faint)' }}>
+                <summary className="cursor-pointer select-none">View technical details</summary>
+                <p className="mono mt-1 whitespace-pre-wrap break-words">{scanError.technical}</p>
+              </details>
+            )}
+          </div>
         )}
       </div>
       {job.result_summary && (
@@ -878,4 +940,9 @@ function describeScanJobTiming(job: ProjectLatestScanJob) {
     return `Started ${formatDateTime(job.started_at)}`
   }
   return `Queued ${formatDateTime(job.created_at)}`
+}
+
+/** Count-aware copy: returns `singular` when `count` is exactly 1, otherwise `plural`. */
+function pluralize(count: number, singular: string, plural: string): string {
+  return count === 1 ? singular : plural
 }

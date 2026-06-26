@@ -166,7 +166,10 @@ export function EventsTable({
               overflowY: 'auto',
             }}
           >
-            <Table className="tripl-table">
+            <Table
+              className="tripl-table"
+              aria-label={activeEt ? `${activeEt.display_name} events` : 'Events'}
+            >
               <TableHeader>
                 <TableRow>
                   <TableHead className="w-8 px-1" aria-label="Reorder" />
@@ -190,9 +193,19 @@ export function EventsTable({
                   )}
                   {!hideMonitor && <TableHead className="w-24">Monitor</TableHead>}
                   {!hideDelta && (
-                    <TableHead className="w-20 text-right text-[11px]">Δ · 24h</TableHead>
+                    <TableHead
+                      className="w-20 text-right text-[11px]"
+                      title="Δ · 24h — change in volume versus the previous 24-hour window"
+                    >
+                      Δ · 24h
+                    </TableHead>
                   )}
-                  <TableHead className="w-32 text-right">{ROW_METRICS_LABEL}</TableHead>
+                  <TableHead
+                    className="w-32 text-right"
+                    title={`Event volume over the last ${ROW_METRICS_LABEL} (rolling 48 hours), with sparkline`}
+                  >
+                    {ROW_METRICS_LABEL}
+                  </TableHead>
                   {!hideTags && (
                     <FilterableHead
                       label="Tags"
@@ -288,6 +301,15 @@ export function EventsTable({
                         ? expandedCell.slice(ev.id.length + 1)
                         : null
                     const windowMetric = eventWindowMetricsByEvent.get(ev.id)
+                    const windowData = windowMetric?.data ?? EMPTY_WINDOW_POINTS
+                    // Distinguish a genuine zero from "not wired": page-view
+                    // types return a real series, so a sum of 0 is a true zero
+                    // (flat sparkline + "0"). Structured/user types with no
+                    // collected series have an empty `data` array — passing
+                    // `undefined` makes the cell read as no-data ("—") instead
+                    // of a misleading bare "0".
+                    const windowTotal =
+                      windowData.length > 0 ? windowMetric?.total_count : undefined
                     return (
                       <EventRow
                         key={ev.id}
@@ -307,8 +329,8 @@ export function EventsTable({
                         slug={slug}
                         expandedFieldId={expandedFieldId}
                         rowSignal={eventRowSignals.get(ev.id)}
-                        windowTotal={windowMetric?.total_count}
-                        windowData={windowMetric?.data ?? EMPTY_WINDOW_POINTS}
+                        windowTotal={windowTotal}
+                        windowData={windowData}
                         metaValueMap={metaValuesByEvent.get(ev.id)}
                         eventType={eventTypesById.get(ev.event_type_id)}
                         getFieldValue={getFieldValue}

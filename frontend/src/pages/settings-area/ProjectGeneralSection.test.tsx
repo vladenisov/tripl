@@ -91,6 +91,29 @@ describe('ProjectGeneralSection', () => {
     expect(calls).toContain('POST /api/v1/projects/demo/search/reindex')
   })
 
+  it('renders preview-only accent + defaults as disabled "Coming soon" controls', async () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = String(input)
+      if (url.endsWith('/api/v1/projects/demo')) return jsonResponse(PROJECT)
+      throw new Error(`Unhandled fetch: ${url}`)
+    })
+
+    renderSection()
+
+    // Accent swatches must be inert (disabled), not interactive-looking no-ops.
+    const swatches = await screen.findAllByRole('button', { name: /Accent color:/ })
+    expect(swatches.length).toBeGreaterThan(0)
+    swatches.forEach((swatch) => expect(swatch).toBeDisabled())
+
+    // Defaults selects (branch / environment / timezone) must be disabled.
+    const selects = screen.getAllByRole('combobox')
+    expect(selects).toHaveLength(3)
+    selects.forEach((select) => expect(select).toBeDisabled())
+
+    // Every inert section carries an explicit "Coming soon" note.
+    expect(screen.getAllByText(/Coming soon/i).length).toBeGreaterThan(0)
+  })
+
   it('exposes a Delete project danger action for owners', async () => {
     vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
       const url = String(input)

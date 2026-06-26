@@ -6,14 +6,15 @@ import { dataSourcesApi } from "@/api/dataSources"
 import { scansApi } from "@/api/scans"
 import type { DataSource, ScanConfig, ScanJob } from "@/types"
 import { Button } from "@/components/ui/button"
-import { Dot } from "@/components/primitives/dot"
 import { EmptyState } from "@/components/empty-state"
 import { Search } from "lucide-react"
-import { ScanListRow } from "./scans/ScanConfigRow"
+import { RunStatusPill, ScanListRow } from "./scans/ScanConfigRow"
+import { runPillStatus } from "./scans/scanRunStatus"
 import { ScanCreatePage } from "./scans/ScanConfigForm"
 import { StatCard, SurfPanel } from "./scans/scanLayout"
 import { INTERVAL_LABEL, formatCount } from "./scans/scanLayoutConstants"
 import { deriveScanRunInfo, jobDurationSeconds, jobRowsScanned, type ScanRunInfo } from "./scans/scanUtils"
+import { friendlyScanError } from "@/lib/scanError"
 import { formatRelativeTime } from "@/lib/datetime"
 
 interface RecentRun {
@@ -22,7 +23,8 @@ interface RecentRun {
   startedAt: string | null
   rows: number | null
   durationSec: number | null
-  failed: boolean
+  status: ScanJob['status']
+  errorMessage: string | null
 }
 
 export function ScansTab({ slug }: { slug: string }) {
@@ -77,7 +79,8 @@ export function ScansTab({ slug }: { slug: string }) {
           startedAt: job.started_at ?? job.created_at,
           rows: jobRowsScanned(job),
           durationSec: jobDurationSeconds(job),
-          failed: job.status === 'failed',
+          status: job.status,
+          errorMessage: job.error_message,
         })
       })
     })
@@ -180,25 +183,33 @@ export function ScansTab({ slug }: { slug: string }) {
       {recentRuns.length > 0 && (
         <SurfPanel title="Recent runs" subtitle="Latest jobs across all scans">
           <div>
-            {recentRuns.map(run => (
-              <div
-                key={run.jobId}
-                className="flex items-center gap-3 border-t px-4 py-2.5 first:border-t-0"
-                style={{ borderColor: 'var(--border-subtle)' }}
-              >
-                <Dot tone={run.failed ? 'danger' : 'success'} size={6} />
-                <span className="w-[170px] shrink-0 truncate text-xs font-medium">{run.scanName}</span>
-                <span className="flex-1 text-[11.5px]" style={{ color: 'var(--fg-subtle)' }}>
-                  {run.startedAt ? formatRelativeTime(run.startedAt) : '—'}
-                </span>
-                <span className="mono text-[11px]" style={{ color: 'var(--fg-subtle)' }}>
-                  {run.rows == null ? '—' : `${formatCount(run.rows)} rows`}
-                </span>
-                <span className="mono w-[52px] text-right text-[11px]" style={{ color: 'var(--fg-faint)' }}>
-                  {run.durationSec == null ? '—' : `${run.durationSec.toFixed(1)}s`}
-                </span>
-              </div>
-            ))}
+            {recentRuns.map(run => {
+              const friendly = run.status === 'failed' ? friendlyScanError(run.errorMessage).message : null
+              return (
+                <div
+                  key={run.jobId}
+                  className="flex items-center gap-3 border-t px-4 py-2.5 first:border-t-0"
+                  style={{ borderColor: 'var(--border-subtle)' }}
+                >
+                  <RunStatusPill status={runPillStatus(run.status)} title={friendly ?? undefined} />
+                  <span className="w-[150px] shrink-0 truncate text-xs font-medium">{run.scanName}</span>
+                  <div className="flex min-w-0 flex-1 flex-col">
+                    <span className="text-[11.5px]" style={{ color: 'var(--fg-subtle)' }}>
+                      {run.startedAt ? formatRelativeTime(run.startedAt) : '—'}
+                    </span>
+                    {friendly && (
+                      <span className="truncate text-[11px]" style={{ color: 'var(--danger)' }}>{friendly}</span>
+                    )}
+                  </div>
+                  <span className="mono text-[11px]" style={{ color: 'var(--fg-subtle)' }}>
+                    {run.rows == null ? '—' : `${formatCount(run.rows)} rows`}
+                  </span>
+                  <span className="mono w-[52px] text-right text-[11px]" style={{ color: 'var(--fg-faint)' }}>
+                    {run.durationSec == null ? '—' : `${run.durationSec.toFixed(1)}s`}
+                  </span>
+                </div>
+              )
+            })}
           </div>
         </SurfPanel>
       )}

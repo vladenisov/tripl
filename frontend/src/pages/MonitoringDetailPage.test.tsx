@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -334,5 +334,120 @@ describe('MonitoringDetailPage event detail', () => {
 
     fireEvent.click(screen.getByRole('button', { name: /Edit/ }))
     expect(await screen.findByText('edit-page')).toBeInTheDocument()
+  })
+})
+
+function installEventDetailFetch(opts: { metricsData?: EventMetricPoint[] } = {}) {
+  const metricsData = opts.metricsData ?? [metricPoint('2026-01-02T00:00:00Z', 200)]
+  return vi.spyOn(globalThis, 'fetch').mockImplementation(async input => {
+    const url = String(input)
+    if (url.endsWith('/api/v1/projects/demo/event-types')) {
+      return mockJsonResponse([eventTypeFixture()])
+    }
+    if (url.endsWith('/api/v1/projects/demo/meta-fields')) return mockJsonResponse([])
+    if (url.endsWith('/api/v1/projects/demo/variables')) return mockJsonResponse([])
+    if (url.includes('/api/v1/projects/demo/events/event-1/history')) return mockJsonResponse([])
+    if (url.includes('/api/v1/projects/demo/events/event-1/metrics')) {
+      return mockJsonResponse({
+        scope: 'event',
+        scan_config_id: 'scan-1',
+        event_id: 'event-1',
+        event_type_id: 'type-1',
+        interval: '1h',
+        latest_signal: null,
+        data: metricsData,
+        forecast: [],
+      })
+    }
+    if (url.includes('/api/v1/projects/demo/events/event-1/photos')) return mockJsonResponse([])
+    if (url.endsWith('/api/v1/projects/demo/events/event-1')) return mockJsonResponse(eventFixture())
+    if (url.endsWith('/api/v1/projects/demo/scans/scan-1')) {
+      return mockJsonResponse({ id: 'scan-1', app_version_column: null })
+    }
+    if (url.includes('/api/v1/projects/demo/annotations')) return mockJsonResponse([])
+
+    throw new Error(`Unhandled fetch: ${url}`)
+  })
+}
+
+function renderLegacyEventDetail() {
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+  return render(
+    <QueryClientProvider client={queryClient}>
+      <MemoryRouter initialEntries={['/p/demo/events/detail/event-1']}>
+        <Routes>
+          {/* Legacy scope-less shape mounted directly to exercise the defensive
+              scope default; in the app this URL redirects to the canonical route. */}
+          <Route path="/p/:slug/events/detail/:eventId" element={<MonitoringDetailPage />} />
+        </Routes>
+      </MemoryRouter>
+    </QueryClientProvider>,
+  )
+}
+
+describe('MonitoringDetailPage event-detail header and semantics', () => {
+  it('renders without crashing when mounted from the legacy scope-less route', async () => {
+    installEventDetailFetch()
+    renderLegacyEventDetail()
+
+    // B1: resolveDetailScope defaults to the event scope when only an eventId is
+    // present, so the page renders the event hero instead of throwing.
+    expect(await screen.findByRole('heading', { name: 'checkout_completed' })).toBeInTheDocument()
+  })
+
+  it('marks the dead Watch and Implementation CTAs as disabled and coming soon', async () => {
+    installEventDetailFetch()
+    renderEventDetail()
+    await screen.findByRole('heading', { name: 'checkout_completed' })
+
+    const watch = screen.getByRole('button', { name: 'Watch' })
+    expect(watch).toBeDisabled()
+    expect(watch).toHaveAttribute('title', 'Coming soon')
+
+    const implementation = screen.getByRole('button', { name: 'Implementation' })
+    expect(implementation).toBeDisabled()
+    expect(implementation).toHaveAttribute('title', 'Coming soon')
+
+    // Metrics stays live — it scrolls to the metrics section.
+    expect(screen.getByRole('button', { name: 'Metrics' })).toBeEnabled()
+  })
+
+  it('shows a Plan / Events / <name> breadcrumb for the event scope', async () => {
+    installEventDetailFetch()
+    renderEventDetail()
+    await screen.findByRole('heading', { name: 'checkout_completed' })
+
+    const breadcrumb = screen.getByRole('navigation', { name: 'Breadcrumb' })
+    expect(within(breadcrumb).getByRole('button', { name: 'Plan' })).toBeInTheDocument()
+    expect(within(breadcrumb).getByRole('button', { name: 'Events' })).toBeInTheDocument()
+    expect(within(breadcrumb).getByText('checkout_completed')).toBeInTheDocument()
+  })
+
+  it('explains the empty 24h metrics instead of rendering a bare dash', async () => {
+    installEventDetailFetch({ metricsData: [] })
+    renderEventDetail()
+    await screen.findByRole('heading', { name: 'checkout_completed' })
+
+    expect(screen.getByText('Volume · 24h').closest('[title]')).toHaveAttribute(
+      'title',
+      'No events in the last 24h',
+    )
+    expect(screen.getByText('Δ · 24h').closest('[title]')).toHaveAttribute(
+      'title',
+      'No prior 24h window to compare against',
+    )
+  })
+
+  it('exposes table semantics for the Fields and Properties tables', async () => {
+    installEventDetailFetch()
+    renderEventDetail()
+    await screen.findByRole('heading', { name: 'checkout_completed' })
+
+    expect(screen.getByRole('table', { name: 'Fields' })).toBeInTheDocument()
+
+    const properties = screen.getByRole('table', { name: 'Properties' })
+    expect(properties).toBeInTheDocument()
+    expect(within(properties).getAllByRole('row').length).toBeGreaterThan(0)
+    expect(within(properties).getAllByRole('rowheader')[0]).toHaveTextContent('Event type')
   })
 })

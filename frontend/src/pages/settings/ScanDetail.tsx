@@ -1,13 +1,13 @@
 import { Fragment, useState } from "react"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
-import { Ban, ChevronDown, GitMerge } from "lucide-react"
+import { Ban, ChevronDown, GitMerge, RotateCcw } from "lucide-react"
 import { scansApi } from "@/api/scans"
 import type { DataSource, EventType, ScanConfig, ScanJob, ScanJobResultSummary } from "@/types"
 import { Button } from "@/components/ui/button"
 import { Card } from "@/components/ui/card"
 import { Chip } from "@/components/primitives/chip"
-import { Dot } from "@/components/primitives/dot"
 import { getErrorMessage } from '@/lib/utils'
+import { friendlyScanError } from '@/lib/scanError'
 import { formatRelativeTime } from '@/lib/datetime'
 import {
   KV,
@@ -16,6 +16,8 @@ import {
   StatCard,
   SurfPanel,
 } from './scans/scanLayout'
+import { RunStatusPill } from './scans/ScanConfigRow'
+import { runPillStatus } from './scans/scanRunStatus'
 import { jobDurationSeconds, jobRowsScanned } from './scans/scanUtils'
 
 function clamp(value: number, min: number, max: number) {
@@ -136,12 +138,25 @@ export function ScanDetail({
     onSuccess: () => qc.invalidateQueries({ queryKey: ['scanJobs', slug, scanConfig.id] }),
   })
 
+  const retryMut = useMutation({
+    mutationFn: () => scansApi.run(slug, scanConfig.id),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['scanJobs', slug, scanConfig.id] }),
+  })
+
   const lastJob = jobs[0] ?? null
   const lastRows = jobRowsScanned(lastJob)
   const lastEvents = lastJob?.result_summary?.events_created ?? null
   const lastMetricRows = lastJob?.result_summary?.breakdown_event_metrics
     ?? lastJob?.result_summary?.event_metrics
     ?? null
+
+  // Last-good timestamp: when the most recent run failed, surface when the scan
+  // last succeeded so a red row is never the only signal.
+  const lastGoodJob = jobs.find(j => j.status === 'completed') ?? null
+  const lastGoodAt = lastGoodJob ? (lastGoodJob.completed_at ?? lastGoodJob.started_at) : null
+  const recentJobsSubtitle = lastGoodAt
+    ? `Last succeeded ${formatRelativeTime(lastGoodAt)}`
+    : 'Latest scan runs'
 
   return (
     <div className="flex flex-col gap-4">
@@ -222,7 +237,7 @@ export function ScanDetail({
       {/* Recent jobs */}
       <SurfPanel
         title="Recent jobs"
-        subtitle="Latest scan runs"
+        subtitle={recentJobsSubtitle}
         right={
           <Button
             size="sm"
@@ -245,6 +260,9 @@ export function ScanDetail({
         )}
         {cancelMut.isError && (
           <p className="px-4 py-2 text-sm" style={{ color: 'var(--danger)' }}>{getErrorMessage(cancelMut.error)}</p>
+        )}
+        {retryMut.isError && (
+          <p className="px-4 py-2 text-sm" style={{ color: 'var(--danger)' }}>{getErrorMessage(retryMut.error)}</p>
         )}
         <p
           role="status"
@@ -280,6 +298,8 @@ export function ScanDetail({
                   onToggle={() => setExpandedJobId(expandedJobId === job.id ? null : job.id)}
                   onCancel={() => cancelMut.mutate(job.id)}
                   cancelPending={cancelMut.isPending && cancelMut.variables === job.id}
+                  onRetry={() => retryMut.mutate()}
+                  retryPending={retryMut.isPending}
                 />
               ))}
             </tbody>
@@ -290,26 +310,22 @@ export function ScanDetail({
   )
 }
 
-const STATUS_DOT: Record<string, 'success' | 'info' | 'danger' | 'neutral'> = {
-  completed: 'success',
-  running: 'info',
-  pending: 'neutral',
-  failed: 'danger',
-  cancelled: 'neutral',
-}
-
 function JobRow({
   job,
   expanded,
   onToggle,
   onCancel,
   cancelPending,
+  onRetry,
+  retryPending,
 }: {
   job: ScanJob
   expanded: boolean
   onToggle: () => void
   onCancel: () => void
   cancelPending: boolean
+  onRetry: () => void
+  retryPending: boolean
 }) {
   const durationSec = jobDurationSeconds(job)
   const duration = durationSec != null
@@ -318,6 +334,9 @@ function JobRow({
   const rows = jobRowsScanned(job)
   const events = job.result_summary?.events_created ?? null
   const isActive = job.status === 'pending' || job.status === 'running'
+  const failedMessage = job.status === 'failed'
+    ? friendlyScanError(job.error_message).message
+    : null
 
   return (
     <Fragment>
@@ -331,14 +350,7 @@ function JobRow({
           {events == null ? '—' : events.toLocaleString()}
         </td>
         <td className="px-4 py-2.5">
-          {job.status === 'failed' ? (
-            <Chip tone="danger" size="xs">failed</Chip>
-          ) : (
-            <span className="inline-flex items-center gap-1.5">
-              <Dot tone={STATUS_DOT[job.status] ?? 'neutral'} pulse={job.status === 'running'} size={6} />
-              <span className="text-[11.5px]" style={{ color: 'var(--fg-muted)' }}>{job.status}</span>
-            </span>
-          )}
+          <RunStatusPill status={runPillStatus(job.status)} title={failedMessage ?? undefined} />
         </td>
         <td className="px-2">
           <div className="flex items-center justify-end gap-1">
@@ -353,6 +365,19 @@ function JobRow({
                 onClick={onCancel}
               >
                 <Ban className="size-3" aria-hidden="true" />
+              </Button>
+            )}
+            {job.status === 'failed' && (
+              <Button
+                variant="ghost"
+                size="icon"
+                className="size-6 text-muted-foreground hover:text-[var(--accent)]"
+                title="Retry scan"
+                aria-label="Retry scan"
+                disabled={retryPending}
+                onClick={onRetry}
+              >
+                <RotateCcw className="size-3" aria-hidden="true" />
               </Button>
             )}
             {(job.result_summary || job.error_message) && (
@@ -396,8 +421,8 @@ function JobDetails({ job }: { job: ScanJob }) {
     <div className="space-y-3 bg-muted/30 p-4">
       <h4 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Job details</h4>
       {job.error_message && (
-        <div className="mono whitespace-pre-wrap rounded-lg border border-destructive/20 bg-destructive/10 p-3 text-xs text-destructive">
-          {job.error_message}
+        <div className="rounded-lg border border-destructive/20 bg-destructive/10 p-3 text-xs text-destructive">
+          {friendlyScanError(job.error_message).message}
         </div>
       )}
       {summary && (

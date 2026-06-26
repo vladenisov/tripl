@@ -624,7 +624,7 @@ export default function ProjectAlertingTab({ slug }: { slug: string }) {
                       <Label htmlFor="dest-email-subject">Subject Template (optional)</Label>
                       <Input
                         id="dest-email-subject"
-                        placeholder="[${'$'}{project_name}] ${'$'}{rule_name}"
+                        placeholder={`[\${project_name}] \${rule_name}`}
                         value={destinationForm.email_subject_template}
                         onChange={event => setDestinationForm(current => ({ ...current, email_subject_template: event.target.value }))}
                       />

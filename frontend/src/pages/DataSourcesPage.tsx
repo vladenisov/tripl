@@ -23,6 +23,7 @@ import { Dot } from '@/components/primitives/dot'
 import { MiniStat, MiniStatDivider } from '@/components/primitives/mini-stat'
 import {
   CheckCircle2,
+  Clock,
   Database,
   Lock,
   Pencil,
@@ -34,6 +35,16 @@ import {
 import { getErrorMessage } from '@/lib/utils'
 
 const EMPTY_DATA_SOURCES: DataSource[] = []
+
+// A successful connection test older than this is no longer a trustworthy
+// "healthy" signal — connections can silently break between manual checks, so
+// we surface staleness instead of a confident green status.
+const HEALTH_STALE_AFTER_MS = 7 * 24 * 60 * 60 * 1000 // 7 days
+
+function isHealthCheckStale(ds: DataSource, now: number = Date.now()): boolean {
+  if (ds.last_test_status !== 'success' || !ds.last_test_at) return false
+  return now - new Date(ds.last_test_at).getTime() > HEALTH_STALE_AFTER_MS
+}
 
 export default function DataSourcesPage() {
   const { dsId } = useParams<{ dsId?: string }>()
@@ -213,7 +224,9 @@ function ConnectionsTab({ openDsId }: { openDsId?: string }) {
     setTimeoutSeconds('')
   }
 
-  const healthyCount = dataSources.filter((ds) => ds.last_test_status === 'success').length
+  const healthyCount = dataSources.filter(
+    (ds) => ds.last_test_status === 'success' && !isHealthCheckStale(ds),
+  ).length
   const warningCount = dataSources.filter((ds) => ds.last_test_status === 'failed').length
 
   return (
@@ -478,12 +491,24 @@ function DataSourceCard({
   onEdit: () => void
   onDelete: () => void
 }) {
+  const lastTestAt = ds.last_test_at
+  const stale = isHealthCheckStale(ds)
   const statusTone: 'success' | 'warning' | 'neutral' =
     ds.last_test_status === 'success'
-      ? 'success'
+      ? stale
+        ? 'warning'
+        : 'success'
       : ds.last_test_status === 'failed'
         ? 'warning'
         : 'neutral'
+  const statusLabel =
+    ds.last_test_status === 'success'
+      ? stale
+        ? 'stale'
+        : 'healthy'
+      : ds.last_test_status === 'failed'
+        ? 'attention'
+        : 'unverified'
   const dotTone = statusTone === 'success' ? 'success' : statusTone === 'warning' ? 'warning' : 'neutral'
 
   return (
@@ -528,8 +553,8 @@ function DataSourceCard({
         className="flex flex-wrap items-center gap-1.5 border-t px-3.5 py-2.5"
         style={{ borderColor: 'var(--border-subtle)' }}
       >
-        <Chip tone={statusTone === 'success' ? 'success' : statusTone === 'warning' ? 'warning' : 'neutral'} size="xs">
-          {statusTone === 'success' ? 'healthy' : statusTone === 'warning' ? 'attention' : 'unverified'}
+        <Chip tone={statusTone} size="xs">
+          {statusLabel}
         </Chip>
         <Chip size="xs">{ds.db_type}</Chip>
         {ds.username && <Chip size="xs">{ds.username}</Chip>}
@@ -545,23 +570,34 @@ function DataSourceCard({
           className="flex items-center gap-1.5 border-t px-3.5 py-2 text-[11.5px]"
           style={{
             borderColor: 'var(--border-subtle)',
-            color: ds.last_test_status === 'success' ? 'var(--success)' : 'var(--danger)',
-            background:
-              ds.last_test_status === 'success' ? 'var(--success-soft)' : 'var(--danger-soft)',
+            color: stale
+              ? 'var(--warning)'
+              : ds.last_test_status === 'success'
+                ? 'var(--success)'
+                : 'var(--danger)',
+            background: stale
+              ? 'var(--warning-soft)'
+              : ds.last_test_status === 'success'
+                ? 'var(--success-soft)'
+                : 'var(--danger-soft)',
           }}
         >
-          {ds.last_test_status === 'success' ? (
-            <CheckCircle2 className="h-3 w-3" />
+          {stale ? (
+            <Clock className="h-3 w-3 shrink-0" />
+          ) : ds.last_test_status === 'success' ? (
+            <CheckCircle2 className="h-3 w-3 shrink-0" />
           ) : (
-            <XCircle className="h-3 w-3" />
+            <XCircle className="h-3 w-3 shrink-0" />
           )}
-          <span className="truncate">{ds.last_test_message}</span>
-          {ds.last_test_at && (
+          <span className="truncate" title={stale ? ds.last_test_message ?? undefined : undefined}>
+            {stale && lastTestAt ? `Last checked ${formatDate(lastTestAt)}` : ds.last_test_message}
+          </span>
+          {lastTestAt && (
             <span
               className="mono ml-auto shrink-0 text-[10.5px]"
               style={{ color: 'var(--fg-faint)' }}
             >
-              {formatRelative(ds.last_test_at)}
+              {stale ? 're-test to confirm' : formatRelative(lastTestAt)}
             </span>
           )}
         </div>
@@ -603,6 +639,10 @@ function parseTimeoutSeconds(value: string): number | null {
   return Number.isFinite(parsed) ? parsed : null
 }
 
+function formatDate(iso: string): string {
+  return new Date(iso).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })
+}
+
 function formatRelative(iso: string): string {
   const date = new Date(iso)
   const delta = Date.now() - date.getTime()
@@ -613,5 +653,5 @@ function formatRelative(iso: string): string {
   if (hours < 24) return `${hours}h ago`
   const days = Math.floor(hours / 24)
   if (days < 30) return `${days}d ago`
-  return date.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })
+  return formatDate(iso)
 }

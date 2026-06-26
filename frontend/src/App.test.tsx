@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { render, screen } from '@testing-library/react'
+import { render, screen, waitFor } from '@testing-library/react'
 import { BrowserRouter } from 'react-router-dom'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import App from './App'
@@ -110,5 +110,41 @@ describe('App', () => {
 
     expect(await screen.findByText('Sign in to tripl')).toBeInTheDocument()
     expect(screen.getByText('Create Account')).toBeInTheDocument()
+  })
+
+  it('redirects the legacy event-detail URL to the canonical monitoring route', async () => {
+    // B1: the legacy `/events/detail/:eventId` route used to mount the detail
+    // page with no `:scope` and crash. It now redirects to the canonical URL.
+    vi.spyOn(globalThis, 'fetch').mockImplementation((input: RequestInfo | URL) => {
+      const url =
+        typeof input === 'string'
+          ? input
+          : input instanceof URL
+            ? input.toString()
+            : input.url
+
+      if (url.endsWith('/api/v1/auth/me')) {
+        return Promise.resolve(jsonResponse({
+          id: 'user-1',
+          email: 'owner@example.com',
+          name: 'Owner',
+          role: 'owner',
+          created_at: '2026-04-18T10:00:00Z',
+          updated_at: '2026-04-18T10:00:00Z',
+        }))
+      }
+      if (url.endsWith('/api/v1/projects')) {
+        return Promise.resolve(jsonResponse([]))
+      }
+      // Detail-page data is irrelevant to the redirect assertion; a 404 makes
+      // the page render its ErrorState gracefully rather than crash.
+      return Promise.resolve(jsonResponse({ detail: 'Not found' }, 404))
+    })
+
+    renderApp('/p/demo/events/detail/event-1')
+
+    await waitFor(() => {
+      expect(window.location.pathname).toBe('/p/demo/monitoring/event/event-1')
+    })
   })
 })

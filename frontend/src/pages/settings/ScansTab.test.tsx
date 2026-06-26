@@ -133,6 +133,44 @@ describe('ScansTab', () => {
     expect(screen.getByText('Every 15 min')).toBeInTheDocument()
   })
 
+  it('labels failed runs as text with a sanitised message and no raw internals', async () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async input => {
+      const url = String(input)
+      if (url.includes('/data-sources/') && url.includes('/schema')) {
+        return mockJsonResponse({ tables: [] })
+      }
+      if (url.endsWith('/api/v1/data-sources')) return mockJsonResponse([dataSource])
+      if (url.endsWith('/api/v1/projects/demo/scans')) return mockJsonResponse([scanConfig])
+      if (url.includes('/scans/scan-1/jobs')) {
+        return mockJsonResponse([
+          {
+            id: 'job-fail',
+            scan_config_id: 'scan-1',
+            status: 'failed',
+            started_at: '2026-01-01T00:00:00Z',
+            completed_at: '2026-01-01T00:07:12Z',
+            result_summary: null,
+            error_message:
+              "HTTPSConnectionPool(host='clickhouse.internal', port=8443): Read timed out. (read timeout=30)",
+            created_at: '2026-01-01T00:00:00Z',
+            updated_at: '2026-01-01T00:07:12Z',
+          },
+        ])
+      }
+      if (url.includes('/eventTypes') || url.includes('/event-types')) return mockJsonResponse([])
+      throw new Error(`Unhandled fetch: ${url}`)
+    })
+    renderTab()
+
+    // The friendly message renders (Last-run column + Recent-runs feed); the
+    // failure is labelled "Failed" as text, and no raw host/port leaks.
+    expect(
+      (await screen.findAllByText('Scan failed: the data source did not respond in time.')).length,
+    ).toBeGreaterThanOrEqual(1)
+    expect(screen.getAllByText('Failed').length).toBeGreaterThanOrEqual(1)
+    expect(screen.queryByText(/clickhouse\.internal/)).not.toBeInTheDocument()
+  })
+
   it('navigates to detail by URL (not the in-place create view)', async () => {
     setupFetch()
     renderTab()

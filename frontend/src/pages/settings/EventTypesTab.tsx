@@ -80,7 +80,7 @@ export function EventTypesTab({ slug }: { slug: string }) {
   })
 
   // Per-type owners drive the list's Owner column and the derived merge Status
-  // (no owners ⇒ anyone can merge ⇒ "open merge"; owners present ⇒ "gated").
+  // (no owners ⇒ anyone can merge ⇒ "ungated"; owners present ⇒ "gated").
   const ownerQueries = useQueries({
     queries: eventTypes.map((et) => ({
       queryKey: ['eventTypeOwners', slug, et.id],
@@ -120,7 +120,7 @@ export function EventTypesTab({ slug }: { slug: string }) {
             No event types yet. Create one to categorize your events.
           </p>
         ) : (
-          <table className="w-full border-collapse">
+          <table className="w-full border-collapse" aria-label="Event types">
             <thead>
               <tr style={{ background: 'var(--bg-sunken)' }}>
                 <Th>Type</Th>
@@ -185,9 +185,21 @@ export function EventTypesTab({ slug }: { slug: string }) {
                   </Td>
                   <Td>
                     {(ownersByType.get(et.id) ?? []).length > 0 ? (
-                      <Chip tone="accent" size="xs">gated</Chip>
+                      <Chip
+                        tone="accent"
+                        size="xs"
+                        title="Owners must approve any branch merge that touches this type"
+                      >
+                        gated
+                      </Chip>
                     ) : (
-                      <Chip tone="neutral" size="xs">open merge</Chip>
+                      <Chip
+                        tone="neutral"
+                        size="xs"
+                        title="No owners set — anyone can merge a branch touching this type"
+                      >
+                        ungated
+                      </Chip>
                     )}
                   </Td>
                   <Td>
@@ -492,7 +504,7 @@ export function FieldsEditor({
               <Th>Display</Th>
               <Th>Type</Th>
               <Th>PII</Th>
-              <Th>Req</Th>
+              <Th>Required</Th>
               <Th>Contract</Th>
               <Th style={{ width: 66 }} />
             </tr>
@@ -1097,7 +1109,10 @@ function Th({
   style?: CSSProperties
 }) {
   return (
-    <th style={{ ...TH_STYLE, ...(align === 'right' ? { textAlign: 'right' } : {}), ...style }}>
+    <th
+      scope="col"
+      style={{ ...TH_STYLE, ...(align === 'right' ? { textAlign: 'right' } : {}), ...style }}
+    >
       {children}
     </th>
   )

@@ -25,7 +25,7 @@ describe('buildNavGroups', () => {
     })
   })
 
-  it('derives counts and an attention tone from the project summary', () => {
+  it('derives counts from the project summary', () => {
     const summary = {
       event_type_count: 6,
       event_count: 2483,
@@ -41,17 +41,42 @@ describe('buildNavGroups', () => {
       latest_signal: null,
     }
     const items = buildNavGroups('demo', summary).flatMap((g) => g.items)
-    const monitors = items.find((i) => i.id === 'monitoring')!
     expect(items.find((i) => i.id === 'events')!.count).toBe('2.5k')
-    expect(monitors.count).toBe('3')
-    expect(monitors.tone).toBe('danger')
+    expect(items.find((i) => i.id === 'variables')!.count).toBe('40')
   })
 
-  it('omits the monitors tone when there are no active signals', () => {
-    const groups = buildNavGroups('demo', undefined)
-    const monitors = groups.flatMap((g) => g.items).find((i) => i.id === 'monitoring')!
-    expect(monitors.count).toBeUndefined()
-    expect(monitors.tone).toBeUndefined()
+  it('never surfaces the signal count on the Monitors badge (H1)', () => {
+    // "Monitors" must not show monitoring_signal_count — that read "Monitors 3"
+    // next to a Monitors page showing 1 monitor. The badge is omitted instead.
+    const summary = {
+      event_type_count: 6,
+      event_count: 2483,
+      active_event_count: 2483,
+      implemented_event_count: 100,
+      review_pending_event_count: 8,
+      archived_event_count: 12,
+      variable_count: 40,
+      scan_count: 5,
+      alert_destination_count: 2,
+      monitoring_signal_count: 3,
+      latest_scan_job: null,
+      latest_signal: null,
+    }
+    const withSummary = buildNavGroups('demo', summary).flatMap((g) => g.items)
+    const withoutSummary = buildNavGroups('demo', undefined).flatMap((g) => g.items)
+    for (const items of [withSummary, withoutSummary]) {
+      const monitors = items.find((i) => i.id === 'monitoring')!
+      expect(monitors.count).toBeUndefined()
+      expect(monitors.tone).toBeUndefined()
+    }
+  })
+
+  it('surfaces Variables and Relations as Plan nav items (M6)', () => {
+    const items = buildNavGroups('demo', undefined)
+      .filter((g) => g.label === 'Plan')
+      .flatMap((g) => g.items)
+    expect(items.find((i) => i.id === 'variables')!.href).toBe('/p/demo/settings/variables')
+    expect(items.find((i) => i.id === 'relations')!.href).toBe('/p/demo/settings/relations')
   })
 })
 

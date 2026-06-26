@@ -186,7 +186,7 @@ function MonitorRow({ monitor }: { monitor: MonitorSummaryItem }) {
   return (
     <div
       role="row"
-      className={`${MONITOR_GRID} border-b py-2.5 last:border-0`}
+      className={`${MONITOR_GRID} cursor-default border-b py-2.5 last:border-0`}
       style={{ borderColor: 'var(--border-subtle)' }}
     >
       <span role="cell" className="flex min-w-0 items-center gap-2">
@@ -205,7 +205,11 @@ function MonitorRow({ monitor }: { monitor: MonitorSummaryItem }) {
         <Chip tone="neutral" size="xs">
           {monitor.destination_type}
         </Chip>
-        <span className="truncate text-[10px]" style={{ color: 'var(--fg-faint)' }}>
+        <span
+          className="truncate text-[10px]"
+          style={{ color: 'var(--fg-faint)' }}
+          title={`Routes to the "${monitor.destination_name}" ${monitor.destination_type} destination`}
+        >
           {monitor.destination_name}
         </span>
       </span>
