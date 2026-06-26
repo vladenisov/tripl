@@ -220,7 +220,7 @@ function ProjectGeneralBody({ slug }: { slug: string }) {
                 value={slugDraft}
                 onChange={setSlugDraft}
                 mono
-                prefix="windylabs.co/p/"
+                prefix="example.com/p/"
                 disabled={!canEdit}
               />
             </Field>
