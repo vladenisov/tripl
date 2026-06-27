@@ -35,3 +35,13 @@ from each folder's `_category_.json`):
 - `markdown.format: 'detect'` → `.md` files are CommonMark (literal `${var}` /
   `{slug}`), `.mdx` is reserved for interactive/OpenAPI pages.
 - `onBrokenLinks: 'throw'` — any broken internal link fails the build.
+
+## API reference
+
+The `/integrate/api` page is a [Redoc](https://github.com/Redocly/redoc) render of
+`openapi/tripl.openapi.json` (via [redocusaurus](https://github.com/rohit-gohri/redocusaurus)).
+Regenerate that spec from the FastAPI app after API changes:
+
+```bash
+./bin/dump-openapi.sh   # writes website/openapi/tripl.openapi.json
+```
