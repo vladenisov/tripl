@@ -283,3 +283,25 @@ class TestDataSourceSchema:
             "/api/v1/data-sources/00000000-0000-0000-0000-000000000000/schema"
         )
         assert resp.status_code == 401
+
+
+class TestConnectionErrorSanitization:
+    """The sync test-connection probe must not leak host/port/credential internals."""
+
+    @pytest.mark.parametrize(
+        "raw",
+        [
+            "HTTPSConnectionPool(host='ch.internal', port=8443): Read timed out.",
+            "ConnectionRefusedError: [Errno 111] Connection refused to db.internal:5432",
+            "OperationalError: password authentication failed for user 'admin'",
+            "some unexpected driver explosion",
+        ],
+    )
+    def test_friendly_test_error_hides_internals(self, raw: str):
+        msg = datasource_service._friendly_test_error(Exception(raw))
+        lowered = msg.lower()
+        assert "connection test failed" in lowered
+        # No raw host/port values, error numbers, or usernames reach the message.
+        assert not any(ch.isdigit() for ch in msg)
+        for leak in ("ch.internal", "db.internal", "errno", "admin", "httpsconnectionpool"):
+            assert leak not in lowered

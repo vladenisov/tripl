@@ -1,5 +1,6 @@
 import asyncio
 import contextlib
+import logging
 import uuid
 from datetime import UTC, datetime
 
@@ -121,6 +122,27 @@ def _to_response(ds: DataSource) -> DataSourceResponse:
     )
 
 
+logger = logging.getLogger(__name__)
+
+
+def _friendly_test_error(exc: Exception) -> str:
+    """Map a raw connection-probe exception to a safe, user-facing message.
+
+    Never echoes host/port/driver/credential internals — those go to logs only.
+    """
+    text = str(exc).lower()
+    if "timed out" in text or "timeout" in text:
+        return "Connection test failed: the data source did not respond in time."
+    if any(
+        hint in text
+        for hint in ("refused", "getaddrinfo", "could not connect", "connection", "name or service", "host", "port")
+    ):
+        return "Connection test failed: could not reach the data source — check the host, port, and network."
+    if any(hint in text for hint in ("auth", "password", "access denied", "credential", "permission")):
+        return "Connection test failed: authentication was rejected — check the credentials."
+    return "Connection test failed. Check the connection settings and try again."
+
+
 def _run_adapter_test(ds: DataSource) -> tuple[bool, str]:
     """Open a sync adapter, run a probe, return (ok, message). Always closes."""
     from tripl.core.adapters.registry import build_adapter
@@ -128,12 +150,14 @@ def _run_adapter_test(ds: DataSource) -> tuple[bool, str]:
     try:
         adapter = build_adapter(ds)
     except Exception as exc:  # noqa: BLE001
-        return False, str(exc)
+        logger.exception("Data source adapter build failed for %s", ds.id)
+        return False, _friendly_test_error(exc)
 
     try:
         ok = bool(adapter.test_connection())
     except Exception as exc:  # noqa: BLE001
-        return False, str(exc)
+        logger.exception("Data source connection test failed for %s", ds.id)
+        return False, _friendly_test_error(exc)
     finally:
         with contextlib.suppress(Exception):
             adapter.close()
