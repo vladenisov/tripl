@@ -1,115 +1,178 @@
-# Releasing & deploying tripl
+---
+title: Release Process
+sidebar_position: 3
+---
 
-tripl ships as **one image** that serves the JSON API and the built SPA in a
-single process. Releases are driven entirely by **git tags**: bump the version,
-push a `vX.Y.Z` tag, and GitHub Actions builds a multi-arch image, pushes it to
-GHCR, and cuts a GitHub Release.
+# Release Process
+
+This page is for **maintainers** cutting a release. tripl ships as **one image**
+that serves the JSON API and the built SPA in a single process. Releases are
+driven entirely by **git tags**: bump the version, push a `vX.Y.Z` tag, and
+GitHub Actions runs CI, builds a multi-arch image, pushes it to GHCR, and cuts a
+GitHub Release.
 
 ```
 bin/release.sh        git tag vX.Y.Z        .github/workflows/release.yml
-  bump version  ───▶   push to origin  ───▶   CI gate ─▶ buildx (amd64+arm64)
-                                                       └─▶ push ghcr.io/.../tripl:X.Y.Z, :X.Y, :latest
+  bump version  ───▶   push to origin  ───▶   CI gate ─▶ buildx (amd64 + arm64)
+                                                       ├─▶ push ghcr.io/.../tripl:X.Y.Z, :X.Y, :latest
                                                        └─▶ GitHub Release
 ```
 
+The **git tag is the single source of truth** for the version.
+`backend/pyproject.toml` and `frontend/package.json` are kept in sync by the
+release script, not the other way around.
+
+## Versioning & tags
+
+tripl follows semver, and the tag is always `v` + the version:
+
+| Bump | Meaning | Example |
+|---|---|---|
+| `patch` | Bug fixes, no API change | `0.1.0` → `0.1.1` |
+| `minor` | New, backward-compatible features | `0.1.0` → `0.2.0` |
+| `major` | Breaking changes | `0.1.0` → `1.0.0` |
+
+You can also pass an explicit `X.Y.Z`. The script validates that both the
+current and target versions are strict `X.Y.Z` (no pre-release suffixes), so
+pre-releases are not part of this flow.
+
 ## Cut a release
 
-From a clean `main` that's green on CI:
+From a clean `main` that is green on CI:
 
 ```bash
 bin/release.sh patch     # 0.1.0 -> 0.1.1   (bug fixes)
 bin/release.sh minor     # 0.1.0 -> 0.2.0   (features, back-compatible)
 bin/release.sh major     # 0.1.0 -> 1.0.0   (breaking changes)
 bin/release.sh 1.4.0     # set an explicit version
-bin/release.sh -n patch  # dry-run: show the plan, change nothing
+bin/release.sh -n patch  # dry-run: print the plan, change nothing
+bin/release.sh -y minor  # skip the confirmation prompt
 ```
 
-The script:
+What [`bin/release.sh`](https://github.com/vladenisov/tripl/blob/main/bin/release.sh)
+does:
 
-1. Reads the current version from `backend/pyproject.toml` (`[project].version`).
-2. Computes and writes the new version to `backend/pyproject.toml` **and**
-   `frontend/package.json` (kept in sync).
-3. Commits `chore(release): vX.Y.Z`.
-4. Creates an annotated tag `vX.Y.Z` and pushes the branch + tag.
+1. Reads the current version from `backend/pyproject.toml` (the `[project]`
+   `version` line).
+2. Computes the new version and writes it to **both**
+   `backend/pyproject.toml` and `frontend/package.json`.
+3. Commits `chore(release): vX.Y.Z` (skipped if the files are already at the
+   target version — it then just tags the current `HEAD`).
+4. Creates an **annotated** tag `vX.Y.Z` and pushes the branch **and** the tag
+   to `origin`.
 
-It refuses to run on a dirty tree or if the tag already exists, and warns if
-you're not on `main`. The **git tag is the source of truth** for the version.
+It runs from the repo root regardless of where you invoke it, and requires GNU
+`sed`.
+
+:::warning Preconditions
+The script **refuses to run** if the working tree is dirty (uncommitted or
+staged changes) or if the tag already exists. It **warns** (but does not stop)
+if you are not on `main`. Unless you pass `-n`/`--dry-run` or `-y`/`--yes`, it
+prompts for confirmation before pushing.
+:::
+
+Use `-n` first if you are unsure — it prints exactly which version it would set
+and what it would commit, tag, and push, without changing anything.
 
 ## What the tag triggers
 
-`.github/workflows/release.yml` runs on any `v*` tag push:
+Pushing a `v*` tag starts the
+[Release workflow](https://github.com/vladenisov/tripl/blob/main/.github/workflows/release.yml),
+which has two jobs:
 
-1. **CI gate** — reuses `ci.yml` (ruff + mypy + pytest, lint + build + vitest).
-   No image is published from red code.
-2. **Build & push** — `docker buildx` builds the root `Dockerfile` `runtime`
-   stage for **`linux/amd64` and `linux/arm64`** and pushes to
-   `ghcr.io/vladenisov/tripl` with tags `X.Y.Z`, `X.Y`, `latest` (stable only),
-   and `sha-<short>`.
-3. **GitHub Release** — created from the tag with auto-generated notes.
+1. **CI gate (`ci`)** — reuses
+   [`ci.yml`](https://github.com/vladenisov/tripl/blob/main/.github/workflows/ci.yml)
+   via `workflow_call`: the backend job (`ruff` + `mypy` + `pytest`) and the
+   frontend job (`pnpm lint` + `pnpm build` + `pnpm test`). The image job
+   `needs: ci`, so **no image is ever published from red code**.
+2. **Build & push image (`image`)** — after CI is green:
+   - Sets up QEMU + Buildx and logs in to GHCR.
+   - Builds the root `Dockerfile` `runtime` stage for **`linux/amd64` and
+     `linux/arm64`** and pushes to `ghcr.io/<owner>/tripl`.
+   - Creates a **GitHub Release** from the tag with auto-generated notes.
 
-Auth uses the built-in `GITHUB_TOKEN` (no extra secrets). The first publish to a
-new package creates it as **private**; make it public in the repo's
-*Packages → tripl → Package settings* if you want anonymous pulls.
+Authentication uses the built-in `GITHUB_TOKEN` (`packages: write` to push to
+GHCR, `contents: write` to create the Release) — no extra secrets to manage.
 
-> **arm64 is cross-built via QEMU** on the amd64 runner, so release builds are
-> slower than a native build (the `pnpm build` + `uv sync` steps especially).
-> This is fine for tagged releases; for faster builds later, switch to a native
-> arm64 runner.
+### Image tags produced
 
-To re-run a build for an existing tag (e.g. a transient failure), use the
-**Run workflow** button on the *Release* workflow and pass the tag (e.g.
-`v1.4.0`).
+Tags are computed by `docker/metadata-action`:
 
-## Deploy
-
-The default `compose.yaml` runs the **published image** — no source build:
-
-```bash
-cp .env.example .env
-# generate the required secrets (appended values win over the .env.example blanks):
-{
-  echo "ENCRYPTION_KEY=$(openssl rand -base64 32 | tr '+/' '-_')"  # Fernet key
-  echo "SECRET_KEY=$(openssl rand -hex 48)"
-  echo "POSTGRES_PASSWORD=$(openssl rand -hex 24)"
-  echo "RABBITMQ_PASSWORD=$(openssl rand -hex 24)"
-  echo "APP_BASE_URL=https://tripl.example.com"   # your public https URL
-  echo "TRIPL_VERSION=1.4.0"                       # pin the release you want
-} >> .env
-
-docker compose pull
-docker compose up -d
-```
-
-The stack: `postgres`, `rabbitmq`, `redis`, a one-shot `migrate` (runs
-`alembic upgrade head` before anything starts), the `app` (API + SPA on
-`:8000`), and `celery-worker` / `celery-beat` — all from the same image.
-
-| Variable | Default | Notes |
+| Tag | Source | Notes |
 |---|---|---|
-| `TRIPL_IMAGE` | `ghcr.io/vladenisov/tripl` | Registry/repo of the image. |
-| `TRIPL_VERSION` | `latest` | **Pin** to a released tag in production. |
-| `POSTGRES_PASSWORD` | — | **Required.** DB password (must not be `tripl`). |
-| `RABBITMQ_PASSWORD` | — | **Required.** Broker password (user is `tripl`). |
-| `ENCRYPTION_KEY` | — | **Required.** Fernet key for secrets at rest. |
-| `SECRET_KEY` | — | **Required.** Session cookie signing key. |
-| `APP_BASE_URL` | — | **Required.** Public base URL (use your `https://` URL). |
+| `X.Y.Z` | full semver | the exact release |
+| `X.Y` | major.minor | floats to the latest patch |
+| `latest` | `flavor latest=auto` | **stable releases only** (no pre-releases) |
+| `sha-<short>` | commit | the exact build commit |
 
-Upgrading is just: bump `TRIPL_VERSION`, then `docker compose pull && docker
-compose up -d`. The `migrate` one-shot applies any new Alembic migrations before
-the new `app`/workers come up, so a multi-worker deploy never races the upgrade.
+:::note arm64 is cross-built via QEMU
+arm64 is emulated on the amd64 runner, so release builds are slower than a
+native build (`pnpm build` and `uv sync` especially). This is acceptable for
+tagged releases. For faster builds later, move to a native arm64 runner.
+:::
 
-> The prod stack enforces production hardening: it forces secure session cookies
-> on and refuses dev-default DB/broker credentials, so it expects to sit behind
-> TLS — terminate it in front of `:8000` and use an `https://` `APP_BASE_URL`.
-> To just preview the app locally over plain HTTP, use the dev stack instead
-> (`docker compose -f compose.dev.yaml up --watch`). The deploy host needs
-> `compose.yaml`, `.env`, and `infra/rabbitmq/` present.
+:::note First publish is private
+The first push to a brand-new GHCR package creates it as **private**. Make it
+public under *Packages → tripl → Package settings* if you want anonymous pulls.
+:::
 
-## Local development
+## Re-running a build for an existing tag
 
-This is **not** the deploy path. For hot-reload development (Vite on `:5173`
-proxying to the API on `:8000`), use the dev stack which builds from source:
+If a push-triggered build fails transiently (e.g. a flaky network step), you do
+not need to re-tag. The Release workflow also accepts **`workflow_dispatch`**:
+
+1. Open the **Release** workflow in the GitHub Actions tab.
+2. Click **Run workflow** and pass the existing tag, e.g. `v1.4.0`.
+
+On `workflow_dispatch` the workflow checks out the requested tag and passes it
+into the metadata action, so `X.Y.Z` / `X.Y` / `latest` still resolve
+correctly. This re-runs the full CI gate before rebuilding.
+
+## Post-release smoke check
+
+After the workflow goes green:
 
 ```bash
-docker compose -f compose.dev.yaml up --watch
+# 1. Watch / confirm the run finished
+gh run watch
+
+# 2. Confirm the Release was cut
+gh release view v1.4.0
+
+# 3. Confirm the multi-arch image is published (should list amd64 + arm64)
+docker buildx imagetools inspect ghcr.io/vladenisov/tripl:1.4.0
+
+# 4. Confirm the floating tags point at it
+docker buildx imagetools inspect ghcr.io/vladenisov/tripl:latest
 ```
+
+Then do a real pull-and-run on a throwaway host or locally, pinning the new tag:
+
+```bash
+TRIPL_VERSION=1.4.0 docker compose pull
+TRIPL_VERSION=1.4.0 docker compose up -d
+docker compose ps        # migrate one-shot Completed; app/workers healthy/Up
+```
+
+The stack from [`compose.yaml`](https://github.com/vladenisov/tripl/blob/main/compose.yaml)
+is `postgres`, `rabbitmq`, `redis`, a one-shot `migrate` (`alembic upgrade head`
+before anything starts), the `app` (API + SPA on `:8000`), and
+`celery-worker` / `celery-beat` — all from the same image. The `migrate`
+one-shot must reach **Completed** before `app`/workers start, so a multi-worker
+deploy never races the schema upgrade.
+
+## Rollback & upgrade path
+
+There is no separate rollback workflow — versions are immutable image tags, so
+rolling back is just re-pinning `TRIPL_VERSION` to the previous release and
+re-deploying. The full upgrade/downgrade procedure, required `.env` secrets, and
+the production-hardening notes live on the deployment page:
+
+➡️ See [Deployment](./deployment) for the upgrade and rollback steps.
+
+:::danger Migrations are not auto-reversed
+Downgrading the image does **not** roll back Alembic migrations. If a release
+applied a schema change, rolling the image back to a version that predates that
+migration can break against the upgraded schema. Treat schema changes as
+forward-only and verify on a staging stack before relying on rollback.
+:::

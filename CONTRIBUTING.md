@@ -1,116 +1,269 @@
-# Contributing
+# Contributing to tripl
 
-## Local Setup
+Thanks for working on **tripl** — an analytics tracking-plan and data-quality
+monitoring service. This guide covers how to get a local environment running,
+the day-to-day backend and frontend workflows, how database migrations work,
+where new code belongs, and the conventions we expect on pull requests.
+
+The agent-facing navigation map (domain model, API map, async pipeline map,
+"where to look first") lives in
+[AGENTS.md](https://github.com/vladenisov/tripl/blob/main/AGENTS.md). This file
+is the human contributor guide. The repo's
+[CLAUDE.md](https://github.com/vladenisov/tripl/blob/main/CLAUDE.md) links here
+for build and test commands instead of duplicating them, so keep the command
+sections below accurate.
+
+## Prerequisites
+
+| Tool | Version | Used for |
+|---|---|---|
+| [uv](https://docs.astral.sh/uv/) | latest | Backend Python env, deps, and task runner |
+| Python | 3.14 (pinned in `backend/.python-version`) | Backend runtime — `uv` will fetch it for you |
+| Node.js | `>=26 <27` (pinned in `frontend/.node-version`) | Frontend build/test |
+| [pnpm](https://pnpm.io/) | `11.6.0` (pinned via `packageManager`) | Frontend deps and scripts |
+| Docker + Compose v2 | recent | Local dev stack |
+
+The repo pins the package managers, so use **`uv`** for the backend and
+**`pnpm`** for the frontend. Do **not** use `pip`, `poetry`, `npm`, or `yarn` —
+they bypass `uv.lock` / `pnpm-lock.yaml` and CI will diverge from your machine.
+
+Enable the pinned pnpm with Corepack (ships with Node):
+
+```bash
+corepack enable
+corepack prepare pnpm@11.6.0 --activate
+```
+
+:::note ClickHouse / BigQuery / Postgres warehouses are external
+tripl reads from *external* analytics warehouses (ClickHouse, BigQuery, and the
+Postgres warehouse adapter). Compose does **not** start a warehouse for you. The
+PostgreSQL container in the dev stack is tripl's own system-of-record database,
+not a scan target. Scans and data-source connection tests need a reachable
+external warehouse.
+:::
+
+## Local Development with Docker Compose
+
+The dev stack builds from source, runs as root, and hot-reloads via Docker
+Compose watch. It is defined in
+[compose.dev.yaml](https://github.com/vladenisov/tripl/blob/main/compose.dev.yaml)
+(this is **not** the deploy stack — production runs the published single-
+container image via `compose.yaml`).
 
 ```bash
 cp .env.example .env
-docker compose up -d --build
+docker compose -f compose.dev.yaml up --watch
 ```
 
-Services:
+Services started: `postgres` (pgvector, pg18), `rabbitmq`, `redis`, `api`,
+`celery-worker`, `celery-beat`, and `frontend`.
 
-| Service | URL |
+| Surface | URL |
 |---|---|
-| Frontend | http://localhost:5173 |
+| Frontend (Vite dev server) | http://localhost:5173 |
 | API | http://localhost:8000 |
-| API docs | http://localhost:8000/docs |
+| API docs (Swagger) | http://localhost:8000/docs |
+| API health | http://localhost:8000/health |
 | RabbitMQ management | http://localhost:15672 |
 
-Notes:
+Useful facts about the dev stack:
 
-- ClickHouse is external and is not started by Compose.
-- `api` runs migrations on startup.
-- `celery-beat` is responsible for scheduling metrics collection checks.
+- The `api` service runs `alembic upgrade head` before launching `uvicorn`, so
+  the schema is migrated on startup.
+- `DEBUG=true` is set for the dev `api`, which relaxes the production-readiness
+  checks (see [Common dev failures](#common-dev-failures)).
+- `celery-beat` polls for due metrics every 5 minutes (the `check-metrics-due`
+  task; scans themselves fire on interval boundaries) and also schedules the
+  daily/weekly maintenance and digest jobs. The actual scan/metrics/alert work
+  runs on `celery-worker`.
+- Watch uses file polling inside containers (`WATCHFILES_FORCE_POLLING` on the
+  backend, `CHOKIDAR_USEPOLLING` on the frontend) so edits under `backend/src`
+  and `frontend/src` sync automatically. Changing a lockfile, `pyproject.toml`,
+  or a `Dockerfile` triggers a rebuild.
+
+You can validate Compose wiring without bringing the stack up:
+
+```bash
+docker compose -f compose.dev.yaml config
+```
 
 ## Backend Workflow
 
+The backend lives in [`backend/`](https://github.com/vladenisov/tripl/blob/main/backend).
+Run these from inside that directory.
+
 ```bash
 cd backend
-uv sync
-uv run pytest
-uv run ruff check
-uv run ruff format --check
-uv run mypy
-uv run alembic upgrade head
+uv sync                                       # install deps from uv.lock (incl. dev extras)
+uv run pytest                                 # full test suite
+uv run pytest src/tripl/tests/test_events.py -v   # single test file
+uv run ruff check                             # lint
+uv run ruff format --check                    # formatting check (drop --check to apply)
+uv run mypy                                   # strict type check
 ```
+
+Notes:
+
+- Tests run against an in-memory SQLite database (`aiosqlite`), so `uv run
+  pytest` needs **no** Postgres, RabbitMQ, or warehouse running. `pytest-asyncio`
+  is in `auto` mode and the loop scope is session-wide (see
+  `[tool.pytest.ini_options]` in `backend/pyproject.toml`).
+- Ruff is configured for `target-version = py314`, `line-length = 100`, rule set
+  `E, F, I, UP, B, SIM`, and excludes generated migrations under
+  `alembic/versions`.
+- mypy runs in `strict` mode over `src/tripl` and excludes the test tree.
+- Run the checks for the side you touched before opening a PR.
 
 ## Frontend Workflow
 
+The frontend lives in [`frontend/`](https://github.com/vladenisov/tripl/blob/main/frontend)
+(React 19 + TypeScript + Vite, Tailwind 4, Radix UI, TanStack Query, Recharts).
+
 ```bash
 cd frontend
-pnpm install
-pnpm dev
-pnpm test
-pnpm exec tsc --noEmit
-pnpm lint
-pnpm build
+pnpm install        # install deps from pnpm-lock.yaml
+pnpm dev            # Vite dev server on :5173
+pnpm test           # vitest run
+pnpm lint           # eslint . --max-warnings 0  (zero-warning policy)
+pnpm build          # tsc -b && vite build  (full type check + production build)
 ```
 
-## Project Structure
+The typed API client is generated from the backend's OpenAPI schema. If you
+change request/response contracts, regenerate it:
 
-```text
-tripl/
-├── compose.yaml          # prod / deploy stack (runs the published image)
-├── compose.dev.yaml      # local dev stack (build from source + hot-reload)
-├── bin/release.sh        # cut a release: bump version, tag, push
-├── README.md
-├── PLAN.md
-├── backend/
-│   ├── alembic/
-│   └── src/tripl/
-│       ├── api/v1/           # FastAPI routers
-│       ├── models/           # SQLAlchemy models
-│       ├── schemas/          # Pydantic contracts
-│       ├── services/         # Business logic
-│       ├── tests/            # pytest coverage
-│       ├── worker/adapters/  # ClickHouse integration
-│       ├── worker/analyzers/ # scan + anomaly logic
-│       └── worker/tasks/     # Celery entrypoints
-└── frontend/
-    └── src/
-        ├── api/              # typed HTTP clients
-        ├── components/       # layout + UI primitives
-        ├── pages/            # MainPage, EventsPage, DataSourcesPage, MonitoringDetailPage, ProjectSettingsPage
-        └── types/            # frontend domain contracts
+```bash
+pnpm gen:api        # regenerates src/types/api.gen.ts from ../backend/openapi.json
 ```
 
-## API Overview
+`pnpm lint` enforces a zero-warning policy and `pnpm build` runs a full
+type-check, so both must be clean before you push frontend changes.
 
-All endpoints live under `/api/v1`.
+## Database Migrations (Alembic)
 
-Core resources:
+Migrations live in `backend/alembic/`. The async `env.py` wires Alembic to
+`tripl.config.settings.database_url` and `tripl.models.Base.metadata`, so a
+migration run needs a reachable Postgres (`DATABASE_URL`) and the models
+importable.
 
-- `/projects`
-- `/projects/{slug}/event-types`
-- `/projects/{slug}/event-types/{event_type_id}/fields`
-- `/projects/{slug}/relations`
-- `/projects/{slug}/meta-fields`
-- `/projects/{slug}/variables`
-- `/projects/{slug}/events`
-- `/data-sources`
-- `/projects/{slug}/scans`
-- `/projects/{slug}/anomaly-settings`
-- `/projects/{slug}/alert-destinations`
-- `/projects/{slug}/alert-deliveries`
+Typical dev loop after changing SQLAlchemy models:
 
-Metrics and monitoring endpoints:
+```bash
+cd backend
+uv run alembic revision --autogenerate -m "describe the change"   # generate
+# review the generated file under alembic/versions/, then:
+uv run alembic upgrade head                                       # apply
+```
 
-- `GET /projects/{slug}/events-metrics`
-- `POST /projects/{slug}/events/window-metrics`
-- `GET /projects/{slug}/metrics/total`
-- `GET /projects/{slug}/events/{event_id}/metrics`
-- `GET /projects/{slug}/event-types/{event_type_id}/metrics`
-- `GET /projects/{slug}/anomalies/signals`
+:::tip alembic shebang fallback
+If `uv run alembic` fails with a broken shebang (e.g. after a directory rename
+left `.venv/bin/alembic` pointing at a stale path), call the module directly:
 
-## Change Expectations
+```bash
+uv run python -m alembic revision --autogenerate -m "msg"
+uv run python -m alembic upgrade head
+```
+:::
 
-- Keep FastAPI routers thin; push business rules into services.
-- Update backend schemas and frontend types together when payloads change.
-- Prefer extending existing worker/analyzer flows rather than adding parallel implementations.
-- For scan, metrics, anomaly, or alerting changes, check both runtime behavior and UI assumptions.
+Always review autogenerated migrations — Alembic does not catch everything
+(e.g. enum changes, server defaults, data backfills). The suite includes
+`test_alembic_revisions.py`, which guards migration integrity, so run
+`uv run pytest` after adding a revision.
 
-## PR Guidelines
+## Architecture: where new code belongs
 
-- Title format: `[analytics] <Title>`
-- Call out API contract changes, event schema changes, queue/schedule changes, metrics/anomaly behavior changes, alerting changes, and environment variable changes.
-- Before merging, run backend checks and frontend checks for the areas you touched.
+tripl is one codebase with two runtimes sharing a common core.
+
+### Shared core kernel
+
+Provider-agnostic, framework-agnostic logic lives in
+[`backend/src/tripl/core/`](https://github.com/vladenisov/tripl/blob/main/backend/src/tripl/core):
+
+- `core/adapters/` — warehouse connectors (`clickhouse.py`, `bigquery.py`,
+  `postgres.py`) behind a shared `base.py` interface and a `registry.py`.
+- `core/analyzers/` — scan and quality logic: cardinality analysis, event/
+  variable generation, anomaly detection, distribution drift, release
+  regression, and preview.
+- `core/intervals.py` — shared time-bucket helpers.
+
+The core kernel exists so both the API and the worker call the **same** scan,
+metrics, and anomaly logic. Put analytics logic here (not in a router or a
+Celery task) so it stays reusable and unit-testable in isolation. Add a new
+warehouse by implementing the adapter `base` interface and registering it in
+`core/adapters/registry.py` — extend the registry rather than branching on
+warehouse type elsewhere.
+
+### API runtime (async) vs worker runtime (sync)
+
+- **API** (`api/`, `services/`, `models/`, `schemas/`, `main.py`) runs on
+  FastAPI with **async** SQLAlchemy + `asyncpg` via `DATABASE_URL`. Keep request
+  paths async — do not introduce blocking DB calls into a router.
+- **Worker** (`worker/`) runs Celery tasks using **sync** SQLAlchemy + `psycopg`
+  via `SYNC_DATABASE_URL`. Sync DB access is expected and acceptable inside
+  worker tasks.
+
+When adding an HTTP feature:
+
+1. Add a **thin** router in `api/v1/<area>.py` — parse/validate, call a service,
+   return a schema. No business rules here.
+2. Put business logic in `services/<area>_service.py`.
+3. Add SQLAlchemy models in `models/` and Pydantic request/response models in
+   `schemas/`. Update both together when a payload changes, and regenerate the
+   frontend types (`pnpm gen:api`) so `frontend/src/types` stays in sync.
+
+When adding heavy, retryable, or scheduled work:
+
+1. Add a Celery entrypoint under `worker/tasks/` (scan, metrics, alerts,
+   maintenance, search).
+2. Put the actual analysis in `core/analyzers/` and any warehouse access in a
+   `core/adapters/` adapter.
+3. Prefer extending an existing task/adapter/analyzer flow over adding a
+   parallel implementation.
+
+Operational invariants to preserve unless you are intentionally changing them:
+RabbitMQ is the Celery broker; PostgreSQL is the system of record for catalog,
+metrics, anomalies, and alert deliveries; warehouses are read-only external data
+sources; and API, worker, and beat must all stay runnable together via Compose.
+
+## Common dev failures
+
+- **Scan / connection test fails with no warehouse reachable.** Warehouses are
+  external and not started by Compose. Point a data source at a real ClickHouse,
+  BigQuery, or Postgres warehouse you control.
+- **App refuses to start in non-debug mode.** `Settings.assert_production_ready()`
+  rejects an empty/invalid `ENCRYPTION_KEY`, an empty `SECRET_KEY`, CORS that
+  resolves to nothing or to the wildcard `*`, or `SESSION_COOKIE_SECURE=false`
+  (it also requires the database/broker URLs). The dev stack sets `DEBUG=true`
+  so these are tolerated locally; if you run the API outside dev mode you must
+  supply real values. Generation commands are documented inline in
+  [`.env.example`](https://github.com/vladenisov/tripl/blob/main/.env.example).
+- **`alembic` shebang errors.** Use `uv run python -m alembic ...` (see the
+  migrations section).
+- **Lockfile drift / CI mismatch.** Always use `uv` and `pnpm`. A stray `pip`,
+  `npm`, or `yarn` install will desync the lockfiles.
+- **Port already in use.** The dev stack binds `5173`, `8000`, `5432`, `5672`,
+  `6379`, and `15672`. Stop conflicting services or remap ports.
+- **Edits not hot-reloading.** Compose watch only syncs `backend/src`,
+  `frontend/src`, and a few config files; changes to `pyproject.toml`,
+  lockfiles, or a `Dockerfile` require a rebuild (re-run `up --watch`).
+
+## Pull Request Conventions
+
+- **Title format:** `[analytics] <Title>`.
+- Keep PRs focused and run the checks for the side(s) you touched: backend
+  (`pytest`, `ruff check`, `ruff format --check`, `mypy`) and/or frontend
+  (`pnpm lint`, `pnpm test`, `pnpm build`). Run `docker compose -f
+  compose.dev.yaml config` when you change Compose or env wiring.
+
+Always call out in the PR description when a change touches:
+
+- **API contracts** — request/response shapes (and regenerate `pnpm gen:api`).
+- **Event/tracking-plan schema** — models or Pydantic schemas.
+- **Queue, task, or schedule** behavior — Celery tasks or the beat schedule.
+- **Metrics or anomaly semantics** — collection, bucketing, or detection logic.
+- **Alerting** — channels, templates, or delivery behavior.
+- **Environment variables** — and keep `.env.example`, the Compose env blocks,
+  and `backend/src/tripl/config.py` synchronized.
+
+For deeper area-by-area pointers (which service, schema, task, and test files
+correspond to each feature), see
+[AGENTS.md](https://github.com/vladenisov/tripl/blob/main/AGENTS.md).

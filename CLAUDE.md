@@ -53,41 +53,25 @@ bd close <id>         # Complete work
 
 ## Build & Test
 
-**Backend uses `uv` (uv.lock). Frontend uses `pnpm` (pnpm-lock.yaml).**
-Do NOT use `pip`, `poetry`, `npm`, or `yarn` in this repo — lockfiles will go
-out of sync and CI will diverge from local.
-
-### Backend (`backend/`)
-
-```bash
-uv sync                                     # install deps from uv.lock
-uv run pytest                               # run test suite
-uv run pytest src/tripl/tests/<file>.py -v  # run a single test file
-uv run alembic upgrade head                 # apply migrations
-uv run alembic revision --autogenerate -m "msg"   # generate migration
-uv run uvicorn tripl.main:app --reload      # dev server
-```
-
-If a script's shebang is broken (e.g. `.venv/bin/alembic` after a directory
-rename), call the module directly: `uv run python -m alembic <args>`.
-
-### Frontend (`frontend/`)
-
-```bash
-pnpm install        # install deps from pnpm-lock.yaml
-pnpm dev            # vite dev server
-pnpm build          # tsc -b && vite build (full type check)
-pnpm test           # vitest run
-pnpm lint           # eslint . --max-warnings 0 (zero-warning policy)
-```
+Build, test, lint, and migration commands live in **[CONTRIBUTING.md](CONTRIBUTING.md)** —
+the single source of truth. The one rule worth repeating: the backend uses `uv`
+(`uv.lock`) and the frontend uses `pnpm` (`pnpm-lock.yaml`); never use `pip`,
+`poetry`, `npm`, or `yarn`, or the lockfiles drift from CI.
 
 ## Architecture Overview
 
-_Add a brief overview of your project architecture_
+See **[AGENTS.md](AGENTS.md)** for the fast navigation map (repo layout, domain
+model, API map, async pipeline) and **[docs/architecture.md](docs/architecture.md)**
+for the longer architecture write-up. Product scope and concepts live in
+**[docs/concepts.md](docs/concepts.md)**.
 
 ## Conventions & Patterns
 
-_Add your project-specific conventions here_
+See the **Practical Coding Guidance** section of [AGENTS.md](AGENTS.md) and the
+contributor workflow in [CONTRIBUTING.md](CONTRIBUTING.md). In short: keep FastAPI
+routers thin (logic in services), use Celery for heavy/scheduled work, preserve the
+async request path / sync worker split, and keep backend Pydantic schemas and
+frontend TS types in sync.
 
 ## graphify
 
