@@ -11,10 +11,10 @@
 #   TRIPL_IMAGE    (default ghcr.io/vladenisov/tripl)
 #   TRIPL_VERSION  (default latest — pin to a released tag e.g. 1.4.0 in prod)
 #
-# Required secrets in .env (generate them — see docs/RELEASE.md):
+# Required secrets in .env (generate them — see website/docs/run/deployment.md):
 #   POSTGRES_PASSWORD, RABBITMQ_PASSWORD, ENCRYPTION_KEY, SECRET_KEY, APP_BASE_URL
 #
-# Build & publish a new image with `bin/release.sh` (see docs/RELEASE.md).
+# Build & publish a new image with `bin/release.sh` (see website/docs/run/release.md).
 # For local development with hot-reload, use compose.dev.yaml instead:
 #   docker compose -f compose.dev.yaml up --watch
 #
@@ -25,7 +25,7 @@ x-app-image: &app-image "${TRIPL_IMAGE:-ghcr.io/vladenisov/tripl}:${TRIPL_VERSIO
 x-app-environment: &app-environment
   # Credentials come from .env and MUST NOT be the dev defaults: the app's
   # assert_production_ready() refuses URLs containing tripl:tripl / guest:guest
-  # when DEBUG is off (the prod default). Generate them — see docs/RELEASE.md.
+  # when DEBUG is off (the prod default). Generate them — see website/docs/run/deployment.md.
   DATABASE_URL: postgresql+asyncpg://tripl:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}@postgres:5432/tripl
   SYNC_DATABASE_URL: postgresql+psycopg://tripl:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}@postgres:5432/tripl
   RABBITMQ_URL: amqp://tripl:${RABBITMQ_PASSWORD:?set RABBITMQ_PASSWORD}@rabbitmq:5672//

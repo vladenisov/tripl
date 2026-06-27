@@ -134,27 +134,28 @@ Then open the app, create the first account on the sign-in page, and click
 
 **Deploying?** The default `compose.yaml` runs the published release image — set
 your secrets and `docker compose up -d` (API + SPA on `:8000`). Cutting a new
-release is one command (`bin/release.sh`). See
-**[docs/RELEASE.md](docs/RELEASE.md)**.
+release is one command (`bin/release.sh`). See the **[deployment guide](website/docs/run/deployment.md)** and **[release process](website/docs/run/release.md)**.
 
 
 ---
 
 ## Documentation
 
+📖 The full, searchable documentation site lives at **[vladenisov.github.io/tripl](https://vladenisov.github.io/tripl/)** (page sources are under [`website/docs/`](website/docs)).
+
 New to tripl? Start at the top and work down:
 
-- **[docs/concepts.md](docs/concepts.md)** — the ideas behind tripl in plain
+- **[Concepts](website/docs/use/concepts.md)** — the ideas behind tripl in plain
   language: tracking plans, events, branches, monitors, and how they fit
   together. Read this first.
-- **[docs/user-guide.md](docs/user-guide.md)** — a hands-on walkthrough, from
+- **[User guide](website/docs/use/user-guide.md)** — a hands-on walkthrough, from
   your first project to a working alert.
-- **[docs/agent-api-guide.md](docs/agent-api-guide.md)** — how to let an LLM
+- **[Agent & API guide](website/docs/integrate/agent-api-guide.md)** — how to let an LLM
   agent or a script read and update the plan through the API.
 
 For people working on tripl itself:
 
-- **[docs/architecture.md](docs/architecture.md)** — how the system is built and
+- **[Architecture](website/docs/develop/architecture.md)** — how the system is built and
   why; the technical details that used to live in this file.
 - **[CONTRIBUTING.md](CONTRIBUTING.md)** — local setup, commands, and project
   structure.
@@ -167,4 +168,4 @@ For people working on tripl itself:
 
 A FastAPI + PostgreSQL backend, a Celery worker that talks to your warehouses,
 and a React frontend — all runnable locally with Docker Compose. The full story
-is in **[docs/architecture.md](docs/architecture.md)**.
+is in **[Architecture](website/docs/develop/architecture.md)**.

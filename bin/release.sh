@@ -3,7 +3,7 @@
 #
 # Pushing the tag triggers .github/workflows/release.yml, which (after CI passes)
 # builds the multi-arch image and pushes it to GHCR (ghcr.io/<owner>/tripl)
-# tagged X.Y.Z / X.Y / latest, then cuts a GitHub Release. See docs/RELEASE.md.
+# tagged X.Y.Z / X.Y / latest, then cuts a GitHub Release. See website/docs/run/release.md.
 #
 #   bin/release.sh patch         # 0.1.0 -> 0.1.1
 #   bin/release.sh minor         # 0.1.0 -> 0.2.0

@@ -61,9 +61,9 @@ the single source of truth. The one rule worth repeating: the backend uses `uv`
 ## Architecture Overview
 
 See **[AGENTS.md](AGENTS.md)** for the fast navigation map (repo layout, domain
-model, API map, async pipeline) and **[docs/architecture.md](docs/architecture.md)**
+model, API map, async pipeline) and **[website/docs/develop/architecture.md](website/docs/develop/architecture.md)**
 for the longer architecture write-up. Product scope and concepts live in
-**[docs/concepts.md](docs/concepts.md)**.
+**[website/docs/use/concepts.md](website/docs/use/concepts.md)**.
 
 ## Conventions & Patterns
 
