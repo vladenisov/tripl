@@ -198,3 +198,10 @@ Use this after out-of-band maintenance or imports if search results look stale. 
 - Treat field and meta value lists as full replacements when included in an event update.
 - Monitoring outputs — signals, schema/distribution drift, and app-version **release regressions** — are read-only. Read them through the metrics endpoints in `/openapi.json`; they are produced by scans, never written by agents.
 - Keep `/openapi.json` in the agent's tool context and use this guide for tripl-specific auth, branch, and workflow rules.
+
+## Interactive API reference
+
+Every endpoint — with request/response schemas — is rendered from the live
+OpenAPI spec at **[API Reference](/integrate/api)** (also linked as **API** in the
+top navigation). Regenerate the underlying spec with `bin/dump-openapi.sh` after
+changing the HTTP API.

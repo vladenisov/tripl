@@ -37,6 +37,15 @@ const config: Config = {
         theme: {customCss: './src/css/custom.css'},
       } satisfies Preset.Options,
     ],
+    [
+      'redocusaurus',
+      {
+        specs: [
+          {id: 'tripl-api', spec: 'openapi/tripl.openapi.json', route: '/integrate/api/'},
+        ],
+        theme: {primaryColor: '#2563eb'},
+      },
+    ],
   ],
 
   themeConfig: {
@@ -45,6 +54,7 @@ const config: Config = {
       logo: {alt: 'tripl', src: 'img/logo.svg'},
       items: [
         {type: 'docSidebar', sidebarId: 'docsSidebar', position: 'left', label: 'Docs'},
+        {to: '/integrate/api/', label: 'API', position: 'left'},
         {href: 'https://github.com/vladenisov/tripl', label: 'GitHub', position: 'right'},
       ],
     },
