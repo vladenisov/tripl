@@ -1,6 +1,6 @@
 ---
 title: Alerting rules
-sidebar_position: 4
+sidebar_position: 5
 ---
 
 # Alerting rules
@@ -17,6 +17,22 @@ destination) → **Delivery** (a single send attempt, carrying the matched items
 
 Rules are project-level: they evaluate the signals produced by every scan in the
 project.
+
+## Where signals come from
+
+A rule never invents an alert — it reacts to **signals** the anomaly detector
+produces on each scan. In short: for each scope the detector compares the latest
+bucket against a seasonal baseline and scores the gap as
+`z = (actual − expected) / spread`, recording a **spike** or **drop** when
+`|z| ≥ sigma_threshold` (default 3) and the expected volume clears
+`min_expected_count` (default 10). It also emits **distribution-drift** signals
+(a value mix shifted) and **release-regression** signals (a new app version
+under-fires an event).
+
+The full math — seasonal vs rolling baselines, the robust spread and its floor,
+the PSI drift score, and the release-regression test — is in
+**[How anomaly detection works](./anomaly-detection.md)**. The rule controls below
+are an **additional** filter on top of that detection.
 
 ## Destinations
 
