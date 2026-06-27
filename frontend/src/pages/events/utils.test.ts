@@ -6,6 +6,8 @@ import {
   mapLatestSignals,
   pickLatestSignal,
   reorderWithSelection,
+  splitEventName,
+  splitTemplateValue,
 } from './utils'
 
 function metricPoint(
@@ -203,5 +205,70 @@ describe('reorderWithSelection', () => {
 
   it('returns null when the block is dropped onto one of its own rows', () => {
     expect(reorderWithSelection(ids, new Set(['a', 'c']), 'a', 'c')).toBeNull()
+  })
+})
+
+describe('splitEventName', () => {
+  it('returns null for ordinary names so they render unchanged', () => {
+    expect(splitEventName('spot:open:fishing')).toBeNull()
+    expect(splitEventName('checkout')).toBeNull()
+  })
+
+  it('splits a name with an empty middle segment (spot::services)', () => {
+    expect(splitEventName('spot::services')).toEqual([
+      { text: 'spot', empty: false },
+      { text: '', empty: true },
+      { text: 'services', empty: false },
+    ])
+  })
+
+  it('treats the serialized "0" sentinel as an empty segment', () => {
+    expect(splitEventName('0:forecast_for_4:0')).toEqual([
+      { text: '0', empty: true },
+      { text: 'forecast_for_4', empty: false },
+      { text: '0', empty: true },
+    ])
+  })
+
+  it('handles leading and trailing empty segments', () => {
+    expect(splitEventName(':services')).toEqual([
+      { text: '', empty: true },
+      { text: 'services', empty: false },
+    ])
+    expect(splitEventName('spot:')).toEqual([
+      { text: 'spot', empty: false },
+      { text: '', empty: true },
+    ])
+  })
+})
+
+describe('splitTemplateValue', () => {
+  it('returns a single non-token part for plain values', () => {
+    expect(splitTemplateValue('hello')).toEqual([{ text: 'hello', token: false }])
+  })
+
+  it('marks ${…} template tokens so they can be tinted', () => {
+    expect(splitTemplateValue('id=${event.property.spot_id}')).toEqual([
+      { text: 'id=', token: false },
+      { text: '${event.property.spot_id}', token: true },
+    ])
+  })
+
+  it('handles a value that is only a token', () => {
+    expect(splitTemplateValue('${rule_name}')).toEqual([
+      { text: '${rule_name}', token: true },
+    ])
+  })
+
+  it('treats a real zero as plain text, not a token', () => {
+    expect(splitTemplateValue('0')).toEqual([{ text: '0', token: false }])
+  })
+
+  it('marks every token across multiple tokens', () => {
+    expect(splitTemplateValue('${a}/${b}')).toEqual([
+      { text: '${a}', token: true },
+      { text: '/', token: false },
+      { text: '${b}', token: true },
+    ])
   })
 })

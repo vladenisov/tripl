@@ -1,5 +1,6 @@
 import { lazy, Suspense } from 'react'
-import { Navigate, useParams } from 'react-router-dom'
+import { Link, Navigate, useParams } from 'react-router-dom'
+import { ArrowUpRight } from 'lucide-react'
 import { AuditTab } from './settings/AuditTab'
 import { BranchesTab } from './settings/BranchesTab'
 import { EventTypesTab } from './settings/EventTypesTab'
@@ -66,6 +67,7 @@ export default function ProjectSettingsPage() {
 
   return (
     <div className="min-w-0">
+      <SettingsSignpost />
       {tab === 'event-types' && itemId && <EventTypeDetail slug={slug} eventTypeId={itemId} />}
       {tab === 'event-types' && !itemId && <EventTypesTab slug={slug} />}
       {tab === 'meta-fields' && <MetaFieldsTab slug={slug} />}
@@ -82,6 +84,33 @@ export default function ProjectSettingsPage() {
       {tab === 'branches' && <BranchesTab slug={slug} />}
       {tab === 'history' && <HistoryTab slug={slug} />}
       {tab === 'audit' && <AuditTab slug={slug} />}
+    </div>
+  )
+}
+
+/**
+ * One-line signpost framing this surface against the full-takeover Settings area,
+ * with a cross-link to it. In-app project settings = day-to-day tracking-plan
+ * operations; the takeover shell = workspace & account configuration. Keeping the
+ * two framed as deliberate halves makes "where does this setting live" predictable.
+ */
+function SettingsSignpost() {
+  return (
+    <div
+      className="mb-5 flex flex-wrap items-center justify-between gap-x-4 gap-y-1.5 border-b pb-3"
+      style={{ borderColor: 'var(--border)' }}
+    >
+      <p className="text-xs" style={{ color: 'var(--fg-subtle)' }}>
+        Project operations — the day-to-day tracking-plan surfaces.
+      </p>
+      <Link
+        to="/settings"
+        className="inline-flex items-center gap-1 text-xs font-medium no-underline transition-colors"
+        style={{ color: 'var(--accent)' }}
+      >
+        Workspace settings
+        <ArrowUpRight className="h-3.5 w-3.5" />
+      </Link>
     </div>
   )
 }

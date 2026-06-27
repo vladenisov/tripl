@@ -46,12 +46,15 @@ function resolveCrumbs(pathname: string, slug?: string, projectName?: string): C
   const projectCrumb = projectName ?? 'project'
 
   // Detail surfaces carry their nav area so the breadcrumb reads
-  // "project › Area › Page › Detail".
+  // "project › Area › Page › Detail". An event's catalog detail is served under
+  // /monitoring/event/<id> (the canonical event route), but it belongs to
+  // Plan › Events — only project-total/event-type signal detail is "Observe ›
+  // Monitors". Check the event scope first.
+  if (pathname.includes('/monitoring/event/') || pathname.includes('/events/detail/')) {
+    return { crumbs: [projectCrumb, 'Plan', 'Events'], title: 'Detail' }
+  }
   if (pathname.includes('/monitoring/')) {
     return { crumbs: [projectCrumb, 'Observe', 'Monitors'], title: 'Detail' }
-  }
-  if (pathname.includes('/events/detail/')) {
-    return { crumbs: [projectCrumb, 'Plan', 'Events'], title: 'Detail' }
   }
 
   // Map the route to its grouped-nav area (Plan / Observe / Govern / Connect)

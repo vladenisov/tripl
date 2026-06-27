@@ -6,11 +6,12 @@ import uuid
 from datetime import UTC, datetime, timedelta
 
 from fastapi import HTTPException
+from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from tripl.models.coverage_metric import CoverageMetric
-from tripl.models.event import Event
+from tripl.models.event import Event, EventStatus
 from tripl.models.event_type import EventType
 from tripl.models.scan_config import ScanConfig
 from tripl.models.shadow_event_candidate import (
@@ -19,7 +20,7 @@ from tripl.models.shadow_event_candidate import (
     SHADOW_STATUS_NEW,
     ShadowEventCandidate,
 )
-from tripl.schemas.event import EventCreate
+from tripl.schemas.event import EventBulkUpdate, EventCreate
 from tripl.schemas.reconciliation import (
     CoverageBucket,
     CoverageResponse,
@@ -38,6 +39,35 @@ from tripl.services.project_service import get_project_id_by_slug
 
 DEFAULT_DEAD_EVENT_DAYS = 30
 DEFAULT_COVERAGE_DAYS = 14
+
+# Terminal lifecycle states a dead event may be retired into. Kept here (rather
+# than in tripl.schemas.reconciliation) so the bulk-archive request/response
+# travel with the service that owns the behaviour.
+_ARCHIVE_STATUSES = (EventStatus.deprecated, EventStatus.archived)
+
+
+class DeadEventArchiveRequest(BaseModel):
+    """Bulk-retire request for dead events.
+
+    ``status`` is constrained to the two terminal lifecycle states so the
+    action can only deprecate or archive — never resurrect — an event.
+    """
+
+    event_ids: list[uuid.UUID] = Field(min_length=1)
+    status: EventStatus = EventStatus.archived
+
+    @field_validator("status")
+    @classmethod
+    def _validate_terminal_status(cls, value: EventStatus) -> EventStatus:
+        if value not in _ARCHIVE_STATUSES:
+            raise ValueError("status must be 'archived' or 'deprecated'")
+        return value
+
+
+class DeadEventArchiveResponse(BaseModel):
+    event_ids: list[uuid.UUID]
+    status: EventStatus
+    archived_count: int
 
 
 async def list_shadow_events(
@@ -243,6 +273,38 @@ async def list_dead_events(
         for event, event_type_name in rows
     ]
     return DeadEventListResponse(items=items, total=len(items), days=days)
+
+
+async def archive_dead_events(
+    session: AsyncSession,
+    slug: str,
+    data: DeadEventArchiveRequest,
+    *,
+    user_id: uuid.UUID,
+    branch_id: uuid.UUID | None,
+) -> DeadEventArchiveResponse:
+    """Bulk-retire dead events into a terminal lifecycle state.
+
+    Delegates to the canonical ``event_service.bulk_update_events`` status path:
+    it resolves the branch, asserts every id belongs to it (404 otherwise),
+    records change history, reindexes search and busts the project cache inside a
+    single transaction. ``status`` is already validated to be deprecated/archived
+    by ``DeadEventArchiveRequest``.
+    """
+    # Dedup while preserving order so a repeated id is counted (and echoed) once.
+    unique_ids = list(dict.fromkeys(data.event_ids))
+    await event_service.bulk_update_events(
+        session,
+        slug,
+        EventBulkUpdate(event_ids=unique_ids, status=data.status),
+        branch_id=branch_id,
+        user_id=user_id,
+    )
+    return DeadEventArchiveResponse(
+        event_ids=unique_ids,
+        status=data.status,
+        archived_count=len(unique_ids),
+    )
 
 
 async def get_coverage(

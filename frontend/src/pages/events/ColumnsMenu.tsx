@@ -46,10 +46,10 @@ export function ColumnsMenu({
           Columns
           {totalHidden > 0 && (
             <span
-              className="mono ml-1 tnum text-[10.5px]"
+              className="ml-1 text-[10.5px]"
               style={{ color: 'var(--fg-subtle)' }}
             >
-              −{totalHidden}
+              {totalHidden} hidden
             </span>
           )}
         </Button>

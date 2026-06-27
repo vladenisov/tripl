@@ -1,4 +1,6 @@
 import uuid
+from collections import defaultdict
+from datetime import UTC, datetime
 
 from fastapi import HTTPException
 from sqlalchemy import String, case, cast, func, literal, select, union_all
@@ -11,6 +13,8 @@ from tripl.core.analyzers.anomaly_detector import (
     SCOPE_PROJECT_TOTAL,
 )
 from tripl.models.alert_destination import AlertDestination
+from tripl.models.alert_rule import AlertRule
+from tripl.models.alert_rule_state import AlertRuleState
 from tripl.models.event import Event
 from tripl.models.event_metric import EventMetric
 from tripl.models.event_type import EventType
@@ -28,7 +32,7 @@ from tripl.schemas.project import (
     ProjectUpdate,
 )
 from tripl.services import plan_branch_service
-from tripl.services.monitoring_utils import classify_signal_state
+from tripl.services.monitoring_utils import classify_signal_state, summarize_monitor_states
 from tripl.services.project_lookup import (
     get_project_by_slug as _lookup_project_by_slug,
 )
@@ -110,8 +114,55 @@ async def _get_project_summaries(
 
     await _populate_latest_scan_jobs(session, summaries)
     await _populate_monitoring_signals(session, summaries)
+    await _populate_firing_monitor_counts(session, summaries)
 
     return summaries
+
+
+async def _populate_firing_monitor_counts(
+    session: AsyncSession,
+    summaries: dict[uuid.UUID, ProjectSummary],
+) -> None:
+    """Count monitors (alert rules) currently in a FIRING state per project.
+
+    Mirrors ``_alerting_monitors.get_monitors_summary``'s ``firing_count``: each
+    rule's per-scope ``AlertRuleState`` rows are rolled up via
+    ``summarize_monitor_states``; a rule counts as firing when at least one active
+    scope has a recent anomaly. Kept in lockstep so this agrees with
+    ``MonitorsSummaryResponse.firing_count`` for the same project.
+    """
+    if not summaries:
+        return
+
+    rule_rows = (
+        await session.execute(
+            select(AlertDestination.project_id, AlertRule.id)
+            .join(AlertDestination, AlertDestination.id == AlertRule.destination_id)
+            .where(AlertDestination.project_id.in_(list(summaries)))
+        )
+    ).all()
+    if not rule_rows:
+        return
+
+    rule_ids = [rule_id for _project_id, rule_id in rule_rows]
+    states_by_rule: dict[uuid.UUID, list[AlertRuleState]] = defaultdict(list)
+    states = (
+        (
+            await session.execute(
+                select(AlertRuleState).where(AlertRuleState.rule_id.in_(rule_ids))
+            )
+        )
+        .scalars()
+        .all()
+    )
+    for state in states:
+        states_by_rule[state.rule_id].append(state)
+
+    now = datetime.now(UTC)
+    for project_id, rule_id in rule_rows:
+        rollup = summarize_monitor_states(states_by_rule.get(rule_id, []), now=now)
+        if rollup.status == "firing":
+            summaries[project_id].firing_monitor_count += 1
 
 
 async def _populate_latest_scan_jobs(

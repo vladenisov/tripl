@@ -1,7 +1,6 @@
 import { Component, type ErrorInfo, type ReactNode } from 'react'
 import { AlertTriangle, RefreshCw } from 'lucide-react'
 import { Button } from '@/components/ui/button'
-import { getErrorMessage } from '@/lib/utils'
 
 interface ErrorBoundaryProps {
   children: ReactNode
@@ -60,8 +59,8 @@ export class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundarySt
               <h1 className="text-base font-semibold text-foreground">Something went wrong</h1>
               <p className="mt-1 text-sm text-muted-foreground">
                 The app hit an unexpected error and could not finish rendering.
+                Try again, and if it keeps happening, reload the page.
               </p>
-              <p className="mt-1 break-words text-sm text-destructive">{getErrorMessage(error)}</p>
               <Button type="button" variant="outline" className="mt-3" onClick={this.reset}>
                 <RefreshCw className="mr-2 h-4 w-4" />
                 Try again

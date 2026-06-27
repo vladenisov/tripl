@@ -30,15 +30,18 @@ const TONE_DOT: Record<MiniStatTone, DotTone> = {
 }
 
 export function MiniStat({ label, value, delta, tone = 'neutral', pulse = false }: MiniStatProps) {
+  // A definition list programmatically ties the value (<dd>) to its caption
+  // (<dt>) so assistive tech announces "<label>: <value>" together, instead of
+  // two unrelated <span>s. (Issue M9.)
   return (
-    <div className="flex flex-col gap-px">
-      <span
+    <dl className="m-0 flex flex-col gap-px">
+      <dt
         className="text-[10px] font-semibold uppercase tracking-[0.06em]"
         style={{ color: 'var(--fg-faint)' }}
       >
         {label}
-      </span>
-      <div className="flex items-baseline gap-1.5">
+      </dt>
+      <dd className="m-0 flex items-baseline gap-1.5">
         <span
           className="mono tnum text-[16px] font-medium tracking-[-0.01em]"
           style={{ color: 'var(--fg)' }}
@@ -54,8 +57,8 @@ export function MiniStat({ label, value, delta, tone = 'neutral', pulse = false 
             {delta}
           </span>
         )}
-      </div>
-    </div>
+      </dd>
+    </dl>
   )
 }
 

@@ -42,7 +42,7 @@ def _build_event_details_url(project_slug: str, event_id: uuid.UUID | None) -> s
     if not app_base_url or event_id is None:
         return None
     base = app_base_url.rstrip("/")
-    return f"{base}/p/{project_slug}/events/detail/{event_id}"
+    return f"{base}/p/{project_slug}/monitoring/event/{event_id}"
 
 
 def _get_project_slug(session: Session, project_id: uuid.UUID) -> str:

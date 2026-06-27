@@ -380,7 +380,7 @@ export function EventForm({
               className={`${TEXT_INPUT_CLASS} mono max-w-[360px]`}
               value={name}
               onChange={e => setName(e.target.value)}
-              placeholder="e.g. checkout_completed"
+              placeholder="e.g. checkout:completed"
               required
             />
           </EvField>

@@ -1,0 +1,177 @@
+import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { MemoryRouter, Route, Routes } from 'react-router-dom'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import MonitorDetailPage from './MonitorDetailPage'
+
+function jsonResponse(body: unknown, status = 200) {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { 'Content-Type': 'application/json' },
+  })
+}
+
+const BASE_MONITOR = {
+  rule_id: 'rule-1',
+  rule_name: 'payment_failed spike',
+  destination_id: 'dest-1',
+  destination_name: 'Main Slack',
+  destination_type: 'slack',
+  enabled: true,
+  status: 'firing',
+  active_scope_count: 2,
+  firing_scope_count: 1,
+  last_anomaly_at: '2026-06-26T10:00:00Z',
+  last_notified_at: '2026-06-26T10:01:00Z',
+  notify_on_spike: true,
+  notify_on_drop: false,
+  min_percent_delta: 50,
+  min_expected_count: 100,
+  cooldown_minutes: 60,
+  muted: false,
+  muted_until: null,
+  rule_enabled: true,
+  destination_enabled: true,
+  include_project_total: true,
+  include_event_types: true,
+  include_events: false,
+  include_schema_drifts: false,
+  include_distribution_drifts: false,
+  include_release_regressions: false,
+  total_deliveries: 3,
+  last_delivery_at: '2026-06-26T10:01:00Z',
+  last_delivery_status: 'sent',
+}
+
+const HISTORY = {
+  items: [
+    {
+      id: 'del-1',
+      project_id: 'proj-1',
+      scan_config_id: 'scan-1',
+      scan_job_id: 'job-1',
+      destination_id: 'dest-1',
+      rule_id: 'rule-1',
+      destination_name: 'Main Slack',
+      rule_name: 'payment_failed spike',
+      scan_name: 'hourly events scan',
+      status: 'failed',
+      channel: 'slack',
+      matched_count: 4,
+      payload_snapshot: null,
+      error_message: 'Scan failed: could not connect to the data source.',
+      created_at: '2026-06-26T10:01:00Z',
+      updated_at: '2026-06-26T10:01:00Z',
+      sent_at: null,
+    },
+  ],
+  total: 1,
+}
+
+type MockOptions = {
+  monitor?: Record<string, unknown>
+  muteResponse?: Record<string, unknown>
+}
+
+function mockApi(options: MockOptions = {}) {
+  const monitor = options.monitor ?? BASE_MONITOR
+  return vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+    const url = String(input)
+    const method = init?.method ?? 'GET'
+    if (url.includes('/alert-deliveries')) return jsonResponse(HISTORY)
+    if (url.includes('/monitors/rule-1/mute')) {
+      return jsonResponse(options.muteResponse ?? { ...monitor, muted: true, muted_until: '2099-01-01T00:00:00Z' })
+    }
+    if (url.includes('/monitors/rule-1/unmute')) {
+      return jsonResponse({ ...monitor, muted: false, muted_until: null })
+    }
+    if (url.includes('/monitors/rule-1') && method === 'GET') return jsonResponse(monitor)
+    throw new Error(`Unhandled fetch: ${method} ${url}`)
+  })
+}
+
+function renderDetail() {
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+  return render(
+    <QueryClientProvider client={queryClient}>
+      <MemoryRouter initialEntries={['/p/demo/monitors/rule-1']}>
+        <Routes>
+          <Route path="/p/:slug/monitors/:monitorId" element={<MonitorDetailPage />} />
+        </Routes>
+      </MemoryRouter>
+    </QueryClientProvider>,
+  )
+}
+
+afterEach(() => {
+  vi.restoreAllMocks()
+})
+
+describe('MonitorDetailPage', () => {
+  it('renders the monitor condition, destination, recency and fired history', async () => {
+    mockApi()
+
+    renderDetail()
+
+    expect(await screen.findByRole('heading', { name: 'payment_failed spike' })).toBeInTheDocument()
+    // Condition config
+    expect(screen.getByText('Spike ▲')).toBeInTheDocument()
+    expect(screen.getByText('≥ 50% change')).toBeInTheDocument()
+    expect(screen.getByText('60m between alerts')).toBeInTheDocument()
+    expect(screen.getByText('Project total')).toBeInTheDocument()
+    // Routing destination + recency
+    expect(screen.getByText('Main Slack')).toBeInTheDocument()
+    expect(screen.getByText('Last fired')).toBeInTheDocument()
+    // Fired-history timeline surfaces this rule's deliveries
+    expect(await screen.findByText('hourly events scan')).toBeInTheDocument()
+    expect(screen.getByText('failed')).toBeInTheDocument()
+    expect(
+      screen.getByText('Scan failed: could not connect to the data source.'),
+    ).toBeInTheDocument()
+    // Back link to the monitors list
+    expect(screen.getByRole('link', { name: 'Monitors' })).toHaveAttribute(
+      'href',
+      '/p/demo/monitors',
+    )
+  })
+
+  it('mutes the monitor for a preset duration', async () => {
+    const fetchMock = mockApi()
+
+    renderDetail()
+
+    await screen.findByRole('heading', { name: 'payment_failed spike' })
+    fireEvent.click(screen.getByRole('button', { name: '24h' }))
+
+    await waitFor(() => {
+      const muteCall = fetchMock.mock.calls.find(([url]) => String(url).includes('/mute'))
+      expect(muteCall).toBeTruthy()
+      const body = JSON.parse(String((muteCall?.[1] as RequestInit).body)) as { muted_until: string }
+      expect(new Date(body.muted_until).getTime()).toBeGreaterThan(Date.now())
+    })
+
+    // After a successful mute the control flips to Unmute.
+    expect(await screen.findByRole('button', { name: 'Unmute' })).toBeInTheDocument()
+  })
+
+  it('shows an unmute control for an already-muted monitor', async () => {
+    mockApi({ monitor: { ...BASE_MONITOR, muted: true, muted_until: '2099-01-01T00:00:00Z' } })
+
+    renderDetail()
+
+    expect(await screen.findByRole('button', { name: 'Unmute' })).toBeInTheDocument()
+    expect(screen.getByText(/Muted until/)).toBeInTheDocument()
+  })
+
+  it('renders an error state when the monitor cannot be loaded', async () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = String(input)
+      if (url.includes('/alert-deliveries')) return jsonResponse(HISTORY)
+      return jsonResponse({ detail: 'Not found' }, 404)
+    })
+
+    renderDetail()
+
+    expect(await screen.findByText('Monitor unavailable')).toBeInTheDocument()
+  })
+})

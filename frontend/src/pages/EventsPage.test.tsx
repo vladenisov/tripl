@@ -226,7 +226,9 @@ describe('EventsPage', () => {
     expect(screen.queryByRole('button', { name: 'Archive event' })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Delete event' })).not.toBeInTheDocument()
 
-    fireEvent.click(screen.getByText('Show chart'))
+    // The "<Tab> Dynamics" chart now defaults open (UX-14), so the toggle reads
+    // "Hide chart" and the signal link in its header is visible without a click.
+    expect(screen.getByRole('button', { name: /Hide chart/ })).toBeInTheDocument()
     expect(await screen.findByText('View signal')).toBeInTheDocument()
   }, 10_000)
 
@@ -557,7 +559,7 @@ describe('EventsPage', () => {
     expect(await screen.findByRole('heading', { name: 'New event' })).toBeInTheDocument()
 
     fireEvent.change(screen.getAllByRole('combobox')[0], { target: { value: 'type-1' } })
-    fireEvent.change(screen.getByPlaceholderText('e.g. checkout_completed'), {
+    fireEvent.change(screen.getByPlaceholderText('e.g. checkout:completed'), {
       target: { value: 'Homepage View' },
     })
     // Metric breakdowns are fixed toggle chips; click country then platform.

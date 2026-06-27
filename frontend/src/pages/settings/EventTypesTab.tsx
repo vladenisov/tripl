@@ -80,7 +80,7 @@ export function EventTypesTab({ slug }: { slug: string }) {
   })
 
   // Per-type owners drive the list's Owner column and the derived merge Status
-  // (no owners ⇒ anyone can merge ⇒ "open merge"; owners present ⇒ "gated").
+  // (no owners ⇒ anyone can merge ⇒ "ungated"; owners present ⇒ "gated").
   const ownerQueries = useQueries({
     queries: eventTypes.map((et) => ({
       queryKey: ['eventTypeOwners', slug, et.id],
@@ -97,6 +97,10 @@ export function EventTypesTab({ slug }: { slug: string }) {
   }
 
   const sorted = [...eventTypes].sort((a, b) => a.order - b.order)
+  // Hide columns that are empty for every visible row — a wall of em-dashes
+  // (no sensitive fields / no owners anywhere) is noise, not information.
+  const showSensitive = sorted.some((et) => sensitiveFieldCount(et) > 0)
+  const showOwner = sorted.some((et) => (ownersByType.get(et.id) ?? []).length > 0)
 
   return (
     <div className="flex flex-col gap-[18px]">
@@ -120,14 +124,14 @@ export function EventTypesTab({ slug }: { slug: string }) {
             No event types yet. Create one to categorize your events.
           </p>
         ) : (
-          <table className="w-full border-collapse">
+          <table className="w-full border-collapse" aria-label="Event types">
             <thead>
               <tr style={{ background: 'var(--bg-sunken)' }}>
                 <Th>Type</Th>
                 <Th>Fields</Th>
                 <Th align="right">Required</Th>
-                <Th>Sensitive</Th>
-                <Th>Owner</Th>
+                {showSensitive && <Th>Sensitive</Th>}
+                {showOwner && <Th>Owner</Th>}
                 <Th>Status</Th>
                 <Th style={{ width: 40 }} />
               </tr>
@@ -160,34 +164,50 @@ export function EventTypesTab({ slug }: { slug: string }) {
                       {requiredFieldCount(et)}
                     </span>
                   </Td>
-                  <Td>
-                    {sensitiveFieldCount(et) > 0 ? (
-                      <Chip tone="warning" size="xs">
-                        {sensitiveFieldCount(et)}
-                      </Chip>
-                    ) : (
-                      <span style={{ color: 'var(--fg-faint)' }}>—</span>
-                    )}
-                  </Td>
-                  <Td>
-                    {(() => {
-                      const owners = ownersByType.get(et.id) ?? []
-                      if (owners.length === 0) {
-                        return <span style={{ color: 'var(--fg-faint)' }}>—</span>
-                      }
-                      return (
-                        <span className="text-[12px]" style={{ color: 'var(--fg-subtle)' }}>
-                          {owners[0].user_name || owners[0].user_email}
-                          {owners.length > 1 ? ` +${owners.length - 1}` : ''}
-                        </span>
-                      )
-                    })()}
-                  </Td>
+                  {showSensitive && (
+                    <Td>
+                      {sensitiveFieldCount(et) > 0 ? (
+                        <Chip tone="warning" size="xs">
+                          {sensitiveFieldCount(et)}
+                        </Chip>
+                      ) : (
+                        <span style={{ color: 'var(--fg-faint)' }}>—</span>
+                      )}
+                    </Td>
+                  )}
+                  {showOwner && (
+                    <Td>
+                      {(() => {
+                        const owners = ownersByType.get(et.id) ?? []
+                        if (owners.length === 0) {
+                          return <span style={{ color: 'var(--fg-faint)' }}>—</span>
+                        }
+                        return (
+                          <span className="text-[12px]" style={{ color: 'var(--fg-subtle)' }}>
+                            {owners[0].user_name || owners[0].user_email}
+                            {owners.length > 1 ? ` +${owners.length - 1}` : ''}
+                          </span>
+                        )
+                      })()}
+                    </Td>
+                  )}
                   <Td>
                     {(ownersByType.get(et.id) ?? []).length > 0 ? (
-                      <Chip tone="accent" size="xs">gated</Chip>
+                      <Chip
+                        tone="accent"
+                        size="xs"
+                        title="Has owners — only they can merge changes to this type"
+                      >
+                        gated
+                      </Chip>
                     ) : (
-                      <Chip tone="neutral" size="xs">open merge</Chip>
+                      <Chip
+                        tone="neutral"
+                        size="xs"
+                        title="No owners — anyone can merge changes to this type"
+                      >
+                        ungated
+                      </Chip>
                     )}
                   </Td>
                   <Td>
@@ -492,7 +512,7 @@ export function FieldsEditor({
               <Th>Display</Th>
               <Th>Type</Th>
               <Th>PII</Th>
-              <Th>Req</Th>
+              <Th>Required</Th>
               <Th>Contract</Th>
               <Th style={{ width: 66 }} />
             </tr>
@@ -1097,7 +1117,10 @@ function Th({
   style?: CSSProperties
 }) {
   return (
-    <th style={{ ...TH_STYLE, ...(align === 'right' ? { textAlign: 'right' } : {}), ...style }}>
+    <th
+      scope="col"
+      style={{ ...TH_STYLE, ...(align === 'right' ? { textAlign: 'right' } : {}), ...style }}
+    >
       {children}
     </th>
   )

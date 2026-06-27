@@ -39,7 +39,10 @@ export function useEventsViewState({
   const [, setSearchParams] = useSearchParams()
   const [openCharts, setOpenCharts] = useState<Record<string, boolean>>({})
 
-  const isTabChartOpen = openCharts[activeTab] ?? false
+  // UX-14: the dynamics chart opens by default so a fresh tab leads with its
+  // trend at a glance. Per-tab user toggles still win — once a tab is closed,
+  // its explicit `false` overrides this default for the rest of the session.
+  const isTabChartOpen = openCharts[activeTab] ?? true
   const setIsTabChartOpen = useCallback((open: boolean) => {
     setOpenCharts(prev => ({ ...prev, [activeTab]: open }))
   }, [activeTab])

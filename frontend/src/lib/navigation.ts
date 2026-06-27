@@ -5,10 +5,12 @@ import {
   Gauge,
   GitBranch,
   GitCompare,
+  Link2,
   ScrollText,
   Search,
   Table2,
   Tag,
+  Variable,
   type LucideIcon,
 } from 'lucide-react'
 import type { ProjectSummary } from '@/types'
@@ -51,8 +53,8 @@ export function formatCount(n: number): string {
  */
 export function buildNavGroups(slug: string, summary: ProjectSummary | undefined): NavGroup[] {
   const base = `/p/${slug}`
-  const signals = summary?.monitoring_signal_count ?? 0
   const destinations = summary?.alert_destination_count ?? 0
+  const firingMonitors = summary?.firing_monitor_count ?? 0
 
   return [
     {
@@ -79,10 +81,22 @@ export function buildNavGroups(slug: string, summary: ProjectSummary | undefined
           label: 'Schema & fields',
           icon: Braces,
           href: `${base}/settings/meta-fields`,
-          match: (p) =>
-            p.startsWith(`${base}/settings/meta-fields`)
-            || p.startsWith(`${base}/settings/variables`)
-            || p.startsWith(`${base}/settings/relations`),
+          match: (p) => p.startsWith(`${base}/settings/meta-fields`),
+        },
+        {
+          id: 'variables',
+          label: 'Variables',
+          icon: Variable,
+          href: `${base}/settings/variables`,
+          match: (p) => p.startsWith(`${base}/settings/variables`),
+          count: summary ? formatCount(summary.variable_count) : undefined,
+        },
+        {
+          id: 'relations',
+          label: 'Relations',
+          icon: Link2,
+          href: `${base}/settings/relations`,
+          match: (p) => p.startsWith(`${base}/settings/relations`),
         },
         {
           id: 'branches',
@@ -112,8 +126,13 @@ export function buildNavGroups(slug: string, summary: ProjectSummary | undefined
             p.startsWith(`${base}/monitors`)
             || p.startsWith(`${base}/monitoring`)
             || p.startsWith(`${base}/settings/monitoring`),
-          count: signals > 0 ? formatCount(signals) : undefined,
-          tone: signals > 0 ? 'danger' : undefined,
+          // The badge counts MONITORS in a FIRING state (firing_monitor_count),
+          // never the open-signal population (monitoring_signal_count) — that
+          // produced "Monitors 5" beside a Monitors page showing 1 monitor. This
+          // keeps the badge equal to the Monitors page firing_count; omitted (no
+          // count, no tone) when nothing is firing.
+          count: firingMonitors > 0 ? formatCount(firingMonitors) : undefined,
+          tone: firingMonitors > 0 ? 'danger' : undefined,
         },
         {
           id: 'alerting',

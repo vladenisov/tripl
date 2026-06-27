@@ -139,6 +139,12 @@ async def test_project_activity_feed_uses_real_backend_records(client: AsyncClie
         item["type"] == "event" and item["title"] == "Event needs review: Landing Viewed"
         for item in items
     )
+    event_items = [item for item in items if item["type"] == "event"]
+    assert event_items, "expected an event activity item"
+    assert all(
+        item["target_path"].startswith(f"/p/{slug}/monitoring/event/") for item in event_items
+    )
+    assert not any("/events/detail/" in (item["target_path"] or "") for item in items)
 
 
 @pytest.mark.asyncio

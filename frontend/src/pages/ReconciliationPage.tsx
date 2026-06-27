@@ -1,7 +1,7 @@
 import { useState, type ReactNode } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Calendar } from 'lucide-react'
+import { Calendar, Inbox } from 'lucide-react'
 import {
   reconciliationApi,
   type CoverageBucket,
@@ -13,22 +13,25 @@ import { eventTypesApi } from '@/api/eventTypes'
 import { Chip } from '@/components/primitives/chip'
 import { Dot } from '@/components/primitives/dot'
 import { ErrorState } from '@/components/error-state'
+import { EventName } from '@/components/event-name'
 import { Button } from '@/components/ui/button'
+import { Checkbox } from '@/components/ui/checkbox'
 import { useActiveBranchId } from '@/hooks/useBranch'
 import { formatRelativeTime } from '@/lib/datetime'
 import { getMonitoringPath } from '@/lib/monitoring'
+import { coverageTone, toneVar } from '@/lib/statusLexicon'
 
 const COVERAGE_DAYS = 14 as const
-const DEAD_DAYS = 30 as const
+// Same window as COVERAGE_DAYS so the whole page reads as one 14-day view
+// instead of silently mixing look-backs (the header's "Last 14 days").
+const DEAD_DAYS = 14 as const
 const SHADOW_TABS: readonly ShadowEventStatus[] = ['new', 'accepted', 'dismissed']
 
-const COVERAGE_GOOD = 90
-const COVERAGE_WARN = 70
-
-function coverageTone(pct: number): string {
-  if (pct >= COVERAGE_GOOD) return 'var(--accent)'
-  if (pct >= COVERAGE_WARN) return 'var(--warning)'
-  return 'var(--danger)'
+// Coverage heatmap colour. Resolved through the shared status lexicon so good
+// coverage reads green (success) — matching the overview KPI — instead of the
+// brand/accent it painted before.
+function coverageColor(pct: number): string {
+  return toneVar(coverageTone(pct))
 }
 
 function bucketPct(bucket: CoverageBucket): number {
@@ -45,6 +48,8 @@ export default function ReconciliationPage() {
   const [acceptingId, setAcceptingId] = useState<string | null>(null)
   const [selectedEventType, setSelectedEventType] = useState<Record<string, string>>({})
   const [rowError, setRowError] = useState<Record<string, string>>({})
+  const [selectedDead, setSelectedDead] = useState<string[]>([])
+  const [deadError, setDeadError] = useState<string | null>(null)
 
   const coverageQuery = useQuery({
     queryKey: ['reconciliation', 'coverage', slug, COVERAGE_DAYS],
@@ -117,6 +122,22 @@ export default function ReconciliationPage() {
     },
   })
 
+  // Dead-events list is resolved on the default branch (the deadEvents query
+  // sends no `?branch`), so archive must target the same branch to keep the
+  // selected ids valid — otherwise the atomic endpoint 404s. Intentionally no
+  // branchId here; revisit if dead-events ever becomes branch-aware.
+  const archiveMutation = useMutation({
+    mutationFn: (eventIds: string[]) => reconciliationApi.archiveDeadEvents(slug!, eventIds),
+    onSuccess: () => {
+      setSelectedDead([])
+      setDeadError(null)
+      void qc.invalidateQueries({ queryKey: ['reconciliation', 'dead', slug] })
+    },
+    onError: (err: unknown) => {
+      setDeadError(err instanceof Error ? err.message : 'Archive failed')
+    },
+  })
+
   const handleAccept = (item: ShadowEvent) => {
     if (!item.event_type_name && !selectedEventType[item.id]) {
       setAcceptingId(item.id)
@@ -133,6 +154,17 @@ export default function ReconciliationPage() {
   const dead = deadQuery.data
   const eventTypes = eventTypesQuery.data ?? []
   const shadowHasItems = (shadow?.items.length ?? 0) > 0
+  const shadowIsEmpty = !!shadow && shadow.items.length === 0 && !shadowQuery.isError
+
+  const deadItems = dead?.items ?? []
+  const allDeadIds = deadItems.map((item) => item.event_id)
+  const allDeadSelected = allDeadIds.length > 0 && allDeadIds.every((id) => selectedDead.includes(id))
+  const hasDeadSelection = selectedDead.length > 0
+
+  const toggleDeadSelection = (id: string) =>
+    setSelectedDead((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]))
+
+  const toggleSelectAllDead = (checked: boolean) => setSelectedDead(checked ? allDeadIds : [])
 
   return (
     <div className="min-w-0 space-y-[18px] pb-12">
@@ -156,9 +188,9 @@ export default function ReconciliationPage() {
         </Button>
       </div>
 
-      {/* Coverage */}
+      {/* Data match — share of planned events actually seen in data (distinct from plan coverage) */}
       <Panel
-        title="Coverage"
+        title="Data match"
         subtitle={
           coverage
             ? `${coverage.summary.matched_count} of ${coverage.summary.total_count} planned events seen in data · ${coverage.days}d`
@@ -168,7 +200,7 @@ export default function ReconciliationPage() {
         {coverageQuery.isError && (
           <div className="p-4">
             <ErrorState
-              title="Coverage unavailable"
+              title="Data match unavailable"
               error={coverageQuery.error}
               onRetry={() => {
                 void coverageQuery.refetch()
@@ -193,7 +225,7 @@ export default function ReconciliationPage() {
                 {coverage.summary.coverage_pct.toFixed(0)}%
               </span>
               <span className="text-[11px]" style={{ color: 'var(--fg-subtle)' }}>
-                matched coverage
+                seen in data
               </span>
             </div>
             <CoverageStrip items={coverage.items} days={coverage.days} />
@@ -201,7 +233,11 @@ export default function ReconciliationPage() {
         )}
       </Panel>
 
-      <div className="grid grid-cols-1 gap-3 lg:grid-cols-[1.5fr_1fr]">
+      <div
+        className={`grid grid-cols-1 gap-3 ${
+          shadowIsEmpty ? 'lg:grid-cols-[auto_1fr]' : 'lg:grid-cols-[1.5fr_1fr]'
+        }`}
+      >
         {/* Shadow events inbox */}
         <Panel
           title="Shadow events inbox"
@@ -245,11 +281,25 @@ export default function ReconciliationPage() {
               Loading…
             </div>
           )}
-          {shadow && shadow.items.length === 0 && !shadowQuery.isError && (
-            <div className="px-4 py-7 text-center text-[12px]" style={{ color: 'var(--fg-subtle)' }}>
-              No {shadowStatus} events.
-            </div>
-          )}
+          {shadowIsEmpty &&
+            (shadowStatus === 'new' ? (
+              <div className="flex min-h-[240px] flex-col items-center justify-center gap-1.5 px-4 py-6 text-center">
+                <Inbox className="h-4 w-4" style={{ color: 'var(--fg-faint)' }} aria-hidden />
+                <div className="text-[12px] font-medium" style={{ color: 'var(--fg-muted)' }}>
+                  No new events
+                </div>
+                <div className="text-[10.5px]" style={{ color: 'var(--fg-subtle)' }}>
+                  No unexpected events seen in the last {COVERAGE_DAYS} days.
+                </div>
+              </div>
+            ) : (
+              <div
+                className="flex min-h-[240px] flex-col items-center justify-center px-4 py-6 text-center text-[12px]"
+                style={{ color: 'var(--fg-subtle)' }}
+              >
+                No {shadowStatus} events.
+              </div>
+            ))}
           {shadow?.items.map((item) => {
             const isActing =
               (acceptMutation.isPending && acceptMutation.variables?.id === item.id) ||
@@ -286,7 +336,48 @@ export default function ReconciliationPage() {
         </Panel>
 
         {/* Dead events */}
-        <Panel title="Dead events" subtitle="In plan, not seen recently">
+        <Panel
+          title="Dead events"
+          subtitle="In plan, not seen recently"
+          right={
+            deadItems.length > 0 ? (
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={!hasDeadSelection || archiveMutation.isPending}
+                onClick={() => archiveMutation.mutate(selectedDead)}
+                title="Archive the selected planned events"
+              >
+                {archiveMutation.isPending
+                  ? 'Archiving…'
+                  : hasDeadSelection
+                    ? `Archive ${selectedDead.length} selected`
+                    : 'Archive selected'}
+              </Button>
+            ) : undefined
+          }
+        >
+          {deadItems.length > 0 && (
+            <div className="flex items-center gap-2.5 px-4 py-2">
+              <Checkbox
+                checked={allDeadSelected}
+                onCheckedChange={(value) => toggleSelectAllDead(value === true)}
+                aria-label="Select all dead events"
+              />
+              <span className="text-[10.5px]" style={{ color: 'var(--fg-subtle)' }}>
+                Planned events not seen in your data recently — often expected.
+              </span>
+            </div>
+          )}
+          {deadError && (
+            <div
+              className="px-4 pb-2 text-[11px]"
+              role="alert"
+              style={{ color: 'var(--danger)' }}
+            >
+              {deadError}
+            </div>
+          )}
           {deadQuery.isError && (
             <div className="p-4">
               <ErrorState
@@ -306,12 +397,18 @@ export default function ReconciliationPage() {
             </div>
           )}
           {dead && dead.items.length === 0 && !deadQuery.isError && (
-            <div className="px-4 py-7 text-center text-[12px]" style={{ color: 'var(--fg-subtle)' }}>
+            <div className="flex min-h-[240px] flex-col items-center justify-center px-4 py-7 text-center text-[12px]" style={{ color: 'var(--fg-subtle)' }}>
               No dead events in the last {dead.days} days.
             </div>
           )}
           {dead?.items.map((item) => (
-            <DeadRow key={item.event_id} item={item} slug={slug} />
+            <DeadRow
+              key={item.event_id}
+              item={item}
+              slug={slug}
+              selected={selectedDead.includes(item.event_id)}
+              onToggle={toggleDeadSelection}
+            />
           ))}
         </Panel>
       </div>
@@ -360,33 +457,59 @@ function Panel({
   )
 }
 
+// Coverage is "steady" when every bucket rounds to the same whole-percent —
+// the per-day histogram then carries no signal worth its visual weight.
+function hasCoverageVariation(items: CoverageBucket[]): boolean {
+  if (items.length < 2) return false
+  const first = Math.round(bucketPct(items[0]))
+  return items.some((bucket) => Math.round(bucketPct(bucket)) !== first)
+}
+
 function CoverageStrip({ items, days }: { items: CoverageBucket[]; days: number }) {
   if (items.length === 0) {
     return (
       <div className="flex-1 text-[11px]" style={{ color: 'var(--fg-subtle)' }}>
-        No coverage data yet.
+        No data-match history yet.
       </div>
     )
   }
+  const steadyPct = Math.round(bucketPct(items[0]))
+  const isSteady = !hasCoverageVariation(items)
   return (
     <div className="flex-1">
-      <div className="flex h-14 items-end gap-0.5">
-        {items.map((bucket) => {
-          const pct = bucketPct(bucket)
-          return (
-            <div
-              key={bucket.bucket}
-              title={`${bucket.bucket}: ${pct.toFixed(0)}%`}
-              className="flex-1 rounded-[2px]"
-              style={{
-                height: `${Math.max(pct, 2)}%`,
-                background: coverageTone(pct),
-                opacity: 0.85,
-              }}
-            />
-          )
-        })}
-      </div>
+      {isSteady ? (
+        // Constant coverage carries no per-day signal — a thin steady line keeps
+        // the panel calm and lets the big number do the talking.
+        <div
+          className="flex h-14 items-center"
+          role="img"
+          aria-label={`Data match steady at ${steadyPct}% across the window`}
+          title={`Steady at ${steadyPct}% across the window`}
+        >
+          <div
+            className="h-[2px] w-full rounded-full"
+            style={{ background: coverageColor(bucketPct(items[0])), opacity: 0.85 }}
+          />
+        </div>
+      ) : (
+        <div className="flex h-14 items-end gap-0.5">
+          {items.map((bucket) => {
+            const pct = bucketPct(bucket)
+            return (
+              <div
+                key={bucket.bucket}
+                title={`${bucket.bucket}: ${pct.toFixed(0)}%`}
+                className="flex-1 rounded-[2px]"
+                style={{
+                  height: `${Math.max(pct, 2)}%`,
+                  background: coverageColor(pct),
+                  opacity: 0.85,
+                }}
+              />
+            )
+          })}
+        </div>
+      )}
       <div
         className="mono mt-1.5 flex justify-between text-[10px]"
         style={{ color: 'var(--fg-faint)' }}
@@ -433,7 +556,7 @@ function ShadowRow({
       <div className="flex items-center gap-2.5">
         <div className="min-w-0 flex-1">
           <span className="mono text-[12.5px]" style={{ color: 'var(--fg)' }}>
-            {item.event_name}
+            <EventName name={item.event_name} />
           </span>
           <div
             className="mt-0.5 flex flex-wrap items-center gap-2 text-[10.5px]"
@@ -509,25 +632,40 @@ function ShadowRow({
   )
 }
 
-function DeadRow({ item, slug }: { item: DeadEvent; slug: string | undefined }) {
+function DeadRow({
+  item,
+  slug,
+  selected,
+  onToggle,
+}: {
+  item: DeadEvent
+  slug: string | undefined
+  selected: boolean
+  onToggle: (id: string) => void
+}) {
   const isNever = !item.last_seen_at
   return (
     <div
       className="flex items-center gap-2.5 border-t px-4 py-2.5"
       style={{ borderColor: 'var(--border-subtle)' }}
     >
+      <Checkbox
+        checked={selected}
+        onCheckedChange={() => onToggle(item.event_id)}
+        aria-label={`Select ${item.name}`}
+      />
       <Dot tone="neutral" size={6} />
       <Link
         to={slug ? getMonitoringPath(slug, { scope_type: 'event', scope_ref: item.event_id }) : '#'}
         className="mono min-w-0 flex-1 truncate text-[12px] hover:underline"
         style={{ color: 'var(--fg-muted)' }}
       >
-        {item.name}
+        <EventName name={item.name} />
       </Link>
       {item.event_type_name && <Chip size="xs">{item.event_type_name}</Chip>}
       <span
         className="mono shrink-0 text-[10.5px]"
-        style={{ color: isNever ? 'var(--danger)' : 'var(--fg-faint)' }}
+        style={{ color: isNever ? 'var(--warning)' : 'var(--fg-faint)' }}
       >
         {formatRelativeTime(item.last_seen_at)}
       </span>

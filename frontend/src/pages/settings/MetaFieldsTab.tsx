@@ -319,7 +319,7 @@ export function MetaFieldsTab({ slug }: { slug: string }) {
                   <TableHead>Display</TableHead>
                 <TableHead className="w-20">Type</TableHead>
                 <TableHead className="w-24">PII</TableHead>
-                <TableHead className="w-16">Req</TableHead>
+                <TableHead className="w-20">Required</TableHead>
                 <TableHead>Default</TableHead>
                 <TableHead className="w-24"></TableHead>
               </TableRow>

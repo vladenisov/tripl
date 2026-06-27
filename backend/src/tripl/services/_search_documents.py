@@ -346,7 +346,7 @@ def _event_document(
                 " ".join(variable_context_text),
             ]
         ),
-        route_path=f"/p/{slug}/events/detail/{event.id}",
+        route_path=f"/p/{slug}/monitoring/event/{event.id}",
         archived=(event.status == "archived"),
     )
 
@@ -373,7 +373,7 @@ def _tag_document(
             ]
         ),
         keywords=tag.name,
-        route_path=f"/p/{slug}/events/detail/{event.id}",
+        route_path=f"/p/{slug}/monitoring/event/{event.id}",
         archived=(event.status == "archived"),
     )
 

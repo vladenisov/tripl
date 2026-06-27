@@ -30,9 +30,17 @@ from tripl.services import app_settings_service
 from tripl.worker.celery_app import celery_app
 from tripl.worker.db import _build_adapter, _get_sync_session
 from tripl.worker.search_reindex import reindex_main_branch_from_worker
+from tripl.worker.tasks._errors import ScanError, user_facing_error
 from tripl.worker.utils.query_windows import TimeWindow, resolve_lookback_window
 
 logger = logging.getLogger(__name__)
+
+# ``ScanError`` and ``user_facing_error`` now live in ``_errors`` so the metrics
+# task can sanitise its user-facing fields with the same logic. The private
+# alias is kept for backwards compatibility with existing imports/tests.
+_user_facing_error = user_facing_error
+
+__all__ = ["ScanError", "user_facing_error"]
 
 
 def _serialize_generation_result(result: GenerationResult) -> dict[str, object]:
@@ -182,7 +190,7 @@ def run_scan(self: object, scan_config_id: str, job_id: str) -> dict[str, object
                     "Scan query reached configured row limit "
                     f"({scan_row_limit}); increase scan_row_limit to avoid partial generation"
                 )
-                raise ValueError(msg)
+                raise ScanError(msg)
 
             event_type = session.get(EventType, event_type_id)
             if event_type is None:
@@ -207,7 +215,7 @@ def run_scan(self: object, scan_config_id: str, job_id: str) -> dict[str, object
             scan_truncated = analysis.row_limit_reached
         else:
             msg = "Either event_type_id or event_type_column must be specified"
-            raise ValueError(msg)
+            raise ScanError(msg)
 
         session.commit()
         reindex_main_branch_from_worker(session, config.project_id)
@@ -256,7 +264,7 @@ def run_scan(self: object, scan_config_id: str, job_id: str) -> dict[str, object
             if job:
                 job.status = ScanJobStatus.failed.value
                 job.completed_at = datetime.now(UTC)
-                job.error_message = str(e)
+                job.error_message = user_facing_error(e)
                 session.commit()
         except Exception:
             logger.exception("Failed to update job status after error")
@@ -305,7 +313,7 @@ def _scan_with_grouping(
             "Grouped scan query reached configured row limit "
             f"({row_limit}); increase scan_row_limit to avoid partial generation"
         )
-        raise ValueError(msg)
+        raise ScanError(msg)
     logger.info(f"Grouped scan: {len(group_values)} groups found for {col_name!r}")
     scan_rows_processed = sum(len(analysis.rows) for analysis in grouped_results.values())
     scan_truncated = any(analysis.row_limit_reached for analysis in grouped_results.values())
@@ -373,7 +381,7 @@ def apply_event_groups(self: object, scan_config_id: str, job_id: str) -> dict[s
             raise ValueError(msg)
         if not config.event_group_rules:
             msg = "Scan config has no event group rules"
-            raise ValueError(msg)
+            raise ScanError(msg)
 
         job.status = ScanJobStatus.running.value
         job.started_at = datetime.now(UTC)
@@ -422,7 +430,7 @@ def apply_event_groups(self: object, scan_config_id: str, job_id: str) -> dict[s
             if job:
                 job.status = ScanJobStatus.failed.value
                 job.completed_at = datetime.now(UTC)
-                job.error_message = str(e)
+                job.error_message = user_facing_error(e)
                 session.commit()
         except Exception:
             logger.exception("Failed to update event group apply job status after error")
@@ -453,7 +461,11 @@ def test_connection(self: object, data_source_id: str) -> dict[str, object]:
             ok = bool(adapter.test_connection())
             message = "Connection successful" if ok else "Connection probe returned no rows"
         except Exception as e:  # noqa: BLE001
-            error = str(e)
+            # The raw probe error embeds host/port/driver detail; keep that in
+            # the logs only and surface a sanitized summary on every user-facing
+            # field (last_test_message and the returned error).
+            logger.exception("Data source connection test failed for %s", data_source_id)
+            error = user_facing_error(e)
             message = error
 
         ds.last_test_at = datetime.now(UTC)
@@ -535,7 +547,7 @@ def preview_scan_config_async(self: object, job_id: str) -> dict[str, object]:
             if job:
                 job.status = ScanJobStatus.failed.value
                 job.completed_at = datetime.now(UTC)
-                job.error_message = str(e)
+                job.error_message = user_facing_error(e)
                 session.commit()
         except Exception:
             logger.exception("Failed to update scan preview job status after error")

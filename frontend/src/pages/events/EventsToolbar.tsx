@@ -71,6 +71,7 @@ export function EventsToolbar({
   const singleStatus = filterStatuses.length === 1 ? filterStatuses[0] : undefined
   return (
     <div className="mb-3 flex items-center gap-2 overflow-x-auto">
+      {/* Primary — find: full-text filter */}
       <div className="relative max-w-[320px] flex-1 shrink-0">
         <Search className="absolute left-2.5 top-2 h-3.5 w-3.5 text-muted-foreground" aria-hidden="true" />
         <Input
@@ -91,80 +92,117 @@ export function EventsToolbar({
           <span className="kbd pointer-events-none absolute right-2 top-1/2 -translate-y-1/2">/</span>
         )}
       </div>
-      <Select
-        value={singleStatus ?? '__all__'}
-        onValueChange={value => onFilterStatusesChange(value === '__all__' ? [] : [value as EventStatus])}
-      >
-        <SelectTrigger className={FILTER_TRIGGER_CLASS} aria-label="Status filter">
-          <span style={{ color: 'var(--fg-subtle)' }}>Status</span>
-          <SelectValue placeholder="any" />
-        </SelectTrigger>
-        <SelectContent>
-          <SelectItem value="__all__">Any status</SelectItem>
-          {EVENT_STATUSES.map(s => (
-            <SelectItem key={s} value={s}>{EVENT_STATUS_LABELS[s]}</SelectItem>
-          ))}
-        </SelectContent>
-      </Select>
-      <Select
-        value={filterSilentDays === undefined ? '__all__' : String(filterSilentDays)}
-        onValueChange={value => onFilterSilentDaysChange(value === '__all__' ? undefined : Number(value))}
-      >
-        <SelectTrigger className={FILTER_TRIGGER_CLASS} aria-label="Activity filter">
-          <span style={{ color: 'var(--fg-subtle)' }}>Activity</span>
-          <SelectValue placeholder="any" />
-        </SelectTrigger>
-        <SelectContent>
-          <SelectItem value="__all__">Any activity</SelectItem>
-          <SelectItem value="1">Silent &gt; 1d</SelectItem>
-          <SelectItem value="7">Silent &gt; 7d</SelectItem>
-          <SelectItem value="30">Silent &gt; 30d</SelectItem>
-        </SelectContent>
-      </Select>
-      {hasActiveFilters && (
-        <Button
-          variant="ghost"
-          size="sm"
-          onClick={onClearFilters}
-          className="h-8 shrink-0 text-xs text-muted-foreground"
+
+      <ToolbarDivider />
+
+      {/* Secondary — refine: status / activity filters */}
+      <div className="flex shrink-0 items-center gap-2">
+        <Select
+          value={singleStatus ?? '__all__'}
+          onValueChange={value => onFilterStatusesChange(value === '__all__' ? [] : [value as EventStatus])}
         >
-          <X className="mr-1 h-3 w-3" />
-          Clear
-        </Button>
-      )}
+          <SelectTrigger className={FILTER_TRIGGER_CLASS} aria-label="Status filter">
+            <span style={{ color: 'var(--fg-subtle)' }}>Status</span>
+            <SelectValue placeholder="any" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="__all__">Any status</SelectItem>
+            {EVENT_STATUSES.map(s => (
+              <SelectItem key={s} value={s}>{EVENT_STATUS_LABELS[s]}</SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+        <Select
+          value={filterSilentDays === undefined ? '__all__' : String(filterSilentDays)}
+          onValueChange={value => onFilterSilentDaysChange(value === '__all__' ? undefined : Number(value))}
+        >
+          <SelectTrigger className={FILTER_TRIGGER_CLASS} aria-label="Activity filter">
+            <span style={{ color: 'var(--fg-subtle)' }}>Activity</span>
+            <SelectValue placeholder="any" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="__all__">Any activity</SelectItem>
+            <SelectItem value="1">Silent &gt; 1d</SelectItem>
+            <SelectItem value="7">Silent &gt; 7d</SelectItem>
+            <SelectItem value="30">Silent &gt; 30d</SelectItem>
+          </SelectContent>
+        </Select>
+        {hasActiveFilters && (
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={onClearFilters}
+            className="h-8 shrink-0 text-xs text-muted-foreground"
+          >
+            <X className="mr-1 h-3 w-3" />
+            Clear
+          </Button>
+        )}
+      </div>
+
       <div className="ml-auto flex shrink-0 items-center gap-2">
-        <SavedViewsMenu
-          views={savedViews}
-          activeViewName={activeSavedViewName}
-          draftName={savedViewName}
-          onDraftNameChange={onSavedViewNameChange}
-          onSave={onSaveCurrentView}
-          onApply={onApplySavedView}
-          onDelete={onDeleteSavedView}
-        />
-        <ColumnsMenu
-          open={columnsMenuOpen}
-          onOpenChange={onColumnsMenuOpenChange}
-          tagsHidden={hiddenColumns.has('tags')}
-          lastSeenHidden={hideLastSeen}
-          fieldColumns={fieldColumns}
-          metaFields={metaFields}
-          hiddenColumns={hiddenColumns}
-          onToggle={onToggleColumn}
-        />
-        <Button variant="outline" size="sm" className="h-8 text-xs" disabled>
-          <Sparkles className="h-3 w-3" />
-          Ask
-        </Button>
-        <Button variant="secondary" size="sm" className="h-8 text-xs" disabled>
-          <Code2 className="h-3 w-3" />
-          Export
-        </Button>
+        {/* Secondary — shape the table: saved views + columns */}
+        <div className="flex items-center gap-2">
+          <SavedViewsMenu
+            views={savedViews}
+            activeViewName={activeSavedViewName}
+            draftName={savedViewName}
+            onDraftNameChange={onSavedViewNameChange}
+            onSave={onSaveCurrentView}
+            onApply={onApplySavedView}
+            onDelete={onDeleteSavedView}
+          />
+          <ColumnsMenu
+            open={columnsMenuOpen}
+            onOpenChange={onColumnsMenuOpenChange}
+            tagsHidden={hiddenColumns.has('tags')}
+            lastSeenHidden={hideLastSeen}
+            fieldColumns={fieldColumns}
+            metaFields={metaFields}
+            hiddenColumns={hiddenColumns}
+            onToggle={onToggleColumn}
+          />
+        </div>
+
+        <ToolbarDivider />
+
+        {/* Utility — Ask AI (differentiator) + export */}
+        <div className="flex items-center gap-2">
+          <Button
+            variant="outline"
+            size="sm"
+            className="h-8 text-xs"
+            style={{ borderColor: 'var(--accent)', color: 'var(--accent)' }}
+            disabled
+            title="Ask AI about these events — coming soon"
+          >
+            <Sparkles className="h-3 w-3" />
+            Ask AI
+          </Button>
+          <Button variant="secondary" size="sm" className="h-8 text-xs" disabled>
+            <Code2 className="h-3 w-3" />
+            Export
+          </Button>
+        </div>
+
+        <ToolbarDivider />
+
+        {/* Primary — create */}
         <Button onClick={onNewEvent} size="sm" className="h-8 text-xs">
           <Plus className="h-3.5 w-3.5" />
           New Event
         </Button>
       </div>
     </div>
+  )
+}
+
+function ToolbarDivider() {
+  return (
+    <div
+      aria-hidden="true"
+      className="h-5 w-px shrink-0"
+      style={{ background: 'var(--border)' }}
+    />
   )
 }

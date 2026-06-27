@@ -12,15 +12,18 @@ import { activityApi } from '@/api/activity'
 import { dataSourcesApi } from '@/api/dataSources'
 import { metricsApi } from '@/api/metrics'
 import { projectsApi } from '@/api/projects'
-import { reconciliationApi } from '@/api/reconciliation'
 import { ErrorState } from '@/components/error-state'
+import { OnboardingChecklist } from '@/components/onboarding-checklist'
 import { Dot } from '@/components/primitives/dot'
-import { MiniStat, MiniStatDivider, type MiniStatTone } from '@/components/primitives/mini-stat'
+import { MiniStat, MiniStatDivider } from '@/components/primitives/mini-stat'
 import { Sparkline } from '@/components/primitives/sparkline'
 import { PageHead, Panel } from '@/components/settings/kit'
 import { useTheme } from '@/components/theme-provider'
-import { formatRelativeTime } from '@/lib/datetime'
+import { formatPlanCoverage, planCoverageRatio } from '@/lib/coverage'
+import { coverageTone, dataSourceHealthLexeme, type StatusLexeme } from '@/lib/statusLexicon'
+import { formatDateTime, formatRelativeTime } from '@/lib/datetime'
 import { getMonitoringPath } from '@/lib/monitoring'
+import { friendlyScanError } from '@/lib/scanError'
 import type {
   ActivityItem,
   ActivityItemSeverity,
@@ -29,9 +32,11 @@ import type {
   MonitoringSignal,
 } from '@/types'
 
-const COVERAGE_DAYS = 14
 const SIGNAL_LIMIT = 6
 const ACTIVITY_LIMIT = 8
+// A successful source connection test older than this is shown as "stale" rather
+// than a confident "healthy" — an old green check is misleading (issue M1).
+const SOURCE_HEALTH_STALE_MS = 24 * 60 * 60 * 1000
 
 export default function OverviewPage() {
   const { slug } = useParams<{ slug: string }>()
@@ -40,11 +45,6 @@ export default function OverviewPage() {
   const projectQuery = useQuery({
     queryKey: ['project', slug],
     queryFn: () => projectsApi.get(slug!),
-    enabled: !!slug,
-  })
-  const coverageQuery = useQuery({
-    queryKey: ['reconciliation', 'coverage', slug, COVERAGE_DAYS],
-    queryFn: () => reconciliationApi.coverage(slug!, COVERAGE_DAYS),
     enabled: !!slug,
   })
   const volumeQuery = useQuery({
@@ -85,23 +85,36 @@ export default function OverviewPage() {
   })
 
   const summary = projectQuery.data?.summary
-  const coverage = coverageQuery.data?.summary
   const volumePoints = volumeQuery.data?.data ?? []
+  const volumeCounts = volumePoints.map((p) => p.count)
   const topEvents = topEventsQuery.data ?? []
   const maxTopVolume = topEvents.reduce((m, e) => Math.max(m, e.total_count), 0)
   const signals = signalsQuery.data ?? []
   const activity = activityQuery.data ?? []
   const sources = sourcesQuery.data ?? []
 
-  const signalCount = summary?.monitoring_signal_count ?? signals.length
+  // "Open signals" must come from the SAME array the panel below renders, so the
+  // headline can never disagree with the list (issue H1).
+  const signalCount = signals.length
   const reviewCount = summary?.review_pending_event_count ?? 0
-  const coveragePct = coverage?.coverage_pct
+  // Coverage is plan coverage (implemented vs active events) rendered through the
+  // canonical formatter, so it reads identically to the projects dashboard (H2).
+  const coveragePct = summary
+    ? planCoverageRatio(summary.implemented_event_count, summary.active_event_count) * 100
+    : undefined
   const activeEventsSeries = kpiSeriesQuery.data?.active_events ?? []
 
   return (
     <div className="min-w-0 space-y-8 pb-12">
+      {/* Guided first-run checklist (UX-24) — a "start here" for the core
+          Plan → Observe → Govern loop. Self-derives done-state from project
+          data, is dismissible, and auto-hides once complete. */}
+      {slug && (
+        <OnboardingChecklist slug={slug} summary={summary} sourceCount={sources.length} />
+      )}
+
       {/* Header */}
-      <PageHead eyebrow={projectQuery.data?.name ?? 'Project'} title="Overview" />
+      <PageHead eyebrow={projectQuery.data?.name ?? 'Project'} title="Live activity" />
 
 
       {/* KPI strip */}
@@ -139,7 +152,7 @@ export default function OverviewPage() {
           <MiniStatDivider />
           <MiniStat
             label="Open signals"
-            value={summary ? signalCount.toLocaleString() : '—'}
+            value={signalsQuery.data ? signalCount.toLocaleString() : '—'}
             tone={signalCount > 0 ? 'danger' : 'success'}
             pulse={signalCount > 0}
             delta={signalCount > 0 ? 'active' : undefined}
@@ -147,20 +160,45 @@ export default function OverviewPage() {
           <MiniStatDivider />
           <MiniStat
             label="Coverage"
-            value={coveragePct != null ? `${coveragePct.toFixed(1)}%` : '—'}
+            value={
+              summary
+                ? formatPlanCoverage(summary.implemented_event_count, summary.active_event_count)
+                : '—'
+            }
             tone={coverageTone(coveragePct)}
           />
           {activeEventsSeries.length > 1 && (
             <>
               <MiniStatDivider />
-              <div className="flex items-center gap-2">
+              {/* Stacked like the MiniStat columns (caption above, figure below):
+                  same `gap-px` label→figure rhythm and a 24px figure so the top
+                  caption sits on the same baseline as the numeric stats in this
+                  `items-center` row. `shrink-0` keeps its room when the strip
+                  wraps, and `pr-1` lifts the line off the card edge (the SVG draws
+                  to x=width with overflow visible) so it reads as a finished stat
+                  rather than a stray line crammed against the edge. Tooltip +
+                  role="img" alt spell out what the line is (issue #12). */}
+              <div
+                className="m-0 flex shrink-0 flex-col gap-px pr-1"
+                title="Active events over the last 14 days"
+              >
                 <span
-                  className="text-[10px] uppercase tracking-[0.06em]"
+                  className="text-[10px] font-semibold uppercase tracking-[0.06em]"
                   style={{ color: 'var(--fg-faint)' }}
                 >
-                  Active · 14d
+                  Active trend · 14d
                 </span>
-                <Sparkline data={activeEventsSeries} variant={chartStyle} width={120} height={28} />
+                <div role="img" aria-label={activeTrendLabel(activeEventsSeries)}>
+                  <Sparkline
+                    data={activeEventsSeries}
+                    variant={chartStyle}
+                    width={120}
+                    height={24}
+                  />
+                  <span className="sr-only">
+                    Active events by day: {activeEventsSeries.map((c) => c.toLocaleString()).join(', ')}.
+                  </span>
+                </div>
               </div>
             </>
           )}
@@ -188,20 +226,24 @@ export default function OverviewPage() {
         )}
         {volumePoints.length > 0 && (
           <div className="flex items-end gap-4">
-            <div className="flex flex-col gap-px">
+            <div
+              role="group"
+              aria-label={`Latest bucket volume ${volumeCounts[volumeCounts.length - 1]!.toLocaleString()}, ${volumePoints.length} buckets`}
+              className="flex flex-col gap-px"
+            >
               <span className="mono tnum text-2xl font-medium tracking-[-0.01em]">
-                {volumePoints[volumePoints.length - 1]!.count.toLocaleString()}
+                {volumeCounts[volumeCounts.length - 1]!.toLocaleString()}
               </span>
               <span className="text-[11px]" style={{ color: 'var(--fg-subtle)' }}>
                 latest bucket · {volumePoints.length} buckets
               </span>
             </div>
-            <Sparkline
-              data={volumePoints.map((p) => p.count)}
-              variant={chartStyle}
-              width={320}
-              height={48}
-            />
+            <div role="img" aria-label={volumeChartLabel(volumeCounts)}>
+              <Sparkline data={volumeCounts} variant={chartStyle} width={320} height={48} />
+              <span className="sr-only">
+                Volume by bucket: {volumeCounts.map((c) => c.toLocaleString()).join(', ')}.
+              </span>
+            </div>
           </div>
         )}
         </div>
@@ -227,13 +269,19 @@ export default function OverviewPage() {
           </div>
         )}
         {topEvents.length > 0 && (
-          <div className="space-y-1.5">
+          <div role="list" aria-label="Top events by volume, last 48 hours" className="space-y-1.5">
             {topEvents.map((e) => (
-              <div key={e.event_id} className="flex items-center gap-3">
+              <div
+                key={e.event_id}
+                role="listitem"
+                aria-label={`${e.name}: ${e.total_count.toLocaleString()} events`}
+                className="flex items-center gap-3"
+              >
                 <span className="mono w-40 shrink-0 truncate text-[12px]" title={e.name}>
                   {e.name}
                 </span>
                 <div
+                  aria-hidden="true"
                   className="relative h-2 flex-1 overflow-hidden rounded-full"
                   style={{ background: 'var(--surface-active)' }}
                 >
@@ -348,11 +396,26 @@ export default function OverviewPage() {
   )
 }
 
-function coverageTone(pct: number | undefined): MiniStatTone {
-  if (pct == null) return 'neutral'
-  if (pct >= 90) return 'success'
-  if (pct >= 70) return 'warning'
-  return 'danger'
+
+// Text alternative for the volume sparkline (issue M8): the SVG itself is
+// aria-hidden, so the surrounding role="img" needs an accessible summary.
+function volumeChartLabel(counts: number[]): string {
+  if (counts.length === 0) return 'Project total volume sparkline'
+  const latest = counts[counts.length - 1]!
+  const min = Math.min(...counts)
+  const max = Math.max(...counts)
+  return `Project total volume sparkline. ${counts.length} buckets. Latest ${latest.toLocaleString()}, range ${min.toLocaleString()} to ${max.toLocaleString()}.`
+}
+
+// Text alternative for the active-events trend sparkline (issue #12). Mirrors
+// volumeChartLabel: the SVG is decorative, so the wrapping role="img" needs an
+// accessible summary of what the 14-day line actually shows.
+function activeTrendLabel(counts: number[]): string {
+  if (counts.length === 0) return 'Active events over the last 14 days'
+  const latest = counts[counts.length - 1]!
+  const min = Math.min(...counts)
+  const max = Math.max(...counts)
+  return `Active events over the last 14 days. Latest ${latest.toLocaleString()}, range ${min.toLocaleString()} to ${max.toLocaleString()}.`
 }
 
 function signalScopeLabel(signal: MonitoringSignal): string {
@@ -398,9 +461,19 @@ function activitySeverityColor(severity: ActivityItemSeverity): string {
   return 'var(--fg-muted)'
 }
 
+// A failed-scan activity row carries the raw backend exception in `detail`
+// (host/port/ORM internals). Surface a friendly, leak-free message instead (H3).
+function activityDetail(item: ActivityItem): string {
+  if (item.type === 'scan' && item.title.startsWith('Scan failed')) {
+    return friendlyScanError(item.detail).message
+  }
+  return item.detail
+}
+
 function ActivityRow({ item }: { item: ActivityItem }) {
   const Icon = ACTIVITY_ICON[item.type]
   const color = activitySeverityColor(item.severity)
+  const detail = activityDetail(item)
   const content = (
     <>
       <div
@@ -412,7 +485,7 @@ function ActivityRow({ item }: { item: ActivityItem }) {
       <div className="min-w-0 flex-1">
         <div className="truncate text-[12px] font-medium leading-[1.35]">{item.title}</div>
         <div className="mt-0.5 truncate text-[11px] leading-[1.3]" style={{ color: 'var(--fg-subtle)' }}>
-          {item.detail}
+          {detail}
         </div>
       </div>
       <span className="mono shrink-0 text-[10.5px]" style={{ color: 'var(--fg-faint)' }}>
@@ -432,17 +505,23 @@ function ActivityRow({ item }: { item: ActivityItem }) {
   return <div className={className}>{content}</div>
 }
 
-function sourceTone(status: DataSource['last_test_status']): {
-  tone: 'success' | 'danger' | 'neutral'
-  label: string
-} {
-  if (status === 'success') return { tone: 'success', label: 'healthy' }
-  if (status === 'failed') return { tone: 'danger', label: 'failing' }
-  return { tone: 'neutral', label: 'untested' }
+// A green "healthy" badge over a months-old check is misleading. When the last
+// successful test is stale we downgrade the label to "stale" and the recency is
+// always made explicit ("checked 2mo ago" + an absolute timestamp tooltip) (M1).
+function sourceHealth(source: DataSource, now: number = Date.now()): StatusLexeme {
+  const checkedAt = source.last_test_at ? Date.parse(source.last_test_at) : NaN
+  const isStale = Number.isNaN(checkedAt) || now - checkedAt > SOURCE_HEALTH_STALE_MS
+  return dataSourceHealthLexeme(source.last_test_status, isStale)
 }
 
 function SourceRow({ source }: { source: DataSource }) {
-  const { tone, label } = sourceTone(source.last_test_status)
+  const { tone, label } = sourceHealth(source)
+  const checkedLabel = source.last_test_at
+    ? `checked ${formatRelativeTime(source.last_test_at)}`
+    : 'never checked'
+  const checkedTitle = source.last_test_at
+    ? `Last checked ${formatDateTime(source.last_test_at)}`
+    : 'Never checked'
   return (
     <div className="flex items-center gap-2 py-2">
       <Dot tone={tone} size={7} />
@@ -454,8 +533,12 @@ function SourceRow({ source }: { source: DataSource }) {
       <span className="w-[64px] shrink-0 text-right text-[11px]" style={{ color: 'var(--fg-subtle)' }}>
         {label}
       </span>
-      <span className="w-[64px] shrink-0 text-right text-[11px]" style={{ color: 'var(--fg-faint)' }}>
-        {source.last_test_at ? formatRelativeTime(source.last_test_at) : '—'}
+      <span
+        className="w-[104px] shrink-0 truncate text-right text-[11px]"
+        style={{ color: 'var(--fg-faint)' }}
+        title={checkedTitle}
+      >
+        {checkedLabel}
       </span>
     </div>
   )

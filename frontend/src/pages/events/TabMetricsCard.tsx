@@ -100,6 +100,8 @@ export function TabMetricsCard({
     [tabMetrics?.data, granularity],
   )
 
+  const hasChartData = tabMetricsData.length > 0
+
   return (
     <Collapsible open={isOpen} onOpenChange={onOpenChange}>
       <Card className="mb-3 gap-0 rounded-lg py-0">
@@ -167,7 +169,7 @@ export function TabMetricsCard({
               <div className="flex h-[160px] items-center justify-center text-sm text-muted-foreground">
                 Loading metrics…
               </div>
-            ) : (
+            ) : hasChartData ? (
               <>
                 <MetricsChart
                   data={tabMetricsData}
@@ -182,6 +184,8 @@ export function TabMetricsCard({
                   </p>
                 )}
               </>
+            ) : (
+              <p className="text-xs text-muted-foreground">No recent volume to chart</p>
             )}
           </CardContent>
         </CollapsibleContent>

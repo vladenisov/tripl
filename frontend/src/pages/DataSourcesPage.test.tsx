@@ -31,6 +31,25 @@ function jsonResponse(data: unknown, status = 200) {
   })
 }
 
+function listFetchMock(sources: DataSource[]) {
+  return (input: RequestInfo | URL) => {
+    const url =
+      typeof input === 'string'
+        ? input
+        : input instanceof URL
+          ? input.toString()
+          : input.url
+
+    if (url.endsWith('/api/v1/data-sources')) {
+      return Promise.resolve(jsonResponse(sources))
+    }
+
+    return Promise.reject(new Error(`Unexpected request: ${url}`))
+  }
+}
+
+const DAY_MS = 24 * 60 * 60 * 1000
+
 function LocationProbe() {
   const location = useLocation()
   return <span data-testid="location">{location.pathname}</span>
@@ -190,5 +209,136 @@ describe('DataSourcesPage', () => {
     expect(screen.queryByRole('button', { name: 'Add connection' })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Test' })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Edit' })).not.toBeInTheDocument()
+  })
+
+  it('flags an old successful health check as stale instead of confident "healthy"', async () => {
+    const staleSource: DataSource = {
+      ...DATA_SOURCE,
+      last_test_status: 'success',
+      last_test_message: 'Connection successful',
+      last_test_at: new Date(Date.now() - 60 * DAY_MS).toISOString(),
+    }
+    vi.spyOn(globalThis, 'fetch').mockImplementation(listFetchMock([staleSource]))
+
+    renderDataSourcesPage('/settings/data-sources', 'owner')
+
+    expect(await screen.findByText('Warehouse')).toBeInTheDocument()
+    expect(screen.getByText('stale')).toBeInTheDocument()
+    expect(screen.queryByText('healthy')).not.toBeInTheDocument()
+    expect(screen.getByText(/Last checked/)).toBeInTheDocument()
+    expect(screen.getByText('re-test to confirm')).toBeInTheDocument()
+  })
+
+  it('presents a recent successful health check as healthy', async () => {
+    const freshSource: DataSource = {
+      ...DATA_SOURCE,
+      last_test_status: 'success',
+      last_test_message: 'Connection successful',
+      last_test_at: new Date(Date.now() - 60 * 1000).toISOString(),
+    }
+    vi.spyOn(globalThis, 'fetch').mockImplementation(listFetchMock([freshSource]))
+
+    renderDataSourcesPage('/settings/data-sources', 'owner')
+
+    expect(await screen.findByText('Warehouse')).toBeInTheDocument()
+    expect(screen.getByText('healthy')).toBeInTheDocument()
+    expect(screen.queryByText('stale')).not.toBeInTheDocument()
+    expect(screen.getByText('Connection successful')).toBeInTheDocument()
+    // A confidently healthy source does not need recovery affordances.
+    expect(screen.queryByRole('button', { name: 'Re-test connection' })).not.toBeInTheDocument()
+  })
+
+  it('surfaces inline recovery actions on a failed source and re-tests on click', async () => {
+    const failedSource: DataSource = {
+      ...DATA_SOURCE,
+      last_test_status: 'failed',
+      last_test_message: 'Connection refused',
+      last_test_at: new Date(Date.now() - 60 * 1000).toISOString(),
+    }
+    const recovered: DataSource = {
+      ...failedSource,
+      last_test_status: 'success',
+      last_test_message: 'Connection successful',
+      last_test_at: new Date().toISOString(),
+    }
+    let testCalls = 0
+
+    vi.spyOn(globalThis, 'fetch').mockImplementation((input: RequestInfo | URL, init?: RequestInit) => {
+      const url =
+        typeof input === 'string'
+          ? input
+          : input instanceof URL
+            ? input.toString()
+            : input.url
+
+      if (url.endsWith('/api/v1/data-sources') && !init?.method) {
+        return Promise.resolve(jsonResponse([failedSource]))
+      }
+
+      if (url.endsWith('/api/v1/data-sources/ds-1/test') && init?.method === 'POST') {
+        testCalls += 1
+        return Promise.resolve(
+          jsonResponse({
+            success: true,
+            message: 'Connection successful',
+            tested_at: recovered.last_test_at,
+            data_source: recovered,
+          }),
+        )
+      }
+
+      return Promise.reject(new Error(`Unexpected request: ${url}`))
+    })
+
+    renderDataSourcesPage('/settings/data-sources', 'owner')
+
+    expect(await screen.findByText('Connection refused')).toBeInTheDocument()
+    const retest = screen.getByRole('button', { name: 'Re-test connection' })
+    expect(retest).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Edit connection' })).toBeInTheDocument()
+
+    fireEvent.click(retest)
+
+    await waitFor(() => {
+      expect(testCalls).toBe(1)
+    })
+    expect(await screen.findByText('Connection successful')).toBeInTheDocument()
+    // Once recovered, the inline re-test affordance is no longer needed.
+    await waitFor(() => {
+      expect(screen.queryByRole('button', { name: 'Re-test connection' })).not.toBeInTheDocument()
+    })
+  })
+
+  it('surfaces a re-test recovery action on a stale source', async () => {
+    const staleSource: DataSource = {
+      ...DATA_SOURCE,
+      last_test_status: 'success',
+      last_test_message: 'Connection successful',
+      last_test_at: new Date(Date.now() - 60 * DAY_MS).toISOString(),
+    }
+    vi.spyOn(globalThis, 'fetch').mockImplementation(listFetchMock([staleSource]))
+
+    renderDataSourcesPage('/settings/data-sources', 'owner')
+
+    expect(await screen.findByText('Warehouse')).toBeInTheDocument()
+    expect(screen.getByText('stale')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Re-test connection' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Edit connection' })).toBeInTheDocument()
+  })
+
+  it('hides inline recovery actions from non-owners on a failed source', async () => {
+    const failedSource: DataSource = {
+      ...DATA_SOURCE,
+      last_test_status: 'failed',
+      last_test_message: 'Connection refused',
+      last_test_at: new Date(Date.now() - 60 * 1000).toISOString(),
+    }
+    vi.spyOn(globalThis, 'fetch').mockImplementation(listFetchMock([failedSource]))
+
+    renderDataSourcesPage('/settings/data-sources', 'viewer')
+
+    expect(await screen.findByText('Connection refused')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Re-test connection' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Edit connection' })).not.toBeInTheDocument()
   })
 })

@@ -40,3 +40,19 @@ export function routeScopeToApiScope(scope: string | undefined): MonitoringScope
       throw new Error(`routeScopeToApiScope: unknown monitoring scope "${scope}"`)
   }
 }
+
+/**
+ * Resolves the API scope for the monitoring detail page from its route params.
+ *
+ * The legacy `/p/:slug/events/detail/:eventId` route carries no `:scope`
+ * segment, so when `scope` is absent but an `eventId` is present we default to
+ * the event scope instead of throwing. Truly-unknown scope strings still throw
+ * via {@link routeScopeToApiScope}, so a malformed canonical URL fails loudly.
+ */
+export function resolveDetailScope(
+  scope: string | undefined,
+  eventId: string | undefined,
+): MonitoringScope {
+  if (scope === undefined && eventId) return 'event'
+  return routeScopeToApiScope(scope)
+}

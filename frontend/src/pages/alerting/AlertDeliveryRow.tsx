@@ -1,8 +1,9 @@
 import { useMemo, useState } from "react"
-import { useQuery } from "@tanstack/react-query"
-import { ChevronDown } from "lucide-react"
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
+import { ChevronDown, Loader2, RotateCcw } from "lucide-react"
 import type { AlertDelivery, AlertDeliveryItem } from "@/types"
 import { alertingApi } from "@/api/alerting"
+import { getErrorMessage } from "@/lib/utils"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
@@ -25,11 +26,21 @@ function buildCorrelationLabels(items: AlertDeliveryItem[]): Map<string, string>
 
 export function AlertDeliveryRow({ slug, delivery }: { slug: string; delivery: AlertDelivery }) {
   const [open, setOpen] = useState(false)
+  const qc = useQueryClient()
   const { data: detail } = useQuery({
     queryKey: ['alertDelivery', slug, delivery.id],
     queryFn: () => alertingApi.getDelivery(slug, delivery.id),
     enabled: open,
   })
+  // Re-queue a failed delivery. On success the backend flips it back to
+  // 'pending'; invalidating the list query refetches the new status/badge.
+  const retryMut = useMutation({
+    mutationFn: () => alertingApi.retryDelivery(slug, delivery.id),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['alertDeliveries', slug] })
+    },
+  })
+  const isFailed = delivery.status === 'failed'
   const renderedPreview = typeof delivery.payload_snapshot?.rendered_message === 'string'
     ? delivery.payload_snapshot.rendered_message
     : null
@@ -57,18 +68,46 @@ export function AlertDeliveryRow({ slug, delivery }: { slug: string; delivery: A
           ) : '—')}
         </TableCell>
         <TableCell>
-          <Button
-            variant="ghost"
-            size="icon"
-            className="h-7 w-7"
-            aria-label={open ? 'Collapse delivery details' : 'Expand delivery details'}
-            aria-expanded={open}
-            onClick={() => setOpen(current => !current)}
-          >
-            <ChevronDown aria-hidden="true" className={`h-4 w-4 transition-transform ${open ? 'rotate-180' : ''}`} />
-          </Button>
+          <div className="flex items-center justify-end gap-1">
+            {isFailed && (
+              <Button
+                variant="ghost"
+                size="sm"
+                className="h-7 gap-1 px-2 text-xs"
+                disabled={retryMut.isPending}
+                aria-label="Retry delivery"
+                onClick={() => retryMut.mutate()}
+              >
+                {retryMut.isPending ? (
+                  <Loader2 aria-hidden="true" className="h-3.5 w-3.5 animate-spin" />
+                ) : (
+                  <RotateCcw aria-hidden="true" className="h-3.5 w-3.5" />
+                )}
+                Retry
+              </Button>
+            )}
+            <Button
+              variant="ghost"
+              size="icon"
+              className="h-7 w-7"
+              aria-label={open ? 'Collapse delivery details' : 'Expand delivery details'}
+              aria-expanded={open}
+              onClick={() => setOpen(current => !current)}
+            >
+              <ChevronDown aria-hidden="true" className={`h-4 w-4 transition-transform ${open ? 'rotate-180' : ''}`} />
+            </Button>
+          </div>
         </TableCell>
       </TableRow>
+      {retryMut.isError && (
+        <TableRow>
+          <TableCell colSpan={9} className="py-1">
+            <p role="alert" className="text-xs text-destructive">
+              Retry failed: {getErrorMessage(retryMut.error)}
+            </p>
+          </TableCell>
+        </TableRow>
+      )}
       {open && detail && (
         <TableRow>
           <TableCell colSpan={9} className="bg-muted/20">

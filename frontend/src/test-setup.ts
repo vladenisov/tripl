@@ -17,6 +17,33 @@ declare module 'vitest' {
   interface AsymmetricMatchersContaining extends AxeMatchers {}
 }
 
+// jsdom's `localStorage` varies by version — CI's build omits it entirely, so a
+// test's `localStorage.clear()` throws, which aborts Testing Library's afterEach
+// cleanup and leaks rendered DOM into later tests. Install a fresh in-memory
+// Storage unconditionally so every test file behaves identically everywhere.
+{
+  const store = new Map<string, string>()
+  const localStorageMock = {
+    get length() {
+      return store.size
+    },
+    clear: () => store.clear(),
+    getItem: (key: string) => (store.has(key) ? store.get(key)! : null),
+    key: (index: number) => Array.from(store.keys())[index] ?? null,
+    removeItem: (key: string) => {
+      store.delete(key)
+    },
+    setItem: (key: string, value: string) => {
+      store.set(key, String(value))
+    },
+  }
+  Object.defineProperty(globalThis, 'localStorage', {
+    value: localStorageMock as Storage,
+    configurable: true,
+    writable: true,
+  })
+}
+
 if (!window.ResizeObserver) {
   class ResizeObserverMock {
     observe() {}
