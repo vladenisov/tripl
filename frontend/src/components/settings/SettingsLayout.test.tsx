@@ -34,6 +34,35 @@ function renderSettings(activePath: string) {
   )
 }
 
+describe('SettingsLayout signposting', () => {
+  it('states the takeover area job in one line', () => {
+    renderSettings('members')
+
+    expect(screen.getByText('Workspace & account configuration')).toBeInTheDocument()
+  })
+
+  it('offers a labelled "Back to project" cross-link to the in-app surface', () => {
+    render(
+      <MemoryRouter>
+        <SettingsLayout activePath="members" onNavigate={vi.fn()} backHref="/p/demo/events">
+          <div>content</div>
+        </SettingsLayout>
+      </MemoryRouter>,
+    )
+
+    const back = screen.getByRole('link', { name: /Back to project/i })
+    expect(back).toHaveAttribute('href', '/p/demo/events')
+  })
+
+  it('shows a short descriptor for each visible nav group', () => {
+    renderSettings('members')
+
+    expect(screen.getByText('Shared across everyone in the workspace')).toBeInTheDocument()
+    expect(screen.getByText('Settings just for you')).toBeInTheDocument()
+    expect(screen.getByText('Server-wide settings (owner only)')).toBeInTheDocument()
+  })
+})
+
 describe('SettingsLayout nav accessibility', () => {
   it('gives the icon-led AI instance nav button an accessible name', () => {
     renderSettings('instance/ai')

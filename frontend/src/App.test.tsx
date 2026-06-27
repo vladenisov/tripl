@@ -11,6 +11,49 @@ function jsonResponse(data: unknown, status = 200) {
   })
 }
 
+function urlOf(input: RequestInfo | URL) {
+  return typeof input === 'string'
+    ? input
+    : input instanceof URL
+      ? input.toString()
+      : input.url
+}
+
+const OWNER = {
+  id: 'user-1',
+  email: 'owner@example.com',
+  name: 'Owner',
+  role: 'owner',
+  created_at: '2026-04-18T10:00:00Z',
+  updated_at: '2026-04-18T10:00:00Z',
+}
+
+function makeProject(slug: string, name: string) {
+  return {
+    id: `proj-${slug}`,
+    name,
+    slug,
+    description: '',
+    created_at: '2026-04-18T10:00:00Z',
+    updated_at: '2026-04-18T10:00:00Z',
+    summary: {
+      event_type_count: 0,
+      event_count: 0,
+      active_event_count: 0,
+      implemented_event_count: 0,
+      review_pending_event_count: 0,
+      archived_event_count: 0,
+      variable_count: 0,
+      scan_count: 0,
+      alert_destination_count: 0,
+      monitoring_signal_count: 0,
+      firing_monitor_count: 0,
+      latest_scan_job: null,
+      latest_signal: null,
+    },
+  }
+}
+
 function renderApp(path = '/') {
   window.history.pushState({}, '', path)
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
@@ -146,5 +189,44 @@ describe('App', () => {
     await waitFor(() => {
       expect(window.location.pathname).toBe('/p/demo/monitoring/event/event-1')
     })
+  })
+
+  it('redirects "/" into the single project when exactly one exists', async () => {
+    // UX-11 / UX-25: one project ⇒ "/" is a redundant hop, so land directly in
+    // that project's overview. Post-redirect page data is irrelevant to the
+    // assertion; a 404 lets the overview render its ErrorState rather than crash.
+    vi.spyOn(globalThis, 'fetch').mockImplementation((input: RequestInfo | URL) => {
+      const url = urlOf(input)
+      if (url.endsWith('/api/v1/auth/me')) return Promise.resolve(jsonResponse(OWNER))
+      if (url.endsWith('/api/v1/projects')) {
+        return Promise.resolve(jsonResponse([makeProject('demo', 'Demo')]))
+      }
+      return Promise.resolve(jsonResponse({ detail: 'Not found' }, 404))
+    })
+
+    renderApp('/')
+
+    await waitFor(() => {
+      expect(window.location.pathname).toBe('/p/demo/overview')
+    })
+  })
+
+  it('keeps "/" on the workspace dashboard when multiple projects exist', async () => {
+    // 2+ projects ⇒ the portfolio view is the right landing; no redirect.
+    vi.spyOn(globalThis, 'fetch').mockImplementation((input: RequestInfo | URL) => {
+      const url = urlOf(input)
+      if (url.endsWith('/api/v1/auth/me')) return Promise.resolve(jsonResponse(OWNER))
+      if (url.endsWith('/api/v1/projects')) {
+        return Promise.resolve(jsonResponse([makeProject('alpha', 'Alpha'), makeProject('beta', 'Beta')]))
+      }
+      if (url.endsWith('/api/v1/data-sources')) return Promise.resolve(jsonResponse([]))
+      return Promise.resolve(jsonResponse({ detail: 'Not found' }, 404))
+    })
+
+    renderApp('/')
+
+    // The dashboard's always-present header renders, and the URL never bounces.
+    expect(await screen.findByText('Analytics workspace')).toBeInTheDocument()
+    expect(window.location.pathname).toBe('/')
   })
 })
