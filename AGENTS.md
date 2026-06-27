@@ -66,7 +66,8 @@ Frontend:
 - TanStack Query
 - Recharts
 
-Local runtime in [compose.yaml](compose.yaml):
+Local dev runtime in [compose.dev.yaml](compose.dev.yaml) (prod runs the
+published image via [compose.yaml](compose.yaml); see [docs/RELEASE.md](docs/RELEASE.md)):
 - `postgres`
 - `rabbitmq`
 - `api`
@@ -90,6 +91,7 @@ Connectivity:
 
 Identity and secrets:
 - `ENCRYPTION_KEY` — Fernet key for at-rest secrets. **Required** in non-debug mode.
+- `SECRET_KEY` — session-cookie signing key. **Required** in non-debug mode.
 - `SESSION_COOKIE_NAME`, `SESSION_TTL_HOURS`, `SESSION_COOKIE_SECURE`.
 - `APP_BASE_URL` — used for alert links and as the default CORS origin.
 
@@ -114,7 +116,7 @@ Practical notes:
 Top level:
 - [PLAN.md](PLAN.md): product scope and longer architecture notes.
 - [README.md](README.md): quick start and user-facing overview.
-- [compose.yaml](compose.yaml): local runtime topology.
+- [compose.yaml](compose.yaml): production stack (published image); [compose.dev.yaml](compose.dev.yaml): local dev topology.
 - [backend](backend): Python service.
 - [frontend](frontend): React app.
 
