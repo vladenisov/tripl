@@ -6,7 +6,7 @@
 # This is NOT the deploy stack. Production runs the published single-container
 # image via the default compose.yaml (`docker compose up -d`), which builds the
 # `runtime` stage (non-root, HEALTHCHECK) in CI — see compose.yaml, Dockerfile,
-# and docs/RELEASE.md.
+# and website/docs/run/release.md.
 x-backend-build: &backend-build
   context: ./backend
   target: dev

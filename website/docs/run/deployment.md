@@ -167,7 +167,7 @@ docker compose pull
 docker compose up -d
 ```
 
-The `migrate` one-shot applies any new Alembic migrations before the new `app` and workers come up, so a rolling deploy never races the upgrade. Pin `TRIPL_VERSION` to an explicit released tag in production rather than tracking `latest`, so upgrades are deliberate and reproducible. Releases are cut from git tags via `bin/release.sh`; the full release machinery is documented in [docs/RELEASE.md](https://github.com/vladenisov/tripl/blob/main/docs/RELEASE.md).
+The `migrate` one-shot applies any new Alembic migrations before the new `app` and workers come up, so a rolling deploy never races the upgrade. Pin `TRIPL_VERSION` to an explicit released tag in production rather than tracking `latest`, so upgrades are deliberate and reproducible. Releases are cut from git tags via `bin/release.sh`; the full release machinery is documented in [the release guide](./release.md).
 
 After upgrading, confirm everything is healthy:
 
@@ -191,4 +191,4 @@ The dev stack serves the SPA from Vite on `:5173` (proxying to the API on `:8000
 
 - [Configuration reference](./configuration) — every environment variable and what it does.
 - [Troubleshooting](../use/troubleshooting) — startup failures, CORS/cookie issues, worker problems.
-- [docs/RELEASE.md](https://github.com/vladenisov/tripl/blob/main/docs/RELEASE.md) — cutting and publishing release images.
+- [the release guide](./release.md) — cutting and publishing release images.

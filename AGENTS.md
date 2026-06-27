@@ -69,7 +69,7 @@ Frontend:
 - Recharts
 
 Local dev runtime in [compose.dev.yaml](compose.dev.yaml) (prod runs the
-published image via [compose.yaml](compose.yaml); see [docs/RELEASE.md](docs/RELEASE.md)):
+published image via [compose.yaml](compose.yaml); see [website/docs/run/release.md](website/docs/run/release.md)):
 - `postgres`
 - `rabbitmq`
 - `api`
