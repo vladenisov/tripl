@@ -132,24 +132,29 @@ export default function MonitorsPage() {
               .
             </div>
           ) : (
-            <div role="table" aria-label="Monitors">
-              <div role="rowgroup">
-                <div
-                  role="row"
-                  className={`${MONITOR_GRID} border-b py-2 text-[10.5px] font-semibold uppercase tracking-[0.05em]`}
-                  style={{ borderColor: 'var(--border-subtle)', color: 'var(--fg-faint)' }}
-                >
-                  <span role="columnheader">Monitor</span>
-                  <span role="columnheader">Condition</span>
-                  <span role="columnheader">Routes to</span>
-                  <span role="columnheader">State</span>
-                  <span role="columnheader" className="text-right">Last fired</span>
+            // Below the grid's min-width the fixed columns would squish, so it
+            // scrolls horizontally on small screens; lg+ is unchanged (the
+            // min-width sits under the available width).
+            <div className="overflow-x-auto">
+              <div role="table" aria-label="Monitors" className="min-w-[680px]">
+                <div role="rowgroup">
+                  <div
+                    role="row"
+                    className={`${MONITOR_GRID} border-b py-2 text-[10.5px] font-semibold uppercase tracking-[0.05em]`}
+                    style={{ borderColor: 'var(--border-subtle)', color: 'var(--fg-faint)' }}
+                  >
+                    <span role="columnheader">Monitor</span>
+                    <span role="columnheader">Condition</span>
+                    <span role="columnheader">Routes to</span>
+                    <span role="columnheader">State</span>
+                    <span role="columnheader" className="text-right">Last fired</span>
+                  </div>
                 </div>
-              </div>
-              <div role="rowgroup">
-                {monitors.map((monitor) => (
-                  <MonitorRow key={monitor.rule_id} monitor={monitor} slug={slug} />
-                ))}
+                <div role="rowgroup">
+                  {monitors.map((monitor) => (
+                    <MonitorRow key={monitor.rule_id} monitor={monitor} slug={slug} />
+                  ))}
+                </div>
               </div>
             </div>
           )}

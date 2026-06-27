@@ -451,7 +451,7 @@ export default function MonitoringDetailPage() {
   const isEventDetail = scope === 'event' && !!event
 
   return (
-    <div className={isEventDetail ? 'mx-auto max-w-[1000px] space-y-5 px-6 pb-12 pt-4' : 'space-y-6 p-6'}>
+    <div className={isEventDetail ? 'mx-auto max-w-[1000px] space-y-5 px-4 pb-12 pt-4 sm:px-6' : 'space-y-6 p-4 sm:p-6'}>
       {isEventDetail && event ? (
         <EventDetailHero
           event={event}
@@ -1573,6 +1573,7 @@ function EventFieldsTable({
           No fields defined.
         </div>
       ) : (
+        <div className="overflow-x-auto">
         <table className="w-full border-collapse" aria-label="Fields">
           <thead>
             <tr style={{ background: 'var(--bg-sunken)' }}>
@@ -1607,6 +1608,7 @@ function EventFieldsTable({
             })}
           </tbody>
         </table>
+        </div>
       )}
     </div>
   )
