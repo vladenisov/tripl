@@ -170,11 +170,18 @@ export default function OverviewPage() {
           {activeEventsSeries.length > 1 && (
             <>
               <MiniStatDivider />
-              {/* Stacked like the MiniStat columns (caption above, figure below)
-                  so the trend reads as a finished stat, not a stray line crammed
-                  against the edge. The tooltip + role="img" alt spell out what the
-                  line is (issue #12). */}
-              <div className="m-0 flex flex-col gap-1" title="Active events over the last 14 days">
+              {/* Stacked like the MiniStat columns (caption above, figure below):
+                  same `gap-px` label→figure rhythm and a 24px figure so the top
+                  caption sits on the same baseline as the numeric stats in this
+                  `items-center` row. `shrink-0` keeps its room when the strip
+                  wraps, and `pr-1` lifts the line off the card edge (the SVG draws
+                  to x=width with overflow visible) so it reads as a finished stat
+                  rather than a stray line crammed against the edge. Tooltip +
+                  role="img" alt spell out what the line is (issue #12). */}
+              <div
+                className="m-0 flex shrink-0 flex-col gap-px pr-1"
+                title="Active events over the last 14 days"
+              >
                 <span
                   className="text-[10px] font-semibold uppercase tracking-[0.06em]"
                   style={{ color: 'var(--fg-faint)' }}
@@ -186,7 +193,7 @@ export default function OverviewPage() {
                     data={activeEventsSeries}
                     variant={chartStyle}
                     width={120}
-                    height={28}
+                    height={24}
                   />
                   <span className="sr-only">
                     Active events by day: {activeEventsSeries.map((c) => c.toLocaleString()).join(', ')}.

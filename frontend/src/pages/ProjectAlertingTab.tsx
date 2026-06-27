@@ -6,7 +6,6 @@ import { alertingApi } from '@/api/alerting'
 import { eventTypesApi } from '@/api/eventTypes'
 import { eventsApi } from '@/api/events'
 import { scansApi } from '@/api/scans'
-import { EmptyState } from '@/components/empty-state'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Checkbox } from '@/components/ui/checkbox'
@@ -263,19 +262,24 @@ export default function ProjectAlertingTab({ slug }: { slug: string }) {
           </div>
 
           {!hasDestinations && (
-            <EmptyState
-              icon={Webhook}
-              title="No alert destinations"
-              description="Create a Slack webhook, Telegram bot, or generic webhook destination, then attach rules to it."
-              action={
-                <div className="flex flex-col items-center gap-2">
-                  <span className="text-xs font-medium text-muted-foreground">Add a channel</span>
-                  <div className="flex flex-wrap items-center justify-center gap-2">
-                    {channelButtons}
-                  </div>
+            // Inlined empty state with trimmed vertical padding (py-8 vs the shared
+            // EmptyState's py-16) so the heading, message, and channel buttons read as
+            // one connected block instead of floating below an awkward void.
+            <div className="flex flex-col items-center justify-center py-8 text-center">
+              <div className="mb-4 flex h-12 w-12 items-center justify-center rounded-full bg-muted">
+                <Webhook className="h-6 w-6 text-muted-foreground" />
+              </div>
+              <h3 className="text-sm font-semibold text-foreground">No alert destinations</h3>
+              <p className="mt-1 max-w-sm text-sm text-muted-foreground">
+                Create a Slack webhook, Telegram bot, or generic webhook destination, then attach rules to it.
+              </p>
+              <div className="mt-4 flex flex-col items-center gap-2">
+                <span className="text-xs font-medium text-muted-foreground">Add a channel</span>
+                <div className="flex flex-wrap items-center justify-center gap-2">
+                  {channelButtons}
                 </div>
-              }
-            />
+              </div>
+            </div>
           )}
 
           {CHANNEL_META

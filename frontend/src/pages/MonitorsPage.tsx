@@ -1,7 +1,9 @@
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
-import { AlertTriangle, Settings2 } from 'lucide-react'
+import { Activity, AlertTriangle, ArrowRight, Settings2 } from 'lucide-react'
 import { alertingApi } from '@/api/alerting'
+import { Button } from '@/components/ui/button'
+import { EmptyState } from '@/components/empty-state'
 import { PageHead, Panel } from '@/components/settings/kit'
 import { ErrorState } from '@/components/error-state'
 import { Chip } from '@/components/primitives/chip'
@@ -29,9 +31,19 @@ export default function MonitorsPage() {
 
   const summary = monitorsQuery.data
   const monitors = summary?.monitors ?? []
+  // The summary has loaded but the project has no monitors at all. This is
+  // distinct from loading (no summary yet) and from the error state, both of
+  // which keep the normal rollup + panel layout.
+  const isEmpty = !monitorsQuery.isError && !!summary && monitors.length === 0
 
   return (
-    <div className="min-w-0 space-y-6 pb-12">
+    <div
+      className={
+        isEmpty
+          ? 'flex min-h-[calc(100vh-7rem)] min-w-0 flex-col gap-6'
+          : 'min-w-0 space-y-6 pb-12'
+      }
+    >
       {/* Header */}
       <PageHead
         eyebrow="Observe"
@@ -82,7 +94,9 @@ export default function MonitorsPage() {
         />
       ) : (
         <div
-          className="flex flex-wrap items-center gap-x-6 gap-y-4 rounded-lg border px-4 py-3"
+          className={`flex flex-wrap items-center gap-x-6 gap-y-4 rounded-lg border px-4 py-3 ${
+            isEmpty ? 'opacity-60' : ''
+          }`}
           style={{ background: 'var(--bg-sunken)', borderColor: 'var(--border-subtle)' }}
         >
           <MiniStat
@@ -109,9 +123,28 @@ export default function MonitorsPage() {
         </div>
       )}
 
-      {/* Monitors table */}
-      {!monitorsQuery.isError && (
-        <Panel title="Monitors" subtitle={summary ? `${summary.total} total` : undefined}>
+      {/* Monitors table — or a centered empty state when the project has none */}
+      {!monitorsQuery.isError &&
+        (isEmpty ? (
+          <div className="flex flex-1 items-center justify-center">
+            <EmptyState
+              icon={Activity}
+              title="No monitors yet"
+              description="Monitors are alert rules attached to a destination. Create one to start watching your events for spikes and drops."
+              action={
+                slug ? (
+                  <Button asChild size="sm">
+                    <Link to={`/p/${slug}/settings/alerting`} className="no-underline">
+                      Alerting settings
+                      <ArrowRight className="h-3.5 w-3.5" />
+                    </Link>
+                  </Button>
+                ) : undefined
+              }
+            />
+          </div>
+        ) : (
+          <Panel title="Monitors" subtitle={summary ? `${summary.total} total` : undefined}>
           {monitorsQuery.isLoading ? (
             <div className="px-4 py-6 text-[12px]" style={{ color: 'var(--fg-subtle)' }}>
               Loading…
@@ -158,8 +191,8 @@ export default function MonitorsPage() {
               </div>
             </div>
           )}
-        </Panel>
-      )}
+          </Panel>
+        ))}
     </div>
   )
 }

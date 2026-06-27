@@ -283,7 +283,7 @@ export default function ReconciliationPage() {
           )}
           {shadowIsEmpty &&
             (shadowStatus === 'new' ? (
-              <div className="flex flex-col items-center gap-1.5 px-4 py-6 text-center">
+              <div className="flex min-h-[240px] flex-col items-center justify-center gap-1.5 px-4 py-6 text-center">
                 <Inbox className="h-4 w-4" style={{ color: 'var(--fg-faint)' }} aria-hidden />
                 <div className="text-[12px] font-medium" style={{ color: 'var(--fg-muted)' }}>
                   No new events
@@ -294,7 +294,7 @@ export default function ReconciliationPage() {
               </div>
             ) : (
               <div
-                className="px-4 py-6 text-center text-[12px]"
+                className="flex min-h-[240px] flex-col items-center justify-center px-4 py-6 text-center text-[12px]"
                 style={{ color: 'var(--fg-subtle)' }}
               >
                 No {shadowStatus} events.
@@ -397,7 +397,7 @@ export default function ReconciliationPage() {
             </div>
           )}
           {dead && dead.items.length === 0 && !deadQuery.isError && (
-            <div className="px-4 py-7 text-center text-[12px]" style={{ color: 'var(--fg-subtle)' }}>
+            <div className="flex min-h-[240px] flex-col items-center justify-center px-4 py-7 text-center text-[12px]" style={{ color: 'var(--fg-subtle)' }}>
               No dead events in the last {dead.days} days.
             </div>
           )}
