@@ -114,9 +114,12 @@ against a rule before you turn it on, so you can tune it without the noise.
 
 ## Quick start
 
+Try it locally — the dev stack builds from source with hot-reload and needs no
+secrets:
+
 ```bash
 cp .env.example .env
-docker compose up -d --build
+docker compose -f compose.dev.yaml up --build
 ```
 
 Then open the app, create the first account on the sign-in page, and click
@@ -128,6 +131,11 @@ Then open the app, create the first account on the sign-in page, and click
 | App | http://localhost:5173 |
 | API | http://localhost:8000 |
 | API reference (interactive) | http://localhost:8000/docs |
+
+**Deploying?** The default `compose.yaml` runs the published release image — set
+your secrets and `docker compose up -d` (API + SPA on `:8000`). Cutting a new
+release is one command (`bin/release.sh`). See
+**[docs/RELEASE.md](docs/RELEASE.md)**.
 
 
 ---

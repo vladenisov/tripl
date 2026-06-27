@@ -137,7 +137,8 @@ Locally, all of the above (except the warehouses) run under Docker Compose:
   proxies `/api` to the backend. In production there are two options: **(a)
   consolidated single container** — FastAPI serves the built SPA itself via
   `app.frontend()` (FastAPI 0.138+) when `SERVE_FRONTEND=true`, so one image
-  serves API + SPA (root `Dockerfile` + `compose.prod.yaml`, **no nginx**); or
+  serves API + SPA (root `Dockerfile` + the default `compose.yaml`, **no nginx**;
+see [RELEASE.md](RELEASE.md)); or
   **(b) standalone static tier** — `frontend/Dockerfile` serves the build through
   nginx (`frontend/nginx.conf`) next to the API. Consolidated mode routes the SPA
   through the API's `SecurityHeadersMiddleware`/`BrotliMiddleware`, so it inherits

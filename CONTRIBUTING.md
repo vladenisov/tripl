@@ -50,7 +50,9 @@ pnpm build
 
 ```text
 tripl/
-├── compose.yaml
+├── compose.yaml          # prod / deploy stack (runs the published image)
+├── compose.dev.yaml      # local dev stack (build from source + hot-reload)
+├── bin/release.sh        # cut a release: bump version, tag, push
 ├── README.md
 ├── PLAN.md
 ├── backend/

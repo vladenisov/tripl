@@ -1,0 +1,62 @@
+# Build context for the root Dockerfile (`docker build .`). Keep this tight:
+# the multi-arch release build sends the context to the builder, so excluding
+# VCS, deps, caches, and secrets makes builds faster and avoids leaking .env.
+#
+# NOTE: the Dockerfile copies backend/src, backend/alembic*, and the whole
+# frontend/ tree — do NOT ignore those. We only drop deps, caches, and outputs
+# that the image rebuilds itself (node_modules, .venv, dist).
+
+# VCS
+.git/
+.gitattributes
+
+# Python caches / virtualenvs (image runs `uv sync` itself)
+**/__pycache__/
+**/*.py[cod]
+**/.venv/
+**/.mypy_cache/
+**/.pytest_cache/
+**/.ruff_cache/
+
+# Node (image runs `pnpm install` + `pnpm build` itself)
+**/node_modules/
+frontend/dist/
+**/.vite/
+**/coverage/
+
+# Local env / secrets — never send these to the builder
+.env
+.env.*
+!.env.example
+
+# Runtime/user data
+var/
+**/var/
+
+# Tooling, agents, and docs not needed to build the image
+.github/
+.claude/
+.codex/
+.agents/
+.omc/
+.beads/
+.design-sync/
+.ds-sync/
+ds-bundle/
+design/
+docs/
+internal/
+graphify-out/
+assets/
+
+# Compose, helper scripts, and markdown (not copied into the image)
+compose*.yaml
+bin/
+*.md
+PLAN.md
+skills-lock.json
+
+# Editor / OS noise
+.DS_Store
+*.swp
+*~

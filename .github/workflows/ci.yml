@@ -4,6 +4,8 @@ on:
   pull_request:
   push:
     branches: [main]
+  # Allow the release workflow to run CI as a gate before publishing an image.
+  workflow_call:
 
 jobs:
   backend:

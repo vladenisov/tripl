@@ -1,0 +1,245 @@
+# LOCAL DEVELOPMENT stack — builds from source, hot-reload, root user, with a
+# separate Vite dev server (SPA on :5173) proxying to the API (:8000).
+#
+#   docker compose -f compose.dev.yaml up --watch
+#
+# This is NOT the deploy stack. Production runs the published single-container
+# image via the default compose.yaml (`docker compose up -d`), which builds the
+# `runtime` stage (non-root, HEALTHCHECK) in CI — see compose.yaml, Dockerfile,
+# and docs/RELEASE.md.
+x-backend-build: &backend-build
+  context: ./backend
+  target: dev
+
+x-backend-environment: &backend-environment
+  DATABASE_URL: postgresql+asyncpg://tripl:tripl@postgres:5432/tripl
+  SYNC_DATABASE_URL: postgresql+psycopg://tripl:tripl@postgres:5432/tripl
+  RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672//
+  REDIS_URL: redis://redis:6379/0
+  ENCRYPTION_KEY: ${ENCRYPTION_KEY:-}
+  APP_BASE_URL: ${APP_BASE_URL:-http://127.0.0.1:5173}
+  SESSION_COOKIE_SECURE: ${SESSION_COOKIE_SECURE:-false}
+  CORS_ALLOW_ORIGINS: ${CORS_ALLOW_ORIGINS:-}
+  SECURITY_HEADERS_ENABLED: ${SECURITY_HEADERS_ENABLED:-true}
+  HSTS_ENABLED: ${HSTS_ENABLED:-false}
+  CONTENT_SECURITY_POLICY: ${CONTENT_SECURITY_POLICY:-}
+  RATE_LIMIT_ENABLED: ${RATE_LIMIT_ENABLED:-true}
+  RATE_LIMIT_LOGIN_PER_MINUTE: ${RATE_LIMIT_LOGIN_PER_MINUTE:-5}
+  RATE_LIMIT_REGISTER_PER_HOUR: ${RATE_LIMIT_REGISTER_PER_HOUR:-3}
+  LOG_LEVEL: ${LOG_LEVEL:-INFO}
+  LOG_JSON: ${LOG_JSON:-false}
+  REQUEST_ID_HEADER: ${REQUEST_ID_HEADER:-X-Request-ID}
+  PROMETHEUS_METRICS_ENABLED: ${PROMETHEUS_METRICS_ENABLED:-false}
+  SEARCH_EMBEDDINGS_ENABLED: ${SEARCH_EMBEDDINGS_ENABLED:-false}
+  SEARCH_EMBEDDING_PROVIDER: ${SEARCH_EMBEDDING_PROVIDER:-openai}
+  SEARCH_EMBEDDING_MODEL: ${SEARCH_EMBEDDING_MODEL:-text-embedding-3-small}
+  SEARCH_EMBEDDING_DIMENSIONS: ${SEARCH_EMBEDDING_DIMENSIONS:-1536}
+  SEARCH_EMBEDDING_API_KEY: ${SEARCH_EMBEDDING_API_KEY:-}
+  OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+
+services:
+  postgres:
+    image: pgvector/pgvector:0.8.2-pg18-trixie
+    environment:
+      POSTGRES_USER: tripl
+      POSTGRES_PASSWORD: tripl
+      POSTGRES_DB: tripl
+      PGDATA: /var/lib/postgresql/18/docker
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata18:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U tripl"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    mem_limit: 1g
+    mem_reservation: 512m
+
+  rabbitmq:
+    image: rabbitmq:3.13-management
+    # consumer_timeout raised above the Celery collect_metrics hard limit so long
+    # metrics replays aren't force-requeued mid-run. See infra/rabbitmq/rabbitmq.conf.
+    volumes:
+      - ./infra/rabbitmq/rabbitmq.conf:/etc/rabbitmq/rabbitmq.conf:ro
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 10s
+      timeout: 10s
+      retries: 10
+      start_period: 30s
+    mem_limit: 512m
+    mem_reservation: 256m
+
+  redis:
+    image: redis:8.6.2-alpine
+    command: ["redis-server", "--maxmemory", "256mb", "--maxmemory-policy", "allkeys-lru", "--save", ""]
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    mem_limit: 384m
+    mem_reservation: 128m
+
+  api:
+    build: *backend-build
+    command: ["sh", "-c", "alembic upgrade head && uvicorn tripl.main:app --host 0.0.0.0 --port 8000 --reload"]
+    ports:
+      - "8000:8000"
+    environment:
+      <<: *backend-environment
+      DEBUG: "true"
+      WATCHFILES_FORCE_POLLING: "true"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    mem_limit: 1g
+    mem_reservation: 512m
+    develop:
+      watch:
+        - action: sync
+          path: ./backend/src
+          target: /app/src
+        - action: sync+restart
+          path: ./backend/alembic
+          target: /app/alembic
+        - action: sync+restart
+          path: ./backend/alembic.ini
+          target: /app/alembic.ini
+        - action: rebuild
+          path: ./backend/pyproject.toml
+        - action: rebuild
+          path: ./backend/uv.lock
+        - action: rebuild
+          path: ./backend/.python-version
+        - action: rebuild
+          path: ./backend/Dockerfile
+
+  celery-worker:
+    build: *backend-build
+    command: ["celery", "-A", "tripl.worker.celery_app", "worker", "--loglevel=info"]
+    environment: *backend-environment
+    depends_on:
+      postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    mem_limit: 1g
+    mem_reservation: 512m
+    develop:
+      watch:
+        - action: sync+restart
+          path: ./backend/src
+          target: /app/src
+        - action: sync+restart
+          path: ./backend/alembic
+          target: /app/alembic
+        - action: sync+restart
+          path: ./backend/alembic.ini
+          target: /app/alembic.ini
+        - action: rebuild
+          path: ./backend/pyproject.toml
+        - action: rebuild
+          path: ./backend/uv.lock
+        - action: rebuild
+          path: ./backend/.python-version
+        - action: rebuild
+          path: ./backend/Dockerfile
+
+  celery-beat:
+    build: *backend-build
+    command: ["celery", "-A", "tripl.worker.celery_app", "beat", "--loglevel=info"]
+    environment: *backend-environment
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+    mem_limit: 256m
+    mem_reservation: 128m
+    develop:
+      watch:
+        - action: sync+restart
+          path: ./backend/src
+          target: /app/src
+        - action: sync+restart
+          path: ./backend/alembic
+          target: /app/alembic
+        - action: sync+restart
+          path: ./backend/alembic.ini
+          target: /app/alembic.ini
+        - action: rebuild
+          path: ./backend/pyproject.toml
+        - action: rebuild
+          path: ./backend/uv.lock
+        - action: rebuild
+          path: ./backend/.python-version
+        - action: rebuild
+          path: ./backend/Dockerfile
+
+  frontend:
+    build:
+      context: ./frontend
+      target: dev
+    ports:
+      - "5173:5173"
+    environment:
+      VITE_API_URL: http://localhost:8000
+      VITE_PROXY_TARGET: http://api:8000
+      CHOKIDAR_USEPOLLING: "true"
+      CHOKIDAR_INTERVAL: "200"
+    depends_on:
+      - api
+    mem_limit: 768m
+    mem_reservation: 256m
+    develop:
+      watch:
+        - action: sync
+          path: ./frontend/src
+          target: /app/src
+        - action: sync
+          path: ./frontend/public
+          target: /app/public
+        - action: sync+restart
+          path: ./frontend/index.html
+          target: /app/index.html
+        - action: sync+restart
+          path: ./frontend/vite.config.ts
+          target: /app/vite.config.ts
+        - action: sync+restart
+          path: ./frontend/tsconfig.json
+          target: /app/tsconfig.json
+        - action: sync+restart
+          path: ./frontend/tsconfig.app.json
+          target: /app/tsconfig.app.json
+        - action: sync+restart
+          path: ./frontend/tsconfig.node.json
+          target: /app/tsconfig.node.json
+        - action: rebuild
+          path: ./frontend/package.json
+        - action: rebuild
+          path: ./frontend/pnpm-lock.yaml
+        - action: rebuild
+          path: ./frontend/pnpm-workspace.yaml
+        - action: rebuild
+          path: ./frontend/.node-version
+        - action: rebuild
+          path: ./frontend/Dockerfile
+
+volumes:
+  pgdata18:
+  chdata:
