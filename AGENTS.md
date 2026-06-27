@@ -1,5 +1,7 @@
 # AGENTS.md
 
+_Last updated: 2026-06-27._
+
 ## What This Repo Is
 
 `tripl` is an analytics tracking-plan and monitoring service.
@@ -8,7 +10,7 @@ Use it to:
 - manage projects and tracking plans;
 - define event types, fields, relations, meta fields, and reusable variables;
 - store concrete catalog events with implementation/review/archive state;
-- connect external analytics DBs, currently ClickHouse;
+- connect external analytics DBs — ClickHouse, BigQuery, or PostgreSQL;
 - run scan jobs that infer events and variables from real data;
 - collect time-bucketed metrics;
 - detect anomalies;
@@ -45,7 +47,7 @@ Not a safe assumption unless you verify:
 ## Stack And Runtime
 
 Backend:
-- Python `3.13`
+- Python `3.14`
 - `uv`
 - FastAPI
 - SQLAlchemy async + `asyncpg`
@@ -76,9 +78,9 @@ published image via [compose.yaml](compose.yaml); see [docs/RELEASE.md](docs/REL
 - `frontend`
 
 Important runtime facts:
-- ClickHouse is external. The repo does not run it in Compose.
+- Warehouses (ClickHouse, BigQuery, PostgreSQL) are external. The repo does not run them in Compose.
 - `api` runs `alembic upgrade head` before `uvicorn`.
-- Celery beat currently schedules metrics due-checks every 60 seconds.
+- Celery beat schedules metrics due-checks every 5 minutes (300s).
 - API health endpoint is `GET /health`.
 - CORS is open in dev app setup.
 
@@ -134,8 +136,8 @@ Backend layers:
 - `backend/src/tripl/crypto.py`: Fernet-based at-rest encryption (one source of truth for all callers).
 - `backend/src/tripl/logging_config.py`: log handler/formatter wiring.
 - `backend/src/tripl/worker/tasks`: async task entrypoints.
-- `backend/src/tripl/worker/analyzers`: scan/anomaly analysis logic.
-- `backend/src/tripl/worker/adapters`: analytics DB adapters.
+- `backend/src/tripl/core/analyzers`: scan/anomaly analysis logic.
+- `backend/src/tripl/core/adapters`: analytics DB (warehouse) adapters — ClickHouse, BigQuery, PostgreSQL.
 - `backend/src/tripl/tests`: backend tests.
 
 Frontend layers:
@@ -163,7 +165,7 @@ Catalog entities:
 - `EventTag`: freeform event tag.
 
 Analytics and monitoring entities:
-- `DataSource`: external analytics DB connection, currently ClickHouse.
+- `DataSource`: external analytics DB connection — ClickHouse, BigQuery, or PostgreSQL.
 - `ScanConfig`: saved scan definition. Important fields include `base_query`, `event_type_id`, `event_type_column`, `time_column`, `event_name_format`, `json_value_paths`, `cardinality_threshold`, `interval`.
 - `ScanJob`: async execution record for a scan config.
 - `EventMetric`: aggregated count buckets.
@@ -252,13 +254,13 @@ Scan flow:
 1. A `ScanConfig` points to a `DataSource` and query.
 2. API creates a `ScanJob`.
 3. Celery task `tripl.worker.tasks.scan.run_scan` executes.
-4. Adapter connects to ClickHouse.
+4. Adapter connects to the configured warehouse (ClickHouse, BigQuery, or PostgreSQL).
 5. Cardinality analysis decides low-cardinality vs variable-like fields.
 6. Event generation creates or updates tracking-plan events and variables.
 7. Job summary is written back to `ScanJob.result_summary`.
 
 Metrics flow:
-1. Beat schedules `tripl.worker.tasks.metrics.check_metrics_due` every 60s.
+1. Beat schedules `tripl.worker.tasks.metrics.check_metrics_due` every 5 minutes (300s).
 2. Due scan configs trigger collection.
 3. Metrics are collected into `event_metrics`.
 4. Anomalies are recalculated and persisted.
@@ -302,7 +304,7 @@ If the task is about data sources or scans:
 - `backend/src/tripl/services/datasource_service.py`
 - `backend/src/tripl/services/scan_service.py`
 - `backend/src/tripl/worker/tasks/scan.py`
-- `backend/src/tripl/worker/adapters/clickhouse.py`
+- `backend/src/tripl/core/adapters/clickhouse.py`
 - `backend/src/tripl/tests/test_data_sources.py`
 - `backend/src/tripl/tests/test_scans.py`
 - `frontend/src/pages/DataSourcesPage.tsx`
@@ -312,7 +314,7 @@ If the task is about metrics or anomaly detection:
 - `backend/src/tripl/api/v1/metrics.py`
 - `backend/src/tripl/services/metrics_service.py`
 - `backend/src/tripl/worker/tasks/metrics.py`
-- `backend/src/tripl/worker/analyzers/anomaly_detector.py`
+- `backend/src/tripl/core/analyzers/anomaly_detector.py`
 - `backend/src/tripl/models/event_metric.py`
 - `backend/src/tripl/models/metric_anomaly.py`
 - `backend/src/tripl/tests/test_metrics_api.py`
@@ -350,7 +352,7 @@ Project-specific expectations:
 Operational assumptions to preserve unless intentionally changing them:
 - RabbitMQ is the Celery broker.
 - PostgreSQL is the system of record for catalog, metrics, anomalies, and alert deliveries.
-- ClickHouse is read from external data sources and is not the app database.
+- Warehouses (ClickHouse, BigQuery, PostgreSQL) are read from external data sources and are not the app database.
 - API, worker, and beat should all be runnable together via Compose.
 
 ## Commands
