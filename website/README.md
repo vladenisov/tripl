@@ -27,7 +27,7 @@ from each folder's `_category_.json`):
 - `use/` — using tripl (concepts, user guide, troubleshooting)
 - `administer/` — instance administration & settings
 - `run/` — self-hosting, deployment, operations, release process
-- `build/` — architecture & contributing
+- `develop/` — architecture & contributing
 - `integrate/` — API & integration guide (OpenAPI reference added in a follow-up)
 
 ## Notes

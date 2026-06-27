@@ -245,4 +245,4 @@ they changed, and when — so you can always answer "how did this get like this?
 
 - Want to actually do something? → **[user-guide.md](user-guide.md)**
 - Connecting an agent or a script? → **[agent-api-guide.md](../integrate/agent-api-guide.md)**
-- Curious how it's built? → **[architecture.md](../build/architecture.md)**
+- Curious how it's built? → **[architecture.md](../develop/architecture.md)**

@@ -24,7 +24,7 @@ nothing to re-instrument.
   are, and how to walk from an empty screen to a working alert.
 - **[Self-hosting & Operations](./run/release)** — deploy and operate your own
   tripl instance.
-- **[Development](./build/architecture)** — architecture and how to contribute.
+- **[Development](./develop/architecture)** — architecture and how to contribute.
 - **[API & Integrations](./integrate/agent-api-guide)** — drive tripl from
   scripts and LLM agents.
 

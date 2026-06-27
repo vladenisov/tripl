@@ -393,5 +393,5 @@ For a wider list of issues, see [Troubleshooting](./troubleshooting).
 
 - Don't recognise a term used here? → [Concepts](./concepts)
 - Automating tripl from a script or agent? → [Agent API guide](../integrate/agent-api-guide)
-- Working on tripl itself? → [Architecture](../build/architecture) and
+- Working on tripl itself? → [Architecture](../develop/architecture) and
   [CONTRIBUTING.md](https://github.com/vladenisov/tripl/blob/main/CONTRIBUTING.md)
