@@ -257,7 +257,7 @@ async def _event_items(
                 title=title,
                 detail=detail,
                 occurred_at=row.updated_at,
-                target_path=f"/p/{row.slug}/events/detail/{row.id}",
+                target_path=f"/p/{row.slug}/monitoring/event/{row.id}",
             )
         )
     return items

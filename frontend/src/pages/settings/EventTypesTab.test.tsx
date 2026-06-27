@@ -3,7 +3,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { EventType, FieldDefinition } from '@/types'
-import { EventTypesTab } from './EventTypesTab'
+import { EventTypesTab, FieldsEditor } from './EventTypesTab'
 import { EventTypeDetail } from './EventTypeDetailView'
 
 function mockJsonResponse(body: unknown) {
@@ -105,6 +105,73 @@ describe('EventTypesTab list', () => {
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: /Cancel/i }))
     expect(await screen.findByText('All types')).toBeInTheDocument()
+  })
+
+  it('shows an understandable merge status (ungated) instead of "open merge"', async () => {
+    renderWithRoutes('/p/demo/settings/event-types', async (input) => {
+      const url = String(input)
+      if (url.endsWith('/api/v1/projects/demo/event-types')) return mockJsonResponse([CHECKOUT])
+      if (url.endsWith('/api/v1/projects/demo/event-types/type-1/owners'))
+        return mockJsonResponse([])
+      throw new Error(`Unhandled fetch: ${url}`)
+    })
+
+    const row = (await screen.findByText('Checkout')).closest('tr') as HTMLElement
+    expect(within(row).getByText('ungated')).toBeInTheDocument()
+    // the cryptic raw words are gone
+    expect(screen.queryByText('open merge')).not.toBeInTheDocument()
+  })
+
+  it('marks an owner-gated type as "gated"', async () => {
+    const owner = {
+      id: 'o-1',
+      event_type_id: 'type-1',
+      user_id: 'u-1',
+      user_email: 'ada@x.io',
+      user_name: 'Ada',
+      granted_by: null,
+      created_at: '2026-01-01T00:00:00Z',
+    }
+    renderWithRoutes('/p/demo/settings/event-types', async (input) => {
+      const url = String(input)
+      if (url.endsWith('/api/v1/projects/demo/event-types')) return mockJsonResponse([CHECKOUT])
+      if (url.endsWith('/api/v1/projects/demo/event-types/type-1/owners'))
+        return mockJsonResponse([owner])
+      throw new Error(`Unhandled fetch: ${url}`)
+    })
+
+    const row = (await screen.findByText('Checkout')).closest('tr') as HTMLElement
+    await waitFor(() => expect(within(row).getByText('gated')).toBeInTheDocument())
+  })
+
+  it('renders the list as an accessible table with a full-word Required header', async () => {
+    renderWithRoutes('/p/demo/settings/event-types', async (input) => {
+      const url = String(input)
+      if (url.endsWith('/api/v1/projects/demo/event-types')) return mockJsonResponse([CHECKOUT])
+      if (url.endsWith('/api/v1/projects/demo/event-types/type-1/owners'))
+        return mockJsonResponse([])
+      throw new Error(`Unhandled fetch: ${url}`)
+    })
+
+    await screen.findByText('Checkout')
+    const table = screen.getByRole('table', { name: 'Event types' })
+    expect(within(table).getByRole('columnheader', { name: 'Required' })).toBeInTheDocument()
+    expect(within(table).queryByRole('columnheader', { name: 'Req' })).not.toBeInTheDocument()
+  })
+})
+
+describe('FieldsEditor fields table', () => {
+  it('labels the required column with the full word, not "Req"', () => {
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    render(
+      <QueryClientProvider client={queryClient}>
+        <FieldsEditor slug="demo" eventType={CHECKOUT} branchId={null} />
+      </QueryClientProvider>,
+    )
+
+    const table = screen.getByRole('table')
+    expect(within(table).getByRole('columnheader', { name: 'Required' })).toBeInTheDocument()
+    expect(within(table).queryByRole('columnheader', { name: 'Req' })).not.toBeInTheDocument()
   })
 })
 

@@ -37,6 +37,8 @@ export type SettingsNavItem = {
 export type SettingsNavGroup = {
   label: string
   sub: string
+  /** One-line descriptor framing the group's scope (rendered under the label). */
+  desc: string
   items: SettingsNavItem[]
 }
 
@@ -44,6 +46,7 @@ export const PROJECT_GROUPS: SettingsNavGroup[] = [
   {
     label: 'Project',
     sub: 'Project',
+    desc: "Configuration for this project's tracking plan",
     items: [
       { id: 'general', label: 'General', icon: SlidersHorizontal, path: 'project/general' },
       { id: 'plan-rules', label: 'Plan rules', icon: Shield, path: 'project/plan-rules' },
@@ -55,6 +58,7 @@ export const WORKSPACE_GROUPS: SettingsNavGroup[] = [
   {
     label: 'Workspace',
     sub: 'Workspace',
+    desc: 'Shared across everyone in the workspace',
     items: [
       { id: 'members', label: 'Members', icon: Users, path: 'members' },
       { id: 'sources', label: 'Data sources', icon: Database, path: 'data-sources' },
@@ -64,6 +68,7 @@ export const WORKSPACE_GROUPS: SettingsNavGroup[] = [
   {
     label: 'Account',
     sub: 'You',
+    desc: 'Settings just for you',
     items: [
       { id: 'profile', label: 'Profile', icon: User, path: 'profile' },
       { id: 'security', label: 'Security', icon: Lock, path: 'security' },
@@ -72,6 +77,7 @@ export const WORKSPACE_GROUPS: SettingsNavGroup[] = [
   {
     label: 'Instance',
     sub: 'Owner only',
+    desc: 'Server-wide settings (owner only)',
     items: [
       { id: 'runtime', label: 'Runtime', icon: Cpu, path: 'instance/runtime', ownerOnly: true },
       { id: 'email', label: 'Email', icon: Mail, path: 'instance/email', ownerOnly: true },

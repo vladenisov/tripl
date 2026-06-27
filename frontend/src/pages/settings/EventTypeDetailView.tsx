@@ -386,8 +386,16 @@ function MergeGateChip({ slug, eventType }: { slug: string; eventType: EventType
   })
   const gated = (owners as EventTypeOwner[]).length > 0
   return (
-    <Chip tone={gated ? 'success' : 'warning'} size="sm">
-      {gated ? 'gated' : 'open merge'}
+    <Chip
+      tone={gated ? 'success' : 'warning'}
+      size="sm"
+      title={
+        gated
+          ? 'Has owners — only they can merge changes to this type'
+          : 'No owners — anyone can merge changes to this type'
+      }
+    >
+      {gated ? 'gated' : 'ungated'}
     </Chip>
   )
 }

@@ -261,6 +261,7 @@ export default function EventsPage({ lockType, embedded = false }: EventsPagePro
           unreviewedCount={unreviewedCount}
           projectTotalSignal={projectTotalSignal}
           eventTypeSignals={eventTypeSignals}
+          activeType={activeEt}
         />
       )}
 

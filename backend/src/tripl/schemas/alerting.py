@@ -578,6 +578,10 @@ class MonitorSummaryItem(BaseModel):
     min_percent_delta: float
     min_expected_count: float
     cooldown_minutes: int
+    # Manual snooze state. ``muted`` is the effective flag (``muted_until`` in
+    # the future); ``muted_until`` is the raw timestamp the mute lifts at.
+    muted: bool = False
+    muted_until: datetime | None = None
 
 
 class MonitorsSummaryResponse(BaseModel):
@@ -586,3 +590,30 @@ class MonitorsSummaryResponse(BaseModel):
     warning_count: int
     healthy_count: int
     total: int
+
+
+class MonitorDetailResponse(MonitorSummaryItem):
+    """A single monitor with the extra context a drill-in detail view needs."""
+
+    # Raw enable flags, so the UI can explain why a monitor is disabled
+    # (``enabled`` on the summary is the AND of these two).
+    rule_enabled: bool
+    destination_enabled: bool
+    # Scope coverage — which signal kinds this monitor subscribes to.
+    include_project_total: bool
+    include_event_types: bool
+    include_events: bool
+    include_schema_drifts: bool
+    include_distribution_drifts: bool
+    include_release_regressions: bool
+    # Quick fired-history stats for the detail header (full history comes from
+    # GET /alert-deliveries?rule_id=...).
+    total_deliveries: int
+    last_delivery_at: datetime | None = None
+    last_delivery_status: AlertDeliveryStatus | None = None
+
+
+class MonitorMuteRequest(BaseModel):
+    # Timed mute, like the inbox mute action: the monitor stays muted until this
+    # instant, which must be in the future.
+    muted_until: datetime

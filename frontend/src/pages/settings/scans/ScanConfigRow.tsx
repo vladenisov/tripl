@@ -1,9 +1,39 @@
 import type { DataSource, ScanConfig } from '@/types'
 import { Chip } from '@/components/primitives/chip'
-import { Dot } from '@/components/primitives/dot'
-import { Clock } from 'lucide-react'
+import { Ban, CheckCircle2, Clock, Loader2, MinusCircle, XCircle, type LucideIcon } from 'lucide-react'
+import { cn } from '@/lib/utils'
+import { friendlyScanError } from '@/lib/scanError'
+import { SCAN_RUN_STATUS } from '@/lib/statusLexicon'
 import { SrcIcon } from './scanLayout'
+import { type RunPillStatus } from './scanRunStatus'
 import type { ScanRunInfo } from './scanUtils'
+
+// Icon + spin are presentation; the word + colour come from the status lexicon.
+const RUN_PILL_ICON: Record<RunPillStatus, { icon: LucideIcon; spin?: boolean }> = {
+  succeeded: { icon: CheckCircle2 },
+  failed: { icon: XCircle },
+  running: { icon: Loader2, spin: true },
+  pending: { icon: Clock },
+  cancelled: { icon: Ban },
+  never: { icon: MinusCircle },
+}
+
+// Status pill rendered as label text + icon shape. `title` surfaces the friendly
+// failure message on hover; it never carries raw backend internals.
+export function RunStatusPill({ status, title }: { status: RunPillStatus; title?: string }) {
+  const { tone, label } = SCAN_RUN_STATUS[status]
+  const { icon: Icon, spin } = RUN_PILL_ICON[status]
+  return (
+    <Chip
+      tone={tone}
+      size="xs"
+      title={title}
+      icon={<Icon className={cn('size-2.5', spin && 'animate-spin')} aria-hidden="true" />}
+    >
+      {label}
+    </Chip>
+  )
+}
 
 // Config badges on the detail header (⏱ interval, lookback, caps, JSON, etc.).
 export function ScanBadges({
@@ -51,13 +81,16 @@ export function ScanListRow({
   onNavigate: () => void
 }) {
   const firstQueryLine = sc.base_query.split('\n')[0]
-  const lastRunTone = runInfo.status === 'failed'
-    ? 'danger'
-    : runInfo.status === 'running'
-      ? 'info'
+  const cadenceLabel = sc.interval ? (intervalLabel[sc.interval] ?? sc.interval) : 'Manual'
+  const pillStatus: RunPillStatus =
+    runInfo.status === 'ok'
+      ? 'succeeded'
       : runInfo.status === 'idle'
-        ? 'neutral'
-        : 'success'
+        ? 'never'
+        : runInfo.status
+  const failedMessage = runInfo.status === 'failed'
+    ? friendlyScanError(runInfo.lastJob?.error_message).message
+    : null
 
   return (
     <tr
@@ -69,42 +102,43 @@ export function ScanListRow({
       onClick={onNavigate}
       onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onNavigate() } }}
     >
+      {/* Lead with a human summary — name over "source · cadence". The raw SQL is
+          demoted to a faint secondary line (full query on hover) rather than its
+          own prominent column. */}
       <td className="px-3.5 py-2.5 align-middle">
         <div className="flex items-center gap-2.5">
           <SrcIcon dbType={dataSource?.db_type ?? null} size={28} />
           <div className="min-w-0">
-            <div className="text-[13px] font-semibold">{sc.name}</div>
-            <div className="text-[11px]" style={{ color: 'var(--fg-subtle)' }}>
-              {dataSource?.name ?? 'Unknown source'}
+            <div className="truncate text-[13px] font-semibold">{sc.name}</div>
+            <div className="truncate text-[11px]" style={{ color: 'var(--fg-subtle)' }}>
+              {dataSource?.name ?? 'Unknown source'} · {cadenceLabel}
+            </div>
+            <div
+              className="mono max-w-[280px] truncate text-[10.5px]"
+              style={{ color: 'var(--fg-faint)' }}
+              title={sc.base_query}
+            >
+              {firstQueryLine}
             </div>
           </div>
         </div>
       </td>
       <td className="px-3.5 py-2.5 align-middle">
-        <span
-          className="mono inline-block max-w-[220px] overflow-hidden text-ellipsis whitespace-nowrap align-middle text-[11px]"
-          style={{ color: 'var(--fg-muted)' }}
-        >
-          {firstQueryLine}
-        </span>
-      </td>
-      <td className="px-3.5 py-2.5 align-middle">
-        {sc.interval ? (
-          <Chip size="xs" icon={<Clock className="size-2.5" />}>{intervalLabel[sc.interval] ?? sc.interval}</Chip>
-        ) : (
-          <span className="text-[11.5px]" style={{ color: 'var(--fg-faint)' }}>Manual</span>
-        )}
-      </td>
-      <td className="px-3.5 py-2.5 align-middle">
-        <span className="inline-flex items-center gap-1.5">
-          <Dot tone={lastRunTone} pulse={runInfo.status === 'running'} size={6} />
-          <span
-            className="mono text-[11.5px]"
-            style={{ color: runInfo.status === 'failed' ? 'var(--danger)' : 'var(--fg-subtle)' }}
-          >
-            {runInfo.lastRunLabel}
+        <div className="flex flex-col gap-1">
+          <span className="inline-flex items-center gap-1.5">
+            <RunStatusPill status={pillStatus} title={failedMessage ?? undefined} />
+            {runInfo.status !== 'idle' && runInfo.status !== 'running' && (
+              <span className="mono text-[11px]" style={{ color: 'var(--fg-subtle)' }}>
+                {runInfo.lastRunLabel}
+              </span>
+            )}
           </span>
-        </span>
+          {failedMessage && (
+            <span className="text-[11px] leading-tight" style={{ color: 'var(--danger)' }}>
+              {failedMessage}
+            </span>
+          )}
+        </div>
       </td>
       <td className="w-10 px-3.5 py-2.5 align-middle text-[var(--fg-faint)]" aria-hidden="true">›</td>
     </tr>

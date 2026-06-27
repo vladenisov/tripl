@@ -153,3 +153,44 @@ export function deriveRowSignalFromMetrics(
     direction: latestAnomaly.anomaly_direction ?? 'drop',
   }
 }
+
+// --- Glitchy / templated event-name + value rendering helpers (UX-9, UX-21) ---
+
+export const NAME_SEGMENT_SEPARATOR = ':'
+const TEMPLATE_TOKEN_SPLIT = /(\$\{[^}]*\})/g
+const TEMPLATE_TOKEN_MATCH = /^\$\{[^}]*\}$/
+
+export type NameSegment = { text: string; empty: boolean }
+
+// An empty colon-segment can arrive as "" or as the serialized sentinel "0".
+// Kept in sync with ReconciliationPage's DeadEventName so the events list and
+// the reconciliation list render glitchy names identically.
+function isEmptyNameSegment(segment: string): boolean {
+  return segment === '' || segment === '0'
+}
+
+/**
+ * Split a colon-namespaced event name into segments, but only when one of the
+ * segments is empty (e.g. "spot::services"). A bare "::" reads as a rendering
+ * bug, so the empty piece is surfaced as an intentional placeholder. Returns
+ * `null` for ordinary names so they render unchanged.
+ */
+export function splitEventName(name: string): NameSegment[] | null {
+  const parts = name.split(NAME_SEGMENT_SEPARATOR)
+  if (parts.length === 1 || !parts.some(isEmptyNameSegment)) return null
+  return parts.map((p) => ({ text: p, empty: isEmptyNameSegment(p) }))
+}
+
+export type ValuePart = { text: string; token: boolean }
+
+/**
+ * Split a property value into plain-text and `${…}` template-token parts so the
+ * tokens can be tinted to read as variables rather than literal text.
+ */
+export function splitTemplateValue(value: string): ValuePart[] {
+  if (!value.includes('${')) return [{ text: value, token: false }]
+  return value
+    .split(TEMPLATE_TOKEN_SPLIT)
+    .filter((p) => p !== '')
+    .map((p) => ({ text: p, token: TEMPLATE_TOKEN_MATCH.test(p) }))
+}

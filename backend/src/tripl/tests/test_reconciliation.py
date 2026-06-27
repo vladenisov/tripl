@@ -303,6 +303,105 @@ async def test_dead_events_reports_stale_implemented_events_only(client: AsyncCl
     assert names[0] == "Never Seen Old"
 
 
+# --- dead events: bulk archive ---
+
+
+@pytest.mark.asyncio
+async def test_archive_dead_events_marks_events_archived(client: AsyncClient):
+    et_id, event_id = await _setup_project(client, "rec-archive")
+    second = await client.post(
+        "/api/v1/projects/rec-archive/events",
+        json={"event_type_id": et_id, "name": "Stale Two"},
+    )
+    second_id = second.json()["id"]
+
+    resp = await client.post(
+        "/api/v1/projects/rec-archive/reconciliation/dead-events/archive",
+        json={"event_ids": [event_id, second_id]},
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["status"] == "archived"
+    assert data["archived_count"] == 2
+    assert set(data["event_ids"]) == {event_id, second_id}
+
+    async with TestSessionLocal() as session:
+        for eid in (event_id, second_id):
+            event = await session.get(Event, uuid.UUID(eid))
+            assert event is not None
+            assert event.status == "archived"
+
+
+@pytest.mark.asyncio
+async def test_archive_dead_events_supports_deprecated_status(client: AsyncClient):
+    _, event_id = await _setup_project(client, "rec-deprecate")
+
+    resp = await client.post(
+        "/api/v1/projects/rec-deprecate/reconciliation/dead-events/archive",
+        json={"event_ids": [event_id], "status": "deprecated"},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["status"] == "deprecated"
+
+    async with TestSessionLocal() as session:
+        event = await session.get(Event, uuid.UUID(event_id))
+        assert event is not None
+        assert event.status == "deprecated"
+
+
+@pytest.mark.asyncio
+async def test_archive_dead_events_dedupes_repeated_ids(client: AsyncClient):
+    _, event_id = await _setup_project(client, "rec-archive-dupe")
+
+    resp = await client.post(
+        "/api/v1/projects/rec-archive-dupe/reconciliation/dead-events/archive",
+        json={"event_ids": [event_id, event_id]},
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["archived_count"] == 1
+    assert data["event_ids"] == [event_id]
+
+
+@pytest.mark.asyncio
+async def test_archive_dead_events_404_is_atomic_when_an_id_is_unknown(client: AsyncClient):
+    _, event_id = await _setup_project(client, "rec-archive-404")
+
+    resp = await client.post(
+        "/api/v1/projects/rec-archive-404/reconciliation/dead-events/archive",
+        json={"event_ids": [event_id, str(uuid.uuid4())]},
+    )
+    assert resp.status_code == 404
+
+    # A missing id rejects the whole batch — the valid event stays untouched.
+    async with TestSessionLocal() as session:
+        event = await session.get(Event, uuid.UUID(event_id))
+        assert event is not None
+        assert event.status != "archived"
+
+
+@pytest.mark.asyncio
+async def test_archive_dead_events_rejects_non_terminal_status(client: AsyncClient):
+    _, event_id = await _setup_project(client, "rec-archive-bad")
+
+    resp = await client.post(
+        "/api/v1/projects/rec-archive-bad/reconciliation/dead-events/archive",
+        json={"event_ids": [event_id], "status": "live"},
+    )
+    assert resp.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_archive_dead_events_requires_at_least_one_id(client: AsyncClient):
+    await _setup_project(client, "rec-archive-empty")
+
+    resp = await client.post(
+        "/api/v1/projects/rec-archive-empty/reconciliation/dead-events/archive",
+        json={"event_ids": []},
+    )
+    assert resp.status_code == 422
+
+
 # --- coverage ---
 
 

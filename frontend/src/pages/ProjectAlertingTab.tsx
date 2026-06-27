@@ -1,12 +1,11 @@
 import { useMemo, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { ClipboardList, Globe, Mail, Send, Ticket, Trash2, Webhook } from 'lucide-react'
+import { ClipboardList, Globe, Mail, Send, Ticket, Trash2, Webhook, type LucideIcon } from 'lucide-react'
 
 import { alertingApi } from '@/api/alerting'
 import { eventTypesApi } from '@/api/eventTypes'
 import { eventsApi } from '@/api/events'
 import { scansApi } from '@/api/scans'
-import { EmptyState } from '@/components/empty-state'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Checkbox } from '@/components/ui/checkbox'
@@ -28,6 +27,17 @@ import {
   type DestinationFormState,
 } from './alerting/constants'
 import { getErrorMessage } from '@/lib/utils'
+
+// Channel catalogue — drives both the per-channel sections and the compact
+// add-channel affordance, so every type stays addable from one place.
+const CHANNEL_META: { channel: DestinationChannel; label: string; Icon: LucideIcon }[] = [
+  { channel: 'slack', label: 'Slack', Icon: Webhook },
+  { channel: 'telegram', label: 'Telegram', Icon: Send },
+  { channel: 'webhook', label: 'Webhook', Icon: Globe },
+  { channel: 'email', label: 'Email', Icon: Mail },
+  { channel: 'jira', label: 'Jira', Icon: Ticket },
+  { channel: 'linear', label: 'Linear', Icon: ClipboardList },
+]
 
 export default function ProjectAlertingTab({ slug }: { slug: string }) {
   const qc = useQueryClient()
@@ -221,6 +231,16 @@ export default function ProjectAlertingTab({ slug }: { slug: string }) {
   })
   const activeDestinationType = editingDestination?.type ?? createType ?? destinationForm.type
 
+  const hasDestinations = destinations.length > 0
+  // One source of truth for the channel buttons so the zero-state CTA and the
+  // populated-state "add another" row stay in sync.
+  const channelButtons = CHANNEL_META.map(({ channel, label, Icon }) => (
+    <Button key={channel} variant="outline" size="sm" onClick={() => openCreate(channel)}>
+      <Icon className="mr-2 h-4 w-4" />
+      {label}
+    </Button>
+  ))
+
   return (
     <div className="space-y-6">
       {dialog}
@@ -234,76 +254,79 @@ export default function ProjectAlertingTab({ slug }: { slug: string }) {
 
       <div className="grid gap-6">
         <div className="min-w-0 space-y-4">
-          <div className="flex items-center justify-between">
+          <div className="space-y-1">
             <h3 className="text-sm font-semibold">Destinations</h3>
-            <div className="flex gap-2">
-              <Button variant="outline" size="sm" onClick={() => openCreate('slack')}>
-                <Webhook className="mr-2 h-4 w-4" />
-                Add Slack
-              </Button>
-              <Button variant="outline" size="sm" onClick={() => openCreate('telegram')}>
-                <Send className="mr-2 h-4 w-4" />
-                Add Telegram
-              </Button>
-              <Button variant="outline" size="sm" onClick={() => openCreate('webhook')}>
-                <Globe className="mr-2 h-4 w-4" />
-                Add Webhook
-              </Button>
-              <Button variant="outline" size="sm" onClick={() => openCreate('email')}>
-                <Mail className="mr-2 h-4 w-4" />
-                Add Email
-              </Button>
-              <Button variant="outline" size="sm" onClick={() => openCreate('jira')}>
-                <Ticket className="mr-2 h-4 w-4" />
-                Add Jira
-              </Button>
-              <Button variant="outline" size="sm" onClick={() => openCreate('linear')}>
-                <ClipboardList className="mr-2 h-4 w-4" />
-                Add Linear
-              </Button>
-            </div>
+            <p className="text-xs text-muted-foreground">
+              Signals route to destinations via rules.
+            </p>
           </div>
 
-          {destinations.length === 0 && (
-            <EmptyState
-              icon={Webhook}
-              title="No alert destinations"
-              description="Create a Slack webhook, Telegram bot, or generic webhook destination, then attach rules to it."
-            />
+          {!hasDestinations && (
+            // Inlined empty state with trimmed vertical padding (py-8 vs the shared
+            // EmptyState's py-16) so the heading, message, and channel buttons read as
+            // one connected block instead of floating below an awkward void.
+            <div className="flex flex-col items-center justify-center py-8 text-center">
+              <div className="mb-4 flex h-12 w-12 items-center justify-center rounded-full bg-muted">
+                <Webhook className="h-6 w-6 text-muted-foreground" />
+              </div>
+              <h3 className="text-sm font-semibold text-foreground">No alert destinations</h3>
+              <p className="mt-1 max-w-sm text-sm text-muted-foreground">
+                Create a Slack webhook, Telegram bot, or generic webhook destination, then attach rules to it.
+              </p>
+              <div className="mt-4 flex flex-col items-center gap-2">
+                <span className="text-xs font-medium text-muted-foreground">Add a channel</span>
+                <div className="flex flex-wrap items-center justify-center gap-2">
+                  {channelButtons}
+                </div>
+              </div>
+            </div>
           )}
 
-          {(['slack', 'telegram', 'webhook', 'email', 'jira', 'linear'] as const).map(channel => (
-            <div key={channel} className="space-y-3">
-              <div className="flex items-center gap-2">
-                <h4 className="text-sm font-medium capitalize">{channel}</h4>
-                <Badge variant="outline" className="text-[10px]">
-                  {groupedDestinations[channel].length}
-                </Badge>
-              </div>
-              {groupedDestinations[channel].map(destination => (
-                <div key={destination.id}>
-                  <DestinationCard
-                    slug={slug}
-                    destination={destination}
-                    eventTypes={eventTypes}
-                    events={events}
-                    onEditDestination={openEdit}
-                  />
-                  <div className="mt-2 flex justify-end">
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      className="text-muted-foreground hover:text-destructive"
-                      onClick={() => handleDeleteDestination(destination)}
-                    >
-                      <Trash2 className="mr-2 h-4 w-4" />
-                      Delete destination
-                    </Button>
-                  </div>
+          {CHANNEL_META
+            .filter(({ channel }) => groupedDestinations[channel].length > 0)
+            .map(({ channel, label }) => (
+              <div key={channel} className="space-y-3">
+                <div className="flex items-center gap-2">
+                  <h4 className="text-sm font-medium">{label}</h4>
+                  <Badge variant="outline" className="text-[10px]">
+                    {groupedDestinations[channel].length}
+                  </Badge>
                 </div>
-              ))}
+                {groupedDestinations[channel].map(destination => (
+                  <div key={destination.id}>
+                    <DestinationCard
+                      slug={slug}
+                      destination={destination}
+                      eventTypes={eventTypes}
+                      events={events}
+                      onEditDestination={openEdit}
+                    />
+                    <div className="mt-2 flex justify-end">
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="text-muted-foreground hover:text-destructive"
+                        onClick={() => handleDeleteDestination(destination)}
+                      >
+                        <Trash2 className="mr-2 h-4 w-4" />
+                        Delete destination
+                      </Button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            ))}
+
+          {/* Once at least one destination exists, empty channels collapse into this
+              compact row instead of rendering bare headers — every type stays one click
+              away without taking vertical space for nothing. The zero-state CTA lives in
+              the EmptyState above, so this "add another" row is for the populated view. */}
+          {hasDestinations && (
+            <div className="flex flex-wrap items-center gap-2 rounded-lg border border-dashed p-3">
+              <span className="text-xs font-medium text-muted-foreground">Add another channel</span>
+              {channelButtons}
             </div>
-          ))}
+          )}
         </div>
 
         <div className="min-w-0 space-y-4">
@@ -624,7 +647,7 @@ export default function ProjectAlertingTab({ slug }: { slug: string }) {
                       <Label htmlFor="dest-email-subject">Subject Template (optional)</Label>
                       <Input
                         id="dest-email-subject"
-                        placeholder="[${'$'}{project_name}] ${'$'}{rule_name}"
+                        placeholder={`[\${project_name}] \${rule_name}`}
                         value={destinationForm.email_subject_template}
                         onChange={event => setDestinationForm(current => ({ ...current, email_subject_template: event.target.value }))}
                       />

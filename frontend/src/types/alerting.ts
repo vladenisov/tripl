@@ -211,6 +211,10 @@ export interface MonitorSummaryItem {
   min_percent_delta: number
   min_expected_count: number
   cooldown_minutes: number
+  // Manual snooze state: `muted` is the effective flag (muted_until in the
+  // future); `muted_until` is the raw timestamp the mute lifts at.
+  muted: boolean
+  muted_until: string | null
 }
 
 export interface MonitorsSummaryResponse {
@@ -219,4 +223,22 @@ export interface MonitorsSummaryResponse {
   warning_count: number
   healthy_count: number
   total: number
+}
+
+/** A single monitor with the extra context a drill-in detail view needs. */
+export interface MonitorDetail extends MonitorSummaryItem {
+  // Raw enable flags (the summary `enabled` is the AND of these two).
+  rule_enabled: boolean
+  destination_enabled: boolean
+  // Which signal kinds this monitor subscribes to.
+  include_project_total: boolean
+  include_event_types: boolean
+  include_events: boolean
+  include_schema_drifts: boolean
+  include_distribution_drifts: boolean
+  include_release_regressions: boolean
+  // Quick fired-history stats (full history via GET /alert-deliveries?rule_id=).
+  total_deliveries: number
+  last_delivery_at: string | null
+  last_delivery_status: AlertDeliveryStatus | null
 }

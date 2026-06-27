@@ -582,6 +582,53 @@ def test_collect_metrics_reuses_existing_pending_job(
     assert jobs[0].result_summary["columns_analyzed"] == 1
 
 
+def test_collect_metrics_persists_sanitized_error_on_failure(
+    sync_session_factory: sessionmaker[Session],
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """A driver failure during collection must not leak host/port/library text
+    into the job's user-facing error_message (full detail stays in the logs)."""
+    with sync_session_factory() as session:
+        config = _create_scan_config(session, with_event_type=True)
+        job = ScanJob(
+            id=uuid.uuid4(),
+            scan_config_id=config.id,
+            status=ScanJobStatus.pending.value,
+        )
+        session.add(job)
+        session.commit()
+        config_id = str(config.id)
+        job_id = str(job.id)
+
+    class TimingOutAdapter:
+        def test_connection(self) -> bool:
+            raise TimeoutError(
+                "clickhouse-connect: HTTPConnectionPool("
+                "host='warehouse.internal', port=8123): Read timed out. "
+                "(read timeout=30)"
+            )
+
+        def close(self) -> None:
+            return None
+
+    monkeypatch.setattr(metrics, "_get_sync_session", sync_session_factory)
+    monkeypatch.setattr(metrics, "_build_adapter", lambda ds: TimingOutAdapter())
+
+    with pytest.raises(TimeoutError):
+        metrics.collect_metrics.run(config_id, job_id)
+
+    with sync_session_factory() as session:
+        reloaded = session.get(ScanJob, uuid.UUID(job_id))
+        assert reloaded is not None
+        assert reloaded.status == ScanJobStatus.failed.value
+        assert reloaded.completed_at is not None
+        assert reloaded.error_message == "Scan failed: the data source did not respond in time."
+        assert "warehouse.internal" not in reloaded.error_message
+        assert "8123" not in reloaded.error_message
+        assert "clickhouse" not in reloaded.error_message.lower()
+        assert "read timed out" not in reloaded.error_message.lower()
+
+
 def test_collect_metrics_replaces_metric_rows_in_window(
     sync_session_factory: sessionmaker[Session],
     monkeypatch: MonkeyPatch,

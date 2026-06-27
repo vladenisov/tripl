@@ -16,6 +16,10 @@ from tripl.schemas.reconciliation import (
     ShadowEventListResponse,
 )
 from tripl.services import reconciliation_service
+from tripl.services.reconciliation_service import (
+    DeadEventArchiveRequest,
+    DeadEventArchiveResponse,
+)
 
 router = APIRouter(prefix="/projects/{slug}/reconciliation", tags=["reconciliation"])
 
@@ -82,6 +86,23 @@ async def list_dead_events(
     days: Annotated[int, Query(ge=1, le=365)] = reconciliation_service.DEFAULT_DEAD_EVENT_DAYS,
 ) -> DeadEventListResponse:
     return await reconciliation_service.list_dead_events(session, slug, days=days)
+
+
+@router.post("/dead-events/archive", response_model=DeadEventArchiveResponse)
+async def archive_dead_events(
+    session: SessionDep,
+    slug: str,
+    payload: DeadEventArchiveRequest,
+    branch_id: BranchIdDep,
+    current_user: EditorUserDep,
+) -> DeadEventArchiveResponse:
+    return await reconciliation_service.archive_dead_events(
+        session,
+        slug,
+        payload,
+        user_id=current_user.id,
+        branch_id=branch_id,
+    )
 
 
 @router.get("/coverage", response_model=CoverageResponse)

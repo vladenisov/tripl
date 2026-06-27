@@ -80,6 +80,33 @@ describe('ProjectSettingsPage', () => {
     expect(await screen.findByText('Takeover general')).toBeInTheDocument()
   })
 
+  it('signposts the surface and cross-links to the takeover settings area', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(mockJsonResponse([]))
+
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    })
+    render(
+      <QueryClientProvider client={queryClient}>
+        <AuthContext.Provider value={ownerAuthValue()}>
+          <MemoryRouter initialEntries={['/p/demo/settings/branches']}>
+            <Routes>
+              <Route path="/p/:slug/settings/:tab/:itemId" element={<ProjectSettingsPage />} />
+              <Route path="/p/:slug/settings/:tab" element={<ProjectSettingsPage />} />
+              <Route path="/p/:slug/settings" element={<ProjectSettingsPage />} />
+            </Routes>
+          </MemoryRouter>
+        </AuthContext.Provider>
+      </QueryClientProvider>,
+    )
+
+    expect(
+      await screen.findByText('Project operations — the day-to-day tracking-plan surfaces.'),
+    ).toBeInTheDocument()
+    const link = screen.getByRole('link', { name: /Workspace settings/i })
+    expect(link).toHaveAttribute('href', '/settings')
+  })
+
   it('loads and updates shared monitoring settings on the monitoring tab', async () => {
     let settings = {
       id: 'settings-1',

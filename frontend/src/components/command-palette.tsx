@@ -306,7 +306,7 @@ function CommandPalette() {
               <Item
                 onSelect={() => goTo('/settings/users')}
                 icon={SlidersHorizontal}
-                label="Users"
+                label="Members"
                 hint="/settings/users"
               />
               <Item
@@ -319,7 +319,7 @@ function CommandPalette() {
                 <Item
                   onSelect={() => goTo('/settings/runtime')}
                   icon={SlidersHorizontal}
-                  label="Service settings"
+                  label="Runtime"
                   hint="/settings/runtime"
                 />
               )}

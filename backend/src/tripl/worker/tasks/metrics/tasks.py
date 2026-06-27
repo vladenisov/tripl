@@ -41,6 +41,7 @@ from tripl.models.scan_job import ScanJob, ScanJobStatus
 from tripl.services import app_settings_service
 from tripl.worker.celery_app import celery_app
 from tripl.worker.search_reindex import reindex_main_branch_from_worker
+from tripl.worker.tasks._errors import user_facing_error
 from tripl.worker.tasks.alerts import send_alert_delivery
 from tripl.worker.tasks.metrics._helpers import (
     _build_adapter,
@@ -719,13 +720,15 @@ def collect_metrics(
         return result_summary
 
     except Exception as exc:
+        # Full driver/ORM detail (host, port, library, SQLAlchemy hints) goes to
+        # the logs; only a sanitized summary reaches the user-facing field.
         logger.exception(f"Metrics collection failed for {scan_config_id}")
         if job:
             try:
                 session.rollback()
                 job.status = ScanJobStatus.failed.value
                 job.completed_at = datetime.now(UTC)
-                job.error_message = str(exc)
+                job.error_message = user_facing_error(exc)
                 session.commit()
             except Exception:
                 session.rollback()

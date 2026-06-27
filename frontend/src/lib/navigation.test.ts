@@ -25,7 +25,7 @@ describe('buildNavGroups', () => {
     })
   })
 
-  it('derives counts and an attention tone from the project summary', () => {
+  it('derives counts from the project summary', () => {
     const summary = {
       event_type_count: 6,
       event_count: 2483,
@@ -37,21 +37,76 @@ describe('buildNavGroups', () => {
       scan_count: 5,
       alert_destination_count: 2,
       monitoring_signal_count: 3,
+      firing_monitor_count: 0,
       latest_scan_job: null,
       latest_signal: null,
     }
     const items = buildNavGroups('demo', summary).flatMap((g) => g.items)
-    const monitors = items.find((i) => i.id === 'monitoring')!
     expect(items.find((i) => i.id === 'events')!.count).toBe('2.5k')
-    expect(monitors.count).toBe('3')
-    expect(monitors.tone).toBe('danger')
+    expect(items.find((i) => i.id === 'variables')!.count).toBe('40')
   })
 
-  it('omits the monitors tone when there are no active signals', () => {
-    const groups = buildNavGroups('demo', undefined)
-    const monitors = groups.flatMap((g) => g.items).find((i) => i.id === 'monitoring')!
-    expect(monitors.count).toBeUndefined()
-    expect(monitors.tone).toBeUndefined()
+  it('binds the Monitors badge to the firing-monitor count, never the signal count (H1)', () => {
+    // "Monitors" counts MONITORS in a firing state (firing_monitor_count), not the
+    // open-signal population (monitoring_signal_count). Binding to the signal count
+    // read "Monitors 9" next to a Monitors page showing 3 firing monitors.
+    const summary = {
+      event_type_count: 6,
+      event_count: 2483,
+      active_event_count: 2483,
+      implemented_event_count: 100,
+      review_pending_event_count: 8,
+      archived_event_count: 12,
+      variable_count: 40,
+      scan_count: 5,
+      alert_destination_count: 2,
+      monitoring_signal_count: 9,
+      firing_monitor_count: 3,
+      latest_scan_job: null,
+      latest_signal: null,
+    }
+    const monitors = buildNavGroups('demo', summary)
+      .flatMap((g) => g.items)
+      .find((i) => i.id === 'monitoring')!
+    // Shows the firing-monitor count (3) in a danger tone — equal to the Monitors
+    // page firing_count — and never the stale signal population (9).
+    expect(monitors.count).toBe('3')
+    expect(monitors.tone).toBe('danger')
+    expect(monitors.count).not.toBe('9')
+  })
+
+  it('omits the Monitors badge when no monitors are firing (H1)', () => {
+    // No firing monitors → no count and no tone (rather than a "0" badge).
+    const summary = {
+      event_type_count: 6,
+      event_count: 2483,
+      active_event_count: 2483,
+      implemented_event_count: 100,
+      review_pending_event_count: 8,
+      archived_event_count: 12,
+      variable_count: 40,
+      scan_count: 5,
+      alert_destination_count: 2,
+      monitoring_signal_count: 9,
+      firing_monitor_count: 0,
+      latest_scan_job: null,
+      latest_signal: null,
+    }
+    const withZero = buildNavGroups('demo', summary).flatMap((g) => g.items)
+    const withoutSummary = buildNavGroups('demo', undefined).flatMap((g) => g.items)
+    for (const items of [withZero, withoutSummary]) {
+      const monitors = items.find((i) => i.id === 'monitoring')!
+      expect(monitors.count).toBeUndefined()
+      expect(monitors.tone).toBeUndefined()
+    }
+  })
+
+  it('surfaces Variables and Relations as Plan nav items (M6)', () => {
+    const items = buildNavGroups('demo', undefined)
+      .filter((g) => g.label === 'Plan')
+      .flatMap((g) => g.items)
+    expect(items.find((i) => i.id === 'variables')!.href).toBe('/p/demo/settings/variables')
+    expect(items.find((i) => i.id === 'relations')!.href).toBe('/p/demo/settings/relations')
   })
 })
 

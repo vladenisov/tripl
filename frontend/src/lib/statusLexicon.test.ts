@@ -1,0 +1,116 @@
+import { describe, expect, it } from 'vitest'
+import {
+  ALERT_DELIVERY,
+  ALERT_DELIVERY_TONE,
+  DATA_SOURCE_HEALTH,
+  MONITOR_STATUS,
+  MONITOR_STATUS_LABEL,
+  MONITOR_STATUS_TONE,
+  REVIEW_STATUS,
+  SCAN_RUN_STATUS,
+  SIGNAL_LEVEL,
+  coverageTone,
+  dataSourceHealthLexeme,
+  eventStatusLexeme,
+  rowSignalLevel,
+  toneVar,
+} from './statusLexicon'
+
+describe('statusLexicon — colour meaning key', () => {
+  it('maps monitor status to firing=danger, warning=warning, healthy=success', () => {
+    expect(MONITOR_STATUS.firing).toEqual({ label: 'Firing', tone: 'danger' })
+    expect(MONITOR_STATUS.warning).toEqual({ label: 'Warning', tone: 'warning' })
+    expect(MONITOR_STATUS.healthy).toEqual({ label: 'Healthy', tone: 'success' })
+  })
+
+  it('exposes flattened tone/label maps derived from MONITOR_STATUS', () => {
+    expect(MONITOR_STATUS_TONE).toEqual({ firing: 'danger', warning: 'warning', healthy: 'success' })
+    expect(MONITOR_STATUS_LABEL).toEqual({ firing: 'Firing', warning: 'Warning', healthy: 'Healthy' })
+  })
+
+  it('maps scan-run status: succeeded=success, failed=danger, running=info, queued/cancelled/never=neutral', () => {
+    expect(SCAN_RUN_STATUS.succeeded.tone).toBe('success')
+    expect(SCAN_RUN_STATUS.failed.tone).toBe('danger')
+    expect(SCAN_RUN_STATUS.running.tone).toBe('info')
+    expect(SCAN_RUN_STATUS.pending).toEqual({ label: 'Queued', tone: 'neutral' })
+    expect(SCAN_RUN_STATUS.cancelled.tone).toBe('neutral')
+    expect(SCAN_RUN_STATUS.never.tone).toBe('neutral')
+  })
+
+  it('treats a latest-scan signal as firing (danger) and an older signal as warning', () => {
+    expect(rowSignalLevel('latest_scan')).toBe(SIGNAL_LEVEL.firing)
+    expect(rowSignalLevel('recent')).toBe(SIGNAL_LEVEL.warning)
+    // signal words match monitor words so the two read as one language
+    expect(SIGNAL_LEVEL.firing.label).toBe(MONITOR_STATUS.firing.label)
+    expect(SIGNAL_LEVEL.firing.tone).toBe('danger')
+    expect(SIGNAL_LEVEL.warning.tone).toBe('warning')
+  })
+
+  it('maps review status: reviewed=success, needs_review=neutral', () => {
+    expect(REVIEW_STATUS.reviewed.tone).toBe('success')
+    expect(REVIEW_STATUS.needs_review.tone).toBe('neutral')
+  })
+
+  it('maps alert delivery: sent=success, failed=danger, pending=info', () => {
+    expect(ALERT_DELIVERY.sent.tone).toBe('success')
+    expect(ALERT_DELIVERY.failed.tone).toBe('danger')
+    expect(ALERT_DELIVERY.pending.tone).toBe('info')
+    expect(ALERT_DELIVERY_TONE).toEqual({ sent: 'success', failed: 'danger', pending: 'info' })
+  })
+
+  it('reuses the canonical event lifecycle tones (no duplication)', () => {
+    expect(eventStatusLexeme('live')).toEqual({ label: 'Live', tone: 'success' })
+    expect(eventStatusLexeme('in_review')).toEqual({ label: 'In Review', tone: 'warning' })
+    expect(eventStatusLexeme('draft').tone).toBe('neutral')
+  })
+})
+
+describe('dataSourceHealthLexeme — failed is red, not amber', () => {
+  it('renders a failed connection test as danger (matches the error banner)', () => {
+    // This is the spot-fix: the connections grid used to paint a failed test
+    // amber while its own inline banner painted it red.
+    expect(dataSourceHealthLexeme('failed', false)).toBe(DATA_SOURCE_HEALTH.failing)
+    expect(dataSourceHealthLexeme('failed', false).tone).toBe('danger')
+  })
+
+  it('renders a fresh successful test as healthy/success', () => {
+    expect(dataSourceHealthLexeme('success', false)).toEqual({ label: 'healthy', tone: 'success' })
+  })
+
+  it('downgrades a stale successful test to stale/warning', () => {
+    expect(dataSourceHealthLexeme('success', true)).toEqual({ label: 'stale', tone: 'warning' })
+  })
+
+  it('renders an untested/unknown source as neutral', () => {
+    expect(dataSourceHealthLexeme(null, false)).toEqual({ label: 'untested', tone: 'neutral' })
+    expect(dataSourceHealthLexeme(undefined, true).tone).toBe('neutral')
+  })
+})
+
+describe('coverageTone — good coverage is green (success), never accent', () => {
+  it('uses success/warning/danger across the 90/70 thresholds', () => {
+    expect(coverageTone(95)).toBe('success')
+    expect(coverageTone(90)).toBe('success')
+    expect(coverageTone(80)).toBe('warning')
+    expect(coverageTone(70)).toBe('warning')
+    expect(coverageTone(50)).toBe('danger')
+  })
+
+  it('returns neutral for an unknown percentage', () => {
+    expect(coverageTone(undefined)).toBe('neutral')
+    expect(coverageTone(null)).toBe('neutral')
+  })
+
+  it('never paints good coverage with the brand accent', () => {
+    expect(coverageTone(95)).not.toBe('accent')
+  })
+})
+
+describe('toneVar — tone to CSS variable', () => {
+  it('resolves the semantic CSS variable for a tone', () => {
+    expect(toneVar('success')).toBe('var(--success)')
+    expect(toneVar('warning')).toBe('var(--warning)')
+    expect(toneVar('danger')).toBe('var(--danger)')
+    expect(toneVar(coverageTone(95))).toBe('var(--success)')
+  })
+})

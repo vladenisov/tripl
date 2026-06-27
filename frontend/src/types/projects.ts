@@ -21,6 +21,7 @@ export interface ProjectSummary {
   scan_count: number
   alert_destination_count: number
   monitoring_signal_count: number
+  firing_monitor_count: number
   latest_scan_job: ProjectLatestScanJob | null
   latest_signal: ProjectLatestSignal | null
 }

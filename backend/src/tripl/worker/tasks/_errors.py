@@ -1,0 +1,64 @@
+"""Shared error sanitisation for worker tasks.
+
+Worker tasks run against external data warehouses (ClickHouse, Postgres, ...)
+through SQLAlchemy and driver libraries. When something fails, the raw exception
+text routinely embeds hostnames, ports, driver/library names, and SQLAlchemy
+hints. Those details belong in the logs only — they must never reach a
+user-facing field (a scan/metrics job's ``error_message``, a data source's
+``last_test_message``).
+
+``user_facing_error`` maps any exception to a short, category-specific summary
+that is safe to persist verbatim, while the caller logs the full exception
+separately. ``ScanError`` opts a message *into* verbatim surfacing for
+controlled, user-actionable conditions (a configuration problem, a row-limit
+hit, ...).
+"""
+
+from __future__ import annotations
+
+
+class ScanError(Exception):
+    """A failure whose message is safe to surface to end users verbatim.
+
+    Raised for controlled, user-actionable conditions (a configuration problem,
+    a hit row limit, ...). Anything that is *not* a ``ScanError`` is treated as
+    an internal failure: the raw exception is logged in full but only a generic,
+    sanitized summary is persisted on the user-facing field — raw driver/ORM
+    exceptions leak hostnames, ports, library names, and SQLAlchemy hints that
+    must never reach the user.
+    """
+
+
+# Substrings that identify the failure category from an exception's text without
+# echoing the (host/port/library-laden) text itself back to the user.
+_TIMEOUT_HINTS = ("timeout", "timed out", "time out")
+_CONNECTION_HINTS = (
+    "connection refused",
+    "could not connect",
+    "connection reset",
+    "connection aborted",
+    "network is unreachable",
+    "no route to host",
+    "host is unreachable",
+    "name or service not known",
+    "getaddrinfo",
+    "failed to resolve",
+)
+
+
+def user_facing_error(exc: Exception) -> str:
+    """Map an exception to a message safe to persist on a user-facing field.
+
+    ``ScanError`` messages are author-curated and surfaced verbatim. For every
+    other exception the raw text is dropped (it carries hostnames, ports, driver
+    names, or ORM autoflush hints — log the full exception separately) and
+    replaced with a generic, categorized summary.
+    """
+    if isinstance(exc, ScanError):
+        return str(exc)
+    text = str(exc).lower()
+    if any(hint in text for hint in _TIMEOUT_HINTS):
+        return "Scan failed: the data source did not respond in time."
+    if any(hint in text for hint in _CONNECTION_HINTS):
+        return "Scan failed: could not connect to the data source."
+    return "Scan failed due to an internal error. Please try again or contact support."

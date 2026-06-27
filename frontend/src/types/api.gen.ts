@@ -402,6 +402,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/projects/{slug}/alert-deliveries/{delivery_id}/retry": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Retry Alert Delivery */
+        post: operations["retry_alert_delivery_api_v1_projects__slug__alert_deliveries__delivery_id__retry_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/projects/{slug}/alert-destinations": {
         parameters: {
             query?: never;
@@ -1457,6 +1474,57 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/projects/{slug}/monitors/{rule_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Monitor */
+        get: operations["get_monitor_api_v1_projects__slug__monitors__rule_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/projects/{slug}/monitors/{rule_id}/mute": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Mute Monitor */
+        post: operations["mute_monitor_api_v1_projects__slug__monitors__rule_id__mute_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/projects/{slug}/monitors/{rule_id}/unmute": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Unmute Monitor */
+        post: operations["unmute_monitor_api_v1_projects__slug__monitors__rule_id__unmute_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/projects/{slug}/overview/kpi-series": {
         parameters: {
             query?: never;
@@ -1519,6 +1587,23 @@ export interface paths {
         get: operations["list_dead_events_api_v1_projects__slug__reconciliation_dead_events_get"];
         put?: never;
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/projects/{slug}/reconciliation/dead-events/archive": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Archive Dead Events */
+        post: operations["archive_dead_events_api_v1_projects__slug__reconciliation_dead_events_archive_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -3610,6 +3695,27 @@ export interface components {
             /** Username */
             username?: string | null;
         };
+        /**
+         * DeadEventArchiveRequest
+         * @description Bulk-retire request for dead events.
+         *
+         *     ``status`` is constrained to the two terminal lifecycle states so the
+         *     action can only deprecate or archive — never resurrect — an event.
+         */
+        DeadEventArchiveRequest: {
+            /** Event Ids */
+            event_ids: string[];
+            /** @default archived */
+            status: components["schemas"]["EventStatus"];
+        };
+        /** DeadEventArchiveResponse */
+        DeadEventArchiveResponse: {
+            /** Archived Count */
+            archived_count: number;
+            /** Event Ids */
+            event_ids: string[];
+            status: components["schemas"]["EventStatus"];
+        };
         /** DeadEventItem */
         DeadEventItem: {
             /**
@@ -4724,6 +4830,89 @@ export interface components {
             z_score: number;
         };
         /**
+         * MonitorDetailResponse
+         * @description A single monitor with the extra context a drill-in detail view needs.
+         */
+        MonitorDetailResponse: {
+            /** Active Scope Count */
+            active_scope_count: number;
+            /** Cooldown Minutes */
+            cooldown_minutes: number;
+            /** Destination Enabled */
+            destination_enabled: boolean;
+            /**
+             * Destination Id
+             * Format: uuid
+             */
+            destination_id: string;
+            /** Destination Name */
+            destination_name: string;
+            /** Destination Type */
+            destination_type: string;
+            /** Enabled */
+            enabled: boolean;
+            /** Firing Scope Count */
+            firing_scope_count: number;
+            /** Include Distribution Drifts */
+            include_distribution_drifts: boolean;
+            /** Include Event Types */
+            include_event_types: boolean;
+            /** Include Events */
+            include_events: boolean;
+            /** Include Project Total */
+            include_project_total: boolean;
+            /** Include Release Regressions */
+            include_release_regressions: boolean;
+            /** Include Schema Drifts */
+            include_schema_drifts: boolean;
+            /** Last Anomaly At */
+            last_anomaly_at?: string | null;
+            /** Last Delivery At */
+            last_delivery_at?: string | null;
+            last_delivery_status?: components["schemas"]["AlertDeliveryStatus"] | null;
+            /** Last Notified At */
+            last_notified_at?: string | null;
+            /** Min Expected Count */
+            min_expected_count: number;
+            /** Min Percent Delta */
+            min_percent_delta: number;
+            /**
+             * Muted
+             * @default false
+             */
+            muted: boolean;
+            /** Muted Until */
+            muted_until?: string | null;
+            /** Notify On Drop */
+            notify_on_drop: boolean;
+            /** Notify On Spike */
+            notify_on_spike: boolean;
+            /** Rule Enabled */
+            rule_enabled: boolean;
+            /**
+             * Rule Id
+             * Format: uuid
+             */
+            rule_id: string;
+            /** Rule Name */
+            rule_name: string;
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "firing" | "warning" | "healthy";
+            /** Total Deliveries */
+            total_deliveries: number;
+        };
+        /** MonitorMuteRequest */
+        MonitorMuteRequest: {
+            /**
+             * Muted Until
+             * Format: date-time
+             */
+            muted_until: string;
+        };
+        /**
          * MonitorSummaryItem
          * @description One alert rule rolled up into a single monitor status.
          */
@@ -4753,6 +4942,13 @@ export interface components {
             min_expected_count: number;
             /** Min Percent Delta */
             min_percent_delta: number;
+            /**
+             * Muted
+             * @default false
+             */
+            muted: boolean;
+            /** Muted Until */
+            muted_until?: string | null;
             /** Notify On Drop */
             notify_on_drop: boolean;
             /** Notify On Spike */
@@ -5228,6 +5424,11 @@ export interface components {
              * @default 0
              */
             event_type_count: number;
+            /**
+             * Firing Monitor Count
+             * @default 0
+             */
+            firing_monitor_count: number;
             /**
              * Implemented Event Count
              * @default 0
@@ -7314,6 +7515,38 @@ export interface operations {
         };
     };
     get_alert_delivery_api_v1_projects__slug__alert_deliveries__delivery_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                slug: string;
+                delivery_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AlertDeliveryDetailResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    retry_alert_delivery_api_v1_projects__slug__alert_deliveries__delivery_id__retry_post: {
         parameters: {
             query?: never;
             header?: never;
@@ -10116,6 +10349,106 @@ export interface operations {
             };
         };
     };
+    get_monitor_api_v1_projects__slug__monitors__rule_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                slug: string;
+                rule_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MonitorDetailResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    mute_monitor_api_v1_projects__slug__monitors__rule_id__mute_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                slug: string;
+                rule_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["MonitorMuteRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MonitorDetailResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    unmute_monitor_api_v1_projects__slug__monitors__rule_id__unmute_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                slug: string;
+                rule_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MonitorDetailResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     get_overview_kpi_series_api_v1_projects__slug__overview_kpi_series_get: {
         parameters: {
             query?: {
@@ -10237,6 +10570,41 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["DeadEventListResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    archive_dead_events_api_v1_projects__slug__reconciliation_dead_events_archive_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                slug: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["DeadEventArchiveRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DeadEventArchiveResponse"];
                 };
             };
             /** @description Validation Error */

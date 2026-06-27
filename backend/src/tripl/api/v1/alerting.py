@@ -19,6 +19,8 @@ from tripl.schemas.alerting import (
     AlertRuleResponse,
     AlertRuleSimulateResponse,
     AlertRuleUpdate,
+    MonitorDetailResponse,
+    MonitorMuteRequest,
     MonitorsSummaryResponse,
 )
 from tripl.services import alerting_service, audit_service
@@ -241,6 +243,78 @@ async def get_alert_delivery(
     session: SessionDep, slug: str, delivery_id: uuid.UUID
 ) -> AlertDeliveryDetailResponse:
     return await alerting_service.get_delivery(session, slug, delivery_id)
+
+
+@router.post(
+    "/alert-deliveries/{delivery_id}/retry",
+    response_model=AlertDeliveryDetailResponse,
+)
+async def retry_alert_delivery(
+    session: SessionDep,
+    slug: str,
+    delivery_id: uuid.UUID,
+    current_user: EditorUserDep,
+) -> AlertDeliveryDetailResponse:
+    delivery = await alerting_service.retry_delivery(session, slug, delivery_id)
+    await audit_service.record(
+        session,
+        user=current_user,
+        action="alert_delivery.retry",
+        target_type="alert_delivery",
+        target_id=delivery.id,
+        target_name=delivery.rule_name,
+        project_slug=slug,
+    )
+    return delivery
+
+
+@router.get("/monitors/{rule_id}", response_model=MonitorDetailResponse)
+async def get_monitor(
+    session: SessionDep, slug: str, rule_id: uuid.UUID
+) -> MonitorDetailResponse:
+    return await alerting_service.get_monitor(session, slug, rule_id)
+
+
+@router.post("/monitors/{rule_id}/mute", response_model=MonitorDetailResponse)
+async def mute_monitor(
+    session: SessionDep,
+    slug: str,
+    rule_id: uuid.UUID,
+    data: MonitorMuteRequest,
+    current_user: EditorUserDep,
+) -> MonitorDetailResponse:
+    monitor = await alerting_service.mute_monitor(session, slug, rule_id, data.muted_until)
+    await audit_service.record(
+        session,
+        user=current_user,
+        action="alert_rule.mute",
+        target_type="alert_rule",
+        target_id=monitor.rule_id,
+        target_name=monitor.rule_name,
+        project_slug=slug,
+        payload=data.model_dump(mode="json"),
+    )
+    return monitor
+
+
+@router.post("/monitors/{rule_id}/unmute", response_model=MonitorDetailResponse)
+async def unmute_monitor(
+    session: SessionDep,
+    slug: str,
+    rule_id: uuid.UUID,
+    current_user: EditorUserDep,
+) -> MonitorDetailResponse:
+    monitor = await alerting_service.unmute_monitor(session, slug, rule_id)
+    await audit_service.record(
+        session,
+        user=current_user,
+        action="alert_rule.unmute",
+        target_type="alert_rule",
+        target_id=monitor.rule_id,
+        target_name=monitor.rule_name,
+        project_slug=slug,
+    )
+    return monitor
 
 
 @router.get("/alert-inbox", response_model=AlertInboxListResponse)

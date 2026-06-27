@@ -517,7 +517,7 @@ async def test_alert_delivery_list_and_detail(client: AsyncClient) -> None:
             expected_count=20,
             absolute_delta=10,
             percent_delta=50,
-            details_path="http://localhost:5173/p/alert-audit/events/detail/event-1",
+            details_path="http://localhost:5173/p/alert-audit/monitoring/event/event-1",
             monitoring_path="http://localhost:5173/p/alert-audit/monitoring/event/event-1",
         )
         session.add_all([data_source, scan_config, destination, rule, delivery, item])
@@ -3176,3 +3176,230 @@ def test_check_deprecated_sunset_events_silent_when_no_recent_data(monkeypatch, 
 
     Base.metadata.drop_all(engine)
     engine.dispose()
+
+
+async def _seed_destination_rule_delivery(
+    project_id: uuid.UUID,
+    *,
+    status: str,
+    error_message: str | None = None,
+    dispatch_attempts: int = 0,
+) -> tuple[str, str, str]:
+    """Insert a data source, scan, destination, rule and one delivery.
+
+    Returns ``(delivery_id, destination_id, rule_id)`` as strings.
+    """
+    async with TestSessionLocal() as session:
+        data_source = DataSource(
+            id=uuid.uuid4(),
+            name="Retry DS",
+            db_type="clickhouse",
+            host="localhost",
+            port=8123,
+            database_name="default",
+            username="default",
+            password_encrypted="",
+        )
+        scan_config = ScanConfig(
+            id=uuid.uuid4(),
+            data_source_id=data_source.id,
+            project_id=project_id,
+            name="Retry Scan",
+            base_query="SELECT * FROM events",
+            time_column="created_at",
+            cardinality_threshold=100,
+            interval="1h",
+        )
+        destination = AlertDestination(
+            id=uuid.uuid4(),
+            project_id=project_id,
+            type="slack",
+            name="Retry Slack",
+            enabled=True,
+            webhook_url_encrypted="secret",
+        )
+        rule = AlertRule(
+            id=uuid.uuid4(),
+            destination_id=destination.id,
+            name="Retry Rule",
+            enabled=True,
+        )
+        delivery = AlertDelivery(
+            id=uuid.uuid4(),
+            project_id=project_id,
+            scan_config_id=scan_config.id,
+            destination_id=destination.id,
+            rule_id=rule.id,
+            channel="slack",
+            status=status,
+            matched_count=1,
+            error_message=error_message,
+            dispatch_attempts=dispatch_attempts,
+        )
+        session.add_all([data_source, scan_config, destination, rule, delivery])
+        await session.commit()
+        return str(delivery.id), str(destination.id), str(rule.id)
+
+
+@pytest.mark.asyncio
+async def test_retry_failed_delivery_resets_and_re_enqueues(
+    client: AsyncClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from tripl.worker.tasks.alerts import send_alert_delivery
+
+    project_resp = await client.post(
+        "/api/v1/projects",
+        json={"name": "Retry", "slug": "alert-retry", "description": ""},
+    )
+    assert project_resp.status_code == 201
+    project_id = uuid.UUID(project_resp.json()["id"])
+
+    delivery_id, _destination_id, _rule_id = await _seed_destination_rule_delivery(
+        project_id,
+        status="failed",
+        error_message="boom",
+        dispatch_attempts=3,
+    )
+
+    enqueued: list[str] = []
+    monkeypatch.setattr(send_alert_delivery, "delay", lambda did: enqueued.append(did))
+
+    resp = await client.post(
+        f"/api/v1/projects/alert-retry/alert-deliveries/{delivery_id}/retry"
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["status"] == "pending"
+    assert body["error_message"] is None
+    assert enqueued == [delivery_id]
+
+    async with TestSessionLocal() as session:
+        persisted = await session.get(AlertDelivery, uuid.UUID(delivery_id))
+        assert persisted is not None
+        assert persisted.status == AlertDeliveryStatus.pending.value
+        assert persisted.error_message is None
+        assert persisted.sent_at is None
+        # Manual retry hands the reaper a clean attempt budget.
+        assert persisted.dispatch_attempts == 0
+
+
+@pytest.mark.asyncio
+async def test_retry_non_failed_delivery_conflicts(
+    client: AsyncClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from tripl.worker.tasks.alerts import send_alert_delivery
+
+    project_resp = await client.post(
+        "/api/v1/projects",
+        json={"name": "Retry Sent", "slug": "alert-retry-sent", "description": ""},
+    )
+    assert project_resp.status_code == 201
+    project_id = uuid.UUID(project_resp.json()["id"])
+
+    delivery_id, _destination_id, _rule_id = await _seed_destination_rule_delivery(
+        project_id,
+        status="sent",
+    )
+
+    enqueued: list[str] = []
+    monkeypatch.setattr(send_alert_delivery, "delay", lambda did: enqueued.append(did))
+
+    resp = await client.post(
+        f"/api/v1/projects/alert-retry-sent/alert-deliveries/{delivery_id}/retry"
+    )
+    assert resp.status_code == 409
+    # A sent delivery must never be re-dispatched.
+    assert enqueued == []
+
+
+@pytest.mark.asyncio
+async def test_retry_unknown_delivery_returns_404(client: AsyncClient) -> None:
+    project_resp = await client.post(
+        "/api/v1/projects",
+        json={"name": "Retry 404", "slug": "alert-retry-404", "description": ""},
+    )
+    assert project_resp.status_code == 201
+
+    resp = await client.post(
+        f"/api/v1/projects/alert-retry-404/alert-deliveries/{uuid.uuid4()}/retry"
+    )
+    assert resp.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_monitor_detail_mute_and_unmute(client: AsyncClient) -> None:
+    project_resp = await client.post(
+        "/api/v1/projects",
+        json={"name": "Monitor Detail", "slug": "monitor-detail", "description": ""},
+    )
+    assert project_resp.status_code == 201
+
+    destination_resp = await client.post(
+        "/api/v1/projects/monitor-detail/alert-destinations",
+        json={
+            "type": "slack",
+            "name": "Mon Slack",
+            "enabled": True,
+            "webhook_url": "https://hooks.slack.com/services/T1/B1/mon",
+        },
+    )
+    assert destination_resp.status_code == 201
+    destination_id = destination_resp.json()["id"]
+
+    rule_resp = await client.post(
+        f"/api/v1/projects/monitor-detail/alert-destinations/{destination_id}/rules",
+        json={"name": "Mon Rule", "enabled": True, "filters": []},
+    )
+    assert rule_resp.status_code == 201
+    rule_id = rule_resp.json()["id"]
+
+    detail_resp = await client.get(f"/api/v1/projects/monitor-detail/monitors/{rule_id}")
+    assert detail_resp.status_code == 200
+    detail = detail_resp.json()
+    assert detail["rule_id"] == rule_id
+    assert detail["status"] == "healthy"
+    assert detail["muted"] is False
+    assert detail["muted_until"] is None
+    assert detail["rule_enabled"] is True
+    assert detail["destination_enabled"] is True
+    assert detail["total_deliveries"] == 0
+    assert detail["last_delivery_at"] is None
+
+    # A mute in the past is rejected.
+    past = (datetime.now(UTC) - timedelta(hours=1)).isoformat()
+    bad_mute = await client.post(
+        f"/api/v1/projects/monitor-detail/monitors/{rule_id}/mute",
+        json={"muted_until": past},
+    )
+    assert bad_mute.status_code == 422
+
+    muted_until = (datetime.now(UTC) + timedelta(hours=2)).isoformat()
+    mute_resp = await client.post(
+        f"/api/v1/projects/monitor-detail/monitors/{rule_id}/mute",
+        json={"muted_until": muted_until},
+    )
+    assert mute_resp.status_code == 200
+    assert mute_resp.json()["muted"] is True
+    assert mute_resp.json()["muted_until"] is not None
+
+    # The summary list reflects the mute too.
+    summary_resp = await client.get("/api/v1/projects/monitor-detail/monitors-summary")
+    assert summary_resp.status_code == 200
+    summary_monitor = next(
+        monitor
+        for monitor in summary_resp.json()["monitors"]
+        if monitor["rule_id"] == rule_id
+    )
+    assert summary_monitor["muted"] is True
+
+    unmute_resp = await client.post(
+        f"/api/v1/projects/monitor-detail/monitors/{rule_id}/unmute"
+    )
+    assert unmute_resp.status_code == 200
+    assert unmute_resp.json()["muted"] is False
+    assert unmute_resp.json()["muted_until"] is None
+
+    missing_resp = await client.get(
+        f"/api/v1/projects/monitor-detail/monitors/{uuid.uuid4()}"
+    )
+    assert missing_resp.status_code == 404

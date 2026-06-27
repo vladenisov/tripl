@@ -1,4 +1,5 @@
-import { memo } from 'react'
+import { Fragment, memo } from 'react'
+import type { ReactNode } from 'react'
 import { useSortable } from '@dnd-kit/sortable'
 import { CSS } from '@dnd-kit/utilities'
 import { Check, GripVertical } from 'lucide-react'
@@ -17,12 +18,14 @@ import { Chip } from '@/components/primitives/chip'
 import { Dot } from '@/components/primitives/dot'
 import { EVENT_STATUS_DOT_TONE, EVENT_STATUS_LABELS } from '@/lib/eventStatus'
 import type { EventStatus } from '@/lib/eventStatus'
+import { SIGNAL_LEVEL, rowSignalLevel } from '@/lib/statusLexicon'
 import { resolveMetaFieldHref } from '@/lib/metaFields'
 import { VariableValueContextTrigger } from '@/components/variable-value-contexts'
+import { EventName } from '@/components/event-name'
 import { EventDriftBadge } from './EventDriftBadge'
 import { EventWindowMetricsCell } from './EventWindowMetricsCell'
 import { SignalLink } from './SignalLink'
-import { formatRelativeTime } from './utils'
+import { formatRelativeTime, splitTemplateValue } from './utils'
 
 export type RowAction =
   | 'edit'
@@ -32,6 +35,30 @@ export type RowAction =
   | 'set-status-archived'
   | 'set-status-draft'
   | 'delete'
+
+function renderTemplateValue(value: string): ReactNode {
+  const parts = splitTemplateValue(value)
+  if (parts.length === 1 && !parts[0].token) return value
+  return parts.map((part, i) =>
+    part.token ? (
+      <span key={i} className="mono" style={{ color: 'var(--accent)' }}>
+        {part.text}
+      </span>
+    ) : (
+      <Fragment key={i}>{part.text}</Fragment>
+    ),
+  )
+}
+
+// A muted em-dash placeholder for a cell with no value. The `title` keeps the
+// bare "—" from reading as broken and lets it be told apart from a real 0.
+function NoData({ title, className }: { title: string; className?: string }): ReactNode {
+  return (
+    <span className={className ?? 'text-[11px]'} style={{ color: 'var(--fg-faint)' }} title={title}>
+      —
+    </span>
+  )
+}
 
 export type EventRowProps = {
   ev: EventListItem
@@ -102,11 +129,8 @@ export const EventRow = memo(function EventRow({
     zIndex: isDragging ? 1 : undefined,
   }
   const anomalyIdx = windowData.findIndex((p) => p.is_anomaly)
-  const signalTone: 'danger' | 'warning' | null = rowSignal
-    ? rowSignal.state === 'latest_scan'
-      ? 'danger'
-      : 'warning'
-    : null
+  const signalLevel = rowSignal ? rowSignalLevel(rowSignal.state) : null
+  const signalTone: 'danger' | 'warning' | null = signalLevel?.tone ?? null
   const statusTone = EVENT_STATUS_DOT_TONE[(ev.status as EventStatus) ?? 'draft'] ?? 'neutral'
 
   return (
@@ -119,7 +143,7 @@ export const EventRow = memo(function EventRow({
       <TableCell className="w-8 px-1">
         <button
           type="button"
-          className="flex h-6 w-6 cursor-grab touch-none items-center justify-center rounded text-muted-foreground hover:bg-muted active:cursor-grabbing"
+          className="flex h-6 w-6 cursor-grab touch-none items-center justify-center rounded text-muted-foreground opacity-0 transition-opacity hover:bg-muted focus-visible:opacity-100 group-hover/row:opacity-100 group-focus-within/row:opacity-100 active:cursor-grabbing"
           aria-label={`Drag to reorder ${ev.name}`}
           {...attributes}
           {...listeners}
@@ -146,7 +170,7 @@ export const EventRow = memo(function EventRow({
             onClick={() => onRowAction('navigate-monitoring', ev)}
             title={ev.name}
           >
-            {ev.name}
+            <EventName name={ev.name} />
           </button>
           {ev.drift_count > 0 && (
             <EventDriftBadge slug={slug} eventTypeId={ev.event_type_id} count={ev.drift_count} />
@@ -180,18 +204,25 @@ export const EventRow = memo(function EventRow({
               style={{ color: 'var(--success)' }}
             />
           ) : (
-            <span aria-hidden="true" className="text-[11px]" style={{ color: 'var(--fg-faint)' }}>—</span>
+            <span
+              aria-hidden="true"
+              className="text-[11px]"
+              style={{ color: 'var(--fg-faint)' }}
+              title="Not reviewed"
+            >
+              —
+            </span>
           )}
         </TableCell>
       )}
       {!hideMonitor && (
         <TableCell>
           {rowSignal ? (
-            <Chip tone={signalTone ?? 'danger'} size="xs">
-              {signalTone === 'warning' ? 'Warning' : 'Firing'}
+            <Chip tone={signalLevel?.tone ?? 'danger'} size="xs">
+              {signalLevel?.label ?? SIGNAL_LEVEL.firing.label}
             </Chip>
           ) : (
-            <span className="text-[11px]" style={{ color: 'var(--fg-faint)' }}>—</span>
+            <NoData title="No active alerts" />
           )}
         </TableCell>
       )}
@@ -200,7 +231,7 @@ export const EventRow = memo(function EventRow({
           {(() => {
             const last = windowData[windowData.length - 1]
             if (!last || last.expected_count == null || last.expected_count === 0) {
-              return <span style={{ color: 'var(--fg-faint)' }}>—</span>
+              return <NoData title="No data" />
             }
             const pct = ((last.count - last.expected_count) / last.expected_count) * 100
             const color =
@@ -239,9 +270,7 @@ export const EventRow = memo(function EventRow({
             {ev.tags.map((t) => (
               <Chip key={t.id} size="xs">{t.name}</Chip>
             ))}
-            {ev.tags.length === 0 && (
-              <span className="text-[11px]" style={{ color: 'var(--fg-faint)' }}>—</span>
-            )}
+            {ev.tags.length === 0 && <NoData title="No tags" />}
           </div>
         </TableCell>
       )}
@@ -261,7 +290,7 @@ export const EventRow = memo(function EventRow({
             return u ? (
               <span style={{ color: 'var(--fg-subtle)' }}>{u.name ?? u.email}</span>
             ) : (
-              <span style={{ color: 'var(--fg-faint)' }}>—</span>
+              <NoData title="No owner" />
             )
           })()}
         </TableCell>
@@ -286,9 +315,9 @@ export const EventRow = memo(function EventRow({
                   aria-expanded={true}
                   aria-label={`Collapse ${f.display_name}`}
                 >
-                  <pre className="max-w-sm whitespace-pre-wrap break-all font-mono text-[11px]">{(() => {
+                  <pre className="max-w-sm whitespace-pre-wrap break-all font-mono text-[11px]">{renderTemplateValue((() => {
                     try { return JSON.stringify(JSON.parse(val), null, 2) } catch { return val }
-                  })()}</pre>
+                  })())}</pre>
                 </button>
                 <VariableValueContextTrigger contexts={fieldValue?.variable_values} />
               </div>
@@ -301,13 +330,22 @@ export const EventRow = memo(function EventRow({
                   aria-expanded={false}
                   aria-label={`Expand ${f.display_name}`}
                 >
-                  {val}
+                  {renderTemplateValue(val)}
                 </button>
                 <VariableValueContextTrigger contexts={fieldValue?.variable_values} />
               </span>
             ) : (
               <span className="flex min-w-0 items-center gap-1.5">
-                <span className="min-w-0">{val}</span>
+                {val === '' ? (
+                  <NoData title="No data" className="min-w-0 text-[11px]" />
+                ) : (
+                  <span
+                    className="min-w-0"
+                    style={val === '0' ? { color: 'var(--fg-faint)' } : undefined}
+                  >
+                    {renderTemplateValue(val)}
+                  </span>
+                )}
                 <VariableValueContextTrigger contexts={fieldValue?.variable_values} />
               </span>
             )}
@@ -334,7 +372,11 @@ export const EventRow = memo(function EventRow({
               <Badge variant={mvRaw === 'true' ? 'success' : 'secondary'} className="text-[10px]">
                 {mvRaw === 'true' ? 'Yes' : 'No'}
               </Badge>
-            ) : mv}
+            ) : mv === '' ? (
+              <NoData title="No data" />
+            ) : (
+              mv
+            )}
           </TableCell>
         )
       })}

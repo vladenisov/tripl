@@ -73,9 +73,12 @@ export function SettingsLayout({
             onMouseLeave={(e) => (e.currentTarget.style.color = 'var(--fg-muted)')}
           >
             <ChevronLeft className="h-[15px] w-[15px]" />
-            <span>Back to tripl</span>
+            <span>Back to project</span>
           </Link>
           <h2 className="mx-1 mt-2.5 text-[17px] font-semibold tracking-[-0.01em]">Settings</h2>
+          <p className="mx-1 mt-1 text-[11.5px] leading-snug" style={{ color: 'var(--fg-subtle)' }}>
+            Workspace &amp; account configuration
+          </p>
         </div>
 
         {/* Context switch */}
@@ -115,16 +118,21 @@ export function SettingsLayout({
         <nav className="flex-1 overflow-y-auto px-3 pb-4">
           {visibleGroups(ctx, isOwner).map((group) => (
             <div key={group.label} className="mb-4">
-              <div className="flex items-baseline gap-1.5 px-[9px] pb-1.5">
-                <span className="text-[11.5px] font-semibold" style={{ color: 'var(--fg)' }}>
-                  {group.label}
-                </span>
-                <span
-                  className="text-[10px] uppercase tracking-[0.05em]"
-                  style={{ color: 'var(--fg-faint)' }}
-                >
-                  {subFor(group)}
-                </span>
+              <div className="px-[9px] pb-1.5">
+                <div className="flex items-baseline gap-1.5">
+                  <span className="text-[11.5px] font-semibold" style={{ color: 'var(--fg)' }}>
+                    {group.label}
+                  </span>
+                  <span
+                    className="text-[10px] uppercase tracking-[0.05em]"
+                    style={{ color: 'var(--fg-faint)' }}
+                  >
+                    {subFor(group)}
+                  </span>
+                </div>
+                <p className="mt-0.5 text-[10.5px] leading-snug" style={{ color: 'var(--fg-faint)' }}>
+                  {group.desc}
+                </p>
               </div>
               <div className="flex flex-col gap-px">
                 {group.items.map((item) => {
@@ -135,6 +143,7 @@ export function SettingsLayout({
                       key={item.id}
                       type="button"
                       aria-current={active ? 'page' : undefined}
+                      aria-label={item.label}
                       onClick={() => onNavigate(item.path)}
                       className="flex items-center gap-2 rounded-md px-[9px] py-[7px] text-left text-[12.5px] font-medium transition-colors"
                       style={{

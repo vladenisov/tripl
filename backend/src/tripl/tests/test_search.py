@@ -71,7 +71,7 @@ def test_search_document_insert_does_not_write_generated_text_vector() -> None:
         entity_type="event",
         entity_id=uuid.uuid4(),
         title="Checkout Completed",
-        route_path="/p/demo/events/detail/event-1",
+        route_path="/p/demo/monitoring/event/event-1",
         content_hash="0" * 64,
     )
 
