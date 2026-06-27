@@ -139,14 +139,52 @@ describe('ReconciliationPage', () => {
     expect(screen.getByRole('button', { name: 'Dismiss' })).toBeInTheDocument()
   })
 
-  it('renders dead events with a never-seen danger marker', async () => {
+  it('renders the dead-events explanation and a calm amber (not danger-red) never marker', async () => {
     mockFetch()
     renderPage()
 
     expect(await screen.findByText('legacy_banner_shown')).toBeInTheDocument()
     expect(screen.getByText('promo_code_invalid')).toBeInTheDocument()
+    // A one-line explanation reassures that dead events are often expected.
+    expect(
+      screen.getByText('Planned events not seen in your data recently — often expected.'),
+    ).toBeInTheDocument()
+    // "never" reads as a calm amber, never as an alarming danger-red wall.
     const neverRows = screen.getAllByText('never')
     expect(neverRows.length).toBeGreaterThan(0)
+    expect(neverRows[0]).toHaveStyle({ color: 'var(--warning)' })
+    expect(neverRows[0]).not.toHaveStyle({ color: 'var(--danger)' })
+  })
+
+  it('renders 0-encoded empty segments as a placeholder, never a bare "0"', async () => {
+    const deadZero: DeadEventsResponse = {
+      days: 30,
+      total: 1,
+      items: [
+        {
+          event_id: 'z1',
+          name: '0:forecast_for_4:0',
+          event_type_id: '',
+          event_type_name: '',
+          last_seen_at: '2026-05-01T00:00:00Z',
+          created_at: '2026-01-01T00:00:00Z',
+        },
+      ],
+    }
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = String(input)
+      if (url.includes('/reconciliation/coverage')) return jsonResponse(coverage)
+      if (url.includes('/reconciliation/dead-events')) return jsonResponse(deadZero)
+      if (url.includes('/reconciliation/shadow-events')) return jsonResponse(emptyShadow)
+      if (url.includes('/event-types')) return jsonResponse([])
+      throw new Error(`Unhandled fetch: ${url}`)
+    })
+    renderPage()
+
+    expect(await screen.findByText('forecast_for_4')).toBeInTheDocument()
+    // The "0" segments collapse to muted placeholders — no confusing standalone "0".
+    expect(screen.queryByText('0')).not.toBeInTheDocument()
+    expect(screen.getAllByTitle('empty segment')).toHaveLength(2)
   })
 
   it('renders colon-delimited dead-event names with a placeholder for empty segments', async () => {
@@ -188,6 +226,23 @@ describe('ReconciliationPage', () => {
     expect(screen.getByText('coordinates(main)')).toBeInTheDocument()
     // The leading empty segment renders an intentional placeholder, not a blank.
     expect(screen.getByTitle('empty segment')).toBeInTheDocument()
+  })
+
+  it('shows a reassuring compact empty state when the new shadow inbox is empty', async () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = String(input)
+      if (url.includes('/reconciliation/coverage')) return jsonResponse(coverage)
+      if (url.includes('/reconciliation/dead-events')) return jsonResponse(dead)
+      if (url.includes('/reconciliation/shadow-events')) return jsonResponse(emptyShadow)
+      if (url.includes('/event-types')) return jsonResponse([])
+      throw new Error(`Unhandled fetch: ${url}`)
+    })
+    renderPage()
+
+    expect(await screen.findByText('No new events')).toBeInTheDocument()
+    expect(
+      screen.getByText('No unexpected events seen in the last 14 days.'),
+    ).toBeInTheDocument()
   })
 
   it('switches shadow tabs to show the per-tab empty state', async () => {

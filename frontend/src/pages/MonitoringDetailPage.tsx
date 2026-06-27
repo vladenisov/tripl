@@ -26,6 +26,9 @@ import { TopMoversPanel } from '@/components/monitoring/top-movers-panel'
 import { VariableValueContextTrigger } from '@/components/variable-value-contexts'
 import { MetricsChart, MetricsMultiSeriesChart } from '@/components/ui/chart-lazy'
 import {
+  DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu'
+import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from '@/components/ui/select'
 import { Separator } from '@/components/ui/separator'
@@ -49,7 +52,7 @@ import type {
 } from '@/types'
 import {
   AlertTriangle, ArrowDown, ArrowLeft, ArrowUp, CalendarPlus, ChevronDown, ChevronLeft, ChevronUp,
-  Code, Eye, GitBranch, GitCompareArrows, Layers, Pencil, Trash2, TrendingUp,
+  Code, Eye, GitBranch, GitCompareArrows, Layers, MoreHorizontal, Pencil, Trash2, TrendingUp,
 } from 'lucide-react'
 
 // Stable empty reference so `metaFieldsQuery.data ?? EMPTY_META_FIELDS`
@@ -1408,12 +1411,47 @@ function EventDetailHeader({
         </div>
       </div>
       <div className="flex flex-wrap items-center gap-2">
-        <HeroAction icon={<Eye size={12} />} label="Watch" disabled title="Coming soon" />
         <HeroAction icon={<TrendingUp size={12} />} label="Metrics" onClick={onMetrics} />
-        <HeroAction icon={<Pencil size={12} />} label="Edit" onClick={onEdit} />
-        <HeroAction icon={<Code size={12} />} label="Implementation" primary disabled title="Coming soon" />
+        <HeroAction icon={<Pencil size={12} />} label="Edit" primary onClick={onEdit} />
+        <EventActionOverflow />
       </div>
     </div>
+  )
+}
+
+/**
+ * Overflow ("…") menu for not-yet-shipped actions. Keeping Watch / Implementation
+ * out of the primary row — rather than as inert disabled buttons beside the live
+ * ones — stops the dead CTAs from undercutting confidence in the working actions.
+ */
+function EventActionOverflow() {
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <button
+          type="button"
+          aria-label="More actions"
+          className="inline-flex h-8 w-8 items-center justify-center rounded-[7px] border transition-colors hover:bg-[var(--surface-hover)]"
+          style={{ background: 'var(--surface)', color: 'var(--fg-muted)', borderColor: 'var(--border)' }}
+        >
+          <MoreHorizontal size={14} />
+        </button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="end" sideOffset={6} className="w-[180px]">
+        <DropdownMenuLabel
+          className="text-[10px] font-semibold uppercase tracking-[0.08em]"
+          style={{ color: 'var(--fg-faint)' }}
+        >
+          Coming soon
+        </DropdownMenuLabel>
+        <DropdownMenuItem disabled className="text-[12.5px]">
+          <Eye className="h-3.5 w-3.5 shrink-0" style={{ color: 'var(--fg-subtle)' }} /> Watch
+        </DropdownMenuItem>
+        <DropdownMenuItem disabled className="text-[12.5px]">
+          <Code className="h-3.5 w-3.5 shrink-0" style={{ color: 'var(--fg-subtle)' }} /> Implementation
+        </DropdownMenuItem>
+      </DropdownMenuContent>
+    </DropdownMenu>
   )
 }
 
@@ -1449,14 +1487,23 @@ function StatCard({
   value,
   tone,
   hint,
+  empty,
 }: {
   label: string
   value: string
   tone?: 'danger' | 'warning'
   /** Hover/long-press explanation, e.g. for an empty "—" value. */
   hint?: string
+  /** De-emphasise the value when it represents a no-data ("—" / "0") state. */
+  empty?: boolean
 }) {
-  const color = tone === 'danger' ? 'var(--danger)' : tone === 'warning' ? 'var(--warning)' : 'var(--fg)'
+  const color = empty
+    ? 'var(--fg-faint)'
+    : tone === 'danger'
+      ? 'var(--danger)'
+      : tone === 'warning'
+        ? 'var(--warning)'
+        : 'var(--fg)'
   return (
     <div className="rounded-[10px] border px-[14px] py-[11px]" style={SURFACE_STYLE} title={hint}>
       <div className="text-[11px]" style={{ color: 'var(--fg-subtle)' }}>{label}</div>
@@ -1474,20 +1521,29 @@ function EventStatStrip({ event, stats }: { event: TEvent; stats: EventDetailSta
       <StatCard
         label="Volume · 24h"
         value={stats.volume24h == null ? '—' : formatNum(stats.volume24h)}
+        empty={stats.volume24h == null}
         hint={stats.volume24h == null ? 'No events in the last 24h' : undefined}
       />
       <StatCard
         label="Δ · 24h"
         value={stats.delta24h == null ? '—' : `${stats.delta24h > 0 ? '+' : ''}${stats.delta24h.toFixed(0)}%`}
         tone={deltaTone}
+        empty={stats.delta24h == null}
         hint={stats.delta24h == null ? 'No prior 24h window to compare against' : undefined}
       />
       <StatCard
         label="Schema drifts"
         value={formatNum(event.drift_count)}
         tone={event.drift_count > 0 ? 'warning' : undefined}
+        empty={event.drift_count === 0}
+        hint={event.drift_count === 0 ? 'No schema drifts detected' : undefined}
       />
-      <StatCard label="Last seen" value={event.last_seen_at ? formatRelativeTime(event.last_seen_at) : '—'} />
+      <StatCard
+        label="Last seen"
+        value={event.last_seen_at ? formatRelativeTime(event.last_seen_at) : '—'}
+        empty={!event.last_seen_at}
+        hint={event.last_seen_at ? undefined : 'No hits recorded yet'}
+      />
     </div>
   )
 }

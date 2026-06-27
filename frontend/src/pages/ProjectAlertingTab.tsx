@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { ClipboardList, Globe, Mail, Send, Ticket, Trash2, Webhook } from 'lucide-react'
+import { ClipboardList, Globe, Mail, Send, Ticket, Trash2, Webhook, type LucideIcon } from 'lucide-react'
 
 import { alertingApi } from '@/api/alerting'
 import { eventTypesApi } from '@/api/eventTypes'
@@ -28,6 +28,17 @@ import {
   type DestinationFormState,
 } from './alerting/constants'
 import { getErrorMessage } from '@/lib/utils'
+
+// Channel catalogue — drives both the per-channel sections and the compact
+// "Add another channel" affordance, so every type stays addable from one place.
+const CHANNEL_META: { channel: DestinationChannel; label: string; Icon: LucideIcon }[] = [
+  { channel: 'slack', label: 'Slack', Icon: Webhook },
+  { channel: 'telegram', label: 'Telegram', Icon: Send },
+  { channel: 'webhook', label: 'Webhook', Icon: Globe },
+  { channel: 'email', label: 'Email', Icon: Mail },
+  { channel: 'jira', label: 'Jira', Icon: Ticket },
+  { channel: 'linear', label: 'Linear', Icon: ClipboardList },
+]
 
 export default function ProjectAlertingTab({ slug }: { slug: string }) {
   const qc = useQueryClient()
@@ -234,34 +245,11 @@ export default function ProjectAlertingTab({ slug }: { slug: string }) {
 
       <div className="grid gap-6">
         <div className="min-w-0 space-y-4">
-          <div className="flex items-center justify-between">
+          <div className="space-y-1">
             <h3 className="text-sm font-semibold">Destinations</h3>
-            <div className="flex gap-2">
-              <Button variant="outline" size="sm" onClick={() => openCreate('slack')}>
-                <Webhook className="mr-2 h-4 w-4" />
-                Add Slack
-              </Button>
-              <Button variant="outline" size="sm" onClick={() => openCreate('telegram')}>
-                <Send className="mr-2 h-4 w-4" />
-                Add Telegram
-              </Button>
-              <Button variant="outline" size="sm" onClick={() => openCreate('webhook')}>
-                <Globe className="mr-2 h-4 w-4" />
-                Add Webhook
-              </Button>
-              <Button variant="outline" size="sm" onClick={() => openCreate('email')}>
-                <Mail className="mr-2 h-4 w-4" />
-                Add Email
-              </Button>
-              <Button variant="outline" size="sm" onClick={() => openCreate('jira')}>
-                <Ticket className="mr-2 h-4 w-4" />
-                Add Jira
-              </Button>
-              <Button variant="outline" size="sm" onClick={() => openCreate('linear')}>
-                <ClipboardList className="mr-2 h-4 w-4" />
-                Add Linear
-              </Button>
-            </div>
+            <p className="text-xs text-muted-foreground">
+              Signals route to destinations via rules.
+            </p>
           </div>
 
           {destinations.length === 0 && (
@@ -272,38 +260,52 @@ export default function ProjectAlertingTab({ slug }: { slug: string }) {
             />
           )}
 
-          {(['slack', 'telegram', 'webhook', 'email', 'jira', 'linear'] as const).map(channel => (
-            <div key={channel} className="space-y-3">
-              <div className="flex items-center gap-2">
-                <h4 className="text-sm font-medium capitalize">{channel}</h4>
-                <Badge variant="outline" className="text-[10px]">
-                  {groupedDestinations[channel].length}
-                </Badge>
-              </div>
-              {groupedDestinations[channel].map(destination => (
-                <div key={destination.id}>
-                  <DestinationCard
-                    slug={slug}
-                    destination={destination}
-                    eventTypes={eventTypes}
-                    events={events}
-                    onEditDestination={openEdit}
-                  />
-                  <div className="mt-2 flex justify-end">
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      className="text-muted-foreground hover:text-destructive"
-                      onClick={() => handleDeleteDestination(destination)}
-                    >
-                      <Trash2 className="mr-2 h-4 w-4" />
-                      Delete destination
-                    </Button>
-                  </div>
+          {CHANNEL_META
+            .filter(({ channel }) => groupedDestinations[channel].length > 0)
+            .map(({ channel, label }) => (
+              <div key={channel} className="space-y-3">
+                <div className="flex items-center gap-2">
+                  <h4 className="text-sm font-medium">{label}</h4>
+                  <Badge variant="outline" className="text-[10px]">
+                    {groupedDestinations[channel].length}
+                  </Badge>
                 </div>
-              ))}
-            </div>
-          ))}
+                {groupedDestinations[channel].map(destination => (
+                  <div key={destination.id}>
+                    <DestinationCard
+                      slug={slug}
+                      destination={destination}
+                      eventTypes={eventTypes}
+                      events={events}
+                      onEditDestination={openEdit}
+                    />
+                    <div className="mt-2 flex justify-end">
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="text-muted-foreground hover:text-destructive"
+                        onClick={() => handleDeleteDestination(destination)}
+                      >
+                        <Trash2 className="mr-2 h-4 w-4" />
+                        Delete destination
+                      </Button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            ))}
+
+          {/* Empty channels collapse here instead of rendering bare headers — every
+              type stays one click away without taking vertical space for nothing. */}
+          <div className="flex flex-wrap items-center gap-2 rounded-lg border border-dashed p-3">
+            <span className="text-xs font-medium text-muted-foreground">Add another channel</span>
+            {CHANNEL_META.map(({ channel, label, Icon }) => (
+              <Button key={channel} variant="outline" size="sm" onClick={() => openCreate(channel)}>
+                <Icon className="mr-2 h-4 w-4" />
+                {label}
+              </Button>
+            ))}
+          </div>
         </div>
 
         <div className="min-w-0 space-y-4">

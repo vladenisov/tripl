@@ -575,7 +575,7 @@ function SignalsBanner({
           </div>
           <div className="text-[11px]" style={{ color: 'var(--fg-subtle)' }}>
             {signalCount > 0
-              ? `${pluralize(projectsWithSignals, '1 project currently has', `${projectsWithSignals} projects currently have`)} active or recent signals`
+              ? `${pluralize(projectsWithSignals, '1 project currently has', `${projectsWithSignals} projects currently have`)} recent signals`
               : 'Monitoring is quiet across the workspace'}
           </div>
         </div>
@@ -606,6 +606,14 @@ function ProjectCard({
   )
   const hasSignals = project.summary.monitoring_signal_count > 0
   const needsReview = project.summary.review_pending_event_count > 0
+  // One needs-attention status leads the card in a saturated color; the rest
+  // render calm/muted so the eye lands on what matters (UX-23). Live monitoring
+  // signals outrank a pending review queue.
+  const attention: 'signals' | 'review' | null = hasSignals
+    ? 'signals'
+    : needsReview
+      ? 'review'
+      : null
 
   return (
     <Card
@@ -621,13 +629,15 @@ function ProjectCard({
             <span className="truncate text-[14px] font-semibold">{project.name}</span>
             <Chip
               tone={
-                status.label === 'Ready'
-                  ? 'success'
-                  : status.label === 'Needs Review'
-                    ? 'warning'
-                    : status.label === 'In Progress'
-                      ? 'info'
-                      : 'neutral'
+                attention === 'signals'
+                  ? 'neutral'
+                  : status.label === 'Ready'
+                    ? 'success'
+                    : status.label === 'Needs Review'
+                      ? 'warning'
+                      : status.label === 'In Progress'
+                        ? 'info'
+                        : 'neutral'
               }
               size="xs"
             >
@@ -663,18 +673,15 @@ function ProjectCard({
 
       <CardContent className="space-y-4 px-4 py-4">
         <div className="flex flex-wrap gap-1.5">
-          <Chip
-            tone={coverageRatio === 1 ? 'success' : 'info'}
-            size="xs"
-          >
+          <Chip tone="neutral" size="xs">
             {project.summary.active_event_count > 0 ? `${coverageDisplay} implemented` : 'No active events'}
           </Chip>
-          <Chip tone={needsReview ? 'warning' : 'neutral'} size="xs">
+          <Chip tone={attention === 'review' ? 'warning' : 'neutral'} size="xs">
             {needsReview
               ? `${project.summary.review_pending_event_count} pending review`
               : 'Review queue clear'}
           </Chip>
-          <Chip tone={project.summary.scan_count > 0 ? 'accent' : 'neutral'} size="xs">
+          <Chip tone="neutral" size="xs">
             {project.summary.scan_count > 0
               ? pluralize(
                   project.summary.scan_count,
@@ -683,7 +690,7 @@ function ProjectCard({
                 )
               : 'No scan coverage'}
           </Chip>
-          <Chip tone={hasSignals ? 'danger' : 'neutral'} size="xs">
+          <Chip tone={attention === 'signals' ? 'danger' : 'neutral'} size="xs">
             {hasSignals
               ? pluralize(
                   project.summary.monitoring_signal_count,
@@ -812,6 +819,9 @@ function LatestScanJobSummary({
   }
 
   const scanError = job.error_message ? friendlyScanError(job.error_message) : null
+  const rowsScanned =
+    job.result_summary?.scan_rows_processed ?? job.result_summary?.query_rows_scanned ?? null
+  const rowsTruncated = job.result_summary?.scan_truncated === true
 
   return (
     <div className="space-y-2">
@@ -821,6 +831,12 @@ function LatestScanJobSummary({
       </div>
       <div className="space-y-0.5 text-[11.5px]" style={{ color: 'var(--fg-subtle)' }}>
         <p>{describeScanJobTiming(job)}</p>
+        {rowsScanned != null && (
+          <p className="mono tnum">
+            {rowsScanned.toLocaleString()}
+            {rowsTruncated ? '+' : ''} rows scanned
+          </p>
+        )}
         {scanError && (
           <div className="space-y-1">
             <p className="line-clamp-2" style={{ color: 'var(--danger)' }}>
@@ -870,8 +886,8 @@ function LatestSignalSummary({
   if (!signal) {
     return (
       <div className="text-[11.5px]" style={{ color: 'var(--fg-subtle)' }}>
-        No active or recent monitoring signals. Once metrics collection finds anomalies, the latest
-        signal will appear here.
+        No recent monitoring signals. Once metrics collection finds anomalies, the latest signal
+        will appear here.
       </div>
     )
   }
@@ -885,7 +901,7 @@ function LatestSignalSummary({
         <Chip tone={signal.direction === 'drop' ? 'warning' : 'danger'} size="xs">
           {signal.direction}
         </Chip>
-        <Chip size="xs">{signalCount} active</Chip>
+        <Chip size="xs">{signalCount} recent</Chip>
       </div>
       <div className="space-y-0.5">
         <p className="text-[12px] font-medium">{signal.scope_name}</p>

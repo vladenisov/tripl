@@ -152,7 +152,7 @@ export function ScansTab({ slug }: { slug: string }) {
           <table className="w-full border-collapse">
             <thead>
               <tr style={{ background: 'var(--bg-sunken)' }}>
-                {['Scan', 'Query', 'Schedule', 'Last run'].map(h => (
+                {['Scan', 'Last run'].map(h => (
                   <th
                     key={h}
                     className="px-3.5 py-2 text-left text-[10.5px] font-semibold uppercase tracking-wide"

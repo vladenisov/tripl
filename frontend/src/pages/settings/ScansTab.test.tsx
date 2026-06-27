@@ -128,9 +128,10 @@ describe('ScansTab', () => {
     expect(screen.getAllByText('Scan configs').length).toBeGreaterThanOrEqual(1)
     expect(screen.getByText('Scheduled')).toBeInTheDocument()
     expect(screen.getByText('Rows scanned · 24h')).toBeInTheDocument()
-    // First query line shown in mono, schedule chip uses the long interval label.
+    // Rows lead with a human summary (source · cadence); the raw SQL is demoted
+    // to a faint secondary line rather than its own prominent column.
+    expect(screen.getByText(/Web Production · Every 15 min/)).toBeInTheDocument()
     expect(screen.getByText(/SELECT \* FROM analytics\.events_v2/)).toBeInTheDocument()
-    expect(screen.getByText('Every 15 min')).toBeInTheDocument()
   })
 
   it('labels failed runs as text with a sanitised message and no raw internals', async () => {

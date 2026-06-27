@@ -45,12 +45,31 @@ afterEach(() => {
   vi.restoreAllMocks()
 })
 
+describe('ProjectAlertingTab — empty channels (UX-19 / UX-20)', () => {
+  it('pockets zero-destination channels into a compact add affordance and frames the routing model', async () => {
+    mockAlertingFetch()
+    renderTab()
+
+    // UX-20: one-line framing so newcomers grasp signal → destination → rule.
+    expect(await screen.findByText('Signals route to destinations via rules.')).toBeInTheDocument()
+
+    // UX-19: with no destinations, no full per-channel headers take up space.
+    expect(screen.queryByRole('heading', { level: 4 })).toBeNull()
+
+    // ...but every channel type stays addable from the single compact row.
+    expect(screen.getByText('Add another channel')).toBeInTheDocument()
+    for (const label of ['Slack', 'Telegram', 'Webhook', 'Email', 'Jira', 'Linear']) {
+      expect(screen.getByRole('button', { name: label })).toBeInTheDocument()
+    }
+  })
+})
+
 describe('ProjectAlertingTab — Add Email destination', () => {
   it('renders the Subject Template placeholder as a clean token example (no escape artifact)', async () => {
     mockAlertingFetch()
     renderTab()
 
-    fireEvent.click(await screen.findByRole('button', { name: 'Add Email' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Email' }))
 
     const subjectInput = await screen.findByPlaceholderText('[${project_name}] ${rule_name}')
     // The placeholder must match the token syntax shown in the helper text below,

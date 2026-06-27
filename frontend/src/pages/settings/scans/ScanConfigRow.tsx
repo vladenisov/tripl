@@ -79,6 +79,7 @@ export function ScanListRow({
   onNavigate: () => void
 }) {
   const firstQueryLine = sc.base_query.split('\n')[0]
+  const cadenceLabel = sc.interval ? (intervalLabel[sc.interval] ?? sc.interval) : 'Manual'
   const pillStatus: RunPillStatus =
     runInfo.status === 'ok'
       ? 'succeeded'
@@ -99,31 +100,26 @@ export function ScanListRow({
       onClick={onNavigate}
       onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onNavigate() } }}
     >
+      {/* Lead with a human summary — name over "source · cadence". The raw SQL is
+          demoted to a faint secondary line (full query on hover) rather than its
+          own prominent column. */}
       <td className="px-3.5 py-2.5 align-middle">
         <div className="flex items-center gap-2.5">
           <SrcIcon dbType={dataSource?.db_type ?? null} size={28} />
           <div className="min-w-0">
-            <div className="text-[13px] font-semibold">{sc.name}</div>
-            <div className="text-[11px]" style={{ color: 'var(--fg-subtle)' }}>
-              {dataSource?.name ?? 'Unknown source'}
+            <div className="truncate text-[13px] font-semibold">{sc.name}</div>
+            <div className="truncate text-[11px]" style={{ color: 'var(--fg-subtle)' }}>
+              {dataSource?.name ?? 'Unknown source'} · {cadenceLabel}
+            </div>
+            <div
+              className="mono max-w-[280px] truncate text-[10.5px]"
+              style={{ color: 'var(--fg-faint)' }}
+              title={sc.base_query}
+            >
+              {firstQueryLine}
             </div>
           </div>
         </div>
-      </td>
-      <td className="px-3.5 py-2.5 align-middle">
-        <span
-          className="mono inline-block max-w-[220px] overflow-hidden text-ellipsis whitespace-nowrap align-middle text-[11px]"
-          style={{ color: 'var(--fg-muted)' }}
-        >
-          {firstQueryLine}
-        </span>
-      </td>
-      <td className="px-3.5 py-2.5 align-middle">
-        {sc.interval ? (
-          <Chip size="xs" icon={<Clock className="size-2.5" />}>{intervalLabel[sc.interval] ?? sc.interval}</Chip>
-        ) : (
-          <span className="text-[11.5px]" style={{ color: 'var(--fg-faint)' }}>Manual</span>
-        )}
       </td>
       <td className="px-3.5 py-2.5 align-middle">
         <div className="flex flex-col gap-1">

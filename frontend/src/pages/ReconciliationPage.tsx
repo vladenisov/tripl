@@ -1,7 +1,7 @@
 import { Fragment, useState, type ReactNode } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Calendar } from 'lucide-react'
+import { Calendar, Inbox } from 'lucide-react'
 import {
   reconciliationApi,
   type CoverageBucket,
@@ -133,6 +133,7 @@ export default function ReconciliationPage() {
   const dead = deadQuery.data
   const eventTypes = eventTypesQuery.data ?? []
   const shadowHasItems = (shadow?.items.length ?? 0) > 0
+  const shadowIsEmpty = !!shadow && shadow.items.length === 0 && !shadowQuery.isError
 
   return (
     <div className="min-w-0 space-y-[18px] pb-12">
@@ -201,7 +202,11 @@ export default function ReconciliationPage() {
         )}
       </Panel>
 
-      <div className="grid grid-cols-1 gap-3 lg:grid-cols-[1.5fr_1fr]">
+      <div
+        className={`grid grid-cols-1 gap-3 ${
+          shadowIsEmpty ? 'lg:grid-cols-[0.85fr_1.65fr]' : 'lg:grid-cols-[1.5fr_1fr]'
+        }`}
+      >
         {/* Shadow events inbox */}
         <Panel
           title="Shadow events inbox"
@@ -245,11 +250,25 @@ export default function ReconciliationPage() {
               Loading…
             </div>
           )}
-          {shadow && shadow.items.length === 0 && !shadowQuery.isError && (
-            <div className="px-4 py-7 text-center text-[12px]" style={{ color: 'var(--fg-subtle)' }}>
-              No {shadowStatus} events.
-            </div>
-          )}
+          {shadowIsEmpty &&
+            (shadowStatus === 'new' ? (
+              <div className="flex flex-col items-center gap-1.5 px-4 py-6 text-center">
+                <Inbox className="h-4 w-4" style={{ color: 'var(--fg-faint)' }} aria-hidden />
+                <div className="text-[12px] font-medium" style={{ color: 'var(--fg-muted)' }}>
+                  No new events
+                </div>
+                <div className="text-[10.5px]" style={{ color: 'var(--fg-subtle)' }}>
+                  No unexpected events seen in the last {COVERAGE_DAYS} days.
+                </div>
+              </div>
+            ) : (
+              <div
+                className="px-4 py-6 text-center text-[12px]"
+                style={{ color: 'var(--fg-subtle)' }}
+              >
+                No {shadowStatus} events.
+              </div>
+            ))}
           {shadow?.items.map((item) => {
             const isActing =
               (acceptMutation.isPending && acceptMutation.variables?.id === item.id) ||
@@ -286,7 +305,30 @@ export default function ReconciliationPage() {
         </Panel>
 
         {/* Dead events */}
-        <Panel title="Dead events" subtitle="In plan, not seen recently">
+        <Panel
+          title="Dead events"
+          subtitle="In plan, not seen recently"
+          right={
+            dead && dead.items.length > 0 ? (
+              <Button
+                variant="outline"
+                size="sm"
+                disabled
+                title="Bulk archive / mark deprecated — coming soon"
+              >
+                Archive
+              </Button>
+            ) : undefined
+          }
+        >
+          {dead && dead.items.length > 0 && (
+            <div
+              className="px-4 py-2 text-[10.5px]"
+              style={{ color: 'var(--fg-subtle)' }}
+            >
+              Planned events not seen in your data recently — often expected.
+            </div>
+          )}
           {deadQuery.isError && (
             <div className="p-4">
               <ErrorState
@@ -511,12 +553,28 @@ function ShadowRow({
 
 const NAME_SEGMENT_SEPARATOR = ':'
 
+// A segment is "empty" when the backend has nothing for it. Empirically a
+// missing segment is encoded as either "" or a literal "0", so a name like
+// "0:forecast_for_4:0" really means ":forecast_for_4:". Treat both forms as
+// empty so they read as intentional structure — never as a confusing "0".
+function isEmptySegment(segment: string): boolean {
+  return segment === '' || segment === '0'
+}
+
+function EmptySegment(): ReactNode {
+  return (
+    <span title="empty segment" style={{ color: 'var(--fg-faint)' }}>
+      ∅
+    </span>
+  )
+}
+
 // Event names are colon-delimited (e.g. "buoy:copy:coordinates"). Render each
 // segment explicitly so that names with an empty segment — like ":forecast_for_4"
 // or a trailing colon — read as intentional structure rather than a glitch.
-function DeadEventName({ name }: { name: string }) {
+function DeadEventName({ name }: { name: string }): ReactNode {
   const segments = name.split(NAME_SEGMENT_SEPARATOR)
-  if (segments.length === 1) return <>{name}</>
+  if (segments.length === 1) return isEmptySegment(name) ? <EmptySegment /> : <>{name}</>
   return (
     <>
       {segments.map((segment, index) => (
@@ -526,13 +584,7 @@ function DeadEventName({ name }: { name: string }) {
               {NAME_SEGMENT_SEPARATOR}
             </span>
           )}
-          {segment ? (
-            <span>{segment}</span>
-          ) : (
-            <span title="empty segment" style={{ color: 'var(--fg-faint)' }}>
-              ∅
-            </span>
-          )}
+          {isEmptySegment(segment) ? <EmptySegment /> : <span>{segment}</span>}
         </Fragment>
       ))}
     </>
@@ -557,7 +609,7 @@ function DeadRow({ item, slug }: { item: DeadEvent; slug: string | undefined }) 
       {item.event_type_name && <Chip size="xs">{item.event_type_name}</Chip>}
       <span
         className="mono shrink-0 text-[10.5px]"
-        style={{ color: isNever ? 'var(--danger)' : 'var(--fg-faint)' }}
+        style={{ color: isNever ? 'var(--warning)' : 'var(--fg-faint)' }}
       >
         {formatRelativeTime(item.last_seen_at)}
       </span>

@@ -146,7 +146,9 @@ describe('ProjectsPage', () => {
     expect(screen.getByText('Production scan')).toBeInTheDocument()
     expect(screen.getByText('Latest scan signal')).toBeInTheDocument()
     expect(screen.getByText('Page View')).toBeInTheDocument()
-    expect(screen.getByText('2 active')).toBeInTheDocument()
+    // H1: the dashboard recent-signal count never speaks of "active".
+    expect(screen.getByText('2 recent')).toBeInTheDocument()
+    expect(screen.queryByText('2 active')).not.toBeInTheDocument()
     expect(screen.getByText('Open Signal')).toBeInTheDocument()
     expect(screen.getByText('Open Project')).toBeInTheDocument()
   })
@@ -273,9 +275,11 @@ describe('ProjectsPage', () => {
     expect(screen.getByText('1 scan configured')).toBeInTheDocument()
     expect(screen.getByText('1 recent signal')).toBeInTheDocument()
     expect(screen.getByText('1 monitoring signal')).toBeInTheDocument()
+    // H1: recent-signal copy drops "active" — the dashboard counts recent signals.
     expect(
-      screen.getByText('1 project currently has active or recent signals'),
+      screen.getByText('1 project currently has recent signals'),
     ).toBeInTheDocument()
+    expect(screen.queryByText(/active or recent signals/)).not.toBeInTheDocument()
   })
 
   it('shows a friendly scan error with an owner-only technical expander (H3)', async () => {
@@ -304,6 +308,92 @@ describe('ProjectsPage', () => {
     // The raw host/port exception and the expander must not exist for viewers.
     expect(screen.queryByText('View technical details')).not.toBeInTheDocument()
     expect(screen.queryByText(/HTTPSConnectionPool/)).not.toBeInTheDocument()
+  })
+
+  it('leads the project card with one attention color and calms the rest (UX-23)', async () => {
+    mockSingleProject()
+
+    renderProjectsPage('owner')
+
+    expect(await screen.findByText('Beta')).toBeInTheDocument()
+    // Live monitoring signals are the needs-attention lead → saturated danger.
+    expect(screen.getByText('1 recent signal')).toHaveStyle({ background: 'var(--danger-soft)' })
+    // Every other supporting status chip renders calm/muted so it does not compete.
+    expect(screen.getByText('99.1% implemented')).toHaveStyle({
+      background: 'var(--surface-hover)',
+    })
+    expect(screen.getByText('1 scan configured')).toHaveStyle({
+      background: 'var(--surface-hover)',
+    })
+    expect(screen.getByText('1 pending review')).toHaveStyle({
+      background: 'var(--surface-hover)',
+    })
+  })
+
+  it('surfaces the latest scan result with rows scanned (UX-18)', async () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation((input: RequestInfo | URL) => {
+      const url =
+        typeof input === 'string'
+          ? input
+          : input instanceof URL
+            ? input.toString()
+            : input.url
+
+      if (url.endsWith('/api/v1/projects')) {
+        return Promise.resolve(jsonResponse([
+          {
+            id: 'proj-3',
+            name: 'Gamma',
+            slug: 'gamma',
+            description: 'Healthy plan with a recent metrics scan.',
+            created_at: '2026-06-01T09:00:00Z',
+            updated_at: '2026-06-10T09:00:00Z',
+            summary: {
+              event_type_count: 2,
+              event_count: 10,
+              active_event_count: 10,
+              implemented_event_count: 10,
+              review_pending_event_count: 0,
+              archived_event_count: 0,
+              variable_count: 2,
+              scan_count: 1,
+              alert_destination_count: 0,
+              monitoring_signal_count: 0,
+              latest_scan_job: {
+                id: 'job-3',
+                scan_config_id: 'scan-3',
+                scan_name: 'Hourly scan',
+                status: 'completed',
+                started_at: '2026-06-10T08:00:00Z',
+                completed_at: '2026-06-10T08:02:00Z',
+                result_summary: {
+                  scan_rows_processed: 12345,
+                  scan_truncated: false,
+                },
+                error_message: null,
+                created_at: '2026-06-10T08:02:00Z',
+              },
+              latest_signal: null,
+            },
+          },
+        ]))
+      }
+
+      if (url.endsWith('/api/v1/data-sources')) {
+        return Promise.resolve(jsonResponse([]))
+      }
+
+      return Promise.reject(new Error(`Unexpected request: ${url}`))
+    })
+
+    renderProjectsPage('owner')
+
+    expect(await screen.findByText('Gamma')).toBeInTheDocument()
+    expect(screen.getByText('Hourly scan')).toBeInTheDocument()
+    // The Latest scan panel reports a real last result, not just a status.
+    const rowsLine = screen.getByText(/rows scanned/)
+    expect(rowsLine).toBeInTheDocument()
+    expect(rowsLine.textContent?.replace(/[^0-9]/g, '')).toBe('12345')
   })
 
   it('shows an error instead of the empty state when the backend is unavailable', async () => {

@@ -20,7 +20,11 @@ export const EventWindowMetricsCell = memo(function EventWindowMetricsCell({
   anomalyIdx?: number | null
   signalTone?: 'danger' | 'warning' | null
 }) {
-  const label = totalCount == null ? '—' : formatCompactCount(totalCount)
+  const noData = totalCount == null
+  // A no-data cell ("—") and a real zero both recede; only a populated count
+  // carries the regular muted weight so live volume stands out.
+  const isEmptyOrZero = noData || totalCount === 0
+  const label = noData ? '—' : formatCompactCount(totalCount)
   const counts = data.map((p) => p.count)
   const sparkColor =
     signalTone === 'danger'
@@ -28,15 +32,24 @@ export const EventWindowMetricsCell = memo(function EventWindowMetricsCell({
       : signalTone === 'warning'
         ? 'var(--warning)'
         : color || 'var(--accent)'
+  const ariaLabel = noData
+    ? `${eventName} metrics: no data for the last 48 hours`
+    : `${eventName} metrics: ${label} events in last 48 hours`
 
   return (
     <Tooltip>
       <TooltipTrigger asChild>
         <button
           type="button"
-          aria-label={`${eventName} metrics: ${label} events in last 48 hours`}
+          aria-label={ariaLabel}
           className="tnum mono grid w-[106px] grid-cols-[60px_38px] items-center gap-2 text-[11.5px] font-medium hover:text-foreground"
-          style={{ color: signalTone ? sparkColor : 'var(--fg-muted)' }}
+          style={{
+            color: signalTone
+              ? sparkColor
+              : isEmptyOrZero
+                ? 'var(--fg-faint)'
+                : 'var(--fg-muted)',
+          }}
         >
           {counts.length > 1 ? (
             <Sparkline
@@ -61,7 +74,7 @@ export const EventWindowMetricsCell = memo(function EventWindowMetricsCell({
             <p className="truncate text-xs font-medium">{eventName}</p>
             <div className="flex items-center justify-between gap-3 text-[11px] text-muted-foreground">
               <span>Last 48 hours</span>
-              <span>{formatCompactCount(totalCount ?? 0)} events</span>
+              <span>{noData ? 'No data' : `${formatCompactCount(totalCount)} events`}</span>
             </div>
           </div>
           <MiniMetricsChart data={data} color={color} height={104} label="Event volume trend" />

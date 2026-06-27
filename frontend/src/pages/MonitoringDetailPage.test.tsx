@@ -337,8 +337,11 @@ describe('MonitoringDetailPage event detail', () => {
   })
 })
 
-function installEventDetailFetch(opts: { metricsData?: EventMetricPoint[] } = {}) {
+function installEventDetailFetch(
+  opts: { metricsData?: EventMetricPoint[]; event?: Record<string, unknown> } = {},
+) {
   const metricsData = opts.metricsData ?? [metricPoint('2026-01-02T00:00:00Z', 200)]
+  const event = opts.event ?? eventFixture()
   return vi.spyOn(globalThis, 'fetch').mockImplementation(async input => {
     const url = String(input)
     if (url.endsWith('/api/v1/projects/demo/event-types')) {
@@ -360,7 +363,7 @@ function installEventDetailFetch(opts: { metricsData?: EventMetricPoint[] } = {}
       })
     }
     if (url.includes('/api/v1/projects/demo/events/event-1/photos')) return mockJsonResponse([])
-    if (url.endsWith('/api/v1/projects/demo/events/event-1')) return mockJsonResponse(eventFixture())
+    if (url.endsWith('/api/v1/projects/demo/events/event-1')) return mockJsonResponse(event)
     if (url.endsWith('/api/v1/projects/demo/scans/scan-1')) {
       return mockJsonResponse({ id: 'scan-1', app_version_column: null })
     }
@@ -395,21 +398,21 @@ describe('MonitoringDetailPage event-detail header and semantics', () => {
     expect(await screen.findByRole('heading', { name: 'checkout_completed' })).toBeInTheDocument()
   })
 
-  it('marks the dead Watch and Implementation CTAs as disabled and coming soon', async () => {
+  it('keeps only live actions in the primary row and tucks coming-soon ones into an overflow menu', async () => {
     installEventDetailFetch()
     renderEventDetail()
     await screen.findByRole('heading', { name: 'checkout_completed' })
 
-    const watch = screen.getByRole('button', { name: 'Watch' })
-    expect(watch).toBeDisabled()
-    expect(watch).toHaveAttribute('title', 'Coming soon')
-
-    const implementation = screen.getByRole('button', { name: 'Implementation' })
-    expect(implementation).toBeDisabled()
-    expect(implementation).toHaveAttribute('title', 'Coming soon')
-
-    // Metrics stays live — it scrolls to the metrics section.
+    // Live actions stay in the primary row, enabled.
     expect(screen.getByRole('button', { name: 'Metrics' })).toBeEnabled()
+    expect(screen.getByRole('button', { name: 'Edit' })).toBeEnabled()
+
+    // Coming-soon actions no longer sit in the primary row as inert disabled buttons.
+    expect(screen.queryByRole('button', { name: 'Watch' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Implementation' })).not.toBeInTheDocument()
+
+    // They live behind an overflow ("…") menu instead.
+    expect(screen.getByRole('button', { name: 'More actions' })).toBeInTheDocument()
   })
 
   it('shows a Plan / Events / <name> breadcrumb for the event scope', async () => {
@@ -436,6 +439,28 @@ describe('MonitoringDetailPage event-detail header and semantics', () => {
       'title',
       'No prior 24h window to compare against',
     )
+  })
+
+  it('de-emphasises and explains empty drift and last-seen stats', async () => {
+    // Visual de-emphasis (var(--fg-faint)) is verified by inspection; the testable
+    // contract is the hover hint that explains the empty "0" / "—" values.
+    installEventDetailFetch({
+      event: { ...eventFixture(), drift_count: 0, last_seen_at: null },
+    })
+    renderEventDetail()
+    await screen.findByRole('heading', { name: 'checkout_completed' })
+
+    expect(screen.getByText('Schema drifts').closest('[title]')).toHaveAttribute(
+      'title',
+      'No schema drifts detected',
+    )
+    // "Last seen" also labels a Properties row, so pick the stat card (the only
+    // "Last seen" wrapped in a title-bearing element).
+    const lastSeenStat = screen
+      .getAllByText('Last seen')
+      .map(node => node.closest('[title]'))
+      .find(Boolean)
+    expect(lastSeenStat).toHaveAttribute('title', 'No hits recorded yet')
   })
 
   it('exposes table semantics for the Fields and Properties tables', async () => {

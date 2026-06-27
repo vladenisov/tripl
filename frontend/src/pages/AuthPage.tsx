@@ -42,6 +42,11 @@ export default function AuthPage() {
   })
 
   const submitLabel = mode === 'login' ? 'Sign In' : 'Create Account'
+  const cardTitle = mode === 'login' ? 'Sign in to tripl' : 'Create your tripl account'
+  const cardDescription =
+    mode === 'login'
+      ? 'Use your account to access the workspace and monitoring tools.'
+      : 'Set up your account to start tracking coverage, monitoring drift, and routing alerts.'
 
   return (
     <div className="min-h-screen bg-[radial-gradient(circle_at_top_left,_rgba(14,165,233,0.15),_transparent_32%),linear-gradient(135deg,_rgba(15,23,42,0.98),_rgba(2,6,23,0.94))] text-slate-50">
@@ -83,9 +88,9 @@ export default function AuthPage() {
           <CardHeader className="border-b border-white/10 px-6 py-6">
             <div className="flex items-center justify-between gap-3">
               <div>
-                <CardTitle as="h2" className="text-2xl text-white">Sign in to tripl</CardTitle>
+                <CardTitle as="h2" className="text-2xl text-white">{cardTitle}</CardTitle>
                 <CardDescription className="mt-2 text-slate-400">
-                  Use your account to access the workspace and monitoring tools.
+                  {cardDescription}
                 </CardDescription>
               </div>
               <div className="rounded-full border border-sky-400/30 bg-sky-400/10 p-2 text-sky-200">

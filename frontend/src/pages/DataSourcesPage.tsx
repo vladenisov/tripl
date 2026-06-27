@@ -510,6 +510,11 @@ function DataSourceCard({
         ? 'attention'
         : 'unverified'
   const dotTone = statusTone === 'success' ? 'success' : statusTone === 'warning' ? 'warning' : 'neutral'
+  // A failed test or a stale "healthy" check both leave the user stuck with a
+  // problem and no obvious next step, so we surface inline recovery actions
+  // (re-test / edit) right where the failure is reported, not just in the
+  // card's management footer.
+  const needsRecovery = stale || ds.last_test_status === 'failed'
 
   return (
     <div
@@ -567,7 +572,7 @@ function DataSourceCard({
 
       {ds.last_test_status && ds.last_test_message && (
         <div
-          className="flex items-center gap-1.5 border-t px-3.5 py-2 text-[11.5px]"
+          className="border-t text-[11.5px]"
           style={{
             borderColor: 'var(--border-subtle)',
             color: stale
@@ -582,23 +587,37 @@ function DataSourceCard({
                 : 'var(--danger-soft)',
           }}
         >
-          {stale ? (
-            <Clock className="h-3 w-3 shrink-0" />
-          ) : ds.last_test_status === 'success' ? (
-            <CheckCircle2 className="h-3 w-3 shrink-0" />
-          ) : (
-            <XCircle className="h-3 w-3 shrink-0" />
-          )}
-          <span className="truncate" title={stale ? ds.last_test_message ?? undefined : undefined}>
-            {stale && lastTestAt ? `Last checked ${formatDate(lastTestAt)}` : ds.last_test_message}
-          </span>
-          {lastTestAt && (
-            <span
-              className="mono ml-auto shrink-0 text-[10.5px]"
-              style={{ color: 'var(--fg-faint)' }}
-            >
-              {stale ? 're-test to confirm' : formatRelative(lastTestAt)}
+          <div className="flex items-center gap-1.5 px-3.5 py-2">
+            {stale ? (
+              <Clock className="h-3 w-3 shrink-0" />
+            ) : ds.last_test_status === 'success' ? (
+              <CheckCircle2 className="h-3 w-3 shrink-0" />
+            ) : (
+              <XCircle className="h-3 w-3 shrink-0" />
+            )}
+            <span className="truncate" title={stale ? ds.last_test_message ?? undefined : undefined}>
+              {stale && lastTestAt ? `Last checked ${formatDate(lastTestAt)}` : ds.last_test_message}
             </span>
+            {lastTestAt && (
+              <span
+                className="mono ml-auto shrink-0 text-[10.5px]"
+                style={{ color: 'var(--fg-faint)' }}
+              >
+                {stale ? 're-test to confirm' : formatRelative(lastTestAt)}
+              </span>
+            )}
+          </div>
+          {canManage && needsRecovery && (
+            <div className="flex items-center gap-1 px-2.5 pb-2.5">
+              <Button variant="outline" size="xs" onClick={onTest} disabled={testing}>
+                <Plug className="h-3 w-3" />
+                {testing ? 'Re-testing…' : 'Re-test connection'}
+              </Button>
+              <Button variant="ghost" size="xs" onClick={onEdit}>
+                <Pencil className="h-3 w-3" />
+                Edit connection
+              </Button>
+            </div>
           )}
         </div>
       )}
