@@ -125,20 +125,33 @@ def _to_response(ds: DataSource) -> DataSourceResponse:
 logger = logging.getLogger(__name__)
 
 
+_TIMEOUT_HINTS = ("timed out", "timeout")
+_UNREACHABLE_HINTS = (
+    "refused",
+    "getaddrinfo",
+    "could not connect",
+    "connection",
+    "name or service",
+    "host",
+    "port",
+)
+_AUTH_HINTS = ("auth", "password", "access denied", "credential", "permission")
+
+
 def _friendly_test_error(exc: Exception) -> str:
     """Map a raw connection-probe exception to a safe, user-facing message.
 
     Never echoes host/port/driver/credential internals — those go to logs only.
     """
     text = str(exc).lower()
-    if "timed out" in text or "timeout" in text:
+    if any(hint in text for hint in _TIMEOUT_HINTS):
         return "Connection test failed: the data source did not respond in time."
-    if any(
-        hint in text
-        for hint in ("refused", "getaddrinfo", "could not connect", "connection", "name or service", "host", "port")
-    ):
-        return "Connection test failed: could not reach the data source — check the host, port, and network."
-    if any(hint in text for hint in ("auth", "password", "access denied", "credential", "permission")):
+    if any(hint in text for hint in _UNREACHABLE_HINTS):
+        return (
+            "Connection test failed: could not reach the data source — "
+            "check the host, port, and network."
+        )
+    if any(hint in text for hint in _AUTH_HINTS):
         return "Connection test failed: authentication was rejected — check the credentials."
     return "Connection test failed. Check the connection settings and try again."
 
