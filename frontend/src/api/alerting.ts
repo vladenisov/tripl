@@ -8,6 +8,7 @@ import type {
   AlertRule,
   AlertRuleFilterPayload,
   AlertRuleSimulateResponse,
+  MonitorDetail,
   MonitorsSummaryResponse,
 } from '../types'
 
@@ -156,6 +157,8 @@ export const alertingApi = {
       destination_id?: string
       rule_id?: string
       scan_config_id?: string
+      date_from?: string
+      date_to?: string
       offset?: number
       limit?: number
     },
@@ -166,6 +169,8 @@ export const alertingApi = {
     if (params?.destination_id) sp.set('destination_id', params.destination_id)
     if (params?.rule_id) sp.set('rule_id', params.rule_id)
     if (params?.scan_config_id) sp.set('scan_config_id', params.scan_config_id)
+    if (params?.date_from) sp.set('date_from', params.date_from)
+    if (params?.date_to) sp.set('date_to', params.date_to)
     if (params?.offset !== undefined) sp.set('offset', String(params.offset))
     if (params?.limit !== undefined) sp.set('limit', String(params.limit))
     const qs = sp.toString()
@@ -174,6 +179,48 @@ export const alertingApi = {
 
   getDelivery: (slug: string, deliveryId: string) =>
     api.get<AlertDeliveryDetail>(`/projects/${slug}/alert-deliveries/${deliveryId}`),
+
+  retryDelivery: (slug: string, deliveryId: string) =>
+    api.post<AlertDeliveryDetail>(
+      `/projects/${slug}/alert-deliveries/${deliveryId}/retry`,
+      undefined,
+    ),
+
+  getMonitor: (slug: string, ruleId: string) =>
+    api.get<MonitorDetail>(`/projects/${slug}/monitors/${ruleId}`),
+
+  getMonitorHistory: (
+    slug: string,
+    ruleId: string,
+    params?: {
+      status?: string
+      channel?: string
+      date_from?: string
+      date_to?: string
+      offset?: number
+      limit?: number
+    },
+  ) => {
+    const sp = new URLSearchParams()
+    sp.set('rule_id', ruleId)
+    if (params?.status) sp.set('status', params.status)
+    if (params?.channel) sp.set('channel', params.channel)
+    if (params?.date_from) sp.set('date_from', params.date_from)
+    if (params?.date_to) sp.set('date_to', params.date_to)
+    if (params?.offset !== undefined) sp.set('offset', String(params.offset))
+    if (params?.limit !== undefined) sp.set('limit', String(params.limit))
+    return api.get<AlertDeliveryListResponse>(
+      `/projects/${slug}/alert-deliveries?${sp.toString()}`,
+    )
+  },
+
+  muteMonitor: (slug: string, ruleId: string, mutedUntil: string) =>
+    api.post<MonitorDetail>(`/projects/${slug}/monitors/${ruleId}/mute`, {
+      muted_until: mutedUntil,
+    }),
+
+  unmuteMonitor: (slug: string, ruleId: string) =>
+    api.post<MonitorDetail>(`/projects/${slug}/monitors/${ruleId}/unmute`, undefined),
 
   listInbox: (
     slug: string,

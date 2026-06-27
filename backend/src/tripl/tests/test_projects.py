@@ -4,6 +4,8 @@ from datetime import UTC, datetime
 import pytest
 from httpx import AsyncClient
 
+from tripl.models.alert_rule import AlertRule
+from tripl.models.alert_rule_state import AlertRuleState
 from tripl.models.event_metric import EventMetric
 from tripl.models.metric_anomaly import MetricAnomaly
 from tripl.models.scan_job import ScanJob
@@ -14,10 +16,14 @@ async def _seed_project_operations(
     *,
     scan_config_id: str,
     event_type_id: str,
+    destination_id: str,
 ) -> None:
     metric_bucket = datetime(2026, 4, 18, 9, tzinfo=UTC)
     job_started_at = datetime(2026, 4, 18, 10, tzinfo=UTC)
     job_completed_at = datetime(2026, 4, 18, 10, 5, tzinfo=UTC)
+    # A firing monitor needs an active scope whose last anomaly is inside the
+    # recent window (summarize_monitor_states uses now - 24h), so anchor it to now.
+    firing_anomaly_bucket = datetime.now(UTC)
 
     async with TestSessionLocal() as session:
         session.add(
@@ -61,6 +67,25 @@ async def _seed_project_operations(
                 error_message=None,
                 created_at=job_completed_at,
                 updated_at=job_completed_at,
+            )
+        )
+        rule_id = uuid.uuid4()
+        session.add(
+            AlertRule(
+                id=rule_id,
+                destination_id=uuid.UUID(destination_id),
+                name="Spike monitor",
+            )
+        )
+        session.add(
+            AlertRuleState(
+                id=uuid.uuid4(),
+                rule_id=rule_id,
+                scan_config_id=uuid.UUID(scan_config_id),
+                scope_type="event_type",
+                scope_ref=event_type_id,
+                is_active=True,
+                last_anomaly_bucket=firing_anomaly_bucket,
             )
         )
         await session.commit()
@@ -244,10 +269,12 @@ async def test_project_summary_counts(client: AsyncClient):
         },
     )
     assert destination_resp.status_code == 201
+    destination_id = destination_resp.json()["id"]
 
     await _seed_project_operations(
         scan_config_id=scan_config_id,
         event_type_id=event_type_id,
+        destination_id=destination_id,
     )
 
     resp = await client.get(f"/api/v1/projects/{slug}")
@@ -264,6 +291,7 @@ async def test_project_summary_counts(client: AsyncClient):
     assert summary["scan_count"] == 1
     assert summary["alert_destination_count"] == 1
     assert summary["monitoring_signal_count"] == 1
+    assert summary["firing_monitor_count"] == 1
     assert summary["latest_scan_job"] == {
         "id": summary["latest_scan_job"]["id"],
         "scan_config_id": scan_config_id,

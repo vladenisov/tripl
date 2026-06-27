@@ -58,6 +58,7 @@ class ProjectSummary(BaseModel):
     scan_count: int = 0
     alert_destination_count: int = 0
     monitoring_signal_count: int = 0
+    firing_monitor_count: int = 0
     latest_scan_job: ProjectLatestScanJob | None = None
     latest_signal: ProjectLatestSignal | None = None
 

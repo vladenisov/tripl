@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import uuid
 from datetime import UTC, datetime, timedelta
 
@@ -10,7 +11,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from tripl.models.alert_correlation_state import AlertCorrelationState
-from tripl.models.alert_delivery import AlertDelivery
+from tripl.models.alert_delivery import AlertDelivery, AlertDeliveryStatus
 from tripl.models.alert_delivery_item import AlertDeliveryItem
 from tripl.models.alert_destination import AlertDestination
 from tripl.models.alert_rule import AlertRule
@@ -25,6 +26,8 @@ from tripl.schemas.alerting import (
     AlertInboxListResponse,
 )
 from tripl.services.project_lookup import get_project_by_slug as _get_project
+
+logger = logging.getLogger(__name__)
 
 INBOX_LOOKBACK_DAYS = 30
 INBOX_MAX_SOURCE_ITEMS = 2000
@@ -166,6 +169,54 @@ async def get_delivery(
         ).model_dump(),
         items=items,
     )
+
+
+async def retry_delivery(
+    session: AsyncSession,
+    slug: str,
+    delivery_id: uuid.UUID,
+) -> AlertDeliveryDetailResponse:
+    """Re-dispatch a failed alert delivery.
+
+    Resets the row to ``pending`` (clearing the prior error and the reaper's
+    attempt counter) and re-enqueues the existing ``send_alert_delivery`` task —
+    the same dispatch path used when the delivery was first created. Only failed
+    deliveries can be retried; a still-``pending`` row is already queued (the
+    reaper backstops it) and a ``sent`` row must not be re-sent.
+    """
+    project = await _get_project(session, slug)
+    delivery = await session.scalar(
+        select(AlertDelivery).where(
+            AlertDelivery.project_id == project.id,
+            AlertDelivery.id == delivery_id,
+        )
+    )
+    if delivery is None:
+        raise HTTPException(status_code=404, detail="Alert delivery not found")
+    if delivery.status != AlertDeliveryStatus.failed.value:
+        raise HTTPException(
+            status_code=409,
+            detail="Only failed deliveries can be retried",
+        )
+
+    delivery.status = AlertDeliveryStatus.pending.value
+    delivery.error_message = None
+    delivery.sent_at = None
+    # Fresh manual attempt: hand the reaper a clean budget so it backstops this
+    # retry if the enqueue below never reaches a worker.
+    delivery.dispatch_attempts = 0
+    # Commit as pending BEFORE enqueueing: if dispatch raises (broker down) the
+    # row is already pending and requeue_stranded_alert_deliveries will pick it
+    # up, mirroring how deliveries are first dispatched.
+    await session.commit()
+
+    # Deferred import to avoid pulling the worker task graph into the API
+    # process at module load (matches scan_service's dispatch sites).
+    from tripl.worker.tasks.alerts import send_alert_delivery
+
+    send_alert_delivery.delay(str(delivery_id))
+
+    return await get_delivery(session, slug, delivery_id)
 
 
 def _effective_inbox_status(state: AlertCorrelationState | None, now: datetime) -> str:

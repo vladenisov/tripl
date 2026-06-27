@@ -48,6 +48,14 @@ export interface DeadEventsResponse {
   days: number
 }
 
+export type DeadEventArchiveStatus = 'archived' | 'deprecated'
+
+export interface ArchiveDeadEventsResponse {
+  event_ids: string[]
+  status: DeadEventArchiveStatus
+  archived_count: number
+}
+
 export interface CoverageBucket {
   bucket: string
   total_count: number
@@ -102,6 +110,17 @@ export const reconciliationApi = {
 
   deadEvents: (slug: string, days: number) =>
     api.get<DeadEventsResponse>(`/projects/${slug}/reconciliation/dead-events?days=${days}`),
+
+  archiveDeadEvents: (
+    slug: string,
+    eventIds: string[],
+    status: DeadEventArchiveStatus = 'archived',
+    branchId?: string | null,
+  ) =>
+    api.post<ArchiveDeadEventsResponse>(
+      withBranch(`/projects/${slug}/reconciliation/dead-events/archive`, branchId),
+      { event_ids: eventIds, status },
+    ),
 
   coverage: (slug: string, days: number) =>
     api.get<CoverageResponse>(`/projects/${slug}/reconciliation/coverage?days=${days}`),

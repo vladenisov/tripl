@@ -1,6 +1,6 @@
 import type { ReactNode } from 'react'
 import { Link } from 'react-router-dom'
-import { useQuery } from '@tanstack/react-query'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   Activity,
   Bell,
@@ -8,12 +8,14 @@ import {
   ChevronRight,
   Loader2,
   Menu,
+  RotateCcw,
   Search,
   Send,
   XCircle,
 } from 'lucide-react'
 import { alertingApi } from '@/api/alerting'
 import { metricsApi } from '@/api/metrics'
+import { getErrorMessage } from '@/lib/utils'
 import { getMonitoringPath } from '@/lib/monitoring'
 import { useCommandPalette } from '@/components/command-palette-context'
 import { Kbd } from '@/components/primitives/kbd'
@@ -307,6 +309,17 @@ function DeliveryNotification({
   slug: string
   delivery: AlertDelivery
 }) {
+  const qc = useQueryClient()
+  // Compact re-queue for a failed delivery. Mirrors the alerting-tab row: the
+  // backend flips it back to 'pending', so we invalidate the notifications
+  // deliveries query (and the full alerting list) to pull the fresh status.
+  const retryMut = useMutation({
+    mutationFn: () => alertingApi.retryDelivery(slug, delivery.id),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['topbarNotifications', slug, 'deliveries'] })
+      qc.invalidateQueries({ queryKey: ['alertDeliveries', slug] })
+    },
+  })
   const StatusIcon = delivery.status === 'sent'
     ? CheckCircle2
     : delivery.status === 'failed'
@@ -317,22 +330,49 @@ function DeliveryNotification({
     : delivery.status === 'failed'
       ? 'var(--danger)'
       : 'var(--warning)'
+  const isFailed = delivery.status === 'failed'
   return (
-    <Link
-      to={`/p/${slug}/settings/alerting`}
-      className="flex gap-2 rounded-md px-1.5 py-2 no-underline transition-colors hover:bg-[var(--surface-hover)]"
-      style={{ color: 'inherit' }}
-    >
-      <StatusIcon className="mt-0.5 h-3.5 w-3.5 shrink-0" style={{ color: statusColor }} />
-      <div className="min-w-0 flex-1">
-        <div className="truncate text-[12px] font-medium">
-          {delivery.rule_name}
-        </div>
-        <div className="mt-0.5 text-[10.5px]" style={{ color: 'var(--fg-subtle)' }}>
-          {delivery.status} · {delivery.channel} · {delivery.matched_count} matched
-        </div>
+    <div className="rounded-md transition-colors hover:bg-[var(--surface-hover)]">
+      <div className="flex items-center gap-1 pr-1">
+        <Link
+          to={`/p/${slug}/settings/alerting`}
+          className="flex min-w-0 flex-1 gap-2 px-1.5 py-2 no-underline"
+          style={{ color: 'inherit' }}
+        >
+          <StatusIcon className="mt-0.5 h-3.5 w-3.5 shrink-0" style={{ color: statusColor }} />
+          <div className="min-w-0 flex-1">
+            <div className="truncate text-[12px] font-medium">
+              {delivery.rule_name}
+            </div>
+            <div className="mt-0.5 text-[10.5px]" style={{ color: 'var(--fg-subtle)' }}>
+              {delivery.status} · {delivery.channel} · {delivery.matched_count} matched
+            </div>
+          </div>
+        </Link>
+        {isFailed && (
+          <button
+            type="button"
+            onClick={() => retryMut.mutate()}
+            disabled={retryMut.isPending}
+            aria-label={`Retry delivery for ${delivery.rule_name}`}
+            className="flex h-6 shrink-0 items-center gap-1 rounded-md px-1.5 text-[10.5px] font-medium transition-colors hover:bg-[var(--surface-active)] disabled:opacity-60"
+            style={{ color: 'var(--fg-muted)' }}
+          >
+            {retryMut.isPending ? (
+              <Loader2 className="h-3 w-3 animate-spin" aria-hidden="true" />
+            ) : (
+              <RotateCcw className="h-3 w-3" aria-hidden="true" />
+            )}
+            Retry
+          </button>
+        )}
       </div>
-    </Link>
+      {isFailed && retryMut.isError && (
+        <p role="alert" className="px-1.5 pb-1.5 text-[10.5px]" style={{ color: 'var(--danger)' }}>
+          {getErrorMessage(retryMut.error)}
+        </p>
+      )}
+    </div>
   )
 }
 

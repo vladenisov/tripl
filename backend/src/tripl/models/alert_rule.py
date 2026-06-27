@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import uuid
+from datetime import datetime
 from typing import TYPE_CHECKING
 
-from sqlalchemy import Boolean, Float, ForeignKey, Index, Integer, String, Text
+from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Index, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from tripl.models.base import Base, TimestampMixin, UUIDMixin
@@ -74,6 +75,14 @@ class AlertRule(UUIDMixin, TimestampMixin, Base):
         db_enum(AlertMessageFormat, "alert_message_format"),
         default=AlertMessageFormat.plain.value,
         server_default=AlertMessageFormat.plain.value,
+    )
+    # Manual snooze for a monitor: while ``muted_until`` is in the future the
+    # monitor is considered muted (mirrors AlertCorrelationState.muted_until).
+    # NULL means not muted. Timed-only, like the inbox mute action; worker-side
+    # suppression of deliveries for muted rules is a separate follow-up.
+    muted_until: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
     )
 
     destination: Mapped[AlertDestination] = relationship(back_populates="rules")

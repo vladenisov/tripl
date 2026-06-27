@@ -13,6 +13,7 @@ const EventsPage = lazy(() => import('./pages/EventsPage'))
 const EventEditPage = lazy(() => import('./pages/events/EventForm'))
 const OverviewPage = lazy(() => import('./pages/OverviewPage'))
 const MonitorsPage = lazy(() => import('./pages/MonitorsPage'))
+const MonitorDetailPage = lazy(() => import('./pages/MonitorDetailPage'))
 const MonitoringDetailPage = lazy(() => import('./pages/MonitoringDetailPage'))
 const ProjectSettingsPage = lazy(() => import('./pages/ProjectSettingsPage'))
 const ReconciliationPage = lazy(() => import('./pages/ReconciliationPage'))
@@ -200,6 +201,7 @@ export default function App() {
             <Route path="/p/:slug/events" element={withSuspense(<EventsPage />)} />
             <Route path="/p/:slug/overview" element={withSuspense(<OverviewPage />)} />
             <Route path="/p/:slug/monitors" element={withSuspense(<MonitorsPage />)} />
+            <Route path="/p/:slug/monitors/:monitorId" element={withSuspense(<MonitorDetailPage />)} />
             <Route path="/p/:slug/reconciliation" element={withSuspense(<ReconciliationPage />)} />
             <Route path="/p/:slug/settings/:tab/:itemId" element={withSuspense(<ProjectSettingsPage />)} />
             <Route path="/p/:slug/settings/:tab" element={withSuspense(<ProjectSettingsPage />)} />

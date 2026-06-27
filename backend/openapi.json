@@ -4222,6 +4222,55 @@
         "title": "DataSourceUpdate",
         "type": "object"
       },
+      "DeadEventArchiveRequest": {
+        "description": "Bulk-retire request for dead events.\n\n``status`` is constrained to the two terminal lifecycle states so the\naction can only deprecate or archive \u2014 never resurrect \u2014 an event.",
+        "properties": {
+          "event_ids": {
+            "items": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "minItems": 1,
+            "title": "Event Ids",
+            "type": "array"
+          },
+          "status": {
+            "$ref": "#/components/schemas/EventStatus",
+            "default": "archived"
+          }
+        },
+        "required": [
+          "event_ids"
+        ],
+        "title": "DeadEventArchiveRequest",
+        "type": "object"
+      },
+      "DeadEventArchiveResponse": {
+        "properties": {
+          "archived_count": {
+            "title": "Archived Count",
+            "type": "integer"
+          },
+          "event_ids": {
+            "items": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "title": "Event Ids",
+            "type": "array"
+          },
+          "status": {
+            "$ref": "#/components/schemas/EventStatus"
+          }
+        },
+        "required": [
+          "event_ids",
+          "status",
+          "archived_count"
+        ],
+        "title": "DeadEventArchiveResponse",
+        "type": "object"
+      },
       "DeadEventItem": {
         "properties": {
           "created_at": {
@@ -7222,6 +7271,214 @@
         "title": "MetricSignalResponse",
         "type": "object"
       },
+      "MonitorDetailResponse": {
+        "description": "A single monitor with the extra context a drill-in detail view needs.",
+        "properties": {
+          "active_scope_count": {
+            "title": "Active Scope Count",
+            "type": "integer"
+          },
+          "cooldown_minutes": {
+            "title": "Cooldown Minutes",
+            "type": "integer"
+          },
+          "destination_enabled": {
+            "title": "Destination Enabled",
+            "type": "boolean"
+          },
+          "destination_id": {
+            "format": "uuid",
+            "title": "Destination Id",
+            "type": "string"
+          },
+          "destination_name": {
+            "title": "Destination Name",
+            "type": "string"
+          },
+          "destination_type": {
+            "title": "Destination Type",
+            "type": "string"
+          },
+          "enabled": {
+            "title": "Enabled",
+            "type": "boolean"
+          },
+          "firing_scope_count": {
+            "title": "Firing Scope Count",
+            "type": "integer"
+          },
+          "include_distribution_drifts": {
+            "title": "Include Distribution Drifts",
+            "type": "boolean"
+          },
+          "include_event_types": {
+            "title": "Include Event Types",
+            "type": "boolean"
+          },
+          "include_events": {
+            "title": "Include Events",
+            "type": "boolean"
+          },
+          "include_project_total": {
+            "title": "Include Project Total",
+            "type": "boolean"
+          },
+          "include_release_regressions": {
+            "title": "Include Release Regressions",
+            "type": "boolean"
+          },
+          "include_schema_drifts": {
+            "title": "Include Schema Drifts",
+            "type": "boolean"
+          },
+          "last_anomaly_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Anomaly At"
+          },
+          "last_delivery_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Delivery At"
+          },
+          "last_delivery_status": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AlertDeliveryStatus"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "last_notified_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Notified At"
+          },
+          "min_expected_count": {
+            "title": "Min Expected Count",
+            "type": "number"
+          },
+          "min_percent_delta": {
+            "title": "Min Percent Delta",
+            "type": "number"
+          },
+          "muted": {
+            "default": false,
+            "title": "Muted",
+            "type": "boolean"
+          },
+          "muted_until": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Muted Until"
+          },
+          "notify_on_drop": {
+            "title": "Notify On Drop",
+            "type": "boolean"
+          },
+          "notify_on_spike": {
+            "title": "Notify On Spike",
+            "type": "boolean"
+          },
+          "rule_enabled": {
+            "title": "Rule Enabled",
+            "type": "boolean"
+          },
+          "rule_id": {
+            "format": "uuid",
+            "title": "Rule Id",
+            "type": "string"
+          },
+          "rule_name": {
+            "title": "Rule Name",
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "firing",
+              "warning",
+              "healthy"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "total_deliveries": {
+            "title": "Total Deliveries",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "rule_id",
+          "rule_name",
+          "destination_id",
+          "destination_name",
+          "destination_type",
+          "enabled",
+          "status",
+          "active_scope_count",
+          "firing_scope_count",
+          "notify_on_spike",
+          "notify_on_drop",
+          "min_percent_delta",
+          "min_expected_count",
+          "cooldown_minutes",
+          "rule_enabled",
+          "destination_enabled",
+          "include_project_total",
+          "include_event_types",
+          "include_events",
+          "include_schema_drifts",
+          "include_distribution_drifts",
+          "include_release_regressions",
+          "total_deliveries"
+        ],
+        "title": "MonitorDetailResponse",
+        "type": "object"
+      },
+      "MonitorMuteRequest": {
+        "properties": {
+          "muted_until": {
+            "format": "date-time",
+            "title": "Muted Until",
+            "type": "string"
+          }
+        },
+        "required": [
+          "muted_until"
+        ],
+        "title": "MonitorMuteRequest",
+        "type": "object"
+      },
       "MonitorSummaryItem": {
         "description": "One alert rule rolled up into a single monitor status.",
         "properties": {
@@ -7285,6 +7542,23 @@
           "min_percent_delta": {
             "title": "Min Percent Delta",
             "type": "number"
+          },
+          "muted": {
+            "default": false,
+            "title": "Muted",
+            "type": "boolean"
+          },
+          "muted_until": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Muted Until"
           },
           "notify_on_drop": {
             "title": "Notify On Drop",
@@ -8444,6 +8718,11 @@
           "event_type_count": {
             "default": 0,
             "title": "Event Type Count",
+            "type": "integer"
+          },
+          "firing_monitor_count": {
+            "default": 0,
+            "title": "Firing Monitor Count",
             "type": "integer"
           },
           "implemented_event_count": {
@@ -13225,6 +13504,58 @@
           }
         },
         "summary": "Get Alert Delivery",
+        "tags": [
+          "alerting"
+        ]
+      }
+    },
+    "/api/v1/projects/{slug}/alert-deliveries/{delivery_id}/retry": {
+      "post": {
+        "operationId": "retry_alert_delivery_api_v1_projects__slug__alert_deliveries__delivery_id__retry_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "slug",
+            "required": true,
+            "schema": {
+              "title": "Slug",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "delivery_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Delivery Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AlertDeliveryDetailResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Retry Alert Delivery",
         "tags": [
           "alerting"
         ]
@@ -18284,6 +18615,172 @@
         ]
       }
     },
+    "/api/v1/projects/{slug}/monitors/{rule_id}": {
+      "get": {
+        "operationId": "get_monitor_api_v1_projects__slug__monitors__rule_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "slug",
+            "required": true,
+            "schema": {
+              "title": "Slug",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "rule_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Rule Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MonitorDetailResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Monitor",
+        "tags": [
+          "alerting"
+        ]
+      }
+    },
+    "/api/v1/projects/{slug}/monitors/{rule_id}/mute": {
+      "post": {
+        "operationId": "mute_monitor_api_v1_projects__slug__monitors__rule_id__mute_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "slug",
+            "required": true,
+            "schema": {
+              "title": "Slug",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "rule_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Rule Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MonitorMuteRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MonitorDetailResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Mute Monitor",
+        "tags": [
+          "alerting"
+        ]
+      }
+    },
+    "/api/v1/projects/{slug}/monitors/{rule_id}/unmute": {
+      "post": {
+        "operationId": "unmute_monitor_api_v1_projects__slug__monitors__rule_id__unmute_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "slug",
+            "required": true,
+            "schema": {
+              "title": "Slug",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "rule_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Rule Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MonitorDetailResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Unmute Monitor",
+        "tags": [
+          "alerting"
+        ]
+      }
+    },
     "/api/v1/projects/{slug}/overview/kpi-series": {
       "get": {
         "operationId": "get_overview_kpi_series_api_v1_projects__slug__overview_kpi_series_get",
@@ -18528,6 +19025,58 @@
           }
         },
         "summary": "List Dead Events",
+        "tags": [
+          "reconciliation"
+        ]
+      }
+    },
+    "/api/v1/projects/{slug}/reconciliation/dead-events/archive": {
+      "post": {
+        "operationId": "archive_dead_events_api_v1_projects__slug__reconciliation_dead_events_archive_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "slug",
+            "required": true,
+            "schema": {
+              "title": "Slug",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DeadEventArchiveRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DeadEventArchiveResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Archive Dead Events",
         "tags": [
           "reconciliation"
         ]

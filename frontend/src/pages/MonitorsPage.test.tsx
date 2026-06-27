@@ -112,7 +112,7 @@ describe('MonitorsPage', () => {
     )
   })
 
-  it('renders monitor rows as non-interactive (H8: no detail route yet)', async () => {
+  it('makes each monitor row drill into its detail route (H8/UX-12)', async () => {
     mockSummary({
       monitors: [
         {
@@ -132,6 +132,8 @@ describe('MonitorsPage', () => {
           min_percent_delta: 0,
           min_expected_count: 0,
           cooldown_minutes: 30,
+          muted: false,
+          muted_until: null,
         },
       ],
       firing_count: 1,
@@ -144,10 +146,47 @@ describe('MonitorsPage', () => {
 
     const row = (await screen.findByText('payment_failed spike')).closest('[role="row"]')
     expect(row).not.toBeNull()
-    // No drill-in target exists, so the row must not imply interactivity.
-    expect(row).toHaveClass('cursor-default')
-    expect(row?.tagName).toBe('DIV')
-    expect(row?.querySelector('a, button')).toBeNull()
+    // The row is now a real drill-in target, so it must read as interactive.
+    expect(row).toHaveClass('cursor-pointer')
+    // A real, keyboard-focusable link carries the navigation.
+    const link = screen.getByRole('link', { name: 'payment_failed spike' })
+    expect(link).toHaveAttribute('href', '/p/demo/monitors/rule-1')
+  })
+
+  it('flags a muted monitor row', async () => {
+    mockSummary({
+      monitors: [
+        {
+          rule_id: 'rule-1',
+          rule_name: 'payment_failed spike',
+          destination_id: 'dest-1',
+          destination_name: 'Main Slack',
+          destination_type: 'slack',
+          enabled: true,
+          status: 'healthy',
+          active_scope_count: 0,
+          firing_scope_count: 0,
+          last_anomaly_at: null,
+          last_notified_at: null,
+          notify_on_spike: true,
+          notify_on_drop: false,
+          min_percent_delta: 0,
+          min_expected_count: 0,
+          cooldown_minutes: 30,
+          muted: true,
+          muted_until: '2099-01-01T00:00:00Z',
+        },
+      ],
+      firing_count: 0,
+      warning_count: 0,
+      healthy_count: 1,
+      total: 1,
+    })
+
+    renderMonitors()
+
+    await screen.findByText('payment_failed spike')
+    expect(screen.getByText('muted')).toBeInTheDocument()
   })
 
   it('shows an empty state with a link to alerting settings', async () => {

@@ -219,7 +219,7 @@ describe('AppSidebar', () => {
     expect(eventTypeLink).toHaveStyle({ background: 'var(--surface-hover)' })
   })
 
-  it('surfaces project-summary counts without leaking the open-signal count onto Monitors', async () => {
+  it('surfaces project-summary counts including the firing-monitor count on Monitors', async () => {
     mockProjectsFetch()
 
     renderSidebar('/p/demo/events')
@@ -233,12 +233,12 @@ describe('AppSidebar', () => {
     expect(screen.getByText('2')).toBeInTheDocument()
     expect(screen.getByText('1')).toBeInTheDocument()
 
-    // H1: the "Monitors" nav item counts MONITORS needing attention (firing
-    // monitors), so it must never surface the open-signal population
-    // (monitoring_signal_count === 9 here). Whether navigation.ts binds the badge
-    // to the firing-monitor count or omits it, the stale signal number must not
-    // appear on the Monitors row.
+    // H1: the "Monitors" nav item counts MONITORS in a firing state
+    // (firing_monitor_count === 3), equal to the Monitors page firing_count — so
+    // it surfaces "3" and never the open-signal population
+    // (monitoring_signal_count === 9 here).
     const monitorsLink = screen.getByRole('link', { name: /Monitors/ })
+    expect(monitorsLink).toHaveTextContent('3')
     expect(monitorsLink).not.toHaveTextContent('9')
   })
 

@@ -9,6 +9,7 @@ from sqlalchemy.orm import sessionmaker
 from tripl.core.adapters.base import ColumnInfo
 from tripl.core.analyzers.preview import build_json_paths_payload, build_preview_payload
 from tripl.models import Base, DataSource, Project, ScanConfig, ScanJob, ScanPreviewJob
+from tripl.worker.tasks import _errors as task_errors
 from tripl.worker.tasks import metrics
 from tripl.worker.tasks import scan as scan_tasks
 
@@ -1191,3 +1192,80 @@ class TestScanConfigsCRUD:
                 assert ds.last_test_message == "Connection successful"
         finally:
             engine.dispose()
+
+    def test_worker_test_connection_sanitizes_probe_failure(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        engine = create_engine(f"sqlite:///{tmp_path / 'test_conn_fail.db'}")
+        try:
+            Base.metadata.create_all(engine)
+            sync_session_factory = sessionmaker(engine, expire_on_commit=False)
+
+            data_source_id = uuid.uuid4()
+            with sync_session_factory() as session:
+                session.add(
+                    DataSource(
+                        id=data_source_id,
+                        name="DS",
+                        db_type="clickhouse",
+                        host="warehouse.internal",
+                        port=8123,
+                        database_name="default",
+                        username="default",
+                        password_encrypted="",
+                    )
+                )
+                session.commit()
+
+            class RefusingAdapter:
+                def test_connection(self) -> bool:
+                    raise ConnectionError(
+                        "clickhouse-connect: Connection refused to "
+                        "warehouse.internal:8123"
+                    )
+
+                def close(self) -> None:
+                    return None
+
+            monkeypatch.setitem(
+                scan_tasks.test_connection.run.__globals__,
+                "_get_sync_session",
+                sync_session_factory,
+            )
+            monkeypatch.setitem(
+                scan_tasks.test_connection.run.__globals__,
+                "_build_adapter",
+                lambda ds: RefusingAdapter(),
+            )
+            monkeypatch.setattr(
+                scan_tasks.cache,
+                "sync_delete_prefix",
+                lambda prefix: None,
+            )
+
+            result = scan_tasks.test_connection.run(str(data_source_id))
+
+            # The returned error is sanitized too — no raw driver text escapes.
+            assert result["success"] is False
+            assert result["error"] == "Scan failed: could not connect to the data source."
+            assert "warehouse.internal" not in str(result["error"])
+
+            with sync_session_factory() as session:
+                ds = session.get(DataSource, data_source_id)
+                assert ds.last_test_status == "failed"
+                assert ds.last_test_at is not None
+                # User-facing probe message carries no host/port/driver detail.
+                assert ds.last_test_message == (
+                    "Scan failed: could not connect to the data source."
+                )
+                assert "warehouse.internal" not in ds.last_test_message
+                assert "8123" not in ds.last_test_message
+                assert "clickhouse" not in ds.last_test_message.lower()
+        finally:
+            engine.dispose()
+
+    def test_scan_error_and_user_facing_error_are_shared_from_errors_module(self) -> None:
+        # scan.py re-exports the canonical implementations from worker.tasks._errors
+        # so the metrics task sanitises with identical logic.
+        assert scan_tasks.ScanError is task_errors.ScanError
+        assert scan_tasks._user_facing_error is task_errors.user_facing_error

@@ -60,6 +60,8 @@ describe('TopBar mobile nav', () => {
 })
 
 type DeliveryOverrides = {
+  id?: string
+  rule_name?: string
   status?: 'pending' | 'sent' | 'failed'
   error_message?: string | null
 }
@@ -183,5 +185,55 @@ describe('TopBar notifications', () => {
       expect(screen.getByText('1 failed')).toBeInTheDocument()
     })
     expect(screen.queryByText(/\d+ active/)).toBeNull()
+  })
+
+  it('offers a compact retry control only on failed delivery notifications', async () => {
+    mockNotificationsFetch(
+      [],
+      [
+        mockDelivery({ id: 'd-failed', rule_name: 'Failing rule', status: 'failed' }),
+        mockDelivery({ id: 'd-sent', rule_name: 'Healthy rule', status: 'sent', error_message: null }),
+      ],
+    )
+
+    renderTopBar()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Notifications' }))
+
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: 'Retry delivery for Failing rule' })).toBeInTheDocument()
+    })
+    // The healthy (sent) delivery exposes no retry affordance.
+    expect(screen.queryByRole('button', { name: 'Retry delivery for Healthy rule' })).toBeNull()
+  })
+
+  it('retries a failed delivery from the notifications menu', async () => {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const url = String(input)
+      if (url.endsWith('/api/v1/projects/demo/anomalies/signals')) {
+        return mockJsonResponse([])
+      }
+      if (url.endsWith('/api/v1/projects/demo/alert-deliveries?limit=5')) {
+        return mockJsonResponse({ items: [mockDelivery({ status: 'failed' })], total: 1 })
+      }
+      if (url.endsWith('/alert-deliveries/delivery-1/retry') && init?.method === 'POST') {
+        return mockJsonResponse({ ...mockDelivery({ status: 'pending', error_message: null }), items: [] })
+      }
+      throw new Error(`Unhandled fetch: ${init?.method} ${url}`)
+    })
+
+    renderTopBar()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Notifications' }))
+
+    const retryButton = await screen.findByRole('button', { name: 'Retry delivery for Spike alerts' })
+    fireEvent.click(retryButton)
+
+    await waitFor(() => {
+      expect(fetchSpy).toHaveBeenCalledWith(
+        '/api/v1/projects/demo/alert-deliveries/delivery-1/retry',
+        expect.objectContaining({ method: 'POST' }),
+      )
+    })
   })
 })

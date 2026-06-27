@@ -27,6 +27,18 @@ const coverage: CoverageResponse = {
   ],
 }
 
+// Every bucket sits at 100% — no per-day variation, so the panel should switch
+// from the dense histogram to a thin steady sparkline.
+const steadyCoverage: CoverageResponse = {
+  days: 14,
+  summary: { total_count: 120, matched_count: 120, coverage_pct: 100 },
+  items: [
+    { bucket: '2026-06-01', total_count: 50, matched_count: 50 },
+    { bucket: '2026-06-02', total_count: 80, matched_count: 80 },
+    { bucket: '2026-06-03', total_count: 60, matched_count: 60 },
+  ],
+}
+
 const shadowNew: ShadowEventsResponse = {
   total: 1,
   new_count: 1,
@@ -268,5 +280,124 @@ describe('ReconciliationPage', () => {
     await waitFor(() => {
       expect(screen.getByRole('button', { name: 'Confirm' })).toBeDisabled()
     })
+  })
+
+  it('shows a thin steady sparkline (not the per-day histogram) when data-match is constant', async () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = String(input)
+      if (url.includes('/reconciliation/coverage')) return jsonResponse(steadyCoverage)
+      if (url.includes('/reconciliation/dead-events')) return jsonResponse(dead)
+      if (url.includes('/reconciliation/shadow-events')) return jsonResponse(emptyShadow)
+      if (url.includes('/event-types')) return jsonResponse([])
+      throw new Error(`Unhandled fetch: ${url}`)
+    })
+    renderPage()
+
+    // The big number still anchors the panel and conveys the level.
+    expect(await screen.findByText('100%')).toBeInTheDocument()
+    // A steady line replaces the histogram when coverage never varies.
+    expect(
+      screen.getByRole('img', { name: /steady at 100% across the window/i }),
+    ).toBeInTheDocument()
+    // No per-bucket histogram bars are rendered in the steady layout.
+    expect(screen.queryByTitle(/2026-06-01:/)).not.toBeInTheDocument()
+  })
+
+  it('keeps the per-day histogram (no steady sparkline) when coverage varies', async () => {
+    mockFetch()
+    renderPage()
+
+    // The default fixture varies (95 / 80 / 50), so the histogram bars remain.
+    expect(await screen.findByTitle('2026-06-01: 95%')).toBeInTheDocument()
+    expect(screen.queryByRole('img', { name: /steady at/i })).not.toBeInTheDocument()
+  })
+
+  it('select-all toggles every dead row and reflects the count on the archive action', async () => {
+    mockFetch()
+    renderPage()
+
+    await screen.findByText('legacy_banner_shown')
+    // With nothing selected the bulk action is present but disabled.
+    expect(screen.getByRole('button', { name: 'Archive selected' })).toBeDisabled()
+
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Select all dead events' }))
+
+    const archiveBtn = screen.getByRole('button', { name: 'Archive 2 selected' })
+    expect(archiveBtn).toBeEnabled()
+    expect(screen.getByRole('checkbox', { name: 'Select legacy_banner_shown' })).toBeChecked()
+    expect(screen.getByRole('checkbox', { name: 'Select promo_code_invalid' })).toBeChecked()
+  })
+
+  it('archives selected dead events and refetches the recon list', async () => {
+    const archiveCalls: Array<{ url: string; body: { event_ids: string[]; status: string } }> = []
+    let deadPayload: DeadEventsResponse = dead
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const url = String(input)
+      if (url.includes('/reconciliation/coverage')) return jsonResponse(coverage)
+      // The archive POST must be matched before the generic dead-events GET.
+      if (url.includes('/reconciliation/dead-events/archive')) {
+        const body = JSON.parse(String(init?.body)) as { event_ids: string[]; status: string }
+        archiveCalls.push({ url, body })
+        // Simulate the server archiving the ids: they drop out of the next list.
+        deadPayload = {
+          ...dead,
+          total: dead.items.length - body.event_ids.length,
+          items: dead.items.filter((d) => !body.event_ids.includes(d.event_id)),
+        }
+        return jsonResponse({
+          event_ids: body.event_ids,
+          status: body.status,
+          archived_count: body.event_ids.length,
+        })
+      }
+      if (url.includes('/reconciliation/dead-events')) return jsonResponse(deadPayload)
+      if (url.includes('/reconciliation/shadow-events')) return jsonResponse(emptyShadow)
+      if (url.includes('/event-types')) return jsonResponse([])
+      throw new Error(`Unhandled fetch: ${url}`)
+    })
+    renderPage()
+
+    fireEvent.click(
+      await screen.findByRole('checkbox', { name: 'Select legacy_banner_shown' }),
+    )
+    fireEvent.click(screen.getByRole('button', { name: 'Archive 1 selected' }))
+
+    await waitFor(() => expect(archiveCalls).toHaveLength(1))
+    expect(archiveCalls[0].url).toContain('/reconciliation/dead-events/archive')
+    expect(archiveCalls[0].body).toEqual({ event_ids: ['d1'], status: 'archived' })
+
+    // After invalidation the archived row is gone; the untouched row survives.
+    await waitFor(() => {
+      expect(screen.queryByText('legacy_banner_shown')).not.toBeInTheDocument()
+    })
+    expect(screen.getByText('promo_code_invalid')).toBeInTheDocument()
+  })
+
+  it('surfaces an error and keeps the selection when archive fails', async () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = String(input)
+      if (url.includes('/reconciliation/coverage')) return jsonResponse(coverage)
+      if (url.includes('/reconciliation/dead-events/archive')) {
+        return new Response(JSON.stringify({ detail: 'Event not found on branch' }), {
+          status: 404,
+          headers: { 'Content-Type': 'application/json' },
+        })
+      }
+      if (url.includes('/reconciliation/dead-events')) return jsonResponse(dead)
+      if (url.includes('/reconciliation/shadow-events')) return jsonResponse(emptyShadow)
+      if (url.includes('/event-types')) return jsonResponse([])
+      throw new Error(`Unhandled fetch: ${url}`)
+    })
+    renderPage()
+
+    fireEvent.click(
+      await screen.findByRole('checkbox', { name: 'Select legacy_banner_shown' }),
+    )
+    fireEvent.click(screen.getByRole('button', { name: 'Archive 1 selected' }))
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('Event not found on branch')
+    // The row and its selection persist so the user can retry.
+    expect(screen.getByText('legacy_banner_shown')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Archive 1 selected' })).toBeInTheDocument()
   })
 })

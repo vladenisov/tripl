@@ -54,6 +54,7 @@ export function formatCount(n: number): string {
 export function buildNavGroups(slug: string, summary: ProjectSummary | undefined): NavGroup[] {
   const base = `/p/${slug}`
   const destinations = summary?.alert_destination_count ?? 0
+  const firingMonitors = summary?.firing_monitor_count ?? 0
 
   return [
     {
@@ -125,10 +126,13 @@ export function buildNavGroups(slug: string, summary: ProjectSummary | undefined
             p.startsWith(`${base}/monitors`)
             || p.startsWith(`${base}/monitoring`)
             || p.startsWith(`${base}/settings/monitoring`),
-          // The sidebar label is "Monitors", so it must NOT surface a *signal*
-          // count (monitoring_signal_count) — that produced "Monitors 5" beside
-          // a Monitors page showing 1 monitor. Until ProjectSummary carries a
-          // firing-monitor count, the badge is omitted (see tripl follow-up).
+          // The badge counts MONITORS in a FIRING state (firing_monitor_count),
+          // never the open-signal population (monitoring_signal_count) — that
+          // produced "Monitors 5" beside a Monitors page showing 1 monitor. This
+          // keeps the badge equal to the Monitors page firing_count; omitted (no
+          // count, no tone) when nothing is firing.
+          count: firingMonitors > 0 ? formatCount(firingMonitors) : undefined,
+          tone: firingMonitors > 0 ? 'danger' : undefined,
         },
         {
           id: 'alerting',
