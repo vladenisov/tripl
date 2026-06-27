@@ -3,9 +3,328 @@ title: Configuration Reference
 sidebar_position: 2
 ---
 
-# Configuration Reference (environment variables)
+# Configuration Reference
 
-🚧 **In progress** (tracked in `tripl-mb9f.12`).
+tripl is configured entirely through environment variables. The backend reads
+them into a single [`Settings`](https://github.com/vladenisov/tripl/blob/main/backend/src/tripl/config.py)
+object (Pydantic `BaseSettings`); values can come from the process environment
+or from a `.env` file in the backend working directory (`model_config = {"env_file": ".env", "extra": "ignore"}`).
+Unknown variables are ignored, so a single `.env` can hold backend, frontend,
+and Docker Compose values side by side.
 
-A single consolidated reference for every environment variable, grouped by
-Database/Broker, Security/Secrets, Observability, and optional features.
+The canonical starting point is
+[`.env.example`](https://github.com/vladenisov/tripl/blob/main/.env.example).
+Copy it to `.env` and fill in real values.
+
+:::note Env-var names
+Every setting below is matched case-insensitively by its uppercased field name:
+the `database_url` field is set with `DATABASE_URL`, `rate_limit_login_per_minute`
+with `RATE_LIMIT_LOGIN_PER_MINUTE`, and so on. Defaults shown are the in-code
+defaults from `Settings`; the production [`compose.yaml`](https://github.com/vladenisov/tripl/blob/main/compose.yaml)
+overrides several of them, as noted.
+:::
+
+## How `DEBUG` changes everything
+
+`DEBUG` is the master switch that decides whether tripl runs in a forgiving
+development posture or a locked-down production one.
+
+- **Default:** `false`.
+- **Accepted spellings** (normalized before validation): `release`, `prod`,
+  `production` are treated as `false`; `dev`, `development` are treated as
+  `true`. Any other value is parsed as a normal boolean.
+- When `DEBUG=false`, the FastAPI lifespan calls
+  `Settings.assert_production_ready()`, which **refuses to start** the process
+  unless required secrets are set (see [Production startup checks](#production-startup-checks-assert_production_ready)).
+- `DEBUG` also affects CORS resolution: in debug, an empty allow-list falls back
+  to `*`.
+
+:::warning
+`assert_production_ready()` runs from the FastAPI app lifespan. CLI tools and
+the test suite that import `Settings` directly are **not** gated by it — only a
+running API process enforces the checks.
+:::
+
+---
+
+## Database & Broker
+
+| Variable | Default | Required in prod? | Purpose |
+| --- | --- | --- | --- |
+| `DATABASE_URL` | `postgresql+asyncpg://tripl:tripl@localhost:5432/tripl` | Yes (must not keep dev creds) | **Async** SQLAlchemy URL used by the FastAPI app (asyncpg driver). |
+| `SYNC_DATABASE_URL` | `postgresql+psycopg://tripl:tripl@localhost:5432/tripl` | Yes (must not keep dev creds) | **Sync** SQLAlchemy URL used by Alembic migrations and the Celery worker (psycopg driver). |
+| `RABBITMQ_URL` | `amqp://guest:guest@localhost:5672//` | Yes (must not keep dev creds) | Celery broker AMQP URL. |
+| `REDIS_URL` | `""` (empty) | No | Cache backend. **Empty disables caching entirely** — every read falls through to PostgreSQL. |
+
+:::danger Async vs sync URLs are not interchangeable
+tripl maintains **two** PostgreSQL URLs pointing at the same database:
+`DATABASE_URL` uses the async `asyncpg` driver for the web app, while
+`SYNC_DATABASE_URL` uses the synchronous `psycopg` driver for Alembic and
+Celery. Keep host, port, database, and credentials identical between them; only
+the `+asyncpg` / `+psycopg` driver suffix differs.
+:::
+
+In the production [`compose.yaml`](https://github.com/vladenisov/tripl/blob/main/compose.yaml)
+these are derived from compose-level secrets (the broker user is `tripl`, not
+`guest`):
+
+```yaml
+DATABASE_URL: postgresql+asyncpg://tripl:${POSTGRES_PASSWORD}@postgres:5432/tripl
+SYNC_DATABASE_URL: postgresql+psycopg://tripl:${POSTGRES_PASSWORD}@postgres:5432/tripl
+RABBITMQ_URL: amqp://tripl:${RABBITMQ_PASSWORD}@rabbitmq:5672//
+REDIS_URL: redis://redis:6379/0
+```
+
+---
+
+## Identity & Secrets
+
+| Variable | Default | Required in prod? | Purpose |
+| --- | --- | --- | --- |
+| `ENCRYPTION_KEY` | `""` | **Yes** | Fernet key encrypting data-source and alert-destination secrets at rest. Must be a valid Fernet key. |
+| `SECRET_KEY` | `""` | **Yes** | Application secret keying the HMAC over session tokens. Rotating it invalidates all existing sessions (users re-login once). |
+| `APP_BASE_URL` | `""` | Effectively yes¹ | Public base URL of the deployment. Used to derive CORS origins when `CORS_ALLOW_ORIGINS` is empty. |
+| `SESSION_COOKIE_NAME` | `tripl_session` | No | Name of the session cookie. |
+| `SESSION_TTL_HOURS` | `168` (24×7) | No | Session lifetime in hours. |
+| `SESSION_COOKIE_SECURE` | `false` | **Yes (must be `true`)** | Marks the session cookie `Secure` so it is only sent over HTTPS. |
+| `DEBUG` | `false` | n/a | Master dev/prod switch — see [above](#how-debug-changes-everything). |
+
+¹ `APP_BASE_URL` is not checked by name, but if `CORS_ALLOW_ORIGINS` is empty
+the production check fails unless `APP_BASE_URL` supplies an origin.
+
+Generate the secrets:
+
+```bash
+# ENCRYPTION_KEY (Fernet)
+python -c 'from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())'
+
+# SECRET_KEY (any long random value)
+python -c 'import secrets; print(secrets.token_urlsafe(32))'
+```
+
+---
+
+## Edge & Hardening
+
+### CORS
+
+| Variable | Default | Required in prod? | Purpose |
+| --- | --- | --- | --- |
+| `CORS_ALLOW_ORIGINS` | `""` | Effectively yes¹ | Comma-separated explicit origin allow-list. |
+
+Effective origins are resolved by `Settings.cors_origins()` in this order:
+
+1. If `CORS_ALLOW_ORIGINS` is set, split on commas (whitespace trimmed).
+2. Else if `DEBUG=true`, fall back to `["*"]`.
+3. Else if `APP_BASE_URL` is set, use it (trailing slash stripped).
+4. Else deny all (`[]`).
+
+### Security headers
+
+| Variable | Default | Required in prod? | Purpose |
+| --- | --- | --- | --- |
+| `SECURITY_HEADERS_ENABLED` | `true` | No | Toggles the security-headers middleware. |
+| `HSTS_ENABLED` | `false` | No | Adds `Strict-Transport-Security`. Only safe behind HTTPS with secure cookies. |
+| `HSTS_MAX_AGE_SECONDS` | `31536000` (1 year) | No | `max-age` for HSTS. |
+| `CONTENT_SECURITY_POLICY` | `""` | No | Optional CSP. Left unset by default. When `SERVE_FRONTEND` is on and this is empty, a SPA-appropriate CSP is applied automatically. |
+
+:::tip
+The production `compose.yaml` sets `SECURITY_HEADERS_ENABLED=true` and defaults
+`HSTS_ENABLED` to `true` (overridable via the `HSTS_ENABLED` env). Enable HSTS
+only once you serve over HTTPS exclusively.
+:::
+
+### Frontend serving
+
+| Variable | Default | Required in prod? | Purpose |
+| --- | --- | --- | --- |
+| `SERVE_FRONTEND` | `false` | No | When `true`, the API also serves the built SPA from `FRONTEND_DIST_DIR`, so production runs a single container. |
+| `FRONTEND_DIST_DIR` | `""` | No | Path to the built SPA assets served when `SERVE_FRONTEND` is on. |
+
+:::note
+In the published image, `SERVE_FRONTEND` / `FRONTEND_DIST_DIR` are baked in —
+the single `app` container serves the JSON API and the SPA on port `8000`. In
+development the Vite dev server serves the SPA with HMR and proxies `/api` to
+the backend, so these stay at their defaults.
+:::
+
+### Rate limiting
+
+| Variable | Default | Required in prod? | Purpose |
+| --- | --- | --- | --- |
+| `RATE_LIMIT_ENABLED` | `true` | No | Master toggle for auth-endpoint rate limiting. |
+| `RATE_LIMIT_LOGIN_PER_MINUTE` | `5` | No | Login attempts per `(ip, route)` per minute. `0` disables this limit. |
+| `RATE_LIMIT_REGISTER_PER_HOUR` | `3` | No | Registrations per `(ip, route)` per hour. `0` disables this limit. |
+| `RATE_LIMIT_TRUST_FORWARDED_FOR` | `false` | No | Derive client IP from `X-Real-IP` / leftmost `X-Forwarded-For` instead of the socket peer. |
+
+:::danger Only trust forwarded headers behind a trusted proxy
+The limiter uses an in-memory token bucket **per worker**. Leave
+`RATE_LIMIT_TRUST_FORWARDED_FOR=false` (the default) whenever the API is the
+edge — including the consolidated single container. Enable it only when a
+trusted proxy/LB overwrites `X-Real-IP` on every request; a raw, attacker-
+controlled `X-Forwarded-For` on a directly exposed API lets a caller rotate it
+per request and bypass the limit. For multi-worker deployments, front the API
+with a shared limiter or LB.
+:::
+
+---
+
+## Observability
+
+| Variable | Default | Required in prod? | Purpose |
+| --- | --- | --- | --- |
+| `REQUEST_ID_HEADER` | `X-Request-ID` | No | Header used to read/emit a per-request correlation ID. |
+| `LOG_LEVEL` | `INFO` | No | Log level (uppercased and trimmed). |
+| `LOG_JSON` | `false` | No | Emit one-line JSON logs instead of plain text. Compose/k8s should enable this. |
+| `PROMETHEUS_METRICS_ENABLED` | `false` | No | Exposes the `/metrics` endpoint and Celery task instrumentation. |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | `""` | No | Setting a non-empty value opts the API and worker into FastAPI/SQLAlchemy/Celery auto-instrumentation via an OTLP exporter. No-op when blank or when the `opentelemetry-*` packages are absent. |
+| `OTEL_SERVICE_NAME` | `tripl` | No | Service name reported by the OTLP exporter. |
+
+:::tip
+`compose.yaml` defaults `LOG_JSON` to `true` (overridable). Expose `/metrics`
+only on an internal-only ingress path or scrape via a sidecar.
+:::
+
+---
+
+## Optional features
+
+These groups are off (or unconfigured) by default. Several enable sending plan
+content or photos to external providers, so they are explicitly opt-in.
+
+### Hybrid knowledge search (embeddings)
+
+Lexical/fuzzy search runs locally against PostgreSQL with no extra config.
+Embeddings are opt-in because indexed text may include internal tracking-plan
+content sent to the configured provider.
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `SEARCH_EMBEDDINGS_ENABLED` | `false` | Enables embedding-backed search. |
+| `SEARCH_EMBEDDING_PROVIDER` | `openai` | Embedding provider. |
+| `SEARCH_EMBEDDING_MODEL` | `text-embedding-3-small` | Embedding model. |
+| `SEARCH_EMBEDDING_DIMENSIONS` | `1536` | Vector dimensions. |
+| `SEARCH_EMBEDDING_API_KEY` | `""` | Provider API key; falls back to `OPENAI_API_KEY` if empty. |
+| `OPENAI_API_KEY` | `""` | Shared OpenAI key used as fallback for search embeddings and AI features. |
+
+### AI features (LLM descriptions, Q&A)
+
+Disabled by default because plan content (event names, descriptions, field
+names) is sent to the configured provider when enabled.
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `AI_ENABLED` | `false` | Master toggle for LLM-powered features. |
+| `AI_BASE_URL` | `https://api.openai.com/v1` | OpenAI-compatible base URL. |
+| `AI_MODEL` | `gpt-4o-mini` | Chat/completion model. |
+| `AI_API_KEY` | `""` | Provider API key; falls back to `OPENAI_API_KEY` if empty. |
+| `AI_TIMEOUT_SECONDS` | `30` | Per-request timeout. |
+| `AI_MAX_OUTPUT_TOKENS` | `700` | Output token cap. |
+
+### Email alerts (SMTP)
+
+Leaving `SMTP_HOST` blank disables email destinations: creating them still
+works, but sends fail with a friendly error pointing at this config. The worker
+reads these at send time, so changes take effect without re-creating
+destinations.
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `SMTP_HOST` | `""` | SMTP server host. Blank disables email delivery. |
+| `SMTP_PORT` | `587` | SMTP port. |
+| `SMTP_USERNAME` | `""` | SMTP auth username. |
+| `SMTP_PASSWORD` | `""` | SMTP auth password. |
+| `SMTP_USE_TLS` | `true` | Use STARTTLS/TLS. |
+| `SMTP_FROM_ADDRESS` | `""` | Default `From:` address when a destination doesn't override it. |
+
+### Event photo storage
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `PHOTO_STORAGE_BACKEND` | `local` | `local` (filesystem, served via authenticated API endpoint) or `gcs` (Google Cloud Storage). |
+| `PHOTO_LOCAL_DIR` | `./var/photos` | Directory for the `local` backend. |
+| `PHOTO_MAX_SIZE_MB` | `10` | Max upload size in MB. |
+| `PHOTO_ALLOWED_MIME` | `image/jpeg,image/png,image/gif,image/webp` | Allowed MIME types (comma-separated). |
+| `GCS_PHOTO_BUCKET` | `""` | GCS bucket for the `gcs` backend. |
+| `GCS_PHOTO_CREDENTIALS_PATH` | `""` | Service-account JSON path. Empty falls back to Application Default Credentials. |
+| `GCS_PHOTO_PUBLIC` | `false` | Return public URLs instead of time-limited signed URLs. |
+| `GCS_PHOTO_SIGNED_URL_TTL_SECONDS` | `3600` | Signed-URL lifetime when not public. |
+
+### Warehouse query row caps
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `SCAN_ROW_LIMIT_DEFAULT` | `50000` | Default row cap for scan/replay when no scan-config override is set. |
+| `METRICS_ROW_LIMIT_DEFAULT` | `100000` | Default row cap for metrics queries when no override is set. |
+
+---
+
+## Production startup checks (`assert_production_ready`)
+
+When `DEBUG=false`, the FastAPI lifespan refuses to start and raises a
+`RuntimeError` listing every problem if any of the following hold:
+
+1. **`ENCRYPTION_KEY` is empty** — data-source and alert-destination secrets
+   would be stored as plaintext.
+2. **`ENCRYPTION_KEY` is not a valid Fernet key** — it is validated by
+   constructing `Fernet(key)`.
+3. **`SESSION_COOKIE_SECURE` is false** — session cookies would be sent over
+   plain HTTP.
+4. **`SECRET_KEY` is empty** — session-token hashes would be unkeyed and
+   guessable.
+5. **Resolved CORS origins are empty** — no browser could call the API. Set
+   `CORS_ALLOW_ORIGINS` or `APP_BASE_URL`.
+6. **Resolved CORS origins are exactly `["*"]`** — browsers reject credentialed
+   (cookie) requests against a wildcard origin, breaking session auth. Set an
+   explicit origin.
+7. **`DATABASE_URL`, `SYNC_DATABASE_URL`, or `RABBITMQ_URL` still contain
+   dev-default credentials** — any of the markers `tripl:tripl` or `guest:guest`
+   surviving into a non-debug deploy fails the check.
+
+:::note
+These checks are pure secret/edge hygiene. Optional-feature variables
+(AI, search, SMTP, photo storage, OTEL, Prometheus) are **not** validated here —
+they fail gracefully or stay disabled when unconfigured.
+:::
+
+---
+
+## Compose / deployment variables
+
+These are consumed by Docker Compose and the image, not by the backend
+`Settings` object. They appear in
+[`.env.example`](https://github.com/vladenisov/tripl/blob/main/.env.example) so
+one `.env` covers the whole stack.
+
+| Variable | Default | Used by | Purpose |
+| --- | --- | --- | --- |
+| `POSTGRES_USER` | `tripl` | PostgreSQL container | DB superuser (compose uses `tripl`). |
+| `POSTGRES_DB` | `tripl` | PostgreSQL container | Database name. |
+| `POSTGRES_PASSWORD` | — (required) | Compose | Builds the DB URLs. The prod stack **requires** a non-default value. |
+| `RABBITMQ_PASSWORD` | — (required) | Compose | Builds `RABBITMQ_URL`; broker user is `tripl`. |
+| `TRIPL_IMAGE` | `ghcr.io/vladenisov/tripl` | Compose | Published image to run. |
+| `TRIPL_VERSION` | `latest` | Compose | Image tag — pin to a released tag in production. |
+| `API_PORT` | `8000` | Dev tooling | Backend port for local/dev runs (the production `compose.yaml` hardcodes `8000:8000`). |
+| `VITE_API_URL` | `http://127.0.0.1:8000` | Frontend build | Base URL the SPA calls; baked in at build time. |
+
+:::warning Compose enforces required secrets too
+In `compose.yaml`, `POSTGRES_PASSWORD`, `RABBITMQ_PASSWORD`, `ENCRYPTION_KEY`,
+`SECRET_KEY`, and `APP_BASE_URL` use the `${VAR:?...}` form, so `docker compose`
+fails fast with a clear message if any is unset — before the app even runs its
+own `assert_production_ready()` checks.
+:::
+
+---
+
+## See also
+
+- [Deployment](./deployment.md) — bringing the stack up with the production
+  compose file.
+- [Release process](./release.md) — building and publishing the image with
+  `bin/release.sh`.
+- [Administration](../administer/admin-guide.md) — day-2 operations.
+- [Troubleshooting](../use/troubleshooting.md) — diagnosing common failures.
+- Source of truth:
+  [`config.py`](https://github.com/vladenisov/tripl/blob/main/backend/src/tripl/config.py),
+  [`.env.example`](https://github.com/vladenisov/tripl/blob/main/.env.example),
+  [`compose.yaml`](https://github.com/vladenisov/tripl/blob/main/compose.yaml).
