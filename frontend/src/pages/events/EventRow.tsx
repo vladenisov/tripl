@@ -18,6 +18,7 @@ import { Chip } from '@/components/primitives/chip'
 import { Dot } from '@/components/primitives/dot'
 import { EVENT_STATUS_DOT_TONE, EVENT_STATUS_LABELS } from '@/lib/eventStatus'
 import type { EventStatus } from '@/lib/eventStatus'
+import { SIGNAL_LEVEL, rowSignalLevel } from '@/lib/statusLexicon'
 import { resolveMetaFieldHref } from '@/lib/metaFields'
 import { VariableValueContextTrigger } from '@/components/variable-value-contexts'
 import { EventDriftBadge } from './EventDriftBadge'
@@ -150,11 +151,8 @@ export const EventRow = memo(function EventRow({
     zIndex: isDragging ? 1 : undefined,
   }
   const anomalyIdx = windowData.findIndex((p) => p.is_anomaly)
-  const signalTone: 'danger' | 'warning' | null = rowSignal
-    ? rowSignal.state === 'latest_scan'
-      ? 'danger'
-      : 'warning'
-    : null
+  const signalLevel = rowSignal ? rowSignalLevel(rowSignal.state) : null
+  const signalTone: 'danger' | 'warning' | null = signalLevel?.tone ?? null
   const statusTone = EVENT_STATUS_DOT_TONE[(ev.status as EventStatus) ?? 'draft'] ?? 'neutral'
 
   return (
@@ -242,8 +240,8 @@ export const EventRow = memo(function EventRow({
       {!hideMonitor && (
         <TableCell>
           {rowSignal ? (
-            <Chip tone={signalTone ?? 'danger'} size="xs">
-              {signalTone === 'warning' ? 'Warning' : 'Firing'}
+            <Chip tone={signalLevel?.tone ?? 'danger'} size="xs">
+              {signalLevel?.label ?? SIGNAL_LEVEL.firing.label}
             </Chip>
           ) : (
             <NoData title="No active alerts" />

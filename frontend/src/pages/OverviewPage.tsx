@@ -14,11 +14,12 @@ import { metricsApi } from '@/api/metrics'
 import { projectsApi } from '@/api/projects'
 import { ErrorState } from '@/components/error-state'
 import { Dot } from '@/components/primitives/dot'
-import { MiniStat, MiniStatDivider, type MiniStatTone } from '@/components/primitives/mini-stat'
+import { MiniStat, MiniStatDivider } from '@/components/primitives/mini-stat'
 import { Sparkline } from '@/components/primitives/sparkline'
 import { PageHead, Panel } from '@/components/settings/kit'
 import { useTheme } from '@/components/theme-provider'
 import { formatPlanCoverage, planCoverageRatio } from '@/lib/coverage'
+import { coverageTone, dataSourceHealthLexeme, type StatusLexeme } from '@/lib/statusLexicon'
 import { formatDateTime, formatRelativeTime } from '@/lib/datetime'
 import { getMonitoringPath } from '@/lib/monitoring'
 import { friendlyScanError } from '@/lib/scanError'
@@ -366,12 +367,6 @@ export default function OverviewPage() {
   )
 }
 
-function coverageTone(pct: number | undefined): MiniStatTone {
-  if (pct == null) return 'neutral'
-  if (pct >= 90) return 'success'
-  if (pct >= 70) return 'warning'
-  return 'danger'
-}
 
 // Text alternative for the volume sparkline (issue M8): the SVG itself is
 // aria-hidden, so the surrounding role="img" needs an accessible summary.
@@ -473,17 +468,10 @@ function ActivityRow({ item }: { item: ActivityItem }) {
 // A green "healthy" badge over a months-old check is misleading. When the last
 // successful test is stale we downgrade the label to "stale" and the recency is
 // always made explicit ("checked 2mo ago" + an absolute timestamp tooltip) (M1).
-function sourceHealth(
-  source: DataSource,
-  now: number = Date.now(),
-): { tone: 'success' | 'danger' | 'warning' | 'neutral'; label: string } {
-  if (source.last_test_status === 'failed') return { tone: 'danger', label: 'failing' }
-  if (source.last_test_status === 'success') {
-    const checkedAt = source.last_test_at ? Date.parse(source.last_test_at) : NaN
-    const isStale = Number.isNaN(checkedAt) || now - checkedAt > SOURCE_HEALTH_STALE_MS
-    return isStale ? { tone: 'warning', label: 'stale' } : { tone: 'success', label: 'healthy' }
-  }
-  return { tone: 'neutral', label: 'untested' }
+function sourceHealth(source: DataSource, now: number = Date.now()): StatusLexeme {
+  const checkedAt = source.last_test_at ? Date.parse(source.last_test_at) : NaN
+  const isStale = Number.isNaN(checkedAt) || now - checkedAt > SOURCE_HEALTH_STALE_MS
+  return dataSourceHealthLexeme(source.last_test_status, isStale)
 }
 
 function SourceRow({ source }: { source: DataSource }) {

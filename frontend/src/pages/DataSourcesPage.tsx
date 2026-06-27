@@ -32,6 +32,7 @@ import {
   Trash2,
   XCircle,
 } from 'lucide-react'
+import { dataSourceHealthLexeme } from '@/lib/statusLexicon'
 import { getErrorMessage } from '@/lib/utils'
 
 const EMPTY_DATA_SOURCES: DataSource[] = []
@@ -493,23 +494,13 @@ function DataSourceCard({
 }) {
   const lastTestAt = ds.last_test_at
   const stale = isHealthCheckStale(ds)
-  const statusTone: 'success' | 'warning' | 'neutral' =
-    ds.last_test_status === 'success'
-      ? stale
-        ? 'warning'
-        : 'success'
-      : ds.last_test_status === 'failed'
-        ? 'warning'
-        : 'neutral'
-  const statusLabel =
-    ds.last_test_status === 'success'
-      ? stale
-        ? 'stale'
-        : 'healthy'
-      : ds.last_test_status === 'failed'
-        ? 'attention'
-        : 'unverified'
-  const dotTone = statusTone === 'success' ? 'success' : statusTone === 'warning' ? 'warning' : 'neutral'
+  // Canonical {label, tone} from the status lexicon: a failed test reads red
+  // (an error — matching the inline failure banner below), a stale "healthy"
+  // check reads amber. Keeps this card in step with the overview list.
+  const health = dataSourceHealthLexeme(ds.last_test_status, stale)
+  const statusTone = health.tone
+  const statusLabel = health.label
+  const dotTone = health.tone
   // A failed test or a stale "healthy" check both leave the user stuck with a
   // problem and no obvious next step, so we surface inline recovery actions
   // (re-test / edit) right where the failure is reported, not just in the

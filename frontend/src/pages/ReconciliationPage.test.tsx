@@ -21,7 +21,7 @@ const coverage: CoverageResponse = {
   days: 14,
   summary: { total_count: 132, matched_count: 124, coverage_pct: 94.2 },
   items: [
-    { bucket: '2026-06-01', total_count: 100, matched_count: 95 }, // 95% accent
+    { bucket: '2026-06-01', total_count: 100, matched_count: 95 }, // 95% success
     { bucket: '2026-06-02', total_count: 100, matched_count: 80 }, // 80% warning
     { bucket: '2026-06-03', total_count: 100, matched_count: 50 }, // 50% danger
   ],

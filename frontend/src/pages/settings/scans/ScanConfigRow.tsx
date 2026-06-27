@@ -1,34 +1,36 @@
 import type { DataSource, ScanConfig } from '@/types'
-import { Chip, type ChipTone } from '@/components/primitives/chip'
+import { Chip } from '@/components/primitives/chip'
 import { Ban, CheckCircle2, Clock, Loader2, MinusCircle, XCircle, type LucideIcon } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { friendlyScanError } from '@/lib/scanError'
+import { SCAN_RUN_STATUS } from '@/lib/statusLexicon'
 import { SrcIcon } from './scanLayout'
 import { type RunPillStatus } from './scanRunStatus'
 import type { ScanRunInfo } from './scanUtils'
 
-const RUN_PILL_META: Record<RunPillStatus, { tone: ChipTone; label: string; icon: LucideIcon; spin?: boolean }> = {
-  succeeded: { tone: 'success', label: 'Succeeded', icon: CheckCircle2 },
-  failed: { tone: 'danger', label: 'Failed', icon: XCircle },
-  running: { tone: 'info', label: 'Running', icon: Loader2, spin: true },
-  pending: { tone: 'neutral', label: 'Queued', icon: Clock },
-  cancelled: { tone: 'neutral', label: 'Cancelled', icon: Ban },
-  never: { tone: 'neutral', label: 'Never run', icon: MinusCircle },
+// Icon + spin are presentation; the word + colour come from the status lexicon.
+const RUN_PILL_ICON: Record<RunPillStatus, { icon: LucideIcon; spin?: boolean }> = {
+  succeeded: { icon: CheckCircle2 },
+  failed: { icon: XCircle },
+  running: { icon: Loader2, spin: true },
+  pending: { icon: Clock },
+  cancelled: { icon: Ban },
+  never: { icon: MinusCircle },
 }
 
 // Status pill rendered as label text + icon shape. `title` surfaces the friendly
 // failure message on hover; it never carries raw backend internals.
 export function RunStatusPill({ status, title }: { status: RunPillStatus; title?: string }) {
-  const meta = RUN_PILL_META[status]
-  const Icon = meta.icon
+  const { tone, label } = SCAN_RUN_STATUS[status]
+  const { icon: Icon, spin } = RUN_PILL_ICON[status]
   return (
     <Chip
-      tone={meta.tone}
+      tone={tone}
       size="xs"
       title={title}
-      icon={<Icon className={cn('size-2.5', meta.spin && 'animate-spin')} aria-hidden="true" />}
+      icon={<Icon className={cn('size-2.5', spin && 'animate-spin')} aria-hidden="true" />}
     >
-      {meta.label}
+      {label}
     </Chip>
   )
 }

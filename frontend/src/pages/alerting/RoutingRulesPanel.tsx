@@ -1,22 +1,14 @@
 import { useQuery } from '@tanstack/react-query'
 import { alertingApi } from '@/api/alerting'
-import { Chip, type ChipTone } from '@/components/primitives/chip'
-import { Dot, type DotTone } from '@/components/primitives/dot'
+import { Chip } from '@/components/primitives/chip'
+import { Dot } from '@/components/primitives/dot'
 import { Panel } from '@/components/settings/kit'
 import { formatRelativeTime } from '@/lib/datetime'
-import type { MonitorStatus, MonitorSummaryItem } from '@/types'
-
-const STATUS_TONE: Record<MonitorStatus, DotTone & ChipTone> = {
-  firing: 'danger',
-  warning: 'warning',
-  healthy: 'success',
-}
-
-const STATUS_LABEL: Record<MonitorStatus, string> = {
-  firing: 'Firing',
-  warning: 'Warning',
-  healthy: 'Healthy',
-}
+import {
+  MONITOR_STATUS_LABEL as STATUS_LABEL,
+  MONITOR_STATUS_TONE as STATUS_TONE,
+} from '@/lib/statusLexicon'
+import type { MonitorSummaryItem } from '@/types'
 
 
 function conditionOf(m: MonitorSummaryItem): string {

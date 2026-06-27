@@ -18,18 +18,17 @@ import { Checkbox } from '@/components/ui/checkbox'
 import { useActiveBranchId } from '@/hooks/useBranch'
 import { formatRelativeTime } from '@/lib/datetime'
 import { getMonitoringPath } from '@/lib/monitoring'
+import { coverageTone, toneVar } from '@/lib/statusLexicon'
 
 const COVERAGE_DAYS = 14 as const
 const DEAD_DAYS = 30 as const
 const SHADOW_TABS: readonly ShadowEventStatus[] = ['new', 'accepted', 'dismissed']
 
-const COVERAGE_GOOD = 90
-const COVERAGE_WARN = 70
-
-function coverageTone(pct: number): string {
-  if (pct >= COVERAGE_GOOD) return 'var(--accent)'
-  if (pct >= COVERAGE_WARN) return 'var(--warning)'
-  return 'var(--danger)'
+// Coverage heatmap colour. Resolved through the shared status lexicon so good
+// coverage reads green (success) — matching the overview KPI — instead of the
+// brand/accent it painted before.
+function coverageColor(pct: number): string {
+  return toneVar(coverageTone(pct))
 }
 
 function bucketPct(bucket: CoverageBucket): number {
@@ -486,7 +485,7 @@ function CoverageStrip({ items, days }: { items: CoverageBucket[]; days: number 
         >
           <div
             className="h-[2px] w-full rounded-full"
-            style={{ background: coverageTone(bucketPct(items[0])), opacity: 0.85 }}
+            style={{ background: coverageColor(bucketPct(items[0])), opacity: 0.85 }}
           />
         </div>
       ) : (
@@ -500,7 +499,7 @@ function CoverageStrip({ items, days }: { items: CoverageBucket[]; days: number 
                 className="flex-1 rounded-[2px]"
                 style={{
                   height: `${Math.max(pct, 2)}%`,
-                  background: coverageTone(pct),
+                  background: coverageColor(pct),
                   opacity: 0.85,
                 }}
               />

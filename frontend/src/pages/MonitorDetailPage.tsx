@@ -5,34 +5,16 @@ import { AlertTriangle, ArrowLeft, Bell, BellOff, RefreshCw, Settings2 } from 'l
 import { alertingApi } from '@/api/alerting'
 import { InfoRow, PageHead, Panel } from '@/components/settings/kit'
 import { ErrorState } from '@/components/error-state'
-import { Chip, type ChipTone } from '@/components/primitives/chip'
-import { Dot, type DotTone } from '@/components/primitives/dot'
+import { Chip } from '@/components/primitives/chip'
+import { Dot } from '@/components/primitives/dot'
 import { MiniStat, MiniStatDivider } from '@/components/primitives/mini-stat'
 import { formatDateTime, formatRelativeTime } from '@/lib/datetime'
-import type {
-  AlertDelivery,
-  AlertDeliveryStatus,
-  MonitorDetail,
-  MonitorStatus,
-} from '@/types'
-
-const STATUS_TONE: Record<MonitorStatus, DotTone & ChipTone> = {
-  firing: 'danger',
-  warning: 'warning',
-  healthy: 'success',
-}
-
-const STATUS_LABEL: Record<MonitorStatus, string> = {
-  firing: 'Firing',
-  warning: 'Warning',
-  healthy: 'Healthy',
-}
-
-const DELIVERY_TONE: Record<AlertDeliveryStatus, ChipTone> = {
-  pending: 'info',
-  sent: 'success',
-  failed: 'danger',
-}
+import {
+  ALERT_DELIVERY_TONE as DELIVERY_TONE,
+  MONITOR_STATUS_LABEL as STATUS_LABEL,
+  MONITOR_STATUS_TONE as STATUS_TONE,
+} from '@/lib/statusLexicon'
+import type { AlertDelivery, MonitorDetail } from '@/types'
 
 const HOUR_MS = 60 * 60 * 1000
 
