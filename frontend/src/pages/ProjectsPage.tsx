@@ -41,7 +41,6 @@ import {
   Activity,
   AlertTriangle,
   ArrowRight,
-  BadgeCheck,
   BellRing,
   FolderKanban,
   PlayCircle,
@@ -117,9 +116,6 @@ export default function MainPage() {
   const projectsNeedingReview = projects.filter(
     (project) => project.summary.review_pending_event_count > 0,
   ).length
-  const projectsReady = projects.filter(
-    (project) => getProjectStatus(project.summary).label === 'Ready',
-  ).length
   const projectsWithLatestScanJob = projects.filter(
     (project) => project.summary.latest_scan_job != null,
   ).length
@@ -178,63 +174,35 @@ export default function MainPage() {
     <div className="space-y-6">
       {dialog}
 
-      {/* Compact header */}
-      <div className="flex flex-wrap items-end justify-between gap-6">
+      {/* Title + create actions. Stats moved into the single stat row below so
+          the header no longer doubles as a stat strip (UX-10). */}
+      <div className="flex flex-wrap items-start justify-between gap-4">
         <div className="min-w-0 space-y-2">
-          <div className="flex items-baseline gap-2.5">
-            <h1 className="m-0 text-[20px] font-semibold tracking-[-0.01em]">
-              Analytics workspace
-            </h1>
-            <span className="mono text-[13px]" style={{ color: 'var(--fg-subtle)' }}>
-              {portfolio.projectCount}
-            </span>
-          </div>
+          <h1 className="m-0 text-[20px] font-semibold tracking-[-0.01em]">
+            Analytics workspace
+          </h1>
           <p className="max-w-2xl text-[12.5px]" style={{ color: 'var(--fg-subtle)' }}>
             See which tracking plans are filling out, which projects still need review, and how much
             scan and alerting coverage exists across the workspace.
           </p>
         </div>
-        <div className="flex items-center gap-4">
-          <MiniStat label="Projects" value={String(portfolio.projectCount)} />
-          <MiniStatDivider />
-          <MiniStat
-            label="Coverage"
-            value={coverageDisplay}
-            delta={portfolio.activeEventCount > 0 ? `${portfolio.implementedEventCount}/${portfolio.activeEventCount}` : undefined}
-            tone={coverageRatio >= 0.8 ? 'success' : coverageRatio >= 0.5 ? 'warning' : 'neutral'}
-          />
-          <MiniStatDivider />
-          <MiniStat
-            label="Signals"
-            value={String(portfolio.monitoringSignalCount)}
-            delta={portfolio.monitoringSignalCount > 0 ? 'live' : 'quiet'}
-            tone={portfolio.monitoringSignalCount > 0 ? 'danger' : 'success'}
-            pulse={portfolio.monitoringSignalCount > 0}
-          />
-          <MiniStatDivider />
-          <MiniStat
-            label="Data sources"
-            value={dataSourceValue}
-            tone={dataSourcesQuery.isError ? 'danger' : 'neutral'}
-          />
-          {canCreateProject && (
-            <>
-              <Button
-                size="sm"
-                variant="outline"
-                onClick={() => demoMut.mutate()}
-                disabled={demoMut.isPending}
-              >
-                <Sparkles className="h-3.5 w-3.5" />
-                {demoMut.isPending ? 'Generating…' : 'Generate demo project'}
-              </Button>
-              <Button size="sm" onClick={() => setShowForm(true)}>
-                <Plus className="h-3.5 w-3.5" />
-                New project
-              </Button>
-            </>
-          )}
-        </div>
+        {canCreateProject && (
+          <div className="flex items-center gap-2">
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => demoMut.mutate()}
+              disabled={demoMut.isPending}
+            >
+              <Sparkles className="h-3.5 w-3.5" />
+              {demoMut.isPending ? 'Generating…' : 'Generate demo project'}
+            </Button>
+            <Button size="sm" onClick={() => setShowForm(true)}>
+              <Plus className="h-3.5 w-3.5" />
+              New project
+            </Button>
+          </div>
+        )}
       </div>
 
       <Dialog open={showForm} onOpenChange={setShowForm}>
@@ -316,74 +284,99 @@ export default function MainPage() {
 
       {!projectsQuery.isLoading && !projectsQuery.isError && (
         <>
-          {/* Portfolio strip */}
-          <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
-            <PortfolioCard
-              icon={FolderKanban}
-              label="Projects"
-              value={String(portfolio.projectCount)}
-              unit={pluralize(portfolio.projectCount, 'project', 'projects')}
-              hint={
-                portfolio.projectCount > 0
-                  ? `${pluralize(projectsReady, '1 project', `${projectsReady} projects`)} fully implemented`
-                  : 'Create a project to start your catalog'
-              }
-            />
-            <PortfolioCard
-              icon={BadgeCheck}
-              label="Coverage"
-              value={coverageDisplay}
-              hint={
-                portfolio.activeEventCount > 0
-                  ? `${portfolio.implementedEventCount} of ${portfolio.activeEventCount} active ${pluralize(portfolio.activeEventCount, 'event', 'events')} implemented`
-                  : 'Coverage starts with your first active event'
-              }
-              tone={coverageRatio >= 0.8 ? 'success' : coverageRatio >= 0.5 ? 'warning' : 'neutral'}
-            />
-            <PortfolioCard
-              icon={BellRing}
-              label="Review queue"
-              value={String(portfolio.reviewPendingEventCount)}
-              unit={pluralize(portfolio.reviewPendingEventCount, 'event', 'events')}
-              hint={
-                portfolio.reviewPendingEventCount > 0
-                  ? `across ${pluralize(projectsNeedingReview, '1 project', `${projectsNeedingReview} projects`)}`
-                  : 'No pending event reviews'
-              }
-              tone={portfolio.reviewPendingEventCount > 0 ? 'warning' : 'success'}
-            />
-            <PortfolioCard
-              icon={PlayCircle}
-              label="Latest jobs"
-              value={String(projectsWithLatestScanJob)}
-              unit={pluralize(projectsWithLatestScanJob, 'project', 'projects')}
-              hint={
-                projectsWithFailedScan > 0
-                  ? pluralize(
-                      projectsWithFailedScan,
-                      '1 project has a failed latest scan job',
-                      `${projectsWithFailedScan} projects have a failed latest scan job`,
-                    )
-                  : projectsWithRunningScan > 0
-                    ? pluralize(
-                        projectsWithRunningScan,
-                        '1 project is currently running a scan',
-                        `${projectsWithRunningScan} projects are currently running scans`,
-                      )
-                    : projectsWithLatestScanJob > 0
-                      ? 'Latest scan jobs are healthy'
-                      : 'No project has run a scan yet'
-              }
-              tone={projectsWithFailedScan > 0 ? 'danger' : projectsWithRunningScan > 0 ? 'info' : 'success'}
-            />
-          </div>
+          {/* One consolidated stat row: calm STATE metrics on the left, then a
+              divider, then attention-worthy ACTION-NEEDED cards on the right.
+              Projects/Coverage live here exactly once — no duplicated tiers,
+              and no metric is shown twice on the page (UX-10). */}
+          <div
+            className="flex flex-col gap-4 rounded-lg border p-3 lg:flex-row lg:items-center"
+            style={{ background: 'var(--bg-elevated)', borderColor: 'var(--border)' }}
+          >
+            <div className="flex flex-wrap items-center gap-x-5 gap-y-3 px-1">
+              <MiniStat label="Projects" value={String(portfolio.projectCount)} />
+              <MiniStatDivider />
+              <MiniStat
+                label="Coverage"
+                value={coverageDisplay}
+                delta={
+                  portfolio.activeEventCount > 0
+                    ? `${portfolio.implementedEventCount}/${portfolio.activeEventCount}`
+                    : undefined
+                }
+                tone={coverageRatio >= 0.8 ? 'success' : coverageRatio >= 0.5 ? 'warning' : 'neutral'}
+              />
+              <MiniStatDivider />
+              <MiniStat
+                label="Data sources"
+                value={dataSourceValue}
+                tone={dataSourcesQuery.isError ? 'danger' : 'neutral'}
+              />
+              <MiniStatDivider />
+              <MiniStat
+                label="Automation"
+                value={String(portfolio.scanCount)}
+                delta={portfolio.scanCount > 0 ? `${projectsWithScans} covered` : undefined}
+              />
+            </div>
 
-          <SignalsBanner
-            scanCount={portfolio.scanCount}
-            projectsWithScans={projectsWithScans}
-            signalCount={portfolio.monitoringSignalCount}
-            projectsWithSignals={projectsWithSignals}
-          />
+            <div
+              className="hidden self-stretch lg:block"
+              style={{ width: 1, background: 'var(--border)' }}
+            />
+            <div className="h-px w-full lg:hidden" style={{ background: 'var(--border)' }} />
+
+            <div className="flex flex-1 flex-wrap items-stretch gap-2">
+              <AttentionStat
+                icon={BellRing}
+                label="Review queue"
+                value={String(portfolio.reviewPendingEventCount)}
+                unit={pluralize(portfolio.reviewPendingEventCount, 'event', 'events')}
+                hint={
+                  portfolio.reviewPendingEventCount > 0
+                    ? `across ${pluralize(projectsNeedingReview, '1 project', `${projectsNeedingReview} projects`)}`
+                    : 'No pending event reviews'
+                }
+                tone={portfolio.reviewPendingEventCount > 0 ? 'warning' : 'success'}
+              />
+              <AttentionStat
+                icon={AlertTriangle}
+                label="Failed jobs"
+                value={String(projectsWithFailedScan)}
+                unit={pluralize(projectsWithFailedScan, 'project', 'projects')}
+                hint={
+                  projectsWithFailedScan > 0
+                    ? pluralize(
+                        projectsWithFailedScan,
+                        '1 project has a failed latest scan job',
+                        `${projectsWithFailedScan} projects have a failed latest scan job`,
+                      )
+                    : projectsWithRunningScan > 0
+                      ? pluralize(
+                          projectsWithRunningScan,
+                          '1 project is currently running a scan',
+                          `${projectsWithRunningScan} projects are currently running scans`,
+                        )
+                      : projectsWithLatestScanJob > 0
+                        ? 'Latest scan jobs are healthy'
+                        : 'No project has run a scan yet'
+                }
+                tone={projectsWithFailedScan > 0 ? 'danger' : projectsWithRunningScan > 0 ? 'info' : 'success'}
+              />
+              <AttentionStat
+                icon={Activity}
+                label="Signals"
+                value={String(portfolio.monitoringSignalCount)}
+                unit={pluralize(portfolio.monitoringSignalCount, 'signal', 'signals')}
+                hint={
+                  portfolio.monitoringSignalCount > 0
+                    ? `${pluralize(projectsWithSignals, '1 project currently has', `${projectsWithSignals} projects currently have`)} recent signals`
+                    : 'Monitoring is quiet across the workspace'
+                }
+                tone={portfolio.monitoringSignalCount > 0 ? 'danger' : 'success'}
+                pulse={portfolio.monitoringSignalCount > 0}
+              />
+            </div>
+          </div>
 
           {projects.length > 0 ? (
             <section className="space-y-3">
@@ -441,11 +434,7 @@ export default function MainPage() {
 function ProjectsPageSkeleton() {
   return (
     <div className="space-y-4">
-      <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
-        {[0, 1, 2, 3].map((index) => (
-          <Skeleton key={index} className="h-24 rounded-lg" />
-        ))}
-      </div>
+      <Skeleton className="h-[72px] rounded-lg" />
       <div className="grid gap-3">
         {[0, 1, 2, 3].map((index) => (
           <Skeleton key={index} className="h-64 rounded-lg" />
@@ -455,22 +444,31 @@ function ProjectsPageSkeleton() {
   )
 }
 
-type PortfolioTone = 'success' | 'warning' | 'danger' | 'info' | 'neutral'
+type StatTone = 'success' | 'warning' | 'danger' | 'info' | 'neutral'
 
-function PortfolioCard({
+/**
+ * An action-needed stat: an attention-worthy card that pops with a tone-soft
+ * background and tone-colored border when it actually needs work, and stays
+ * calm/muted once cleared. Reuses the same tone-soft attention system as the
+ * project cards so actionable items read as clickable next to the calm STATE
+ * MiniStats (UX-10).
+ */
+function AttentionStat({
   icon: Icon,
   label,
   value,
   unit,
   hint,
   tone = 'neutral',
+  pulse = false,
 }: {
   icon: ElementType
   label: string
   value: string
   unit?: string
   hint: string
-  tone?: PortfolioTone
+  tone?: StatTone
+  pulse?: boolean
 }) {
   const toneColor =
     tone === 'success'
@@ -481,7 +479,7 @@ function PortfolioCard({
           ? 'var(--danger)'
           : tone === 'info'
             ? 'var(--info)'
-            : 'var(--accent)'
+            : 'var(--fg-subtle)'
   const toneSoft =
     tone === 'success'
       ? 'var(--success-soft)'
@@ -491,95 +489,46 @@ function PortfolioCard({
           ? 'var(--danger-soft)'
           : tone === 'info'
             ? 'var(--info-soft)'
-            : 'var(--accent-soft)'
+            : 'var(--surface-hover)'
+  const needsAttention = tone === 'warning' || tone === 'danger' || tone === 'info'
   return (
     <div
-      className="rounded-lg border p-4"
-      style={{ background: 'var(--bg-elevated)', borderColor: 'var(--border)' }}
+      className="flex min-w-[170px] flex-1 items-start gap-2.5 rounded-lg border px-3 py-2.5"
+      style={{
+        background: needsAttention ? toneSoft : 'var(--bg-elevated)',
+        borderColor: needsAttention ? toneColor : 'var(--border)',
+      }}
     >
-      <dl className="m-0">
-        <div className="flex items-start justify-between gap-3">
-          <div className="min-w-0 space-y-0.5">
-            <dt
-              className="text-[10px] font-semibold uppercase tracking-[0.08em]"
-              style={{ color: 'var(--fg-faint)' }}
-            >
-              {label}
-            </dt>
-            <dd className="m-0 flex items-baseline gap-1">
-              <span className="mono tnum text-[24px] font-medium leading-[1.1] tracking-[-0.01em]">
-                {value}
-              </span>
-              {unit ? (
-                <span className="text-[11px]" style={{ color: 'var(--fg-faint)' }}>
-                  {unit}
-                </span>
-              ) : null}
-            </dd>
-          </div>
-          <div
-            className="flex h-7 w-7 items-center justify-center rounded-md"
-            style={{ background: toneSoft, color: toneColor }}
-          >
-            <Icon className="h-3.5 w-3.5" />
-          </div>
-        </div>
-        <dd className="m-0 mt-2 text-[11.5px] leading-[1.4]" style={{ color: 'var(--fg-subtle)' }}>
+      <div
+        className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md"
+        style={{ background: toneSoft, color: toneColor }}
+      >
+        <Icon className="h-3.5 w-3.5" />
+      </div>
+      <dl className="m-0 min-w-0 space-y-0.5">
+        <dd className="m-0 flex items-baseline gap-1">
+          {pulse && needsAttention && (
+            <Dot tone={tone === 'warning' ? 'warning' : 'danger'} size={6} pulse />
+          )}
+          <span className="mono tnum text-[20px] font-medium leading-[1.1] tracking-[-0.01em]">
+            {value}
+          </span>
+          {unit ? (
+            <span className="text-[11px]" style={{ color: 'var(--fg-faint)' }}>
+              {unit}
+            </span>
+          ) : null}
+        </dd>
+        <dt
+          className="text-[10px] font-semibold uppercase tracking-[0.07em]"
+          style={{ color: 'var(--fg-faint)' }}
+        >
+          {label}
+        </dt>
+        <dd className="m-0 text-[11px] leading-[1.35]" style={{ color: 'var(--fg-subtle)' }}>
           {hint}
         </dd>
       </dl>
-    </div>
-  )
-}
-
-function SignalsBanner({
-  scanCount,
-  projectsWithScans,
-  signalCount,
-  projectsWithSignals,
-}: {
-  scanCount: number
-  projectsWithScans: number
-  signalCount: number
-  projectsWithSignals: number
-}) {
-  return (
-    <div
-      className="flex flex-wrap items-center gap-5 rounded-lg border px-4 py-3"
-      style={{ background: 'var(--bg-elevated)', borderColor: 'var(--border)' }}
-    >
-      <div className="flex items-center gap-2">
-        <div
-          className="flex h-8 w-8 items-center justify-center rounded-md"
-          style={{ background: 'var(--accent-soft)', color: 'var(--accent)' }}
-        >
-          <Activity className="h-4 w-4" />
-        </div>
-        <div>
-          <div className="text-[12.5px] font-semibold">Automation</div>
-          <div className="text-[11px]" style={{ color: 'var(--fg-subtle)' }}>
-            {scanCount > 0
-              ? `${pluralize(scanCount, '1 scan', `${scanCount} scans`)} · ${pluralize(projectsWithScans, '1 project', `${projectsWithScans} projects`)} covered`
-              : 'No scans configured yet'}
-          </div>
-        </div>
-      </div>
-      <div className="h-8 w-px" style={{ background: 'var(--border-subtle)' }} />
-      <div className="flex items-center gap-2">
-        <Dot tone={signalCount > 0 ? 'danger' : 'success'} pulse={signalCount > 0} size={8} />
-        <div>
-          <div className="text-[12.5px] font-semibold">
-            {signalCount > 0
-              ? pluralize(signalCount, '1 monitoring signal', `${signalCount} monitoring signals`)
-              : 'No recent signals'}
-          </div>
-          <div className="text-[11px]" style={{ color: 'var(--fg-subtle)' }}>
-            {signalCount > 0
-              ? `${pluralize(projectsWithSignals, '1 project currently has', `${projectsWithSignals} projects currently have`)} recent signals`
-              : 'Monitoring is quiet across the workspace'}
-          </div>
-        </div>
-      </div>
     </div>
   )
 }

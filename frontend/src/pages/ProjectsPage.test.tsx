@@ -151,6 +151,19 @@ describe('ProjectsPage', () => {
     expect(screen.queryByText('2 active')).not.toBeInTheDocument()
     expect(screen.getByText('Open Signal')).toBeInTheDocument()
     expect(screen.getByText('Open Project')).toBeInTheDocument()
+
+    // UX-10: create-actions live in the header action area, not the stat strip.
+    expect(screen.getByRole('button', { name: /New project/i })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /Generate demo project/i })).toBeInTheDocument()
+    // UX-10: each STATE metric is shown exactly once — no duplicated stat tiers.
+    expect(screen.getAllByText('Projects')).toHaveLength(1)
+    expect(screen.getAllByText('Coverage')).toHaveLength(1)
+    expect(screen.getByText('Data sources')).toBeInTheDocument()
+    expect(screen.getByText('Automation')).toBeInTheDocument()
+    // UX-10: action-needed metrics each appear once, distinct from STATE metrics.
+    expect(screen.getByText('Review queue')).toBeInTheDocument()
+    expect(screen.getByText('Failed jobs')).toBeInTheDocument()
+    expect(screen.getByText('Signals')).toBeInTheDocument()
   })
 
   it('hides project deletion from editors', async () => {
@@ -274,7 +287,9 @@ describe('ProjectsPage', () => {
     expect(screen.getByText('across 1 project')).toBeInTheDocument()
     expect(screen.getByText('1 scan configured')).toBeInTheDocument()
     expect(screen.getByText('1 recent signal')).toBeInTheDocument()
-    expect(screen.getByText('1 monitoring signal')).toBeInTheDocument()
+    // UX-10: the monitoring-signal metric lives once now, as an action-needed
+    // stat — no separate Automation banner repeating the count.
+    expect(screen.getByText('Signals')).toBeInTheDocument()
     // H1: recent-signal copy drops "active" — the dashboard counts recent signals.
     expect(
       screen.getByText('1 project currently has recent signals'),

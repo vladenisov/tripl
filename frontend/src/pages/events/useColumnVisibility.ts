@@ -1,45 +1,48 @@
 import { useCallback, useState } from 'react'
 
 const STORAGE_KEY = 'tripl.eventsHiddenCols'
-const BOOTSTRAP_KEY = 'tripl.eventsHiddenColsBootstrap'
-const REVIEWED_BOOTSTRAP_KEY = 'tripl.eventsHiddenColsBootstrapReviewed'
-const SECONDARY_COLS_BOOTSTRAP_KEY = 'tripl.eventsHiddenColsBootstrapSecondary'
 
 /**
- * Persists which event-table columns the user has hidden via localStorage,
- * with a one-time bootstrap to hide `last_seen` by default for existing
- * users. The host page wires the resulting Set + toggler into EventsToolbar
- * and into per-column render guards.
+ * Columns hidden by default for a first-time user (no persisted preference).
+ *
+ * UX-14: a fresh user should meet a lean, scannable table that leads with the
+ * most meaningful columns — Event, Type, Status, 48h, Reviewed (Event, Type, 48h
+ * and Actions are pinned and always shown) — instead of an intimidating 12–15
+ * column spreadsheet. The secondary columns below start hidden and stay one
+ * click away in the Columns editor. No column is removed; only the default
+ * visibility changes, and only for users who have not customized their columns.
+ *
+ * Per-event-type field columns (`f:<id>`) and meta columns (`m:<id>`) are the
+ * other half of the long tail. Their ids are dynamic and unknown at this layer,
+ * so defaulting them hidden has to happen where the field definitions are known
+ * (useEventsViewState) — out of scope for this hook.
+ */
+const DEFAULT_HIDDEN_COLUMNS: readonly string[] = [
+  'monitor',
+  'owner',
+  'delta',
+  'tags',
+  'last_seen',
+]
+
+/**
+ * Persists which event-table columns the user has hidden via localStorage.
+ *
+ * A first-time user (no persisted choice) gets the lean default set above; a
+ * returning user's saved choice is respected exactly — we never override a
+ * persisted preference. The host page wires the resulting Set + toggler into
+ * EventsToolbar and into per-column render guards.
  */
 export function useColumnVisibility() {
   const [hiddenColumns, setHiddenColumns] = useState<Set<string>>(() => {
     try {
       const raw = localStorage.getItem(STORAGE_KEY)
-      const initial = new Set<string>(raw ? (JSON.parse(raw) as string[]) : [])
-      // One-time bootstrap: hide `last_seen` by default for existing and new
-      // users alike. Subsequent toggles persist via the hiddenCols key as usual.
-      if (localStorage.getItem(BOOTSTRAP_KEY) !== '1') {
-        initial.add('last_seen')
-        localStorage.setItem(BOOTSTRAP_KEY, '1')
-        localStorage.setItem(STORAGE_KEY, JSON.stringify([...initial]))
-      }
-      // Reviewed is a secondary column — hidden by default (one-time, separate
-      // key so it doesn't re-hide last_seen for users who chose to show it).
-      if (localStorage.getItem(REVIEWED_BOOTSTRAP_KEY) !== '1') {
-        initial.add('reviewed')
-        localStorage.setItem(REVIEWED_BOOTSTRAP_KEY, '1')
-        localStorage.setItem(STORAGE_KEY, JSON.stringify([...initial]))
-      }
-      // Monitor / Owner / Δ are secondary columns — hidden by default (one-time).
-      if (localStorage.getItem(SECONDARY_COLS_BOOTSTRAP_KEY) !== '1') {
-        initial.add('monitor')
-        initial.add('owner')
-        initial.add('delta')
-        localStorage.setItem(SECONDARY_COLS_BOOTSTRAP_KEY, '1')
-        localStorage.setItem(STORAGE_KEY, JSON.stringify([...initial]))
-      }
-      return initial
-    } catch { return new Set() }
+      // Respect a persisted choice exactly; only fresh users get the lean default.
+      if (raw !== null) return new Set<string>(JSON.parse(raw) as string[])
+      return new Set<string>(DEFAULT_HIDDEN_COLUMNS)
+    } catch {
+      return new Set<string>(DEFAULT_HIDDEN_COLUMNS)
+    }
   })
 
   const [colMenuOpen, setColMenuOpen] = useState(false)
