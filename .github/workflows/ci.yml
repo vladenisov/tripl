@@ -19,7 +19,8 @@ jobs:
         uses: astral-sh/setup-uv@v3
         with:
           enable-cache: true
-          python-version-file: backend/.python-version
+          # uv reads backend/.python-version itself during `uv sync`; setup-uv
+          # has no `python-version-file` input (it warned "Unexpected input").
 
       - name: Install dependencies
         run: uv sync --extra dev
