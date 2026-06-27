@@ -82,6 +82,45 @@ describe('OnboardingChecklist', () => {
     expect(screen.getByText('1 of 5')).toBeInTheDocument()
   })
 
+  it('collapses to a compact bar once all but the last step are done (fix #13)', () => {
+    // 4 of 5 done — everything except alerting → slim bar, not the full card.
+    renderChecklist({
+      summary: makeSummary({
+        event_type_count: 4,
+        scan_count: 2,
+        implemented_event_count: 3,
+      }),
+      sourceCount: 1,
+    })
+
+    expect(screen.getByText('4 of 5')).toBeInTheDocument()
+    // The tall card header and its step rows are hidden until expanded.
+    expect(screen.queryByText('Get started')).not.toBeInTheDocument()
+    expect(screen.queryByText('Define your plan')).not.toBeInTheDocument()
+
+    // Expanding reveals the full multi-row checklist.
+    fireEvent.click(screen.getByRole('button', { name: /show steps/i }))
+    expect(screen.getByText('Get started')).toBeInTheDocument()
+    expect(screen.getByText('Set up alerting')).toBeInTheDocument()
+  })
+
+  it('can still be dismissed from the compact bar (fix #13)', () => {
+    renderChecklist({
+      summary: makeSummary({
+        event_type_count: 4,
+        scan_count: 2,
+        implemented_event_count: 3,
+      }),
+      sourceCount: 1,
+    })
+
+    expect(screen.getByText('4 of 5')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: /dismiss/i }))
+
+    expect(screen.queryByText('4 of 5')).not.toBeInTheDocument()
+    expect(localStorage.getItem('tripl.onboarding.dismissed.demo')).toBe('1')
+  })
+
   it('auto-hides once every step is complete', () => {
     renderChecklist({
       summary: makeSummary({

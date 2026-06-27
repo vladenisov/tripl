@@ -86,7 +86,7 @@ describe('OverviewPage', () => {
     mockFetch()
     renderOverview()
 
-    expect(await screen.findByRole('heading', { name: 'Overview' })).toBeInTheDocument()
+    expect(await screen.findByRole('heading', { name: 'Live activity' })).toBeInTheDocument()
     expect(screen.getByText('Active events')).toBeInTheDocument()
 
     // active_event_count = 323 → "323"

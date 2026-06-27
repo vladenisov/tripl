@@ -133,10 +133,11 @@ describe('ReconciliationPage', () => {
       ),
     ).toBeInTheDocument()
     expect(await screen.findByText('94%')).toBeInTheDocument()
-    // The data-match metric is labelled distinctly from the dashboard's "Plan coverage".
+    // The metric drops the word "coverage" so it no longer collides with the
+    // dashboard's plan-coverage KPI — it now reads as "seen in data".
     expect(screen.getByText('Data match')).toBeInTheDocument()
-    expect(screen.getByText('data-match coverage')).toBeInTheDocument()
-    expect(screen.queryByText('matched coverage')).not.toBeInTheDocument()
+    expect(screen.getByText('seen in data')).toBeInTheDocument()
+    expect(screen.queryByText('data-match coverage')).not.toBeInTheDocument()
     expect(screen.getByText('124 of 132 planned events seen in data · 14d')).toBeInTheDocument()
   })
 

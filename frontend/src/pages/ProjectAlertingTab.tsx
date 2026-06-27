@@ -30,7 +30,7 @@ import {
 import { getErrorMessage } from '@/lib/utils'
 
 // Channel catalogue — drives both the per-channel sections and the compact
-// "Add another channel" affordance, so every type stays addable from one place.
+// add-channel affordance, so every type stays addable from one place.
 const CHANNEL_META: { channel: DestinationChannel; label: string; Icon: LucideIcon }[] = [
   { channel: 'slack', label: 'Slack', Icon: Webhook },
   { channel: 'telegram', label: 'Telegram', Icon: Send },
@@ -232,6 +232,16 @@ export default function ProjectAlertingTab({ slug }: { slug: string }) {
   })
   const activeDestinationType = editingDestination?.type ?? createType ?? destinationForm.type
 
+  const hasDestinations = destinations.length > 0
+  // One source of truth for the channel buttons so the zero-state CTA and the
+  // populated-state "add another" row stay in sync.
+  const channelButtons = CHANNEL_META.map(({ channel, label, Icon }) => (
+    <Button key={channel} variant="outline" size="sm" onClick={() => openCreate(channel)}>
+      <Icon className="mr-2 h-4 w-4" />
+      {label}
+    </Button>
+  ))
+
   return (
     <div className="space-y-6">
       {dialog}
@@ -252,11 +262,19 @@ export default function ProjectAlertingTab({ slug }: { slug: string }) {
             </p>
           </div>
 
-          {destinations.length === 0 && (
+          {!hasDestinations && (
             <EmptyState
               icon={Webhook}
               title="No alert destinations"
               description="Create a Slack webhook, Telegram bot, or generic webhook destination, then attach rules to it."
+              action={
+                <div className="flex flex-col items-center gap-2">
+                  <span className="text-xs font-medium text-muted-foreground">Add a channel</span>
+                  <div className="flex flex-wrap items-center justify-center gap-2">
+                    {channelButtons}
+                  </div>
+                </div>
+              }
             />
           )}
 
@@ -295,17 +313,16 @@ export default function ProjectAlertingTab({ slug }: { slug: string }) {
               </div>
             ))}
 
-          {/* Empty channels collapse here instead of rendering bare headers — every
-              type stays one click away without taking vertical space for nothing. */}
-          <div className="flex flex-wrap items-center gap-2 rounded-lg border border-dashed p-3">
-            <span className="text-xs font-medium text-muted-foreground">Add another channel</span>
-            {CHANNEL_META.map(({ channel, label, Icon }) => (
-              <Button key={channel} variant="outline" size="sm" onClick={() => openCreate(channel)}>
-                <Icon className="mr-2 h-4 w-4" />
-                {label}
-              </Button>
-            ))}
-          </div>
+          {/* Once at least one destination exists, empty channels collapse into this
+              compact row instead of rendering bare headers — every type stays one click
+              away without taking vertical space for nothing. The zero-state CTA lives in
+              the EmptyState above, so this "add another" row is for the populated view. */}
+          {hasDestinations && (
+            <div className="flex flex-wrap items-center gap-2 rounded-lg border border-dashed p-3">
+              <span className="text-xs font-medium text-muted-foreground">Add another channel</span>
+              {channelButtons}
+            </div>
+          )}
         </div>
 
         <div className="min-w-0 space-y-4">

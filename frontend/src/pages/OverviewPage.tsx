@@ -114,7 +114,7 @@ export default function OverviewPage() {
       )}
 
       {/* Header */}
-      <PageHead eyebrow={projectQuery.data?.name ?? 'Project'} title="Overview" />
+      <PageHead eyebrow={projectQuery.data?.name ?? 'Project'} title="Live activity" />
 
 
       {/* KPI strip */}
@@ -170,14 +170,28 @@ export default function OverviewPage() {
           {activeEventsSeries.length > 1 && (
             <>
               <MiniStatDivider />
-              <div className="flex items-center gap-2">
+              {/* Stacked like the MiniStat columns (caption above, figure below)
+                  so the trend reads as a finished stat, not a stray line crammed
+                  against the edge. The tooltip + role="img" alt spell out what the
+                  line is (issue #12). */}
+              <div className="m-0 flex flex-col gap-1" title="Active events over the last 14 days">
                 <span
-                  className="text-[10px] uppercase tracking-[0.06em]"
+                  className="text-[10px] font-semibold uppercase tracking-[0.06em]"
                   style={{ color: 'var(--fg-faint)' }}
                 >
-                  Active · 14d
+                  Active trend · 14d
                 </span>
-                <Sparkline data={activeEventsSeries} variant={chartStyle} width={120} height={28} />
+                <div role="img" aria-label={activeTrendLabel(activeEventsSeries)}>
+                  <Sparkline
+                    data={activeEventsSeries}
+                    variant={chartStyle}
+                    width={120}
+                    height={28}
+                  />
+                  <span className="sr-only">
+                    Active events by day: {activeEventsSeries.map((c) => c.toLocaleString()).join(', ')}.
+                  </span>
+                </div>
               </div>
             </>
           )}
@@ -384,6 +398,17 @@ function volumeChartLabel(counts: number[]): string {
   const min = Math.min(...counts)
   const max = Math.max(...counts)
   return `Project total volume sparkline. ${counts.length} buckets. Latest ${latest.toLocaleString()}, range ${min.toLocaleString()} to ${max.toLocaleString()}.`
+}
+
+// Text alternative for the active-events trend sparkline (issue #12). Mirrors
+// volumeChartLabel: the SVG is decorative, so the wrapping role="img" needs an
+// accessible summary of what the 14-day line actually shows.
+function activeTrendLabel(counts: number[]): string {
+  if (counts.length === 0) return 'Active events over the last 14 days'
+  const latest = counts[counts.length - 1]!
+  const min = Math.min(...counts)
+  const max = Math.max(...counts)
+  return `Active events over the last 14 days. Latest ${latest.toLocaleString()}, range ${min.toLocaleString()} to ${max.toLocaleString()}.`
 }
 
 function signalScopeLabel(signal: MonitoringSignal): string {

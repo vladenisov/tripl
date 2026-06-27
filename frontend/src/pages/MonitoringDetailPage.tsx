@@ -1569,6 +1569,9 @@ function EventFieldsTable({
   const fields = [...(eventType?.field_definitions ?? [])].sort((a, b) => a.order - b.order)
   const valueByField = new Map(event.field_values.map(fv => [fv.field_definition_id, fv]))
   const requiredCount = fields.filter(f => f.is_required).length
+  // Hide the Sensitivity column when no field carries a sensitivity label —
+  // otherwise it renders a "—" for every row, adding noise without signal.
+  const showSensitivity = fields.some(f => (fieldDefMap.get(f.id) ?? f).sensitivity !== 'none')
   return (
     <div className={SURFACE_CARD} style={SURFACE_STYLE}>
       <div className="flex items-center gap-2 border-b px-4 py-3" style={{ borderColor: 'var(--border-subtle)' }}>
@@ -1589,7 +1592,7 @@ function EventFieldsTable({
               <th scope="col" className={EV_TH_CLASS}>Field</th>
               <th scope="col" className={EV_TH_CLASS}>Type</th>
               <th scope="col" className={EV_TH_CLASS}>Value</th>
-              <th scope="col" className={EV_TH_CLASS}>Sensitivity</th>
+              {showSensitivity && <th scope="col" className={EV_TH_CLASS}>Sensitivity</th>}
             </tr>
           </thead>
           <tbody>
@@ -1611,7 +1614,9 @@ function EventFieldsTable({
                       ) : null}
                     </span>
                   </td>
-                  <td className={EV_TD_CLASS}><SensitivityChip value={def.sensitivity} /></td>
+                  {showSensitivity && (
+                    <td className={EV_TD_CLASS}><SensitivityChip value={def.sensitivity} /></td>
+                  )}
                 </tr>
               )
             })}

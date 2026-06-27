@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { Link } from 'react-router-dom'
-import { ArrowRight, Check, X } from 'lucide-react'
+import { ArrowRight, Check, ChevronDown, X } from 'lucide-react'
 import { Chip } from '@/components/primitives/chip'
 import { Dot } from '@/components/primitives/dot'
 import { Panel } from '@/components/settings/kit'
@@ -16,7 +16,10 @@ import type { ProjectSummary } from '@/types'
  *
  * It is deliberately compact and self-effacing: dismissal is persisted in
  * localStorage per project, and the whole card auto-hides once every step is
- * complete, so it never lingers for an established project.
+ * complete, so it never lingers for an established project. Once the user is
+ * all-but-done (every step bar the last), it collapses to a slim one-line bar
+ * that can be expanded on demand, so a nearly-onboarded project isn't dominated
+ * by a tall card (fix #13).
  */
 
 const STORAGE_PREFIX = 'tripl.onboarding.dismissed.'
@@ -104,6 +107,8 @@ export function OnboardingChecklist({ slug, summary, sourceCount }: OnboardingCh
   // dismissal. Reading dismissal on render also means a slug change is picked up
   // automatically, with no stale per-project state.
   const [, setDismissTick] = useState(0)
+  // Ephemeral: when the slim collapsed bar is expanded back to the full card.
+  const [expanded, setExpanded] = useState(false)
 
   // Not loaded yet — render nothing rather than a checklist full of false
   // "incomplete" steps that would flip to done a moment later.
@@ -118,10 +123,6 @@ export function OnboardingChecklist({ slug, summary, sourceCount }: OnboardingCh
   // Self-hiding: once the whole loop is set up there is nothing to guide.
   if (completed >= total) return null
 
-  // The first not-yet-done step is the "active" one; later incomplete steps are
-  // shown as upcoming/locked (visually de-emphasised, still navigable).
-  const activeIndex = steps.findIndex((s) => !s.done)
-
   function handleDismiss(): void {
     try {
       localStorage.setItem(storageKey(slug), '1')
@@ -130,6 +131,50 @@ export function OnboardingChecklist({ slug, summary, sourceCount }: OnboardingCh
     }
     setDismissTick((n) => n + 1)
   }
+
+  // Mostly onboarded (every step bar the last) → swap the tall card for a slim
+  // one-line bar with progress + an expand affordance, instead of letting a
+  // near-complete checklist hog the top of the Overview. Early-stage projects
+  // (more than one step left) keep the full card. Dismiss + localStorage
+  // persistence are unchanged (fix #13).
+  const isMostlyDone = completed >= total - 1
+  if (isMostlyDone && !expanded) {
+    const remaining = total - completed
+    return (
+      <div
+        className="flex items-center gap-3 rounded-lg border px-4 py-2.5"
+        style={{ background: 'var(--bg-sunken)', borderColor: 'var(--border-subtle)' }}
+      >
+        <Chip tone="info" size="sm">{`${completed} of ${total}`}</Chip>
+        <span className="min-w-0 flex-1 truncate text-[12.5px] font-medium">
+          {`Almost set up — ${remaining} step${remaining === 1 ? '' : 's'} left`}
+        </span>
+        <button
+          type="button"
+          onClick={() => setExpanded(true)}
+          aria-expanded={false}
+          className="flex shrink-0 items-center gap-1 rounded px-2 py-1 text-[11px] font-medium transition-colors hover:bg-[var(--surface-hover)]"
+          style={{ color: 'var(--accent)' }}
+        >
+          Show steps
+          <ChevronDown className="h-3 w-3" />
+        </button>
+        <button
+          type="button"
+          onClick={handleDismiss}
+          aria-label="Dismiss getting-started checklist"
+          className="flex h-6 w-6 shrink-0 items-center justify-center rounded transition-colors hover:bg-[var(--surface-hover)]"
+          style={{ color: 'var(--fg-subtle)' }}
+        >
+          <X className="h-3.5 w-3.5" />
+        </button>
+      </div>
+    )
+  }
+
+  // The first not-yet-done step is the "active" one; later incomplete steps are
+  // shown as upcoming/locked (visually de-emphasised, still navigable).
+  const activeIndex = steps.findIndex((s) => !s.done)
 
   return (
     <Panel

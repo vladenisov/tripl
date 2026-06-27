@@ -56,8 +56,10 @@ describe('ProjectAlertingTab — empty channels (UX-19 / UX-20)', () => {
     // UX-19: with no destinations, no full per-channel headers take up space.
     expect(screen.queryByRole('heading', { level: 4 })).toBeNull()
 
-    // ...but every channel type stays addable from the single compact row.
-    expect(screen.getByText('Add another channel')).toBeInTheDocument()
+    // ...but every channel type stays addable straight from the zero-state CTA,
+    // which is count-aware ("Add a channel", not "Add another channel").
+    expect(screen.getByText('Add a channel')).toBeInTheDocument()
+    expect(screen.queryByText('Add another channel')).toBeNull()
     for (const label of ['Slack', 'Telegram', 'Webhook', 'Email', 'Jira', 'Linear']) {
       expect(screen.getByRole('button', { name: label })).toBeInTheDocument()
     }

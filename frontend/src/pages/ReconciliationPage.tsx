@@ -22,7 +22,9 @@ import { getMonitoringPath } from '@/lib/monitoring'
 import { coverageTone, toneVar } from '@/lib/statusLexicon'
 
 const COVERAGE_DAYS = 14 as const
-const DEAD_DAYS = 30 as const
+// Same window as COVERAGE_DAYS so the whole page reads as one 14-day view
+// instead of silently mixing look-backs (the header's "Last 14 days").
+const DEAD_DAYS = 14 as const
 const SHADOW_TABS: readonly ShadowEventStatus[] = ['new', 'accepted', 'dismissed']
 
 // Coverage heatmap colour. Resolved through the shared status lexicon so good
@@ -223,7 +225,7 @@ export default function ReconciliationPage() {
                 {coverage.summary.coverage_pct.toFixed(0)}%
               </span>
               <span className="text-[11px]" style={{ color: 'var(--fg-subtle)' }}>
-                data-match coverage
+                seen in data
               </span>
             </div>
             <CoverageStrip items={coverage.items} days={coverage.days} />
