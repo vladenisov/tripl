@@ -1,0 +1,222 @@
+---
+title: Driving tripl from an agent or script
+sidebar_position: 2
+---
+
+# Driving tripl from an agent or script
+
+tripl is the canonical catalog of your analytics events — the single source of
+truth for what each event means, which fields it carries, and which task it came
+from. That makes it a natural backend for an LLM agent or a plain automation
+script: read the catalog before you act, draft new event definitions, then write
+them back safely.
+
+This page covers the REST surface, authentication, and the
+**read → draft → write** loop. For natural-language discovery of existing
+events, see [Searching events](./searching-events.md). For an end-to-end worked
+example, see the [Agent API guide](../integrate/agent-api-guide.md).
+
+## Getting an API key
+
+Create keys in the app under **Account → API keys**. The full token is shown
+**once** at creation — copy it then; afterwards only the non-secret prefix is
+visible. Every request authenticates with a bearer token:
+
+```
+Authorization: Bearer <api_key>
+```
+
+A key can be scoped to a single project or left able to see every project your
+account can reach.
+
+### Read vs write scopes
+
+The scope letter is embedded in the token prefix so you (and your logs) can tell
+at a glance what a key can do:
+
+| Scope | Token prefix | Can call |
+|-------|--------------|----------|
+| `read` | `tk_r_…` | `GET` endpoints only (list, search, read). Write endpoints return `403`. |
+| `write` | `tk_w_…` | Everything a read key can, plus create / update / delete. |
+
+:::tip
+Give a discovery-only agent a `tk_r_` key. Reserve `tk_w_` keys for the
+write step, and prefer a project-scoped key so a bug can't touch the wrong
+project.
+:::
+
+## REST surface
+
+Everything lives under `/api/v1`. `{slug}` is the project slug (for example
+`web`).
+
+| Method | Path | Scope | Purpose |
+|--------|------|-------|---------|
+| `GET` | `/projects` | read | List projects: `[{slug, name}]` |
+| `GET` | `/projects/{slug}/event-types` | read | Event types; each embeds its `field_definitions` (`id`, `name`, `display_name`, `field_type`, `required`, enum options) |
+| `GET` | `/projects/{slug}/meta-fields` | read | Project meta fields |
+| `GET` | `/projects/{slug}/events` | read | Filtered listing → `{items, total}`; each item embeds `field_values`, `meta_values`, `tags` |
+| `GET` | `/projects/{slug}/events/{id}` | read | Full event detail |
+| `GET` | `/projects/{slug}/search` | read | Smart / global search → `{items, total, semantic_used}` |
+| `POST` | `/projects/{slug}/events` | write | Create an event |
+| `PATCH` | `/projects/{slug}/events/{id}` | write | Update an event |
+| `DELETE` | `/projects/{slug}/events/{id}` | write | Permanently delete an event |
+
+### Listing filters (`GET /events`)
+
+All string filters match as a case-insensitive substring. Combine them freely:
+
+| Query param | Matches |
+|-------------|---------|
+| `search` | Substring over event name / description |
+| `field_value` | Substring over any field value |
+| `meta_value` | Substring over any meta value (e.g. a ticket key) |
+| `tag` | Exact tag |
+| `event_type_id` | Events of one event type |
+| `status` | One or more lifecycle states (repeatable). Values: `draft`, `in_review`, `ready_for_dev`, `implemented`, `live`, `deprecated`, `archived` |
+| `silent_since_days` | Events with no observed traffic for at least N days |
+| `offset`, `limit` | Pagination (`limit` defaults to `200`, max `10000`) |
+
+:::note
+There is no boolean `implemented` or `archived` filter — those are lifecycle
+**statuses**. To list implemented events, pass `status=implemented`; to find
+retired ones, pass `status=archived`.
+:::
+
+### Search params (`GET /search`)
+
+| Query param | Meaning |
+|-------------|---------|
+| `q` | Natural-language phrase (1–500 chars) |
+| `types` | Restrict to entity kinds (repeatable): `event`, `event_type`, `field`, `meta_field`, `variable`, `relation`, `tag` |
+| `include_archived` | Include archived entities (default `false`) |
+| `limit` | Max results (default `20`, max `100`) |
+
+Each hit carries a `confidence` in `[0, 1]` (relevance normalized to the top hit
+of that response) and `semantic_used` reports whether embeddings were used.
+Event hits also include `event_id`, `name`, `implemented`, and
+`variable_values`. Use search for feature phrases, not exact keys — see
+[Searching events](./searching-events.md).
+
+## Minimal auth example
+
+`curl`:
+
+```bash
+curl -s https://tripl.example.com/api/v1/projects \
+  -H "Authorization: Bearer $TRIPL_API_KEY"
+```
+
+Python with `requests`:
+
+```python
+import os
+import requests
+
+BASE = "https://tripl.example.com/api/v1"
+session = requests.Session()
+session.headers["Authorization"] = f"Bearer {os.environ['TRIPL_API_KEY']}"
+
+resp = session.get(f"{BASE}/projects")
+resp.raise_for_status()
+for project in resp.json():
+    print(project["slug"], "-", project["name"])
+```
+
+## The read → draft → write loop
+
+The agent pattern is always the same: **read** the catalog to find what already
+exists, **draft** definitions in memory, then **write** them back safely.
+
+### 1. Read first
+
+tripl is the source of truth, so never create blind. Locate relevant events by
+the originating ticket (a `meta_value` filter), by a feature phrase (smart
+search), or by structured filters — *before* acting.
+
+```python
+# Every event already linked to a ticket, by its key in the "ticket" meta field.
+existing = session.get(
+    f"{BASE}/projects/web/events",
+    params={"meta_value": "PROJ-123"},
+).json()
+by_name = {item["name"]: item for item in existing["items"]}
+```
+
+### 2. Draft
+
+Build the payload in memory. An event references its event type, carries a clear
+description, field values, and meta values — including a link back to the ticket
+it came from so the event stays retrievable by task.
+
+```python
+def build_event(event_type_id, ticket_meta_field_id):
+    return {
+        "event_type_id": event_type_id,
+        "name": "checkout:completed",
+        "description": "Fires once the order is confirmed.",
+        "status": "draft",
+        "tags": ["checkout"],
+        "field_values": [],
+        "meta_values": [
+            {"meta_field_definition_id": ticket_meta_field_id, "value": "PROJ-123"},
+        ],
+    }
+```
+
+### 3. Write safely
+
+Validate before you POST. A **dry run** builds and prints the payload without
+sending it, so a human (or a test) can eyeball it first:
+
+```python
+def upsert_event(payload, by_name, dry_run=True):
+    if dry_run:
+        print("DRY RUN — would write:", payload)
+        return None
+
+    existing = by_name.get(payload["name"])
+    if existing:  # exact-name upsert avoids duplicates
+        return session.patch(
+            f"{BASE}/projects/web/events/{existing['id']}",
+            json=payload,
+        ).json()
+    return session.post(
+        f"{BASE}/projects/web/events",
+        json=payload,
+    ).json()
+```
+
+Key safety rules baked into the loop:
+
+- **Dry-run by default.** Build and print the payload; only switch
+  `dry_run=False` once it looks right.
+- **Upsert by exact name.** Match on the event `name` you already read back. If
+  it exists, `PATCH` it; otherwise `POST`. This stops an agent from creating a
+  second `checkout:completed` every run.
+- **Attach the originating ticket.** Always set a `ticket` meta value (e.g.
+  `PROJ-123`). That single link is what lets the next run find the event by task
+  rather than guessing.
+
+### Archiving obsolete events
+
+When an event should leave the active plan but stay in the catalog for history,
+**archive** it by setting its status rather than deleting it:
+
+```python
+session.patch(
+    f"{BASE}/projects/web/events/{event_id}",
+    json={"status": "archived"},
+)
+```
+
+`DELETE /projects/{slug}/events/{id}` permanently removes the event and its
+field/meta values — reach for it only when you truly want the record gone.
+Archiving keeps the event findable and preserves the link back to its ticket.
+
+## Next steps
+
+- [Searching events](./searching-events.md) — natural-language discovery and
+  when to prefer structured filters.
+- [Agent API guide](../integrate/agent-api-guide.md) — a fuller worked
+  integration.
