@@ -34,5 +34,4 @@ from each folder's `_category_.json`):
 
 - `markdown.format: 'detect'` → `.md` files are CommonMark (literal `${var}` /
   `{slug}`), `.mdx` is reserved for interactive/OpenAPI pages.
-- `onBrokenLinks: 'warn'` while the existing docs are being migrated; the port
-  task tightens this back to `throw` once cross-doc links are fixed.
+- `onBrokenLinks: 'throw'` — any broken internal link fails the build.

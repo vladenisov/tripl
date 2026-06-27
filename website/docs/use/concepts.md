@@ -231,7 +231,7 @@ Every member of a project has a **role**:
 An **API key** lets a script or an AI agent talk to tripl without a human logged
 in. Keys are scoped to be safe: **read** keys can only look, **write** keys can
 edit, and a key can be locked to a single project and given an expiry date. They
-can be revoked at any time. See **[agent-api-guide.md](agent-api-guide.md)** for
+can be revoked at any time. See **[agent-api-guide.md](../integrate/agent-api-guide.md)** for
 the details.
 
 ### Audit log
@@ -244,5 +244,5 @@ they changed, and when — so you can always answer "how did this get like this?
 ## Where to go next
 
 - Want to actually do something? → **[user-guide.md](user-guide.md)**
-- Connecting an agent or a script? → **[agent-api-guide.md](agent-api-guide.md)**
-- Curious how it's built? → **[architecture.md](architecture.md)**
+- Connecting an agent or a script? → **[agent-api-guide.md](../integrate/agent-api-guide.md)**
+- Curious how it's built? → **[architecture.md](../build/architecture.md)**

@@ -15,14 +15,12 @@ const config: Config = {
   projectName: 'tripl',
   trailingSlash: false,
 
-  // The full port (.3) will fix cross-doc links; warn for now so the
-  // scaffold builds green while content is migrated.
-  onBrokenLinks: 'warn',
-  onBrokenMarkdownLinks: 'warn',
+  // Cross-doc links fixed; broken links now fail the build.
+  onBrokenLinks: 'throw',
 
   // .md -> CommonMark (literal braces, so ${var}/{slug} don't break),
   // .mdx -> MDX (for future interactive / OpenAPI pages).
-  markdown: {format: 'detect'},
+  markdown: {format: 'detect', hooks: {onBrokenMarkdownLinks: 'throw'}},
 
   i18n: {defaultLocale: 'en', locales: ['en']},
 
