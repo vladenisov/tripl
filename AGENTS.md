@@ -348,6 +348,7 @@ Project-specific expectations:
 - when changing schemas or payloads, update both backend Pydantic models and frontend TS types;
 - if you change alert message variables or formats, update both backend template logic and `ProjectAlertingTab` helper UI;
 - if you change scan or metrics summaries, check any frontend assumptions around `ScanJob.result_summary`.
+- **update the docs when you change files**: any change to behavior, the HTTP API, config/env, or a user-facing feature must update the documentation site under `website/docs/` in the SAME change; regenerate the OpenAPI spec with `./bin/dump-openapi.sh` when the HTTP API changed.
 
 Operational assumptions to preserve unless intentionally changing them:
 - RabbitMQ is the Celery broker.
@@ -384,6 +385,7 @@ Minimum checks before finishing:
 - frontend tests for touched frontend domains;
 - lint/type checks for the side you changed;
 - `docker compose config` when Compose or env wiring changes.
+- **docs updated**: behavior / API / config / feature changes are reflected in `website/docs/` (and `./bin/dump-openapi.sh` re-run if the HTTP API changed). Docs are not optional follow-up — they ship with the change.
 
 Extra checks expected for specific areas:
 - scan/data-source changes: verify connection test or scan execution path;

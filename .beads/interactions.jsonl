@@ -362,3 +362,4 @@
 {"id":"int-57d66e97","kind":"field_change","created_at":"2026-06-27T21:10:26.370679758Z","actor":"Vladislav Denisov","issue_id":"tripl-mb9f.12","extra":{"field":"status","new_value":"closed","old_value":"open","reason":"Closed"}}
 {"id":"int-45a51edd","kind":"field_change","created_at":"2026-06-27T21:15:08.160401079Z","actor":"Vladislav Denisov","issue_id":"tripl-mb9f.3","extra":{"field":"status","new_value":"closed","old_value":"open","reason":"Closed"}}
 {"id":"int-ef3f2ecc","kind":"field_change","created_at":"2026-06-27T21:15:44.77459573Z","actor":"Vladislav Denisov","issue_id":"tripl-mb9f","extra":{"field":"status","new_value":"closed","old_value":"open","reason":"Closed"}}
+{"id":"int-d4ea973a","kind":"field_change","created_at":"2026-06-27T22:48:57.590002406Z","actor":"Vladislav Denisov","issue_id":"tripl-9n1z","extra":{"field":"status","new_value":"closed","old_value":"open","reason":"Closed"}}
