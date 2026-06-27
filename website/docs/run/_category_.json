@@ -1,5 +1,8 @@
 {
   "label": "Self-hosting & Operations",
-  "position": 4,
-  "link": {"type": "generated-index", "description": "Deploy, configure, and operate your own tripl instance."}
+  "position": 5,
+  "link": {
+    "type": "generated-index",
+    "description": "Deploy, configure, and operate your own tripl instance."
+  }
 }
