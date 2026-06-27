@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { Link, useLocation, useNavigate, useParams } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 import {
+  BookOpen,
   Check,
   ChevronLeft,
   ChevronRight,
@@ -147,6 +148,7 @@ export function AppSidebar() {
     !!navSlug
     && (currentPath === `/p/${navSlug}/settings`
       || currentPath === `/p/${navSlug}/settings/general`)
+  const conceptsActive = !!navSlug && currentPath === `/p/${navSlug}/concepts`
 
   if (collapsed) {
     return (
@@ -273,8 +275,33 @@ export function AppSidebar() {
         )}
       </div>
 
-      {/* Footer: user row with workspace settings + sign out */}
+      {/* Footer: a discoverable Concepts/help entry, then the user row with
+          workspace settings + sign out. The Concepts link teaches the domain
+          model (Plan / Observe / Govern) to newcomers. */}
       <div className="px-3 py-3 border-t" style={{ borderColor: 'var(--border-subtle)' }}>
+        {navSlug && (
+          <Link
+            to={`/p/${navSlug}/concepts`}
+            className="mb-2 flex items-center gap-2 rounded-[5px] px-1.5 py-1.5 text-[12px] font-medium no-underline transition-colors"
+            style={{
+              background: conceptsActive ? 'var(--surface-hover)' : 'transparent',
+              color: conceptsActive ? 'var(--fg)' : 'var(--fg-muted)',
+            }}
+            onMouseEnter={(e) => {
+              if (!conceptsActive) e.currentTarget.style.background = 'var(--surface-hover)'
+            }}
+            onMouseLeave={(e) => {
+              if (!conceptsActive) e.currentTarget.style.background = 'transparent'
+            }}
+          >
+            <BookOpen
+              className="h-3.5 w-3.5 shrink-0"
+              style={{ color: conceptsActive ? 'var(--accent)' : 'var(--fg-subtle)' }}
+              aria-hidden="true"
+            />
+            <span className="flex-1 truncate text-left">Concepts</span>
+          </Link>
+        )}
         <div className="flex items-center gap-1.5">
           <div
             className="flex h-[26px] w-[26px] items-center justify-center rounded-full text-[11px] font-semibold text-white"

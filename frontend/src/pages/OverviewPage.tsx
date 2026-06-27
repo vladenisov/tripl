@@ -13,6 +13,7 @@ import { dataSourcesApi } from '@/api/dataSources'
 import { metricsApi } from '@/api/metrics'
 import { projectsApi } from '@/api/projects'
 import { ErrorState } from '@/components/error-state'
+import { OnboardingChecklist } from '@/components/onboarding-checklist'
 import { Dot } from '@/components/primitives/dot'
 import { MiniStat, MiniStatDivider } from '@/components/primitives/mini-stat'
 import { Sparkline } from '@/components/primitives/sparkline'
@@ -105,6 +106,13 @@ export default function OverviewPage() {
 
   return (
     <div className="min-w-0 space-y-8 pb-12">
+      {/* Guided first-run checklist (UX-24) — a "start here" for the core
+          Plan → Observe → Govern loop. Self-derives done-state from project
+          data, is dismissible, and auto-hides once complete. */}
+      {slug && (
+        <OnboardingChecklist slug={slug} summary={summary} sourceCount={sources.length} />
+      )}
+
       {/* Header */}
       <PageHead eyebrow={projectQuery.data?.name ?? 'Project'} title="Overview" />
 
