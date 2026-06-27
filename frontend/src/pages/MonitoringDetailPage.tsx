@@ -18,6 +18,7 @@ import { Chip } from '@/components/primitives/chip'
 import { Dot } from '@/components/primitives/dot'
 import { Sparkline } from '@/components/primitives/sparkline'
 import { SensitivityChip } from '@/components/primitives/sensitivity-chip'
+import { EmptyState } from '@/components/empty-state'
 import { ErrorState } from '@/components/error-state'
 import EventPhotosSection from '@/components/event-photos-section'
 import { ReleaseRegressionPanel } from '@/components/monitoring/release-regression-panel'
@@ -577,6 +578,14 @@ export default function MonitoringDetailPage() {
               {metricsQuery.isLoading ? (
                 <div className="h-[280px] flex items-center justify-center text-sm text-muted-foreground">
                   Loading monitoring data…
+                </div>
+              ) : chartData.length === 0 ? (
+                <div className="h-[280px] flex items-center justify-center">
+                  <EmptyState
+                    icon={TrendingUp}
+                    title="No metrics data available"
+                    description="Run a scan to start collecting volume metrics for this scope."
+                  />
                 </div>
               ) : (
                 <MetricsChart
@@ -1709,8 +1718,13 @@ function EventSideColumn({
         </div>
         <div className="py-[4px]">
           {history.length === 0 ? (
-            <div className="px-4 py-5 text-center text-[11.5px]" style={{ color: 'var(--fg-subtle)' }}>
-              No recent changes
+            <div className="px-4 py-5 text-center" style={{ color: 'var(--fg-subtle)' }}>
+              <p className="text-[11.5px] font-medium" style={{ color: 'var(--fg-muted)' }}>
+                No recent changes
+              </p>
+              <p className="mt-1 text-[10.5px]">
+                Edits to this event's definition will show up here.
+              </p>
             </div>
           ) : history.slice(0, 4).map(change => (
             <div key={change.id} className="flex gap-[10px] border-t px-4 py-2" style={{ borderColor: 'var(--border-subtle)' }}>

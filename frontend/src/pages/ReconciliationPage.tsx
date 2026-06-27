@@ -1,4 +1,4 @@
-import { Fragment, useState, type ReactNode } from 'react'
+import { useState, type ReactNode } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Calendar, Inbox } from 'lucide-react'
@@ -13,6 +13,7 @@ import { eventTypesApi } from '@/api/eventTypes'
 import { Chip } from '@/components/primitives/chip'
 import { Dot } from '@/components/primitives/dot'
 import { ErrorState } from '@/components/error-state'
+import { EventName } from '@/components/event-name'
 import { Button } from '@/components/ui/button'
 import { Checkbox } from '@/components/ui/checkbox'
 import { useActiveBranchId } from '@/hooks/useBranch'
@@ -232,7 +233,7 @@ export default function ReconciliationPage() {
 
       <div
         className={`grid grid-cols-1 gap-3 ${
-          shadowIsEmpty ? 'lg:grid-cols-[0.85fr_1.65fr]' : 'lg:grid-cols-[1.5fr_1fr]'
+          shadowIsEmpty ? 'lg:grid-cols-[auto_1fr]' : 'lg:grid-cols-[1.5fr_1fr]'
         }`}
       >
         {/* Shadow events inbox */}
@@ -553,7 +554,7 @@ function ShadowRow({
       <div className="flex items-center gap-2.5">
         <div className="min-w-0 flex-1">
           <span className="mono text-[12.5px]" style={{ color: 'var(--fg)' }}>
-            {item.event_name}
+            <EventName name={item.event_name} />
           </span>
           <div
             className="mt-0.5 flex flex-wrap items-center gap-2 text-[10.5px]"
@@ -629,46 +630,6 @@ function ShadowRow({
   )
 }
 
-const NAME_SEGMENT_SEPARATOR = ':'
-
-// A segment is "empty" when the backend has nothing for it. Empirically a
-// missing segment is encoded as either "" or a literal "0", so a name like
-// "0:forecast_for_4:0" really means ":forecast_for_4:". Treat both forms as
-// empty so they read as intentional structure — never as a confusing "0".
-function isEmptySegment(segment: string): boolean {
-  return segment === '' || segment === '0'
-}
-
-function EmptySegment(): ReactNode {
-  return (
-    <span title="empty segment" style={{ color: 'var(--fg-faint)' }}>
-      ∅
-    </span>
-  )
-}
-
-// Event names are colon-delimited (e.g. "buoy:copy:coordinates"). Render each
-// segment explicitly so that names with an empty segment — like ":forecast_for_4"
-// or a trailing colon — read as intentional structure rather than a glitch.
-function DeadEventName({ name }: { name: string }): ReactNode {
-  const segments = name.split(NAME_SEGMENT_SEPARATOR)
-  if (segments.length === 1) return isEmptySegment(name) ? <EmptySegment /> : <>{name}</>
-  return (
-    <>
-      {segments.map((segment, index) => (
-        <Fragment key={index}>
-          {index > 0 && (
-            <span aria-hidden style={{ color: 'var(--fg-faint)' }}>
-              {NAME_SEGMENT_SEPARATOR}
-            </span>
-          )}
-          {isEmptySegment(segment) ? <EmptySegment /> : <span>{segment}</span>}
-        </Fragment>
-      ))}
-    </>
-  )
-}
-
 function DeadRow({
   item,
   slug,
@@ -697,7 +658,7 @@ function DeadRow({
         className="mono min-w-0 flex-1 truncate text-[12px] hover:underline"
         style={{ color: 'var(--fg-muted)' }}
       >
-        <DeadEventName name={item.name} />
+        <EventName name={item.name} />
       </Link>
       {item.event_type_name && <Chip size="xs">{item.event_type_name}</Chip>}
       <span

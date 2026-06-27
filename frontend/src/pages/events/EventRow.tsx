@@ -21,10 +21,11 @@ import type { EventStatus } from '@/lib/eventStatus'
 import { SIGNAL_LEVEL, rowSignalLevel } from '@/lib/statusLexicon'
 import { resolveMetaFieldHref } from '@/lib/metaFields'
 import { VariableValueContextTrigger } from '@/components/variable-value-contexts'
+import { EventName } from '@/components/event-name'
 import { EventDriftBadge } from './EventDriftBadge'
 import { EventWindowMetricsCell } from './EventWindowMetricsCell'
 import { SignalLink } from './SignalLink'
-import { NAME_SEGMENT_SEPARATOR, formatRelativeTime, splitEventName, splitTemplateValue } from './utils'
+import { formatRelativeTime, splitTemplateValue } from './utils'
 
 export type RowAction =
   | 'edit'
@@ -34,29 +35,6 @@ export type RowAction =
   | 'set-status-archived'
   | 'set-status-draft'
   | 'delete'
-
-function EmptySegment(): ReactNode {
-  return (
-    <span title="empty segment" style={{ color: 'var(--fg-faint)' }}>
-      ∅
-    </span>
-  )
-}
-
-function renderEventName(name: string): ReactNode {
-  const segments = splitEventName(name)
-  if (!segments) return name
-  return segments.map((seg, i) => (
-    <Fragment key={i}>
-      {i > 0 && (
-        <span aria-hidden style={{ color: 'var(--fg-faint)' }}>
-          {NAME_SEGMENT_SEPARATOR}
-        </span>
-      )}
-      {seg.empty ? <EmptySegment /> : <span>{seg.text}</span>}
-    </Fragment>
-  ))
-}
 
 function renderTemplateValue(value: string): ReactNode {
   const parts = splitTemplateValue(value)
@@ -192,7 +170,7 @@ export const EventRow = memo(function EventRow({
             onClick={() => onRowAction('navigate-monitoring', ev)}
             title={ev.name}
           >
-            {renderEventName(ev.name)}
+            <EventName name={ev.name} />
           </button>
           {ev.drift_count > 0 && (
             <EventDriftBadge slug={slug} eventTypeId={ev.event_type_id} count={ev.drift_count} />
@@ -337,9 +315,9 @@ export const EventRow = memo(function EventRow({
                   aria-expanded={true}
                   aria-label={`Collapse ${f.display_name}`}
                 >
-                  <pre className="max-w-sm whitespace-pre-wrap break-all font-mono text-[11px]">{(() => {
+                  <pre className="max-w-sm whitespace-pre-wrap break-all font-mono text-[11px]">{renderTemplateValue((() => {
                     try { return JSON.stringify(JSON.parse(val), null, 2) } catch { return val }
-                  })()}</pre>
+                  })())}</pre>
                 </button>
                 <VariableValueContextTrigger contexts={fieldValue?.variable_values} />
               </div>

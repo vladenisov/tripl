@@ -67,7 +67,7 @@ export default function SettingsArea({ section }: { section: string }) {
   }, [section])
 
   const onNavigate = (path: string) => navigate(`/settings/${path}`)
-  const backHref = slug ? `/p/${slug}/events` : '/'
+  const backHref = slug ? `/p/${slug}/events` : '/workspace'
 
   return (
     <SettingsLayout activePath={section} onNavigate={onNavigate} backHref={backHref} projectName={projectName}>

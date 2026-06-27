@@ -21,6 +21,7 @@ const ProjectSettingsPage = lazy(() => import('./pages/ProjectSettingsPage'))
 const ReconciliationPage = lazy(() => import('./pages/ReconciliationPage'))
 const ConceptsPage = lazy(() => import('./pages/ConceptsPage'))
 const SettingsArea = lazy(() => import('./pages/settings-area/SettingsArea'))
+const NotFoundPage = lazy(() => import('./pages/NotFoundPage'))
 
 function RouteFallback() {
   return (
@@ -222,6 +223,7 @@ export default function App() {
             {/* Stable escape: single-project users land in their project from
                 "/", but the portfolio view stays reachable here (never bounced). */}
             <Route path="/workspace" element={withSuspense(<MainPage />)} />
+            <Route path="/projects" element={<Navigate to="/workspace" replace />} />
             <Route path="/data-sources" element={<Navigate to="/settings/data-sources" replace />} />
             <Route path="/data-sources/:dsId" element={<DataSourceRedirect />} />
             <Route path="/users" element={<Navigate to="/settings/members" replace />} />
@@ -244,6 +246,9 @@ export default function App() {
             <Route path="/p/:slug/settings/:tab" element={withSuspense(<ProjectSettingsPage />)} />
             <Route path="/p/:slug/settings" element={withSuspense(<ProjectSettingsPage />)} />
             <Route path="/p/:slug" element={withSuspense(<EventsPage />)} />
+            {/* Catch-all: render the app shell + not-found state for any
+                unmatched authed path instead of a blank screen. */}
+            <Route path="*" element={withSuspense(<NotFoundPage />)} />
           </Route>
         </Routes>
       </AuthProvider>

@@ -463,6 +463,24 @@ describe('MonitoringDetailPage event-detail header and semantics', () => {
     expect(lastSeenStat).toHaveAttribute('title', 'No hits recorded yet')
   })
 
+  it('coaches empty volume metrics and empty change history instead of blank panels', async () => {
+    // No metric points and (per installEventDetailFetch) no history entries, so
+    // both lower panels should render their coached empty states.
+    installEventDetailFetch({ metricsData: [] })
+    renderEventDetail()
+    await screen.findByRole('heading', { name: 'checkout_completed' })
+
+    expect(screen.getByText('No metrics data available')).toBeInTheDocument()
+    expect(
+      screen.getByText('Run a scan to start collecting volume metrics for this scope.'),
+    ).toBeInTheDocument()
+
+    expect(screen.getByText('No recent changes')).toBeInTheDocument()
+    expect(
+      screen.getByText("Edits to this event's definition will show up here."),
+    ).toBeInTheDocument()
+  })
+
   it('exposes table semantics for the Fields and Properties tables', async () => {
     installEventDetailFetch()
     renderEventDetail()

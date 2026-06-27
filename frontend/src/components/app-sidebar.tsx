@@ -172,7 +172,7 @@ export function AppSidebar() {
           in the project chip) and links back to the workspace overview. */}
       <div className="flex items-center gap-1 px-3 pt-2.5 pb-1.5">
         <Link
-          to="/"
+          to="/workspace"
           title="Tripl — home"
           aria-label="Tripl — home"
           className="flex flex-1 items-center gap-2 rounded-md px-1 py-1 no-underline transition-colors hover:bg-[var(--surface-hover)]"
@@ -558,7 +558,7 @@ function CollapsedSidebar({
       style={{ background: 'var(--bg-sunken)', borderColor: 'var(--border)' }}
     >
       <Link
-        to="/"
+        to="/workspace"
         title="Tripl — home"
         aria-label="Tripl — home"
         className="mb-2.5 flex h-8 w-8 items-center justify-center rounded-md no-underline transition-colors hover:bg-[var(--surface-hover)]"
@@ -731,7 +731,7 @@ function ProjectSwitcher({
         <DropdownMenuSeparator />
         <DropdownMenuItem asChild>
           <Link
-            to="/"
+            to="/workspace"
             className="flex items-center gap-2 text-[12.5px] no-underline"
             style={{ color: 'var(--fg)' }}
           >

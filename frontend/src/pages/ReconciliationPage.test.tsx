@@ -232,10 +232,10 @@ describe('ReconciliationPage', () => {
     })
     renderPage()
 
-    // Non-empty segments still render their own text.
+    // A leading empty segment splits the name and surfaces its non-empty piece.
     expect(await screen.findByText('forecast_for_4')).toBeInTheDocument()
-    expect(screen.getByText('buoy')).toBeInTheDocument()
-    expect(screen.getByText('coordinates(main)')).toBeInTheDocument()
+    // A name with no empty segment renders as-is (matching the Events list).
+    expect(screen.getByText('buoy:copy:coordinates(main)')).toBeInTheDocument()
     // The leading empty segment renders an intentional placeholder, not a blank.
     expect(screen.getByTitle('empty segment')).toBeInTheDocument()
   })

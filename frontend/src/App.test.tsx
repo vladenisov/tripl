@@ -229,4 +229,36 @@ describe('App', () => {
     expect(await screen.findByText('Analytics workspace')).toBeInTheDocument()
     expect(window.location.pathname).toBe('/')
   })
+
+  it('redirects "/projects" to the workspace portfolio', async () => {
+    // The sidebar/back-links route to the portfolio; "/projects" is a friendly
+    // alias that lands on the same all-projects workspace (never bounced).
+    vi.spyOn(globalThis, 'fetch').mockImplementation((input: RequestInfo | URL) => {
+      const url = urlOf(input)
+      if (url.endsWith('/api/v1/auth/me')) return Promise.resolve(jsonResponse(OWNER))
+      if (url.endsWith('/api/v1/projects')) {
+        return Promise.resolve(jsonResponse([makeProject('alpha', 'Alpha'), makeProject('beta', 'Beta')]))
+      }
+      if (url.endsWith('/api/v1/data-sources')) return Promise.resolve(jsonResponse([]))
+      return Promise.resolve(jsonResponse({ detail: 'Not found' }, 404))
+    })
+
+    renderApp('/projects')
+
+    expect(await screen.findByText('Analytics workspace')).toBeInTheDocument()
+    await waitFor(() => {
+      expect(window.location.pathname).toBe('/workspace')
+    })
+  })
+
+  it('renders the not-found page for an unknown authed route', async () => {
+    // No catch-all used to leave unmatched paths on a blank screen; the catch-all
+    // now renders the app shell + a not-found state with a way back to the portfolio.
+    vi.spyOn(globalThis, 'fetch').mockImplementation(authenticatedFetch)
+
+    renderApp('/totally-unknown')
+
+    expect(await screen.findByText('Page not found')).toBeInTheDocument()
+    expect(screen.getByText('Back to all projects')).toBeInTheDocument()
+  })
 })

@@ -6,11 +6,12 @@ const STORAGE_KEY = 'tripl.eventsHiddenCols'
  * Columns hidden by default for a first-time user (no persisted preference).
  *
  * UX-14: a fresh user should meet a lean, scannable table that leads with the
- * most meaningful columns — Event, Type, Status, 48h, Reviewed (Event, Type, 48h
- * and Actions are pinned and always shown) — instead of an intimidating 12–15
- * column spreadsheet. The secondary columns below start hidden and stay one
- * click away in the Columns editor. No column is removed; only the default
- * visibility changes, and only for users who have not customized their columns.
+ * monitoring signal — Event, Type, Status, Monitor, Δ, Last seen, 48h (Event,
+ * Type, 48h and Actions are pinned and always shown) — instead of an
+ * intimidating column spreadsheet. Only the least-essential workflow-metadata
+ * columns start hidden: Owner, Reviewed and Tags. They stay one click away in
+ * the Columns editor. No column is removed; only the default visibility
+ * changes, and only for users who have not customized their columns.
  *
  * Per-event-type field columns (`f:<id>`) and meta columns (`m:<id>`) are the
  * other half of the long tail. Their ids are dynamic and unknown at this layer,
@@ -18,11 +19,9 @@ const STORAGE_KEY = 'tripl.eventsHiddenCols'
  * (useEventsViewState) — out of scope for this hook.
  */
 const DEFAULT_HIDDEN_COLUMNS: readonly string[] = [
-  'monitor',
   'owner',
-  'delta',
+  'reviewed',
   'tags',
-  'last_seen',
 ]
 
 /**

@@ -49,10 +49,10 @@ export default function AuthPage() {
       : 'Set up your account to start tracking coverage, monitoring drift, and routing alerts.'
 
   return (
-    <div className="min-h-screen bg-[radial-gradient(circle_at_top_left,_rgba(14,165,233,0.15),_transparent_32%),linear-gradient(135deg,_rgba(15,23,42,0.98),_rgba(2,6,23,0.94))] text-slate-50">
+    <div className="min-h-screen bg-[radial-gradient(circle_at_top_left,_rgba(20,184,166,0.15),_transparent_32%),linear-gradient(135deg,_rgba(15,23,42,0.98),_rgba(2,6,23,0.94))] text-slate-50">
       <div className="mx-auto grid min-h-screen max-w-6xl items-center gap-8 px-6 py-10 lg:grid-cols-[1.15fr_0.85fr]">
         <section className="space-y-8">
-          <div className="inline-flex items-center gap-2 rounded-full border border-white/15 bg-white/5 px-3 py-1 text-xs uppercase tracking-[0.28em] text-sky-200/80">
+          <div className="inline-flex items-center gap-2 rounded-full border border-white/15 bg-white/5 px-3 py-1 text-xs uppercase tracking-[0.28em] text-teal-200/80">
             <Radar className="h-3.5 w-3.5" />
             Tracking Operations
           </div>
@@ -84,7 +84,7 @@ export default function AuthPage() {
           </div>
         </section>
 
-        <Card className="border-white/10 bg-slate-950/70 py-0 shadow-2xl shadow-sky-950/40 backdrop-blur">
+        <Card className="border-white/10 bg-slate-950/70 py-0 shadow-2xl shadow-teal-950/40 backdrop-blur">
           <CardHeader className="border-b border-white/10 px-6 py-6">
             <div className="flex items-center justify-between gap-3">
               <div>
@@ -93,7 +93,7 @@ export default function AuthPage() {
                   {cardDescription}
                 </CardDescription>
               </div>
-              <div className="rounded-full border border-sky-400/30 bg-sky-400/10 p-2 text-sky-200">
+              <div className="rounded-full border border-teal-400/30 bg-teal-400/10 p-2 text-teal-200">
                 {mode === 'login' ? (
                   <LockKeyhole className="h-4 w-4" />
                 ) : (
@@ -199,7 +199,7 @@ export default function AuthPage() {
               <Button
                 type="submit"
                 size="lg"
-                className="w-full justify-center bg-sky-400 text-slate-950 hover:bg-sky-300"
+                className="w-full justify-center bg-teal-400 text-slate-950 hover:bg-teal-300"
                 disabled={authMutation.isPending}
               >
                 {authMutation.isPending ? 'Working…' : submitLabel}
@@ -230,7 +230,7 @@ function FeatureCard({
 }) {
   return (
     <div className="rounded-2xl border border-white/10 bg-white/5 p-4 backdrop-blur-sm">
-      <div className="text-[11px] font-semibold uppercase tracking-[0.22em] text-sky-200/70">
+      <div className="text-[11px] font-semibold uppercase tracking-[0.22em] text-teal-200/70">
         {eyebrow}
       </div>
       <div className="mt-3 text-lg font-semibold text-white">{title}</div>
