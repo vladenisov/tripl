@@ -22,8 +22,8 @@ contexts:
 The **Instance** sections in the UI let an owner override a subset of the
 server's configuration, stored in the instance database. Everything else —
 database/broker URLs, the encryption key, the application secret — is set only
-through environment variables. Note also that not every Instance section is
-wired to a live consumer yet (see [When changes take effect](#when-changes-take-effect)).
+through environment variables. Sections differ in **when** an override applies —
+some at use-time, some on the next restart (see [When changes take effect](#when-changes-take-effect)).
 For the full env-var reference (including the variables behind the settings
 below) see [Configuration](../run/configuration.md).
 :::
@@ -209,23 +209,30 @@ blank to keep the existing value, type a new value to replace it, or use
 
 #### When changes take effect
 
-:::warning Not every section is wired to a live consumer
-The **Runtime** (query limits, app base URL), **Email**, and **AI** sections are
-read at **use-time**: the API and the Celery worker resolve the override → env
-value on each call, so edits apply without a restart. The worker additionally
-falls back to env-only config if it can't read the settings table, so
-background jobs never fail on a settings read. (The Runtime section's own header
-still cautions that "overrides take effect on the next deploy" — the app base
-URL used for CORS and the OpenAPI server block, for instance, is read once at
-startup, while the worker reads it live.)
+Sections apply at one of two times:
 
-In the current release the **Security & access**, **Storage**, and
-**Observability** sections are *not yet consumed at runtime*. CORS, security
-headers, the session cookie, rate limiting, the photo storage backend, logging
-and metrics are all read from the **environment** at process start, never from
-the saved overrides. Editing those fields records an override and flips the
-source badge, but to actually change that behaviour set the matching
-environment variable and redeploy — see [Configuration](../run/configuration.md).
+**Use-time (no restart).** The **Runtime** (query limits, app base URL),
+**Email**, and **AI** sections are resolved override → env value on each call, so
+edits apply immediately. The worker falls back to env-only config if it can't
+read the settings table, so background jobs never fail on a settings read.
+
+**Restart-time (next deploy).** The **Security & access**, **Storage**, and
+**Observability** sections are consumed by parts of the server that are wired
+once at process start — the middleware stack (CORS, security headers, the
+session cookie), the auth rate limiters, the photo storage backend, logging, and
+the metrics route. At startup the saved overrides are **applied onto the running
+configuration** before any of those are built, so they take effect on the **next
+restart/redeploy** — exactly what the UI's "overrides take effect on the next
+deploy" note means. You no longer need to also set the matching environment
+variable; the env var is just the default the override replaces.
+
+:::note A running process won't pick these up live
+Because these sections are read once at boot, editing them does **not** change a
+process that's already running — restart the API (and worker) container for the
+new values to take effect. A bad value (e.g. a CORS origin that locks you out)
+is recovered the same way you set it: edit it back, or clear the override, and
+restart. The matching environment variable still works as the baseline default —
+see [Configuration](../run/configuration.md).
 :::
 
 The sections, with the fields each exposes:
