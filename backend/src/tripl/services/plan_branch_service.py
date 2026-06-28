@@ -636,6 +636,17 @@ async def transition_branch(
         if existing is None:
             session.add(PlanBranchApproval(branch_id=branch.id, user_id=user_id))
 
+    if action == "submit":
+        # Surface the owners of touched event types as expected reviewers up
+        # front — the same set the merge gate will later require an approval
+        # from. Local import: merge_service imports this module, so a top-level
+        # import here would be circular.
+        from tripl.services.plan_branch_merge_service import (
+            assign_owner_reviewers_for_branch,
+        )
+
+        await assign_owner_reviewers_for_branch(session, project_id=project.id, branch=branch)
+
     await session.commit()
     await session.refresh(branch)
     return await _to_detail(session, branch)
