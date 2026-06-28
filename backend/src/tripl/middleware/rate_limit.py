@@ -37,14 +37,23 @@ class _Bucket:
 
 
 class TokenBucketLimiter:
-    """Refilling token bucket. ``capacity`` is the burst, ``per_seconds`` the refill window."""
+    """Refilling token bucket. ``capacity`` is the burst, ``per_seconds`` the refill window.
 
-    def __init__(self, *, capacity: int, per_seconds: float, name: str) -> None:
+    A limiter built with ``enabled=False`` represents a route whose configured
+    per-window count is 0 (rate limiting disabled for that route). Its
+    :meth:`acquire` is a no-op, so the dependency wiring stays uniform whether
+    or not the route is limited.
+    """
+
+    def __init__(
+        self, *, capacity: int, per_seconds: float, name: str, enabled: bool = True
+    ) -> None:
         if capacity <= 0 or per_seconds <= 0:
             raise ValueError("capacity and per_seconds must be > 0")
         self.capacity = capacity
         self.per_seconds = per_seconds
         self.name = name
+        self.enabled = enabled
         self._rate = capacity / per_seconds
         self._lock = threading.Lock()
         self._buckets: dict[str, _Bucket] = {}
@@ -52,7 +61,12 @@ class TokenBucketLimiter:
         self._max_keys = 10_000
 
     def acquire(self, key: str) -> None:
-        """Consume one token for ``key``. Raises :class:`RateLimitExceeded` if empty."""
+        """Consume one token for ``key``. Raises :class:`RateLimitExceeded` if empty.
+
+        No-op when the limiter is disabled (route configured with a 0 limit).
+        """
+        if not self.enabled:
+            return
         now = time.monotonic()
         with self._lock:
             bucket = self._buckets.get(key)
@@ -105,16 +119,28 @@ def _client_key(request: Request, route: str) -> str:
     return f"{route}:{ip}"
 
 
-login_rate_limiter = TokenBucketLimiter(
-    capacity=max(1, settings.rate_limit_login_per_minute),
-    per_seconds=60.0,
-    name="login",
+def _limiter_for(configured: int, *, per_seconds: float, name: str) -> TokenBucketLimiter:
+    """Build a limiter for a configured per-window count.
+
+    A configured value of ``0`` disables rate limiting on that route (per the
+    ``config`` docstring); it is represented as a disabled limiter whose
+    ``acquire`` is a no-op, so callers keep the same wiring either way.
+    """
+    enabled = configured > 0
+    return TokenBucketLimiter(
+        capacity=configured if enabled else 1,
+        per_seconds=per_seconds,
+        name=name,
+        enabled=enabled,
+    )
+
+
+login_rate_limiter = _limiter_for(
+    settings.rate_limit_login_per_minute, per_seconds=60.0, name="login"
 )
 
-register_rate_limiter = TokenBucketLimiter(
-    capacity=max(1, settings.rate_limit_register_per_hour),
-    per_seconds=3600.0,
-    name="register",
+register_rate_limiter = _limiter_for(
+    settings.rate_limit_register_per_hour, per_seconds=3600.0, name="register"
 )
 
 
@@ -122,7 +148,7 @@ def enforce(limiter: TokenBucketLimiter) -> Callable[[Request], Awaitable[None]]
     """FastAPI dependency that applies ``limiter`` to the inbound request."""
 
     async def dependency(request: Request) -> None:
-        if not settings.rate_limit_enabled:
+        if not settings.rate_limit_enabled or not limiter.enabled:
             return
         key = _client_key(request, limiter.name)
         try:

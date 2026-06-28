@@ -9,6 +9,7 @@ from tripl.middleware.rate_limit import (
     RateLimitExceeded,
     TokenBucketLimiter,
     _client_key,
+    _limiter_for,
     login_rate_limiter,
     register_rate_limiter,
 )
@@ -75,6 +76,24 @@ def test_token_bucket_separate_keys_have_separate_quota() -> None:
     bucket.acquire("b")
     with pytest.raises(RateLimitExceeded):
         bucket.acquire("a")
+
+
+def test_limiter_for_zero_disables_route() -> None:
+    # A configured value of 0 means "no rate limiting on that route": the
+    # limiter is disabled and acquire never raises, no matter how many calls.
+    limiter = _limiter_for(0, per_seconds=60.0, name="login")
+    assert limiter.enabled is False
+    for _ in range(100):
+        limiter.acquire("same-key")  # must not raise
+
+
+def test_limiter_for_positive_enforces_capacity() -> None:
+    limiter = _limiter_for(2, per_seconds=60.0, name="login")
+    assert limiter.enabled is True
+    limiter.acquire("k")
+    limiter.acquire("k")
+    with pytest.raises(RateLimitExceeded):
+        limiter.acquire("k")
 
 
 def test_client_key_ignores_spoofed_forwarded_for_by_default(
