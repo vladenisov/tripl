@@ -102,3 +102,48 @@ async def test_service_settings_are_owner_only(anon_client: AsyncClient) -> None
 
     resp = await anon_client.get("/api/v1/settings")
     assert resp.status_code == 403
+
+
+def test_apply_startup_service_overrides_mutates_settings(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # One field from each of the three sections that are dead until applied at
+    # startup, plus an AI field that must be ignored (AI is consumed via its own
+    # resolved config, not off `settings`).
+    overrides = {
+        "hsts_enabled": True,  # security
+        "photo_max_size_mb": 99,  # storage
+        "log_level": "DEBUG",  # observability
+        "ai_model": "should-not-be-applied",  # not a startup-applied field
+    }
+    monkeypatch.setattr(
+        app_settings_service, "get_service_overrides_sync", lambda _session: overrides
+    )
+
+    touched = ("hsts_enabled", "photo_max_size_mb", "log_level", "ai_model")
+    originals = {f: getattr(settings, f) for f in touched}
+    try:
+        applied = app_settings_service.apply_startup_service_overrides(session=object())  # type: ignore[arg-type]
+
+        assert set(applied) == {"hsts_enabled", "photo_max_size_mb", "log_level"}
+        assert settings.hsts_enabled is True
+        assert settings.photo_max_size_mb == 99
+        assert settings.log_level == "DEBUG"
+        # AI fields are not applied onto settings by the startup hook.
+        assert settings.ai_model == originals["ai_model"]
+    finally:
+        for field, value in originals.items():
+            setattr(settings, field, value)
+
+
+def test_apply_startup_service_overrides_is_noop_on_db_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def _boom(_session: object) -> dict[str, object]:
+        raise RuntimeError("db down")
+
+    monkeypatch.setattr(app_settings_service, "get_service_overrides_sync", _boom)
+
+    # Must swallow the error and apply nothing, so importing the app never fails
+    # just because overrides can't be read.
+    assert app_settings_service.apply_startup_service_overrides(session=object()) == []  # type: ignore[arg-type]

@@ -11,18 +11,28 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response
 from sqlalchemy import text
 
-from tripl.api.v1.router import router as v1_router
 from tripl.config import settings
-from tripl.database import engine
-from tripl.logging_config import configure_logging
-from tripl.middleware import RequestIDMiddleware, SecurityHeadersMiddleware
-from tripl.middleware.request_id import current_request_id
-from tripl.observability.metrics import render_metrics
+from tripl.services.app_settings_service import apply_startup_service_overrides
 
-# Configure logging at import time so every log line — including those emitted
-# while building the app and importing routers, before the async lifespan runs —
-# uses the structured handler. configure_logging() is idempotent, so the call in
-# the lifespan below simply re-applies the current settings.
+# Apply persisted Security/Storage/Observability overrides onto `settings` before
+# anything reads them: the middleware stack, auth rate limiters, logging config
+# and the /metrics route are all wired from `settings` at import time below, so
+# this has to run first (a later apply would be ignored). This is what makes
+# those overrides "take effect on the next deploy", as the settings UI states.
+apply_startup_service_overrides()
+
+from tripl.api.v1.router import router as v1_router  # noqa: E402
+from tripl.database import engine  # noqa: E402
+from tripl.logging_config import configure_logging  # noqa: E402
+from tripl.middleware import RequestIDMiddleware, SecurityHeadersMiddleware  # noqa: E402
+from tripl.middleware.request_id import current_request_id  # noqa: E402
+from tripl.observability.metrics import render_metrics  # noqa: E402
+
+# Configure logging now (after overrides are applied) so every log line — including
+# those emitted while building the app and importing routers, before the async
+# lifespan runs — uses the structured handler and the effective log level.
+# configure_logging() is idempotent, so the call in the lifespan below simply
+# re-applies the current settings.
 configure_logging()
 
 logger = logging.getLogger(__name__)

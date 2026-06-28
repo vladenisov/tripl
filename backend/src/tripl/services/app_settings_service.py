@@ -383,6 +383,59 @@ def get_runtime_config_sync(session: Session | None = None) -> RuntimeConfig:
         return env_runtime_config()
 
 
+# Sections whose values are read directly off the ``settings`` singleton by
+# import-time consumers — the middleware stack, auth rate limiters, logging
+# config and the /metrics route. Unlike runtime/email/ai (consumed through
+# build_*_config at request/task time), their overrides only take effect when
+# applied back onto ``settings`` at process startup. None of these fields are
+# secrets (SECRET_FIELDS are ai/smtp only), so no decryption is needed here.
+STARTUP_APPLIED_FIELDS: tuple[str, ...] = (
+    *SECURITY_FIELDS,
+    *STORAGE_FIELDS,
+    *OBSERVABILITY_FIELDS,
+)
+
+
+def apply_startup_service_overrides(session: Session | None = None) -> list[str]:
+    """Apply persisted Security/Storage/Observability overrides onto ``settings``.
+
+    Must run at the very top of the API and worker entry modules, before the
+    middleware, rate limiters, logging and metrics route are wired from
+    ``settings`` — those read it once at import, so a later apply would be too
+    late. This is what makes these overrides "take effect on the next deploy",
+    as the admin settings UI states.
+
+    Degrades to a no-op (env-only config) when the DB is unreachable, so simply
+    importing the app never fails because overrides cannot be read. Returns the
+    list of fields actually applied (for logging and tests).
+    """
+    try:
+        if session is not None:
+            overrides = get_service_overrides_sync(session)
+        else:
+            from tripl.worker.db import SyncSessionLocal
+
+            with SyncSessionLocal() as own_session:
+                overrides = get_service_overrides_sync(own_session)
+    except Exception:  # noqa: BLE001
+        logger.warning(
+            "Startup service-override apply skipped: app_settings read failed",
+            exc_info=True,
+        )
+        return []
+
+    applied: list[str] = []
+    for field in STARTUP_APPLIED_FIELDS:
+        value = overrides.get(field)
+        if value is None or not hasattr(settings, field):
+            continue
+        setattr(settings, field, value)
+        applied.append(field)
+    if applied:
+        logger.info("Applied %d service override(s) onto settings at startup", len(applied))
+    return applied
+
+
 async def update_service_overrides(
     session: AsyncSession,
     changes: dict[str, Any],

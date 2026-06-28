@@ -1,6 +1,12 @@
 from celery import Celery
 
 from tripl.config import settings
+from tripl.services.app_settings_service import apply_startup_service_overrides
+
+# Apply persisted Security/Storage/Observability overrides onto `settings` before
+# anything reads them (the prometheus gate below, logging, and task modules).
+# Mirrors the API entry point so the worker honours the same overrides.
+apply_startup_service_overrides()
 
 if settings.prometheus_metrics_enabled:
     from tripl.observability.metrics import install_celery_instrumentation
