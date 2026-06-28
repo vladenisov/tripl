@@ -29,17 +29,18 @@ The project sidebar groups every surface into three job-based areas:
 | Area | Surfaces |
 |------|----------|
 | **Plan** | Events, Event types, Schema & fields, Variables, Relations, Plan branches |
-| **Observe** | Live activity, Monitors, Alerting |
-| **Govern** | Reconciliation, Scans, Audit log |
+| **Observe** | Live activity, Monitors, Anomalies, Alerting |
+| **Govern** | Reconciliation, Coverage, Scans, Audit log |
 
 Above the groups sit the **project switcher**, the **branch switcher** (shown
 only inside a project), and the **Search or jump** button (⌘K). Below the groups
 is a **Project settings** link; the footer adds **Concepts** (the in-app domain
 primer), a **Workspace settings** gear, and **Sign out**. Badge counts come from
 the cheap project summary: Events (active events), Event types, Variables,
-Monitors (only when one or more is firing, rendered in red), and Alerting (only
-when one or more destinations exist). Schema & fields, Relations, and Plan
-branches carry no count.
+Monitors (only when one or more is firing, rendered in red), Anomalies (the count
+of open monitoring signals, in red when any are open), and Alerting (only when
+one or more destinations exist). Schema & fields, Relations, Plan branches,
+Coverage, Scans, and Audit log carry no count.
 
 ---
 
@@ -187,6 +188,17 @@ choose the scopes to watch (project total / event types / events), and set the
 baseline window (buckets), minimum history (buckets), sigma threshold, and
 minimum expected count. Scans honor these settings.
 
+### Anomalies
+
+**Where:** Observe › Anomalies (route `/p/<slug>/anomalies`). A standalone,
+cross-event list of every open monitoring signal, sorted most-severe-first by
+`|z|`. A rollup shows open-signal, spike, and drop counts; each row shows the
+spike/drop direction, scope (project total / event type / event), actual vs
+expected counts, the z-score, and when it fired — linking to the monitoring
+detail for that scope. The sidebar badge mirrors the open-signal count.
+Sensitivity is tuned in **Monitoring settings** (see
+[How anomaly detection works](./anomaly-detection.md)).
+
 ### Chart annotations
 
 The **annotations** layer on the monitoring Volume tab lets you mark a deploy or
@@ -221,6 +233,17 @@ creates the event on the active branch (you pick an event type when none is
 inferred), or **Dismiss** it. **Dead events** (in plan, not seen recently over a
 14-day window) can be selected and archived; archiving targets the project's
 `main` branch.
+
+### Coverage
+
+**Where:** Govern › Coverage (route `/p/<slug>/coverage`). A read-only
+plan-coverage overview, complementary to Reconciliation's data-match view. The
+rollup leads with **plan coverage** — the canonical share of active events that
+are implemented — alongside active, implemented, in-review, and archived counts,
+plus an implemented-vs-pending bar. **Instrumentation gaps** lists active events
+with no data in the last 30 days (the same dead-events signal Reconciliation acts
+on); each row shows the event, its type, and when it was last seen, with a link
+to Reconciliation to triage.
 
 ### Scans
 

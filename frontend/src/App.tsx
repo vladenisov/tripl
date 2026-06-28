@@ -19,6 +19,8 @@ const MonitorDetailPage = lazy(() => import('./pages/MonitorDetailPage'))
 const MonitoringDetailPage = lazy(() => import('./pages/MonitoringDetailPage'))
 const ProjectSettingsPage = lazy(() => import('./pages/ProjectSettingsPage'))
 const ReconciliationPage = lazy(() => import('./pages/ReconciliationPage'))
+const AnomaliesPage = lazy(() => import('./pages/AnomaliesPage'))
+const CoveragePage = lazy(() => import('./pages/CoveragePage'))
 const ConceptsPage = lazy(() => import('./pages/ConceptsPage'))
 const SettingsArea = lazy(() => import('./pages/settings-area/SettingsArea'))
 const NotFoundPage = lazy(() => import('./pages/NotFoundPage'))
@@ -241,6 +243,8 @@ export default function App() {
             <Route path="/p/:slug/monitors" element={withSuspense(<MonitorsPage />)} />
             <Route path="/p/:slug/monitors/:monitorId" element={withSuspense(<MonitorDetailPage />)} />
             <Route path="/p/:slug/reconciliation" element={withSuspense(<ReconciliationPage />)} />
+            <Route path="/p/:slug/anomalies" element={withSuspense(<AnomaliesPage />)} />
+            <Route path="/p/:slug/coverage" element={withSuspense(<CoveragePage />)} />
             <Route path="/p/:slug/concepts" element={withSuspense(<ConceptsPage />)} />
             <Route path="/p/:slug/settings/:tab/:itemId" element={withSuspense(<ProjectSettingsPage />)} />
             <Route path="/p/:slug/settings/:tab" element={withSuspense(<ProjectSettingsPage />)} />

@@ -170,8 +170,10 @@ describe('AppSidebar', () => {
       'Plan branches',
       'Live activity',
       'Monitors',
+      'Anomalies',
       'Alerting',
       'Reconciliation',
+      'Coverage',
       'Scans',
       'Audit log',
     ]) {
@@ -192,8 +194,10 @@ describe('AppSidebar', () => {
       'Schema & fields': '/p/demo/settings/meta-fields',
       'Plan branches': '/p/demo/settings/branches',
       Monitors: '/p/demo/monitors',
+      Anomalies: '/p/demo/anomalies',
       Alerting: '/p/demo/settings/alerting',
       Reconciliation: '/p/demo/reconciliation',
+      Coverage: '/p/demo/coverage',
       Scans: '/p/demo/settings/scans',
       'Audit log': '/p/demo/settings/audit',
     }
@@ -240,6 +244,12 @@ describe('AppSidebar', () => {
     const monitorsLink = screen.getByRole('link', { name: /Monitors/ })
     expect(monitorsLink).toHaveTextContent('3')
     expect(monitorsLink).not.toHaveTextContent('9')
+
+    // The Anomalies item is the counterpart: it badges the open-signal
+    // population (monitoring_signal_count === 9), not the firing-monitor count.
+    const anomaliesLink = screen.getByRole('link', { name: /Anomalies/ })
+    expect(anomaliesLink).toHaveTextContent('9')
+    expect(anomaliesLink).not.toHaveTextContent('3')
   })
 
   it('surfaces Variables and Relations as discoverable Plan nav items (M6)', async () => {
