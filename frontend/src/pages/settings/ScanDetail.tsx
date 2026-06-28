@@ -95,6 +95,79 @@ function chipList(values: string[]) {
   )
 }
 
+/* ─── Per-event platform presence matrix (events × platform values, ✓/—) ─── */
+function PlatformPresencePanel({ slug, scanConfigId }: { slug: string; scanConfigId: string }) {
+  const { data, isLoading } = useQuery({
+    queryKey: ['platformPresence', slug, scanConfigId],
+    queryFn: () => scansApi.getPlatformPresence(slug, scanConfigId),
+  })
+
+  const subtitle = data?.platform_column
+    ? `Per-event coverage across ${data.platform_column}`
+    : 'Events seen per platform value'
+
+  let body: React.ReactNode
+  if (isLoading) {
+    body = <p className="px-4 py-3 text-sm text-muted-foreground">Loading platform presence…</p>
+  } else if (!data?.platform_column) {
+    body = (
+      <p className="px-4 py-3 text-sm" style={{ color: 'var(--fg-subtle)' }}>
+        No platform column configured
+      </p>
+    )
+  } else if (data.items.length === 0 || data.platforms.length === 0) {
+    body = (
+      <p className="px-4 py-3 text-sm" style={{ color: 'var(--fg-subtle)' }}>
+        No platform data yet
+      </p>
+    )
+  } else {
+    body = (
+      <div className="overflow-x-auto">
+        <table className="w-full border-collapse">
+          <thead>
+            <tr style={{ background: 'var(--bg-sunken)' }}>
+              <th className="px-4 py-2 text-left text-[10.5px] font-semibold uppercase tracking-wide" style={{ color: 'var(--fg-subtle)' }}>Event</th>
+              {data.platforms.map(platform => (
+                <th key={platform} className="px-4 py-2 text-center text-[10.5px] font-semibold uppercase tracking-wide" style={{ color: 'var(--fg-subtle)' }}>
+                  {platform}
+                </th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {data.items.map(item => (
+              <tr key={item.event_id} className="border-t" style={{ borderColor: 'var(--border-subtle)' }}>
+                <td className="px-4 py-2.5 text-xs" style={{ color: 'var(--fg)' }}>{item.event_name}</td>
+                {data.platforms.map(platform => {
+                  const present = item.present_platforms.includes(platform)
+                  return (
+                    <td
+                      key={platform}
+                      className="mono px-4 py-2.5 text-center text-[12.5px]"
+                      style={{ color: present ? 'var(--success)' : 'var(--fg-faint)' }}
+                    >
+                      <span aria-label={`${item.event_name} ${present ? 'present' : 'absent'} on ${platform}`}>
+                        {present ? '✓' : '—'}
+                      </span>
+                    </td>
+                  )
+                })}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    )
+  }
+
+  return (
+    <SurfPanel title="Platform presence" subtitle={subtitle}>
+      {body}
+    </SurfPanel>
+  )
+}
+
 /* ─── Overview tab body: stat cards + source/query + mapping/drift + jobs ─── */
 export function ScanDetail({
   slug,
@@ -233,6 +306,9 @@ export function ScanDetail({
           <KV label="Cardinality threshold" value={scanConfig.cardinality_threshold} mono />
         </SurfPanel>
       </div>
+
+      {/* Platform presence matrix */}
+      <PlatformPresencePanel slug={slug} scanConfigId={scanConfig.id} />
 
       {/* Recent jobs */}
       <SurfPanel

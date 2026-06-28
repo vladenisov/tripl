@@ -2018,6 +2018,29 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/projects/{slug}/scans/{scan_id}/platform-presence": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Platform Presence
+         * @description Per-event platform presence matrix for the scan's platform_column.
+         *
+         *     Empty when the scan has no platform_column set (the platform dimension is
+         *     inert), so callers can render the panel unconditionally.
+         */
+        get: operations["get_platform_presence_api_v1_projects__slug__scans__scan_id__platform_presence_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/projects/{slug}/scans/{scan_id}/run": {
         parameters: {
             query?: never;
@@ -5242,6 +5265,39 @@ export interface components {
             /** Summary */
             summary: string;
         };
+        /**
+         * PlatformPresenceResponse
+         * @description Per-event platform presence matrix derived from EventMetricBreakdown rows
+         *     on the scan's designated ``platform_column``. Empty when the column is unset.
+         */
+        PlatformPresenceResponse: {
+            /** Items */
+            items: components["schemas"]["PlatformPresenceRow"][];
+            /** Platform Column */
+            platform_column?: string | null;
+            /** Platforms */
+            platforms: string[];
+            /**
+             * Scan Config Id
+             * Format: uuid
+             */
+            scan_config_id: string;
+        };
+        /**
+         * PlatformPresenceRow
+         * @description One event and the platform values it has stored breakdown data for.
+         */
+        PlatformPresenceRow: {
+            /**
+             * Event Id
+             * Format: uuid
+             */
+            event_id: string;
+            /** Event Name */
+            event_name: string;
+            /** Present Platforms */
+            present_platforms: string[];
+        };
         /** ProjectAnomalySettingsResponse */
         ProjectAnomalySettingsResponse: {
             /** Anomaly Detection Enabled */
@@ -5703,6 +5759,8 @@ export interface components {
             metrics_row_limit?: number | null;
             /** Name */
             name: string;
+            /** Platform Column */
+            platform_column?: string | null;
             replay_chunk_interval?: components["schemas"]["ScanInterval"] | null;
             /** Scan Lookback Hours */
             scan_lookback_hours?: number | null;
@@ -5783,6 +5841,8 @@ export interface components {
             metrics_row_limit: number | null;
             /** Name */
             name: string;
+            /** Platform Column */
+            platform_column: string | null;
             /**
              * Project Id
              * Format: uuid
@@ -5832,6 +5892,8 @@ export interface components {
             metrics_row_limit?: number | null;
             /** Name */
             name?: string | null;
+            /** Platform Column */
+            platform_column?: string | null;
             replay_chunk_interval?: components["schemas"]["ScanInterval"] | null;
             /** Scan Lookback Hours */
             scan_lookback_hours?: number | null;
@@ -11555,6 +11617,38 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ScanJobResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_platform_presence_api_v1_projects__slug__scans__scan_id__platform_presence_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                slug: string;
+                scan_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PlatformPresenceResponse"];
                 };
             };
             /** @description Validation Error */

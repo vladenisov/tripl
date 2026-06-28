@@ -604,6 +604,18 @@ def _collect_metric_breakdown_rows(
         if add_supported_column(configured_column, source="scan_config"):
             scan_breakdown_column_set.add(configured_column)
 
+    # The designated platform column is collected as a scan-level breakdown so
+    # platform values land in EventMetricBreakdown — powering the per-event
+    # platform presence matrix and per-platform volume anomalies — without the
+    # user also listing it in metric_breakdown_columns. Deduped against the set
+    # above so it is never queried twice.
+    if (
+        config.platform_column
+        and config.platform_column not in scan_breakdown_column_set
+        and add_supported_column(config.platform_column, source="platform_column")
+    ):
+        scan_breakdown_column_set.add(config.platform_column)
+
     generation_results: list[GenerationResult] = []
     if single_result is not None:
         generation_results.append(single_result)

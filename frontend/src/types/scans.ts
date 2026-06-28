@@ -105,8 +105,22 @@ export interface ScanConfig {
   metrics_row_limit: number | null
   app_version_column: string | null
   app_version_keep_releases: number | null
+  platform_column: string | null
   created_at: string
   updated_at: string
+}
+
+export interface PlatformPresenceRow {
+  event_id: string
+  event_name: string
+  present_platforms: string[]
+}
+
+export interface PlatformPresenceResponse {
+  scan_config_id: string
+  platform_column: string | null
+  platforms: string[]
+  items: PlatformPresenceRow[]
 }
 
 export interface ScanPreviewColumn {

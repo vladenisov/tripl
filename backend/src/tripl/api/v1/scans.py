@@ -6,6 +6,7 @@ from tripl.api.deps import EditorUserDep, SessionDep, get_editor_user
 from tripl.models.scan_config import ScanConfig
 from tripl.models.scan_job import ScanJob
 from tripl.models.scan_preview_job import ScanPreviewJob
+from tripl.schemas.event_metric import PlatformPresenceResponse
 from tripl.schemas.scan_config import (
     ScanConfigCreate,
     ScanConfigPreviewRequest,
@@ -14,7 +15,7 @@ from tripl.schemas.scan_config import (
     ScanMetricsReplayRequest,
 )
 from tripl.schemas.scan_job import ScanJobResponse, ScanPreviewJobResponse
-from tripl.services import audit_service, scan_service
+from tripl.services import audit_service, metrics_service, scan_service
 
 # Handlers return ORM models; FastAPI serializes them through each route's
 # ``response_model=...Response`` (the OpenAPI contract). The return annotations
@@ -87,6 +88,17 @@ async def get_scan_config(
     session: SessionDep, slug: str, scan_id: uuid.UUID
 ) -> ScanConfig:
     return await scan_service.get_scan_config(session, slug, scan_id)
+
+
+@router.get("/{scan_id}/platform-presence", response_model=PlatformPresenceResponse)
+async def get_platform_presence(
+    session: SessionDep, slug: str, scan_id: uuid.UUID
+) -> PlatformPresenceResponse:
+    """Per-event platform presence matrix for the scan's platform_column.
+
+    Empty when the scan has no platform_column set (the platform dimension is
+    inert), so callers can render the panel unconditionally."""
+    return await metrics_service.get_platform_presence(session, slug, scan_id)
 
 
 @router.patch("/{scan_id}", response_model=ScanConfigResponse)

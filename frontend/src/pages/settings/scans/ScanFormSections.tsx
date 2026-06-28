@@ -187,7 +187,7 @@ export function EventMappingSection({
 }
 
 export function AppVersionSection({ form, footerFor }: SectionProps) {
-  const { state, setAppVersionColumn, set, preview } = form
+  const { state, setAppVersionColumn, setPlatformColumn, set, preview } = form
   return (
     <SCard
       title="App version"
@@ -199,8 +199,10 @@ export function AppVersionSection({ form, footerFor }: SectionProps) {
           columns={preview?.columns ?? null}
           appVersionColumn={state.appVersionColumn}
           keepReleases={state.appVersionKeepReleases}
+          platformColumn={state.platformColumn}
           onAppVersionColumnChange={setAppVersionColumn}
           onKeepReleasesChange={value => set('appVersionKeepReleases', value)}
+          onPlatformColumnChange={setPlatformColumn}
         />
       </div>
     </SCard>
@@ -235,6 +237,7 @@ export function MetricsDriftSection({ form, footerFor }: SectionProps) {
           eventTypeColumn={state.eventTypeColumn}
           timeColumn={state.timeColumn}
           appVersionColumn={state.appVersionColumn}
+          platformColumn={state.platformColumn}
           valuesLimit={state.metricBreakdownValuesLimit}
           onToggleColumn={toggleMetricBreakdownColumn}
           onValuesLimitChange={value => set('metricBreakdownValuesLimit', value)}
@@ -245,6 +248,7 @@ export function MetricsDriftSection({ form, footerFor }: SectionProps) {
           eventTypeColumn={state.eventTypeColumn}
           timeColumn={state.timeColumn}
           appVersionColumn={state.appVersionColumn}
+          platformColumn={state.platformColumn}
           onToggleField={toggleDistributionDriftField}
         />
         <ScanPreviewPanel

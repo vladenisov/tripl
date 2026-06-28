@@ -8302,6 +8302,76 @@
         "title": "PlanRevisionSummary",
         "type": "object"
       },
+      "PlatformPresenceResponse": {
+        "description": "Per-event platform presence matrix derived from EventMetricBreakdown rows\non the scan's designated ``platform_column``. Empty when the column is unset.",
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/PlatformPresenceRow"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "platform_column": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Platform Column"
+          },
+          "platforms": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Platforms",
+            "type": "array"
+          },
+          "scan_config_id": {
+            "format": "uuid",
+            "title": "Scan Config Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "scan_config_id",
+          "platforms",
+          "items"
+        ],
+        "title": "PlatformPresenceResponse",
+        "type": "object"
+      },
+      "PlatformPresenceRow": {
+        "description": "One event and the platform values it has stored breakdown data for.",
+        "properties": {
+          "event_id": {
+            "format": "uuid",
+            "title": "Event Id",
+            "type": "string"
+          },
+          "event_name": {
+            "title": "Event Name",
+            "type": "string"
+          },
+          "present_platforms": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Present Platforms",
+            "type": "array"
+          }
+        },
+        "required": [
+          "event_id",
+          "event_name",
+          "present_platforms"
+        ],
+        "title": "PlatformPresenceRow",
+        "type": "object"
+      },
       "ProjectAnomalySettingsResponse": {
         "properties": {
           "anomaly_detection_enabled": {
@@ -9397,6 +9467,19 @@
             "title": "Name",
             "type": "string"
           },
+          "platform_column": {
+            "anyOf": [
+              {
+                "maxLength": 255,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Platform Column"
+          },
           "replay_chunk_interval": {
             "anyOf": [
               {
@@ -9660,6 +9743,17 @@
             "title": "Name",
             "type": "string"
           },
+          "platform_column": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Platform Column"
+          },
           "project_id": {
             "format": "uuid",
             "title": "Project Id",
@@ -9737,6 +9831,7 @@
           "metrics_row_limit",
           "app_version_column",
           "app_version_keep_releases",
+          "platform_column",
           "created_at",
           "updated_at"
         ],
@@ -9929,6 +10024,18 @@
               }
             ],
             "title": "Name"
+          },
+          "platform_column": {
+            "anyOf": [
+              {
+                "maxLength": 255,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Platform Column"
           },
           "replay_chunk_interval": {
             "anyOf": [
@@ -20882,6 +20989,59 @@
           }
         },
         "summary": "Replay Scan Metrics",
+        "tags": [
+          "scans"
+        ]
+      }
+    },
+    "/api/v1/projects/{slug}/scans/{scan_id}/platform-presence": {
+      "get": {
+        "description": "Per-event platform presence matrix for the scan's platform_column.\n\nEmpty when the scan has no platform_column set (the platform dimension is\ninert), so callers can render the panel unconditionally.",
+        "operationId": "get_platform_presence_api_v1_projects__slug__scans__scan_id__platform_presence_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "slug",
+            "required": true,
+            "schema": {
+              "title": "Slug",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "scan_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Scan Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlatformPresenceResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Platform Presence",
         "tags": [
           "scans"
         ]
