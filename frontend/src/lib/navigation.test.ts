@@ -18,8 +18,10 @@ describe('buildNavGroups', () => {
       schema: '/p/demo/settings/meta-fields',
       branches: '/p/demo/settings/branches',
       monitoring: '/p/demo/monitors',
+      anomalies: '/p/demo/anomalies',
       alerting: '/p/demo/settings/alerting',
       reconciliation: '/p/demo/reconciliation',
+      coverage: '/p/demo/coverage',
       scans: '/p/demo/settings/scans',
       audit: '/p/demo/settings/audit',
     })
@@ -101,6 +103,57 @@ describe('buildNavGroups', () => {
     }
   })
 
+  it('binds the Anomalies badge to the open-signal count (not firing monitors)', () => {
+    // Anomalies lists the raw open-signal population, so its badge uses
+    // monitoring_signal_count — deliberately distinct from the Monitors badge,
+    // which counts firing monitors (firing_monitor_count).
+    const summary = {
+      event_type_count: 6,
+      event_count: 2483,
+      active_event_count: 2483,
+      implemented_event_count: 100,
+      review_pending_event_count: 8,
+      archived_event_count: 12,
+      variable_count: 40,
+      scan_count: 5,
+      alert_destination_count: 2,
+      monitoring_signal_count: 9,
+      firing_monitor_count: 3,
+      latest_scan_job: null,
+      latest_signal: null,
+    }
+    const anomalies = buildNavGroups('demo', summary)
+      .flatMap((g) => g.items)
+      .find((i) => i.id === 'anomalies')!
+    expect(anomalies.count).toBe('9')
+    expect(anomalies.tone).toBe('danger')
+  })
+
+  it('omits the Anomalies badge when no signals are open', () => {
+    const summary = {
+      event_type_count: 6,
+      event_count: 2483,
+      active_event_count: 2483,
+      implemented_event_count: 100,
+      review_pending_event_count: 8,
+      archived_event_count: 12,
+      variable_count: 40,
+      scan_count: 5,
+      alert_destination_count: 2,
+      monitoring_signal_count: 0,
+      firing_monitor_count: 0,
+      latest_scan_job: null,
+      latest_signal: null,
+    }
+    const withZero = buildNavGroups('demo', summary).flatMap((g) => g.items)
+    const withoutSummary = buildNavGroups('demo', undefined).flatMap((g) => g.items)
+    for (const items of [withZero, withoutSummary]) {
+      const anomalies = items.find((i) => i.id === 'anomalies')!
+      expect(anomalies.count).toBeUndefined()
+      expect(anomalies.tone).toBeUndefined()
+    }
+  })
+
   it('surfaces Variables and Relations as Plan nav items (M6)', () => {
     const items = buildNavGroups('demo', undefined)
       .filter((g) => g.label === 'Plan')
@@ -121,8 +174,10 @@ describe('resolveNavLocation', () => {
     ['/p/demo/settings/branches', 'Plan', 'Plan branches'],
     ['/p/demo/monitors', 'Observe', 'Monitors'],
     ['/p/demo/settings/monitoring', 'Observe', 'Monitors'],
+    ['/p/demo/anomalies', 'Observe', 'Anomalies'],
     ['/p/demo/settings/alerting', 'Observe', 'Alerting'],
     ['/p/demo/reconciliation', 'Govern', 'Reconciliation'],
+    ['/p/demo/coverage', 'Govern', 'Coverage'],
     ['/p/demo/settings/scans', 'Govern', 'Scans'],
     ['/p/demo/settings/audit', 'Govern', 'Audit log'],
   ])('maps %s to %s › %s', (path, area, label) => {

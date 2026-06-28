@@ -1,5 +1,6 @@
 import {
   Activity,
+  AlertTriangle,
   Bell,
   Braces,
   Gauge,
@@ -8,6 +9,7 @@ import {
   Link2,
   ScrollText,
   Search,
+  ShieldCheck,
   Table2,
   Tag,
   Variable,
@@ -55,6 +57,7 @@ export function buildNavGroups(slug: string, summary: ProjectSummary | undefined
   const base = `/p/${slug}`
   const destinations = summary?.alert_destination_count ?? 0
   const firingMonitors = summary?.firing_monitor_count ?? 0
+  const openSignals = summary?.monitoring_signal_count ?? 0
 
   return [
     {
@@ -135,6 +138,19 @@ export function buildNavGroups(slug: string, summary: ProjectSummary | undefined
           tone: firingMonitors > 0 ? 'danger' : undefined,
         },
         {
+          id: 'anomalies',
+          label: 'Anomalies',
+          icon: AlertTriangle,
+          href: `${base}/anomalies`,
+          match: (p) => p.startsWith(`${base}/anomalies`),
+          // Badges the open-signal population (monitoring_signal_count) — the raw
+          // anomalies feed this page lists — in a danger tone when any are open.
+          // This is deliberately the signal count, not firing_monitor_count: that
+          // one belongs to Monitors above. Omitted when nothing is open.
+          count: openSignals > 0 ? formatCount(openSignals) : undefined,
+          tone: openSignals > 0 ? 'danger' : undefined,
+        },
+        {
           id: 'alerting',
           label: 'Alerting',
           icon: Bell,
@@ -153,6 +169,13 @@ export function buildNavGroups(slug: string, summary: ProjectSummary | undefined
           icon: GitCompare,
           href: `${base}/reconciliation`,
           match: (p) => p.startsWith(`${base}/reconciliation`),
+        },
+        {
+          id: 'coverage',
+          label: 'Coverage',
+          icon: ShieldCheck,
+          href: `${base}/coverage`,
+          match: (p) => p.startsWith(`${base}/coverage`),
         },
         {
           id: 'scans',
