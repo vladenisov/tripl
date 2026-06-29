@@ -1110,6 +1110,49 @@ def test_collect_metrics_stores_every_app_version_without_collapse(
         } == expected
 
 
+def test_reserved_catalog_columns_includes_version_and_platform() -> None:
+    from tripl.worker.tasks.metrics.tasks import reserved_catalog_columns
+
+    full = ScanConfig(
+        event_type_column="event_name",
+        time_column="time",
+        app_version_column="app_version",
+        platform_column="platform",
+    )
+    assert reserved_catalog_columns(full) == {"event_name", "time", "app_version", "platform"}
+
+    # Only the columns that are actually set are reserved.
+    partial = ScanConfig(time_column="time", app_version_column="app_version")
+    assert reserved_catalog_columns(partial) == {"time", "app_version"}
+
+    assert reserved_catalog_columns(ScanConfig()) == set()
+
+
+def test_ensure_event_type_skips_reserved_columns(
+    sync_session_factory: sessionmaker[Session],
+) -> None:
+    """Reserved columns (app_version/platform/time) must not become catalog
+    fields; ordinary columns still do."""
+    from tripl.worker.tasks.metrics.generation import _ensure_event_type_with_fields
+
+    with sync_session_factory() as session:
+        config = _create_scan_config(session)
+        columns = [
+            ColumnInfo(name="time", type_name="DateTime"),
+            ColumnInfo(name="app_version", type_name="String"),
+            ColumnInfo(name="platform", type_name="String"),
+            ColumnInfo(name="screen", type_name="String"),
+        ]
+        et = _ensure_event_type_with_fields(
+            session,
+            config.project_id,
+            "ReservedSkipPanel",
+            columns,
+            {"time", "app_version", "platform"},
+        )
+        assert {fd.name for fd in et.field_definitions} == {"screen"}
+
+
 def _seed_app_version_breakdowns(
     session: Session,
     config: ScanConfig,
