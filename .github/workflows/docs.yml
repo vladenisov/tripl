@@ -41,7 +41,7 @@ jobs:
         run: corepack pnpm install --frozen-lockfile --ignore-scripts
       - name: Build
         run: corepack pnpm build
-      - uses: actions/configure-pages@v5
+      - uses: actions/configure-pages@v6
       - uses: actions/upload-pages-artifact@v3
         with:
           path: website/build
