@@ -1,4 +1,5 @@
 import uuid
+from datetime import datetime
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, Query
@@ -15,10 +16,18 @@ from tripl.schemas.metric_definition import (
     MetricDefinitionResponse,
     MetricDefinitionUpdate,
 )
-from tripl.services import audit_service, metric_definition_service
+from tripl.schemas.metric_series import (
+    MetricBreakdownsResponse,
+    MetricSeriesResponse,
+    MetricVersionSeriesResponse,
+)
+from tripl.services import audit_service, metric_definition_service, metric_series_service
 
 router = APIRouter(prefix="/projects/{slug}/metrics", tags=["metrics-catalog"])
 _editor_required = [Depends(get_editor_user)]
+
+TimeFrom = Annotated[datetime | None, Query(alias="from")]
+TimeTo = Annotated[datetime | None, Query(alias="to")]
 
 
 @router.get("", response_model=MetricDefinitionListResponse)
@@ -31,7 +40,7 @@ async def list_metric_definitions(
     offset: int = Query(0, ge=0),
     limit: int = Query(200, ge=1, le=1000),
 ) -> MetricDefinitionListResponse:
-    items, total = await metric_definition_service.list_metric_definitions(
+    items, total = await metric_definition_service.list_metric_definitions_enriched(
         session,
         slug,
         status=status,
@@ -97,6 +106,62 @@ async def get_metric_definition(
     metric_id: uuid.UUID,
 ) -> MetricDefinition:
     return await metric_definition_service.get_metric_definition(session, slug, metric_id)
+
+
+# Series reads live under the two-segment ``/{metric_id}/...`` templates, which
+# never overlap the single-segment ``/{metric_id}`` CRUD route or the static
+# ``/reorder`` / ``/bulk-update`` routes.
+@router.get("/{metric_id}/series", response_model=MetricSeriesResponse)
+async def get_metric_series(
+    session: SessionDep,
+    slug: str,
+    metric_id: uuid.UUID,
+    time_from: TimeFrom = None,
+    time_to: TimeTo = None,
+) -> MetricSeriesResponse:
+    return await metric_series_service.get_metric_series(
+        session,
+        slug,
+        metric_id,
+        time_from=time_from,
+        time_to=time_to,
+    )
+
+
+@router.get("/{metric_id}/breakdowns", response_model=MetricBreakdownsResponse)
+async def get_metric_breakdowns(
+    session: SessionDep,
+    slug: str,
+    metric_id: uuid.UUID,
+    column: str | None = None,
+    time_from: TimeFrom = None,
+    time_to: TimeTo = None,
+) -> MetricBreakdownsResponse:
+    return await metric_series_service.get_metric_breakdowns(
+        session,
+        slug,
+        metric_id,
+        column=column,
+        time_from=time_from,
+        time_to=time_to,
+    )
+
+
+@router.get("/{metric_id}/versions", response_model=MetricVersionSeriesResponse)
+async def get_metric_version_series(
+    session: SessionDep,
+    slug: str,
+    metric_id: uuid.UUID,
+    time_from: TimeFrom = None,
+    time_to: TimeTo = None,
+) -> MetricVersionSeriesResponse:
+    return await metric_series_service.get_metric_version_series(
+        session,
+        slug,
+        metric_id,
+        time_from=time_from,
+        time_to=time_to,
+    )
 
 
 @router.patch("/{metric_id}", response_model=MetricDefinitionResponse)

@@ -1,4 +1,6 @@
 import uuid
+from dataclasses import dataclass
+from datetime import datetime
 
 from fastapi import HTTPException
 from sqlalchemy import func, or_, select
@@ -9,22 +11,31 @@ from tripl.models.data_source import DataSource
 from tripl.models.domain_enums import MetricKind, MetricStatus
 from tripl.models.event import Event
 from tripl.models.event_type import EventType
+from tripl.models.metric_anomaly import MetricAnomaly
 from tripl.models.metric_definition import MetricDefinition
+from tripl.models.metric_value import MetricValue
+from tripl.schemas.event_metric import MetricSignalResponse
 from tripl.schemas.metric_definition import (
     EventCompositionMetricCreate,
     FactAggregationMetricCreate,
     MetricDefinitionBulkUpdate,
     MetricDefinitionCreate,
+    MetricDefinitionListItem,
     MetricDefinitionMove,
     MetricDefinitionReorder,
     MetricDefinitionUpdate,
     SqlMetricCreate,
 )
+from tripl.services.metrics_service import _signal_from_anomaly
+from tripl.services.monitoring_utils import classify_signal_state
 from tripl.services.project_lookup import get_project_id_by_slug
 
 # Defensive cap on the list query; realistic projects have well under this many
 # metric definitions.
 _LIST_HARD_CAP = 1000
+
+# Number of trailing values returned per metric for the catalog sparkline.
+_SPARK_POINTS = 20
 
 
 async def _verify_data_source(session: AsyncSession, data_source_id: uuid.UUID) -> None:
@@ -117,6 +128,169 @@ async def list_metric_definitions(
         .limit(min(limit, _LIST_HARD_CAP))
     )
     return list(result.scalars().all()), int(total)
+
+
+@dataclass(frozen=True)
+class _MetricListEnrichment:
+    latest_value: float | None
+    latest_bucket: datetime | None
+    spark: list[float]
+    latest_signal: MetricSignalResponse | None
+
+
+async def _load_latest_values(
+    session: AsyncSession,
+    metric_ids: list[uuid.UUID],
+) -> dict[uuid.UUID, tuple[datetime, float, list[float]]]:
+    """One batched, row-bounded query for the latest value + trailing spark.
+
+    A window function (``ROW_NUMBER() OVER (PARTITION BY metric_definition_id
+    ORDER BY bucket DESC)``) trims each metric to its trailing ``_SPARK_POINTS``
+    rows inside the database, so the transferred result set is bounded at
+    ``len(metric_ids) * _SPARK_POINTS`` no matter how much history a metric has
+    accumulated — the single-query batch property is kept, but the scan no longer
+    grows without limit as data ages. Folds in Python to the latest
+    (bucket, value) plus the trailing sparkline, both in ascending bucket order.
+    """
+    if not metric_ids:
+        return {}
+    row_number = (
+        func.row_number()
+        .over(
+            partition_by=MetricValue.metric_definition_id,
+            order_by=(MetricValue.bucket.desc(), MetricValue.id.desc()),
+        )
+        .label("rn")
+    )
+    ranked = (
+        select(
+            MetricValue.metric_definition_id.label("metric_definition_id"),
+            MetricValue.bucket.label("bucket"),
+            MetricValue.value.label("value"),
+            row_number,
+        )
+        .where(MetricValue.metric_definition_id.in_(metric_ids))
+        .subquery()
+    )
+    rows = (
+        await session.execute(
+            select(ranked.c.metric_definition_id, ranked.c.bucket, ranked.c.value)
+            .where(ranked.c.rn <= _SPARK_POINTS)
+            .order_by(ranked.c.metric_definition_id, ranked.c.bucket)
+        )
+    ).all()
+    series_by_id: dict[uuid.UUID, list[tuple[datetime, float]]] = {}
+    for metric_id, bucket, value in rows:
+        series_by_id.setdefault(metric_id, []).append((bucket, float(value)))
+    result: dict[uuid.UUID, tuple[datetime, float, list[float]]] = {}
+    for metric_id, series in series_by_id.items():
+        latest_bucket, latest_value = series[-1]
+        spark = [value for _bucket, value in series]
+        result[metric_id] = (latest_bucket, latest_value, spark)
+    return result
+
+
+async def _load_latest_metric_anomalies(
+    session: AsyncSession,
+    metric_ids: list[uuid.UUID],
+) -> dict[uuid.UUID, MetricAnomaly]:
+    """One batched query for the latest anomaly per metric.
+
+    SEAM (ticket tripl-dxhp.6): catalog-metric anomalies live in
+    ``MetricAnomaly`` under ``scope_ref = str(metric_definition_id)``. The
+    ``MetricScopeType.metric`` enum value is added by .6, so until then we match
+    on ``scope_ref`` ALONE (a metric UUID never collides with the
+    event/event_type/project_total scope_refs).
+    """
+    if not metric_ids:
+        return {}
+    scope_refs = [str(metric_id) for metric_id in metric_ids]
+    by_ref = {str(metric_id): metric_id for metric_id in metric_ids}
+    rows = (
+        await session.execute(
+            select(MetricAnomaly)
+            .where(MetricAnomaly.scope_ref.in_(scope_refs))
+            .order_by(MetricAnomaly.bucket)
+        )
+    ).scalars()
+    latest: dict[uuid.UUID, MetricAnomaly] = {}
+    for anomaly in rows:
+        metric_id = by_ref.get(anomaly.scope_ref)
+        if metric_id is not None:
+            latest[metric_id] = anomaly  # ascending bucket order → last write wins
+    return latest
+
+
+async def _build_list_enrichment(
+    session: AsyncSession,
+    metric_ids: list[uuid.UUID],
+) -> dict[uuid.UUID, _MetricListEnrichment]:
+    latest_values = await _load_latest_values(session, metric_ids)
+    latest_anomalies = await _load_latest_metric_anomalies(session, metric_ids)
+    enrichment: dict[uuid.UUID, _MetricListEnrichment] = {}
+    for metric_id in metric_ids:
+        value_row = latest_values.get(metric_id)
+        latest_bucket = value_row[0] if value_row else None
+        latest_value = value_row[1] if value_row else None
+        spark = value_row[2] if value_row else []
+        signal: MetricSignalResponse | None = None
+        anomaly = latest_anomalies.get(metric_id)
+        if anomaly is not None:
+            state = classify_signal_state(
+                anomaly_bucket=anomaly.bucket,
+                latest_metric_bucket=latest_bucket,
+            )
+            if state is not None:
+                signal = _signal_from_anomaly(anomaly, state=state)
+        enrichment[metric_id] = _MetricListEnrichment(
+            latest_value=latest_value,
+            latest_bucket=latest_bucket,
+            spark=spark,
+            latest_signal=signal,
+        )
+    return enrichment
+
+
+async def list_metric_definitions_enriched(
+    session: AsyncSession,
+    slug: str,
+    *,
+    status: list[MetricStatus] | None = None,
+    kind: MetricKind | None = None,
+    search: str | None = None,
+    offset: int = 0,
+    limit: int = 200,
+) -> tuple[list[MetricDefinitionListItem], int]:
+    """List rows enriched with per-metric latest value + latest signal + spark.
+
+    Enrichment is two BATCHED queries across all listed ids (one per concern),
+    never one-per-metric.
+    """
+    metrics, total = await list_metric_definitions(
+        session,
+        slug,
+        status=status,
+        kind=kind,
+        search=search,
+        offset=offset,
+        limit=limit,
+    )
+    enrichment = await _build_list_enrichment(session, [metric.id for metric in metrics])
+    items: list[MetricDefinitionListItem] = []
+    for metric in metrics:
+        item = MetricDefinitionListItem.model_validate(metric)
+        extra = enrichment.get(metric.id)
+        if extra is not None:
+            item = item.model_copy(
+                update={
+                    "latest_value": extra.latest_value,
+                    "latest_bucket": extra.latest_bucket,
+                    "latest_signal": extra.latest_signal,
+                    "spark": extra.spark,
+                }
+            )
+        items.append(item)
+    return items, total
 
 
 async def get_metric_definition(

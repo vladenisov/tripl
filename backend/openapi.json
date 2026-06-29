@@ -7654,6 +7654,100 @@
         "title": "MetricAggregation",
         "type": "string"
       },
+      "MetricBreakdownSeries": {
+        "properties": {
+          "breakdown_value": {
+            "title": "Breakdown Value",
+            "type": "string"
+          },
+          "data": {
+            "items": {
+              "$ref": "#/components/schemas/MetricSeriesPoint"
+            },
+            "title": "Data",
+            "type": "array"
+          },
+          "is_other": {
+            "default": false,
+            "title": "Is Other",
+            "type": "boolean"
+          },
+          "total_value": {
+            "title": "Total Value",
+            "type": "number"
+          }
+        },
+        "required": [
+          "breakdown_value",
+          "total_value",
+          "data"
+        ],
+        "title": "MetricBreakdownSeries",
+        "type": "object"
+      },
+      "MetricBreakdownsResponse": {
+        "properties": {
+          "columns": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Columns",
+            "type": "array"
+          },
+          "interval": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ScanInterval"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "metric_id": {
+            "format": "uuid",
+            "title": "Metric Id",
+            "type": "string"
+          },
+          "scan_config_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Scan Config Id"
+          },
+          "selected_column": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Selected Column"
+          },
+          "series": {
+            "items": {
+              "$ref": "#/components/schemas/MetricBreakdownSeries"
+            },
+            "title": "Series",
+            "type": "array"
+          }
+        },
+        "required": [
+          "metric_id",
+          "columns",
+          "series"
+        ],
+        "title": "MetricBreakdownsResponse",
+        "type": "object"
+      },
       "MetricComposition": {
         "description": "How an ``event_composition`` metric combines event series.",
         "enum": [
@@ -7811,6 +7905,39 @@
             ],
             "title": "Last Collection Status"
           },
+          "latest_bucket": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Latest Bucket"
+          },
+          "latest_signal": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/MetricSignalResponse"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "latest_value": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Latest Value"
+          },
           "name": {
             "title": "Name",
             "type": "string"
@@ -7839,6 +7966,14 @@
           "reviewed": {
             "title": "Reviewed",
             "type": "boolean"
+          },
+          "spark": {
+            "default": [],
+            "items": {
+              "type": "number"
+            },
+            "title": "Spark",
+            "type": "array"
           },
           "status": {
             "$ref": "#/components/schemas/MetricStatus"
@@ -8434,6 +8569,141 @@
         "title": "MetricScopeType",
         "type": "string"
       },
+      "MetricSeriesPoint": {
+        "description": "One densified point of a catalog-metric series.\n\nMirrors ``EventMetricPoint`` but stores a float ``value``. ``expected_count``\n/ ``stddev`` / ``z_score`` / ``anomaly_direction`` are only populated for\nbuckets that carry an anomaly row; the rest leave them ``None``.",
+        "properties": {
+          "anomaly_direction": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AnomalyDirection"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "bucket": {
+            "format": "date-time",
+            "title": "Bucket",
+            "type": "string"
+          },
+          "expected_count": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expected Count"
+          },
+          "is_anomaly": {
+            "default": false,
+            "title": "Is Anomaly",
+            "type": "boolean"
+          },
+          "stddev": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Stddev"
+          },
+          "value": {
+            "title": "Value",
+            "type": "number"
+          },
+          "z_score": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Z Score"
+          }
+        },
+        "required": [
+          "bucket",
+          "value"
+        ],
+        "title": "MetricSeriesPoint",
+        "type": "object"
+      },
+      "MetricSeriesResponse": {
+        "properties": {
+          "data": {
+            "items": {
+              "$ref": "#/components/schemas/MetricSeriesPoint"
+            },
+            "title": "Data",
+            "type": "array"
+          },
+          "forecast": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/ForecastPoint"
+            },
+            "title": "Forecast",
+            "type": "array"
+          },
+          "interval": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ScanInterval"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "latest_signal": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/MetricSignalResponse"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "metric_id": {
+            "format": "uuid",
+            "title": "Metric Id",
+            "type": "string"
+          },
+          "scan_config_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Scan Config Id"
+          },
+          "scope": {
+            "default": "metric",
+            "title": "Scope",
+            "type": "string"
+          }
+        },
+        "required": [
+          "metric_id",
+          "data"
+        ],
+        "title": "MetricSeriesResponse",
+        "type": "object"
+      },
       "MetricSignalResponse": {
         "properties": {
           "actual_count": {
@@ -8525,6 +8795,116 @@
         ],
         "title": "MetricStatus",
         "type": "string"
+      },
+      "MetricVersionSeries": {
+        "properties": {
+          "data": {
+            "items": {
+              "$ref": "#/components/schemas/MetricSeriesPoint"
+            },
+            "title": "Data",
+            "type": "array"
+          },
+          "is_latest": {
+            "default": false,
+            "title": "Is Latest",
+            "type": "boolean"
+          },
+          "is_other": {
+            "default": false,
+            "title": "Is Other",
+            "type": "boolean"
+          },
+          "total_value": {
+            "title": "Total Value",
+            "type": "number"
+          },
+          "version": {
+            "title": "Version",
+            "type": "string"
+          }
+        },
+        "required": [
+          "version",
+          "total_value",
+          "data"
+        ],
+        "title": "MetricVersionSeries",
+        "type": "object"
+      },
+      "MetricVersionSeriesResponse": {
+        "properties": {
+          "app_version_column": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "App Version Column"
+          },
+          "interval": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ScanInterval"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "latest_version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Latest Version"
+          },
+          "metric_id": {
+            "format": "uuid",
+            "title": "Metric Id",
+            "type": "string"
+          },
+          "scan_config_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Scan Config Id"
+          },
+          "series": {
+            "items": {
+              "$ref": "#/components/schemas/MetricVersionSeries"
+            },
+            "title": "Series",
+            "type": "array"
+          },
+          "versions": {
+            "items": {
+              "$ref": "#/components/schemas/AppVersionInfo"
+            },
+            "title": "Versions",
+            "type": "array"
+          }
+        },
+        "required": [
+          "metric_id",
+          "versions",
+          "series"
+        ],
+        "title": "MetricVersionSeriesResponse",
+        "type": "object"
       },
       "MonitorDetailResponse": {
         "description": "A single monitor with the extra context a drill-in detail view needs.",
@@ -20550,6 +20930,108 @@
         ]
       }
     },
+    "/api/v1/projects/{slug}/metrics/{metric_id}/breakdowns": {
+      "get": {
+        "operationId": "get_metric_breakdowns_api_v1_projects__slug__metrics__metric_id__breakdowns_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "slug",
+            "required": true,
+            "schema": {
+              "title": "Slug",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "metric_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Metric Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "column",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Column"
+            }
+          },
+          {
+            "in": "query",
+            "name": "from",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "From"
+            }
+          },
+          {
+            "in": "query",
+            "name": "to",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "To"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MetricBreakdownsResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Metric Breakdowns",
+        "tags": [
+          "metrics-catalog"
+        ]
+      }
+    },
     "/api/v1/projects/{slug}/metrics/{metric_id}/move": {
       "patch": {
         "operationId": "move_metric_definition_api_v1_projects__slug__metrics__metric_id__move_patch",
@@ -20607,6 +21089,178 @@
           }
         },
         "summary": "Move Metric Definition",
+        "tags": [
+          "metrics-catalog"
+        ]
+      }
+    },
+    "/api/v1/projects/{slug}/metrics/{metric_id}/series": {
+      "get": {
+        "operationId": "get_metric_series_api_v1_projects__slug__metrics__metric_id__series_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "slug",
+            "required": true,
+            "schema": {
+              "title": "Slug",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "metric_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Metric Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "from",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "From"
+            }
+          },
+          {
+            "in": "query",
+            "name": "to",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "To"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MetricSeriesResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Metric Series",
+        "tags": [
+          "metrics-catalog"
+        ]
+      }
+    },
+    "/api/v1/projects/{slug}/metrics/{metric_id}/versions": {
+      "get": {
+        "operationId": "get_metric_version_series_api_v1_projects__slug__metrics__metric_id__versions_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "slug",
+            "required": true,
+            "schema": {
+              "title": "Slug",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "metric_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Metric Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "from",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "From"
+            }
+          },
+          {
+            "in": "query",
+            "name": "to",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "To"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MetricVersionSeriesResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Metric Version Series",
         "tags": [
           "metrics-catalog"
         ]

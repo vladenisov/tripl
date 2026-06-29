@@ -18,6 +18,7 @@ from tripl.models.domain_enums import (
     MetricStatus,
     ScanInterval,
 )
+from tripl.schemas.event_metric import MetricSignalResponse
 from tripl.schemas.scan_config import check_replay_chunk_against_interval
 
 
@@ -427,6 +428,16 @@ class MetricDefinitionListItem(BaseModel):
     last_collection_status: str | None
     created_at: datetime
     updated_at: datetime
+
+    # --- Read-time enrichment (populated by the list service, not the ORM) ---
+    # Latest collected value + its bucket, the latest open anomaly signal, and a
+    # short sparkline of recent values — for the catalog row's value/status/spark
+    # cells. All default to "no data" so the model validates straight off the ORM
+    # before enrichment is merged in.
+    latest_value: float | None = None
+    latest_bucket: datetime | None = None
+    latest_signal: MetricSignalResponse | None = None
+    spark: list[float] = []
 
 
 class MetricDefinitionListResponse(BaseModel):

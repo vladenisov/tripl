@@ -53,6 +53,13 @@ celery_app.conf.beat_schedule = {
         # itself becomes slow against a growing scan_configs table.
         "schedule": 300.0,
     },
+    "check-metric-definitions-due": {
+        "task": "tripl.worker.tasks.metrics.check_metric_definitions_due",
+        # Catalog metrics schedule on interval boundaries (15m, 1h, …) just like
+        # scans, so a 5-minute dispatcher tick is plenty. Runs independently of
+        # check-metrics-due (separate task + advisory lock).
+        "schedule": 300.0,
+    },
     "cleanup-schema-drifts": {
         "task": "tripl.worker.tasks.maintenance.cleanup_schema_drifts",
         # Daily prune is plenty — drift rows past retention are filtered
