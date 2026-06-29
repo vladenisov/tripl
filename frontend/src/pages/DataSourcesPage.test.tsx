@@ -16,6 +16,7 @@ const DATA_SOURCE: DataSource = {
   username: 'default',
   password_set: false,
   timeout_seconds: null,
+  json_path_discovery: null,
   extra_params: null,
   last_test_at: null,
   last_test_status: null,
@@ -324,6 +325,171 @@ describe('DataSourcesPage', () => {
     expect(screen.getByText('stale')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Re-test connection' })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Edit connection' })).toBeInTheDocument()
+  })
+
+  it('renders the JSON path discovery select for a ClickHouse create form and submits its value', async () => {
+    let postPayload: Record<string, unknown> | undefined
+
+    vi.spyOn(globalThis, 'fetch').mockImplementation((input: RequestInfo | URL, init?: RequestInit) => {
+      const url =
+        typeof input === 'string'
+          ? input
+          : input instanceof URL
+            ? input.toString()
+            : input.url
+
+      if (url.endsWith('/api/v1/data-sources') && !init?.method) {
+        return Promise.resolve(jsonResponse([DATA_SOURCE]))
+      }
+
+      if (url.endsWith('/api/v1/data-sources') && init?.method === 'POST') {
+        postPayload = JSON.parse(String(init.body)) as Record<string, unknown>
+        return Promise.resolve(jsonResponse(DATA_SOURCE))
+      }
+
+      return Promise.reject(new Error(`Unexpected request: ${url}`))
+    })
+
+    renderDataSourcesPage('/settings/data-sources', 'owner')
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Add connection' }))
+
+    // ClickHouse is the default db type, so the CH-only discovery select shows.
+    const discovery = await screen.findByLabelText('JSON path discovery')
+    expect(discovery).toBeInTheDocument()
+
+    fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'Prod CH' } })
+    fireEvent.change(screen.getByLabelText('Host'), { target: { value: 'ch.example.com' } })
+    fireEvent.change(screen.getByLabelText('Database'), { target: { value: 'analytics' } })
+    fireEvent.change(discovery, { target: { value: 'all' } })
+
+    fireEvent.click(screen.getByRole('button', { name: 'Create' }))
+
+    await waitFor(() => {
+      expect(postPayload?.json_path_discovery).toBe('all')
+    })
+  })
+
+  it('defaults the create payload json_path_discovery to "dynamic"', async () => {
+    let postPayload: Record<string, unknown> | undefined
+
+    vi.spyOn(globalThis, 'fetch').mockImplementation((input: RequestInfo | URL, init?: RequestInit) => {
+      const url =
+        typeof input === 'string'
+          ? input
+          : input instanceof URL
+            ? input.toString()
+            : input.url
+
+      if (url.endsWith('/api/v1/data-sources') && !init?.method) {
+        return Promise.resolve(jsonResponse([DATA_SOURCE]))
+      }
+
+      if (url.endsWith('/api/v1/data-sources') && init?.method === 'POST') {
+        postPayload = JSON.parse(String(init.body)) as Record<string, unknown>
+        return Promise.resolve(jsonResponse(DATA_SOURCE))
+      }
+
+      return Promise.reject(new Error(`Unexpected request: ${url}`))
+    })
+
+    renderDataSourcesPage('/settings/data-sources', 'owner')
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Add connection' }))
+    await screen.findByLabelText('JSON path discovery')
+
+    fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'Prod CH' } })
+    fireEvent.change(screen.getByLabelText('Host'), { target: { value: 'ch.example.com' } })
+    fireEvent.change(screen.getByLabelText('Database'), { target: { value: 'analytics' } })
+
+    fireEvent.click(screen.getByRole('button', { name: 'Create' }))
+
+    await waitFor(() => {
+      expect(postPayload?.json_path_discovery).toBe('dynamic')
+    })
+  })
+
+  it('includes json_path_discovery in the edit/update payload for a ClickHouse source', async () => {
+    let patchPayload: Record<string, unknown> | undefined
+
+    vi.spyOn(globalThis, 'fetch').mockImplementation((input: RequestInfo | URL, init?: RequestInit) => {
+      const url =
+        typeof input === 'string'
+          ? input
+          : input instanceof URL
+            ? input.toString()
+            : input.url
+
+      if (url.endsWith('/api/v1/data-sources') && !init?.method) {
+        return Promise.resolve(jsonResponse([DATA_SOURCE]))
+      }
+
+      if (url.endsWith('/api/v1/data-sources/ds-1') && init?.method === 'PATCH') {
+        patchPayload = JSON.parse(String(init.body)) as Record<string, unknown>
+        return Promise.resolve(jsonResponse(DATA_SOURCE))
+      }
+
+      return Promise.reject(new Error(`Unexpected request: ${url}`))
+    })
+
+    renderDataSourcesPage()
+
+    expect(await screen.findByRole('dialog', { name: 'Edit data source' })).toBeInTheDocument()
+    const discovery = screen.getByLabelText('JSON path discovery')
+    expect(discovery).toBeInTheDocument()
+    fireEvent.change(discovery, { target: { value: 'all' } })
+
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+
+    await waitFor(() => {
+      expect(patchPayload?.json_path_discovery).toBe('all')
+    })
+  })
+
+  it('omits json_path_discovery from a BigQuery create payload', async () => {
+    let postPayload: Record<string, unknown> | undefined
+
+    vi.spyOn(globalThis, 'fetch').mockImplementation((input: RequestInfo | URL, init?: RequestInit) => {
+      const url =
+        typeof input === 'string'
+          ? input
+          : input instanceof URL
+            ? input.toString()
+            : input.url
+
+      if (url.endsWith('/api/v1/data-sources') && !init?.method) {
+        return Promise.resolve(jsonResponse([DATA_SOURCE]))
+      }
+
+      if (url.endsWith('/api/v1/data-sources') && init?.method === 'POST') {
+        postPayload = JSON.parse(String(init.body)) as Record<string, unknown>
+        return Promise.resolve(jsonResponse(DATA_SOURCE))
+      }
+
+      return Promise.reject(new Error(`Unexpected request: ${url}`))
+    })
+
+    renderDataSourcesPage('/settings/data-sources', 'owner')
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Add connection' }))
+    fireEvent.change(await screen.findByLabelText('Type'), { target: { value: 'bigquery' } })
+
+    // The ClickHouse-only discovery control must disappear for BigQuery.
+    expect(screen.queryByLabelText('JSON path discovery')).not.toBeInTheDocument()
+
+    fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'BQ' } })
+    fireEvent.change(screen.getByLabelText('Project ID'), { target: { value: 'gcp-proj' } })
+    fireEvent.change(screen.getByLabelText('Default dataset'), { target: { value: 'analytics' } })
+    fireEvent.change(screen.getByLabelText('Service account JSON'), {
+      target: { value: '{"type":"service_account"}' },
+    })
+
+    fireEvent.click(screen.getByRole('button', { name: 'Create' }))
+
+    await waitFor(() => {
+      expect(postPayload).toBeDefined()
+    })
+    expect(postPayload).not.toHaveProperty('json_path_discovery')
   })
 
   it('hides inline recovery actions from non-owners on a failed source', async () => {

@@ -3592,6 +3592,8 @@ export interface components {
             } | null;
             /** Host */
             host: string;
+            /** Json Path Discovery */
+            json_path_discovery?: ("all" | "dynamic") | null;
             /** Name */
             name: string;
             /**
@@ -3633,6 +3635,8 @@ export interface components {
              * Format: uuid
              */
             id: string;
+            /** Json Path Discovery */
+            json_path_discovery?: ("all" | "dynamic") | null;
             /** Last Test At */
             last_test_at: string | null;
             /** Last Test Message */
@@ -3707,6 +3711,8 @@ export interface components {
             } | null;
             /** Host */
             host?: string | null;
+            /** Json Path Discovery */
+            json_path_discovery?: ("all" | "dynamic") | null;
             /** Name */
             name?: string | null;
             /** Password */

@@ -31,6 +31,12 @@ logger = logging.getLogger(__name__)
 _IDENTIFIER_RE = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_.]*$")
 _IDENTIFIER_PART_RE = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*$")
 
+# JSON path *discovery* (preview) enumeration functions. "dynamic" lists only the
+# important typed subcolumn paths (fast); "all" lists every path incl. shared-data
+# paths. Scan-time value extraction always uses JSONAllPaths and is unaffected.
+_JSON_PATH_DISCOVERY_FUNCS = {"all": "JSONAllPaths", "dynamic": "JSONDynamicPaths"}
+_DEFAULT_JSON_PATH_DISCOVERY = "dynamic"
+
 
 class ClickHouseAdapter(BaseAdapter):
     def __init__(
@@ -40,6 +46,7 @@ class ClickHouseAdapter(BaseAdapter):
         database: str,
         username: str = "",
         password: str = "",
+        json_path_discovery: str | None = None,
         **kwargs: object,
     ) -> None:
         self._client = clickhouse_connect.get_client(
@@ -51,6 +58,13 @@ class ClickHouseAdapter(BaseAdapter):
             **kwargs,
         )
         self._allowed_columns: set[str] = set()
+        # Which path-enumeration function the JSON path discovery query uses.
+        # Unknown/None falls back to the default ("dynamic").
+        self._json_path_discovery = (
+            json_path_discovery
+            if json_path_discovery in _JSON_PATH_DISCOVERY_FUNCS
+            else _DEFAULT_JSON_PATH_DISCOVERY
+        )
 
     def close(self) -> None:
         self._client.close()
@@ -119,9 +133,13 @@ class ClickHouseAdapter(BaseAdapter):
     ) -> dict[str, dict[str, list[object]]]:
         """Discover JSON paths independently from visible preview rows.
 
-        JSONAllPaths is already the scan-time primitive used by the adapter; here
-        it is run across the source query so the UI sees path candidates even
-        when they do not happen to appear in the small preview sample.
+        The enumeration function is chosen by the connection's json_path_discovery
+        mode: "dynamic" (JSONDynamicPaths, default) surfaces only the important
+        typed subcolumn paths and is much faster on wide JSON columns; "all"
+        (JSONAllPaths) lists every path including shared-data ones. It runs across
+        the source query so the UI sees path candidates even when they do not
+        appear in the small preview sample. Scan-time value extraction always uses
+        JSONAllPaths and is unaffected by this setting.
         """
         if not json_columns or path_limit <= 0 or sample_limit <= 0 or sample_row_limit <= 0:
             return {column: {} for column in json_columns}
@@ -135,12 +153,13 @@ class ClickHouseAdapter(BaseAdapter):
             f"(SELECT * FROM ({base_query}) AS _src{where_clause} "
             f"LIMIT {int(sample_row_limit)})"
         )
+        path_fn = _JSON_PATH_DISCOVERY_FUNCS[self._json_path_discovery]
         for column in json_columns:
             c = self._validate_column(column)
             path_sql = (
                 "SELECT _path "
                 "FROM ("
-                f"SELECT arrayJoin(JSONAllPaths(`{c}`)) AS _path "
+                f"SELECT arrayJoin({path_fn}(`{c}`)) AS _path "
                 f"FROM {sampled_source} AS _sample"
                 ") "
                 "WHERE _path != '' "

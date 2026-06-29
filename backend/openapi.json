@@ -3848,6 +3848,21 @@
             "title": "Host",
             "type": "string"
           },
+          "json_path_discovery": {
+            "anyOf": [
+              {
+                "enum": [
+                  "all",
+                  "dynamic"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Json Path Discovery"
+          },
           "name": {
             "maxLength": 255,
             "minLength": 1,
@@ -3927,6 +3942,21 @@
             "format": "uuid",
             "title": "Id",
             "type": "string"
+          },
+          "json_path_discovery": {
+            "anyOf": [
+              {
+                "enum": [
+                  "all",
+                  "dynamic"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Json Path Discovery"
           },
           "last_test_at": {
             "anyOf": [
@@ -4157,6 +4187,21 @@
               }
             ],
             "title": "Host"
+          },
+          "json_path_discovery": {
+            "anyOf": [
+              {
+                "enum": [
+                  "all",
+                  "dynamic"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Json Path Discovery"
           },
           "name": {
             "anyOf": [
