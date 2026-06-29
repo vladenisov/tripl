@@ -79,6 +79,24 @@ COLLECT_METRICS_SOFT_TIME_LIMIT_SECONDS = 24 * 60 * 60
 COLLECT_METRICS_TIME_LIMIT_SECONDS = 25 * 60 * 60
 
 
+def reserved_catalog_columns(config: ScanConfig) -> set[str]:
+    """Scan columns that are metric dimensions, not tracked event fields.
+
+    The event-type/time grouping columns and the app-version & platform breakdown
+    columns are collected into metric tables (EventMetric / EventMetricBreakdown),
+    never the catalog. Excluding them from FieldDefinition creation keeps them off
+    the events table, where they'd otherwise show up as useless columns carrying
+    non-deterministic per-event sample values.
+    """
+    reserved = (
+        config.event_type_column,
+        config.time_column,
+        config.app_version_column,
+        config.platform_column,
+    )
+    return {column for column in reserved if column}
+
+
 def _build_replay_progress_summary(
     *,
     time_from_dt: datetime,
@@ -307,11 +325,7 @@ def collect_metrics(
             columns = [c for c in columns if c.name != config.time_column]
         logger.info(f"Found {len(columns)} columns in base query")
 
-        skip_cols = set()
-        if config.event_type_column:
-            skip_cols.add(config.event_type_column)
-        if config.time_column:
-            skip_cols.add(config.time_column)
+        skip_cols = reserved_catalog_columns(config)
         json_value_path_map = _get_scan_json_value_path_map(config)
         runtime_config = app_settings_service.get_runtime_config_sync(session)
         scan_row_limit = config.scan_row_limit or runtime_config.scan_row_limit_default
