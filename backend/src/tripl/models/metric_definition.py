@@ -82,25 +82,27 @@ class MetricDefinition(UUIDMixin, TimestampMixin, Base):
 
     # --- Definition kind + kind-specific config ---
     kind: Mapped[str] = mapped_column(db_enum(MetricKind, "metric_kind"), nullable=False)
-    # Aggregation for ``fact_aggregation`` (count/sum/avg/min/max/count_distinct).
+    # Aggregation for a ``fact`` single operand (count/sum/avg/min/max/count_distinct).
     aggregation: Mapped[str | None] = mapped_column(
         db_enum(MetricAggregation, "metric_aggregation"), nullable=True
     )
-    # Composition operator for ``event_composition`` (single/ratio/per_distinct_user).
+    # Composition operator for ``event_composition`` (single/ratio/per_distinct_user)
+    # and ``fact`` (single/ratio).
     composition: Mapped[str | None] = mapped_column(
         db_enum(MetricComposition, "metric_composition"), nullable=True
     )
     # Free-form, kind-specific scalar config validated by a Pydantic discriminated
-    # union at the schema boundary. fact_aggregation: source_table/base_query,
-    # measure_column, distinct_column, filter_sql, time_column. sql: metric_sql,
+    # union at the schema boundary. fact single: measure_column, distinct_column,
+    # row_filter. fact ratio: numerator/denominator operands. sql: metric_sql,
     # time_column.
     config: Mapped[dict[str, object]] = mapped_column(JSON, default=dict, server_default="{}")
 
     # --- Fact-table model binding ---
-    # A ``fact`` metric references a separately-defined FactTable; the detailed
-    # fact config (aggregation/measure/filter/ratio) lives in ``config`` and is
-    # handled by a later ticket. NULL for non-``fact`` kinds; the fact table is
-    # kept when this metric is unbound (SET NULL).
+    # A ``fact`` metric references a separately-defined FactTable (the single
+    # operand, or the ratio numerator); the detailed fact config
+    # (measure/distinct/filter, and the ratio operands) lives in ``config``. NULL
+    # for non-``fact`` kinds; the fact table is kept when this metric is unbound
+    # (SET NULL).
     fact_table_id: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("fact_tables.id", ondelete="SET NULL"), nullable=True
     )
@@ -112,8 +114,10 @@ class MetricDefinition(UUIDMixin, TimestampMixin, Base):
     platform_column: Mapped[str | None] = mapped_column(String(255), nullable=True)
 
     # --- Collection binding (HYBRID) ---
-    # sql/fact_aggregation collect from their own data source on their own interval.
-    # event_composition leaves these NULL and reads event_metrics on the source grid.
+    # ``sql`` collects from its own data source on its own interval. ``fact``
+    # leaves ``data_source_id`` NULL (the data source comes from the referenced
+    # FactTable) but carries its own ``interval``. ``event_composition`` leaves
+    # both NULL and reads event_metrics on the source grid.
     data_source_id: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("data_sources.id", ondelete="SET NULL"), nullable=True
     )

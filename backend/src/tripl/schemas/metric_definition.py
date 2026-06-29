@@ -9,7 +9,6 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 from tripl.core.adapters.measure_validator import (
     validate_identifier,
     validate_select_sql_safety,
-    validate_sql_fragment,
 )
 from tripl.models.domain_enums import (
     MetricAggregation,
@@ -40,52 +39,81 @@ _AGGREGATIONS_REQUIRING_MEASURE = frozenset(
         MetricAggregation.avg,
         MetricAggregation.min,
         MetricAggregation.max,
-        MetricAggregation.count_distinct,
     }
 )
+
+# Compositions a ``fact`` metric supports. ``per_distinct_user`` is an
+# event_composition-only operator and is rejected for ``fact``.
+_FACT_COMPOSITIONS = frozenset({MetricComposition.single, MetricComposition.ratio})
+
+
+def _validate_fact_operand_columns(
+    *,
+    aggregation: MetricAggregation,
+    measure_column: str | None,
+    distinct_column: str | None,
+    role: str,
+) -> None:
+    """Enforce the per-aggregation column requirements of one fact operand.
+
+    ``count`` needs no column; ``sum``/``avg``/``min``/``max`` REQUIRE a
+    ``measure_column``; ``count_distinct`` REQUIRES a ``distinct_column``. Raises
+    ``ValueError`` (English) naming the operand role on any violation.
+    """
+    if aggregation in _AGGREGATIONS_REQUIRING_MEASURE and not measure_column:
+        msg = f"{role}: measure_column is required for aggregation '{aggregation.value}'"
+        raise ValueError(msg)
+    if aggregation is MetricAggregation.count_distinct and not distinct_column:
+        msg = f"{role}: distinct_column is required for aggregation 'count_distinct'"
+        raise ValueError(msg)
 
 
 # ── Kind-specific config payloads ────────────────────────────────────────────
 
 
-class FactAggregationConfig(BaseModel):
-    """Config JSON for a ``fact_aggregation`` metric.
+class FactOperand(BaseModel):
+    """One fact-table aggregation operand (a single metric, or one ratio side).
 
-    Requires a source: either ``source_table`` (a warehouse table) or
-    ``base_query`` (a base SELECT). ``measure_column`` is required by the
-    enclosing metric when the aggregation is not ``count`` (enforced there,
-    since the aggregation lives on the metric, not in this config).
+    References a ``FactTable`` by id and aggregates one of its introspected
+    columns. ``measure_column`` / ``distinct_column`` reach warehouse SQL
+    unparameterised, so they are identifier-validated here; their membership in
+    the referenced fact table's columns is checked in the service (it needs the
+    DB). ``row_filter`` is the NAME of one of that fact table's stored row
+    filters — never a raw SQL fragment — resolved to SQL at collection time.
     """
 
     model_config = ConfigDict(extra="forbid")
 
-    source_table: str | None = Field(default=None, min_length=1, max_length=255)
-    base_query: str | None = Field(default=None, min_length=1)
+    fact_table_id: uuid.UUID
+    aggregation: MetricAggregation
     measure_column: str | None = Field(default=None, min_length=1, max_length=255)
     distinct_column: str | None = Field(default=None, min_length=1, max_length=255)
-    filter_sql: str | None = Field(default=None, min_length=1)
-    time_column: str | None = Field(default=None, min_length=1, max_length=255)
+    row_filter: str | None = Field(default=None, min_length=1, max_length=255)
 
-    @field_validator("source_table", "measure_column", "distinct_column", "time_column")
+    @field_validator("measure_column", "distinct_column")
     @classmethod
     def _check_identifier_fields(cls, value: str | None) -> str | None:
         return _validate_optional_identifier(value)
 
-    @field_validator("filter_sql")
-    @classmethod
-    def _check_filter_sql(cls, value: str | None) -> str | None:
-        return value if value is None else validate_sql_fragment(value)
-
-    @field_validator("base_query")
-    @classmethod
-    def _check_base_query(cls, value: str | None) -> str | None:
-        return value if value is None else validate_select_sql_safety(value)
-
     @model_validator(mode="after")
-    def validate_source(self) -> FactAggregationConfig:
-        if not self.source_table and not self.base_query:
-            raise ValueError("fact_aggregation config requires either source_table or base_query")
+    def validate_operand(self) -> FactOperand:
+        _validate_fact_operand_columns(
+            aggregation=self.aggregation,
+            measure_column=self.measure_column,
+            distinct_column=self.distinct_column,
+            role="operand",
+        )
         return self
+
+    def to_config(self) -> dict[str, object]:
+        """JSON-safe operand dict for the metric ``config`` column."""
+        return {
+            "fact_table_id": str(self.fact_table_id),
+            "aggregation": self.aggregation.value,
+            "measure_column": self.measure_column,
+            "distinct_column": self.distinct_column,
+            "row_filter": self.row_filter,
+        }
 
 
 class SqlConfig(BaseModel):
@@ -158,34 +186,115 @@ class _MetricDefinitionBase(BaseModel):
 # ── Discriminated create variants ────────────────────────────────────────────
 
 
-class FactAggregationMetricCreate(_MetricDefinitionBase):
-    kind: Literal[MetricKind.fact_aggregation] = MetricKind.fact_aggregation
-    aggregation: MetricAggregation
-    config: FactAggregationConfig
-    data_source_id: uuid.UUID
+class FactMetricCreate(_MetricDefinitionBase):
+    """An aggregation over a separately-defined ``FactTable``.
+
+    SINGLE (``composition=single``, the default): one operand given by the
+    top-level ``fact_table_id`` + ``aggregation`` + the ``measure_column`` /
+    ``distinct_column`` / ``row_filter`` config fields.
+
+    RATIO (``composition=ratio``): ``numerator`` / ``denominator`` operands (each
+    a :class:`FactOperand`); the denominator MAY reference a different fact table.
+    The numerator operand is mirrored onto the model's ``fact_table_id`` /
+    ``aggregation`` columns for catalog display and FK integrity.
+
+    The data source and timestamp column are taken from the referenced fact
+    table(s) at collection time; only the collection ``interval`` lives here.
+    Fact-table existence, project ownership, column membership, and row-filter
+    name resolution are checked in the service (they need the DB).
+    """
+
+    kind: Literal[MetricKind.fact] = MetricKind.fact
+    composition: MetricComposition = MetricComposition.single
     interval: ScanInterval
     replay_chunk_interval: ScanInterval | None = None
 
+    # SINGLE operand (reuses the model's fact_table_id / aggregation columns).
+    fact_table_id: uuid.UUID | None = None
+    aggregation: MetricAggregation | None = None
+    measure_column: str | None = Field(default=None, min_length=1, max_length=255)
+    distinct_column: str | None = Field(default=None, min_length=1, max_length=255)
+    row_filter: str | None = Field(default=None, min_length=1, max_length=255)
+
+    # RATIO operands.
+    numerator: FactOperand | None = None
+    denominator: FactOperand | None = None
+
+    @field_validator("measure_column", "distinct_column")
+    @classmethod
+    def _check_single_identifier_fields(cls, value: str | None) -> str | None:
+        return _validate_optional_identifier(value)
+
     @model_validator(mode="after")
-    def validate_kind(self) -> FactAggregationMetricCreate:
-        if self.aggregation in _AGGREGATIONS_REQUIRING_MEASURE and not self.config.measure_column:
+    def validate_kind(self) -> FactMetricCreate:
+        if self.composition not in _FACT_COMPOSITIONS:
             raise ValueError(
-                f"measure_column is required for aggregation '{self.aggregation.value}'"
+                f"fact metric composition must be 'single' or 'ratio', got "
+                f"'{self.composition.value}'"
             )
+        if self.composition is MetricComposition.single:
+            self._validate_single()
+        else:
+            self._validate_ratio()
         check_replay_chunk_against_interval(
             interval=self.interval,
             replay_chunk_interval=self.replay_chunk_interval,
         )
         return self
 
+    def _validate_single(self) -> None:
+        if self.numerator is not None or self.denominator is not None:
+            raise ValueError("single fact metric must not set numerator/denominator operands")
+        if self.fact_table_id is None or self.aggregation is None:
+            raise ValueError("single fact metric requires fact_table_id and aggregation")
+        _validate_fact_operand_columns(
+            aggregation=self.aggregation,
+            measure_column=self.measure_column,
+            distinct_column=self.distinct_column,
+            role="single",
+        )
+
+    def _validate_ratio(self) -> None:
+        if self.numerator is None or self.denominator is None:
+            raise ValueError("ratio fact metric requires both numerator and denominator operands")
+        if (
+            self.fact_table_id is not None
+            or self.aggregation is not None
+            or self.measure_column is not None
+            or self.distinct_column is not None
+            or self.row_filter is not None
+        ):
+            raise ValueError(
+                "ratio fact metric must not set top-level single-operand fields; "
+                "use numerator/denominator"
+            )
+
     def to_create_values(self) -> dict[str, object]:
+        if self.composition is MetricComposition.single:
+            fact_table_id = self.fact_table_id
+            aggregation = self.aggregation
+            config: dict[str, object] = {
+                "measure_column": self.measure_column,
+                "distinct_column": self.distinct_column,
+                "row_filter": self.row_filter,
+            }
+        else:
+            if self.numerator is None or self.denominator is None:
+                raise ValueError("ratio fact metric requires both numerator and denominator")
+            fact_table_id = self.numerator.fact_table_id
+            aggregation = self.numerator.aggregation
+            config = {
+                "numerator": self.numerator.to_config(),
+                "denominator": self.denominator.to_config(),
+            }
         return {
             **self._shared_values(),
             "kind": self.kind,
-            "aggregation": self.aggregation,
-            "composition": None,
-            "config": self.config.model_dump(),
-            "data_source_id": self.data_source_id,
+            "aggregation": aggregation,
+            "composition": self.composition,
+            "config": config,
+            "fact_table_id": fact_table_id,
+            "data_source_id": None,
             "interval": self.interval,
             "replay_chunk_interval": self.replay_chunk_interval,
             "numerator_event_id": None,
@@ -217,6 +326,7 @@ class SqlMetricCreate(_MetricDefinitionBase):
             "aggregation": None,
             "composition": None,
             "config": self.config.model_dump(),
+            "fact_table_id": None,
             "data_source_id": self.data_source_id,
             "interval": self.interval,
             "replay_chunk_interval": self.replay_chunk_interval,
@@ -266,6 +376,7 @@ class EventCompositionMetricCreate(_MetricDefinitionBase):
             "aggregation": None,
             "composition": self.composition,
             "config": {},
+            "fact_table_id": None,
             "data_source_id": None,
             "interval": None,
             "replay_chunk_interval": None,
@@ -293,7 +404,7 @@ def _validate_single_ref(
 
 
 MetricDefinitionCreate = Annotated[
-    FactAggregationMetricCreate | SqlMetricCreate | EventCompositionMetricCreate,
+    FactMetricCreate | SqlMetricCreate | EventCompositionMetricCreate,
     Field(discriminator="kind"),
 ]
 
@@ -384,6 +495,7 @@ class MetricDefinitionResponse(BaseModel):
     aggregation: MetricAggregation | None
     composition: MetricComposition | None
     config: dict[str, object]
+    fact_table_id: uuid.UUID | None
     breakdown_columns: list[str]
     breakdown_values_limit: int | None
     app_version_column: str | None

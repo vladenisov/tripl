@@ -17,7 +17,6 @@ import {
   type SelectOption,
 } from '@/components/settings/kit'
 import {
-  METRIC_AGGREGATIONS,
   METRIC_COMPOSITIONS,
   METRIC_KIND_LABEL,
   METRIC_SCAN_INTERVALS,
@@ -26,8 +25,6 @@ import {
   type DataSource,
   type EventCompositionMetricCreate,
   type EventListItem,
-  type FactAggregationMetricCreate,
-  type MetricAggregation,
   type MetricComposition,
   type MetricCreate,
   type MetricDefinitionResponse,
@@ -40,15 +37,7 @@ import {
 
 const DEFAULT_COLOR = '#6366f1'
 
-// Aggregations that operate on a measure column (count / count_distinct don't).
-const MEASURE_AGGREGATIONS: readonly MetricAggregation[] = ['sum', 'avg', 'min', 'max']
-
 const KIND_OPTIONS: { value: MetricKind; label: string; description: string }[] = [
-  {
-    value: 'fact_aggregation',
-    label: 'Fact aggregation',
-    description: 'Aggregate a warehouse table or base query (count, sum, distinct…).',
-  },
   {
     value: 'sql',
     label: 'SQL',
@@ -113,7 +102,7 @@ export function MetricForm({ slug, metric, dataSources, events, onClose }: Metri
     return typeof value === 'string' ? value : ''
   }
 
-  const [kind, setKind] = useState<MetricKind>(metric?.kind ?? 'fact_aggregation')
+  const [kind, setKind] = useState<MetricKind>(metric?.kind ?? 'sql')
   const [displayName, setDisplayName] = useState(metric?.display_name ?? '')
   const [name, setName] = useState(metric?.name ?? '')
   const [description, setDescription] = useState(metric?.description ?? '')
@@ -129,16 +118,9 @@ export function MetricForm({ slug, metric, dataSources, events, onClose }: Metri
   const [appVersionColumn, setAppVersionColumn] = useState(metric?.app_version_column ?? '')
   const [platformColumn, setPlatformColumn] = useState(metric?.platform_column ?? '')
 
-  // Fact aggregation
+  // Shared collection settings (SQL today; fact metrics arrive in a later slice).
   const [dataSourceId, setDataSourceId] = useState(metric?.data_source_id ?? '')
   const [interval, setIntervalValue] = useState<MetricScanInterval>(metric?.interval ?? '1h')
-  const [aggregation, setAggregation] = useState<MetricAggregation>(metric?.aggregation ?? 'count')
-  const [sourceTable, setSourceTable] = useState(configString('source_table'))
-  const [baseQuery, setBaseQuery] = useState(configString('base_query'))
-  const [measureColumn, setMeasureColumn] = useState(configString('measure_column'))
-  const [distinctColumn, setDistinctColumn] = useState(configString('distinct_column'))
-  const [filterSql, setFilterSql] = useState(configString('filter_sql'))
-  const [factTimeColumn, setFactTimeColumn] = useState(configString('time_column'))
 
   // SQL
   const [metricSql, setMetricSql] = useState(configString('metric_sql'))
@@ -160,9 +142,6 @@ export function MetricForm({ slug, metric, dataSources, events, onClose }: Metri
     [events],
   )
 
-  const needsMeasure = MEASURE_AGGREGATIONS.includes(aggregation)
-  const needsDistinct = aggregation === 'count_distinct'
-
   function validate(): string[] {
     const errs: string[] = []
     if (!displayName.trim()) errs.push('Display name is required.')
@@ -174,19 +153,7 @@ export function MetricForm({ slug, metric, dataSources, events, onClose }: Metri
     if (isNew) {
       if (!name.trim()) errs.push('Internal name is required.')
 
-      if (kind === 'fact_aggregation') {
-        if (!dataSourceId) errs.push('A data source is required for a fact aggregation.')
-        if (!interval) errs.push('A collection interval is required.')
-        if (!sourceTable.trim() && !baseQuery.trim()) {
-          errs.push('Provide a source table or a base query.')
-        }
-        if (needsMeasure && !measureColumn.trim()) {
-          errs.push(`A measure column is required for the "${aggregation}" aggregation.`)
-        }
-        if (needsDistinct && !distinctColumn.trim()) {
-          errs.push('A distinct column is required for count_distinct.')
-        }
-      } else if (kind === 'sql') {
+      if (kind === 'sql') {
         if (!dataSourceId) errs.push('A data source is required for a SQL metric.')
         if (!interval) errs.push('A collection interval is required.')
         if (!metricSql.trim()) errs.push('The metric SQL query is required.')
@@ -217,24 +184,7 @@ export function MetricForm({ slug, metric, dataSources, events, onClose }: Metri
       unit: unit.trim() || null,
     }
 
-    if (kind === 'fact_aggregation') {
-      const payload: FactAggregationMetricCreate = {
-        ...base,
-        kind: 'fact_aggregation',
-        aggregation,
-        interval,
-        data_source_id: dataSourceId,
-        config: {
-          source_table: sourceTable.trim() || null,
-          base_query: baseQuery.trim() || null,
-          measure_column: measureColumn.trim() || null,
-          distinct_column: distinctColumn.trim() || null,
-          filter_sql: filterSql.trim() || null,
-          time_column: factTimeColumn.trim() || null,
-        },
-      }
-      return payload
-    }
+    // TODO(tripl-ysji.5): build the rich `fact` create payload + form here.
     if (kind === 'sql') {
       const payload: SqlMetricCreate = {
         ...base,
@@ -247,6 +197,9 @@ export function MetricForm({ slug, metric, dataSources, events, onClose }: Metri
         },
       }
       return payload
+    }
+    if (kind === 'fact') {
+      throw new Error('fact metric creation is not yet implemented (tripl-ysji.5)')
     }
     const payload: EventCompositionMetricCreate = {
       ...base,
@@ -380,52 +333,6 @@ export function MetricForm({ slug, metric, dataSources, events, onClose }: Metri
             />
           </MField>
         </SCard>
-
-        {isNew && kind === 'fact_aggregation' && (
-          <SCard title="Fact aggregation" description="Aggregate a warehouse table or base query.">
-            <MField label="Data source" htmlFor="metric-data-source" required>
-              <Select id="metric-data-source" value={dataSourceId} onChange={setDataSourceId} options={dataSourceOptions} />
-            </MField>
-            <MField label="Collection interval" htmlFor="metric-interval" required>
-              <Select
-                id="metric-interval"
-                value={interval}
-                onChange={value => setIntervalValue(value as MetricScanInterval)}
-                options={METRIC_SCAN_INTERVALS.map(i => ({ value: i, label: i }))}
-              />
-            </MField>
-            <MField label="Aggregation" htmlFor="metric-aggregation" required>
-              <Select
-                id="metric-aggregation"
-                value={aggregation}
-                onChange={value => setAggregation(value as MetricAggregation)}
-                options={METRIC_AGGREGATIONS.map(a => ({ value: a, label: a }))}
-              />
-            </MField>
-            <MField label="Source table" htmlFor="metric-source-table" hint="Provide a source table or a base query below.">
-              <TextInput id="metric-source-table" value={sourceTable} onChange={setSourceTable} mono placeholder="events.checkout" />
-            </MField>
-            <MField label="Base query" htmlFor="metric-base-query" hint="Optional SQL subquery used as the aggregation source.">
-              <TextArea id="metric-base-query" value={baseQuery} onChange={setBaseQuery} mono rows={2} placeholder="SELECT * FROM events WHERE …" />
-            </MField>
-            {needsMeasure && (
-              <MField label="Measure column" htmlFor="metric-measure" required hint="Column aggregated by sum/avg/min/max.">
-                <TextInput id="metric-measure" value={measureColumn} onChange={setMeasureColumn} mono placeholder="amount" />
-              </MField>
-            )}
-            {needsDistinct && (
-              <MField label="Distinct column" htmlFor="metric-distinct" required hint="Column counted distinctly.">
-                <TextInput id="metric-distinct" value={distinctColumn} onChange={setDistinctColumn} mono placeholder="user_id" />
-              </MField>
-            )}
-            <MField label="Filter SQL" htmlFor="metric-filter" hint="Optional WHERE clause (without the WHERE keyword).">
-              <TextInput id="metric-filter" value={filterSql} onChange={setFilterSql} mono placeholder="status = 'ok'" />
-            </MField>
-            <MField label="Time column" htmlFor="metric-fact-time" last hint="Column used to bucket rows over time.">
-              <TextInput id="metric-fact-time" value={factTimeColumn} onChange={setFactTimeColumn} mono placeholder="created_at" />
-            </MField>
-          </SCard>
-        )}
 
         {isNew && kind === 'sql' && (
           <SCard title="SQL" description="A custom query returning one numeric value per bucket.">

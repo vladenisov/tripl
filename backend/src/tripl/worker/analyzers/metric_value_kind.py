@@ -13,11 +13,11 @@ This single predicate is consumed by two places that must agree:
 * ``services/metric_series_service.py`` — count-shaped gaps densify to ``0.0``;
   fractional gaps stay absent (rendered as a null break in the chart).
 
-Count-shaped:  ``fact_aggregation`` with aggregation in {count, count_distinct,
-sum}; ``event_composition`` ``single`` (a count).
+Count-shaped:  ``fact`` ``single`` with aggregation in {count, count_distinct};
+``event_composition`` ``single`` (a count).
 Fractional:    ``event_composition`` ``ratio`` / ``per_distinct_user``;
-``fact_aggregation`` ``avg`` / ``min`` / ``max`` (levels); any ``sql`` metric
-(arbitrary user expression).
+``fact`` ``ratio`` and ``fact`` ``single`` with ``sum`` / ``avg`` / ``min`` /
+``max`` (levels); any ``sql`` metric (arbitrary user expression).
 """
 
 from __future__ import annotations
@@ -36,7 +36,6 @@ if TYPE_CHECKING:
 _COUNT_SHAPED_AGGREGATIONS = {
     MetricAggregation.count,
     MetricAggregation.count_distinct,
-    MetricAggregation.sum,
 }
 
 
@@ -62,7 +61,13 @@ def is_count_shaped(metric: MetricDefinition) -> bool:
     if kind is MetricKind.event_composition:
         composition = _coerce(metric.composition, MetricComposition)
         return composition is MetricComposition.single
-    if kind is MetricKind.fact_aggregation:
+    if kind is MetricKind.fact:
+        # A fact ratio is fractional; a single operand is count-shaped only for
+        # the count-style aggregations (count / count_distinct). An unset
+        # composition defaults to single (the single-operand shape).
+        composition = _coerce(metric.composition, MetricComposition)
+        if composition is MetricComposition.ratio:
+            return False
         aggregation = _coerce(metric.aggregation, MetricAggregation)
         return aggregation in _COUNT_SHAPED_AGGREGATIONS
     return True

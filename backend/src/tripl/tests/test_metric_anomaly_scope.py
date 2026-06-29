@@ -177,8 +177,9 @@ def test_recompute_persists_metric_scope_anomaly(
         metric = _add_metric(
             session,
             config,
-            kind=MetricKind.fact_aggregation,
+            kind=MetricKind.fact,
             aggregation=MetricAggregation.count,
+            composition=MetricComposition.single,
             name="signups",
         )
         # Flat baseline (10) for 9 buckets, a clear spike (100) at the last.
@@ -213,8 +214,9 @@ def test_detect_metrics_disabled_skips_metric_scope(
         metric = _add_metric(
             session,
             config,
-            kind=MetricKind.fact_aggregation,
+            kind=MetricKind.fact,
             aggregation=MetricAggregation.count,
+            composition=MetricComposition.single,
             name="signups",
         )
         baseline = {hour: 10.0 for hour in range(_SPIKE_HOUR)}
@@ -264,8 +266,9 @@ def _seed_spiked_metric(session: Session) -> tuple[ScanConfig, MetricDefinition]
     metric = _add_metric(
         session,
         config,
-        kind=MetricKind.fact_aggregation,
+        kind=MetricKind.fact,
         aggregation=MetricAggregation.count,
+        composition=MetricComposition.single,
         name="signups",
     )
     baseline = {hour: 10.0 for hour in range(_SPIKE_HOUR)}
@@ -430,8 +433,9 @@ async def test_get_active_signals_surfaces_metric_scope(client: AsyncClient) -> 
                 project_id=project_id,
                 name="conv",
                 display_name="Conversions",
-                kind=MetricKind.fact_aggregation.value,
+                kind=MetricKind.fact.value,
                 aggregation=MetricAggregation.count.value,
+                composition=MetricComposition.single.value,
                 config={},
                 interval="1h",
                 status=MetricStatus.active.value,
@@ -512,8 +516,9 @@ def test_metric_scope_partial_unique_index_blocks_duplicate_rows(
         metric = _add_metric(
             session,
             config,
-            kind=MetricKind.fact_aggregation,
+            kind=MetricKind.fact,
             aggregation=MetricAggregation.count,
+            composition=MetricComposition.single,
             name="signups",
         )
         bucket = _BASE + timedelta(hours=_SPIKE_HOUR)
@@ -560,8 +565,9 @@ def test_metric_scope_upsert_absorbs_conflicting_row(
         metric = _add_metric(
             session,
             config,
-            kind=MetricKind.fact_aggregation,
+            kind=MetricKind.fact,
             aggregation=MetricAggregation.count,
+            composition=MetricComposition.single,
             name="signups",
         )
         bucket = _BASE + timedelta(hours=_SPIKE_HOUR)

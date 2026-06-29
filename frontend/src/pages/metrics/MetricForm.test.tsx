@@ -59,19 +59,19 @@ afterEach(() => {
 })
 
 describe('MetricForm validation', () => {
-  it('rejects a fact aggregation that is missing required identity/config', async () => {
+  it('rejects a SQL metric that is missing required identity/config', async () => {
     renderForm()
 
-    // Fresh fact_aggregation form: no display name, no data source, no source/base.
+    // Fresh form: kind defaults to SQL, with no display name, data source, or query.
     submit()
 
     expect(await screen.findByText('Display name is required.')).toBeInTheDocument()
-    expect(screen.getByText('A data source is required for a fact aggregation.')).toBeInTheDocument()
-    expect(screen.getByText('Provide a source table or a base query.')).toBeInTheDocument()
+    expect(screen.getByText('A data source is required for a SQL metric.')).toBeInTheDocument()
+    expect(screen.getByText('The metric SQL query is required.')).toBeInTheDocument()
     expect(metricsCatalogApi.create).not.toHaveBeenCalled()
   })
 
-  it('requires a measure column for a sum aggregation', async () => {
+  it('requires a time column for a SQL metric', async () => {
     renderForm()
 
     fireEvent.change(screen.getByLabelText('Display name', { exact: false }), {
@@ -80,19 +80,20 @@ describe('MetricForm validation', () => {
     fireEvent.change(screen.getByLabelText('Internal name', { exact: false }), {
       target: { value: 'total_revenue' },
     })
-    fireEvent.change(document.getElementById('metric-data-source')!, { target: { value: 'ds-1' } })
-    fireEvent.change(document.getElementById('metric-source-table')!, { target: { value: 'events.orders' } })
-    fireEvent.change(document.getElementById('metric-aggregation')!, { target: { value: 'sum' } })
+    fireEvent.change(document.getElementById('metric-sql-data-source')!, { target: { value: 'ds-1' } })
+    fireEvent.change(document.getElementById('metric-sql-query')!, {
+      target: { value: 'SELECT 1 AS value' },
+    })
 
     submit()
 
     expect(
-      await screen.findByText('A measure column is required for the "sum" aggregation.'),
+      await screen.findByText('A time column is required for a SQL metric.'),
     ).toBeInTheDocument()
     expect(metricsCatalogApi.create).not.toHaveBeenCalled()
   })
 
-  it('creates a valid count fact aggregation', async () => {
+  it('creates a valid SQL metric', async () => {
     const { onClose } = renderForm()
 
     fireEvent.change(screen.getByLabelText('Display name', { exact: false }), {
@@ -101,8 +102,11 @@ describe('MetricForm validation', () => {
     fireEvent.change(screen.getByLabelText('Internal name', { exact: false }), {
       target: { value: 'order_count' },
     })
-    fireEvent.change(document.getElementById('metric-data-source')!, { target: { value: 'ds-1' } })
-    fireEvent.change(document.getElementById('metric-source-table')!, { target: { value: 'events.orders' } })
+    fireEvent.change(document.getElementById('metric-sql-data-source')!, { target: { value: 'ds-1' } })
+    fireEvent.change(document.getElementById('metric-sql-query')!, {
+      target: { value: 'SELECT bucket, count(*) AS value FROM events GROUP BY 1' },
+    })
+    fireEvent.change(document.getElementById('metric-sql-time')!, { target: { value: 'bucket' } })
 
     submit()
 
@@ -110,8 +114,7 @@ describe('MetricForm validation', () => {
     expect(metricsCatalogApi.create).toHaveBeenCalledWith(
       'demo',
       expect.objectContaining({
-        kind: 'fact_aggregation',
-        aggregation: 'count',
+        kind: 'sql',
         data_source_id: 'ds-1',
         name: 'order_count',
         display_name: 'Order count',
@@ -120,13 +123,13 @@ describe('MetricForm validation', () => {
     await waitFor(() => expect(onClose).toHaveBeenCalled())
   })
 
-  // A saved fact_aggregation whose `config` is intentionally empty: in create
-  // mode that would fail the "source table or base query" check. It must not
-  // block an edit, since config is immutable and excluded from the update.
+  // A saved metric whose `config` is intentionally empty: in create mode that
+  // would fail the "metric SQL query is required" check. It must not block an
+  // edit, since config is immutable and excluded from the update.
   const EDIT_METRIC = {
     id: 'metric-1',
     project_id: 'p-1',
-    kind: 'fact_aggregation',
+    kind: 'sql',
     name: 'order_count',
     display_name: 'Order count',
     description: 'Orders per hour',
@@ -159,9 +162,9 @@ describe('MetricForm validation', () => {
     expect(document.getElementById('metric-name')).toBeNull()
     expect(screen.getByText('order_count')).toBeInTheDocument()
     // The kind-specific config section is not rendered at all.
-    expect(document.getElementById('metric-data-source')).toBeNull()
-    expect(document.getElementById('metric-source-table')).toBeNull()
-    expect(document.getElementById('metric-aggregation')).toBeNull()
+    expect(document.getElementById('metric-sql-data-source')).toBeNull()
+    expect(document.getElementById('metric-sql-query')).toBeNull()
+    expect(document.getElementById('metric-sql-time')).toBeNull()
   })
 
   it('saves presentation edits without re-validating immutable config', async () => {
@@ -180,7 +183,7 @@ describe('MetricForm validation', () => {
       expect.objectContaining({ display_name: 'Orders / hour' }),
     )
     // The empty config would fail create-mode validation; it must not block an edit.
-    expect(screen.queryByText('Provide a source table or a base query.')).toBeNull()
+    expect(screen.queryByText('The metric SQL query is required.')).toBeNull()
     expect(metricsCatalogApi.create).not.toHaveBeenCalled()
     await waitFor(() => expect(onClose).toHaveBeenCalled())
   })

@@ -279,7 +279,10 @@ def _metric_definition_due(
     )
     if kind is MetricKind.event_composition:
         return _event_composition_due(session, definition)
-    if definition.interval is None or definition.data_source_id is None:
+    # ``sql`` carries its own ``data_source_id``; ``fact`` takes its data source
+    # from the referenced FactTable (so ``data_source_id`` is NULL). Both gate on
+    # the metric's own collection ``interval``.
+    if definition.interval is None:
         return False
     delta = get_interval(definition.interval).delta
     last_bucket = session.execute(

@@ -45,15 +45,18 @@ def _project(session: Session) -> Project:
     return project
 
 
-def test_fact_aggregation_metric_roundtrips(session_factory: sessionmaker[Session]) -> None:
+def test_fact_metric_roundtrips(session_factory: sessionmaker[Session]) -> None:
+    fact_table_id = uuid.uuid4()
     with session_factory() as session:
         project = _project(session)
         metric = MetricDefinition(
             project_id=project.id,
             name="signups_per_day",
             display_name="Signups / day",
-            kind=MetricKind.fact_aggregation,
+            kind=MetricKind.fact,
+            composition=MetricComposition.single,
             aggregation=MetricAggregation.count_distinct,
+            fact_table_id=fact_table_id,
             unit="users",
             data_source_id=None,
             interval=ScanInterval.d1,
@@ -62,11 +65,9 @@ def test_fact_aggregation_metric_roundtrips(session_factory: sessionmaker[Sessio
             app_version_column="app_version",
             platform_column="platform",
             config={
-                "source_table": "events.signups",
                 "measure_column": None,
                 "distinct_column": "user_id",
-                "filter_sql": "is_test = 0",
-                "time_column": "ts",
+                "row_filter": "exclude_test",
             },
         )
         session.add(metric)
@@ -83,12 +84,13 @@ def test_fact_aggregation_metric_roundtrips(session_factory: sessionmaker[Sessio
         assert loaded.color == "#6366f1"
         assert loaded.order == 0
         # Kind-specific fields.
-        assert loaded.kind == MetricKind.fact_aggregation
+        assert loaded.kind == MetricKind.fact
+        assert loaded.composition == MetricComposition.single
         assert loaded.aggregation == MetricAggregation.count_distinct
-        assert loaded.composition is None
+        assert loaded.fact_table_id == fact_table_id
         assert loaded.breakdown_columns == ["country", "plan"]
         assert loaded.config["distinct_column"] == "user_id"
-        assert loaded.config["time_column"] == "ts"
+        assert loaded.config["row_filter"] == "exclude_test"
 
 
 def test_sql_metric_roundtrips(session_factory: sessionmaker[Session]) -> None:

@@ -4,9 +4,13 @@ Mirrors ``collect_metrics`` (event metrics) but writes Float values into
 ``metric_values`` / ``metric_value_breakdowns`` for one ``MetricDefinition`` per
 run. Three kinds are supported:
 
-* ``fact_aggregation`` -- an aggregation over a measure column of a warehouse
-  base query, via ``adapter.get_time_bucketed_aggregate`` (+ optional
-  per-dimension breakdowns via ``get_time_bucketed_aggregate_breakdown``).
+* ``fact`` -- an aggregation over a column of a separately-defined ``FactTable``,
+  via ``adapter.get_time_bucketed_aggregate`` (+ optional per-dimension
+  breakdowns via ``get_time_bucketed_aggregate_breakdown``). ``single`` collects
+  one operand series; ``ratio`` divides a numerator series by a denominator
+  series (each operand a — possibly different — FactTable). The base query, time
+  column and data source are taken from the referenced FactTable; a named row
+  filter is resolved to its stored SQL fragment at collection time.
 * ``sql`` -- a user-authored per-bucket SELECT, executed via
   ``adapter.get_preview_rows`` after a defensive ``validate_select_sql`` that
   binds the value/time column names.
@@ -17,7 +21,7 @@ run. Three kinds are supported:
 
 Idempotency: every kind WINDOW-DELETEs the affected ``(definition[, config])``
 rows before UPSERTing, so a re-run overwrites a window instead of duplicating
-it. ``fact_aggregation`` / ``sql`` write ``scan_config_id = NULL`` rows;
+it. ``fact`` / ``sql`` write ``scan_config_id = NULL`` rows;
 ``event_composition`` writes rows keyed by the source ``scan_config_id`` grid.
 
 NOTE on divide-by-zero: ``metric_values.value`` is NOT NULL (see the M2 model /
@@ -36,6 +40,7 @@ from __future__ import annotations
 import logging
 import uuid
 from collections.abc import Mapping
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import cast
 
@@ -47,11 +52,11 @@ from tripl.core.adapters.base import BaseAdapter
 from tripl.core.adapters.measure_validator import (
     coerce_aggregation,
     requires_measure,
-    validate_identifier,
     validate_measure_column,
     validate_select_sql,
+    validate_sql_fragment,
 )
-from tripl.core.intervals import get_interval
+from tripl.core.intervals import IntervalSpec, get_interval
 from tripl.models.data_source import DataSource
 from tripl.models.domain_enums import (
     MetricAggregation,
@@ -60,6 +65,7 @@ from tripl.models.domain_enums import (
     MetricStatus,
 )
 from tripl.models.event_metric import EventMetric
+from tripl.models.fact_table import FactTable
 from tripl.models.metric_definition import MetricDefinition
 from tripl.models.metric_value import MetricValue
 from tripl.models.scan_config import ScanConfig
@@ -92,8 +98,8 @@ COLLECTION_STATUS_ERROR = "error"
 COLLECT_METRIC_DEFINITIONS_SOFT_TIME_LIMIT_SECONDS = 30 * 60
 COLLECT_METRIC_DEFINITIONS_TIME_LIMIT_SECONDS = 35 * 60
 
-# First-collection lookback for fact_aggregation / sql metrics (in interval
-# buckets), mirroring collect_metrics' ``time_to - delta * 30`` default.
+# First-collection lookback for fact / sql metrics (in interval buckets),
+# mirroring collect_metrics' ``time_to - delta * 30`` default.
 DEFAULT_COLLECTION_BUCKETS = 30
 
 # Per-query row ceiling; one row per bucket (no breakdown) or per
@@ -154,7 +160,7 @@ def _resolve_value_window(
     metric_definition_id: uuid.UUID,
     delta: timedelta,
 ) -> tuple[datetime, datetime]:
-    """Resolve the [from, to) collection window for a fact_aggregation/sql metric.
+    """Resolve the [from, to) collection window for a fact/sql metric.
 
     Window end is the latest complete interval boundary. Window start resumes one
     interval before the last stored bucket (so the last bucket is recomputed), or
@@ -204,28 +210,141 @@ def _read_event_metric_series(
     return series
 
 
-def _resolve_fact_base_query(config: Mapping[str, object]) -> str:
-    """Resolve the effective base query for a fact_aggregation metric.
+@dataclass(frozen=True)
+class _FactOperand:
+    """One resolved fact operand (the single metric, or one ratio side)."""
 
-    Either an explicit ``base_query`` or a ``source_table`` (validated as an
-    identifier). A ``filter_sql`` fragment, when present, wraps the source in a
-    bounded ``WHERE`` subquery. Both inputs were already validated at the schema
-    boundary; the identifier/fragment checks here are defence in depth.
-    """
-    base_query = _config_str(config, "base_query")
-    source_table = _config_str(config, "source_table")
-    if base_query is not None:
-        source = base_query
-    elif source_table is not None:
-        source = f"SELECT * FROM {validate_identifier(source_table)}"
-    else:
-        msg = "fact_aggregation metric requires base_query or source_table in config"
+    fact_table_id: uuid.UUID
+    aggregation: MetricAggregation
+    measure_column: str | None
+    distinct_column: str | None
+    row_filter: str | None
+
+
+def _operand_from_config(raw: Mapping[str, object]) -> _FactOperand:
+    """Parse a fact ratio operand from its stored ``config`` dict."""
+    fact_table_id = raw.get("fact_table_id")
+    aggregation = raw.get("aggregation")
+    if not isinstance(fact_table_id, str) or not isinstance(aggregation, str):
+        msg = "fact ratio operand requires fact_table_id and aggregation in config"
         raise ScanError(msg)
+    return _FactOperand(
+        fact_table_id=uuid.UUID(fact_table_id),
+        aggregation=coerce_aggregation(aggregation),
+        measure_column=_config_str(raw, "measure_column"),
+        distinct_column=_config_str(raw, "distinct_column"),
+        row_filter=_config_str(raw, "row_filter"),
+    )
 
-    filter_sql = _config_str(config, "filter_sql")
-    if filter_sql is not None:
-        return f"SELECT * FROM ({source}) AS _filtered WHERE {filter_sql}"
-    return source
+
+def _fact_operand_measure(operand: _FactOperand) -> str | None:
+    """Effective measure column the adapter aggregates for this operand.
+
+    ``count`` aggregates rows (no column); ``count_distinct`` distinct-counts the
+    operand's ``distinct_column``; ``sum``/``avg``/``min``/``max`` aggregate its
+    ``measure_column``.
+    """
+    if operand.aggregation is MetricAggregation.count:
+        return None
+    if operand.aggregation is MetricAggregation.count_distinct:
+        return operand.distinct_column
+    return operand.measure_column
+
+
+def _resolve_fact_operand_query(fact_table: FactTable, row_filter_name: str | None) -> str:
+    """Resolve a fact operand's base query, applying its named row filter.
+
+    The base query is the fact table's stored ``sql``. A ``row_filter_name`` (if
+    set) must match one of the fact table's stored row filters by NAME; the
+    associated (already-validated) fragment wraps the source in a bounded
+    ``WHERE`` subquery. The fragment is re-validated here as defence in depth.
+    """
+    source = fact_table.sql
+    if row_filter_name is None:
+        return source
+    for row_filter in fact_table.row_filters or []:
+        if isinstance(row_filter, Mapping) and row_filter.get("name") == row_filter_name:
+            fragment = row_filter.get("sql")
+            if isinstance(fragment, str) and fragment:
+                safe = validate_sql_fragment(fragment)
+                return f"SELECT * FROM ({source}) AS _filtered WHERE {safe}"
+    msg = f"row filter {row_filter_name!r} is not defined on fact table {fact_table.id}"
+    raise ScanError(msg)
+
+
+def _load_fact_table(
+    session: Session, fact_table_id: uuid.UUID | None, *, project_id: uuid.UUID
+) -> FactTable:
+    """Load a bound FactTable for a fact metric or raise a ``ScanError``.
+
+    The worker has global visibility (no project scope on ``session.get``), so
+    the loaded fact table's ``project_id`` is checked against the metric's
+    ``project_id`` as defence in depth against a cross-project reference.
+    """
+    if fact_table_id is None:
+        msg = "fact metric requires a fact_table_id"
+        raise ScanError(msg)
+    fact_table = session.get(FactTable, fact_table_id)
+    if fact_table is None:
+        msg = f"FactTable {fact_table_id} for fact metric not found"
+        raise ScanError(msg)
+    if fact_table.project_id != project_id:
+        msg = f"FactTable {fact_table_id} does not belong to project {project_id}"
+        raise ScanError(msg)
+    if fact_table.data_source_id is None:
+        msg = f"FactTable {fact_table_id} has no data source bound"
+        raise ScanError(msg)
+    return fact_table
+
+
+def _aggregate_fact_window(
+    adapter: BaseAdapter,
+    *,
+    fact_table: FactTable,
+    operand: _FactOperand,
+    ch_interval: str,
+    delta: timedelta,
+    chunk_from: datetime,
+    chunk_to: datetime,
+) -> tuple[dict[datetime, float], str, str | None]:
+    """Run one fact operand's bucketed aggregate over a chunk window.
+
+    Returns ``(values_by_bucket, base_query, validated_measure)`` so a SINGLE
+    caller can reuse the base query / measure for its breakdown pass.
+    """
+    base_query = _resolve_fact_operand_query(fact_table, operand.row_filter)
+    measure = _fact_operand_measure(operand)
+    if requires_measure(operand.aggregation):
+        if measure is None:
+            msg = (
+                f"aggregation {operand.aggregation.value!r} requires a "
+                "measure_column / distinct_column"
+            )
+            raise ScanError(msg)
+        columns = adapter.get_columns(base_query)
+        if not columns:
+            # An empty allowlist would make ``validate_measure_column`` skip its
+            # membership check (it short-circuits on a falsy allowlist), silently
+            # bypassing the only column guard. Fail loudly instead.
+            msg = "fact table query returned no columns; cannot validate measure column"
+            raise ScanError(msg)
+        allowed_columns = {column.name for column in columns}
+        measure = validate_measure_column(measure, allowed_columns)
+    _cols, _json_value_names, rows = adapter.get_time_bucketed_aggregate(
+        base_query,
+        fact_table.timestamp_column,
+        ch_interval,
+        operand.aggregation,
+        measure,
+        [],
+        [],
+        None,
+        chunk_from,
+        chunk_to,
+        limit=METRIC_QUERY_ROW_LIMIT,
+    )
+    values = {_coerce_bucket(row[0], delta): _coerce_value(row[-1]) for row in rows}
+    return values, base_query, measure
 
 
 def _collect_fact_breakdown_rows(
@@ -241,7 +360,7 @@ def _collect_fact_breakdown_rows(
     chunk_from: datetime,
     chunk_to: datetime,
 ) -> int:
-    """Collect per-dimension breakdown values for a fact_aggregation chunk.
+    """Collect per-dimension breakdown values for a single fact-metric chunk.
 
     Each configured breakdown column (plus the optional app-version / platform
     columns) runs one ``get_time_bucketed_aggregate_breakdown`` query. Rows are
@@ -296,50 +415,86 @@ def _collect_fact_breakdown_rows(
     return len(rows_out)
 
 
-def _collect_fact_aggregation(
-    session: Session, *, definition: MetricDefinition
+def _resolve_fact_composition(definition: MetricDefinition) -> MetricComposition:
+    """Coerce a fact metric's composition, defaulting an unset value to single."""
+    if definition.composition is None:
+        return MetricComposition.single
+    if isinstance(definition.composition, MetricComposition):
+        return definition.composition
+    return MetricComposition(definition.composition)
+
+
+def _collect_fact(session: Session, *, definition: MetricDefinition) -> dict[str, object]:
+    """Collect a ``fact`` metric: an aggregation over a FactTable per bucket.
+
+    SINGLE collects one operand series (+ optional per-dimension breakdowns).
+    RATIO divides a numerator series by a denominator series (each over a —
+    possibly different — FactTable); a zero/absent denominator maps to ``None``
+    (divide-by-zero), which the NOT-NULL row builder drops.
+    """
+    if definition.interval is None:
+        msg = "fact metric requires an interval"
+        raise ScanError(msg)
+    interval_spec = get_interval(definition.interval)
+    delta = interval_spec.delta
+    time_from, time_to = _resolve_value_window(
+        session, metric_definition_id=definition.id, delta=delta
+    )
+    composition = _resolve_fact_composition(definition)
+    if composition is MetricComposition.ratio:
+        return _collect_fact_ratio(
+            session,
+            definition=definition,
+            interval_spec=interval_spec,
+            delta=delta,
+            time_from=time_from,
+            time_to=time_to,
+        )
+    return _collect_fact_single(
+        session,
+        definition=definition,
+        interval_spec=interval_spec,
+        delta=delta,
+        time_from=time_from,
+        time_to=time_to,
+    )
+
+
+def _collect_fact_single(
+    session: Session,
+    *,
+    definition: MetricDefinition,
+    interval_spec: IntervalSpec,
+    delta: timedelta,
+    time_from: datetime,
+    time_to: datetime,
 ) -> dict[str, object]:
-    """Collect a fact_aggregation metric: agg(measure) per interval bucket."""
-    if definition.data_source_id is None or definition.interval is None:
-        msg = "fact_aggregation metric requires a data source and interval"
-        raise ScanError(msg)
+    """Collect a single-operand fact metric (agg(measure) per bucket + breakdowns)."""
     if definition.aggregation is None:
-        msg = "fact_aggregation metric requires an aggregation"
+        msg = "single fact metric requires an aggregation"
         raise ScanError(msg)
-
     config = definition.config or {}
-    base_query = _resolve_fact_base_query(config)
-    time_column = _config_str(config, "time_column")
-    if time_column is None:
-        msg = "fact_aggregation metric requires a time_column in config"
-        raise ScanError(msg)
-
-    agg = coerce_aggregation(definition.aggregation)
-    measure_column = _config_str(config, "measure_column")
-
-    ds = session.get(DataSource, definition.data_source_id)
+    fact_table = _load_fact_table(
+        session, definition.fact_table_id, project_id=definition.project_id
+    )
+    operand = _FactOperand(
+        fact_table_id=fact_table.id,
+        aggregation=coerce_aggregation(definition.aggregation),
+        measure_column=_config_str(config, "measure_column"),
+        distinct_column=_config_str(config, "distinct_column"),
+        row_filter=_config_str(config, "row_filter"),
+    )
+    ds = session.get(DataSource, fact_table.data_source_id)
     if ds is None:
-        msg = "DataSource for fact_aggregation metric not found"
+        msg = "DataSource for fact metric not found"
         raise ScanError(msg)
+    ch_interval = interval_spec.ch_interval
 
     adapter = _build_adapter(ds)
     total_values = 0
     total_breakdowns = 0
     try:
         adapter.test_connection()
-        allowed_columns = {c.name for c in adapter.get_columns(base_query)}
-        validated_measure: str | None = None
-        if requires_measure(agg):
-            if measure_column is None:
-                msg = f"aggregation {agg.value!r} requires a measure_column in config"
-                raise ScanError(msg)
-            validated_measure = validate_measure_column(measure_column, allowed_columns)
-
-        interval_spec = get_interval(definition.interval)
-        delta = interval_spec.delta
-        time_from, time_to = _resolve_value_window(
-            session, metric_definition_id=definition.id, delta=delta
-        )
         chunks = _iter_window_chunks(
             time_from,
             time_to,
@@ -347,20 +502,15 @@ def _collect_fact_aggregation(
             chunk_interval_code=definition.replay_chunk_interval,
         )
         for chunk_from, chunk_to in chunks:
-            _cols, _json_value_names, rows = adapter.get_time_bucketed_aggregate(
-                base_query,
-                time_column,
-                interval_spec.ch_interval,
-                agg,
-                validated_measure,
-                [],
-                [],
-                None,
-                chunk_from,
-                chunk_to,
-                limit=METRIC_QUERY_ROW_LIMIT,
+            values, base_query, measure = _aggregate_fact_window(
+                adapter,
+                fact_table=fact_table,
+                operand=operand,
+                ch_interval=ch_interval,
+                delta=delta,
+                chunk_from=chunk_from,
+                chunk_to=chunk_to,
             )
-            values = {_coerce_bucket(row[0], delta): _coerce_value(row[-1]) for row in rows}
             value_rows = _build_metric_value_rows(
                 metric_definition_id=definition.id,
                 scan_config_id=None,
@@ -379,10 +529,10 @@ def _collect_fact_aggregation(
                 adapter=adapter,
                 definition=definition,
                 base_query=base_query,
-                time_column=time_column,
-                ch_interval=interval_spec.ch_interval,
-                agg=agg,
-                measure_column=validated_measure,
+                time_column=fact_table.timestamp_column,
+                ch_interval=ch_interval,
+                agg=operand.aggregation,
+                measure_column=measure,
                 chunk_from=chunk_from,
                 chunk_to=chunk_to,
             )
@@ -391,6 +541,103 @@ def _collect_fact_aggregation(
         adapter.close()
 
     return {"values": total_values, "breakdown_values": total_breakdowns}
+
+
+def _collect_fact_ratio(
+    session: Session,
+    *,
+    definition: MetricDefinition,
+    interval_spec: IntervalSpec,
+    delta: timedelta,
+    time_from: datetime,
+    time_to: datetime,
+) -> dict[str, object]:
+    """Collect a ratio fact metric: numerator / denominator per bucket.
+
+    Each operand may reference a different FactTable / data source, so a separate
+    adapter is built per operand. The two series are divided via
+    ``evaluate_composition``; divide-by-zero buckets map to ``None`` and are
+    dropped by the NOT-NULL row builder.
+    """
+    config = definition.config or {}
+    numerator_raw = config.get("numerator")
+    denominator_raw = config.get("denominator")
+    if not isinstance(numerator_raw, Mapping) or not isinstance(denominator_raw, Mapping):
+        msg = "ratio fact metric requires numerator and denominator operands in config"
+        raise ScanError(msg)
+    numerator_op = _operand_from_config(numerator_raw)
+    denominator_op = _operand_from_config(denominator_raw)
+    numerator_ft = _load_fact_table(
+        session, numerator_op.fact_table_id, project_id=definition.project_id
+    )
+    denominator_ft = _load_fact_table(
+        session, denominator_op.fact_table_id, project_id=definition.project_id
+    )
+    numerator_ds = session.get(DataSource, numerator_ft.data_source_id)
+    denominator_ds = session.get(DataSource, denominator_ft.data_source_id)
+    if numerator_ds is None or denominator_ds is None:
+        msg = "DataSource for fact ratio operand not found"
+        raise ScanError(msg)
+    ch_interval = interval_spec.ch_interval
+
+    numerator_adapter = _build_adapter(numerator_ds)
+    total_values = 0
+    try:
+        denominator_adapter = _build_adapter(denominator_ds)
+        try:
+            numerator_adapter.test_connection()
+            denominator_adapter.test_connection()
+            chunks = _iter_window_chunks(
+                time_from,
+                time_to,
+                interval_delta=delta,
+                chunk_interval_code=definition.replay_chunk_interval,
+            )
+            for chunk_from, chunk_to in chunks:
+                numerator_values, _nq, _nm = _aggregate_fact_window(
+                    numerator_adapter,
+                    fact_table=numerator_ft,
+                    operand=numerator_op,
+                    ch_interval=ch_interval,
+                    delta=delta,
+                    chunk_from=chunk_from,
+                    chunk_to=chunk_to,
+                )
+                denominator_values, _dq, _dm = _aggregate_fact_window(
+                    denominator_adapter,
+                    fact_table=denominator_ft,
+                    operand=denominator_op,
+                    ch_interval=ch_interval,
+                    delta=delta,
+                    chunk_from=chunk_from,
+                    chunk_to=chunk_to,
+                )
+                values = evaluate_composition(
+                    MetricComposition.ratio,
+                    numerator=numerator_values,
+                    denominator=denominator_values,
+                )
+                value_rows = _build_metric_value_rows(
+                    metric_definition_id=definition.id,
+                    scan_config_id=None,
+                    values=values,
+                )
+                _delete_metric_values_window(
+                    session,
+                    metric_definition_id=definition.id,
+                    time_from=chunk_from,
+                    time_to=chunk_to,
+                )
+                _upsert_metric_values_rows(session, rows=value_rows)
+                total_values += len(value_rows)
+                session.commit()
+        finally:
+            denominator_adapter.close()
+    finally:
+        numerator_adapter.close()
+
+    # Ratio collects no breakdowns; report 0 for shape parity with _collect_fact_single.
+    return {"values": total_values, "breakdown_values": 0}
 
 
 def _collect_sql(session: Session, *, definition: MetricDefinition) -> dict[str, object]:
@@ -630,7 +877,7 @@ def _collect_event_composition(
 
 
 _COLLECTORS = {
-    MetricKind.fact_aggregation: _collect_fact_aggregation,
+    MetricKind.fact: _collect_fact,
     MetricKind.sql: _collect_sql,
     MetricKind.event_composition: _collect_event_composition,
 }
@@ -674,10 +921,10 @@ def collect_metric_definitions(self: object, metric_definition_id: str) -> dict[
         )
         collector = _COLLECTORS.get(kind)
         if collector is None:
-            # ``fact`` is registered in the enum (FactTable foundation) but its
-            # collector lands in a later ticket; fail with a clear message rather
-            # than a cryptic KeyError if such a metric is dispatched directly.
-            msg = f"Metric collection is not implemented for kind {kind.value!r} yet"
+            # Every supported kind is registered above; a missing collector means
+            # an unsupported kind was dispatched directly. Fail with a clear
+            # message rather than a cryptic KeyError.
+            msg = f"Metric collection is not implemented for kind {kind.value!r}"
             raise NotImplementedError(msg)
         summary = collector(session, definition=definition)
 

@@ -6658,94 +6658,18 @@
         "title": "EventWindowMetricsResponse",
         "type": "object"
       },
-      "FactAggregationConfig": {
-        "additionalProperties": false,
-        "description": "Config JSON for a ``fact_aggregation`` metric.\n\nRequires a source: either ``source_table`` (a warehouse table) or\n``base_query`` (a base SELECT). ``measure_column`` is required by the\nenclosing metric when the aggregation is not ``count`` (enforced there,\nsince the aggregation lives on the metric, not in this config).",
-        "properties": {
-          "base_query": {
-            "anyOf": [
-              {
-                "minLength": 1,
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Base Query"
-          },
-          "distinct_column": {
-            "anyOf": [
-              {
-                "maxLength": 255,
-                "minLength": 1,
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Distinct Column"
-          },
-          "filter_sql": {
-            "anyOf": [
-              {
-                "minLength": 1,
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Filter Sql"
-          },
-          "measure_column": {
-            "anyOf": [
-              {
-                "maxLength": 255,
-                "minLength": 1,
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Measure Column"
-          },
-          "source_table": {
-            "anyOf": [
-              {
-                "maxLength": 255,
-                "minLength": 1,
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Source Table"
-          },
-          "time_column": {
-            "anyOf": [
-              {
-                "maxLength": 255,
-                "minLength": 1,
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Time Column"
-          }
-        },
-        "title": "FactAggregationConfig",
-        "type": "object"
-      },
-      "FactAggregationMetricCreate": {
+      "FactMetricCreate": {
+        "description": "An aggregation over a separately-defined ``FactTable``.\n\nSINGLE (``composition=single``, the default): one operand given by the\ntop-level ``fact_table_id`` + ``aggregation`` + the ``measure_column`` /\n``distinct_column`` / ``row_filter`` config fields.\n\nRATIO (``composition=ratio``): ``numerator`` / ``denominator`` operands (each\na :class:`FactOperand`); the denominator MAY reference a different fact table.\nThe numerator operand is mirrored onto the model's ``fact_table_id`` /\n``aggregation`` columns for catalog display and FK integrity.\n\nThe data source and timestamp column are taken from the referenced fact\ntable(s) at collection time; only the collection ``interval`` lives here.\nFact-table existence, project ownership, column membership, and row-filter\nname resolution are checked in the service (they need the DB).",
         "properties": {
           "aggregation": {
-            "$ref": "#/components/schemas/MetricAggregation"
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/MetricAggregation"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "anomaly_detection_enabled": {
             "default": true,
@@ -6790,13 +6714,19 @@
             "title": "Color",
             "type": "string"
           },
-          "config": {
-            "$ref": "#/components/schemas/FactAggregationConfig"
+          "composition": {
+            "$ref": "#/components/schemas/MetricComposition",
+            "default": "single"
           },
-          "data_source_id": {
-            "format": "uuid",
-            "title": "Data Source Id",
-            "type": "string"
+          "denominator": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/FactOperand"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "description": {
             "default": "",
@@ -6809,20 +6739,68 @@
             "title": "Display Name",
             "type": "string"
           },
+          "distinct_column": {
+            "anyOf": [
+              {
+                "maxLength": 255,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Distinct Column"
+          },
+          "fact_table_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Fact Table Id"
+          },
           "interval": {
             "$ref": "#/components/schemas/ScanInterval"
           },
           "kind": {
-            "const": "fact_aggregation",
-            "default": "fact_aggregation",
+            "const": "fact",
+            "default": "fact",
             "title": "Kind",
             "type": "string"
+          },
+          "measure_column": {
+            "anyOf": [
+              {
+                "maxLength": 255,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Measure Column"
           },
           "name": {
             "maxLength": 255,
             "minLength": 1,
             "title": "Name",
             "type": "string"
+          },
+          "numerator": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/FactOperand"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "order": {
             "default": 0,
@@ -6869,6 +6847,19 @@
             "title": "Reviewed",
             "type": "boolean"
           },
+          "row_filter": {
+            "anyOf": [
+              {
+                "maxLength": 255,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Row Filter"
+          },
           "status": {
             "$ref": "#/components/schemas/MetricStatus",
             "default": "draft"
@@ -6889,12 +6880,68 @@
         "required": [
           "name",
           "display_name",
-          "aggregation",
-          "config",
-          "data_source_id",
           "interval"
         ],
-        "title": "FactAggregationMetricCreate",
+        "title": "FactMetricCreate",
+        "type": "object"
+      },
+      "FactOperand": {
+        "additionalProperties": false,
+        "description": "One fact-table aggregation operand (a single metric, or one ratio side).\n\nReferences a ``FactTable`` by id and aggregates one of its introspected\ncolumns. ``measure_column`` / ``distinct_column`` reach warehouse SQL\nunparameterised, so they are identifier-validated here; their membership in\nthe referenced fact table's columns is checked in the service (it needs the\nDB). ``row_filter`` is the NAME of one of that fact table's stored row\nfilters \u2014 never a raw SQL fragment \u2014 resolved to SQL at collection time.",
+        "properties": {
+          "aggregation": {
+            "$ref": "#/components/schemas/MetricAggregation"
+          },
+          "distinct_column": {
+            "anyOf": [
+              {
+                "maxLength": 255,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Distinct Column"
+          },
+          "fact_table_id": {
+            "format": "uuid",
+            "title": "Fact Table Id",
+            "type": "string"
+          },
+          "measure_column": {
+            "anyOf": [
+              {
+                "maxLength": 255,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Measure Column"
+          },
+          "row_filter": {
+            "anyOf": [
+              {
+                "maxLength": 255,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Row Filter"
+          }
+        },
+        "required": [
+          "fact_table_id",
+          "aggregation"
+        ],
+        "title": "FactOperand",
         "type": "object"
       },
       "FactTableColumnSchema": {
@@ -8197,7 +8244,7 @@
         "type": "object"
       },
       "MetricAggregation": {
-        "description": "Aggregation applied by a ``fact_aggregation`` metric.",
+        "description": "Aggregation applied by a ``fact`` metric over a FactTable column.",
         "enum": [
           "count",
           "sum",
@@ -8304,7 +8351,7 @@
         "type": "object"
       },
       "MetricComposition": {
-        "description": "How an ``event_composition`` metric combines event series.",
+        "description": "How an ``event_composition`` or ``fact`` metric combines its series.\n\n``event_composition`` uses ``single`` / ``ratio`` / ``per_distinct_user``;\n``fact`` uses ``single`` (one operand) and ``ratio`` (numerator / denominator\noperands, each over a \u2014 possibly different \u2014 FactTable).",
         "enum": [
           "single",
           "ratio",
@@ -8759,6 +8806,18 @@
             "title": "Display Name",
             "type": "string"
           },
+          "fact_table_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Fact Table Id"
+          },
           "id": {
             "format": "uuid",
             "title": "Id",
@@ -8921,6 +8980,7 @@
           "aggregation",
           "composition",
           "config",
+          "fact_table_id",
           "breakdown_columns",
           "breakdown_values_limit",
           "app_version_column",
@@ -9106,7 +9166,6 @@
         "description": "How a MetricDefinition produces its per-bucket value.",
         "enum": [
           "sql",
-          "fact_aggregation",
           "event_composition",
           "fact"
         ],
@@ -21453,14 +21512,14 @@
                 "discriminator": {
                   "mapping": {
                     "event_composition": "#/components/schemas/EventCompositionMetricCreate",
-                    "fact_aggregation": "#/components/schemas/FactAggregationMetricCreate",
+                    "fact": "#/components/schemas/FactMetricCreate",
                     "sql": "#/components/schemas/SqlMetricCreate"
                   },
                   "propertyName": "kind"
                 },
                 "oneOf": [
                   {
-                    "$ref": "#/components/schemas/FactAggregationMetricCreate"
+                    "$ref": "#/components/schemas/FactMetricCreate"
                   },
                   {
                     "$ref": "#/components/schemas/SqlMetricCreate"

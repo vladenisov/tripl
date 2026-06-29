@@ -31,6 +31,28 @@ async def data_source(client: AsyncClient) -> dict:
 
 
 @pytest.fixture
+async def fact_table(client: AsyncClient, project: dict) -> dict:
+    resp = await client.post(
+        f"/api/v1/projects/{project['slug']}/fact-tables",
+        json={
+            "name": "orders_ft",
+            "display_name": "Orders",
+            "sql": "SELECT created_at, amount, user_id FROM orders",
+            "timestamp_column": "created_at",
+            "columns": [
+                {"name": "created_at", "type": "timestamp"},
+                {"name": "amount", "type": "number"},
+                {"name": "user_id", "type": "string"},
+            ],
+            "identifier_columns": ["user_id"],
+            "row_filters": [{"name": "exclude_test", "sql": "is_test = 0"}],
+        },
+    )
+    assert resp.status_code == 201, resp.text
+    return resp.json()
+
+
+@pytest.fixture
 async def event_type(client: AsyncClient, project: dict) -> dict:
     resp = await client.post(
         f"/api/v1/projects/{project['slug']}/event-types",
@@ -76,53 +98,120 @@ async def _create_sql_metric(
 
 
 class TestCreateHappyPaths:
-    async def test_create_fact_aggregation_sum(
-        self, client: AsyncClient, project: dict, data_source: dict
+    async def test_create_fact_single_sum(
+        self, client: AsyncClient, project: dict, fact_table: dict
     ):
         resp = await client.post(
             _metrics_url(project["slug"]),
             json={
-                "kind": "fact_aggregation",
+                "kind": "fact",
                 "name": "revenue",
                 "display_name": "Revenue",
+                "composition": "single",
+                "fact_table_id": fact_table["id"],
                 "aggregation": "sum",
-                "data_source_id": data_source["id"],
                 "interval": "1h",
-                "config": {
-                    "source_table": "orders",
-                    "measure_column": "amount",
-                    "time_column": "created_at",
-                },
+                "measure_column": "amount",
             },
         )
         assert resp.status_code == 201, resp.text
         data = resp.json()
-        assert data["kind"] == "fact_aggregation"
+        assert data["kind"] == "fact"
         assert data["aggregation"] == "sum"
-        assert data["composition"] is None
-        assert data["data_source_id"] == data_source["id"]
+        assert data["composition"] == "single"
+        assert data["fact_table_id"] == fact_table["id"]
+        # The data source is taken from the fact table, not stored on the metric.
+        assert data["data_source_id"] is None
         assert data["interval"] == "1h"
         assert data["config"]["measure_column"] == "amount"
         assert data["status"] == "draft"
         assert data["project_id"] == project["id"]
 
-    async def test_create_fact_aggregation_count_without_measure(
-        self, client: AsyncClient, project: dict, data_source: dict
+    async def test_create_fact_single_count_without_measure(
+        self, client: AsyncClient, project: dict, fact_table: dict
     ):
         resp = await client.post(
             _metrics_url(project["slug"]),
             json={
-                "kind": "fact_aggregation",
+                "kind": "fact",
                 "name": "orders_count",
                 "display_name": "Orders",
+                "composition": "single",
+                "fact_table_id": fact_table["id"],
                 "aggregation": "count",
-                "data_source_id": data_source["id"],
                 "interval": "1d",
-                "config": {"source_table": "orders"},
             },
         )
         assert resp.status_code == 201, resp.text
         assert resp.json()["config"].get("measure_column") is None
+
+    async def test_create_fact_single_with_row_filter(
+        self, client: AsyncClient, project: dict, fact_table: dict
+    ):
+        resp = await client.post(
+            _metrics_url(project["slug"]),
+            json={
+                "kind": "fact",
+                "name": "clean_revenue",
+                "display_name": "Clean Revenue",
+                "composition": "single",
+                "fact_table_id": fact_table["id"],
+                "aggregation": "sum",
+                "interval": "1h",
+                "measure_column": "amount",
+                "row_filter": "exclude_test",
+            },
+        )
+        assert resp.status_code == 201, resp.text
+        assert resp.json()["config"]["row_filter"] == "exclude_test"
+
+    async def test_create_fact_ratio_cross_fact_table(
+        self, client: AsyncClient, project: dict, fact_table: dict
+    ):
+        # A second fact table for the denominator: the ratio may span two tables.
+        other = await client.post(
+            f"/api/v1/projects/{project['slug']}/fact-tables",
+            json={
+                "name": "sessions_ft",
+                "display_name": "Sessions",
+                "sql": "SELECT started_at, session_id FROM sessions",
+                "timestamp_column": "started_at",
+                "columns": [
+                    {"name": "started_at", "type": "timestamp"},
+                    {"name": "session_id", "type": "string"},
+                ],
+                "identifier_columns": ["session_id"],
+                "row_filters": [],
+            },
+        )
+        assert other.status_code == 201, other.text
+        denominator_ft = other.json()
+
+        resp = await client.post(
+            _metrics_url(project["slug"]),
+            json={
+                "kind": "fact",
+                "name": "orders_per_session",
+                "display_name": "Orders / session",
+                "composition": "ratio",
+                "interval": "1h",
+                "numerator": {"fact_table_id": fact_table["id"], "aggregation": "count"},
+                "denominator": {
+                    "fact_table_id": denominator_ft["id"],
+                    "aggregation": "count_distinct",
+                    "distinct_column": "session_id",
+                },
+            },
+        )
+        assert resp.status_code == 201, resp.text
+        data = resp.json()
+        assert data["composition"] == "ratio"
+        # The numerator operand mirrors onto the catalog fact_table_id / aggregation.
+        assert data["fact_table_id"] == fact_table["id"]
+        assert data["aggregation"] == "count"
+        assert data["config"]["numerator"]["fact_table_id"] == fact_table["id"]
+        assert data["config"]["denominator"]["fact_table_id"] == denominator_ft["id"]
+        assert data["config"]["denominator"]["distinct_column"] == "session_id"
 
     async def test_create_sql_metric(self, client: AsyncClient, project: dict, data_source: dict):
         resp = await client.post(
@@ -269,39 +358,110 @@ class TestNameUniqueness:
 
 
 class TestConfigValidation:
-    async def test_fact_aggregation_sum_without_measure_column(
-        self, client: AsyncClient, project: dict, data_source: dict
+    async def test_fact_single_sum_without_measure_column(
+        self, client: AsyncClient, project: dict, fact_table: dict
     ):
         resp = await client.post(
             _metrics_url(project["slug"]),
             json={
-                "kind": "fact_aggregation",
+                "kind": "fact",
                 "name": "bad_sum",
                 "display_name": "Bad Sum",
+                "composition": "single",
+                "fact_table_id": fact_table["id"],
                 "aggregation": "sum",
-                "data_source_id": data_source["id"],
                 "interval": "1h",
-                "config": {"source_table": "orders", "time_column": "created_at"},
             },
         )
         assert resp.status_code == 422
 
-    async def test_fact_aggregation_without_source(
-        self, client: AsyncClient, project: dict, data_source: dict
+    async def test_fact_single_count_distinct_requires_distinct_column(
+        self, client: AsyncClient, project: dict, fact_table: dict
     ):
         resp = await client.post(
             _metrics_url(project["slug"]),
             json={
-                "kind": "fact_aggregation",
-                "name": "no_source",
-                "display_name": "No Source",
-                "aggregation": "count",
-                "data_source_id": data_source["id"],
+                "kind": "fact",
+                "name": "bad_cd",
+                "display_name": "Bad CD",
+                "composition": "single",
+                "fact_table_id": fact_table["id"],
+                "aggregation": "count_distinct",
                 "interval": "1h",
-                "config": {"time_column": "created_at"},
             },
         )
         assert resp.status_code == 422
+
+    async def test_fact_single_without_fact_table_id(
+        self, client: AsyncClient, project: dict
+    ):
+        resp = await client.post(
+            _metrics_url(project["slug"]),
+            json={
+                "kind": "fact",
+                "name": "no_ft",
+                "display_name": "No Fact Table",
+                "composition": "single",
+                "aggregation": "count",
+                "interval": "1h",
+            },
+        )
+        assert resp.status_code == 422
+
+    async def test_fact_measure_column_not_in_fact_table_rejected(
+        self, client: AsyncClient, project: dict, fact_table: dict
+    ):
+        # A syntactically valid identifier that is NOT one of the fact table's
+        # introspected columns is rejected by the service-level allowlist check.
+        resp = await client.post(
+            _metrics_url(project["slug"]),
+            json={
+                "kind": "fact",
+                "name": "ghost_col",
+                "display_name": "Ghost Col",
+                "composition": "single",
+                "fact_table_id": fact_table["id"],
+                "aggregation": "sum",
+                "interval": "1h",
+                "measure_column": "not_a_column",
+            },
+        )
+        assert resp.status_code == 422, resp.text
+
+    async def test_fact_unknown_row_filter_rejected(
+        self, client: AsyncClient, project: dict, fact_table: dict
+    ):
+        resp = await client.post(
+            _metrics_url(project["slug"]),
+            json={
+                "kind": "fact",
+                "name": "ghost_filter",
+                "display_name": "Ghost Filter",
+                "composition": "single",
+                "fact_table_id": fact_table["id"],
+                "aggregation": "count",
+                "interval": "1h",
+                "row_filter": "does_not_exist",
+            },
+        )
+        assert resp.status_code == 422, resp.text
+
+    async def test_fact_nonexistent_fact_table_rejected(
+        self, client: AsyncClient, project: dict
+    ):
+        resp = await client.post(
+            _metrics_url(project["slug"]),
+            json={
+                "kind": "fact",
+                "name": "ghost_ft",
+                "display_name": "Ghost FT",
+                "composition": "single",
+                "fact_table_id": str(uuid.uuid4()),
+                "aggregation": "count",
+                "interval": "1h",
+            },
+        )
+        assert resp.status_code == 422, resp.text
 
     async def test_sql_without_metric_sql(
         self, client: AsyncClient, project: dict, data_source: dict
@@ -428,36 +588,40 @@ class TestSchemaSecurityValidation:
     """The schema boundary is the only gate before warehouse SQL with no bound
     params, so every identifier / SQL-text field must reject injection probes."""
 
-    async def test_reject_source_table_injection(
-        self, client: AsyncClient, project: dict, data_source: dict
+    async def test_reject_row_filter_raw_sql_fragment(
+        self, client: AsyncClient, project: dict, fact_table: dict
     ):
+        # ``row_filter`` is the NAME of a stored fact-table filter, never a raw
+        # SQL fragment: a fragment is not a known name and is rejected.
         resp = await client.post(
             _metrics_url(project["slug"]),
             json={
-                "kind": "fact_aggregation",
-                "name": "inj_table",
-                "display_name": "Inj Table",
+                "kind": "fact",
+                "name": "inj_filter_name",
+                "display_name": "Inj Filter Name",
+                "composition": "single",
+                "fact_table_id": fact_table["id"],
                 "aggregation": "count",
-                "data_source_id": data_source["id"],
                 "interval": "1h",
-                "config": {"source_table": "orders; DROP TABLE x --"},
+                "row_filter": "1=1 UNION SELECT secret FROM users --",
             },
         )
         assert resp.status_code == 422, resp.text
 
     async def test_reject_measure_column_with_quote(
-        self, client: AsyncClient, project: dict, data_source: dict
+        self, client: AsyncClient, project: dict, fact_table: dict
     ):
         resp = await client.post(
             _metrics_url(project["slug"]),
             json={
-                "kind": "fact_aggregation",
+                "kind": "fact",
                 "name": "inj_measure",
                 "display_name": "Inj Measure",
+                "composition": "single",
+                "fact_table_id": fact_table["id"],
                 "aggregation": "sum",
-                "data_source_id": data_source["id"],
                 "interval": "1h",
-                "config": {"source_table": "orders", "measure_column": "am'ount"},
+                "measure_column": "am'ount",
             },
         )
         assert resp.status_code == 422, resp.text
@@ -496,26 +660,6 @@ class TestSchemaSecurityValidation:
         )
         assert resp.status_code == 422, resp.text
 
-    async def test_reject_filter_sql_union(
-        self, client: AsyncClient, project: dict, data_source: dict
-    ):
-        resp = await client.post(
-            _metrics_url(project["slug"]),
-            json={
-                "kind": "fact_aggregation",
-                "name": "inj_filter",
-                "display_name": "Inj Filter",
-                "aggregation": "count",
-                "data_source_id": data_source["id"],
-                "interval": "1h",
-                "config": {
-                    "source_table": "orders",
-                    "filter_sql": "1=1 UNION SELECT secret FROM users --",
-                },
-            },
-        )
-        assert resp.status_code == 422, resp.text
-
     async def test_reject_metric_sql_with_drop_and_comment(
         self, client: AsyncClient, project: dict, data_source: dict
     ):
@@ -534,47 +678,6 @@ class TestSchemaSecurityValidation:
             },
         )
         assert resp.status_code == 422, resp.text
-
-    async def test_reject_base_query_forbidden_keyword(
-        self, client: AsyncClient, project: dict, data_source: dict
-    ):
-        resp = await client.post(
-            _metrics_url(project["slug"]),
-            json={
-                "kind": "fact_aggregation",
-                "name": "inj_base",
-                "display_name": "Inj Base",
-                "aggregation": "count",
-                "data_source_id": data_source["id"],
-                "interval": "1h",
-                "config": {"base_query": "SELECT * FROM users UNION SELECT secret FROM admin"},
-            },
-        )
-        assert resp.status_code == 422, resp.text
-
-    async def test_accept_clean_fact_aggregation_with_filter_sql(
-        self, client: AsyncClient, project: dict, data_source: dict
-    ):
-        resp = await client.post(
-            _metrics_url(project["slug"]),
-            json={
-                "kind": "fact_aggregation",
-                "name": "clean_filter",
-                "display_name": "Clean Filter",
-                "aggregation": "sum",
-                "data_source_id": data_source["id"],
-                "interval": "1h",
-                "config": {
-                    "source_table": "orders",
-                    "measure_column": "amount",
-                    "time_column": "created_at",
-                    "filter_sql": "is_test = 0 AND country IN ('US','GB')",
-                },
-            },
-        )
-        assert resp.status_code == 201, resp.text
-        assert resp.json()["config"]["filter_sql"] == "is_test = 0 AND country IN ('US','GB')"
-
 
 class TestBulkUpdateOwner:
     async def test_owner_id_null_unassigns_owner(

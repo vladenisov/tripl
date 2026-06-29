@@ -77,7 +77,7 @@ async def _resolve_metric_interval(
 ) -> tuple[str | None, uuid.UUID | None]:
     """Interval + source scan_config for the metric's grid.
 
-    ``sql`` / ``fact_aggregation`` metrics collect on their own ``interval``.
+    ``sql`` / ``fact`` metrics collect on their own ``interval``.
     ``event_composition`` metrics leave ``interval`` NULL and align onto a
     source scan grid, so the interval is taken from the ``scan_config_id``
     stamped on their stored values.

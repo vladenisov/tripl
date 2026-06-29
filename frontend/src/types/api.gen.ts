@@ -1404,6 +1404,60 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/projects/{slug}/fact-tables": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Fact Tables */
+        get: operations["list_fact_tables_api_v1_projects__slug__fact_tables_get"];
+        put?: never;
+        /** Create Fact Table */
+        post: operations["create_fact_table_api_v1_projects__slug__fact_tables_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/projects/{slug}/fact-tables/preview": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Preview Fact Table */
+        post: operations["preview_fact_table_api_v1_projects__slug__fact_tables_preview_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/projects/{slug}/fact-tables/{fact_table_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Fact Table */
+        get: operations["get_fact_table_api_v1_projects__slug__fact_tables__fact_table_id__get"];
+        put?: never;
+        post?: never;
+        /** Delete Fact Table */
+        delete: operations["delete_fact_table_api_v1_projects__slug__fact_tables__fact_table_id__delete"];
+        options?: never;
+        head?: never;
+        /** Update Fact Table */
+        patch: operations["update_fact_table_api_v1_projects__slug__fact_tables__fact_table_id__patch"];
+        trace?: never;
+    };
     "/api/v1/projects/{slug}/meta-fields": {
         parameters: {
             query?: never;
@@ -4808,31 +4862,25 @@ export interface components {
             total_count: number;
         };
         /**
-         * FactAggregationConfig
-         * @description Config JSON for a ``fact_aggregation`` metric.
+         * FactMetricCreate
+         * @description An aggregation over a separately-defined ``FactTable``.
          *
-         *     Requires a source: either ``source_table`` (a warehouse table) or
-         *     ``base_query`` (a base SELECT). ``measure_column`` is required by the
-         *     enclosing metric when the aggregation is not ``count`` (enforced there,
-         *     since the aggregation lives on the metric, not in this config).
+         *     SINGLE (``composition=single``, the default): one operand given by the
+         *     top-level ``fact_table_id`` + ``aggregation`` + the ``measure_column`` /
+         *     ``distinct_column`` / ``row_filter`` config fields.
+         *
+         *     RATIO (``composition=ratio``): ``numerator`` / ``denominator`` operands (each
+         *     a :class:`FactOperand`); the denominator MAY reference a different fact table.
+         *     The numerator operand is mirrored onto the model's ``fact_table_id`` /
+         *     ``aggregation`` columns for catalog display and FK integrity.
+         *
+         *     The data source and timestamp column are taken from the referenced fact
+         *     table(s) at collection time; only the collection ``interval`` lives here.
+         *     Fact-table existence, project ownership, column membership, and row-filter
+         *     name resolution are checked in the service (they need the DB).
          */
-        FactAggregationConfig: {
-            /** Base Query */
-            base_query?: string | null;
-            /** Distinct Column */
-            distinct_column?: string | null;
-            /** Filter Sql */
-            filter_sql?: string | null;
-            /** Measure Column */
-            measure_column?: string | null;
-            /** Source Table */
-            source_table?: string | null;
-            /** Time Column */
-            time_column?: string | null;
-        };
-        /** FactAggregationMetricCreate */
-        FactAggregationMetricCreate: {
-            aggregation: components["schemas"]["MetricAggregation"];
+        FactMetricCreate: {
+            aggregation?: components["schemas"]["MetricAggregation"] | null;
             /**
              * Anomaly Detection Enabled
              * @default true
@@ -4849,12 +4897,9 @@ export interface components {
              * @default #6366f1
              */
             color: string;
-            config: components["schemas"]["FactAggregationConfig"];
-            /**
-             * Data Source Id
-             * Format: uuid
-             */
-            data_source_id: string;
+            /** @default single */
+            composition: components["schemas"]["MetricComposition"];
+            denominator?: components["schemas"]["FactOperand"] | null;
             /**
              * Description
              * @default
@@ -4862,14 +4907,21 @@ export interface components {
             description: string;
             /** Display Name */
             display_name: string;
+            /** Distinct Column */
+            distinct_column?: string | null;
+            /** Fact Table Id */
+            fact_table_id?: string | null;
             interval: components["schemas"]["ScanInterval"];
             /**
              * @description discriminator enum property added by openapi-typescript
              * @enum {string}
              */
-            kind: "fact_aggregation";
+            kind: "fact";
+            /** Measure Column */
+            measure_column?: string | null;
             /** Name */
             name: string;
+            numerator?: components["schemas"]["FactOperand"] | null;
             /**
              * Order
              * @default 0
@@ -4885,10 +4937,243 @@ export interface components {
              * @default false
              */
             reviewed: boolean;
+            /** Row Filter */
+            row_filter?: string | null;
             /** @default draft */
             status: components["schemas"]["MetricStatus"];
             /** Unit */
             unit?: string | null;
+        };
+        /**
+         * FactOperand
+         * @description One fact-table aggregation operand (a single metric, or one ratio side).
+         *
+         *     References a ``FactTable`` by id and aggregates one of its introspected
+         *     columns. ``measure_column`` / ``distinct_column`` reach warehouse SQL
+         *     unparameterised, so they are identifier-validated here; their membership in
+         *     the referenced fact table's columns is checked in the service (it needs the
+         *     DB). ``row_filter`` is the NAME of one of that fact table's stored row
+         *     filters — never a raw SQL fragment — resolved to SQL at collection time.
+         */
+        FactOperand: {
+            aggregation: components["schemas"]["MetricAggregation"];
+            /** Distinct Column */
+            distinct_column?: string | null;
+            /**
+             * Fact Table Id
+             * Format: uuid
+             */
+            fact_table_id: string;
+            /** Measure Column */
+            measure_column?: string | null;
+            /** Row Filter */
+            row_filter?: string | null;
+        };
+        /**
+         * FactTableColumnSchema
+         * @description A single introspected column descriptor: its name and warehouse type.
+         */
+        FactTableColumnSchema: {
+            /** Name */
+            name: string;
+            /** Type */
+            type: string;
+        };
+        /**
+         * FactTableCreate
+         * @description Create a fact table from a full read-only SELECT plus its column metadata.
+         *
+         *     ``sql`` must be a single read-only SELECT (validated via the shared
+         *     SELECT-safety path that rejects stacked statements, comments, DDL/DML and
+         *     ``UNION``). ``timestamp_column`` and ``identifier_columns`` are validated as
+         *     bare identifiers since they reach warehouse SQL unparameterised.
+         */
+        FactTableCreate: {
+            /**
+             * Color
+             * @default #6366f1
+             */
+            color: string;
+            /** Columns */
+            columns?: components["schemas"]["FactTableColumnSchema"][];
+            /** Data Source Id */
+            data_source_id?: string | null;
+            /**
+             * Description
+             * @default
+             */
+            description: string;
+            /** Display Name */
+            display_name: string;
+            /** Identifier Columns */
+            identifier_columns?: string[];
+            /** Name */
+            name: string;
+            /** Row Filters */
+            row_filters?: components["schemas"]["FactTableRowFilter"][];
+            /** Sql */
+            sql: string;
+            /** Timestamp Column */
+            timestamp_column: string;
+        };
+        /**
+         * FactTableListItem
+         * @description Slim catalog row: presentation + source binding, without the heavy SQL.
+         */
+        FactTableListItem: {
+            /** Color */
+            color: string;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /** Data Source Id */
+            data_source_id: string | null;
+            /** Description */
+            description: string;
+            /** Display Name */
+            display_name: string;
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** Name */
+            name: string;
+            /** Order */
+            order: number;
+            /**
+             * Project Id
+             * Format: uuid
+             */
+            project_id: string;
+            /** Timestamp Column */
+            timestamp_column: string;
+            /**
+             * Updated At
+             * Format: date-time
+             */
+            updated_at: string;
+        };
+        /** FactTableListResponse */
+        FactTableListResponse: {
+            /** Items */
+            items: components["schemas"]["FactTableListItem"][];
+            /** Total */
+            total: number;
+        };
+        /**
+         * FactTablePreviewRequest
+         * @description Introspect a candidate SELECT before persisting it as a fact table.
+         */
+        FactTablePreviewRequest: {
+            /** Data Source Id */
+            data_source_id?: string | null;
+            /** Sql */
+            sql: string;
+            /** Timestamp Column */
+            timestamp_column?: string | null;
+        };
+        /** FactTablePreviewResponse */
+        FactTablePreviewResponse: {
+            /** Columns */
+            columns: components["schemas"]["FactTableColumnSchema"][];
+            /** Identifier Candidates */
+            identifier_candidates: string[];
+            /** Sample Rows */
+            sample_rows: {
+                [key: string]: unknown;
+            }[];
+        };
+        /** FactTableResponse */
+        FactTableResponse: {
+            /** Color */
+            color: string;
+            /** Columns */
+            columns: components["schemas"]["FactTableColumnSchema"][];
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /** Data Source Id */
+            data_source_id: string | null;
+            /** Description */
+            description: string;
+            /** Display Name */
+            display_name: string;
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** Identifier Columns */
+            identifier_columns: string[];
+            /** Name */
+            name: string;
+            /** Order */
+            order: number;
+            /**
+             * Project Id
+             * Format: uuid
+             */
+            project_id: string;
+            /** Row Filters */
+            row_filters: components["schemas"]["FactTableRowFilter"][];
+            /** Sql */
+            sql: string;
+            /** Timestamp Column */
+            timestamp_column: string;
+            /**
+             * Updated At
+             * Format: date-time
+             */
+            updated_at: string;
+        };
+        /**
+         * FactTableRowFilter
+         * @description A reusable named row filter: a label plus a boolean WHERE fragment.
+         *
+         *     The ``sql`` fragment flows into warehouse SQL with no bound parameters, so it
+         *     is validated at this boundary via the shared SQL-fragment validator (rejects
+         *     comment markers, ``;`` separators, and DDL/DML/``UNION`` keywords).
+         */
+        FactTableRowFilter: {
+            /** Name */
+            name: string;
+            /** Sql */
+            sql: string;
+        };
+        /**
+         * FactTableUpdate
+         * @description Partial update of a fact table.
+         *
+         *     ``name`` is immutable (it is the per-project identity) — recreate the fact
+         *     table to rename it. Every other field is optional; ``exclude_unset`` at the
+         *     service layer keeps only the fields the client actually sent.
+         */
+        FactTableUpdate: {
+            /** Color */
+            color?: string | null;
+            /** Columns */
+            columns?: components["schemas"]["FactTableColumnSchema"][] | null;
+            /** Data Source Id */
+            data_source_id?: string | null;
+            /** Description */
+            description?: string | null;
+            /** Display Name */
+            display_name?: string | null;
+            /** Identifier Columns */
+            identifier_columns?: string[] | null;
+            /** Order */
+            order?: number | null;
+            /** Row Filters */
+            row_filters?: components["schemas"]["FactTableRowFilter"][] | null;
+            /** Sql */
+            sql?: string | null;
+            /** Timestamp Column */
+            timestamp_column?: string | null;
         };
         /** FieldDefinitionBulkCreate */
         FieldDefinitionBulkCreate: {
@@ -5122,7 +5407,7 @@ export interface components {
         };
         /**
          * MetricAggregation
-         * @description Aggregation applied by a ``fact_aggregation`` metric.
+         * @description Aggregation applied by a ``fact`` metric over a FactTable column.
          * @enum {string}
          */
         MetricAggregation: "count" | "sum" | "avg" | "min" | "max" | "count_distinct";
@@ -5159,7 +5444,11 @@ export interface components {
         };
         /**
          * MetricComposition
-         * @description How an ``event_composition`` metric combines event series.
+         * @description How an ``event_composition`` or ``fact`` metric combines its series.
+         *
+         *     ``event_composition`` uses ``single`` / ``ratio`` / ``per_distinct_user``;
+         *     ``fact`` uses ``single`` (one operand) and ``ratio`` (numerator / denominator
+         *     operands, each over a — possibly different — FactTable).
          * @enum {string}
          */
         MetricComposition: "single" | "ratio" | "per_distinct_user";
@@ -5293,6 +5582,8 @@ export interface components {
             description: string;
             /** Display Name */
             display_name: string;
+            /** Fact Table Id */
+            fact_table_id: string | null;
             /**
              * Id
              * Format: uuid
@@ -5375,7 +5666,7 @@ export interface components {
          * @description How a MetricDefinition produces its per-bucket value.
          * @enum {string}
          */
-        MetricKind: "sql" | "fact_aggregation" | "event_composition" | "fact";
+        MetricKind: "sql" | "event_composition" | "fact";
         /**
          * MetricScopeType
          * @enum {string}
@@ -10942,6 +11233,209 @@ export interface operations {
             };
         };
     };
+    list_fact_tables_api_v1_projects__slug__fact_tables_get: {
+        parameters: {
+            query?: {
+                search?: string | null;
+                offset?: number;
+                limit?: number;
+            };
+            header?: never;
+            path: {
+                slug: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["FactTableListResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    create_fact_table_api_v1_projects__slug__fact_tables_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                slug: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["FactTableCreate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["FactTableResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    preview_fact_table_api_v1_projects__slug__fact_tables_preview_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                slug: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["FactTablePreviewRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["FactTablePreviewResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_fact_table_api_v1_projects__slug__fact_tables__fact_table_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                slug: string;
+                fact_table_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["FactTableResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    delete_fact_table_api_v1_projects__slug__fact_tables__fact_table_id__delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                slug: string;
+                fact_table_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    update_fact_table_api_v1_projects__slug__fact_tables__fact_table_id__patch: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                slug: string;
+                fact_table_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["FactTableUpdate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["FactTableResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     list_meta_fields_api_v1_projects__slug__meta_fields_get: {
         parameters: {
             query?: never;
@@ -11122,7 +11616,7 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["FactAggregationMetricCreate"] | components["schemas"]["SqlMetricCreate"] | components["schemas"]["EventCompositionMetricCreate"];
+                "application/json": components["schemas"]["FactMetricCreate"] | components["schemas"]["SqlMetricCreate"] | components["schemas"]["EventCompositionMetricCreate"];
             };
         };
         responses: {

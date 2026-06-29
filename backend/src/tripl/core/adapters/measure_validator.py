@@ -5,7 +5,7 @@ import re
 from tripl.models.domain_enums import MetricAggregation
 
 # Dialect-agnostic security validator for user-supplied measure expressions,
-# columns, and sql-kind SELECTs used by ``fact_aggregation`` / ``sql`` metrics.
+# columns, and sql-kind SELECTs used by ``fact`` / ``sql`` metrics.
 #
 # Security model (matches the warehouse adapters): IDENTIFIER-ALLOWLIST +
 # LITERAL-ESCAPING with NO bound parameters. This module never escapes literals
@@ -64,6 +64,18 @@ _FORBIDDEN_SQL_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Fragment-only forbidden set: everything ``validate_select_sql_safety`` rejects
+# PLUS ``select`` and ``with``. A stored row filter is a boolean WHERE expression
+# that must never embed a query, so a correlated subquery (``user_id IN (SELECT
+# ...)``) or a CTE (``WITH ...``) is rejected. Same word-boundary construction as
+# ``_FORBIDDEN_SQL_RE``, so identifiers like ``selected_count`` / ``is_selected``
+# / ``created_with`` do not trip it.
+_FORBIDDEN_FRAGMENT_KEYWORDS: tuple[str, ...] = (*_FORBIDDEN_SQL_KEYWORDS, "select", "with")
+_FORBIDDEN_FRAGMENT_RE = re.compile(
+    r"\b(" + "|".join(_FORBIDDEN_FRAGMENT_KEYWORDS) + r")\b",
+    re.IGNORECASE,
+)
+
 # Comment markers that can hide trailing injection from a naive scan.
 _COMMENT_MARKERS: tuple[str, ...] = ("--", "/*", "*/", "#")
 
@@ -109,11 +121,13 @@ def validate_sql_fragment(text: str) -> str:
 
     Intended for boolean filter expressions, not full statements. Rejects comment
     markers (``--``/``/*``/``*/``/``#``), an embedded ``;``, and any forbidden
-    DDL/DML/session/``UNION`` keyword (matched on word boundaries,
-    case-insensitively). Returns ``text`` unchanged. Legitimate filters such as
-    ``status IN ('a','b') AND created_at > '2026-01-01'`` pass (``created_at``
-    does not trip ``create``); probes like ``1=1 UNION SELECT ...`` or
-    ``x; DROP ...`` are rejected. Raises ``ValueError`` (English) on violation.
+    DDL/DML/session/``UNION`` keyword plus ``SELECT``/``WITH`` (matched on word
+    boundaries, case-insensitively), so a fragment can never embed a correlated
+    subquery (``user_id IN (SELECT ...)``) or a CTE. Returns ``text`` unchanged.
+    Legitimate filters such as ``status IN ('a','b') AND created_at >
+    '2026-01-01'`` pass (``created_at`` does not trip ``create``); probes like
+    ``1=1 UNION SELECT ...`` or ``x; DROP ...`` are rejected. Raises
+    ``ValueError`` (English) on violation.
     """
     for marker in _COMMENT_MARKERS:
         if marker in text:
@@ -122,7 +136,7 @@ def validate_sql_fragment(text: str) -> str:
     if ";" in text:
         msg = "Filter must not contain ';' separators"
         raise ValueError(msg)
-    forbidden = _FORBIDDEN_SQL_RE.search(text)
+    forbidden = _FORBIDDEN_FRAGMENT_RE.search(text)
     if forbidden is not None:
         msg = f"Filter must be read-only; disallowed keyword: {forbidden.group(1).upper()}"
         raise ValueError(msg)

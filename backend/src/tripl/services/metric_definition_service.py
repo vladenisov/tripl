@@ -11,13 +11,15 @@ from tripl.models.data_source import DataSource
 from tripl.models.domain_enums import MetricKind, MetricScopeType, MetricStatus
 from tripl.models.event import Event
 from tripl.models.event_type import EventType
+from tripl.models.fact_table import FactTable
 from tripl.models.metric_anomaly import MetricAnomaly
 from tripl.models.metric_definition import MetricDefinition
 from tripl.models.metric_value import MetricValue
 from tripl.schemas.event_metric import MetricSignalResponse
 from tripl.schemas.metric_definition import (
     EventCompositionMetricCreate,
-    FactAggregationMetricCreate,
+    FactMetricCreate,
+    FactOperand,
     MetricDefinitionBulkUpdate,
     MetricDefinitionCreate,
     MetricDefinitionListItem,
@@ -84,6 +86,94 @@ async def _verify_composition_refs(
                 status_code=422,
                 detail="One or more referenced event types do not exist in the project",
             )
+
+
+async def _verify_fact_operand(
+    session: AsyncSession,
+    project_id: uuid.UUID,
+    *,
+    fact_table_id: uuid.UUID,
+    measure_column: str | None,
+    distinct_column: str | None,
+    row_filter: str | None,
+    role: str,
+) -> None:
+    """Validate one fact operand against its referenced fact table.
+
+    The fact table must exist and belong to the metric's project; any
+    ``measure_column`` / ``distinct_column`` must be one of the fact table's
+    introspected column names; any ``row_filter`` must be the NAME of one of the
+    fact table's stored row filters (never a raw SQL fragment). Identifier-shape
+    and per-aggregation requirements were already enforced at the schema boundary.
+    """
+    fact_table = await session.get(FactTable, fact_table_id)
+    if fact_table is None or fact_table.project_id != project_id:
+        raise HTTPException(
+            status_code=422,
+            detail=f"{role}: referenced fact table does not exist in the project",
+        )
+
+    column_names = {
+        column["name"]
+        for column in (fact_table.columns or [])
+        if isinstance(column, dict) and "name" in column
+    }
+    for column in (measure_column, distinct_column):
+        if column is not None and column not in column_names:
+            raise HTTPException(
+                status_code=422,
+                detail=f"{role}: column {column!r} is not a column of the referenced fact table",
+            )
+
+    if row_filter is not None:
+        filter_names = {
+            row["name"]
+            for row in (fact_table.row_filters or [])
+            if isinstance(row, dict) and "name" in row
+        }
+        if row_filter not in filter_names:
+            raise HTTPException(
+                status_code=422,
+                detail=f"{role}: row filter {row_filter!r} is not defined on the referenced "
+                "fact table",
+            )
+
+
+async def _verify_fact_metric(
+    session: AsyncSession,
+    project_id: uuid.UUID,
+    data: FactMetricCreate,
+) -> None:
+    """Validate a fact metric's operand(s) against their fact table(s)."""
+    if data.numerator is not None and data.denominator is not None:
+        operands: list[tuple[str, FactOperand]] = [
+            ("numerator", data.numerator),
+            ("denominator", data.denominator),
+        ]
+        for role, operand in operands:
+            await _verify_fact_operand(
+                session,
+                project_id,
+                fact_table_id=operand.fact_table_id,
+                measure_column=operand.measure_column,
+                distinct_column=operand.distinct_column,
+                row_filter=operand.row_filter,
+                role=role,
+            )
+        return
+
+    # SINGLE: the schema guarantees fact_table_id is set for a single fact metric.
+    if data.fact_table_id is None:
+        raise ValueError("single fact metric requires fact_table_id")
+    await _verify_fact_operand(
+        session,
+        project_id,
+        fact_table_id=data.fact_table_id,
+        measure_column=data.measure_column,
+        distinct_column=data.distinct_column,
+        row_filter=data.row_filter,
+        role="single",
+    )
 
 
 async def list_metric_definitions(
@@ -328,8 +418,10 @@ async def create_metric_definition(
         )
 
     # Kind-specific existence checks that the schema cannot do (need the DB).
-    if isinstance(data, FactAggregationMetricCreate | SqlMetricCreate):
+    if isinstance(data, SqlMetricCreate):
         await _verify_data_source(session, data.data_source_id)
+    elif isinstance(data, FactMetricCreate):
+        await _verify_fact_metric(session, project_id, data)
     elif isinstance(data, EventCompositionMetricCreate):
         await _verify_composition_refs(session, project_id, data)
 

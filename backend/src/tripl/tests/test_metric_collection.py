@@ -29,6 +29,7 @@ from tripl.models.domain_enums import (
     ScanInterval,
 )
 from tripl.models.event_metric import EventMetric
+from tripl.models.fact_table import FactTable
 from tripl.models.metric_definition import MetricDefinition
 from tripl.models.metric_value import MetricValue
 from tripl.models.metric_value_breakdown import MetricValueBreakdown
@@ -89,7 +90,7 @@ def _seed_scan_config(session: Session, project: Project, data_source: DataSourc
     return config
 
 
-# ── fact_aggregation ─────────────────────────────────────────────────────────
+# ── fact ───────────────────────────────────────────────────────────────────
 
 
 class _FactAdapter:
@@ -103,6 +104,7 @@ class _FactAdapter:
         return [
             ColumnInfo(name="ts", type_name="DateTime"),
             ColumnInfo(name="amount", type_name="Float64"),
+            ColumnInfo(name="user_id", type_name="String"),
         ]
 
     def get_time_bucketed_aggregate(
@@ -125,22 +127,87 @@ class _FactAdapter:
         return None
 
 
-def _make_fact_metric(
+class _FactRatioAdapter:
+    """Returns a queued rowset per ``get_time_bucketed_aggregate`` call.
+
+    A fact ratio collect drives the adapter once for the numerator and once for
+    the denominator (in that order), so the two rowsets are popped in turn.
+    """
+
+    def __init__(self, rowsets: list[list[tuple[object, ...]]]) -> None:
+        self._rowsets = rowsets
+        self._calls = 0
+
+    def test_connection(self) -> bool:
+        return True
+
+    def get_columns(self, base_query: str) -> list[ColumnInfo]:
+        return [
+            ColumnInfo(name="ts", type_name="DateTime"),
+            ColumnInfo(name="amount", type_name="Float64"),
+            ColumnInfo(name="user_id", type_name="String"),
+        ]
+
+    def get_time_bucketed_aggregate(
+        self,
+        base_query: str,
+        time_column: str,
+        ch_interval: str,
+        agg_fn: MetricAggregation,
+        measure_column: str | None,
+        regular_columns: list[str],
+        json_columns: list[str],
+        json_value_paths: dict[str, list[str]] | None,
+        time_from: datetime,
+        time_to: datetime,
+        limit: int = 100000,
+    ) -> tuple[list[str], list[str], list[tuple[object, ...]]]:
+        rows = self._rowsets[self._calls]
+        self._calls += 1
+        return ([], [], rows)
+
+    def close(self) -> None:
+        return None
+
+
+def _seed_fact_table(
     session: Session, project: Project, data_source: DataSource, **overrides: object
+) -> FactTable:
+    fact_table = FactTable(
+        id=uuid.uuid4(),
+        project_id=project.id,
+        name=f"ft-{uuid.uuid4().hex[:6]}",
+        display_name="Revenue Facts",
+        data_source_id=data_source.id,
+        sql="SELECT ts, amount, user_id FROM revenue",
+        timestamp_column="ts",
+        columns=[
+            {"name": "ts", "type": "timestamp"},
+            {"name": "amount", "type": "number"},
+            {"name": "user_id", "type": "string"},
+        ],
+        identifier_columns=["user_id"],
+        row_filters=[],
+        **overrides,
+    )
+    session.add(fact_table)
+    session.commit()
+    return fact_table
+
+
+def _make_fact_metric(
+    session: Session, project: Project, fact_table: FactTable, **overrides: object
 ) -> MetricDefinition:
     definition = MetricDefinition(
         id=uuid.uuid4(),
         project_id=project.id,
         name=f"fact-{uuid.uuid4().hex[:6]}",
         display_name="Revenue",
-        kind=MetricKind.fact_aggregation,
+        kind=MetricKind.fact,
+        composition=MetricComposition.single,
         aggregation=MetricAggregation.sum,
-        config={
-            "base_query": "SELECT ts, amount FROM revenue",
-            "measure_column": "amount",
-            "time_column": "ts",
-        },
-        data_source_id=data_source.id,
+        fact_table_id=fact_table.id,
+        config={"measure_column": "amount"},
         interval=ScanInterval.h1,
         status=MetricStatus.active,
         **overrides,
@@ -150,13 +217,14 @@ def _make_fact_metric(
     return definition
 
 
-def test_collect_fact_aggregation_writes_metric_values(
+def test_collect_fact_writes_metric_values(
     sync_session_factory: sessionmaker[Session],
     monkeypatch: MonkeyPatch,
 ) -> None:
     with sync_session_factory() as session:
         project, data_source = _seed_project_and_ds(session)
-        definition = _make_fact_metric(session, project, data_source)
+        fact_table = _seed_fact_table(session, project, data_source)
+        definition = _make_fact_metric(session, project, fact_table)
         def_id = str(definition.id)
 
     adapter = _FactAdapter([(datetime(2026, 1, 1, 10), 12.5), (datetime(2026, 1, 1, 11), 7.0)])
@@ -190,13 +258,14 @@ def test_collect_fact_aggregation_writes_metric_values(
         assert definition.last_collected_at is not None
 
 
-def test_collect_fact_aggregation_is_idempotent_on_rerun(
+def test_collect_fact_is_idempotent_on_rerun(
     sync_session_factory: sessionmaker[Session],
     monkeypatch: MonkeyPatch,
 ) -> None:
     with sync_session_factory() as session:
         project, data_source = _seed_project_and_ds(session)
-        definition = _make_fact_metric(session, project, data_source)
+        fact_table = _seed_fact_table(session, project, data_source)
+        definition = _make_fact_metric(session, project, fact_table)
         def_id = str(definition.id)
 
     adapter = _FactAdapter([(datetime(2026, 1, 1, 10), 5.0), (datetime(2026, 1, 1, 11), 6.0)])
@@ -229,11 +298,11 @@ def test_collect_fact_aggregation_is_idempotent_on_rerun(
         }
 
 
-def test_collect_fact_aggregation_floors_naive_bucket_to_utc(
+def test_collect_fact_floors_naive_bucket_to_utc(
     sync_session_factory: sessionmaker[Session],
     monkeypatch: MonkeyPatch,
 ) -> None:
-    """fact_aggregation buckets are interval-floored + UTC-coerced like the sql path.
+    """fact buckets are interval-floored + UTC-coerced like the sql path.
 
     A warehouse adapter returning a naive, interval-unaligned datetime must be
     normalized through ``_coerce_bucket`` before storage (so a later
@@ -242,7 +311,8 @@ def test_collect_fact_aggregation_floors_naive_bucket_to_utc(
     """
     with sync_session_factory() as session:
         project, data_source = _seed_project_and_ds(session)
-        definition = _make_fact_metric(session, project, data_source)
+        fact_table = _seed_fact_table(session, project, data_source)
+        definition = _make_fact_metric(session, project, fact_table)
         def_id = str(definition.id)
 
     # 10:37:12 (naive) must floor to the 10:00 bucket of the 1h interval.
@@ -274,6 +344,82 @@ def test_collect_fact_aggregation_floors_naive_bucket_to_utc(
         assert rows[0].bucket == datetime(2026, 1, 1, 10)
 
 
+def test_collect_fact_ratio_handles_divide_by_zero(
+    sync_session_factory: sessionmaker[Session],
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """A fact ratio divides numerator / denominator; a zero denominator is a gap.
+
+    The denominator may reference a different fact table (here a second one); a
+    divide-by-zero bucket maps to ``None`` and is dropped by the NOT-NULL row
+    builder rather than stored as a misleading ``0``.
+    """
+    with sync_session_factory() as session:
+        project, data_source = _seed_project_and_ds(session)
+        numerator_ft = _seed_fact_table(session, project, data_source)
+        denominator_ft = _seed_fact_table(session, project, data_source)
+        definition = MetricDefinition(
+            id=uuid.uuid4(),
+            project_id=project.id,
+            name=f"fact-ratio-{uuid.uuid4().hex[:6]}",
+            display_name="Conversion",
+            kind=MetricKind.fact,
+            composition=MetricComposition.ratio,
+            aggregation=MetricAggregation.count,
+            fact_table_id=numerator_ft.id,
+            config={
+                "numerator": {
+                    "fact_table_id": str(numerator_ft.id),
+                    "aggregation": "count",
+                    "measure_column": None,
+                    "distinct_column": None,
+                    "row_filter": None,
+                },
+                "denominator": {
+                    "fact_table_id": str(denominator_ft.id),
+                    "aggregation": "count_distinct",
+                    "measure_column": None,
+                    "distinct_column": "user_id",
+                    "row_filter": None,
+                },
+            },
+            interval=ScanInterval.h1,
+            status=MetricStatus.active,
+        )
+        session.add(definition)
+        session.commit()
+        def_id = str(definition.id)
+
+    # Numerator series then denominator series (b11 denominator 0 -> divide-by-zero).
+    adapter = _FactRatioAdapter(
+        [
+            [(datetime(2026, 1, 1, 10), 10.0), (datetime(2026, 1, 1, 11), 20.0)],
+            [(datetime(2026, 1, 1, 10), 2.0), (datetime(2026, 1, 1, 11), 0.0)],
+        ]
+    )
+    monkeypatch.setattr(metric_collect, "_get_sync_session", sync_session_factory)
+    monkeypatch.setattr(metric_collect, "_build_adapter", lambda ds: adapter)
+    monkeypatch.setattr(
+        metric_collect,
+        "_resolve_value_window",
+        lambda *a, **k: (datetime(2026, 1, 1, 10), datetime(2026, 1, 1, 12)),
+    )
+
+    result = metric_collect.collect_metric_definitions.run(def_id)
+
+    # Only the finite-ratio bucket is stored; the divide-by-zero bucket is absent.
+    assert result["values"] == 1
+    with sync_session_factory() as session:
+        rows = (
+            session.execute(
+                select(MetricValue).where(MetricValue.metric_definition_id == uuid.UUID(def_id))
+            )
+            .scalars()
+            .all()
+        )
+        assert {(row.bucket, row.value) for row in rows} == {(datetime(2026, 1, 1, 10), 5.0)}
+
+
 class _FactBreakdownAdapter(_FactAdapter):
     def get_time_bucketed_aggregate_breakdown(
         self,
@@ -302,16 +448,17 @@ class _FactBreakdownAdapter(_FactAdapter):
         )
 
 
-def test_collect_fact_aggregation_writes_breakdown_values(
+def test_collect_fact_writes_breakdown_values(
     sync_session_factory: sessionmaker[Session],
     monkeypatch: MonkeyPatch,
 ) -> None:
     with sync_session_factory() as session:
         project, data_source = _seed_project_and_ds(session)
+        fact_table = _seed_fact_table(session, project, data_source)
         definition = _make_fact_metric(
             session,
             project,
-            data_source,
+            fact_table,
             breakdown_columns=["country"],
             breakdown_values_limit=2,
         )
@@ -780,7 +927,7 @@ def test_evaluate_composition_ratio_zero_denominator_is_none() -> None:
 
 def test_coerce_bucket_makes_naive_datetime_utc_aware_and_floored() -> None:
     # A naive, unaligned warehouse bucket is coerced to UTC and floored to the
-    # interval -- the normalization the fact_aggregation path relies on so stored
+    # interval -- the normalization the fact path relies on so stored
     # buckets never mix naive/aware bounds across collection runs.
     coerced = metric_collect._coerce_bucket(datetime(2026, 1, 1, 10, 37), timedelta(hours=1))
     assert coerced == datetime(2026, 1, 1, 10, tzinfo=UTC)
@@ -793,15 +940,17 @@ def test_coerce_bucket_makes_naive_datetime_utc_aware_and_floored() -> None:
 def _make_active_fact_metric_for_dispatch(
     session: Session, project: Project, data_source: DataSource
 ) -> MetricDefinition:
+    fact_table = _seed_fact_table(session, project, data_source)
     definition = MetricDefinition(
         id=uuid.uuid4(),
         project_id=project.id,
         name="due-metric",
         display_name="Due Metric",
-        kind=MetricKind.fact_aggregation,
+        kind=MetricKind.fact,
+        composition=MetricComposition.single,
         aggregation=MetricAggregation.count,
-        config={"base_query": "SELECT ts FROM t", "time_column": "ts"},
-        data_source_id=data_source.id,
+        fact_table_id=fact_table.id,
+        config={},
         interval=ScanInterval.h1,
         status=MetricStatus.active,
     )

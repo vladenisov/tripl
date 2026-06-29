@@ -19,7 +19,7 @@ produced) and ``include_metrics=False`` (NONE), proving the SAFE-OFF gate.
 
 Per-dialect adapter aggregation coverage lives in ``test_adapter_aggregations.py``;
 the wiring assertion here is intentionally light (collection invokes
-``get_time_bucketed_aggregate`` for ``fact_aggregation``).
+``get_time_bucketed_aggregate`` for ``fact``).
 """
 
 from __future__ import annotations
@@ -49,6 +49,7 @@ from tripl.models.domain_enums import (
     ScanInterval,
 )
 from tripl.models.event_metric import EventMetric
+from tripl.models.fact_table import FactTable
 from tripl.models.metric_anomaly import MetricAnomaly
 from tripl.models.metric_definition import MetricDefinition
 from tripl.models.metric_value import MetricValue
@@ -130,6 +131,28 @@ def _seed_pipeline_base(session: Session) -> tuple[Project, DataSource, ScanConf
     session.add_all([project, data_source, config, settings])
     session.commit()
     return project, data_source, config
+
+
+def _seed_fact_table(session: Session, project: Project, data_source: DataSource) -> FactTable:
+    """A fact table over the warehouse revenue rowset (source of ``fact`` metrics)."""
+    fact_table = FactTable(
+        id=uuid.uuid4(),
+        project_id=project.id,
+        name=f"ft-{uuid.uuid4().hex[:6]}",
+        display_name="Revenue Facts",
+        data_source_id=data_source.id,
+        sql="SELECT ts, amount FROM revenue",
+        timestamp_column="ts",
+        columns=[
+            {"name": "ts", "type": "timestamp"},
+            {"name": "amount", "type": "number"},
+        ],
+        identifier_columns=[],
+        row_filters=[],
+    )
+    session.add(fact_table)
+    session.commit()
+    return fact_table
 
 
 def _spike_rows(base_value: float, spike_value: float) -> list[tuple[datetime, float]]:
@@ -387,28 +410,26 @@ def _patch_collection(
         monkeypatch.setattr(metric_collect, "_build_adapter", lambda ds: adapter)
 
 
-# ── 1. fact_aggregation ────────────────────────────────────────────────────────
+# ── 1. fact ────────────────────────────────────────────────────────────────────
 
 
-def test_fact_aggregation_pipeline_end_to_end(
+def test_fact_pipeline_end_to_end(
     sync_session_factory: sessionmaker[Session],
     monkeypatch: MonkeyPatch,
 ) -> None:
     with sync_session_factory() as session:
         project, data_source, config = _seed_pipeline_base(session)
+        fact_table = _seed_fact_table(session, project, data_source)
         metric = MetricDefinition(
             id=uuid.uuid4(),
             project_id=project.id,
             name=f"fact-{uuid.uuid4().hex[:6]}",
             display_name="Revenue",
-            kind=MetricKind.fact_aggregation,
+            kind=MetricKind.fact,
+            composition=MetricComposition.single,
             aggregation=MetricAggregation.sum,
-            config={
-                "base_query": "SELECT ts, amount FROM revenue",
-                "measure_column": "amount",
-                "time_column": "ts",
-            },
-            data_source_id=data_source.id,
+            fact_table_id=fact_table.id,
+            config={"measure_column": "amount"},
             interval=ScanInterval.h1,
             status=MetricStatus.active,
             anomaly_detection_enabled=True,
@@ -434,7 +455,7 @@ def test_fact_aggregation_pipeline_end_to_end(
             .scalars()
             .all()
         )
-        # fact_aggregation values are project-global (scan_config_id NULL).
+        # fact values are project-global (scan_config_id NULL).
         assert all(row.scan_config_id is None for row in rows)
         stored = {(row.bucket, row.value) for row in rows}
         expected = {(_BASE + timedelta(hours=hour), 10.0) for hour in range(_SPIKE_HOUR)}
@@ -717,29 +738,27 @@ def test_event_composition_per_distinct_user_pipeline_end_to_end(
 # ── adapter aggregation wiring (light) ─────────────────────────────────────────
 
 
-def test_fact_aggregation_collect_invokes_time_bucketed_aggregate(
+def test_fact_collect_invokes_time_bucketed_aggregate(
     sync_session_factory: sessionmaker[Session],
     monkeypatch: MonkeyPatch,
 ) -> None:
-    """Light wiring check: a fact_aggregation collect drives the adapter's
+    """Light wiring check: a fact collect drives the adapter's
     ``get_time_bucketed_aggregate`` with the metric's aggregation. The exhaustive
     per-dialect aggregation coverage lives in ``test_adapter_aggregations.py``.
     """
     with sync_session_factory() as session:
         project, data_source, _config = _seed_pipeline_base(session)
+        fact_table = _seed_fact_table(session, project, data_source)
         metric = MetricDefinition(
             id=uuid.uuid4(),
             project_id=project.id,
             name=f"fact-wire-{uuid.uuid4().hex[:6]}",
             display_name="Revenue",
-            kind=MetricKind.fact_aggregation,
+            kind=MetricKind.fact,
+            composition=MetricComposition.single,
             aggregation=MetricAggregation.sum,
-            config={
-                "base_query": "SELECT ts, amount FROM revenue",
-                "measure_column": "amount",
-                "time_column": "ts",
-            },
-            data_source_id=data_source.id,
+            fact_table_id=fact_table.id,
+            config={"measure_column": "amount"},
             interval=ScanInterval.h1,
             status=MetricStatus.active,
             anomaly_detection_enabled=True,

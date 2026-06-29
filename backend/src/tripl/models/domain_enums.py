@@ -98,11 +98,8 @@ class MetricKind(enum.StrEnum):
     """How a MetricDefinition produces its per-bucket value."""
 
     sql = "sql"
-    fact_aggregation = "fact_aggregation"
     event_composition = "event_composition"
     # ``fact``: aggregation over a separately-defined FactTable (fact-table model).
-    # Replaces the inline ``fact_aggregation`` kind; the latter is kept for
-    # backward compatibility with existing rows.
     fact = "fact"
 
 
@@ -115,7 +112,7 @@ class MetricStatus(enum.StrEnum):
 
 
 class MetricAggregation(enum.StrEnum):
-    """Aggregation applied by a ``fact_aggregation`` metric."""
+    """Aggregation applied by a ``fact`` metric over a FactTable column."""
 
     count = "count"  # type: ignore[assignment]  # StrEnum member shadows str.count
     sum = "sum"
@@ -126,7 +123,12 @@ class MetricAggregation(enum.StrEnum):
 
 
 class MetricComposition(enum.StrEnum):
-    """How an ``event_composition`` metric combines event series."""
+    """How an ``event_composition`` or ``fact`` metric combines its series.
+
+    ``event_composition`` uses ``single`` / ``ratio`` / ``per_distinct_user``;
+    ``fact`` uses ``single`` (one operand) and ``ratio`` (numerator / denominator
+    operands, each over a — possibly different — FactTable).
+    """
 
     single = "single"
     ratio = "ratio"

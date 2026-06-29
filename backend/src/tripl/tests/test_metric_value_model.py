@@ -89,7 +89,7 @@ def test_metric_value_roundtrips(session_factory: sessionmaker[Session]) -> None
     bucket = datetime(2026, 1, 1, 12, tzinfo=UTC)
     with session_factory() as session:
         ctx = _seed(session)
-        # One row bound to a scan grid, one unscoped (sql/fact_aggregation).
+        # One row bound to a scan grid, one unscoped (sql/fact).
         session.add_all(
             [
                 MetricValue(

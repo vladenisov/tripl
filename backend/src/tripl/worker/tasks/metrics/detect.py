@@ -547,7 +547,7 @@ def _load_metric_value_points(
 def _resolve_metric_interval(session: Session, metric: MetricDefinition) -> str | None:
     """Interval for a metric's grid.
 
-    ``sql`` / ``fact_aggregation`` carry their own ``interval``;
+    ``sql`` / ``fact`` carry their own ``interval``;
     ``event_composition`` leaves it NULL and inherits the grid of the
     most-recent value's ``scan_config_id`` (mirrors the series read service).
     """

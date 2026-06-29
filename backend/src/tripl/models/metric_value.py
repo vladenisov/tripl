@@ -15,7 +15,7 @@ class MetricValue(UUIDMixin, Base):
     Mirrors ``EventMetric`` but is keyed by ``MetricDefinition`` and stores a
     Float ``value`` (instead of a BigInteger count). ``scan_config_id`` is an
     optional FK used to align ``event_composition`` metrics onto the source
-    scan grid; it is left NULL for ``sql`` / ``fact_aggregation`` metrics that
+    scan grid; it is left NULL for ``sql`` / ``fact`` metrics that
     collect from their own data source.
     """
 

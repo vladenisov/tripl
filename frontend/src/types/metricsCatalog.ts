@@ -1,6 +1,6 @@
 // Metrics catalog types, sourced directly from the committed backend OpenAPI
 // (`api.gen.ts`) so the frontend stays in lock-step with the backend schemas.
-// The catalog metric kinds (`sql` / `fact_aggregation` / `event_composition`)
+// The catalog metric kinds (`sql` / `fact` / `event_composition`)
 // form a discriminated union on `kind`; the create payloads mirror that union.
 import type { components } from './api.gen'
 
@@ -14,15 +14,14 @@ export type MetricComposition = Schemas['MetricComposition']
 export type MetricScanInterval = Schemas['ScanInterval']
 
 // ───────── Kind-specific config blocks ─────────
-export type FactAggregationConfig = Schemas['FactAggregationConfig']
 export type SqlConfig = Schemas['SqlConfig']
 
 // ───────── Create payloads (discriminated on `kind`) ─────────
-export type FactAggregationMetricCreate = Schemas['FactAggregationMetricCreate']
+export type FactMetricCreate = Schemas['FactMetricCreate']
 export type SqlMetricCreate = Schemas['SqlMetricCreate']
 export type EventCompositionMetricCreate = Schemas['EventCompositionMetricCreate']
 export type MetricCreate =
-  | FactAggregationMetricCreate
+  | FactMetricCreate
   | SqlMetricCreate
   | EventCompositionMetricCreate
 
@@ -48,7 +47,7 @@ export type MetricVersionSeriesResponse = Schemas['MetricVersionSeriesResponse']
 
 // ───────── UI option lists ─────────
 export const METRIC_KINDS: readonly MetricKind[] = [
-  'fact_aggregation',
+  'fact',
   'sql',
   'event_composition',
 ]
@@ -80,7 +79,6 @@ export const METRIC_SCAN_INTERVALS: readonly MetricScanInterval[] = [
 
 export const METRIC_KIND_LABEL: Record<MetricKind, string> = {
   fact: 'Fact',
-  fact_aggregation: 'Fact aggregation',
   sql: 'SQL',
   event_composition: 'Event composition',
 }

@@ -33,7 +33,7 @@ const STATUS_TONE: Record<MetricStatus, ChipTone> = {
 
 const KIND_FILTER_OPTIONS: { value: '' | MetricKind; label: string }[] = [
   { value: '', label: 'All kinds' },
-  { value: 'fact_aggregation', label: 'Fact aggregation' },
+  { value: 'fact', label: 'Fact' },
   { value: 'sql', label: 'SQL' },
   { value: 'event_composition', label: 'Event composition' },
 ]
