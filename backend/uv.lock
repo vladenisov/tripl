@@ -1529,7 +1529,7 @@ requires-dist = [
     { name = "python-multipart", specifier = ">=0.0.32" },
     { name = "redis", extras = ["hiredis"], specifier = ">=8.0.0" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.15.17" },
-    { name = "sqlalchemy", extras = ["asyncio"], specifier = ">=2.0.50" },
+    { name = "sqlalchemy", extras = ["asyncio"], specifier = ">=2.0.51" },
     { name = "statsmodels", specifier = ">=0.14.6" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.49.0" },
 ]
