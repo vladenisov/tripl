@@ -30,6 +30,8 @@ from tripl.models.meta_field_definition import MetaFieldDefinition
 from tripl.models.metric_anomaly import MetricAnomaly
 from tripl.models.metric_breakdown_anomaly import MetricBreakdownAnomaly
 from tripl.models.metric_definition import MetricDefinition
+from tripl.models.metric_value import MetricValue
+from tripl.models.metric_value_breakdown import MetricValueBreakdown
 from tripl.models.plan_branch import PlanBranch
 from tripl.models.plan_branch_approval import PlanBranchApproval
 from tripl.models.plan_branch_comment import PlanBranchComment
@@ -82,6 +84,8 @@ __all__ = [
     "MetricAnomaly",
     "MetricBreakdownAnomaly",
     "MetricDefinition",
+    "MetricValue",
+    "MetricValueBreakdown",
     "PlanBranch",
     "PlanBranchApproval",
     "PlanBranchComment",

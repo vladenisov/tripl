@@ -16,6 +16,11 @@ from tripl.core.adapters.base import (
     SchemaColumn,
     SchemaTable,
 )
+from tripl.core.adapters.measure_validator import (
+    build_aggregate_sql,
+    validate_measure_column,
+)
+from tripl.models.domain_enums import MetricAggregation
 
 # Hard cap on rows pulled from the catalog so a warehouse with thousands of
 # wide tables can't blow up the autocomplete payload or the request.
@@ -30,6 +35,10 @@ logger = logging.getLogger(__name__)
 
 _IDENTIFIER_RE = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_.]*$")
 _IDENTIFIER_PART_RE = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*$")
+# Mirrors PostgresAdapter._INTERVAL_RE: a positive integer and a supported unit.
+# The bucketed-aggregate paths interpolate the interval into SQL with no bound
+# parameters, so the value must be allowlisted before it reaches the string.
+_INTERVAL_RE = re.compile(r"^\d+\s+(second|minute|hour|day|week|month)s?$", re.IGNORECASE)
 
 # JSON path *discovery* (preview) enumeration functions. "dynamic" lists only the
 # important typed subcolumn paths (fast); "all" lists every path incl. shared-data
@@ -99,8 +108,7 @@ class ClickHouseAdapter(BaseAdapter):
                 SchemaColumn(name=str(name), data_type=str(type_name))
             )
         return [
-            SchemaTable(name=table, columns=columns)
-            for table, columns in columns_by_table.items()
+            SchemaTable(name=table, columns=columns) for table, columns in columns_by_table.items()
         ]
 
     def get_preview_rows(
@@ -150,8 +158,7 @@ class ClickHouseAdapter(BaseAdapter):
         # otherwise scans the whole source (no LIMIT survives a GROUP BY), which
         # turns into a full-table scan and trips the timeout on large tables.
         sampled_source = (
-            f"(SELECT * FROM ({base_query}) AS _src{where_clause} "
-            f"LIMIT {int(sample_row_limit)})"
+            f"(SELECT * FROM ({base_query}) AS _src{where_clause} LIMIT {int(sample_row_limit)})"
         )
         path_fn = _JSON_PATH_DISCOVERY_FUNCS[self._json_path_discovery]
         for column in json_columns:
@@ -229,6 +236,12 @@ class ClickHouseAdapter(BaseAdapter):
             msg = f"Column {column!r} not found in query result"
             raise ValueError(msg)
         return column
+
+    def _validate_interval(self, ch_interval: str) -> str:
+        if not _INTERVAL_RE.match(ch_interval.strip()):
+            msg = f"Unsupported interval: {ch_interval!r}"
+            raise ValueError(msg)
+        return ch_interval.strip()
 
     def _json_path_expression(self, column: str, path: str) -> str:
         parts = [part for part in path.split(".") if part]
@@ -538,11 +551,12 @@ class ClickHouseAdapter(BaseAdapter):
         Row layout: (_bucket, col1_val, ..., json_paths1, ..., count).
         """
         tc = self._validate_column(time_column)
+        interval = self._validate_interval(ch_interval)
         reg_cols = [self._validate_column(c) for c in regular_columns]
         json_cols = [self._validate_column(c) for c in json_columns]
         json_value_paths = json_value_paths or {}
 
-        select_parts = [f"toStartOfInterval(`{tc}`, INTERVAL {ch_interval}) AS _bucket"]
+        select_parts = [f"toStartOfInterval(`{tc}`, INTERVAL {interval}) AS _bucket"]
         col_names: list[str] = []
         json_value_names: list[str] = []
         for c in reg_cols:
@@ -581,6 +595,192 @@ class ClickHouseAdapter(BaseAdapter):
         logger.info(f"CH bucketed done in {elapsed:.2f}s, {n_rows} rows")
 
         return col_names, json_value_names, result.result_rows
+
+    def _aggregate_value_sql(self, agg_fn: MetricAggregation, measure_column: str | None) -> str:
+        """Validate + escape the measure and build the safe aggregate fragment."""
+        measure_sql: str | None = None
+        if measure_column is not None:
+            measure_sql = f"`{validate_measure_column(measure_column, self._allowed_columns)}`"
+        return build_aggregate_sql(agg_fn, measure_sql)
+
+    def get_time_bucketed_aggregate(
+        self,
+        base_query: str,
+        time_column: str,
+        ch_interval: str,
+        agg_fn: MetricAggregation,
+        measure_column: str | None,
+        regular_columns: list[str],
+        json_columns: list[str],
+        json_value_paths: dict[str, list[str]] | None,
+        time_from: datetime,
+        time_to: datetime,
+        limit: int = 100000,
+    ) -> tuple[list[str], list[str], list[tuple[object, ...]]]:
+        """Time-bucketed aggregate, mirroring get_time_bucketed_counts.
+
+        Returns (column_names, json_value_names, rows).
+        Row layout: (_bucket, col1_val, ..., json_paths1, ..., aggregate_value).
+        """
+        tc = self._validate_column(time_column)
+        interval = self._validate_interval(ch_interval)
+        reg_cols = [self._validate_column(c) for c in regular_columns]
+        json_cols = [self._validate_column(c) for c in json_columns]
+        json_value_paths = json_value_paths or {}
+        value_sql = self._aggregate_value_sql(agg_fn, measure_column)
+
+        select_parts = [f"toStartOfInterval(`{tc}`, INTERVAL {interval}) AS _bucket"]
+        col_names: list[str] = []
+        json_value_names: list[str] = []
+        for c in reg_cols:
+            select_parts.append(f"`{c}`")
+            col_names.append(c)
+        for c in json_cols:
+            select_parts.append(f"arraySort(JSONAllPaths(`{c}`))")
+            col_names.append(c)
+        for c in json_cols:
+            for path in json_value_paths.get(c, []):
+                full_path = f"{c}.{path}"
+                select_parts.append(
+                    f"toJSONString({self._json_path_expression(c, path)}) AS `{full_path}`"
+                )
+                json_value_names.append(full_path)
+        select_parts.append(f"{value_sql} AS _value")
+
+        t_from = time_from.strftime("%Y-%m-%d %H:%M:%S")
+        t_to = time_to.strftime("%Y-%m-%d %H:%M:%S")
+        sql = (
+            f"SELECT {', '.join(select_parts)} "
+            f"FROM ({base_query}) AS _src "
+            f"WHERE `{tc}` >= '{t_from}' AND `{tc}` < '{t_to}' "
+            f"GROUP BY ALL "
+            f"ORDER BY _bucket "
+            f"LIMIT {int(limit)}"
+        )
+
+        logger.info("CH bucketed aggregate query: %s", sql)
+        t0 = time.monotonic()
+        result = self._client.query(sql)
+        elapsed = time.monotonic() - t0
+        n_rows = len(result.result_rows)
+        logger.info("CH bucketed aggregate done in %.2fs, %s rows", elapsed, n_rows)
+
+        return col_names, json_value_names, result.result_rows
+
+    def get_time_bucketed_aggregate_breakdown(
+        self,
+        base_query: str,
+        time_column: str,
+        ch_interval: str,
+        agg_fn: MetricAggregation,
+        measure_column: str | None,
+        breakdown_column: str,
+        regular_columns: list[str],
+        json_columns: list[str],
+        json_value_paths: dict[str, list[str]] | None,
+        time_from: datetime,
+        time_to: datetime,
+        values_limit: int | None = None,
+        limit: int = 100000,
+    ) -> tuple[list[str], list[str], list[tuple[object, ...]]]:
+        """Time-bucketed aggregate grouped by one breakdown column.
+
+        Returns (column_names, json_value_names, rows).
+        Row layout: (_bucket, _breakdown_value, _is_other, col1_val, ..., aggregate_value).
+        """
+        tc = self._validate_column(time_column)
+        interval = self._validate_interval(ch_interval)
+        reg_cols = [self._validate_column(c) for c in regular_columns]
+        json_cols = [self._validate_column(c) for c in json_columns]
+        breakdown = self._validate_column(breakdown_column)
+        if breakdown not in reg_cols:
+            msg = f"Breakdown column must be a scalar column: {breakdown}"
+            raise ValueError(msg)
+        json_value_paths = json_value_paths or {}
+        value_sql = self._aggregate_value_sql(agg_fn, measure_column)
+
+        raw_expr = self._string_value_expression(breakdown)
+        breakdown_expr, is_other_expr = self._breakdown_value_exprs(
+            base_query,
+            time_column,
+            breakdown,
+            raw_expr,
+            time_from,
+            time_to,
+            values_limit,
+        )
+
+        select_parts = [f"toStartOfInterval(`{tc}`, INTERVAL {interval}) AS _bucket"]
+        select_parts.append(f"{breakdown_expr} AS _breakdown_value")
+        select_parts.append(f"{is_other_expr} AS _is_other")
+        col_names: list[str] = []
+        json_value_names: list[str] = []
+        for c in reg_cols:
+            select_parts.append(f"`{c}`")
+            col_names.append(c)
+        for c in json_cols:
+            select_parts.append(f"arraySort(JSONAllPaths(`{c}`))")
+            col_names.append(c)
+        for c in json_cols:
+            for path in json_value_paths.get(c, []):
+                full_path = f"{c}.{path}"
+                select_parts.append(
+                    f"toJSONString({self._json_path_expression(c, path)}) AS `{full_path}`"
+                )
+                json_value_names.append(full_path)
+        select_parts.append(f"{value_sql} AS _value")
+
+        t_from = time_from.strftime("%Y-%m-%d %H:%M:%S")
+        t_to = time_to.strftime("%Y-%m-%d %H:%M:%S")
+        sql = (
+            f"SELECT {', '.join(select_parts)} "
+            f"FROM ({base_query}) AS _src "
+            f"WHERE `{tc}` >= '{t_from}' AND `{tc}` < '{t_to}' "
+            f"GROUP BY ALL "
+            f"ORDER BY _bucket, _breakdown_value "
+            f"LIMIT {int(limit)}"
+        )
+
+        logger.info("CH bucketed aggregate breakdown query for %s: %s", breakdown, sql)
+        t0 = time.monotonic()
+        result = self._client.query(sql)
+        elapsed = time.monotonic() - t0
+        n_rows = len(result.result_rows)
+        logger.info("CH bucketed aggregate breakdown done in %.2fs, %s rows", elapsed, n_rows)
+
+        return col_names, json_value_names, result.result_rows
+
+    def _breakdown_value_exprs(
+        self,
+        base_query: str,
+        time_column: str,
+        breakdown: str,
+        raw_expr: str,
+        time_from: datetime,
+        time_to: datetime,
+        values_limit: int | None,
+    ) -> tuple[str, str]:
+        """Build the (breakdown_value, is_other) expressions with Other folding.
+
+        Reuses the count path's top-values selection so the aggregate breakdown
+        buckets identically to get_time_bucketed_breakdown_counts.
+        """
+        if values_limit is None:
+            return raw_expr, "0"
+        top_count = max(values_limit - 1, 0)
+        top_values = self._top_breakdown_values_multi(
+            base_query,
+            time_column,
+            [breakdown],
+            time_from,
+            time_to,
+            top_count,
+        ).get(breakdown, [])
+        if not top_values:
+            return "'Other'", "1"
+        quoted = ", ".join(self._quote_string(value) for value in top_values)
+        in_values = f"{raw_expr} IN ({quoted})"
+        return f"if({in_values}, {raw_expr}, 'Other')", f"if({in_values}, 0, 1)"
 
     def get_time_bucketed_breakdown_counts(
         self,
@@ -634,6 +834,7 @@ class ClickHouseAdapter(BaseAdapter):
             return [], [], []
 
         tc = self._validate_column(time_column)
+        interval = self._validate_interval(ch_interval)
         reg_cols = [self._validate_column(c) for c in regular_columns]
         json_cols = [self._validate_column(c) for c in json_columns]
         breakdown_cols = [self._validate_column(c) for c in breakdown_columns]
@@ -655,7 +856,7 @@ class ClickHouseAdapter(BaseAdapter):
                 top_count,
             )
 
-        prepared_parts = [f"toStartOfInterval(`{tc}`, INTERVAL {ch_interval}) AS _bucket"]
+        prepared_parts = [f"toStartOfInterval(`{tc}`, INTERVAL {interval}) AS _bucket"]
         col_names: list[str] = []
         json_value_names: list[str] = []
         for c in reg_cols:

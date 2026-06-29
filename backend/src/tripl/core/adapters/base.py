@@ -5,6 +5,12 @@ import re
 from dataclasses import dataclass
 from datetime import datetime
 
+from tripl.models.domain_enums import MetricAggregation
+
+# float() raises ValueError on malformed strings and TypeError on non-coercible
+# inputs; catch both when coercing a sampled field value to a number.
+_NUMERIC_PARSE_ERRORS = (TypeError, ValueError)
+
 
 @dataclass
 class ColumnInfo:
@@ -202,7 +208,7 @@ class BaseAdapter(abc.ABC):
                     elif expectation.drift_type == "range_violation":
                         try:
                             numeric = float(text)
-                        except TypeError, ValueError:
+                        except _NUMERIC_PARSE_ERRORS:
                             is_bad = True
                         else:
                             is_bad = (
@@ -335,6 +341,70 @@ class BaseAdapter(abc.ABC):
         Row layout: (
             _bucket, _breakdown_column, _breakdown_value, _is_other,
             col1_val, col2_val, ..., keep_json_value1, ..., count
+        ).
+        """
+        ...
+
+    @abc.abstractmethod
+    def get_time_bucketed_aggregate(
+        self,
+        base_query: str,
+        time_column: str,
+        ch_interval: str,
+        agg_fn: MetricAggregation,
+        measure_column: str | None,
+        regular_columns: list[str],
+        json_columns: list[str],
+        json_value_paths: dict[str, list[str]] | None,
+        time_from: datetime,
+        time_to: datetime,
+        limit: int = 100000,
+    ) -> tuple[list[str], list[str], list[tuple[object, ...]]]:
+        """Time-bucketed AGGREGATE, mirroring get_time_bucketed_counts.
+
+        Computes ``agg_fn`` over ``measure_column`` per time bucket instead of a
+        plain ``count()``. ``count`` ignores ``measure_column`` and aggregates
+        rows; ``count_distinct``/``sum``/``avg``/``min``/``max`` require it. The
+        measure column is validated against the ``get_columns`` allowlist and
+        escaped with the same identifier helper as the count path; literals are
+        escaped identically and there are NO bound parameters.
+
+        Returns (column_names, json_value_names, rows) — the SAME bucketed shape
+        the count methods return, so downstream parsing stays uniform.
+        Row layout: (_bucket, col1_val, ..., json_paths1, ..., aggregate_value),
+        where the final positional column is the aggregate value (the slot the
+        count methods fill with ``count``).
+        """
+        ...
+
+    @abc.abstractmethod
+    def get_time_bucketed_aggregate_breakdown(
+        self,
+        base_query: str,
+        time_column: str,
+        ch_interval: str,
+        agg_fn: MetricAggregation,
+        measure_column: str | None,
+        breakdown_column: str,
+        regular_columns: list[str],
+        json_columns: list[str],
+        json_value_paths: dict[str, list[str]] | None,
+        time_from: datetime,
+        time_to: datetime,
+        values_limit: int | None = None,
+        limit: int = 100000,
+    ) -> tuple[list[str], list[str], list[tuple[object, ...]]]:
+        """Time-bucketed aggregate grouped by one breakdown column.
+
+        Mirrors get_time_bucketed_breakdown_counts but emits ``agg_fn`` over
+        ``measure_column`` instead of ``count()``. When ``values_limit`` is set,
+        breakdown values beyond the top ``values_limit - 1`` are folded into an
+        ``'Other'`` bucket (``_is_other = 1``), exactly like the count path.
+
+        Returns (column_names, json_value_names, rows).
+        Row layout: (
+            _bucket, _breakdown_value, _is_other,
+            col1_val, ..., json_paths1, ..., aggregate_value
         ).
         """
         ...
