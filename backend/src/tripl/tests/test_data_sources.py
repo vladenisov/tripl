@@ -37,6 +37,51 @@ class TestDataSourcesCRUD:
         assert "password" not in data
         assert "password_encrypted" not in data
         assert "project_id" not in data
+        # Unset by default — the CH adapter falls back to "dynamic" discovery.
+        assert data["json_path_discovery"] is None
+
+    async def test_json_path_discovery_round_trips(self, client: AsyncClient):
+        create = await client.post(
+            "/api/v1/data-sources",
+            json={
+                "name": "CH discovery",
+                "db_type": "clickhouse",
+                "host": "localhost",
+                "database_name": "analytics",
+                "json_path_discovery": "all",
+            },
+        )
+        assert create.status_code == 201
+        ds_id = create.json()["id"]
+        assert create.json()["json_path_discovery"] == "all"
+
+        got = await client.get(f"/api/v1/data-sources/{ds_id}")
+        assert got.json()["json_path_discovery"] == "all"
+
+        updated = await client.patch(
+            f"/api/v1/data-sources/{ds_id}",
+            json={"json_path_discovery": "dynamic"},
+        )
+        assert updated.json()["json_path_discovery"] == "dynamic"
+
+        cleared = await client.patch(
+            f"/api/v1/data-sources/{ds_id}",
+            json={"json_path_discovery": None},
+        )
+        assert cleared.json()["json_path_discovery"] is None
+
+    async def test_create_rejects_invalid_json_path_discovery(self, client: AsyncClient):
+        resp = await client.post(
+            "/api/v1/data-sources",
+            json={
+                "name": "CH bad discovery",
+                "db_type": "clickhouse",
+                "host": "localhost",
+                "database_name": "analytics",
+                "json_path_discovery": "everything",
+            },
+        )
+        assert resp.status_code == 422
 
     async def test_list_data_sources(self, client: AsyncClient):
         await client.post(

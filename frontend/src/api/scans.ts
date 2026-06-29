@@ -1,6 +1,7 @@
 import { api } from './client'
 import type {
   EventGroupRule,
+  PlatformPresenceResponse,
   ScanConfig,
   ScanConfigPreview,
   ScanJob,
@@ -18,6 +19,9 @@ export const scansApi = {
 
   get: (slug: string, scanId: string) =>
     api.get<ScanConfig>(`/projects/${slug}/scans/${scanId}`),
+
+  getPlatformPresence: (slug: string, scanId: string) =>
+    api.get<PlatformPresenceResponse>(`/projects/${slug}/scans/${scanId}/platform-presence`),
 
   create: (slug: string, data: {
     data_source_id: string
@@ -40,6 +44,7 @@ export const scansApi = {
     metrics_row_limit?: number | null
     app_version_column?: string | null
     app_version_keep_releases?: number | null
+    platform_column?: string | null
   }) => api.post<ScanConfig>(`/projects/${slug}/scans`, data),
 
   // Preview runs against the warehouse and can be slow, so the backend handles
@@ -104,6 +109,7 @@ export const scansApi = {
     metrics_row_limit?: number | null
     app_version_column?: string | null
     app_version_keep_releases?: number | null
+    platform_column?: string | null
   }) => api.patch<ScanConfig>(`/projects/${slug}/scans/${scanId}`, data),
 
   del: (slug: string, scanId: string) =>

@@ -19,11 +19,12 @@ class FakeClient:
         return FakeQueryResult()
 
 
-def _adapter() -> tuple[ClickHouseAdapter, FakeClient]:
+def _adapter(json_path_discovery: str = "dynamic") -> tuple[ClickHouseAdapter, FakeClient]:
     client = FakeClient()
     adapter = object.__new__(ClickHouseAdapter)
     adapter._client = client
-    adapter._allowed_columns = {"time", "event_name"}
+    adapter._allowed_columns = {"time", "event_name", "props"}
+    adapter._json_path_discovery = json_path_discovery
     return adapter, client
 
 
@@ -63,3 +64,36 @@ def test_clickhouse_full_breakdown_applies_time_window() -> None:
         "WHERE `time` >= '2026-04-01 00:00:00' AND `time` < '2026-04-02 00:00:00' "
         "GROUP BY ALL"
     ) in client.sql[0]
+
+
+def test_json_path_discovery_defaults_to_dynamic_function() -> None:
+    adapter, client = _adapter()  # default mode
+    adapter.get_json_path_samples("SELECT props FROM events", ["props"])
+    assert "JSONDynamicPaths(`props`)" in client.sql[0]
+    assert "JSONAllPaths" not in client.sql[0]
+
+
+def test_json_path_discovery_all_uses_jsonallpaths() -> None:
+    adapter, client = _adapter(json_path_discovery="all")
+    adapter.get_json_path_samples("SELECT props FROM events", ["props"])
+    assert "JSONAllPaths(`props`)" in client.sql[0]
+    assert "JSONDynamicPaths" not in client.sql[0]
+
+
+def test_json_path_discovery_init_resolves_mode() -> None:
+    import tripl.core.adapters.clickhouse as ch_mod
+
+    original = ch_mod.clickhouse_connect.get_client
+    ch_mod.clickhouse_connect.get_client = lambda **_kwargs: FakeClient()  # type: ignore[assignment]
+
+    def _mode(value: str | None) -> str:
+        adapter = ClickHouseAdapter(host="h", port=1, database="d", json_path_discovery=value)
+        return adapter._json_path_discovery
+
+    try:
+        # Unset and unknown both fall back to the default ("dynamic"); "all" sticks.
+        assert _mode(None) == "dynamic"
+        assert _mode("bogus") == "dynamic"
+        assert _mode("all") == "all"
+    finally:
+        ch_mod.clickhouse_connect.get_client = original  # type: ignore[assignment]

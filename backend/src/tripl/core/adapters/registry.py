@@ -57,6 +57,7 @@ def _build_clickhouse(ds: DataSource, password: str) -> BaseAdapter:
         database=ds.database_name,
         username=ds.username,
         password=password,
+        json_path_discovery=ds.json_path_discovery,
         **kwargs,
     )
 

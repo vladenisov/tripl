@@ -4,7 +4,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { dataSourcesApi } from '@/api/dataSources'
 import { useAuth } from '@/components/auth-context'
 import { useConfirm } from '@/hooks/useConfirm'
-import type { DataSource, DbType } from '@/types'
+import type { DataSource, DbType, JsonPathDiscovery } from '@/types'
 import { DB_TYPE_OPTIONS } from '@/types'
 import { Button } from '@/components/ui/button'
 import {
@@ -36,6 +36,18 @@ import { dataSourceHealthLexeme } from '@/lib/statusLexicon'
 import { getErrorMessage } from '@/lib/utils'
 
 const EMPTY_DATA_SOURCES: DataSource[] = []
+
+// ClickHouse JSON path discovery options (the preview step that enumerates
+// candidate JSON paths). Defaults to "dynamic" — the effective backend default
+// when the stored value is null.
+const JSON_PATH_DISCOVERY_OPTIONS: { value: JsonPathDiscovery; label: string }[] = [
+  { value: 'dynamic', label: 'Dynamic (recommended)' },
+  { value: 'all', label: 'All paths' },
+]
+
+const JSON_PATH_DISCOVERY_HELP =
+  'Dynamic lists only the important typed JSON sub-paths (faster). ' +
+  'All lists every path including rarely-used ones (slower, exhaustive).'
 
 // A successful connection test older than this is no longer a trustworthy
 // "healthy" signal — connections can silently break between manual checks, so
@@ -80,6 +92,7 @@ function ConnectionsTab({ openDsId }: { openDsId?: string }) {
   const [username, setUsername] = useState('')
   const [password, setPassword] = useState('')
   const [timeoutSeconds, setTimeoutSeconds] = useState('')
+  const [jsonPathDiscovery, setJsonPathDiscovery] = useState<JsonPathDiscovery>('dynamic')
 
   const [editName, setEditName] = useState('')
   const [editHost, setEditHost] = useState('')
@@ -88,6 +101,7 @@ function ConnectionsTab({ openDsId }: { openDsId?: string }) {
   const [editUsername, setEditUsername] = useState('')
   const [editPassword, setEditPassword] = useState('')
   const [editTimeoutSeconds, setEditTimeoutSeconds] = useState('')
+  const [editJsonPathDiscovery, setEditJsonPathDiscovery] = useState<JsonPathDiscovery>('dynamic')
 
   const [testingId, setTestingId] = useState<string | null>(null)
   const canManageDataSources = user?.role === 'owner'
@@ -103,7 +117,12 @@ function ConnectionsTab({ openDsId }: { openDsId?: string }) {
       dataSourcesApi.create({
         name, db_type: dbType, host, port,
         database_name: databaseName, username, password,
-        ...(dbType === 'clickhouse' ? { timeout_seconds: parseTimeoutSeconds(timeoutSeconds) } : {}),
+        ...(dbType === 'clickhouse'
+          ? {
+              timeout_seconds: parseTimeoutSeconds(timeoutSeconds),
+              json_path_discovery: jsonPathDiscovery,
+            }
+          : {}),
       }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['dataSources'] })
@@ -118,7 +137,10 @@ function ConnectionsTab({ openDsId }: { openDsId?: string }) {
         database_name: editDatabaseName, username: editUsername,
         ...(editPassword ? { password: editPassword } : {}),
         ...(editingDs?.db_type === 'clickhouse'
-          ? { timeout_seconds: parseTimeoutSeconds(editTimeoutSeconds) }
+          ? {
+              timeout_seconds: parseTimeoutSeconds(editTimeoutSeconds),
+              json_path_discovery: editJsonPathDiscovery,
+            }
           : {}),
       }),
     onSuccess: () => {
@@ -180,6 +202,7 @@ function ConnectionsTab({ openDsId }: { openDsId?: string }) {
     setEditUsername(ds.username)
     setEditPassword('')
     setEditTimeoutSeconds(ds.timeout_seconds == null ? '' : String(ds.timeout_seconds))
+    setEditJsonPathDiscovery(ds.json_path_discovery ?? 'dynamic')
   }, [])
 
   const startEdit = useCallback((ds: DataSource) => {
@@ -223,6 +246,7 @@ function ConnectionsTab({ openDsId }: { openDsId?: string }) {
     setUsername('')
     setPassword('')
     setTimeoutSeconds('')
+    setJsonPathDiscovery('dynamic')
   }
 
   const healthyCount = dataSources.filter(
@@ -355,6 +379,24 @@ function ConnectionsTab({ openDsId }: { openDsId?: string }) {
                       </div>
                     )}
                   </div>
+                  {dbType === 'clickhouse' && (
+                    <div className="grid gap-2">
+                      <Label htmlFor="ds-json-path-discovery">JSON path discovery</Label>
+                      <select
+                        id="ds-json-path-discovery"
+                        value={jsonPathDiscovery}
+                        onChange={(e) => setJsonPathDiscovery(e.target.value as JsonPathDiscovery)}
+                        className="flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                      >
+                        {JSON_PATH_DISCOVERY_OPTIONS.map((opt) => (
+                          <option key={opt.value} value={opt.value}>
+                            {opt.label}
+                          </option>
+                        ))}
+                      </select>
+                      <p className="text-xs text-muted-foreground">{JSON_PATH_DISCOVERY_HELP}</p>
+                    </div>
+                  )}
                 </>
               )}
               {createMut.isError && (
@@ -419,6 +461,24 @@ function ConnectionsTab({ openDsId }: { openDsId?: string }) {
                   </div>
                 )}
               </div>
+              {editingDs?.db_type === 'clickhouse' && (
+                <div className="grid gap-2">
+                  <Label htmlFor="edit-ds-json-path-discovery">JSON path discovery</Label>
+                  <select
+                    id="edit-ds-json-path-discovery"
+                    value={editJsonPathDiscovery}
+                    onChange={(e) => setEditJsonPathDiscovery(e.target.value as JsonPathDiscovery)}
+                    className="flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                  >
+                    {JSON_PATH_DISCOVERY_OPTIONS.map((opt) => (
+                      <option key={opt.value} value={opt.value}>
+                        {opt.label}
+                      </option>
+                    ))}
+                  </select>
+                  <p className="text-xs text-muted-foreground">{JSON_PATH_DISCOVERY_HELP}</p>
+                </div>
+              )}
               {updateMut.isError && (
                 <p className="text-sm text-destructive">{getErrorMessage(updateMut.error)}</p>
               )}

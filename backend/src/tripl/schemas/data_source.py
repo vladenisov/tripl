@@ -1,10 +1,16 @@
 import re
 import uuid
 from datetime import datetime
+from typing import Literal
 
 from pydantic import BaseModel, Field, field_validator
 
 from tripl.models.data_source import DBType, TestStatus
+
+# ClickHouse JSON path *discovery* (preview) mode. "dynamic" enumerates only the
+# important typed subcolumn paths (JSONDynamicPaths, fast); "all" enumerates every
+# path (JSONAllPaths). NULL means "use the connection default" (dynamic).
+JsonPathDiscovery = Literal["all", "dynamic"]
 
 # Bare hostname / IPv4 / bracketed IPv6 characters. Format-only guard: we do NOT
 # block private/loopback addresses here on purpose — data sources legitimately
@@ -35,6 +41,7 @@ class DataSourceCreate(BaseModel):
     username: str = ""
     password: str = ""
     timeout_seconds: int | None = Field(None, ge=1)
+    json_path_discovery: JsonPathDiscovery | None = None
     extra_params: dict[str, object] | None = None
 
     @field_validator("host")
@@ -54,6 +61,7 @@ class DataSourceUpdate(BaseModel):
     username: str | None = None
     password: str | None = None
     timeout_seconds: int | None = Field(None, ge=1)
+    json_path_discovery: JsonPathDiscovery | None = None
     extra_params: dict[str, object] | None = None
 
     @field_validator("host")
@@ -72,6 +80,7 @@ class DataSourceResponse(BaseModel):
     username: str
     password_set: bool
     timeout_seconds: int | None = None
+    json_path_discovery: JsonPathDiscovery | None = None
     extra_params: dict[str, object] | None
     last_test_at: datetime | None
     last_test_status: TestStatus | None
