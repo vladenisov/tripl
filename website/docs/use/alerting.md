@@ -73,6 +73,12 @@ the drift/regression signals are opt-in:
 | Schema drift | off |
 | Distribution drift | off |
 | Release regression | off |
+| Metric anomaly | off |
+
+**Metric anomalies** are opt-in via a rule's **`include_metrics`** flag (off by
+default). Unlike the drift and regression signals they behave like a volume anomaly
+— they carry a real spike/drop direction and **do** honor the count thresholds
+below.
 
 **Direction.** *Notify on spike* and *notify on drop* (at least one must be on).
 Schema and distribution drift are reported as a **spike**; release regressions are
@@ -85,10 +91,10 @@ reported as a **drop** — so a drift-only rule still needs *notify on spike* en
 - `min percent delta` — require at least N % of change.
 
 :::warning
-Thresholds apply **only** to the volume scopes (project total / event type /
-event). Schema drift, distribution drift, and release regressions **bypass**
-thresholds — if you enable those scopes, they fire regardless of the count
-thresholds.
+Thresholds apply to the volume scopes (project total / event type / event) and to
+**metric anomalies**. Schema drift, distribution drift, and release regressions
+**bypass** thresholds — if you enable those scopes, they fire regardless of the
+count thresholds.
 :::
 
 **Filters** narrow further by `event_type`, `event`, or `direction`, with
