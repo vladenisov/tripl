@@ -4,6 +4,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { ChevronLeft, Loader2, Plus, Save } from 'lucide-react'
 import { dataSourcesApi } from '@/api/dataSources'
 import { eventsApi } from '@/api/events'
+import { factTablesApi } from '@/api/factTablesApi'
 import { metricsCatalogApi } from '@/api/metricsCatalogApi'
 import { ErrorState } from '@/components/error-state'
 import {
@@ -17,6 +18,7 @@ import {
   type SelectOption,
 } from '@/components/settings/kit'
 import {
+  METRIC_AGGREGATIONS,
   METRIC_COMPOSITIONS,
   METRIC_KIND_LABEL,
   METRIC_SCAN_INTERVALS,
@@ -25,6 +27,8 @@ import {
   type DataSource,
   type EventCompositionMetricCreate,
   type EventListItem,
+  type FactMetricCreate,
+  type MetricAggregation,
   type MetricComposition,
   type MetricCreate,
   type MetricDefinitionResponse,
@@ -34,6 +38,12 @@ import {
   type MetricStatus,
   type SqlMetricCreate,
 } from '@/types'
+import type { FactTable, FactTableColumn } from '@/types/factTables'
+
+// The single fact operand shape sent to the backend (numerator / denominator /
+// the implicit single operand) — derived from the generated create schema so it
+// stays in lock-step without a hand-written alias.
+type FactOperandPayload = NonNullable<FactMetricCreate['numerator']>
 
 const DEFAULT_COLOR = '#6366f1'
 
@@ -44,11 +54,259 @@ const KIND_OPTIONS: { value: MetricKind; label: string; description: string }[] 
     description: 'Run a custom SQL query that returns one numeric value per bucket.',
   },
   {
+    value: 'fact',
+    label: 'Fact',
+    description: 'Aggregate a reusable fact table (count, sum, average, ratio…).',
+  },
+  {
     value: 'event_composition',
     label: 'Event composition',
     description: 'Combine existing event series (single, ratio, per distinct user).',
   },
 ]
+
+const AGGREGATION_LABEL: Record<MetricAggregation, string> = {
+  count: 'Count',
+  sum: 'Sum',
+  avg: 'Average',
+  min: 'Min',
+  max: 'Max',
+  count_distinct: 'Count distinct',
+}
+
+const FACT_COMPOSITIONS = ['single', 'ratio'] as const
+type FactComposition = (typeof FACT_COMPOSITIONS)[number]
+
+// One side of a fact metric (the single operand, or the numerator / denominator
+// of a ratio). Held flat in form state and mapped to {@link FactOperandPayload}
+// at submit time.
+interface FactOperandState {
+  factTableId: string
+  aggregation: MetricAggregation
+  measureColumn: string
+  distinctColumn: string
+  rowFilter: string
+}
+
+const EMPTY_OPERAND: FactOperandState = {
+  factTableId: '',
+  aggregation: 'count',
+  measureColumn: '',
+  distinctColumn: '',
+  rowFilter: '',
+}
+
+// Backend required-field rules per aggregation: sum/avg/min/max measure a
+// column; count_distinct counts the distinct values of a column; count needs
+// neither.
+function needsMeasure(aggregation: MetricAggregation): boolean {
+  return (
+    aggregation === 'sum' ||
+    aggregation === 'avg' ||
+    aggregation === 'min' ||
+    aggregation === 'max'
+  )
+}
+
+function needsDistinct(aggregation: MetricAggregation): boolean {
+  return aggregation === 'count_distinct'
+}
+
+// The slice of a loaded fact table the operand editor needs: its columns plus
+// the identifier columns / named row filters used to populate the dropdowns.
+interface FactTableDetail {
+  columns: FactTableColumn[]
+  identifierColumns: string[]
+  rowFilters: string[]
+}
+
+const EMPTY_DETAIL: FactTableDetail = { columns: [], identifierColumns: [], rowFilters: [] }
+
+function toDetail(table: FactTable | undefined): FactTableDetail {
+  if (!table) return EMPTY_DETAIL
+  return {
+    columns: table.columns,
+    identifierColumns: table.identifier_columns,
+    rowFilters: table.row_filters.map(filter => filter.name),
+  }
+}
+
+function isMetricAggregation(value: unknown): value is MetricAggregation {
+  return METRIC_AGGREGATIONS.includes(value as MetricAggregation)
+}
+
+// Hydrate one operand from a stored fact-metric config sub-object (ratio
+// denominator); untrusted JSON, so every field is narrowed before use.
+function readOperandFromConfig(raw: unknown): FactOperandState {
+  if (!raw || typeof raw !== 'object') return { ...EMPTY_OPERAND }
+  const obj = raw as Record<string, unknown>
+  const str = (key: string): string => (typeof obj[key] === 'string' ? (obj[key] as string) : '')
+  const aggregation = obj['aggregation']
+  return {
+    factTableId: str('fact_table_id'),
+    aggregation: isMetricAggregation(aggregation) ? aggregation : 'count',
+    measureColumn: str('measure_column'),
+    distinctColumn: str('distinct_column'),
+    rowFilter: str('row_filter'),
+  }
+}
+
+function toOperandPayload(operand: FactOperandState): FactOperandPayload {
+  return {
+    fact_table_id: operand.factTableId,
+    aggregation: operand.aggregation,
+    measure_column: needsMeasure(operand.aggregation) ? operand.measureColumn || null : null,
+    distinct_column: needsDistinct(operand.aggregation) ? operand.distinctColumn || null : null,
+    row_filter: operand.rowFilter || null,
+  }
+}
+
+// Validate one operand against the backend required-field rules. `prefix` names
+// the side for ratio operands ('numerator' / 'denominator'); empty for a single
+// operand.
+function operandErrors(operand: FactOperandState, prefix: string): string[] {
+  const errs: string[] = []
+  const qualifier = prefix ? `${prefix} ` : ''
+  if (!operand.factTableId) {
+    errs.push(prefix ? `A ${prefix} fact table is required.` : 'A fact table is required for a fact metric.')
+  }
+  if (needsMeasure(operand.aggregation) && !operand.measureColumn) {
+    errs.push(`A ${qualifier}measure column is required for the ${operand.aggregation} aggregation.`)
+  }
+  if (needsDistinct(operand.aggregation) && !operand.distinctColumn) {
+    errs.push(`A ${qualifier}distinct column is required for the count_distinct aggregation.`)
+  }
+  return errs
+}
+
+interface FactOperandEditorProps {
+  idPrefix: string
+  operand: FactOperandState
+  onChange: (next: FactOperandState) => void
+  factTableOptions: SelectOption[]
+  detail: FactTableDetail
+  loading: boolean
+}
+
+/**
+ * Point-and-click editor for one fact operand: pick the fact table, the
+ * aggregation, the measure/distinct column it requires, and an optional named
+ * row filter. The column / row-filter dropdowns are populated from the loaded
+ * fact table; for `count_distinct`, identifier columns are surfaced first.
+ */
+function FactOperandEditor({
+  idPrefix,
+  operand,
+  onChange,
+  factTableOptions,
+  detail,
+  loading,
+}: FactOperandEditorProps) {
+  const set = <K extends keyof FactOperandState>(key: K, value: FactOperandState[K]): void =>
+    onChange({ ...operand, [key]: value })
+
+  const columnOptions = useMemo(
+    () =>
+      toOptions(
+        'Select column…',
+        detail.columns.map(column => ({ value: column.name, label: `${column.name} · ${column.type}` })),
+      ),
+    [detail.columns],
+  )
+
+  // Prefer identifier columns for count_distinct, but still allow any column.
+  const distinctOptions = useMemo(() => {
+    const identifiers = new Set(detail.identifierColumns)
+    const ordered = [
+      ...detail.columns.filter(column => identifiers.has(column.name)),
+      ...detail.columns.filter(column => !identifiers.has(column.name)),
+    ]
+    return toOptions(
+      'Select column…',
+      ordered.map(column => ({
+        value: column.name,
+        label: identifiers.has(column.name) ? `${column.name} · id` : column.name,
+      })),
+    )
+  }, [detail.columns, detail.identifierColumns])
+
+  const rowFilterOptions = useMemo(
+    () => toOptions('No row filter', detail.rowFilters.map(name => ({ value: name, label: name }))),
+    [detail.rowFilters],
+  )
+
+  const columnHint = loading ? 'Loading columns…' : undefined
+
+  return (
+    <>
+      <MField label="Fact table" htmlFor={`${idPrefix}-table`} required>
+        <Select
+          id={`${idPrefix}-table`}
+          value={operand.factTableId}
+          onChange={value => set('factTableId', value)}
+          options={factTableOptions}
+          aria-required
+        />
+      </MField>
+      <MField label="Aggregation" htmlFor={`${idPrefix}-aggregation`} required>
+        <Select
+          id={`${idPrefix}-aggregation`}
+          value={operand.aggregation}
+          onChange={value => set('aggregation', value as MetricAggregation)}
+          options={METRIC_AGGREGATIONS.map(a => ({ value: a, label: AGGREGATION_LABEL[a] }))}
+        />
+      </MField>
+      {needsMeasure(operand.aggregation) && (
+        <MField
+          label="Measure column"
+          htmlFor={`${idPrefix}-measure`}
+          required
+          hint={columnHint ?? 'Column to aggregate (numeric preferred).'}
+        >
+          <Select
+            id={`${idPrefix}-measure`}
+            value={operand.measureColumn}
+            onChange={value => set('measureColumn', value)}
+            options={columnOptions}
+            disabled={!operand.factTableId}
+            aria-required
+          />
+        </MField>
+      )}
+      {needsDistinct(operand.aggregation) && (
+        <MField
+          label="Distinct column"
+          htmlFor={`${idPrefix}-distinct`}
+          required
+          hint={columnHint ?? 'Column whose distinct values are counted.'}
+        >
+          <Select
+            id={`${idPrefix}-distinct`}
+            value={operand.distinctColumn}
+            onChange={value => set('distinctColumn', value)}
+            options={distinctOptions}
+            disabled={!operand.factTableId}
+            aria-required
+          />
+        </MField>
+      )}
+      <MField
+        label="Row filter"
+        htmlFor={`${idPrefix}-row-filter`}
+        last
+        hint="Optional named filter defined on the fact table."
+      >
+        <Select
+          id={`${idPrefix}-row-filter`}
+          value={operand.rowFilter}
+          onChange={value => set('rowFilter', value)}
+          options={rowFilterOptions}
+          disabled={!operand.factTableId}
+        />
+      </MField>
+    </>
+  )
+}
 
 function toOptions(prefix: string, items: { value: string; label: string }[]): SelectOption[] {
   return [{ value: '', label: prefix }, ...items]
@@ -131,7 +389,54 @@ export function MetricForm({ slug, metric, dataSources, events, onClose }: Metri
   const [numeratorEventId, setNumeratorEventId] = useState(metric?.numerator_event_id ?? '')
   const [denominatorEventId, setDenominatorEventId] = useState(metric?.denominator_event_id ?? '')
 
+  // Fact metric. The single operand reuses `numeratorOp`; ratio adds `denominatorOp`.
+  const [factComposition, setFactComposition] = useState<FactComposition>(
+    metric?.kind === 'fact' && metric.composition === 'ratio' ? 'ratio' : 'single',
+  )
+  const [numeratorOp, setNumeratorOp] = useState<FactOperandState>(() => ({
+    factTableId: metric?.fact_table_id ?? '',
+    aggregation: metric?.aggregation ?? 'count',
+    measureColumn: configString('measure_column'),
+    distinctColumn: configString('distinct_column'),
+    rowFilter: configString('row_filter'),
+  }))
+  const [denominatorOp, setDenominatorOp] = useState<FactOperandState>(() =>
+    readOperandFromConfig(initialConfig['denominator']),
+  )
+
   const [formErrors, setFormErrors] = useState<string[]>([])
+
+  const factEnabled = isNew && kind === 'fact'
+  const factTablesQuery = useQuery({
+    queryKey: ['fact-tables', slug],
+    queryFn: () => factTablesApi.list(slug),
+    enabled: factEnabled,
+  })
+  const numeratorDetailQuery = useQuery({
+    queryKey: ['fact-table', slug, numeratorOp.factTableId],
+    queryFn: () => factTablesApi.get(slug, numeratorOp.factTableId),
+    enabled: factEnabled && !!numeratorOp.factTableId,
+  })
+  const denominatorDetailQuery = useQuery({
+    queryKey: ['fact-table', slug, denominatorOp.factTableId],
+    queryFn: () => factTablesApi.get(slug, denominatorOp.factTableId),
+    enabled: factEnabled && factComposition === 'ratio' && !!denominatorOp.factTableId,
+  })
+
+  const factTableOptions = useMemo(
+    () =>
+      toOptions(
+        'Select fact table…',
+        (factTablesQuery.data?.items ?? []).map(t => ({ value: t.id, label: t.display_name })),
+      ),
+    [factTablesQuery.data],
+  )
+  const numeratorDetail = useMemo(() => toDetail(numeratorDetailQuery.data), [numeratorDetailQuery.data])
+  const denominatorDetail = useMemo(
+    () => toDetail(denominatorDetailQuery.data),
+    [denominatorDetailQuery.data],
+  )
+  const hasFactTables = (factTablesQuery.data?.items.length ?? 0) > 0
 
   const dataSourceOptions = useMemo(
     () => toOptions('Select data source…', dataSources.map(ds => ({ value: ds.id, label: ds.name }))),
@@ -155,9 +460,15 @@ export function MetricForm({ slug, metric, dataSources, events, onClose }: Metri
 
       if (kind === 'sql') {
         if (!dataSourceId) errs.push('A data source is required for a SQL metric.')
-        if (!interval) errs.push('A collection interval is required.')
         if (!metricSql.trim()) errs.push('The metric SQL query is required.')
         if (!sqlTimeColumn.trim()) errs.push('A time column is required for a SQL metric.')
+      } else if (kind === 'fact') {
+        if (factComposition === 'ratio') {
+          errs.push(...operandErrors(numeratorOp, 'numerator'))
+          errs.push(...operandErrors(denominatorOp, 'denominator'))
+        } else {
+          errs.push(...operandErrors(numeratorOp, ''))
+        }
       } else {
         if (!numeratorEventId) errs.push('A numerator event is required.')
         if (composition === 'ratio' && !denominatorEventId) {
@@ -184,7 +495,6 @@ export function MetricForm({ slug, metric, dataSources, events, onClose }: Metri
       unit: unit.trim() || null,
     }
 
-    // TODO(tripl-ysji.5): build the rich `fact` create payload + form here.
     if (kind === 'sql') {
       const payload: SqlMetricCreate = {
         ...base,
@@ -199,16 +509,49 @@ export function MetricForm({ slug, metric, dataSources, events, onClose }: Metri
       return payload
     }
     if (kind === 'fact') {
-      throw new Error('fact metric creation is not yet implemented (tripl-ysji.5)')
+      if (factComposition === 'ratio') {
+        const payload: FactMetricCreate = {
+          ...base,
+          kind: 'fact',
+          composition: 'ratio',
+          interval,
+          numerator: toOperandPayload(numeratorOp),
+          denominator: toOperandPayload(denominatorOp),
+        }
+        return payload
+      }
+      const payload: FactMetricCreate = {
+        ...base,
+        kind: 'fact',
+        composition: 'single',
+        interval,
+        fact_table_id: numeratorOp.factTableId,
+        aggregation: numeratorOp.aggregation,
+        measure_column: needsMeasure(numeratorOp.aggregation)
+          ? numeratorOp.measureColumn || null
+          : null,
+        distinct_column: needsDistinct(numeratorOp.aggregation)
+          ? numeratorOp.distinctColumn || null
+          : null,
+        row_filter: numeratorOp.rowFilter || null,
+      }
+      return payload
     }
-    const payload: EventCompositionMetricCreate = {
-      ...base,
-      kind: 'event_composition',
-      composition,
-      numerator_event_id: numeratorEventId || null,
-      denominator_event_id: composition === 'ratio' ? denominatorEventId || null : null,
+    if (kind === 'event_composition') {
+      const payload: EventCompositionMetricCreate = {
+        ...base,
+        kind: 'event_composition',
+        composition,
+        numerator_event_id: numeratorEventId || null,
+        denominator_event_id: composition === 'ratio' ? denominatorEventId || null : null,
+      }
+      return payload
     }
-    return payload
+    // Exhaustiveness guard: a future MetricKind must add a branch above. Missing
+    // one fails at compile time (the `never` assignment) and loudly at runtime,
+    // rather than silently producing a wrong-kind payload.
+    const _exhaustive: never = kind
+    throw new Error(`unsupported metric kind: ${String(_exhaustive)}`)
   }
 
   function buildUpdatePayload(): MetricDefinitionUpdate {
@@ -292,7 +635,7 @@ export function MetricForm({ slug, metric, dataSources, events, onClose }: Metri
 
         <SCard title="Details">
           <MField label="Display name" htmlFor="metric-display-name" required>
-            <TextInput id="metric-display-name" value={displayName} onChange={setDisplayName} placeholder="Checkout conversion" />
+            <TextInput id="metric-display-name" value={displayName} onChange={setDisplayName} placeholder="Checkout conversion" aria-required />
           </MField>
           <MField
             label="Internal name"
@@ -301,7 +644,7 @@ export function MetricForm({ slug, metric, dataSources, events, onClose }: Metri
             hint={isNew ? 'Stable identifier used in queries.' : "Can't be changed after creation."}
           >
             {isNew ? (
-              <TextInput id="metric-name" value={name} onChange={setName} mono placeholder="checkout_conversion" />
+              <TextInput id="metric-name" value={name} onChange={setName} mono placeholder="checkout_conversion" aria-required />
             ) : (
               <div className="mono text-[13px]" style={{ color: 'var(--fg)' }}>
                 {name}
@@ -354,6 +697,79 @@ export function MetricForm({ slug, metric, dataSources, events, onClose }: Metri
               <TextInput id="metric-sql-time" value={sqlTimeColumn} onChange={setSqlTimeColumn} mono placeholder="bucket" />
             </MField>
           </SCard>
+        )}
+
+        {factEnabled && (
+          <>
+            <SCard title="Fact" description="Aggregate a reusable fact table into one value per bucket.">
+              <MField
+                label="Composition"
+                htmlFor="metric-fact-composition"
+                required
+                hint="A single aggregation, or a ratio of two."
+              >
+                <Select
+                  id="metric-fact-composition"
+                  value={factComposition}
+                  onChange={value => setFactComposition(value as FactComposition)}
+                  options={FACT_COMPOSITIONS.map(c => ({
+                    value: c,
+                    label: c === 'single' ? 'Single' : 'Ratio',
+                  }))}
+                />
+              </MField>
+              <MField label="Collection interval" htmlFor="metric-fact-interval" required last>
+                <Select
+                  id="metric-fact-interval"
+                  value={interval}
+                  onChange={value => setIntervalValue(value as MetricScanInterval)}
+                  options={METRIC_SCAN_INTERVALS.map(i => ({ value: i, label: i }))}
+                />
+              </MField>
+            </SCard>
+
+            {factTablesQuery.isSuccess && !hasFactTables ? (
+              <SCard title="Aggregation">
+                <div className="px-[18px] py-[15px] text-[12.5px]" style={{ color: 'var(--fg-subtle)' }}>
+                  No fact tables yet. Define one in Fact tables before creating a fact metric.
+                </div>
+              </SCard>
+            ) : factComposition === 'single' ? (
+              <SCard title="Aggregation">
+                <FactOperandEditor
+                  idPrefix="metric-fact"
+                  operand={numeratorOp}
+                  onChange={setNumeratorOp}
+                  factTableOptions={factTableOptions}
+                  detail={numeratorDetail}
+                  loading={numeratorDetailQuery.isFetching}
+                />
+              </SCard>
+            ) : (
+              <>
+                <SCard title="Numerator">
+                  <FactOperandEditor
+                    idPrefix="metric-fact-num"
+                    operand={numeratorOp}
+                    onChange={setNumeratorOp}
+                    factTableOptions={factTableOptions}
+                    detail={numeratorDetail}
+                    loading={numeratorDetailQuery.isFetching}
+                  />
+                </SCard>
+                <SCard title="Denominator" description="May reference a different fact table.">
+                  <FactOperandEditor
+                    idPrefix="metric-fact-den"
+                    operand={denominatorOp}
+                    onChange={setDenominatorOp}
+                    factTableOptions={factTableOptions}
+                    detail={denominatorDetail}
+                    loading={denominatorDetailQuery.isFetching}
+                  />
+                </SCard>
+              </>
+            )}
+          </>
         )}
 
         {isNew && kind === 'event_composition' && (
@@ -520,6 +936,7 @@ export default function MetricEditPage() {
 
   return (
     <MetricForm
+      key={metricQuery.data?.id ?? 'new'}
       slug={slug}
       metric={metricQuery.data ?? null}
       dataSources={dataSourcesQuery.data ?? EMPTY_DATA_SOURCES}

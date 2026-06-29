@@ -10,6 +10,7 @@ import {
   Link2,
   ScrollText,
   Search,
+  Sheet,
   ShieldCheck,
   Table2,
   Tag,
@@ -144,6 +145,13 @@ export function buildNavGroups(slug: string, summary: ProjectSummary | undefined
           icon: LineChart,
           href: `${base}/metrics`,
           match: (p) => p.startsWith(`${base}/metrics`),
+        },
+        {
+          id: 'fact-tables',
+          label: 'Fact tables',
+          icon: Sheet,
+          href: `${base}/fact-tables`,
+          match: (p) => p.startsWith(`${base}/fact-tables`),
         },
         {
           id: 'anomalies',

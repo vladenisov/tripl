@@ -22,6 +22,8 @@ const ReconciliationPage = lazy(() => import('./pages/ReconciliationPage'))
 const AnomaliesPage = lazy(() => import('./pages/AnomaliesPage'))
 const MetricsPage = lazy(() => import('./pages/metrics/MetricsPage'))
 const MetricEditPage = lazy(() => import('./pages/metrics/MetricForm'))
+const FactTablesPage = lazy(() => import('./pages/fact-tables/FactTablesPage'))
+const FactTableEditPage = lazy(() => import('./pages/fact-tables/FactTableForm'))
 const CoveragePage = lazy(() => import('./pages/CoveragePage'))
 const ConceptsPage = lazy(() => import('./pages/ConceptsPage'))
 const SettingsArea = lazy(() => import('./pages/settings-area/SettingsArea'))
@@ -273,6 +275,9 @@ export default function App() {
             <Route path="/p/:slug/metrics/new" element={withMetricSuspense('metrics-new', <MetricEditPage />)} />
             <Route path="/p/:slug/metrics/:metricId/edit" element={withMetricSuspense('metrics-edit', <MetricEditPage />)} />
             <Route path="/p/:slug/metrics" element={withMetricSuspense('metrics-list', <MetricsPage />)} />
+            <Route path="/p/:slug/fact-tables/new" element={withMetricSuspense('fact-tables-new', <FactTableEditPage />)} />
+            <Route path="/p/:slug/fact-tables/:factTableId/edit" element={withMetricSuspense('fact-tables-edit', <FactTableEditPage />)} />
+            <Route path="/p/:slug/fact-tables" element={withMetricSuspense('fact-tables-list', <FactTablesPage />)} />
             <Route path="/p/:slug/coverage" element={withSuspense(<CoveragePage />)} />
             <Route path="/p/:slug/concepts" element={withSuspense(<ConceptsPage />)} />
             <Route path="/p/:slug/settings/:tab/:itemId" element={withSuspense(<ProjectSettingsPage />)} />

@@ -12,7 +12,15 @@ vi.mock('@/api/metricsCatalogApi', () => ({
   },
 }))
 
+vi.mock('@/api/factTablesApi', () => ({
+  factTablesApi: {
+    list: vi.fn(),
+    get: vi.fn(),
+  },
+}))
+
 import { metricsCatalogApi } from '@/api/metricsCatalogApi'
+import { factTablesApi } from '@/api/factTablesApi'
 
 const DATA_SOURCES = [
   { id: 'ds-1', name: 'Warehouse' },
@@ -22,6 +30,26 @@ const EVENTS = [
   { id: 'ev-1', name: 'checkout:start' },
   { id: 'ev-2', name: 'checkout:done' },
 ] as unknown as EventListItem[]
+
+const FACT_TABLES = {
+  total: 2,
+  items: [
+    { id: 'ft-1', display_name: 'Orders', name: 'orders' },
+    { id: 'ft-2', display_name: 'Sessions', name: 'sessions' },
+  ],
+}
+
+const FACT_TABLE_DETAIL = {
+  id: 'ft-1',
+  name: 'orders',
+  display_name: 'Orders',
+  columns: [
+    { name: 'amount', type: 'numeric' },
+    { name: 'user_id', type: 'text' },
+  ],
+  identifier_columns: ['user_id'],
+  row_filters: [{ name: 'completed', sql: 'status = $1' }],
+}
 
 let queryClient: QueryClient
 
@@ -52,6 +80,14 @@ beforeEach(() => {
   queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   vi.mocked(metricsCatalogApi.create).mockClear()
   vi.mocked(metricsCatalogApi.update).mockClear()
+  vi.mocked(factTablesApi.list).mockReset()
+  vi.mocked(factTablesApi.get).mockReset()
+  vi.mocked(factTablesApi.list).mockResolvedValue(
+    FACT_TABLES as unknown as Awaited<ReturnType<typeof factTablesApi.list>>,
+  )
+  vi.mocked(factTablesApi.get).mockResolvedValue(
+    FACT_TABLE_DETAIL as unknown as Awaited<ReturnType<typeof factTablesApi.get>>,
+  )
 })
 
 afterEach(() => {
@@ -234,6 +270,94 @@ describe('MetricForm validation', () => {
         composition: 'ratio',
         numerator_event_id: 'ev-2',
         denominator_event_id: 'ev-1',
+      }),
+    )
+  })
+
+  function fillFactIdentity(displayName: string, name: string) {
+    fireEvent.click(screen.getByRole('radio', { name: /Fact/ }))
+    fireEvent.change(screen.getByLabelText('Display name', { exact: false }), {
+      target: { value: displayName },
+    })
+    fireEvent.change(screen.getByLabelText('Internal name', { exact: false }), {
+      target: { value: name },
+    })
+  }
+
+  it('builds a single fact metric with a sum over a measure column', async () => {
+    renderForm()
+    fillFactIdentity('Total revenue', 'total_revenue')
+
+    // Pick the fact table once the list (and its options) has loaded; its detail
+    // (columns) then loads asynchronously.
+    await waitFor(() =>
+      expect(document.querySelector('#metric-fact-table option[value="ft-1"]')).not.toBeNull(),
+    )
+    fireEvent.change(document.getElementById('metric-fact-table')!, { target: { value: 'ft-1' } })
+    await waitFor(() => expect(factTablesApi.get).toHaveBeenCalledWith('demo', 'ft-1'))
+
+    // Sum requires a measure column; the dropdown appears and fills from columns.
+    fireEvent.change(document.getElementById('metric-fact-aggregation')!, { target: { value: 'sum' } })
+    await waitFor(() =>
+      expect(document.querySelector('#metric-fact-measure option[value="amount"]')).not.toBeNull(),
+    )
+    fireEvent.change(document.getElementById('metric-fact-measure')!, { target: { value: 'amount' } })
+
+    submit()
+
+    await waitFor(() => expect(metricsCatalogApi.create).toHaveBeenCalledTimes(1))
+    expect(metricsCatalogApi.create).toHaveBeenCalledWith(
+      'demo',
+      expect.objectContaining({
+        kind: 'fact',
+        composition: 'single',
+        fact_table_id: 'ft-1',
+        aggregation: 'sum',
+        measure_column: 'amount',
+        distinct_column: null,
+        row_filter: null,
+      }),
+    )
+  })
+
+  it('rejects a sum fact metric with no measure column', async () => {
+    renderForm()
+    fillFactIdentity('Total revenue', 'total_revenue')
+
+    fireEvent.change(document.getElementById('metric-fact-table')!, { target: { value: 'ft-1' } })
+    fireEvent.change(document.getElementById('metric-fact-aggregation')!, { target: { value: 'sum' } })
+
+    submit()
+
+    expect(
+      await screen.findByText('A measure column is required for the sum aggregation.'),
+    ).toBeInTheDocument()
+    expect(metricsCatalogApi.create).not.toHaveBeenCalled()
+  })
+
+  it('builds a ratio fact metric with numerator and denominator operands', async () => {
+    renderForm()
+    fillFactIdentity('Revenue per session', 'revenue_per_session')
+
+    fireEvent.change(document.getElementById('metric-fact-composition')!, { target: { value: 'ratio' } })
+
+    // Both operands use count, so no measure/distinct column is required.
+    await waitFor(() =>
+      expect(document.querySelector('#metric-fact-num-table option[value="ft-1"]')).not.toBeNull(),
+    )
+    fireEvent.change(document.getElementById('metric-fact-num-table')!, { target: { value: 'ft-1' } })
+    fireEvent.change(document.getElementById('metric-fact-den-table')!, { target: { value: 'ft-2' } })
+
+    submit()
+
+    await waitFor(() => expect(metricsCatalogApi.create).toHaveBeenCalledTimes(1))
+    expect(metricsCatalogApi.create).toHaveBeenCalledWith(
+      'demo',
+      expect.objectContaining({
+        kind: 'fact',
+        composition: 'ratio',
+        numerator: expect.objectContaining({ fact_table_id: 'ft-1', aggregation: 'count' }),
+        denominator: expect.objectContaining({ fact_table_id: 'ft-2', aggregation: 'count' }),
       }),
     )
   })
