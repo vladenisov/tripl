@@ -103,6 +103,7 @@ async def update_scan_config(
             app_version_column=update_dict.get(
                 "app_version_column", config.app_version_column
             ),
+            platform_column=update_dict.get("platform_column", config.platform_column),
         )
         check_replay_chunk_against_interval(
             interval=update_dict.get("interval", config.interval),

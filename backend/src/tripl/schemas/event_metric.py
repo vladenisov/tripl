@@ -179,6 +179,24 @@ class ReleaseRegressionsResponse(BaseModel):
     items: list[ReleaseRegressionItem]
 
 
+class PlatformPresenceRow(BaseModel):
+    """One event and the platform values it has stored breakdown data for."""
+
+    event_id: uuid.UUID
+    event_name: str
+    present_platforms: list[str]
+
+
+class PlatformPresenceResponse(BaseModel):
+    """Per-event platform presence matrix derived from EventMetricBreakdown rows
+    on the scan's designated ``platform_column``. Empty when the column is unset."""
+
+    scan_config_id: uuid.UUID
+    platform_column: str | None = None
+    platforms: list[str]
+    items: list[PlatformPresenceRow]
+
+
 class TopMoverItem(BaseModel):
     """One row of "what moved this anomaly" — backed by MetricBreakdownAnomaly."""
 

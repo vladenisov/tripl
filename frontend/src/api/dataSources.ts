@@ -1,5 +1,5 @@
 import { api } from './client'
-import type { DataSource, DataSourceTestResult, DbType } from '../types'
+import type { DataSource, DataSourceTestResult, DbType, JsonPathDiscovery } from '../types'
 
 export const dataSourcesApi = {
   list: () =>
@@ -17,6 +17,7 @@ export const dataSourcesApi = {
     username?: string
     password?: string
     timeout_seconds?: number | null
+    json_path_discovery?: JsonPathDiscovery | null
   }) => api.post<DataSource>('/data-sources', data),
 
   update: (id: string, data: {
@@ -28,6 +29,7 @@ export const dataSourcesApi = {
     username?: string
     password?: string
     timeout_seconds?: number | null
+    json_path_discovery?: JsonPathDiscovery | null
   }) => api.patch<DataSource>(`/data-sources/${id}`, data),
 
   del: (id: string) =>

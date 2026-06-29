@@ -8,9 +8,11 @@ from tripl.models.event import Event
 from tripl.models.event_photo import EventPhoto
 from tripl.models.event_photo_comment import EventPhotoComment
 from tripl.models.event_type import EventType
+from tripl.models.event_type_owner import EventTypeOwner
 from tripl.models.field_definition import FieldDefinition
 from tripl.models.plan_branch import PlanBranch
 from tripl.models.plan_branch_approval import PlanBranchApproval
+from tripl.models.plan_branch_reviewer import PlanBranchReviewer
 from tripl.models.user import User
 from tripl.tests.conftest import TestSessionLocal
 
@@ -298,6 +300,97 @@ async def test_reviewers_add_list_remove(client: AsyncClient) -> None:
 
     detail2 = await client.get(f"/api/v1/projects/branch-rev/branches/{branch_id}")
     assert detail2.json()["reviewers"] == []
+
+
+async def _touch_branch_event_type(branch_id: str, name: str = "track") -> None:
+    """Mutate a branch's deep-copy of an event type so it diffs from the merge
+    base — making it 'touched' for owner-gating / auto-assign."""
+    async with TestSessionLocal() as session:
+        branch_et = (
+            (
+                await session.execute(
+                    select(EventType).where(
+                        EventType.name == name, EventType.branch_id == uuid.UUID(branch_id)
+                    )
+                )
+            )
+            .scalars()
+            .first()
+        )
+        branch_et.description = "touched on branch"
+        await session.commit()
+
+
+@pytest.mark.asyncio
+async def test_submit_auto_assigns_touched_owners_as_reviewers(client: AsyncClient) -> None:
+    """Submitting a branch surfaces the owners of every touched event type as
+    expected reviewers — and is idempotent across a re-submit."""
+    et_id = await _seed_plan(client, "branch-autorev")
+    branch_id = await _create_branch(client, "branch-autorev")
+
+    owner_id = uuid.uuid4()
+    async with TestSessionLocal() as session:
+        session.add(
+            User(
+                id=owner_id,
+                email="owner-rev@example.com",
+                password_hash="!seed",
+                role="editor",
+            )
+        )
+        # Own the LIVE (main) "track" event type — owners attach to main only.
+        session.add(EventTypeOwner(event_type_id=uuid.UUID(et_id), user_id=owner_id))
+        await session.commit()
+    await _touch_branch_event_type(branch_id)
+
+    detail = await _transition(client, "branch-autorev", branch_id, "submit")
+    assert detail["status"] == "ready_for_review"
+    assert str(owner_id) in {r["user_id"] for r in detail["reviewers"]}
+
+    # request_changes clears approvals but keeps reviewers; re-submitting must not
+    # duplicate the owner (the (branch_id, user_id) unique key + pre-read dedup).
+    await _transition(client, "branch-autorev", branch_id, "request_changes")
+    detail2 = await _transition(client, "branch-autorev", branch_id, "submit")
+    owner_rows = [r for r in detail2["reviewers"] if r["user_id"] == str(owner_id)]
+    assert len(owner_rows) == 1
+
+    async with TestSessionLocal() as session:
+        rows = (
+            (
+                await session.execute(
+                    select(PlanBranchReviewer).where(
+                        PlanBranchReviewer.branch_id == uuid.UUID(branch_id),
+                        PlanBranchReviewer.user_id == owner_id,
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        assert len(rows) == 1
+
+
+@pytest.mark.asyncio
+async def test_submit_skips_branch_author_as_reviewer(client: AsyncClient) -> None:
+    """The branch author is never auto-assigned to review their own branch, even
+    when they own a touched event type (self-review is skipped)."""
+    et_id = await _seed_plan(client, "branch-autorev-self")
+    branch_id = await _create_branch(client, "branch-autorev-self")
+
+    async with TestSessionLocal() as session:
+        author = (
+            (await session.execute(select(User).where(User.email == "test@example.com")))
+            .scalars()
+            .first()
+        )
+        author_id = author.id
+        session.add(EventTypeOwner(event_type_id=uuid.UUID(et_id), user_id=author_id))
+        await session.commit()
+    await _touch_branch_event_type(branch_id)
+
+    detail = await _transition(client, "branch-autorev-self", branch_id, "submit")
+    assert detail["status"] == "ready_for_review"
+    assert all(r["user_id"] != str(author_id) for r in detail["reviewers"])
 
 
 @pytest.mark.asyncio

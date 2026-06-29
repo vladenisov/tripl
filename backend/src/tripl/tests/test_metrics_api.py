@@ -1791,3 +1791,123 @@ async def test_overview_kpi_series(client: AsyncClient):
     assert len(body["active_events"]) == 14
     assert sum(body["active_events"]) == 2
     assert body["active_events"][-1] == 2  # both created today
+
+
+async def _seed_platform_scan(
+    client: AsyncClient, slug: str, *, platform_column: str | None
+) -> tuple[str, dict[str, str]]:
+    """Project + 2 events + a scan config (optionally platform-aware). Returns
+    (scan_config_id, {event_name: event_id})."""
+    proj = await client.post("/api/v1/projects", json={"name": "Platform", "slug": slug})
+    project_id = proj.json()["id"]
+    et = await client.post(
+        f"/api/v1/projects/{slug}/event-types",
+        json={"name": "track", "display_name": "Track"},
+    )
+    et_id = et.json()["id"]
+    events: dict[str, str] = {}
+    for name in ("checkout", "signup"):
+        ev = await client.post(
+            f"/api/v1/projects/{slug}/events",
+            json={"event_type_id": et_id, "name": name},
+        )
+        events[name] = ev.json()["id"]
+
+    async with TestSessionLocal() as session:
+        data_source = DataSource(
+            id=uuid.uuid4(),
+            name=f"Platform DS {uuid.uuid4().hex[:8]}",
+            db_type="clickhouse",
+            host="localhost",
+            port=8123,
+            database_name="default",
+            username="default",
+            password_encrypted="",
+        )
+        scan_config = ScanConfig(
+            id=uuid.uuid4(),
+            data_source_id=data_source.id,
+            project_id=uuid.UUID(project_id),
+            event_type_id=None,
+            name="Platform Config",
+            base_query="SELECT time, event_name FROM events",
+            event_type_column="event_name",
+            time_column="time",
+            cardinality_threshold=100,
+            interval="1h",
+            platform_column=platform_column,
+        )
+        session.add_all([data_source, scan_config])
+        scan_config_id = str(scan_config.id)
+        await session.commit()
+    return scan_config_id, events
+
+
+async def test_platform_presence_matrix(client: AsyncClient) -> None:
+    """Presence is derived from platform_column breakdown rows (event scope,
+    count > 0); zero-count and non-platform breakdown rows are excluded."""
+    scan_config_id, events = await _seed_platform_scan(
+        client, "platform-presence", platform_column="platform"
+    )
+    bucket = datetime(2026, 1, 1, 10, tzinfo=UTC)
+    rows = [
+        ("checkout", "ios", 50),
+        ("checkout", "android", 30),
+        ("signup", "ios", 10),
+        ("signup", "android", 0),  # zero count → not present
+    ]
+    async with TestSessionLocal() as session:
+        for ev_name, platform, count in rows:
+            session.add(
+                EventMetricBreakdown(
+                    id=uuid.uuid4(),
+                    scan_config_id=uuid.UUID(scan_config_id),
+                    event_id=uuid.UUID(events[ev_name]),
+                    event_type_id=None,
+                    bucket=bucket,
+                    breakdown_column="platform",
+                    breakdown_value=platform,
+                    is_other=False,
+                    count=count,
+                )
+            )
+        # A non-platform breakdown row must be ignored by the matrix.
+        session.add(
+            EventMetricBreakdown(
+                id=uuid.uuid4(),
+                scan_config_id=uuid.UUID(scan_config_id),
+                event_id=uuid.UUID(events["checkout"]),
+                event_type_id=None,
+                bucket=bucket,
+                breakdown_column="country",
+                breakdown_value="US",
+                is_other=False,
+                count=99,
+            )
+        )
+        await session.commit()
+
+    resp = await client.get(
+        f"/api/v1/projects/platform-presence/scans/{scan_config_id}/platform-presence"
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["platform_column"] == "platform"
+    assert body["platforms"] == ["android", "ios"]
+    items = {it["event_name"]: it["present_platforms"] for it in body["items"]}
+    assert items["checkout"] == ["android", "ios"]
+    assert items["signup"] == ["ios"]  # android dropped (count 0)
+
+
+async def test_platform_presence_empty_without_platform_column(client: AsyncClient) -> None:
+    scan_config_id, _events = await _seed_platform_scan(
+        client, "platform-presence-empty", platform_column=None
+    )
+    resp = await client.get(
+        f"/api/v1/projects/platform-presence-empty/scans/{scan_config_id}/platform-presence"
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["platform_column"] is None
+    assert body["platforms"] == []
+    assert body["items"] == []

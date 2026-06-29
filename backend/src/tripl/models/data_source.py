@@ -38,6 +38,12 @@ class DataSource(UUIDMixin, TimestampMixin, Base):
     username: Mapped[str] = mapped_column(String(255), default="")
     password_encrypted: Mapped[str] = mapped_column(Text, default="")
     timeout_seconds: Mapped[int | None] = mapped_column(Integer, nullable=True, default=None)
+    # ClickHouse-only: which path-enumeration function the JSON path *discovery*
+    # (preview) query uses — "all" (JSONAllPaths, every path incl. shared data) or
+    # "dynamic" (JSONDynamicPaths, only the important typed subcolumn paths, much
+    # faster). NULL falls back to the adapter default ("dynamic"). Ignored by
+    # Postgres/BigQuery. Does not affect scan-time value extraction.
+    json_path_discovery: Mapped[str | None] = mapped_column(String(16), nullable=True, default=None)
     extra_params: Mapped[dict[str, object] | None] = mapped_column(sa.JSON, nullable=True)
 
     last_test_at: Mapped[datetime | None] = mapped_column(

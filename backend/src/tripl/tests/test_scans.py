@@ -140,6 +140,57 @@ class TestScanConfigsCRUD:
         )
         assert resp.status_code == 422
 
+    async def test_create_scan_config_with_platform(
+        self, client: AsyncClient, project: dict, data_source: dict, event_type: dict
+    ):
+        resp = await client.post(
+            f"/api/v1/projects/{project['slug']}/scans",
+            json={
+                "data_source_id": data_source["id"],
+                "name": "Platform scan",
+                "base_query": "SELECT * FROM events",
+                "event_type_id": event_type["id"],
+                "platform_column": "platform",
+            },
+        )
+        assert resp.status_code == 201
+        assert resp.json()["platform_column"] == "platform"
+
+    async def test_create_scan_config_rejects_platform_as_breakdown(
+        self, client: AsyncClient, project: dict, data_source: dict, event_type: dict
+    ):
+        # platform_column is collected on its own path, so listing it as a generic
+        # breakdown column too would double-collect it.
+        resp = await client.post(
+            f"/api/v1/projects/{project['slug']}/scans",
+            json={
+                "data_source_id": data_source["id"],
+                "name": "Platform clash scan",
+                "base_query": "SELECT * FROM events",
+                "event_type_id": event_type["id"],
+                "platform_column": "platform",
+                "metric_breakdown_columns": ["platform"],
+            },
+        )
+        assert resp.status_code == 422
+
+    async def test_create_scan_config_rejects_platform_as_time_column(
+        self, client: AsyncClient, project: dict, data_source: dict, event_type: dict
+    ):
+        # The platform column cannot double as another reserved role.
+        resp = await client.post(
+            f"/api/v1/projects/{project['slug']}/scans",
+            json={
+                "data_source_id": data_source["id"],
+                "name": "Platform role clash scan",
+                "base_query": "SELECT * FROM events",
+                "event_type_id": event_type["id"],
+                "time_column": "ts",
+                "platform_column": "ts",
+            },
+        )
+        assert resp.status_code == 422
+
     async def test_create_scan_config_rejects_invalid_group_regex(
         self, client: AsyncClient, project: dict, data_source: dict, event_type: dict
     ):

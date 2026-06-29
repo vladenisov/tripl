@@ -57,6 +57,7 @@ async def create_data_source(session: AsyncSession, data: DataSourceCreate) -> D
         username=data.username,
         password_encrypted=encrypt_value(data.password),
         timeout_seconds=data.timeout_seconds,
+        json_path_discovery=data.json_path_discovery,
         extra_params=data.extra_params,
     )
     session.add(ds)
@@ -113,6 +114,7 @@ def _to_response(ds: DataSource) -> DataSourceResponse:
         username=ds.username,
         password_set=bool(ds.password_encrypted),
         timeout_seconds=ds.timeout_seconds,
+        json_path_discovery=ds.json_path_discovery,
         extra_params=ds.extra_params,
         last_test_at=ds.last_test_at,
         last_test_status=ds.last_test_status,

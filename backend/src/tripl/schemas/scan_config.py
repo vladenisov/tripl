@@ -53,27 +53,40 @@ def check_scalar_columns_unreserved(
     event_type_column: str | None,
     time_column: str | None,
     app_version_column: str | None = None,
+    platform_column: str | None = None,
 ) -> None:
-    """Reject selections that overlap reserved time/grouping/version columns.
+    """Reject selections that overlap reserved time/grouping/version/platform columns.
 
     Used by both ScanConfigCreate (full payload) and the scan service
     update path (merged payload). Raises ValueError so pydantic surfaces it
     as 422 directly; the service-layer catches it to convert to HTTPException.
 
-    ``app_version_column`` is reserved because, when set, version series are
-    collected on a dedicated path; letting it double as a generic breakdown or
-    drift column would collect it twice.
+    ``app_version_column`` and ``platform_column`` are reserved because, when set,
+    each is collected on its own path; letting either double as a generic
+    breakdown or drift column would collect it twice. The platform column is also
+    barred from coinciding with the other reserved roles.
     """
-    reserved = {column for column in (event_type_column, time_column, app_version_column) if column}
+    reserved = {
+        column
+        for column in (event_type_column, time_column, app_version_column, platform_column)
+        if column
+    }
     if set(metric_breakdown_columns) & reserved:
         raise ValueError(
-            "metric_breakdown_columns cannot include event_type_column, time_column "
-            "or app_version_column"
+            "metric_breakdown_columns cannot include event_type_column, time_column, "
+            "app_version_column or platform_column"
         )
     if set(distribution_drift_fields) & reserved:
         raise ValueError(
-            "distribution_drift_fields cannot include event_type_column, time_column "
-            "or app_version_column"
+            "distribution_drift_fields cannot include event_type_column, time_column, "
+            "app_version_column or platform_column"
+        )
+    other_roles = {
+        column for column in (event_type_column, time_column, app_version_column) if column
+    }
+    if platform_column and platform_column in other_roles:
+        raise ValueError(
+            "platform_column cannot also be event_type_column, time_column or app_version_column"
         )
 
 
@@ -114,6 +127,7 @@ class ScanConfigCreate(BaseModel):
     metrics_row_limit: int | None = Field(default=None, ge=1)
     app_version_column: str | None = Field(default=None, min_length=1, max_length=255)
     app_version_keep_releases: int | None = Field(default=None, ge=1)
+    platform_column: str | None = Field(default=None, min_length=1, max_length=255)
 
     @field_validator("json_value_paths")
     @classmethod
@@ -148,6 +162,7 @@ class ScanConfigCreate(BaseModel):
             event_type_column=self.event_type_column,
             time_column=self.time_column,
             app_version_column=self.app_version_column,
+            platform_column=self.platform_column,
         )
         check_replay_chunk_against_interval(
             interval=self.interval,
@@ -191,6 +206,7 @@ class ScanConfigUpdate(BaseModel):
     metrics_row_limit: int | None = Field(default=None, ge=1)
     app_version_column: str | None = Field(default=None, max_length=255)
     app_version_keep_releases: int | None = Field(default=None, ge=1)
+    platform_column: str | None = Field(default=None, max_length=255)
 
     @field_validator("json_value_paths")
     @classmethod
@@ -241,6 +257,7 @@ class ScanConfigResponse(BaseModel):
     metrics_row_limit: int | None
     app_version_column: str | None
     app_version_keep_releases: int | None
+    platform_column: str | None
     created_at: datetime
     updated_at: datetime
 

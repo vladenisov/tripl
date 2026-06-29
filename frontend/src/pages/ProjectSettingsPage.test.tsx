@@ -1136,6 +1136,7 @@ describe('ProjectSettingsPage', () => {
         distribution_drift_fields: [],
         app_version_column: null,
         app_version_keep_releases: null,
+        platform_column: null,
         cardinality_threshold: 100,
         interval: null,
         replay_chunk_interval: null,

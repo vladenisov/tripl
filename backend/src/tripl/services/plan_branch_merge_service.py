@@ -22,11 +22,13 @@ from tripl.models.event_type_owner import EventTypeOwner
 from tripl.models.event_type_relation import EventTypeRelation
 from tripl.models.field_definition import FieldDefinition
 from tripl.models.meta_field_definition import MetaFieldDefinition
-from tripl.models.plan_branch import BranchStatus
+from tripl.models.plan_branch import BranchStatus, PlanBranch
 from tripl.models.plan_branch_approval import PlanBranchApproval
+from tripl.models.plan_branch_reviewer import PlanBranchReviewer
 from tripl.models.plan_revision import PlanRevision
 from tripl.models.variable import Variable
 from tripl.schemas.plan_branch import PlanBranchDetailResponse
+from tripl.services.event_type_owner_service import load_owner_user_ids
 from tripl.services.plan_branch_conflicts import (
     _ET_CHANGE_KEYS,
     _detect_merge_conflicts,
@@ -603,6 +605,70 @@ async def _check_owner_approvals(
             status_code=409,
             detail={"missing_owner_approvals": missing},
         )
+
+
+async def assign_owner_reviewers_for_branch(
+    session: AsyncSession,
+    *,
+    project_id: uuid.UUID,
+    branch: PlanBranch,
+) -> list[uuid.UUID]:
+    """Upsert the owners of every touched event type as reviewers of ``branch``.
+
+    Invoked when a branch enters review (the ``submit`` transition) so the people
+    whose approval the merge gate later requires (:func:`_check_owner_approvals`)
+    are surfaced as expected reviewers up front, without a manual lookup. The
+    branch author is never assigned to review their own branch; whether an author
+    may *approve* their own owned type is a separate policy (tripl-s8t0).
+
+    Idempotent: the ``(branch_id, user_id)`` unique key plus the pre-read of
+    existing reviewers means a re-submit adds nothing new. Does not commit — it
+    joins the caller's transaction.
+    """
+    main_branch_id = await ensure_main_branch_id(session, project_id)
+
+    base_payload: dict[str, Any] = {}
+    if branch.base_revision_id is not None:
+        base_rev = await session.get(PlanRevision, branch.base_revision_id)
+        if base_rev is not None:
+            base_payload = base_rev.payload or {}
+    branch_payload = await build_plan_snapshot(session, project_id, branch_id=branch.id)
+
+    touched = _touched_event_type_names(base_payload, branch_payload)
+    if not touched:
+        return []
+
+    # Only live (main) rows can be owned — a type freshly added on the branch has
+    # no owner yet, so it drops out here.
+    rows = await session.execute(
+        select(EventType.id).where(
+            EventType.project_id == project_id,
+            EventType.branch_id == main_branch_id,
+            EventType.name.in_(list(touched)),
+        )
+    )
+    main_et_ids = [et_id for (et_id,) in rows.all()]
+    if not main_et_ids:
+        return []
+
+    owners_by_et = await load_owner_user_ids(session, main_et_ids)
+    owner_ids: set[uuid.UUID] = set()
+    for ids in owners_by_et.values():
+        owner_ids |= ids
+    if branch.created_by is not None:
+        owner_ids.discard(branch.created_by)
+    if not owner_ids:
+        return []
+
+    existing = await session.execute(
+        select(PlanBranchReviewer.user_id).where(PlanBranchReviewer.branch_id == branch.id)
+    )
+    already = {user_id for (user_id,) in existing.all()}
+    added: list[uuid.UUID] = []
+    for user_id in sorted(owner_ids - already, key=str):
+        session.add(PlanBranchReviewer(branch_id=branch.id, user_id=user_id))
+        added.append(user_id)
+    return added
 
 
 async def merge_branch(

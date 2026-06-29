@@ -21,6 +21,7 @@ export interface ScanFormPayload {
   distribution_drift_fields: string[]
   app_version_column: string | null
   app_version_keep_releases: number | null
+  platform_column: string | null
   cardinality_threshold: number
   interval: string | null
   replay_chunk_interval: string | null
@@ -38,6 +39,7 @@ export interface ScanFormState {
   timeColumn: string
   appVersionColumn: string
   appVersionKeepReleases: string
+  platformColumn: string
   eventNameFormat: string
   jsonValuePaths: string[]
   eventGroupRules: UiEventGroupRule[]
@@ -64,6 +66,7 @@ function initialState(scanConfig: ScanConfig | null): ScanFormState {
     appVersionKeepReleases: scanConfig?.app_version_keep_releases
       ? String(scanConfig.app_version_keep_releases)
       : '',
+    platformColumn: scanConfig?.platform_column ?? '',
     eventNameFormat: scanConfig?.event_name_format ?? '',
     jsonValuePaths: scanConfig?.json_value_paths ?? [],
     eventGroupRules: withUiIds(scanConfig?.event_group_rules ?? []),
@@ -99,6 +102,7 @@ export interface UseScanFormResult {
   setEventTypeColumn: (value: string) => void
   setTimeColumn: (value: string) => void
   setAppVersionColumn: (value: string) => void
+  setPlatformColumn: (value: string) => void
   setInterval: (value: string) => void
   toggleJsonValuePath: (path: string) => void
   toggleMetricBreakdownColumn: (column: string) => void
@@ -138,12 +142,16 @@ export function useScanForm(
         const eventTypeColumn = has(current.eventTypeColumn) ? current.eventTypeColumn : ''
         const timeColumn = has(current.timeColumn) ? current.timeColumn : ''
         const appVersionColumn = has(current.appVersionColumn) ? current.appVersionColumn : ''
-        const reserved = new Set([eventTypeColumn, timeColumn, appVersionColumn].filter(Boolean))
+        const platformColumn = has(current.platformColumn) ? current.platformColumn : ''
+        const reserved = new Set(
+          [eventTypeColumn, timeColumn, appVersionColumn, platformColumn].filter(Boolean),
+        )
         return {
           ...current,
           eventTypeColumn,
           timeColumn,
           appVersionColumn,
+          platformColumn,
           appVersionKeepReleases: appVersionColumn ? current.appVersionKeepReleases : '',
           metricBreakdownColumns: current.metricBreakdownColumns.filter(
             column => has(column) && !reserved.has(column),
@@ -213,6 +221,14 @@ export function useScanForm(
       distributionDriftFields: current.distributionDriftFields.filter(field => field !== value),
     }))
 
+  const setPlatformColumn = (value: string) =>
+    setState(current => ({
+      ...current,
+      platformColumn: value,
+      metricBreakdownColumns: current.metricBreakdownColumns.filter(column => column !== value),
+      distributionDriftFields: current.distributionDriftFields.filter(field => field !== value),
+    }))
+
   const setInterval = (value: string) =>
     setState(current => ({
       ...current,
@@ -267,6 +283,7 @@ export function useScanForm(
       app_version_keep_releases: state.appVersionColumn
         ? parseOptionalPositiveInt(state.appVersionKeepReleases)
         : null,
+      platform_column: state.platformColumn || null,
       cardinality_threshold: state.cardinalityThreshold,
       interval: state.interval || null,
       replay_chunk_interval: state.chunkInterval || null,
@@ -288,6 +305,7 @@ export function useScanForm(
     setEventTypeColumn,
     setTimeColumn,
     setAppVersionColumn,
+    setPlatformColumn,
     setInterval,
     toggleJsonValuePath,
     toggleMetricBreakdownColumn,

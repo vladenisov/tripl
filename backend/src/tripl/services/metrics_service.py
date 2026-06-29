@@ -43,6 +43,8 @@ from tripl.schemas.event_metric import (
     ForecastPoint,
     MetricSignalResponse,
     OverviewKpiSeriesResponse,
+    PlatformPresenceResponse,
+    PlatformPresenceRow,
     ReleaseRegressionItem,
     ReleaseRegressionsResponse,
     TopEventResponse,
@@ -1052,6 +1054,63 @@ async def get_release_regressions(
         scan_config_id=config.id,
         app_version_column=config.app_version_column,
         latest_version=latest_version,
+        items=items,
+    )
+
+
+async def get_platform_presence(
+    session: AsyncSession,
+    slug: str,
+    scan_config_id: uuid.UUID,
+) -> PlatformPresenceResponse:
+    """Per-event platform presence matrix for a scan's designated platform column.
+
+    Presence is derived from the generic breakdown rows the metrics worker stores
+    under ``platform_column`` (event-scope, real values only, count > 0): an event
+    is "present" on a platform if it has any such stored row. Empty when the scan
+    has no ``platform_column`` configured. Read-only; cheap index-backed query.
+    """
+    project = await _resolve_project(session, slug)
+    config = await _resolve_scan_config(session, project.id, scan_config_id)
+    if not config.platform_column:
+        return PlatformPresenceResponse(
+            scan_config_id=config.id, platform_column=None, platforms=[], items=[]
+        )
+
+    rows = await session.execute(
+        select(
+            EventMetricBreakdown.event_id,
+            EventMetricBreakdown.breakdown_value,
+            Event.name,
+        )
+        .join(Event, Event.id == EventMetricBreakdown.event_id)
+        .where(
+            EventMetricBreakdown.scan_config_id == config.id,
+            EventMetricBreakdown.breakdown_column == config.platform_column,
+            EventMetricBreakdown.event_id.is_not(None),
+            EventMetricBreakdown.is_other.is_(False),
+            EventMetricBreakdown.count > 0,
+        )
+    )
+    platforms: set[str] = set()
+    by_event: dict[uuid.UUID, tuple[str, set[str]]] = {}
+    for event_id, platform_value, event_name in rows.all():
+        platforms.add(platform_value)
+        _name, present = by_event.setdefault(event_id, (event_name, set()))
+        present.add(platform_value)
+
+    items = [
+        PlatformPresenceRow(
+            event_id=event_id,
+            event_name=name,
+            present_platforms=sorted(present),
+        )
+        for event_id, (name, present) in sorted(by_event.items(), key=lambda kv: kv[1][0])
+    ]
+    return PlatformPresenceResponse(
+        scan_config_id=config.id,
+        platform_column=config.platform_column,
+        platforms=sorted(platforms),
         items=items,
     )
 

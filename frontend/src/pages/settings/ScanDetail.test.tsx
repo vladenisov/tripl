@@ -34,6 +34,7 @@ const scanConfig: ScanConfig = {
   metrics_row_limit: null,
   app_version_column: null,
   app_version_keep_releases: null,
+  platform_column: null,
   created_at: '2026-01-01T00:00:00Z',
   updated_at: '2026-01-01T00:00:00Z',
 }
@@ -46,6 +47,9 @@ describe('ScanDetail', () => {
   it('shows replay chunk progress for running jobs', async () => {
     vi.spyOn(globalThis, 'fetch').mockImplementation(async input => {
       const url = String(input)
+      if (url.endsWith('/platform-presence')) {
+        return mockJsonResponse({ scan_config_id: 'scan-1', platform_column: null, platforms: [], items: [] })
+      }
       if (url.endsWith('/api/v1/projects/demo/scans/scan-1/jobs')) {
         return mockJsonResponse([
           {
@@ -99,6 +103,9 @@ describe('ScanDetail', () => {
   it('renders the overview panels with real ScanConfig fields', async () => {
     vi.spyOn(globalThis, 'fetch').mockImplementation(async input => {
       const url = String(input)
+      if (url.endsWith('/platform-presence')) {
+        return mockJsonResponse({ scan_config_id: 'scan-1', platform_column: null, platforms: [], items: [] })
+      }
       if (url.endsWith('/api/v1/projects/demo/scans/scan-1/jobs')) {
         return mockJsonResponse([])
       }
@@ -130,6 +137,9 @@ describe('ScanDetail', () => {
   it('labels a failed job, offers a retry, and never shows raw scan internals', async () => {
     vi.spyOn(globalThis, 'fetch').mockImplementation(async input => {
       const url = String(input)
+      if (url.endsWith('/platform-presence')) {
+        return mockJsonResponse({ scan_config_id: 'scan-1', platform_column: null, platforms: [], items: [] })
+      }
       if (url.endsWith('/api/v1/projects/demo/scans/scan-1/jobs')) {
         return mockJsonResponse([
           {
@@ -172,5 +182,77 @@ describe('ScanDetail', () => {
     ).toBeInTheDocument()
     expect(screen.queryByText(/clickhouse\.internal/)).not.toBeInTheDocument()
     expect(screen.queryByText(/8443/)).not.toBeInTheDocument()
+  })
+
+  it('renders the platform presence grid from a mocked response', async () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async input => {
+      const url = String(input)
+      if (url.endsWith('/platform-presence')) {
+        return mockJsonResponse({
+          scan_config_id: 'scan-1',
+          platform_column: 'platform',
+          platforms: ['android', 'ios'],
+          items: [
+            { event_id: 'evt-checkout', event_name: 'checkout', present_platforms: ['android', 'ios'] },
+            { event_id: 'evt-signup', event_name: 'signup', present_platforms: ['ios'] },
+          ],
+        })
+      }
+      if (url.endsWith('/api/v1/projects/demo/scans/scan-1/jobs')) {
+        return mockJsonResponse([])
+      }
+      throw new Error(`Unhandled fetch: ${url}`)
+    })
+
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    })
+
+    render(
+      <QueryClientProvider client={queryClient}>
+        <ScanDetail slug="demo" scanConfig={scanConfig} eventTypes={[]} branchId={null} />
+      </QueryClientProvider>,
+    )
+
+    expect(await screen.findByText('Platform presence')).toBeInTheDocument()
+    // Column headers are the sorted distinct platform values (await the async grid load).
+    expect(await screen.findByRole('columnheader', { name: 'android' })).toBeInTheDocument()
+    expect(screen.getByRole('columnheader', { name: 'ios' })).toBeInTheDocument()
+    // Rows are events; cells encode presence as ✓ / — with accessible labels.
+    expect(screen.getByText('checkout')).toBeInTheDocument()
+    expect(screen.getByText('signup')).toBeInTheDocument()
+    expect(screen.getByLabelText('checkout present on android')).toHaveTextContent('✓')
+    expect(screen.getByLabelText('signup absent on android')).toHaveTextContent('—')
+    expect(screen.getByLabelText('signup present on ios')).toHaveTextContent('✓')
+  })
+
+  it('shows an empty state when no platform column is configured', async () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async input => {
+      const url = String(input)
+      if (url.endsWith('/platform-presence')) {
+        return mockJsonResponse({
+          scan_config_id: 'scan-1',
+          platform_column: null,
+          platforms: [],
+          items: [],
+        })
+      }
+      if (url.endsWith('/api/v1/projects/demo/scans/scan-1/jobs')) {
+        return mockJsonResponse([])
+      }
+      throw new Error(`Unhandled fetch: ${url}`)
+    })
+
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    })
+
+    render(
+      <QueryClientProvider client={queryClient}>
+        <ScanDetail slug="demo" scanConfig={scanConfig} eventTypes={[]} branchId={null} />
+      </QueryClientProvider>,
+    )
+
+    expect(await screen.findByText('No platform column configured')).toBeInTheDocument()
   })
 })
