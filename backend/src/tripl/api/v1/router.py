@@ -14,6 +14,7 @@ from tripl.api.v1.event_photos import router as event_photos_router
 from tripl.api.v1.event_type_owners import router as event_type_owners_router
 from tripl.api.v1.event_types import router as event_types_router
 from tripl.api.v1.events import router as events_router
+from tripl.api.v1.fact_tables import router as fact_tables_router
 from tripl.api.v1.fields import router as fields_router
 from tripl.api.v1.meta_fields import router as meta_fields_router
 from tripl.api.v1.metrics import router as metrics_router
@@ -52,6 +53,7 @@ router.include_router(scans_router, dependencies=protected_dependencies)
 router.include_router(search_router, dependencies=protected_dependencies)
 router.include_router(metrics_router, dependencies=protected_dependencies)
 router.include_router(metrics_catalog_router, dependencies=protected_dependencies)
+router.include_router(fact_tables_router, dependencies=protected_dependencies)
 router.include_router(chart_annotations_router, dependencies=protected_dependencies)
 router.include_router(plan_branches_router, dependencies=protected_dependencies)
 router.include_router(plan_revisions_router, dependencies=protected_dependencies)

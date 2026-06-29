@@ -6897,6 +6897,540 @@
         "title": "FactAggregationMetricCreate",
         "type": "object"
       },
+      "FactTableColumnSchema": {
+        "description": "A single introspected column descriptor: its name and warehouse type.",
+        "properties": {
+          "name": {
+            "maxLength": 255,
+            "minLength": 1,
+            "title": "Name",
+            "type": "string"
+          },
+          "type": {
+            "maxLength": 255,
+            "minLength": 1,
+            "title": "Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "type"
+        ],
+        "title": "FactTableColumnSchema",
+        "type": "object"
+      },
+      "FactTableCreate": {
+        "additionalProperties": false,
+        "description": "Create a fact table from a full read-only SELECT plus its column metadata.\n\n``sql`` must be a single read-only SELECT (validated via the shared\nSELECT-safety path that rejects stacked statements, comments, DDL/DML and\n``UNION``). ``timestamp_column`` and ``identifier_columns`` are validated as\nbare identifiers since they reach warehouse SQL unparameterised.",
+        "properties": {
+          "color": {
+            "default": "#6366f1",
+            "pattern": "^#[0-9a-fA-F]{6}$",
+            "title": "Color",
+            "type": "string"
+          },
+          "columns": {
+            "items": {
+              "$ref": "#/components/schemas/FactTableColumnSchema"
+            },
+            "title": "Columns",
+            "type": "array"
+          },
+          "data_source_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Data Source Id"
+          },
+          "description": {
+            "default": "",
+            "title": "Description",
+            "type": "string"
+          },
+          "display_name": {
+            "maxLength": 255,
+            "minLength": 1,
+            "title": "Display Name",
+            "type": "string"
+          },
+          "identifier_columns": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Identifier Columns",
+            "type": "array"
+          },
+          "name": {
+            "maxLength": 255,
+            "minLength": 1,
+            "title": "Name",
+            "type": "string"
+          },
+          "row_filters": {
+            "items": {
+              "$ref": "#/components/schemas/FactTableRowFilter"
+            },
+            "title": "Row Filters",
+            "type": "array"
+          },
+          "sql": {
+            "minLength": 1,
+            "title": "Sql",
+            "type": "string"
+          },
+          "timestamp_column": {
+            "maxLength": 255,
+            "minLength": 1,
+            "title": "Timestamp Column",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "display_name",
+          "sql",
+          "timestamp_column"
+        ],
+        "title": "FactTableCreate",
+        "type": "object"
+      },
+      "FactTableListItem": {
+        "description": "Slim catalog row: presentation + source binding, without the heavy SQL.",
+        "properties": {
+          "color": {
+            "title": "Color",
+            "type": "string"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "data_source_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Data Source Id"
+          },
+          "description": {
+            "title": "Description",
+            "type": "string"
+          },
+          "display_name": {
+            "title": "Display Name",
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "order": {
+            "title": "Order",
+            "type": "integer"
+          },
+          "project_id": {
+            "format": "uuid",
+            "title": "Project Id",
+            "type": "string"
+          },
+          "timestamp_column": {
+            "title": "Timestamp Column",
+            "type": "string"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "title": "Updated At",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "project_id",
+          "name",
+          "display_name",
+          "description",
+          "color",
+          "order",
+          "data_source_id",
+          "timestamp_column",
+          "created_at",
+          "updated_at"
+        ],
+        "title": "FactTableListItem",
+        "type": "object"
+      },
+      "FactTableListResponse": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/FactTableListItem"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "total": {
+            "title": "Total",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "items",
+          "total"
+        ],
+        "title": "FactTableListResponse",
+        "type": "object"
+      },
+      "FactTablePreviewRequest": {
+        "additionalProperties": false,
+        "description": "Introspect a candidate SELECT before persisting it as a fact table.",
+        "properties": {
+          "data_source_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Data Source Id"
+          },
+          "sql": {
+            "minLength": 1,
+            "title": "Sql",
+            "type": "string"
+          },
+          "timestamp_column": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Timestamp Column"
+          }
+        },
+        "required": [
+          "sql"
+        ],
+        "title": "FactTablePreviewRequest",
+        "type": "object"
+      },
+      "FactTablePreviewResponse": {
+        "properties": {
+          "columns": {
+            "items": {
+              "$ref": "#/components/schemas/FactTableColumnSchema"
+            },
+            "title": "Columns",
+            "type": "array"
+          },
+          "identifier_candidates": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Identifier Candidates",
+            "type": "array"
+          },
+          "sample_rows": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Sample Rows",
+            "type": "array"
+          }
+        },
+        "required": [
+          "columns",
+          "identifier_candidates",
+          "sample_rows"
+        ],
+        "title": "FactTablePreviewResponse",
+        "type": "object"
+      },
+      "FactTableResponse": {
+        "properties": {
+          "color": {
+            "title": "Color",
+            "type": "string"
+          },
+          "columns": {
+            "items": {
+              "$ref": "#/components/schemas/FactTableColumnSchema"
+            },
+            "title": "Columns",
+            "type": "array"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "data_source_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Data Source Id"
+          },
+          "description": {
+            "title": "Description",
+            "type": "string"
+          },
+          "display_name": {
+            "title": "Display Name",
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "identifier_columns": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Identifier Columns",
+            "type": "array"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "order": {
+            "title": "Order",
+            "type": "integer"
+          },
+          "project_id": {
+            "format": "uuid",
+            "title": "Project Id",
+            "type": "string"
+          },
+          "row_filters": {
+            "items": {
+              "$ref": "#/components/schemas/FactTableRowFilter"
+            },
+            "title": "Row Filters",
+            "type": "array"
+          },
+          "sql": {
+            "title": "Sql",
+            "type": "string"
+          },
+          "timestamp_column": {
+            "title": "Timestamp Column",
+            "type": "string"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "title": "Updated At",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "project_id",
+          "name",
+          "display_name",
+          "description",
+          "color",
+          "order",
+          "data_source_id",
+          "sql",
+          "timestamp_column",
+          "columns",
+          "identifier_columns",
+          "row_filters",
+          "created_at",
+          "updated_at"
+        ],
+        "title": "FactTableResponse",
+        "type": "object"
+      },
+      "FactTableRowFilter": {
+        "description": "A reusable named row filter: a label plus a boolean WHERE fragment.\n\nThe ``sql`` fragment flows into warehouse SQL with no bound parameters, so it\nis validated at this boundary via the shared SQL-fragment validator (rejects\ncomment markers, ``;`` separators, and DDL/DML/``UNION`` keywords).",
+        "properties": {
+          "name": {
+            "maxLength": 255,
+            "minLength": 1,
+            "title": "Name",
+            "type": "string"
+          },
+          "sql": {
+            "minLength": 1,
+            "title": "Sql",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "sql"
+        ],
+        "title": "FactTableRowFilter",
+        "type": "object"
+      },
+      "FactTableUpdate": {
+        "additionalProperties": false,
+        "description": "Partial update of a fact table.\n\n``name`` is immutable (it is the per-project identity) \u2014 recreate the fact\ntable to rename it. Every other field is optional; ``exclude_unset`` at the\nservice layer keeps only the fields the client actually sent.",
+        "properties": {
+          "color": {
+            "anyOf": [
+              {
+                "pattern": "^#[0-9a-fA-F]{6}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Color"
+          },
+          "columns": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/FactTableColumnSchema"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Columns"
+          },
+          "data_source_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Data Source Id"
+          },
+          "description": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Description"
+          },
+          "display_name": {
+            "anyOf": [
+              {
+                "maxLength": 255,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Display Name"
+          },
+          "identifier_columns": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Identifier Columns"
+          },
+          "order": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Order"
+          },
+          "row_filters": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/FactTableRowFilter"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Row Filters"
+          },
+          "sql": {
+            "anyOf": [
+              {
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sql"
+          },
+          "timestamp_column": {
+            "anyOf": [
+              {
+                "maxLength": 255,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Timestamp Column"
+          }
+        },
+        "title": "FactTableUpdate",
+        "type": "object"
+      },
       "FieldDefinitionBulkCreate": {
         "properties": {
           "fields": {
@@ -20242,6 +20776,344 @@
         "summary": "Download Event Photo",
         "tags": [
           "event-photos"
+        ]
+      }
+    },
+    "/api/v1/projects/{slug}/fact-tables": {
+      "get": {
+        "operationId": "list_fact_tables_api_v1_projects__slug__fact_tables_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "slug",
+            "required": true,
+            "schema": {
+              "title": "Slug",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "search",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Search"
+            }
+          },
+          {
+            "in": "query",
+            "name": "offset",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "minimum": 0,
+              "title": "Offset",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 200,
+              "maximum": 1000,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FactTableListResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Fact Tables",
+        "tags": [
+          "fact-tables"
+        ]
+      },
+      "post": {
+        "operationId": "create_fact_table_api_v1_projects__slug__fact_tables_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "slug",
+            "required": true,
+            "schema": {
+              "title": "Slug",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FactTableCreate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FactTableResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Create Fact Table",
+        "tags": [
+          "fact-tables"
+        ]
+      }
+    },
+    "/api/v1/projects/{slug}/fact-tables/preview": {
+      "post": {
+        "operationId": "preview_fact_table_api_v1_projects__slug__fact_tables_preview_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "slug",
+            "required": true,
+            "schema": {
+              "title": "Slug",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FactTablePreviewRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FactTablePreviewResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Preview Fact Table",
+        "tags": [
+          "fact-tables"
+        ]
+      }
+    },
+    "/api/v1/projects/{slug}/fact-tables/{fact_table_id}": {
+      "delete": {
+        "operationId": "delete_fact_table_api_v1_projects__slug__fact_tables__fact_table_id__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "slug",
+            "required": true,
+            "schema": {
+              "title": "Slug",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "fact_table_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Fact Table Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Delete Fact Table",
+        "tags": [
+          "fact-tables"
+        ]
+      },
+      "get": {
+        "operationId": "get_fact_table_api_v1_projects__slug__fact_tables__fact_table_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "slug",
+            "required": true,
+            "schema": {
+              "title": "Slug",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "fact_table_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Fact Table Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FactTableResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Fact Table",
+        "tags": [
+          "fact-tables"
+        ]
+      },
+      "patch": {
+        "operationId": "update_fact_table_api_v1_projects__slug__fact_tables__fact_table_id__patch",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "slug",
+            "required": true,
+            "schema": {
+              "title": "Slug",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "fact_table_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Fact Table Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FactTableUpdate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FactTableResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Update Fact Table",
+        "tags": [
+          "fact-tables"
         ]
       }
     },
