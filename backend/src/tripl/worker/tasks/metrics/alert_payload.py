@@ -13,6 +13,7 @@ from sqlalchemy.orm import Session
 
 from tripl.alerting_matching import (
     SCOPE_DISTRIBUTION_DRIFT,
+    SCOPE_METRIC,
     SCOPE_RELEASE_REGRESSION,
     AlertMatchCandidate,
 )
@@ -25,6 +26,7 @@ from tripl.models.alert_destination import AlertDestination
 from tripl.models.alert_rule import AlertRule
 from tripl.models.event import Event
 from tripl.models.event_type import EventType
+from tripl.models.metric_definition import MetricDefinition
 from tripl.models.scan_config import ScanConfig
 
 from ._helpers import SCOPE_SCHEMA_DRIFT
@@ -80,6 +82,20 @@ def _build_alert_scope_names(
             select(Event.id, Event.name).where(Event.id.in_(event_ids))
         ).all():
             scope_names[(SCOPE_EVENT, str(event_id))] = name
+
+    # Catalog metric anomalies resolve to the metric's display name (scope_ref is
+    # the metric definition id).
+    metric_scope_refs = {
+        anomaly.scope_ref for anomaly in anomalies if anomaly.scope_type == SCOPE_METRIC
+    }
+    if metric_scope_refs:
+        metric_ids = {uuid.UUID(ref) for ref in metric_scope_refs}
+        for metric_id, display_name in session.execute(
+            select(MetricDefinition.id, MetricDefinition.display_name).where(
+                MetricDefinition.id.in_(metric_ids)
+            )
+        ).all():
+            scope_names[(SCOPE_METRIC, str(metric_id))] = display_name
 
     # Release regressions borrow the name of their underlying event / event type
     # (already resolved above) so the message shows "Login", not a raw UUID.

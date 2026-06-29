@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import uuid
+from dataclasses import replace
 from datetime import datetime
 
 from sqlalchemy import delete, select
@@ -12,6 +13,7 @@ from sqlalchemy.orm import Session
 from tripl.core.analyzers.anomaly_detector import (
     SCOPE_EVENT,
     SCOPE_EVENT_TYPE,
+    SCOPE_METRIC,
     SCOPE_PROJECT_TOTAL,
     AnomalyDetectionSettings,
     DetectedAnomaly,
@@ -20,14 +22,18 @@ from tripl.core.analyzers.anomaly_detector import (
     required_history_buckets,
 )
 from tripl.core.intervals import get_interval
+from tripl.models.domain_enums import MetricStatus
 from tripl.models.event import Event
 from tripl.models.event_metric import EventMetric
 from tripl.models.event_metric_breakdown import EventMetricBreakdown
 from tripl.models.metric_anomaly import MetricAnomaly
 from tripl.models.metric_breakdown_anomaly import MetricBreakdownAnomaly
+from tripl.models.metric_definition import MetricDefinition
+from tripl.models.metric_value import MetricValue
 from tripl.models.project_anomaly_settings import ProjectAnomalySettings
 from tripl.models.scan_config import ScanConfig
 from tripl.observability.metrics import anomalies_detected_total
+from tripl.worker.analyzers.metric_value_kind import is_count_shaped
 
 
 def _build_anomaly_settings(
@@ -121,7 +127,7 @@ def _load_scope_points(
 def _replace_scope_anomalies(
     session: Session,
     *,
-    scan_config_id: uuid.UUID,
+    scan_config_id: uuid.UUID | None,
     scope_type: str,
     scope_ref: str,
     evaluation_start: datetime,
@@ -130,15 +136,19 @@ def _replace_scope_anomalies(
     event_type_id: uuid.UUID | None,
     anomalies: list[DetectedAnomaly],
 ) -> int:
-    session.execute(
-        delete(MetricAnomaly).where(
-            MetricAnomaly.scan_config_id == scan_config_id,
-            MetricAnomaly.scope_type == scope_type,
-            MetricAnomaly.scope_ref == scope_ref,
-            MetricAnomaly.bucket >= evaluation_start,
-            MetricAnomaly.bucket < evaluation_end,
-        )
-    )
+    # ``metric``-scope rows carry a NULL scan_config_id and are keyed purely by
+    # (scope_type, scope_ref); event scopes additionally partition by config.
+    delete_filters = [
+        MetricAnomaly.scope_type == scope_type,
+        MetricAnomaly.scope_ref == scope_ref,
+        MetricAnomaly.bucket >= evaluation_start,
+        MetricAnomaly.bucket < evaluation_end,
+    ]
+    if scan_config_id is None:
+        delete_filters.append(MetricAnomaly.scan_config_id.is_(None))
+    else:
+        delete_filters.append(MetricAnomaly.scan_config_id == scan_config_id)
+    session.execute(delete(MetricAnomaly).where(*delete_filters))
 
     rows: list[dict[str, object]] = []
     for anomaly in anomalies:
@@ -160,10 +170,19 @@ def _replace_scope_anomalies(
         )
         anomalies_detected_total.labels(scope=scope_type, direction=anomaly.direction).inc()
 
-    # Idempotent insert: a concurrent collect_metrics run for the same config
+    # Idempotent insert: a concurrent collect_metrics run over the same window
     # (e.g. a manual replay overlapping a scheduled collection) deletes and
-    # re-inserts the same (config, scope, bucket) rows; a plain INSERT trips
-    # uq_metric_anomaly_scope_bucket and fails the whole job. Upsert is safe.
+    # re-inserts the same (scope, bucket) rows; a plain INSERT trips the unique
+    # index and fails the whole job. Upsert is safe.
+    #
+    # The conflict target depends on scan_config_id. Event scopes set it, so the
+    # composite ``uq_metric_anomaly_scope_bucket`` (which includes it) dedupes
+    # them. ``metric`` scopes carry a NULL scan_config_id; SQL treats NULLs as
+    # DISTINCT, so that composite constraint NEVER fires for them — two
+    # ``(NULL, 'metric', ref, bucket)`` rows from concurrent runs would both
+    # insert. We instead target the partial unique index
+    # ``uq_metric_anomaly_metric_scope`` (scope_type, scope_ref, bucket) WHERE
+    # scan_config_id IS NULL, which excludes the NULL column and so does conflict.
     _updatable = [
         "event_id",
         "event_type_id",
@@ -173,20 +192,35 @@ def _replace_scope_anomalies(
         "z_score",
         "direction",
     ]
+    null_scope = scan_config_id is None
     if rows:
         if session.bind is not None and session.bind.dialect.name == "sqlite":
             sqlite_stmt = sqlite_insert(MetricAnomaly).values(rows)
-            sqlite_stmt = sqlite_stmt.on_conflict_do_update(
-                index_elements=["scan_config_id", "scope_type", "scope_ref", "bucket"],
-                set_={col: getattr(sqlite_stmt.excluded, col) for col in _updatable},
-            )
+            if null_scope:
+                sqlite_stmt = sqlite_stmt.on_conflict_do_update(
+                    index_elements=["scope_type", "scope_ref", "bucket"],
+                    index_where=MetricAnomaly.scan_config_id.is_(None),
+                    set_={col: getattr(sqlite_stmt.excluded, col) for col in _updatable},
+                )
+            else:
+                sqlite_stmt = sqlite_stmt.on_conflict_do_update(
+                    index_elements=["scan_config_id", "scope_type", "scope_ref", "bucket"],
+                    set_={col: getattr(sqlite_stmt.excluded, col) for col in _updatable},
+                )
             session.execute(sqlite_stmt)
         else:
             pg_stmt = pg_insert(MetricAnomaly).values(rows)
-            pg_stmt = pg_stmt.on_conflict_do_update(
-                constraint="uq_metric_anomaly_scope_bucket",
-                set_={col: getattr(pg_stmt.excluded, col) for col in _updatable},
-            )
+            if null_scope:
+                pg_stmt = pg_stmt.on_conflict_do_update(
+                    index_elements=["scope_type", "scope_ref", "bucket"],
+                    index_where=MetricAnomaly.scan_config_id.is_(None),
+                    set_={col: getattr(pg_stmt.excluded, col) for col in _updatable},
+                )
+            else:
+                pg_stmt = pg_stmt.on_conflict_do_update(
+                    constraint="uq_metric_anomaly_scope_bucket",
+                    set_={col: getattr(pg_stmt.excluded, col) for col in _updatable},
+                )
             session.execute(pg_stmt)
 
     return len(anomalies)
@@ -482,6 +516,159 @@ def _collect_breakdown_scope_keys(
     return keys
 
 
+def _load_metric_value_points(
+    session: Session,
+    *,
+    metric_definition_id: uuid.UUID,
+    history_from: datetime,
+    time_to: datetime,
+) -> list[SeriesPoint]:
+    """Load a catalog metric's stored value series as integer ``SeriesPoint``s.
+
+    Values are summed per bucket (an ``event_composition`` metric may have been
+    collected across more than one source grid) and rounded to the int the
+    detector consumes. For fractional metrics this collapses sub-unit ratios
+    toward 0; the fractional gate (no zero-fill, no ``min_expected_count``) is
+    what keeps that from producing false anomalies.
+    """
+    rows = session.execute(
+        select(MetricValue.bucket, sa_func.sum(MetricValue.value))
+        .where(
+            MetricValue.metric_definition_id == metric_definition_id,
+            MetricValue.bucket >= history_from,
+            MetricValue.bucket < time_to,
+        )
+        .group_by(MetricValue.bucket)
+        .order_by(MetricValue.bucket)
+    ).all()
+    return [SeriesPoint(bucket=bucket, count=round(float(value))) for bucket, value in rows]
+
+
+def _resolve_metric_interval(session: Session, metric: MetricDefinition) -> str | None:
+    """Interval for a metric's grid.
+
+    ``sql`` / ``fact_aggregation`` carry their own ``interval``;
+    ``event_composition`` leaves it NULL and inherits the grid of the
+    most-recent value's ``scan_config_id`` (mirrors the series read service).
+    """
+    if metric.interval is not None:
+        return metric.interval
+    scan_config_id = session.execute(
+        select(MetricValue.scan_config_id)
+        .where(
+            MetricValue.metric_definition_id == metric.id,
+            MetricValue.scan_config_id.is_not(None),
+        )
+        .order_by(MetricValue.bucket.desc())
+        .limit(1)
+    ).scalar()
+    if scan_config_id is None:
+        return None
+    return session.execute(
+        select(ScanConfig.interval).where(ScanConfig.id == scan_config_id)
+    ).scalar()
+
+
+def _project_metric_scope_refs(session: Session, project_id: uuid.UUID) -> list[str]:
+    return [
+        str(metric_id)
+        for metric_id in session.execute(
+            select(MetricDefinition.id).where(MetricDefinition.project_id == project_id)
+        ).scalars()
+    ]
+
+
+def _purge_project_metric_anomalies(
+    session: Session,
+    config: ScanConfig,
+    *,
+    evaluation_start: datetime | None = None,
+    evaluation_end: datetime | None = None,
+) -> None:
+    """Delete ``metric``-scope anomalies for THIS project's metrics.
+
+    Scoped to the project's metric ids so it never touches another project's
+    metric-scope rows (which share the global ``scan_config_id IS NULL`` space).
+    Without a window it is a full purge (detection disabled); with one it clears
+    just the evaluated window.
+    """
+    scope_refs = _project_metric_scope_refs(session, config.project_id)
+    if not scope_refs:
+        return
+    filters = [
+        MetricAnomaly.scope_type == SCOPE_METRIC,
+        MetricAnomaly.scope_ref.in_(scope_refs),
+    ]
+    if evaluation_start is not None:
+        filters.append(MetricAnomaly.bucket >= evaluation_start)
+    if evaluation_end is not None:
+        filters.append(MetricAnomaly.bucket < evaluation_end)
+    session.execute(delete(MetricAnomaly).where(*filters))
+
+
+def _recalculate_project_metric_anomalies(
+    session: Session,
+    config: ScanConfig,
+    *,
+    settings: AnomalyDetectionSettings,
+    evaluation_start: datetime,
+    evaluation_end: datetime,
+) -> int:
+    """Detect anomalies over the project's active catalog metric series.
+
+    Metric anomalies are project-global: stored with ``scope_type='metric'``,
+    ``scope_ref=str(metric_definition_id)`` and a NULL ``scan_config_id``.
+    Count-shaped metrics keep the standard zero-fill + ``min_expected_count``
+    behavior; fractional metrics (ratios/averages/sql) drop both so sparse or
+    sub-unit series do not produce false anomalies.
+    """
+    metrics = list(
+        session.execute(
+            select(MetricDefinition).where(
+                MetricDefinition.project_id == config.project_id,
+                MetricDefinition.status == MetricStatus.active.value,
+                MetricDefinition.anomaly_detection_enabled.is_(True),
+            )
+        ).scalars()
+    )
+    detected = 0
+    for metric in metrics:
+        interval = _resolve_metric_interval(session, metric)
+        if interval is None:
+            continue
+        interval_spec = get_interval(interval)
+        count_shaped = is_count_shaped(metric)
+        metric_settings = settings if count_shaped else replace(settings, min_expected_count=0)
+        history_from = evaluation_start - interval_spec.delta * required_history_buckets(
+            interval_spec.delta, settings
+        )
+        points = _load_metric_value_points(
+            session,
+            metric_definition_id=metric.id,
+            history_from=history_from,
+            time_to=evaluation_end,
+        )
+        detected += _replace_scope_anomalies(
+            session,
+            scan_config_id=None,
+            scope_type=SCOPE_METRIC,
+            scope_ref=str(metric.id),
+            evaluation_start=evaluation_start,
+            evaluation_end=evaluation_end,
+            event_id=None,
+            event_type_id=None,
+            anomalies=detect_anomalies(
+                points,
+                interval=interval_spec.delta,
+                evaluation_start=evaluation_start,
+                evaluation_end=evaluation_end,
+                settings=metric_settings,
+                fill_gaps=count_shaped,
+            ),
+        )
+    return detected
+
+
 def _recalculate_metric_anomalies(
     session: Session,
     config: ScanConfig,
@@ -492,6 +679,7 @@ def _recalculate_metric_anomalies(
     project_settings = _get_project_anomaly_settings(session, config.project_id)
     if project_settings is None or not project_settings.anomaly_detection_enabled:
         session.execute(delete(MetricAnomaly).where(MetricAnomaly.scan_config_id == config.id))
+        _purge_project_metric_anomalies(session, config)
         session.flush()
         return 0
 
@@ -629,6 +817,22 @@ def _recalculate_metric_anomalies(
                 MetricAnomaly.bucket >= evaluation_start,
                 MetricAnomaly.bucket < evaluation_end,
             )
+        )
+
+    if project_settings.detect_metrics:
+        anomalies_detected += _recalculate_project_metric_anomalies(
+            session,
+            config,
+            settings=settings,
+            evaluation_start=evaluation_start,
+            evaluation_end=evaluation_end,
+        )
+    else:
+        _purge_project_metric_anomalies(
+            session,
+            config,
+            evaluation_start=evaluation_start,
+            evaluation_end=evaluation_end,
         )
 
     session.flush()

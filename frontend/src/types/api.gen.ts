@@ -1440,6 +1440,58 @@ export interface paths {
         patch: operations["update_meta_field_api_v1_projects__slug__meta_fields__meta_field_id__patch"];
         trace?: never;
     };
+    "/api/v1/projects/{slug}/metrics": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Metric Definitions */
+        get: operations["list_metric_definitions_api_v1_projects__slug__metrics_get"];
+        put?: never;
+        /** Create Metric Definition */
+        post: operations["create_metric_definition_api_v1_projects__slug__metrics_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/projects/{slug}/metrics/bulk-update": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Bulk Update Metric Definitions */
+        post: operations["bulk_update_metric_definitions_api_v1_projects__slug__metrics_bulk_update_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/projects/{slug}/metrics/reorder": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /** Reorder Metric Definitions */
+        patch: operations["reorder_metric_definitions_api_v1_projects__slug__metrics_reorder_patch"];
+        trace?: never;
+    };
     "/api/v1/projects/{slug}/metrics/total": {
         parameters: {
             query?: never;
@@ -1449,6 +1501,93 @@ export interface paths {
         };
         /** Get Project Total Metrics */
         get: operations["get_project_total_metrics_api_v1_projects__slug__metrics_total_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/projects/{slug}/metrics/{metric_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Metric Definition */
+        get: operations["get_metric_definition_api_v1_projects__slug__metrics__metric_id__get"];
+        put?: never;
+        post?: never;
+        /** Delete Metric Definition */
+        delete: operations["delete_metric_definition_api_v1_projects__slug__metrics__metric_id__delete"];
+        options?: never;
+        head?: never;
+        /** Update Metric Definition */
+        patch: operations["update_metric_definition_api_v1_projects__slug__metrics__metric_id__patch"];
+        trace?: never;
+    };
+    "/api/v1/projects/{slug}/metrics/{metric_id}/breakdowns": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Metric Breakdowns */
+        get: operations["get_metric_breakdowns_api_v1_projects__slug__metrics__metric_id__breakdowns_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/projects/{slug}/metrics/{metric_id}/move": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /** Move Metric Definition */
+        patch: operations["move_metric_definition_api_v1_projects__slug__metrics__metric_id__move_patch"];
+        trace?: never;
+    };
+    "/api/v1/projects/{slug}/metrics/{metric_id}/series": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Metric Series */
+        get: operations["get_metric_series_api_v1_projects__slug__metrics__metric_id__series_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/projects/{slug}/metrics/{metric_id}/versions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Metric Version Series */
+        get: operations["get_metric_version_series_api_v1_projects__slug__metrics__metric_id__versions_get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -2877,6 +3016,11 @@ export interface components {
              */
             include_events: boolean;
             /**
+             * Include Metrics
+             * @default false
+             */
+            include_metrics: boolean;
+            /**
              * Include Project Total
              * @default true
              */
@@ -2985,6 +3129,8 @@ export interface components {
             include_event_types: boolean;
             /** Include Events */
             include_events: boolean;
+            /** Include Metrics */
+            include_metrics: boolean;
             /** Include Project Total */
             include_project_total: boolean;
             /** Include Release Regressions */
@@ -3066,6 +3212,8 @@ export interface components {
             include_event_types?: boolean | null;
             /** Include Events */
             include_events?: boolean | null;
+            /** Include Metrics */
+            include_metrics?: boolean | null;
             /** Include Project Total */
             include_project_total?: boolean | null;
             /** Include Release Regressions */
@@ -3913,6 +4061,73 @@ export interface components {
             /** User Id */
             user_id?: string | null;
         };
+        /**
+         * EventCompositionMetricCreate
+         * @description Derived from already-collected event_metrics; no data source / interval.
+         *
+         *     Numerator/denominator are each given as exactly one ref: an ``event_id`` or
+         *     an ``event_type_id``. ``single``/``per_distinct_user`` use the numerator
+         *     only; ``ratio`` requires both numerator and denominator.
+         */
+        EventCompositionMetricCreate: {
+            /**
+             * Anomaly Detection Enabled
+             * @default true
+             */
+            anomaly_detection_enabled: boolean;
+            /** App Version Column */
+            app_version_column?: string | null;
+            /** Breakdown Columns */
+            breakdown_columns?: string[];
+            /** Breakdown Values Limit */
+            breakdown_values_limit?: number | null;
+            /**
+             * Color
+             * @default #6366f1
+             */
+            color: string;
+            composition: components["schemas"]["MetricComposition"];
+            /** Denominator Event Id */
+            denominator_event_id?: string | null;
+            /** Denominator Event Type Id */
+            denominator_event_type_id?: string | null;
+            /**
+             * Description
+             * @default
+             */
+            description: string;
+            /** Display Name */
+            display_name: string;
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            kind: "event_composition";
+            /** Name */
+            name: string;
+            /** Numerator Event Id */
+            numerator_event_id?: string | null;
+            /** Numerator Event Type Id */
+            numerator_event_type_id?: string | null;
+            /**
+             * Order
+             * @default 0
+             */
+            order: number;
+            /** Owner Id */
+            owner_id?: string | null;
+            /** Platform Column */
+            platform_column?: string | null;
+            /**
+             * Reviewed
+             * @default false
+             */
+            reviewed: boolean;
+            /** @default draft */
+            status: components["schemas"]["MetricStatus"];
+            /** Unit */
+            unit?: string | null;
+        };
         /** EventCreate */
         EventCreate: {
             /**
@@ -4592,6 +4807,89 @@ export interface components {
             /** Total Count */
             total_count: number;
         };
+        /**
+         * FactAggregationConfig
+         * @description Config JSON for a ``fact_aggregation`` metric.
+         *
+         *     Requires a source: either ``source_table`` (a warehouse table) or
+         *     ``base_query`` (a base SELECT). ``measure_column`` is required by the
+         *     enclosing metric when the aggregation is not ``count`` (enforced there,
+         *     since the aggregation lives on the metric, not in this config).
+         */
+        FactAggregationConfig: {
+            /** Base Query */
+            base_query?: string | null;
+            /** Distinct Column */
+            distinct_column?: string | null;
+            /** Filter Sql */
+            filter_sql?: string | null;
+            /** Measure Column */
+            measure_column?: string | null;
+            /** Source Table */
+            source_table?: string | null;
+            /** Time Column */
+            time_column?: string | null;
+        };
+        /** FactAggregationMetricCreate */
+        FactAggregationMetricCreate: {
+            aggregation: components["schemas"]["MetricAggregation"];
+            /**
+             * Anomaly Detection Enabled
+             * @default true
+             */
+            anomaly_detection_enabled: boolean;
+            /** App Version Column */
+            app_version_column?: string | null;
+            /** Breakdown Columns */
+            breakdown_columns?: string[];
+            /** Breakdown Values Limit */
+            breakdown_values_limit?: number | null;
+            /**
+             * Color
+             * @default #6366f1
+             */
+            color: string;
+            config: components["schemas"]["FactAggregationConfig"];
+            /**
+             * Data Source Id
+             * Format: uuid
+             */
+            data_source_id: string;
+            /**
+             * Description
+             * @default
+             */
+            description: string;
+            /** Display Name */
+            display_name: string;
+            interval: components["schemas"]["ScanInterval"];
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            kind: "fact_aggregation";
+            /** Name */
+            name: string;
+            /**
+             * Order
+             * @default 0
+             */
+            order: number;
+            /** Owner Id */
+            owner_id?: string | null;
+            /** Platform Column */
+            platform_column?: string | null;
+            replay_chunk_interval?: components["schemas"]["ScanInterval"] | null;
+            /**
+             * Reviewed
+             * @default false
+             */
+            reviewed: boolean;
+            /** @default draft */
+            status: components["schemas"]["MetricStatus"];
+            /** Unit */
+            unit?: string | null;
+        };
         /** FieldDefinitionBulkCreate */
         FieldDefinitionBulkCreate: {
             /** Fields */
@@ -4823,10 +5121,319 @@ export interface components {
             sensitivity?: components["schemas"]["Sensitivity"] | null;
         };
         /**
+         * MetricAggregation
+         * @description Aggregation applied by a ``fact_aggregation`` metric.
+         * @enum {string}
+         */
+        MetricAggregation: "count" | "sum" | "avg" | "min" | "max" | "count_distinct";
+        /** MetricBreakdownSeries */
+        MetricBreakdownSeries: {
+            /** Breakdown Value */
+            breakdown_value: string;
+            /** Data */
+            data: components["schemas"]["MetricSeriesPoint"][];
+            /**
+             * Is Other
+             * @default false
+             */
+            is_other: boolean;
+            /** Total Value */
+            total_value: number;
+        };
+        /** MetricBreakdownsResponse */
+        MetricBreakdownsResponse: {
+            /** Columns */
+            columns: string[];
+            interval?: components["schemas"]["ScanInterval"] | null;
+            /**
+             * Metric Id
+             * Format: uuid
+             */
+            metric_id: string;
+            /** Scan Config Id */
+            scan_config_id?: string | null;
+            /** Selected Column */
+            selected_column?: string | null;
+            /** Series */
+            series: components["schemas"]["MetricBreakdownSeries"][];
+        };
+        /**
+         * MetricComposition
+         * @description How an ``event_composition`` metric combines event series.
+         * @enum {string}
+         */
+        MetricComposition: "single" | "ratio" | "per_distinct_user";
+        /** MetricDefinitionBulkUpdate */
+        MetricDefinitionBulkUpdate: {
+            /** Anomaly Detection Enabled */
+            anomaly_detection_enabled?: boolean | null;
+            /** Metric Ids */
+            metric_ids: string[];
+            /** Owner Id */
+            owner_id?: string | null;
+            /** Reviewed */
+            reviewed?: boolean | null;
+            status?: components["schemas"]["MetricStatus"] | null;
+        };
+        /**
+         * MetricDefinitionListItem
+         * @description Slim list row: the catalog table fields, without the heavier config/refs.
+         */
+        MetricDefinitionListItem: {
+            aggregation: components["schemas"]["MetricAggregation"] | null;
+            /** Anomaly Detection Enabled */
+            anomaly_detection_enabled: boolean;
+            /** Color */
+            color: string;
+            composition: components["schemas"]["MetricComposition"] | null;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /** Description */
+            description: string;
+            /** Display Name */
+            display_name: string;
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            interval: components["schemas"]["ScanInterval"] | null;
+            kind: components["schemas"]["MetricKind"];
+            /** Last Collected At */
+            last_collected_at: string | null;
+            /** Last Collection Status */
+            last_collection_status: string | null;
+            /** Latest Bucket */
+            latest_bucket?: string | null;
+            latest_signal?: components["schemas"]["MetricSignalResponse"] | null;
+            /** Latest Value */
+            latest_value?: number | null;
+            /** Name */
+            name: string;
+            /** Order */
+            order: number;
+            /** Owner Id */
+            owner_id: string | null;
+            /**
+             * Project Id
+             * Format: uuid
+             */
+            project_id: string;
+            /** Reviewed */
+            reviewed: boolean;
+            /**
+             * Spark
+             * @default []
+             */
+            spark: number[];
+            status: components["schemas"]["MetricStatus"];
+            /** Unit */
+            unit: string | null;
+            /**
+             * Updated At
+             * Format: date-time
+             */
+            updated_at: string;
+        };
+        /** MetricDefinitionListResponse */
+        MetricDefinitionListResponse: {
+            /** Items */
+            items: components["schemas"]["MetricDefinitionListItem"][];
+            /** Total */
+            total: number;
+        };
+        /** MetricDefinitionMove */
+        MetricDefinitionMove: {
+            /**
+             * Direction
+             * @enum {string}
+             */
+            direction: "up" | "down";
+            /** Visible Metric Ids */
+            visible_metric_ids?: string[] | null;
+        };
+        /** MetricDefinitionReorder */
+        MetricDefinitionReorder: {
+            /** Metric Ids */
+            metric_ids: string[];
+        };
+        /** MetricDefinitionResponse */
+        MetricDefinitionResponse: {
+            aggregation: components["schemas"]["MetricAggregation"] | null;
+            /** Anomaly Detection Enabled */
+            anomaly_detection_enabled: boolean;
+            /** App Version Column */
+            app_version_column: string | null;
+            /** Breakdown Columns */
+            breakdown_columns: string[];
+            /** Breakdown Values Limit */
+            breakdown_values_limit: number | null;
+            /** Color */
+            color: string;
+            composition: components["schemas"]["MetricComposition"] | null;
+            /** Config */
+            config: {
+                [key: string]: unknown;
+            };
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /** Data Source Id */
+            data_source_id: string | null;
+            /** Denominator Event Id */
+            denominator_event_id: string | null;
+            /** Denominator Event Type Id */
+            denominator_event_type_id: string | null;
+            /** Description */
+            description: string;
+            /** Display Name */
+            display_name: string;
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            interval: components["schemas"]["ScanInterval"] | null;
+            kind: components["schemas"]["MetricKind"];
+            /** Last Collected At */
+            last_collected_at: string | null;
+            /** Last Collection Error */
+            last_collection_error: string | null;
+            /** Last Collection Status */
+            last_collection_status: string | null;
+            /** Name */
+            name: string;
+            /** Numerator Event Id */
+            numerator_event_id: string | null;
+            /** Numerator Event Type Id */
+            numerator_event_type_id: string | null;
+            /** Order */
+            order: number;
+            /** Owner Id */
+            owner_id: string | null;
+            /** Platform Column */
+            platform_column: string | null;
+            /**
+             * Project Id
+             * Format: uuid
+             */
+            project_id: string;
+            replay_chunk_interval: components["schemas"]["ScanInterval"] | null;
+            /** Reviewed */
+            reviewed: boolean;
+            status: components["schemas"]["MetricStatus"];
+            /** Unit */
+            unit: string | null;
+            /**
+             * Updated At
+             * Format: date-time
+             */
+            updated_at: string;
+        };
+        /**
+         * MetricDefinitionUpdate
+         * @description Partial update of presentation, lifecycle, dimension and monitoring fields.
+         *
+         *     ``kind``/``config`` and the collection binding define a metric's identity and
+         *     are immutable here — recreate the metric to change them (mirrors the simple
+         *     EventType update surface).
+         */
+        MetricDefinitionUpdate: {
+            /** Anomaly Detection Enabled */
+            anomaly_detection_enabled?: boolean | null;
+            /** App Version Column */
+            app_version_column?: string | null;
+            /** Breakdown Columns */
+            breakdown_columns?: string[] | null;
+            /** Breakdown Values Limit */
+            breakdown_values_limit?: number | null;
+            /** Color */
+            color?: string | null;
+            /** Description */
+            description?: string | null;
+            /** Display Name */
+            display_name?: string | null;
+            /** Order */
+            order?: number | null;
+            /** Owner Id */
+            owner_id?: string | null;
+            /** Platform Column */
+            platform_column?: string | null;
+            /** Reviewed */
+            reviewed?: boolean | null;
+            status?: components["schemas"]["MetricStatus"] | null;
+            /** Unit */
+            unit?: string | null;
+        };
+        /**
+         * MetricKind
+         * @description How a MetricDefinition produces its per-bucket value.
+         * @enum {string}
+         */
+        MetricKind: "sql" | "fact_aggregation" | "event_composition";
+        /**
          * MetricScopeType
          * @enum {string}
          */
-        MetricScopeType: "project_total" | "event_type" | "event" | "schema" | "distribution" | "release_regression";
+        MetricScopeType: "project_total" | "event_type" | "event" | "schema" | "distribution" | "release_regression" | "metric";
+        /**
+         * MetricSeriesPoint
+         * @description One densified point of a catalog-metric series.
+         *
+         *     Mirrors ``EventMetricPoint`` but stores a float ``value``. ``expected_count``
+         *     / ``stddev`` / ``z_score`` / ``anomaly_direction`` are only populated for
+         *     buckets that carry an anomaly row; the rest leave them ``None``.
+         */
+        MetricSeriesPoint: {
+            anomaly_direction?: components["schemas"]["AnomalyDirection"] | null;
+            /**
+             * Bucket
+             * Format: date-time
+             */
+            bucket: string;
+            /** Expected Count */
+            expected_count?: number | null;
+            /**
+             * Is Anomaly
+             * @default false
+             */
+            is_anomaly: boolean;
+            /** Stddev */
+            stddev?: number | null;
+            /** Value */
+            value: number;
+            /** Z Score */
+            z_score?: number | null;
+        };
+        /** MetricSeriesResponse */
+        MetricSeriesResponse: {
+            /** Data */
+            data: components["schemas"]["MetricSeriesPoint"][];
+            /**
+             * Forecast
+             * @default []
+             */
+            forecast: components["schemas"]["ForecastPoint"][];
+            interval?: components["schemas"]["ScanInterval"] | null;
+            latest_signal?: components["schemas"]["MetricSignalResponse"] | null;
+            /**
+             * Metric Id
+             * Format: uuid
+             */
+            metric_id: string;
+            /** Scan Config Id */
+            scan_config_id?: string | null;
+            /**
+             * Scope
+             * @default metric
+             */
+            scope: string;
+        };
         /** MetricSignalResponse */
         MetricSignalResponse: {
             /** Actual Count */
@@ -4843,11 +5450,8 @@ export interface components {
             event_type_id?: string | null;
             /** Expected Count */
             expected_count: number;
-            /**
-             * Scan Config Id
-             * Format: uuid
-             */
-            scan_config_id: string;
+            /** Scan Config Id */
+            scan_config_id?: string | null;
             /** Scope Ref */
             scope_ref: string;
             scope_type: components["schemas"]["MetricScopeType"];
@@ -4857,6 +5461,50 @@ export interface components {
             stddev: number;
             /** Z Score */
             z_score: number;
+        };
+        /**
+         * MetricStatus
+         * @description Simple catalog lifecycle for metrics (no dev-implementation states).
+         * @enum {string}
+         */
+        MetricStatus: "draft" | "active" | "archived";
+        /** MetricVersionSeries */
+        MetricVersionSeries: {
+            /** Data */
+            data: components["schemas"]["MetricSeriesPoint"][];
+            /**
+             * Is Latest
+             * @default false
+             */
+            is_latest: boolean;
+            /**
+             * Is Other
+             * @default false
+             */
+            is_other: boolean;
+            /** Total Value */
+            total_value: number;
+            /** Version */
+            version: string;
+        };
+        /** MetricVersionSeriesResponse */
+        MetricVersionSeriesResponse: {
+            /** App Version Column */
+            app_version_column?: string | null;
+            interval?: components["schemas"]["ScanInterval"] | null;
+            /** Latest Version */
+            latest_version?: string | null;
+            /**
+             * Metric Id
+             * Format: uuid
+             */
+            metric_id: string;
+            /** Scan Config Id */
+            scan_config_id?: string | null;
+            /** Series */
+            series: components["schemas"]["MetricVersionSeries"][];
+            /** Versions */
+            versions: components["schemas"]["AppVersionInfo"][];
         };
         /**
          * MonitorDetailResponse
@@ -4888,6 +5536,8 @@ export interface components {
             include_event_types: boolean;
             /** Include Events */
             include_events: boolean;
+            /** Include Metrics */
+            include_metrics: boolean;
             /** Include Project Total */
             include_project_total: boolean;
             /** Include Release Regressions */
@@ -5319,6 +5969,8 @@ export interface components {
             detect_event_types: boolean;
             /** Detect Events */
             detect_events: boolean;
+            /** Detect Metrics */
+            detect_metrics: boolean;
             /** Detect Project Total */
             detect_project_total: boolean;
             /**
@@ -5353,6 +6005,8 @@ export interface components {
             detect_event_types?: boolean | null;
             /** Detect Events */
             detect_events?: boolean | null;
+            /** Detect Metrics */
+            detect_metrics?: boolean | null;
             /** Detect Project Total */
             detect_project_total?: boolean | null;
             /** Min Expected Count */
@@ -6432,6 +7086,75 @@ export interface components {
             /** Scope Ref */
             scope_ref: string;
             scope_type: components["schemas"]["MetricScopeType"];
+        };
+        /**
+         * SqlConfig
+         * @description Config JSON for a ``sql`` metric: a user-authored per-bucket SELECT.
+         */
+        SqlConfig: {
+            /** Metric Sql */
+            metric_sql: string;
+            /** Time Column */
+            time_column: string;
+        };
+        /** SqlMetricCreate */
+        SqlMetricCreate: {
+            /**
+             * Anomaly Detection Enabled
+             * @default true
+             */
+            anomaly_detection_enabled: boolean;
+            /** App Version Column */
+            app_version_column?: string | null;
+            /** Breakdown Columns */
+            breakdown_columns?: string[];
+            /** Breakdown Values Limit */
+            breakdown_values_limit?: number | null;
+            /**
+             * Color
+             * @default #6366f1
+             */
+            color: string;
+            config: components["schemas"]["SqlConfig"];
+            /**
+             * Data Source Id
+             * Format: uuid
+             */
+            data_source_id: string;
+            /**
+             * Description
+             * @default
+             */
+            description: string;
+            /** Display Name */
+            display_name: string;
+            interval: components["schemas"]["ScanInterval"];
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            kind: "sql";
+            /** Name */
+            name: string;
+            /**
+             * Order
+             * @default 0
+             */
+            order: number;
+            /** Owner Id */
+            owner_id?: string | null;
+            /** Platform Column */
+            platform_column?: string | null;
+            replay_chunk_interval?: components["schemas"]["ScanInterval"] | null;
+            /**
+             * Reviewed
+             * @default false
+             */
+            reviewed: boolean;
+            /** @default draft */
+            status: components["schemas"]["MetricStatus"];
+            /** Unit */
+            unit?: string | null;
         };
         /** StorageSettings */
         StorageSettings: {
@@ -10351,6 +11074,146 @@ export interface operations {
             };
         };
     };
+    list_metric_definitions_api_v1_projects__slug__metrics_get: {
+        parameters: {
+            query?: {
+                status?: components["schemas"]["MetricStatus"][] | null;
+                kind?: components["schemas"]["MetricKind"] | null;
+                search?: string | null;
+                offset?: number;
+                limit?: number;
+            };
+            header?: never;
+            path: {
+                slug: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MetricDefinitionListResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    create_metric_definition_api_v1_projects__slug__metrics_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                slug: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["FactAggregationMetricCreate"] | components["schemas"]["SqlMetricCreate"] | components["schemas"]["EventCompositionMetricCreate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MetricDefinitionResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    bulk_update_metric_definitions_api_v1_projects__slug__metrics_bulk_update_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                slug: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["MetricDefinitionBulkUpdate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    reorder_metric_definitions_api_v1_projects__slug__metrics_reorder_patch: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                slug: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["MetricDefinitionReorder"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MetricDefinitionResponse"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     get_project_total_metrics_api_v1_projects__slug__metrics_total_get: {
         parameters: {
             query?: {
@@ -10373,6 +11236,246 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["EventMetricsResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_metric_definition_api_v1_projects__slug__metrics__metric_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                slug: string;
+                metric_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MetricDefinitionResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    delete_metric_definition_api_v1_projects__slug__metrics__metric_id__delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                slug: string;
+                metric_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    update_metric_definition_api_v1_projects__slug__metrics__metric_id__patch: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                slug: string;
+                metric_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["MetricDefinitionUpdate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MetricDefinitionResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_metric_breakdowns_api_v1_projects__slug__metrics__metric_id__breakdowns_get: {
+        parameters: {
+            query?: {
+                column?: string | null;
+                from?: string | null;
+                to?: string | null;
+            };
+            header?: never;
+            path: {
+                slug: string;
+                metric_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MetricBreakdownsResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    move_metric_definition_api_v1_projects__slug__metrics__metric_id__move_patch: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                slug: string;
+                metric_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["MetricDefinitionMove"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MetricDefinitionResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_metric_series_api_v1_projects__slug__metrics__metric_id__series_get: {
+        parameters: {
+            query?: {
+                from?: string | null;
+                to?: string | null;
+            };
+            header?: never;
+            path: {
+                slug: string;
+                metric_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MetricSeriesResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_metric_version_series_api_v1_projects__slug__metrics__metric_id__versions_get: {
+        parameters: {
+            query?: {
+                from?: string | null;
+                to?: string | null;
+            };
+            header?: never;
+            path: {
+                slug: string;
+                metric_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MetricVersionSeriesResponse"];
                 };
             };
             /** @description Validation Error */

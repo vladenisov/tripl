@@ -6,6 +6,7 @@ import {
   Gauge,
   GitBranch,
   GitCompare,
+  LineChart,
   Link2,
   ScrollText,
   Search,
@@ -136,6 +137,13 @@ export function buildNavGroups(slug: string, summary: ProjectSummary | undefined
           // count, no tone) when nothing is firing.
           count: firingMonitors > 0 ? formatCount(firingMonitors) : undefined,
           tone: firingMonitors > 0 ? 'danger' : undefined,
+        },
+        {
+          id: 'metrics',
+          label: 'Metrics',
+          icon: LineChart,
+          href: `${base}/metrics`,
+          match: (p) => p.startsWith(`${base}/metrics`),
         },
         {
           id: 'anomalies',

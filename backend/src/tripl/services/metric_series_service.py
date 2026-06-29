@@ -11,16 +11,12 @@ forecast (``forecast_next_buckets``), the anomaly→signal mapping
 (``classify_signal_state``) are all imported, not reimplemented. Only the
 float/no-event-scope shaping is specialised here.
 
-ANOMALY-SCOPE SEAM (ticket tripl-dxhp.6): catalog-metric anomalies are stored
-in ``MetricAnomaly`` under ``scope_ref = str(metric_definition_id)``. The
-matching ``MetricScopeType.metric`` enum value (and its ``ALTER TYPE``
-migration) is added by ticket .6; until then the value cannot be constructed in
-Python or inserted under the SQLite CHECK constraint, so we deliberately match
-on ``scope_ref`` ALONE. A metric-definition UUID never collides with the
-event / event_type / project_total scope_refs (those are event_id /
-event_type_id / scan_config_id), so the scope_ref filter is exact. When .6
-lands it should keep writing ``scope_ref = str(metric_definition_id)`` and this
-read continues to work unchanged.
+ANOMALY-SCOPE (ticket tripl-dxhp.6): catalog-metric anomalies are stored in
+``MetricAnomaly`` under ``scope_type='metric'`` /
+``scope_ref=str(metric_definition_id)`` with a NULL ``scan_config_id``. The read
+filters on BOTH ``scope_type == MetricScopeType.metric`` and the scope_ref so it
+can never pick up an unrelated row whose scope_ref happens to equal a metric
+definition UUID.
 """
 
 from __future__ import annotations
@@ -33,6 +29,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from tripl.core.analyzers.anomaly_detector import (
+    SCOPE_METRIC,
     SeriesPoint,
     expand_series,
     forecast_next_buckets,
@@ -60,6 +57,7 @@ from tripl.semver import (
 )
 from tripl.services.metrics_service import _resolve_project, _signal_from_anomaly
 from tripl.services.monitoring_utils import classify_signal_state
+from tripl.worker.analyzers.metric_value_kind import is_count_shaped
 
 
 async def _resolve_metric(
@@ -136,10 +134,13 @@ async def _load_metric_anomalies(
     time_from: datetime | None,
     time_to: datetime | None,
 ) -> list[MetricAnomaly]:
-    """Anomalies for a metric, matched on ``scope_ref`` alone (see module docstring)."""
+    """Anomalies for a metric, matched on (scope_type='metric', scope_ref)."""
     query = (
         select(MetricAnomaly)
-        .where(MetricAnomaly.scope_ref == str(metric_id))
+        .where(
+            MetricAnomaly.scope_type == SCOPE_METRIC,
+            MetricAnomaly.scope_ref == str(metric_id),
+        )
         .order_by(MetricAnomaly.bucket)
     )
     if time_from is not None:
@@ -155,18 +156,21 @@ def _densify_value_rows(
     interval: str | None,
     value_rows: list[tuple[datetime, float]],
     anomalies: list[MetricAnomaly],
+    count_shaped: bool = True,
 ) -> list[tuple[datetime, float]]:
     """Place values on the interval grid, preserving float precision.
 
-    ``expand_series`` only carries an int count, so it is used purely to produce
-    the densified bucket grid (off a rounded copy); the true float value is then
-    re-read per bucket, with gap buckets filled as ``0.0``.
+    For COUNT-shaped metrics ``expand_series`` produces the densified bucket grid
+    (off a rounded copy) and gap buckets are filled as ``0.0`` — a missing count
+    genuinely means zero. For FRACTIONAL metrics (ratios/averages/sql) a missing
+    bucket means "no data", not zero, so gaps are NOT filled: only present
+    buckets are returned and the chart renders the gaps as null breaks.
     """
     values_by_bucket: dict[datetime, float] = dict(value_rows)
     for anomaly in anomalies:
         values_by_bucket.setdefault(anomaly.bucket, float(anomaly.actual_count))
 
-    if interval and values_by_bucket:
+    if interval and values_by_bucket and count_shaped:
         delta = get_interval(interval).delta
         grid_points = [
             SeriesPoint(bucket=bucket, count=round(value))
@@ -186,9 +190,15 @@ def _build_metric_series_points(
     interval: str | None,
     value_rows: list[tuple[datetime, float]],
     anomalies: list[MetricAnomaly],
+    count_shaped: bool = True,
 ) -> list[MetricSeriesPoint]:
     anomalies_by_bucket = {anomaly.bucket: anomaly for anomaly in anomalies}
-    grid = _densify_value_rows(interval=interval, value_rows=value_rows, anomalies=anomalies)
+    grid = _densify_value_rows(
+        interval=interval,
+        value_rows=value_rows,
+        anomalies=anomalies,
+        count_shaped=count_shaped,
+    )
     points: list[MetricSeriesPoint] = []
     for bucket, value in grid:
         anomaly = anomalies_by_bucket.get(bucket)
@@ -260,7 +270,10 @@ async def get_metric_series(
         session, metric.id, time_from=time_from, time_to=time_to
     )
     data = _build_metric_series_points(
-        interval=interval, value_rows=value_rows, anomalies=anomalies
+        interval=interval,
+        value_rows=value_rows,
+        anomalies=anomalies,
+        count_shaped=is_count_shaped(metric),
     )
     return MetricSeriesResponse(
         metric_id=metric.id,

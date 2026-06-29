@@ -1,9 +1,19 @@
 import type { MetricScopeType } from '@/types'
 
-// The subset of MetricScopeType that maps to a monitoring detail route /
-// API scope. The other three members (schema, distribution,
-// release_regression) have no standalone monitoring detail page.
-export type MonitoringScope = 'project_total' | 'event_type' | 'event'
+// The subset of scopes that map to a monitoring detail route / API scope.
+// `metric` is the catalog-metric drilldown (its series/versions/breakdowns
+// power the MonitoringDetailPage tabs). The MetricScopeType members
+// schema / distribution / release_regression have no standalone detail page.
+export type MonitoringScope = 'project_total' | 'event_type' | 'event' | 'metric'
+
+/**
+ * Build the canonical monitoring-detail URL for a catalog metric. Metrics are
+ * not a `MetricScopeType` member (anomaly signals never carry them), so they
+ * get a dedicated helper instead of overloading {@link getMonitoringPath}.
+ */
+export function getMetricMonitoringPath(slug: string, metricId: string): string {
+  return `/p/${slug}/monitoring/metric/${metricId}`
+}
 
 export function getMonitoringPath(
   slug: string,
@@ -16,6 +26,9 @@ export function getMonitoringPath(
       return `/p/${slug}/monitoring/event-type/${signal.scope_ref}`
     case 'event':
       return `/p/${slug}/monitoring/event/${signal.scope_ref}`
+    case 'metric':
+      // Catalog-metric anomalies carry scope_ref = metric_definition_id.
+      return getMetricMonitoringPath(slug, signal.scope_ref)
     case 'schema':
     case 'distribution':
     case 'release_regression':
@@ -36,6 +49,8 @@ export function routeScopeToApiScope(scope: string | undefined): MonitoringScope
       return 'event_type'
     case 'event':
       return 'event'
+    case 'metric':
+      return 'metric'
     default:
       throw new Error(`routeScopeToApiScope: unknown monitoring scope "${scope}"`)
   }

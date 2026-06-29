@@ -12,6 +12,7 @@ from tripl import cache
 from tripl.core.analyzers.anomaly_detector import (
     SCOPE_EVENT,
     SCOPE_EVENT_TYPE,
+    SCOPE_METRIC,
     SCOPE_PROJECT_TOTAL,
 )
 from tripl.models.distribution_drift import DistributionDrift
@@ -19,6 +20,8 @@ from tripl.models.event_metric import EventMetric
 from tripl.models.event_metric_breakdown import EventMetricBreakdown
 from tripl.models.metric_anomaly import MetricAnomaly
 from tripl.models.metric_breakdown_anomaly import MetricBreakdownAnomaly
+from tripl.models.metric_definition import MetricDefinition
+from tripl.models.metric_value import MetricValue
 from tripl.models.scan_config import ScanConfig
 from tripl.schemas.event_metric import (
     BreakdownTimelinePoint,
@@ -182,6 +185,68 @@ async def _get_latest_metric_buckets_multi(
     }
 
 
+async def _get_active_metric_signals(
+    session: AsyncSession,
+    *,
+    project_id: uuid.UUID,
+) -> list[MetricSignalResponse]:
+    """Open ``metric``-scope signals for a project's catalog metrics.
+
+    Catalog metric anomalies carry a NULL ``scan_config_id`` and are keyed by
+    ``scope_ref = str(metric_definition_id)``, so they are loaded on their own
+    (the event-scope multi-query joins ScanConfig on scan_config_id and would
+    drop them). Each metric's newest anomaly is classified against its latest
+    stored value bucket; only ``latest_scan`` (open) signals surface.
+    """
+    metric_ids = list(
+        (
+            await session.execute(
+                select(MetricDefinition.id).where(
+                    MetricDefinition.project_id == project_id,
+                    MetricDefinition.anomaly_detection_enabled.is_(True),
+                )
+            )
+        ).scalars()
+    )
+    if not metric_ids:
+        return []
+
+    scope_refs = [str(metric_id) for metric_id in metric_ids]
+    latest_value_buckets: dict[str, datetime] = {
+        str(metric_definition_id): bucket
+        for metric_definition_id, bucket in (
+            await session.execute(
+                select(MetricValue.metric_definition_id, func.max(MetricValue.bucket))
+                .where(MetricValue.metric_definition_id.in_(metric_ids))
+                .group_by(MetricValue.metric_definition_id)
+            )
+        ).all()
+    }
+
+    latest_anomalies: dict[str, MetricAnomaly] = {}
+    for anomaly in (
+        await session.execute(
+            select(MetricAnomaly)
+            .where(
+                MetricAnomaly.scope_type == SCOPE_METRIC,
+                MetricAnomaly.scope_ref.in_(scope_refs),
+            )
+            .order_by(MetricAnomaly.bucket.desc())
+        )
+    ).scalars():
+        latest_anomalies.setdefault(anomaly.scope_ref, anomaly)
+
+    signals: list[MetricSignalResponse] = []
+    for scope_ref, anomaly in latest_anomalies.items():
+        state = classify_signal_state(
+            anomaly_bucket=anomaly.bucket,
+            latest_metric_bucket=latest_value_buckets.get(scope_ref),
+        )
+        if state is not None:
+            signals.append(_signal_from_anomaly(anomaly, state=state))
+    return signals
+
+
 async def get_active_signals(
     session: AsyncSession,
     slug: str,
@@ -211,6 +276,10 @@ async def get_active_signals(
 
     signals: list[MetricSignalResponse] = []
     for anomaly in latest_anomalies:
+        # Event-scope rows always carry a scan_config_id (the multi-query joins
+        # ScanConfig); the NULL-config ``metric`` scope is handled separately.
+        if anomaly.scan_config_id is None:
+            continue
         key = (anomaly.scan_config_id, anomaly.scope_type, anomaly.scope_ref)
         latest_metric_bucket = latest_metrics.get(key)
         state = classify_signal_state(
@@ -219,6 +288,10 @@ async def get_active_signals(
         )
         if state is not None:
             signals.append(_signal_from_anomaly(anomaly, state=state))
+
+    # Catalog metric signals are project-global (NULL scan_config_id) and so are
+    # loaded separately from the event-scope multi-query above.
+    signals.extend(await _get_active_metric_signals(session, project_id=project.id))
 
     signals.sort(key=lambda signal: signal.bucket, reverse=True)
     if cacheable:

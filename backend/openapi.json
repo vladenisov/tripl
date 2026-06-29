@@ -1924,6 +1924,11 @@
             "title": "Include Events",
             "type": "boolean"
           },
+          "include_metrics": {
+            "default": false,
+            "title": "Include Metrics",
+            "type": "boolean"
+          },
           "include_project_total": {
             "default": true,
             "title": "Include Project Total",
@@ -2123,6 +2128,10 @@
             "title": "Include Events",
             "type": "boolean"
           },
+          "include_metrics": {
+            "title": "Include Metrics",
+            "type": "boolean"
+          },
           "include_project_total": {
             "title": "Include Project Total",
             "type": "boolean"
@@ -2201,6 +2210,7 @@
           "include_schema_drifts",
           "include_distribution_drifts",
           "include_release_regressions",
+          "include_metrics",
           "notify_on_spike",
           "notify_on_drop",
           "ai_explanation_enabled",
@@ -2380,6 +2390,17 @@
               }
             ],
             "title": "Include Events"
+          },
+          "include_metrics": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Include Metrics"
           },
           "include_project_total": {
             "anyOf": [
@@ -8564,7 +8585,8 @@
           "event",
           "schema",
           "distribution",
-          "release_regression"
+          "release_regression",
+          "metric"
         ],
         "title": "MetricScopeType",
         "type": "string"
@@ -8747,9 +8769,16 @@
             "type": "number"
           },
           "scan_config_id": {
-            "format": "uuid",
-            "title": "Scan Config Id",
-            "type": "string"
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Scan Config Id"
           },
           "scope_ref": {
             "title": "Scope Ref",
@@ -8772,7 +8801,6 @@
           }
         },
         "required": [
-          "scan_config_id",
           "scope_type",
           "scope_ref",
           "state",
@@ -8954,6 +8982,10 @@
             "title": "Include Events",
             "type": "boolean"
           },
+          "include_metrics": {
+            "title": "Include Metrics",
+            "type": "boolean"
+          },
           "include_project_total": {
             "title": "Include Project Total",
             "type": "boolean"
@@ -9095,6 +9127,7 @@
           "include_schema_drifts",
           "include_distribution_drifts",
           "include_release_regressions",
+          "include_metrics",
           "total_deliveries"
         ],
         "title": "MonitorDetailResponse",
@@ -10030,6 +10063,10 @@
             "title": "Detect Events",
             "type": "boolean"
           },
+          "detect_metrics": {
+            "title": "Detect Metrics",
+            "type": "boolean"
+          },
           "detect_project_total": {
             "title": "Detect Project Total",
             "type": "boolean"
@@ -10069,6 +10106,7 @@
           "detect_project_total",
           "detect_event_types",
           "detect_events",
+          "detect_metrics",
           "baseline_window_buckets",
           "min_history_buckets",
           "sigma_threshold",
@@ -10125,6 +10163,17 @@
               }
             ],
             "title": "Detect Events"
+          },
+          "detect_metrics": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Detect Metrics"
           },
           "detect_project_total": {
             "anyOf": [

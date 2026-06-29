@@ -26,7 +26,9 @@ class EventMetricPoint(BaseModel):
 
 
 class MetricSignalResponse(BaseModel):
-    scan_config_id: uuid.UUID
+    # NULL for ``metric``-scope signals (catalog MetricDefinition series are
+    # project-global and not tied to a single scan config).
+    scan_config_id: uuid.UUID | None = None
     scope_type: MetricScopeType
     scope_ref: str
     state: str

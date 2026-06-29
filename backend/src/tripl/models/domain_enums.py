@@ -89,8 +89,9 @@ class MetricScopeType(enum.StrEnum):
     schema = "schema"
     distribution = "distribution"
     release_regression = "release_regression"
-    # ``metric`` (user-defined MetricDefinition series) is added by the metrics
+    # ``metric`` (user-defined MetricDefinition series). Added by the metrics
     # epic's anomaly-scope ticket (tripl-dxhp.6) via an ALTER TYPE migration.
+    metric = "metric"
 
 
 class MetricKind(enum.StrEnum):

@@ -160,16 +160,16 @@ async def _seed_metric_anomaly(
     direction: str,
     actual_count: int,
     expected_count: float,
+    scope_type: str = "metric",
 ) -> None:
-    # SEAM (ticket .6): MetricScopeType.metric does not exist yet and cannot be
-    # inserted under the SQLite CHECK constraint, so we seed a placeholder
-    # scope_type and rely on the service matching on scope_ref alone.
+    # Catalog-metric anomalies are stored under scope_type='metric' /
+    # scope_ref=str(metric_definition_id); the series read matches on both.
     async with TestSessionLocal() as session:
         session.add(
             MetricAnomaly(
                 id=uuid.uuid4(),
                 scan_config_id=scan_config_id,
-                scope_type="event",
+                scope_type=scope_type,
                 scope_ref=str(metric_id),
                 event_id=None,
                 event_type_id=None,
@@ -237,13 +237,14 @@ class TestMetricSeries:
         assert body["scope"] == "metric"
         assert body["interval"] == "1h"
 
-        # b1 was never stored: the grid must densify it to 0.0 between b0 and b2.
-        assert [point["value"] for point in body["data"]] == [10.0, 0.0, 4.0]
+        # b1 was never stored. A ``sql`` metric is fractional (value-kind, ticket
+        # .6): gaps are NOT zero-filled — they stay absent (a null break in the
+        # chart) so a missing bucket never reads as a drop to 0.
+        assert [point["value"] for point in body["data"]] == [10.0, 4.0]
 
-        spike, gap, drop = body["data"]
+        spike, drop = body["data"]
         assert spike["is_anomaly"] is True
         assert spike["anomaly_direction"] == "spike"
-        assert gap["is_anomaly"] is False
         assert drop["is_anomaly"] is True
         assert drop["anomaly_direction"] == "drop"
 
@@ -251,6 +252,35 @@ class TestMetricSeries:
         assert body["latest_signal"] is not None
         assert body["latest_signal"]["direction"] == "drop"
         assert body["latest_signal"]["scope_ref"] == metric["id"]
+
+    async def test_series_ignores_foreign_scope_with_colliding_scope_ref(
+        self, client: AsyncClient, project: dict, data_source: dict
+    ):
+        """A non-metric anomaly reusing the metric UUID as scope_ref must NOT flag.
+
+        Finding tripl-dxhp.6 #3: the series read filters on scope_type='metric'
+        too, so a row from another scope that happens to carry the metric UUID is
+        excluded rather than surfaced as a false anomaly.
+        """
+        slug = project["slug"]
+        metric = await _create_sql_metric(client, slug, data_source["id"], "iso2")
+        scan_config_id = await _seed_scan_config(project["id"])
+        await _seed_metric_values(metric["id"], [(B0, 10.0), (B2, 4.0)])
+        await _seed_metric_anomaly(
+            scan_config_id=scan_config_id,
+            metric_id=metric["id"],
+            bucket=B0,
+            direction="spike",
+            actual_count=10,
+            expected_count=3.0,
+            scope_type="event",  # foreign scope reusing the metric UUID
+        )
+
+        resp = await client.get(f"{_metrics_url(slug)}/{metric['id']}/series")
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        assert all(point["is_anomaly"] is False for point in body["data"])
+        assert body["latest_signal"] is None
 
     async def test_series_empty_when_no_values(
         self, client: AsyncClient, project: dict, data_source: dict

@@ -6,6 +6,7 @@ import { eventTypesApi } from '@/api/eventTypes'
 import { eventsApi } from '@/api/events'
 import { metaFieldsApi } from '@/api/metaFields'
 import { metricsApi } from '@/api/metrics'
+import { metricsCatalogApi } from '@/api/metricsCatalogApi'
 import { scansApi } from '@/api/scans'
 import { EVENT_STATUS_LABELS, EVENT_STATUS_TONE } from '@/lib/eventStatus'
 import type { EventStatus } from '@/lib/eventStatus'
@@ -40,14 +41,21 @@ import { GRANULARITY_OPTIONS, RANGE_OPTIONS, aggregateMetricPoints, type Metrics
 import { resolveMetaFieldHref } from '@/lib/metaFields'
 import { resolveDetailScope } from '@/lib/monitoring'
 import type {
+  AppVersionSeriesResponse,
   DistributionDriftBand,
   DistributionDriftPoint,
   Event as TEvent,
+  EventMetricBreakdownsResponse,
   EventMetricPoint,
   EventMetricsResponse,
   EventType,
   FieldDefinition,
   MetaFieldDefinition,
+  MetricBreakdownsResponse,
+  MetricSeriesPoint,
+  MetricSeriesResponse,
+  MetricSignalResponse,
+  MetricVersionSeriesResponse,
   MonitoringSignal,
   AppVersionMetricSeries,
 } from '@/types'
@@ -83,6 +91,90 @@ interface VersionChartSeries {
   data: AppVersionMetricSeries['data']
   color: string
   isHighlighted: boolean
+}
+
+// ───────── Catalog-metric adapters ─────────
+// Catalog metric series mirror the event-volume shapes almost exactly (the only
+// real difference is a float `value` instead of an integer `count`), so the
+// `metric` scope reuses every MonitoringDetailPage consumer by mapping its
+// catalog responses onto the event-shaped types the tabs already render.
+function metricPointToEventPoint(point: MetricSeriesPoint): EventMetricPoint {
+  return {
+    bucket: point.bucket,
+    count: point.value,
+    expected_count: point.expected_count ?? null,
+    stddev: point.stddev ?? null,
+    is_anomaly: point.is_anomaly,
+    anomaly_direction: point.anomaly_direction ?? null,
+    z_score: point.z_score ?? null,
+  }
+}
+
+function metricSignalToMonitoringSignal(signal: MetricSignalResponse): MonitoringSignal {
+  return {
+    scan_config_id: signal.scan_config_id ?? '',
+    scope_type: signal.scope_type,
+    scope_ref: signal.scope_ref,
+    state: signal.state === 'recent' ? 'recent' : 'latest_scan',
+    event_id: signal.event_id ?? null,
+    event_type_id: signal.event_type_id ?? null,
+    bucket: signal.bucket,
+    actual_count: signal.actual_count,
+    expected_count: signal.expected_count,
+    stddev: signal.stddev,
+    z_score: signal.z_score,
+    direction: signal.direction,
+  }
+}
+
+function adaptMetricSeries(res: MetricSeriesResponse): EventMetricsResponse {
+  return {
+    scope: 'event',
+    scan_config_id: res.scan_config_id ?? null,
+    event_id: null,
+    event_type_id: null,
+    interval: res.interval ?? null,
+    latest_signal: res.latest_signal ? metricSignalToMonitoringSignal(res.latest_signal) : null,
+    data: res.data.map(metricPointToEventPoint),
+    forecast: res.forecast,
+  }
+}
+
+function adaptMetricVersions(res: MetricVersionSeriesResponse): AppVersionSeriesResponse {
+  return {
+    scan_config_id: res.scan_config_id ?? '',
+    scope_type: 'event',
+    scope_ref: '',
+    event_id: null,
+    event_type_id: null,
+    app_version_column: res.app_version_column ?? null,
+    interval: res.interval ?? null,
+    latest_version: res.latest_version ?? null,
+    versions: res.versions,
+    series: res.series.map(series => ({
+      version: series.version,
+      is_other: series.is_other,
+      is_latest: series.is_latest,
+      total_count: series.total_value,
+      data: series.data.map(metricPointToEventPoint),
+    })),
+  }
+}
+
+function adaptMetricBreakdowns(res: MetricBreakdownsResponse): EventMetricBreakdownsResponse {
+  return {
+    event_id: res.metric_id,
+    scan_config_id: res.scan_config_id ?? null,
+    interval: res.interval ?? null,
+    columns: res.columns,
+    selected_column: res.selected_column ?? null,
+    series: res.series.map(series => ({
+      breakdown_value: series.breakdown_value,
+      is_other: series.is_other,
+      total_count: series.total_value,
+      data: series.data.map(metricPointToEventPoint),
+    })),
+  }
 }
 
 export default function MonitoringDetailPage() {
@@ -150,9 +242,21 @@ export default function MonitoringDetailPage() {
   })
   const metaFields = metaFieldsQuery.data ?? EMPTY_META_FIELDS
 
+  // Catalog metric definition (header / color / version-column) — only the
+  // `metric` scope; the other scopes derive their title from event(-type) data.
+  const metricDefinitionQuery = useQuery({
+    queryKey: ['metricDefinition', slug, scopeId],
+    queryFn: () => metricsCatalogApi.get(slug!, scopeId),
+    enabled: scope === 'metric' && !!slug && !!scopeId,
+  })
+  const metricDefinition = metricDefinitionQuery.data
+
   const metricsQuery = useQuery({
     queryKey: ['monitoringMetrics', slug, scope, scopeId, rangeDays],
     queryFn: () => {
+      if (scope === 'metric') {
+        return metricsCatalogApi.getSeries(slug!, scopeId, timeRange).then(adaptMetricSeries)
+      }
       if (scope === 'project_total') {
         return metricsApi.getProjectTotalMetrics(slug!, {
           scan_config_id: scopeId,
@@ -173,15 +277,22 @@ export default function MonitoringDetailPage() {
   const scanConfigQuery = useQuery({
     queryKey: ['scanConfig', slug, scanConfigId],
     queryFn: () => scansApi.get(slug!, scanConfigId!),
-    enabled: !!slug && !!scanConfigId,
+    enabled: scope !== 'metric' && !!slug && !!scanConfigId,
   })
-  const hasVersionColumn = Boolean(scanConfigQuery.data?.app_version_column)
+  // Catalog metrics expose their version column on the definition; the other
+  // scopes read it off the resolved scan config.
+  const hasVersionColumn = scope === 'metric'
+    ? Boolean(metricDefinition?.app_version_column)
+    : Boolean(scanConfigQuery.data?.app_version_column)
   const selectedTab: MonitoringDetailTab = activeTab === 'versions' && !hasVersionColumn
     ? 'volume'
     : activeTab
 
   const appVersionScope = useMemo(() => {
-    if (!scanConfigId || !scopeId) return null
+    // The catalog `metric` scope fetches versions from its own endpoint, so it
+    // never builds an event app-version scope (and returning early here narrows
+    // `scope` to the three event scopes for the typed app-version API below).
+    if (scope === 'metric' || !scanConfigId || !scopeId) return null
     return {
       scope_type: scope,
       scope_ref: scope === 'project_total' ? scanConfigId : scopeId,
@@ -192,25 +303,34 @@ export default function MonitoringDetailPage() {
     queryKey: [
       'appVersionSeries',
       slug,
+      scope,
+      scopeId,
       scanConfigId,
       appVersionScope?.scope_type,
       appVersionScope?.scope_ref,
       timeRange.from,
       timeRange.to,
     ],
-    queryFn: () => metricsApi.getAppVersionSeries(slug!, scanConfigId!, {
-      scope_type: appVersionScope!.scope_type,
-      scope_ref: appVersionScope!.scope_ref,
-      ...timeRange,
-    }),
-    enabled: selectedTab === 'versions' && hasVersionColumn && !!slug && !!scanConfigId && !!appVersionScope,
+    queryFn: () => {
+      if (scope === 'metric') {
+        return metricsCatalogApi.getVersions(slug!, scopeId, timeRange).then(adaptMetricVersions)
+      }
+      return metricsApi.getAppVersionSeries(slug!, scanConfigId!, {
+        scope_type: appVersionScope!.scope_type,
+        scope_ref: appVersionScope!.scope_ref,
+        ...timeRange,
+      })
+    },
+    enabled: selectedTab === 'versions' && hasVersionColumn && !!slug && !!scopeId
+      && (scope === 'metric' || (!!scanConfigId && !!appVersionScope)),
     refetchInterval: 60000,
   })
 
   const appVersionAdoptionQuery = useQuery({
     queryKey: ['appVersionAdoption', slug, scanConfigId, timeRange.from, timeRange.to],
     queryFn: () => metricsApi.getAppVersionAdoption(slug!, scanConfigId!, timeRange),
-    enabled: selectedTab === 'versions' && hasVersionColumn && !!slug && !!scanConfigId,
+    // No catalog adoption endpoint — the metric scope leaves this card empty.
+    enabled: scope !== 'metric' && selectedTab === 'versions' && hasVersionColumn && !!slug && !!scanConfigId,
     refetchInterval: 60000,
   })
   const selectedVersionFilter: VersionFilter = versionFilter === 'latest' && !appVersionSeriesQuery.data?.latest_version
@@ -265,12 +385,20 @@ export default function MonitoringDetailPage() {
   // (event-level only). Columns come from the event's configured breakdown columns plus
   // scan-wide breakdown columns that have collected data.
   const breakdownQuery = useQuery({
-    queryKey: ['eventMetricBreakdowns', slug, scopeId, breakdownColumn, rangeDays],
-    queryFn: () => metricsApi.getEventMetricBreakdowns(slug!, scopeId, {
-      column: breakdownColumn || undefined,
-      ...timeRange,
-    }),
-    enabled: scope === 'event' && selectedTab === 'breakdowns' && !!slug && !!scopeId,
+    queryKey: ['eventMetricBreakdowns', slug, scope, scopeId, breakdownColumn, rangeDays],
+    queryFn: () => {
+      if (scope === 'metric') {
+        return metricsCatalogApi
+          .getBreakdowns(slug!, scopeId, { column: breakdownColumn || undefined, ...timeRange })
+          .then(adaptMetricBreakdowns)
+      }
+      return metricsApi.getEventMetricBreakdowns(slug!, scopeId, {
+        column: breakdownColumn || undefined,
+        ...timeRange,
+      })
+    },
+    enabled: (scope === 'event' || scope === 'metric')
+      && selectedTab === 'breakdowns' && !!slug && !!scopeId,
     refetchInterval: 60000,
   })
   const breakdowns = breakdownQuery.data
@@ -337,7 +465,9 @@ export default function MonitoringDetailPage() {
         from: timeRange.from,
         to: timeRange.to,
       }),
-    enabled: !!slug && !!scopeId,
+    // Annotations are scoped to event/event-type/project-total; the catalog
+    // metric scope has no annotation surface.
+    enabled: scope !== 'metric' && !!slug && !!scopeId,
   })
   const annotations = annotationsQuery.data ?? []
 
@@ -348,7 +478,7 @@ export default function MonitoringDetailPage() {
       chartAnnotationsApi.create(slug!, {
         bucket: new Date(annotationBucket).toISOString(),
         label: annotationLabel.trim(),
-        scope_type: scope,
+        scope_type: scope === 'metric' ? null : scope,
         scope_ref: scopeId,
       }),
     onSuccess: () => {
@@ -383,11 +513,13 @@ export default function MonitoringDetailPage() {
   )
 
   const headerTitle = (() => {
+    if (scope === 'metric') return metricDefinition?.display_name ?? 'Metric'
     if (scope === 'project_total') return 'Project Total'
     if (scope === 'event_type') return eventType?.display_name ?? 'Event Type'
     return event?.name ?? 'Event'
   })()
   const headerDescription = (() => {
+    if (scope === 'metric') return metricDefinition?.description || 'Catalog metric monitoring detail.'
     if (scope === 'project_total') return 'Canonical total event volume for the selected scan config.'
     if (scope === 'event_type') return eventType?.description || 'Aggregated volume for the event type.'
     return event?.description || 'Monitoring detail for the selected event.'
@@ -404,6 +536,7 @@ export default function MonitoringDetailPage() {
     eventQuery.isError
     || eventTypesQuery.isError
     || metaFieldsQuery.isError
+    || metricDefinitionQuery.isError
     || metricsQuery.isError
     || scanConfigQuery.isError
     || appVersionSeriesQuery.isError
@@ -419,6 +552,7 @@ export default function MonitoringDetailPage() {
             eventQuery.error
             ?? eventTypesQuery.error
             ?? metaFieldsQuery.error
+            ?? metricDefinitionQuery.error
             ?? metricsQuery.error
             ?? scanConfigQuery.error
             ?? appVersionSeriesQuery.error
@@ -515,12 +649,14 @@ export default function MonitoringDetailPage() {
               By version
             </TabsTrigger>
           )}
-          <TabsTrigger value="heatmap">Heatmap</TabsTrigger>
-          <TabsTrigger value="distribution">
-            <GitCompareArrows className="h-3.5 w-3.5" />
-            Distribution
-          </TabsTrigger>
-          {scope === 'event' && (
+          {scope !== 'metric' && <TabsTrigger value="heatmap">Heatmap</TabsTrigger>}
+          {scope !== 'metric' && (
+            <TabsTrigger value="distribution">
+              <GitCompareArrows className="h-3.5 w-3.5" />
+              Distribution
+            </TabsTrigger>
+          )}
+          {(scope === 'event' || scope === 'metric') && (
             <TabsTrigger value="breakdowns">
               <Layers className="h-3.5 w-3.5" />
               Breakdowns
@@ -552,7 +688,7 @@ export default function MonitoringDetailPage() {
             </Card>
           )}
 
-          {latestSignal && slug && (
+          {latestSignal && slug && scope !== 'metric' && (
             <TopMoversPanel
               slug={slug}
               scanConfigId={latestSignal.scan_config_id}
@@ -593,9 +729,9 @@ export default function MonitoringDetailPage() {
                   forecast={metrics?.forecast}
                   annotations={annotations}
                   height={280}
-                  color={eventType?.color || 'var(--chart-3)'}
+                  color={eventType?.color || metricDefinition?.color || 'var(--chart-3)'}
                   granularity={granularity}
-                  seriesLabel="events"
+                  seriesLabel={scope === 'metric' ? metricDefinition?.unit || 'value' : 'events'}
                 />
               )}
               {metrics?.interval && (
@@ -606,6 +742,7 @@ export default function MonitoringDetailPage() {
             </CardContent>
           </Card>
 
+          {scope !== 'metric' && (
           <Card>
             <CardContent className="space-y-3 p-4">
               <div className="flex items-center gap-2">
@@ -700,6 +837,7 @@ export default function MonitoringDetailPage() {
               )}
             </CardContent>
           </Card>
+          )}
         </TabsContent>
 
         {hasVersionColumn && (
@@ -804,11 +942,13 @@ export default function MonitoringDetailPage() {
               </CardContent>
             </Card>
 
-            <ReleaseRegressionPanel
-              slug={slug!}
-              scanConfigId={scanConfigId!}
-              enabled={selectedTab === 'versions'}
-            />
+            {scope !== 'metric' && scanConfigId && (
+              <ReleaseRegressionPanel
+                slug={slug!}
+                scanConfigId={scanConfigId}
+                enabled={selectedTab === 'versions'}
+              />
+            )}
           </TabsContent>
         )}
 

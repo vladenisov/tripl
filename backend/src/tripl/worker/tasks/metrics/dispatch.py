@@ -7,6 +7,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from tripl.alerting_matching import AlertMatchCandidate, rule_matches_anomaly
+from tripl.core.analyzers.anomaly_detector import SCOPE_METRIC
 from tripl.models.alert_correlation_state import AlertCorrelationState
 from tripl.models.alert_delivery import AlertDelivery, AlertDeliveryStatus
 from tripl.models.alert_delivery_item import AlertDeliveryItem
@@ -19,6 +20,7 @@ from tripl.worker.tasks.metrics.alert_payload import (
 )
 from tripl.worker.tasks.metrics.signals import (
     _get_active_distribution_drift_candidates,
+    _get_active_metric_anomaly_candidates,
     _get_active_release_regression_candidates,
     _get_active_schema_drift_candidates,
     _get_latest_active_anomalies,
@@ -97,6 +99,30 @@ def _touch_correlation_state(
     state.last_seen_at = max(state.last_seen_at or seen_at, seen_at)
 
 
+def _project_metric_state_config_id(session: Session, config: ScanConfig) -> uuid.UUID:
+    """Canonical scan_config_id for project-global (``metric``-scope) AlertRuleState.
+
+    ``metric``-scope anomalies are project-global (NULL ``scan_config_id`` on the
+    anomaly row), but ``AlertRuleState.scan_config_id`` is a NOT-NULL FK to
+    scan_configs, so it cannot be NULL or a synthetic id. ``_prepare_alert_
+    deliveries`` runs once per scan config, and every run for the project sees the
+    same metric anomaly. Keying the rule state on ``config.id`` would give each
+    config its own cooldown clock and re-send the same metric anomaly N times.
+
+    We instead anchor every metric-scope rule state on a deterministic
+    project-canonical config id (the lowest config id in the project), so all
+    config runs converge on ONE shared state row and ONE cooldown clock. It stays
+    a real FK target; if that config is deleted its states cascade away and the
+    next-lowest id becomes canonical.
+    """
+    config_ids = list(
+        session.execute(
+            select(ScanConfig.id).where(ScanConfig.project_id == config.project_id)
+        ).scalars()
+    )
+    return min(config_ids) if config_ids else config.id
+
+
 def _prepare_alert_deliveries(
     session: Session,
     config: ScanConfig,
@@ -105,6 +131,7 @@ def _prepare_alert_deliveries(
 ) -> list[uuid.UUID]:
     active_candidates: dict[tuple[str, str], AlertMatchCandidate] = {}
     active_candidates.update(_get_latest_active_anomalies(session, config))
+    active_candidates.update(_get_active_metric_anomaly_candidates(session, config))
     active_candidates.update(_get_active_schema_drift_candidates(session, config))
     active_candidates.update(_get_active_distribution_drift_candidates(session, config))
     active_candidates.update(_get_active_release_regression_candidates(session, config))
@@ -114,6 +141,9 @@ def _prepare_alert_deliveries(
 
     now = datetime.now(UTC)
     project_slug = _get_project_slug(session, config.project_id)
+    # ``metric`` scopes are project-global; anchor their rule state on a single
+    # canonical config so cooldown is shared across every config's dispatch run.
+    metric_state_config_id = _project_metric_state_config_id(session, config)
     scope_names = _build_alert_scope_names(session, list(active_candidates.values()))
     delivery_ids: list[uuid.UUID] = []
     suppressed_group_ids = _suppressed_correlation_group_ids(
@@ -127,15 +157,27 @@ def _prepare_alert_deliveries(
             continue
 
         for rule in enabled_rules:
+            # Non-metric scopes are config-partitioned (state keyed by config.id);
+            # metric scopes are project-global, keyed by the canonical config so
+            # the cooldown clock is shared across every config run.
             existing_states = {
                 (state.scope_type, state.scope_ref): state
                 for state in session.execute(
                     select(AlertRuleState).where(
                         AlertRuleState.rule_id == rule.id,
                         AlertRuleState.scan_config_id == config.id,
+                        AlertRuleState.scope_type != SCOPE_METRIC,
                     )
                 ).scalars()
             }
+            for state in session.execute(
+                select(AlertRuleState).where(
+                    AlertRuleState.rule_id == rule.id,
+                    AlertRuleState.scan_config_id == metric_state_config_id,
+                    AlertRuleState.scope_type == SCOPE_METRIC,
+                )
+            ).scalars():
+                existing_states[(state.scope_type, state.scope_ref)] = state
 
             matched_anomalies = [
                 candidate
@@ -157,9 +199,12 @@ def _prepare_alert_deliveries(
                 current_state = existing_states.get(key)
                 should_send = False
                 if current_state is None:
+                    state_config_id = (
+                        metric_state_config_id if anomaly.scope_type == SCOPE_METRIC else config.id
+                    )
                     current_state = AlertRuleState(
                         rule_id=rule.id,
-                        scan_config_id=config.id,
+                        scan_config_id=state_config_id,
                         scope_type=anomaly.scope_type,
                         scope_ref=anomaly.scope_ref,
                         is_active=True,

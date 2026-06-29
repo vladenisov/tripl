@@ -83,6 +83,7 @@ class AlertRuleBase(BaseModel):
     include_schema_drifts: bool | None = None
     include_distribution_drifts: bool | None = None
     include_release_regressions: bool | None = None
+    include_metrics: bool | None = None
     notify_on_spike: bool | None = None
     notify_on_drop: bool | None = None
     ai_explanation_enabled: bool | None = None
@@ -113,6 +114,7 @@ class AlertRuleCreate(AlertRuleBase):
     include_schema_drifts: bool = False
     include_distribution_drifts: bool = False
     include_release_regressions: bool = False
+    include_metrics: bool = False
     notify_on_spike: bool = True
     notify_on_drop: bool = True
     ai_explanation_enabled: bool = False
@@ -141,6 +143,7 @@ class AlertRuleResponse(BaseModel):
     include_schema_drifts: bool
     include_distribution_drifts: bool
     include_release_regressions: bool
+    include_metrics: bool
     notify_on_spike: bool
     notify_on_drop: bool
     ai_explanation_enabled: bool
@@ -606,6 +609,7 @@ class MonitorDetailResponse(MonitorSummaryItem):
     include_schema_drifts: bool
     include_distribution_drifts: bool
     include_release_regressions: bool
+    include_metrics: bool
     # Quick fired-history stats for the detail header (full history comes from
     # GET /alert-deliveries?rule_id=...).
     total_deliveries: int

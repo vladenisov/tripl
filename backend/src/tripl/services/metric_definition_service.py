@@ -8,7 +8,7 @@ from sqlalchemy import update as sql_update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from tripl.models.data_source import DataSource
-from tripl.models.domain_enums import MetricKind, MetricStatus
+from tripl.models.domain_enums import MetricKind, MetricScopeType, MetricStatus
 from tripl.models.event import Event
 from tripl.models.event_type import EventType
 from tripl.models.metric_anomaly import MetricAnomaly
@@ -196,11 +196,10 @@ async def _load_latest_metric_anomalies(
 ) -> dict[uuid.UUID, MetricAnomaly]:
     """One batched query for the latest anomaly per metric.
 
-    SEAM (ticket tripl-dxhp.6): catalog-metric anomalies live in
-    ``MetricAnomaly`` under ``scope_ref = str(metric_definition_id)``. The
-    ``MetricScopeType.metric`` enum value is added by .6, so until then we match
-    on ``scope_ref`` ALONE (a metric UUID never collides with the
-    event/event_type/project_total scope_refs).
+    Catalog-metric anomalies live in ``MetricAnomaly`` under
+    ``scope_type = 'metric'`` and ``scope_ref = str(metric_definition_id)``
+    (the ``MetricScopeType.metric`` scope added by tripl-dxhp.6). Both columns
+    are matched so a foreign-scope row reusing the same UUID cannot leak in.
     """
     if not metric_ids:
         return {}
@@ -209,7 +208,10 @@ async def _load_latest_metric_anomalies(
     rows = (
         await session.execute(
             select(MetricAnomaly)
-            .where(MetricAnomaly.scope_ref.in_(scope_refs))
+            .where(
+                MetricAnomaly.scope_type == MetricScopeType.metric.value,
+                MetricAnomaly.scope_ref.in_(scope_refs),
+            )
             .order_by(MetricAnomaly.bucket)
         )
     ).scalars()
