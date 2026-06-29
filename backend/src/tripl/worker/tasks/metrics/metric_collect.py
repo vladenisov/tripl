@@ -672,7 +672,14 @@ def collect_metric_definitions(self: object, metric_definition_id: str) -> dict[
             if isinstance(definition.kind, MetricKind)
             else MetricKind(definition.kind)
         )
-        summary = _COLLECTORS[kind](session, definition=definition)
+        collector = _COLLECTORS.get(kind)
+        if collector is None:
+            # ``fact`` is registered in the enum (FactTable foundation) but its
+            # collector lands in a later ticket; fail with a clear message rather
+            # than a cryptic KeyError if such a metric is dispatched directly.
+            msg = f"Metric collection is not implemented for kind {kind.value!r} yet"
+            raise NotImplementedError(msg)
+        summary = collector(session, definition=definition)
 
         definition.last_collected_at = datetime.now(UTC)
         definition.last_collection_status = COLLECTION_STATUS_SUCCESS

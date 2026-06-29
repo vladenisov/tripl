@@ -38,9 +38,9 @@ class MetricDefinition(UUIDMixin, TimestampMixin, Base):
     global model).
 
     A metric is defined in one of three ``kind``s:
-    - ``fact_aggregation``: an aggregation (``aggregation``) over a measure column
-      of a warehouse table / base SELECT (config: ``source_table``/``base_query``,
-      ``measure_column``, ``distinct_column``, ``filter_sql``, ``time_column``).
+    - ``fact``: an aggregation over a column of a separately-defined ``FactTable``
+      (referenced by ``fact_table_id``); the column/aggregation/filter (and any
+      ratio numerator/denominator) live in ``config``.
     - ``sql``: a user-authored SELECT returning a per-bucket measure (config:
       ``metric_sql``, ``time_column``).
     - ``event_composition``: derived from already-collected ``event_metrics`` —
@@ -95,6 +95,15 @@ class MetricDefinition(UUIDMixin, TimestampMixin, Base):
     # measure_column, distinct_column, filter_sql, time_column. sql: metric_sql,
     # time_column.
     config: Mapped[dict[str, object]] = mapped_column(JSON, default=dict, server_default="{}")
+
+    # --- Fact-table model binding ---
+    # A ``fact`` metric references a separately-defined FactTable; the detailed
+    # fact config (aggregation/measure/filter/ratio) lives in ``config`` and is
+    # handled by a later ticket. NULL for non-``fact`` kinds; the fact table is
+    # kept when this metric is unbound (SET NULL).
+    fact_table_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("fact_tables.id", ondelete="SET NULL"), nullable=True
+    )
 
     # --- Dimensions (mirror ScanConfig breakdown/version/platform) ---
     breakdown_columns: Mapped[list[str]] = mapped_column(JSON, default=list, server_default="[]")

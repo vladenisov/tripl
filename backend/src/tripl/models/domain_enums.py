@@ -100,6 +100,10 @@ class MetricKind(enum.StrEnum):
     sql = "sql"
     fact_aggregation = "fact_aggregation"
     event_composition = "event_composition"
+    # ``fact``: aggregation over a separately-defined FactTable (fact-table model).
+    # Replaces the inline ``fact_aggregation`` kind; the latter is kept for
+    # backward compatibility with existing rows.
+    fact = "fact"
 
 
 class MetricStatus(enum.StrEnum):

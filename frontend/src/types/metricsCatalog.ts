@@ -79,6 +79,7 @@ export const METRIC_SCAN_INTERVALS: readonly MetricScanInterval[] = [
 ]
 
 export const METRIC_KIND_LABEL: Record<MetricKind, string> = {
+  fact: 'Fact',
   fact_aggregation: 'Fact aggregation',
   sql: 'SQL',
   event_composition: 'Event composition',

@@ -136,7 +136,11 @@ function adaptMetricSeries(res: MetricSeriesResponse): EventMetricsResponse {
     interval: res.interval ?? null,
     latest_signal: res.latest_signal ? metricSignalToMonitoringSignal(res.latest_signal) : null,
     data: res.data.map(metricPointToEventPoint),
-    forecast: res.forecast,
+    // Per-metric forecasting renders a dashed tail that trends toward 0, which
+    // is misleading for fractional (ratio/avg) catalog metrics. Drop it for the
+    // metric scope; event-scope forecasts come from their own endpoint and are
+    // left untouched.
+    forecast: [],
   }
 }
 
@@ -193,6 +197,9 @@ export default function MonitoringDetailPage() {
     if (location.key !== 'default') navigate(-1)
     else navigate(`/p/${slug}/events`)
   }
+  // Catalog-metric drilldowns belong to the Metrics surface, so their back
+  // affordance returns to the metrics list rather than the events list.
+  const goToMetrics = () => navigate(`/p/${slug}/metrics`)
   const [rangeDays, setRangeDays] = useState(30)
   const [granularity, setGranularity] = useState<MetricsGranularity>('hour')
   const [activeTab, setActiveTab] = useState<MonitoringDetailTab>('volume')
@@ -604,8 +611,13 @@ export default function MonitoringDetailPage() {
       ) : (
         <>
           <div className="flex items-center justify-between gap-2">
-            <Button variant="ghost" size="sm" onClick={goBack}>
-              <ArrowLeft className="mr-2 h-4 w-4" /> Back to events
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={scope === 'metric' ? goToMetrics : goBack}
+            >
+              <ArrowLeft className="mr-2 h-4 w-4" />
+              {scope === 'metric' ? 'Back to metrics' : 'Back to events'}
             </Button>
           </div>
 

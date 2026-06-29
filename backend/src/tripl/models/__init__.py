@@ -25,6 +25,7 @@ from tripl.models.event_tag import EventTag
 from tripl.models.event_type import EventType
 from tripl.models.event_type_owner import EventTypeOwner
 from tripl.models.event_type_relation import EventTypeRelation
+from tripl.models.fact_table import FactTable
 from tripl.models.field_definition import FieldDefinition
 from tripl.models.meta_field_definition import MetaFieldDefinition
 from tripl.models.metric_anomaly import MetricAnomaly
@@ -69,6 +70,7 @@ __all__ = [
     "Project",
     "EventType",
     "EventTypeOwner",
+    "FactTable",
     "FieldDefinition",
     "EventTypeRelation",
     "MetaFieldDefinition",

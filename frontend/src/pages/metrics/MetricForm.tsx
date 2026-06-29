@@ -291,6 +291,14 @@ export function MetricForm({ slug, metric, dataSources, events, onClose }: Metri
     saveMut.mutate()
   }
 
+  // Switching kind swaps which config fields render, so a stale error list would
+  // show messages for fields that no longer exist. Clear it on kind change;
+  // re-validation still runs on the next submit.
+  const changeKind = (next: MetricKind) => {
+    setKind(next)
+    setFormErrors([])
+  }
+
   return (
     <div className="h-full overflow-y-auto">
       <form
@@ -318,7 +326,7 @@ export function MetricForm({ slug, metric, dataSources, events, onClose }: Metri
               <RadioCards
                 groupLabel="Metric kind"
                 value={kind}
-                onChange={value => setKind(value as MetricKind)}
+                onChange={value => changeKind(value as MetricKind)}
                 options={KIND_OPTIONS}
               />
             ) : (

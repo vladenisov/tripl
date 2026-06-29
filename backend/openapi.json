@@ -8573,7 +8573,8 @@
         "enum": [
           "sql",
           "fact_aggregation",
-          "event_composition"
+          "event_composition",
+          "fact"
         ],
         "title": "MetricKind",
         "type": "string"

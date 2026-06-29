@@ -5375,7 +5375,7 @@ export interface components {
          * @description How a MetricDefinition produces its per-bucket value.
          * @enum {string}
          */
-        MetricKind: "sql" | "fact_aggregation" | "event_composition";
+        MetricKind: "sql" | "fact_aggregation" | "event_composition" | "fact";
         /**
          * MetricScopeType
          * @enum {string}

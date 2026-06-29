@@ -53,6 +53,13 @@ function resolveCrumbs(pathname: string, slug?: string, projectName?: string): C
   if (pathname.includes('/monitoring/event/') || pathname.includes('/events/detail/')) {
     return { crumbs: [projectCrumb, 'Plan', 'Events'], title: 'Detail' }
   }
+  // Catalog-metric drilldowns belong to the Metrics surface, not Monitors, so
+  // their breadcrumb reads "… › Observe › Metrics" (matching the metrics list
+  // nav) instead of the generic "Observe › Monitors". Check before the generic
+  // /monitoring/ branch.
+  if (pathname.includes('/monitoring/metric/')) {
+    return { crumbs: [projectCrumb, 'Observe', 'Metrics'], title: 'Detail' }
+  }
   if (pathname.includes('/monitoring/')) {
     return { crumbs: [projectCrumb, 'Observe', 'Monitors'], title: 'Detail' }
   }

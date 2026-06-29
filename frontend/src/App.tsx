@@ -43,6 +43,30 @@ function withSuspense(element: React.ReactNode) {
   )
 }
 
+function MetricRouteFallback() {
+  return (
+    <div className="flex min-h-[240px] items-center justify-center text-sm text-muted-foreground">
+      Loading metrics…
+    </div>
+  )
+}
+
+/**
+ * Keyed Suspense for the lazy metric routes. The shared {@link withSuspense}
+ * reuses a single boundary instance across navigations, so React keeps the
+ * previous (already-resolved) page on screen while the metric chunk loads — a
+ * brief flash of stale content. Keying the boundary by route forces a fresh
+ * mount that shows the fallback immediately. Scoped to metric routes so other
+ * routes keep their existing behavior.
+ */
+function withMetricSuspense(routeKey: string, element: ReactNode) {
+  return (
+    <Suspense key={routeKey} fallback={<MetricRouteFallback />}>
+      {element}
+    </Suspense>
+  )
+}
+
 function SessionFallback() {
   return (
     <div className="flex min-h-screen items-center justify-center bg-background px-6 text-sm text-muted-foreground">
@@ -246,9 +270,9 @@ export default function App() {
             <Route path="/p/:slug/monitors/:monitorId" element={withSuspense(<MonitorDetailPage />)} />
             <Route path="/p/:slug/reconciliation" element={withSuspense(<ReconciliationPage />)} />
             <Route path="/p/:slug/anomalies" element={withSuspense(<AnomaliesPage />)} />
-            <Route path="/p/:slug/metrics/new" element={withSuspense(<MetricEditPage />)} />
-            <Route path="/p/:slug/metrics/:metricId/edit" element={withSuspense(<MetricEditPage />)} />
-            <Route path="/p/:slug/metrics" element={withSuspense(<MetricsPage />)} />
+            <Route path="/p/:slug/metrics/new" element={withMetricSuspense('metrics-new', <MetricEditPage />)} />
+            <Route path="/p/:slug/metrics/:metricId/edit" element={withMetricSuspense('metrics-edit', <MetricEditPage />)} />
+            <Route path="/p/:slug/metrics" element={withMetricSuspense('metrics-list', <MetricsPage />)} />
             <Route path="/p/:slug/coverage" element={withSuspense(<CoveragePage />)} />
             <Route path="/p/:slug/concepts" element={withSuspense(<ConceptsPage />)} />
             <Route path="/p/:slug/settings/:tab/:itemId" element={withSuspense(<ProjectSettingsPage />)} />
