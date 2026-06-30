@@ -638,20 +638,30 @@ export default function MonitoringDetailPage() {
               {scope === 'metric' ? 'Back to metrics' : 'Back to events'}
             </Button>
             {scope === 'metric' && (
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => collectMut.mutate()}
-                disabled={collectMut.isPending}
-                title="Backfill a recent window now so the chart populates without waiting for the scheduler."
-              >
-                {collectMut.isPending ? (
-                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                ) : (
-                  <RefreshCw className="mr-2 h-4 w-4" />
-                )}
-                {collectMut.isPending ? 'Collecting…' : 'Collect now'}
-              </Button>
+              <div className="flex items-center gap-2">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => navigate(`/p/${slug}/metrics/${scopeId}/edit`)}
+                >
+                  <Pencil className="mr-2 h-4 w-4" />
+                  Edit
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => collectMut.mutate()}
+                  disabled={collectMut.isPending}
+                  title="Backfill a recent window now so the chart populates without waiting for the scheduler."
+                >
+                  {collectMut.isPending ? (
+                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                  ) : (
+                    <RefreshCw className="mr-2 h-4 w-4" />
+                  )}
+                  {collectMut.isPending ? 'Collecting…' : 'Collect now'}
+                </Button>
+              </div>
             )}
           </div>
 
