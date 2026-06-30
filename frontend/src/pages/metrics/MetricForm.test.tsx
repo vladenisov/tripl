@@ -190,6 +190,22 @@ describe('MetricForm validation', () => {
     await waitFor(() => expect(onClose).toHaveBeenCalled())
   })
 
+  it('pre-fills the internal name from the display name in snake_case until edited', () => {
+    renderForm()
+
+    const display = screen.getByLabelText('Display name', { exact: false })
+    fireEvent.change(display, { target: { value: 'Checkout Conversion!' } })
+    const internal = screen.getByLabelText('Internal name', { exact: false }) as HTMLInputElement
+    expect(internal.value).toBe('checkout_conversion')
+
+    // Editing the internal name directly stops further auto-derivation.
+    fireEvent.change(internal, { target: { value: 'my_metric' } })
+    fireEvent.change(display, { target: { value: 'Something Else' } })
+    expect(
+      (screen.getByLabelText('Internal name', { exact: false }) as HTMLInputElement).value,
+    ).toBe('my_metric')
+  })
+
   // A saved metric whose `config` is intentionally empty: in create mode that
   // would fail the "metric SQL query is required" check. It must not block an
   // edit, since config is immutable and excluded from the update.
@@ -346,7 +362,40 @@ describe('MetricForm validation', () => {
         aggregation: 'sum',
         measure_column: 'amount',
         distinct_column: null,
-        row_filter: null,
+        row_filters: [],
+        filter_sql: null,
+      }),
+    )
+  })
+
+  it('combines a named row filter with a free-text SQL filter', async () => {
+    renderForm()
+    fillFactIdentity('Completed revenue', 'completed_revenue')
+
+    await waitFor(() =>
+      expect(document.querySelector('#metric-fact-table option[value="ft-1"]')).not.toBeNull(),
+    )
+    fireEvent.change(document.getElementById('metric-fact-table')!, { target: { value: 'ft-1' } })
+    // Detail (columns + named row filters) loads asynchronously.
+    await waitFor(() =>
+      expect(screen.getByRole('checkbox', { name: 'Apply the completed row filter' })).toBeInTheDocument(),
+    )
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Apply the completed row filter' }))
+    fireEvent.change(document.getElementById('metric-fact-filter-sql')!, {
+      target: { value: 'amount > 0' },
+    })
+
+    submit()
+
+    await waitFor(() => expect(metricsCatalogApi.create).toHaveBeenCalledTimes(1))
+    expect(metricsCatalogApi.create).toHaveBeenCalledWith(
+      'demo',
+      expect.objectContaining({
+        kind: 'fact',
+        composition: 'single',
+        fact_table_id: 'ft-1',
+        row_filters: ['completed'],
+        filter_sql: 'amount > 0',
       }),
     )
   })

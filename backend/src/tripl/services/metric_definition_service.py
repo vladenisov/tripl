@@ -95,16 +95,19 @@ async def _verify_fact_operand(
     fact_table_id: uuid.UUID,
     measure_column: str | None,
     distinct_column: str | None,
-    row_filter: str | None,
+    row_filters: list[str],
     role: str,
 ) -> None:
     """Validate one fact operand against its referenced fact table.
 
     The fact table must exist and belong to the metric's project; any
     ``measure_column`` / ``distinct_column`` must be one of the fact table's
-    introspected column names; any ``row_filter`` must be the NAME of one of the
-    fact table's stored row filters (never a raw SQL fragment). Identifier-shape
-    and per-aggregation requirements were already enforced at the schema boundary.
+    introspected column names; EVERY name in ``row_filters`` must be the NAME of
+    one of the fact table's stored row filters (never a raw SQL fragment).
+    ``filter_sql`` is a free-text fragment guarded at the schema boundary (same
+    trust model as the named fragments), so it needs no DB-backed check here.
+    Identifier-shape and per-aggregation requirements were already enforced at
+    the schema boundary.
     """
     fact_table = await session.get(FactTable, fact_table_id)
     if fact_table is None or fact_table.project_id != project_id:
@@ -125,18 +128,19 @@ async def _verify_fact_operand(
                 detail=f"{role}: column {column!r} is not a column of the referenced fact table",
             )
 
-    if row_filter is not None:
+    if row_filters:
         filter_names = {
             row["name"]
             for row in (fact_table.row_filters or [])
             if isinstance(row, dict) and "name" in row
         }
-        if row_filter not in filter_names:
-            raise HTTPException(
-                status_code=422,
-                detail=f"{role}: row filter {row_filter!r} is not defined on the referenced "
-                "fact table",
-            )
+        for name in row_filters:
+            if name not in filter_names:
+                raise HTTPException(
+                    status_code=422,
+                    detail=f"{role}: row filter {name!r} is not defined on the referenced "
+                    "fact table",
+                )
 
 
 async def _verify_fact_metric(
@@ -157,7 +161,7 @@ async def _verify_fact_metric(
                 fact_table_id=operand.fact_table_id,
                 measure_column=operand.measure_column,
                 distinct_column=operand.distinct_column,
-                row_filter=operand.row_filter,
+                row_filters=operand.effective_row_filters(),
                 role=role,
             )
         return
@@ -171,7 +175,7 @@ async def _verify_fact_metric(
         fact_table_id=data.fact_table_id,
         measure_column=data.measure_column,
         distinct_column=data.distinct_column,
-        row_filter=data.row_filter,
+        row_filters=data.effective_row_filters(),
         role="single",
     )
 

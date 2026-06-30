@@ -342,8 +342,10 @@ def test_different_filters_share_one_scan(
 
     adapter = _BatchAdapter(
         spec_values={
-            (sql, MetricAggregation.count, None, "amount > 0"): {B10: 5.0},
-            (sql, MetricAggregation.count, None, "amount < 0"): {B10: 2.0},
+            # Each named fragment is wrapped in parentheses by the combined-filter
+            # assembly (so multi-filter ANDing is precedence-safe).
+            (sql, MetricAggregation.count, None, "(amount > 0)"): {B10: 5.0},
+            (sql, MetricAggregation.count, None, "(amount < 0)"): {B10: 2.0},
         }
     )
     _patch(monkeypatch, sync_session_factory, adapter)
@@ -353,7 +355,7 @@ def test_different_filters_share_one_scan(
     assert adapter.multi_calls == 1
     # Both filters became conditional aggregate columns in the single scan.
     filters = {spec.filter_sql for spec in adapter.seen_specs[0]}
-    assert filters == {"amount > 0", "amount < 0"}
+    assert filters == {"(amount > 0)", "(amount < 0)"}
     with sync_session_factory() as session:
         assert _values_for(session, pos_id) == {(B10, 5.0)}
         assert _values_for(session, neg_id) == {(B10, 2.0)}
@@ -641,3 +643,145 @@ def test_scheduler_groups_fact_metrics_into_batch(
             reloaded = session.get(MetricDefinition, metric_id)
             assert reloaded is not None
             assert reloaded.last_collection_status == "running"
+
+
+# (h) multiple named filters ANDed, free-text filter_sql, both, and legacy ──────
+
+
+def test_multiple_named_filters_anded(
+    sync_session_factory: sessionmaker[Session],
+    monkeypatch: MonkeyPatch,
+) -> None:
+    with sync_session_factory() as session:
+        project, data_source = _seed_project_and_ds(session)
+        fact_table = _seed_fact_table(
+            session,
+            project,
+            data_source,
+            row_filters=[
+                {"name": "positive", "sql": "amount > 0"},
+                {"name": "big", "sql": "amount > 100"},
+            ],
+        )
+        sql = fact_table.sql
+        metric = _make_single_metric(
+            session,
+            project,
+            fact_table,
+            aggregation=MetricAggregation.count,
+            config={"row_filters": ["positive", "big"]},
+        )
+        def_id = metric.id
+
+    combined = "(amount > 0) AND (amount > 100)"
+    adapter = _BatchAdapter(
+        spec_values={(sql, MetricAggregation.count, None, combined): {B10: 3.0}}
+    )
+    _patch(monkeypatch, sync_session_factory, adapter)
+
+    metric_collect.collect_fact_metrics_batch.run([str(def_id)])
+
+    assert {spec.filter_sql for spec in adapter.seen_specs[0]} == {combined}
+    with sync_session_factory() as session:
+        assert _values_for(session, def_id) == {(B10, 3.0)}
+
+
+def test_free_text_filter_sql(
+    sync_session_factory: sessionmaker[Session],
+    monkeypatch: MonkeyPatch,
+) -> None:
+    with sync_session_factory() as session:
+        project, data_source = _seed_project_and_ds(session)
+        fact_table = _seed_fact_table(session, project, data_source)
+        sql = fact_table.sql
+        metric = _make_single_metric(
+            session,
+            project,
+            fact_table,
+            aggregation=MetricAggregation.count,
+            config={"filter_sql": "amount > 5"},
+        )
+        def_id = metric.id
+
+    combined = "(amount > 5)"
+    adapter = _BatchAdapter(
+        spec_values={(sql, MetricAggregation.count, None, combined): {B10: 7.0}}
+    )
+    _patch(monkeypatch, sync_session_factory, adapter)
+
+    metric_collect.collect_fact_metrics_batch.run([str(def_id)])
+
+    assert {spec.filter_sql for spec in adapter.seen_specs[0]} == {combined}
+    with sync_session_factory() as session:
+        assert _values_for(session, def_id) == {(B10, 7.0)}
+
+
+def test_named_filters_and_filter_sql_together(
+    sync_session_factory: sessionmaker[Session],
+    monkeypatch: MonkeyPatch,
+) -> None:
+    with sync_session_factory() as session:
+        project, data_source = _seed_project_and_ds(session)
+        fact_table = _seed_fact_table(
+            session,
+            project,
+            data_source,
+            row_filters=[{"name": "positive", "sql": "amount > 0"}],
+        )
+        sql = fact_table.sql
+        metric = _make_single_metric(
+            session,
+            project,
+            fact_table,
+            aggregation=MetricAggregation.count,
+            config={"row_filters": ["positive"], "filter_sql": "amount > 5"},
+        )
+        def_id = metric.id
+
+    combined = "(amount > 0) AND (amount > 5)"
+    adapter = _BatchAdapter(
+        spec_values={(sql, MetricAggregation.count, None, combined): {B10: 2.0}}
+    )
+    _patch(monkeypatch, sync_session_factory, adapter)
+
+    metric_collect.collect_fact_metrics_batch.run([str(def_id)])
+
+    assert {spec.filter_sql for spec in adapter.seen_specs[0]} == {combined}
+    with sync_session_factory() as session:
+        assert _values_for(session, def_id) == {(B10, 2.0)}
+
+
+def test_legacy_single_row_filter_still_works(
+    sync_session_factory: sessionmaker[Session],
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """A config written with the legacy single ``row_filter`` key still collects."""
+    with sync_session_factory() as session:
+        project, data_source = _seed_project_and_ds(session)
+        fact_table = _seed_fact_table(
+            session,
+            project,
+            data_source,
+            row_filters=[{"name": "positive", "sql": "amount > 0"}],
+        )
+        sql = fact_table.sql
+        metric = _make_single_metric(
+            session,
+            project,
+            fact_table,
+            aggregation=MetricAggregation.count,
+            config={"row_filter": "positive"},
+        )
+        def_id = metric.id
+
+    combined = "(amount > 0)"
+    adapter = _BatchAdapter(
+        spec_values={(sql, MetricAggregation.count, None, combined): {B10: 9.0}}
+    )
+    _patch(monkeypatch, sync_session_factory, adapter)
+
+    metric_collect.collect_fact_metrics_batch.run([str(def_id)])
+
+    assert {spec.filter_sql for spec in adapter.seen_specs[0]} == {combined}
+    with sync_session_factory() as session:
+        assert _values_for(session, def_id) == {(B10, 9.0)}

@@ -93,8 +93,8 @@ class MetricDefinition(UUIDMixin, TimestampMixin, Base):
     )
     # Free-form, kind-specific scalar config validated by a Pydantic discriminated
     # union at the schema boundary. fact single: measure_column, distinct_column,
-    # row_filter. fact ratio: numerator/denominator operands. sql: metric_sql,
-    # time_column.
+    # row_filters (named filters, ANDed), filter_sql (free-text WHERE). fact ratio:
+    # numerator/denominator operands. sql: metric_sql, time_column.
     config: Mapped[dict[str, object]] = mapped_column(JSON, default=dict, server_default="{}")
 
     # --- Fact-table model binding ---

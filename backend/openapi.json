@@ -6659,7 +6659,7 @@
         "type": "object"
       },
       "FactMetricCreate": {
-        "description": "An aggregation over a separately-defined ``FactTable``.\n\nSINGLE (``composition=single``, the default): one operand given by the\ntop-level ``fact_table_id`` + ``aggregation`` + the ``measure_column`` /\n``distinct_column`` / ``row_filter`` config fields.\n\nRATIO (``composition=ratio``): ``numerator`` / ``denominator`` operands (each\na :class:`FactOperand`); the denominator MAY reference a different fact table.\nThe numerator operand is mirrored onto the model's ``fact_table_id`` /\n``aggregation`` columns for catalog display and FK integrity.\n\nThe data source and timestamp column are taken from the referenced fact\ntable(s) at collection time; only the collection ``interval`` lives here.\nFact-table existence, project ownership, column membership, and row-filter\nname resolution are checked in the service (they need the DB).",
+        "description": "An aggregation over a separately-defined ``FactTable``.\n\nSINGLE (``composition=single``, the default): one operand given by the\ntop-level ``fact_table_id`` + ``aggregation`` + the ``measure_column`` /\n``distinct_column`` / ``row_filters`` / ``filter_sql`` config fields (the\nlegacy single ``row_filter`` name is still accepted and folded in).\n\nRATIO (``composition=ratio``): ``numerator`` / ``denominator`` operands (each\na :class:`FactOperand`); the denominator MAY reference a different fact table.\nThe numerator operand is mirrored onto the model's ``fact_table_id`` /\n``aggregation`` columns for catalog display and FK integrity.\n\nThe data source and timestamp column are taken from the referenced fact\ntable(s) at collection time; only the collection ``interval`` lives here.\nFact-table existence, project ownership, column membership, and row-filter\nname resolution are checked in the service (they need the DB).",
         "properties": {
           "aggregation": {
             "anyOf": [
@@ -6764,6 +6764,18 @@
             ],
             "title": "Fact Table Id"
           },
+          "filter_sql": {
+            "anyOf": [
+              {
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Filter Sql"
+          },
           "interval": {
             "$ref": "#/components/schemas/ScanInterval"
           },
@@ -6860,6 +6872,13 @@
             ],
             "title": "Row Filter"
           },
+          "row_filters": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Row Filters",
+            "type": "array"
+          },
           "status": {
             "$ref": "#/components/schemas/MetricStatus",
             "default": "draft"
@@ -6887,7 +6906,7 @@
       },
       "FactOperand": {
         "additionalProperties": false,
-        "description": "One fact-table aggregation operand (a single metric, or one ratio side).\n\nReferences a ``FactTable`` by id and aggregates one of its introspected\ncolumns. ``measure_column`` / ``distinct_column`` reach warehouse SQL\nunparameterised, so they are identifier-validated here; their membership in\nthe referenced fact table's columns is checked in the service (it needs the\nDB). ``row_filter`` is the NAME of one of that fact table's stored row\nfilters \u2014 never a raw SQL fragment \u2014 resolved to SQL at collection time.",
+        "description": "One fact-table aggregation operand (a single metric, or one ratio side).\n\nReferences a ``FactTable`` by id and aggregates one of its introspected\ncolumns. ``measure_column`` / ``distinct_column`` reach warehouse SQL\nunparameterised, so they are identifier-validated here; their membership in\nthe referenced fact table's columns is checked in the service (it needs the\nDB).\n\nRow filtering combines two inputs, ANDed together at collection time:\n``row_filters`` is a list of NAMES of that fact table's stored row filters\n(each resolved to its SQL fragment; membership checked in the service), and\n``filter_sql`` is a free-text boolean WHERE fragment (SQL-safety-validated\nhere). The legacy single ``row_filter`` name is still accepted on input and\nfolded into the effective named-filter set; new writes use ``row_filters`` +\n``filter_sql``.",
         "properties": {
           "aggregation": {
             "$ref": "#/components/schemas/MetricAggregation"
@@ -6909,6 +6928,18 @@
             "format": "uuid",
             "title": "Fact Table Id",
             "type": "string"
+          },
+          "filter_sql": {
+            "anyOf": [
+              {
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Filter Sql"
           },
           "measure_column": {
             "anyOf": [
@@ -6935,6 +6966,13 @@
               }
             ],
             "title": "Row Filter"
+          },
+          "row_filters": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Row Filters",
+            "type": "array"
           }
         },
         "required": [

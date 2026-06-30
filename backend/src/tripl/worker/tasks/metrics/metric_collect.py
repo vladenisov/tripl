@@ -124,6 +124,30 @@ def _config_str(config: Mapping[str, object], key: str) -> str | None:
     return value if isinstance(value, str) and value else None
 
 
+def _config_str_list(config: Mapping[str, object], key: str) -> list[str]:
+    """Return ``config[key]`` as a list of non-empty strings (else ``[]``)."""
+    value = config.get(key)
+    if not isinstance(value, list):
+        return []
+    return [item for item in value if isinstance(item, str) and item]
+
+
+def _effective_filter_names(config: Mapping[str, object]) -> tuple[str, ...]:
+    """Effective named-filter set from a stored operand ``config``.
+
+    Reads the new ``row_filters`` list and folds in a legacy single
+    ``row_filter`` name (back-compat with configs written before multi-filter
+    support). Order is preserved and duplicates removed so the WHERE assembled
+    from it is deterministic and identical across the per-metric and batched
+    collection paths.
+    """
+    effective: list[str] = list(_config_str_list(config, "row_filters"))
+    legacy = _config_str(config, "row_filter")
+    if legacy is not None and legacy not in effective:
+        effective.append(legacy)
+    return tuple(effective)
+
+
 def _coerce_value(raw: object) -> float:
     """Coerce a warehouse aggregate cell to ``float`` (ints, Decimals, strings)."""
     return float(cast("float | int | str", raw))
@@ -212,13 +236,20 @@ def _read_event_metric_series(
 
 @dataclass(frozen=True)
 class _FactOperand:
-    """One resolved fact operand (the single metric, or one ratio side)."""
+    """One resolved fact operand (the single metric, or one ratio side).
+
+    ``row_filters`` is the effective named-filter set (legacy single
+    ``row_filter`` already folded in) and ``filter_sql`` is the optional
+    free-text WHERE fragment; both are resolved to one ANDed WHERE expression at
+    collection time.
+    """
 
     fact_table_id: uuid.UUID
     aggregation: MetricAggregation
     measure_column: str | None
     distinct_column: str | None
-    row_filter: str | None
+    row_filters: tuple[str, ...]
+    filter_sql: str | None
 
 
 def _operand_from_config(raw: Mapping[str, object]) -> _FactOperand:
@@ -233,7 +264,8 @@ def _operand_from_config(raw: Mapping[str, object]) -> _FactOperand:
         aggregation=coerce_aggregation(aggregation),
         measure_column=_config_str(raw, "measure_column"),
         distinct_column=_config_str(raw, "distinct_column"),
-        row_filter=_config_str(raw, "row_filter"),
+        row_filters=_effective_filter_names(raw),
+        filter_sql=_config_str(raw, "filter_sql"),
     )
 
 
@@ -251,25 +283,57 @@ def _fact_operand_measure(operand: _FactOperand) -> str | None:
     return operand.measure_column
 
 
-def _resolve_fact_operand_query(fact_table: FactTable, row_filter_name: str | None) -> str:
-    """Resolve a fact operand's base query, applying its named row filter.
+def _resolve_named_filter_fragment(fact_table: FactTable, name: str) -> str:
+    """Resolve one named row filter to its validated boolean WHERE fragment.
 
-    The base query is the fact table's stored ``sql``. A ``row_filter_name`` (if
-    set) must match one of the fact table's stored row filters by NAME; the
-    associated (already-validated) fragment wraps the source in a bounded
-    ``WHERE`` subquery. The fragment is re-validated here as defence in depth.
+    ``name`` must match one of the fact table's stored row filters by NAME; the
+    associated fragment is re-validated here as defence in depth. Raises a
+    ``ScanError`` for an unknown name.
     """
-    source = fact_table.sql
-    if row_filter_name is None:
-        return source
     for row_filter in fact_table.row_filters or []:
-        if isinstance(row_filter, Mapping) and row_filter.get("name") == row_filter_name:
+        if isinstance(row_filter, Mapping) and row_filter.get("name") == name:
             fragment = row_filter.get("sql")
             if isinstance(fragment, str) and fragment:
-                safe = validate_sql_fragment(fragment)
-                return f"SELECT * FROM ({source}) AS _filtered WHERE {safe}"
-    msg = f"row filter {row_filter_name!r} is not defined on fact table {fact_table.id}"
+                return validate_sql_fragment(fragment)
+    msg = f"row filter {name!r} is not defined on fact table {fact_table.id}"
     raise ScanError(msg)
+
+
+def _resolve_combined_filter(
+    fact_table: FactTable, *, row_filters: tuple[str, ...], filter_sql: str | None
+) -> str | None:
+    """Resolve an operand's named filters + free-text ``filter_sql`` into one WHERE.
+
+    Every name in ``row_filters`` is resolved to its stored SQL fragment (by
+    NAME), then a present ``filter_sql`` is appended; each fragment is wrapped in
+    parentheses and the list is joined with ``" AND "``. An empty set returns
+    ``None`` (no extra WHERE). The SAME combined string is consumed by both the
+    per-metric path (a bounded ``WHERE`` subquery) and the batched path (a
+    conditional aggregate), preserving value-identity between them.
+    """
+    fragments = [_resolve_named_filter_fragment(fact_table, name) for name in row_filters]
+    if filter_sql is not None:
+        fragments.append(validate_sql_fragment(filter_sql))
+    if not fragments:
+        return None
+    return " AND ".join(f"({fragment})" for fragment in fragments)
+
+
+def _resolve_fact_operand_query(fact_table: FactTable, operand: _FactOperand) -> str:
+    """Resolve a fact operand's base query, applying its combined row filter.
+
+    The base query is the fact table's stored ``sql``. The operand's effective
+    named filters and ``filter_sql`` are assembled into one ANDed boolean
+    expression (see ``_resolve_combined_filter``); when present it wraps the
+    source in a bounded ``WHERE`` subquery, else the source is returned as-is.
+    """
+    source = fact_table.sql
+    combined = _resolve_combined_filter(
+        fact_table, row_filters=operand.row_filters, filter_sql=operand.filter_sql
+    )
+    if combined is None:
+        return source
+    return f"SELECT * FROM ({source}) AS _filtered WHERE {combined}"
 
 
 def _load_fact_table(
@@ -312,7 +376,7 @@ def _aggregate_fact_window(
     Returns ``(values_by_bucket, base_query, validated_measure)`` so a SINGLE
     caller can reuse the base query / measure for its breakdown pass.
     """
-    base_query = _resolve_fact_operand_query(fact_table, operand.row_filter)
+    base_query = _resolve_fact_operand_query(fact_table, operand)
     measure = _fact_operand_measure(operand)
     if requires_measure(operand.aggregation):
         if measure is None:
@@ -482,7 +546,8 @@ def _collect_fact_single(
         aggregation=coerce_aggregation(definition.aggregation),
         measure_column=_config_str(config, "measure_column"),
         distinct_column=_config_str(config, "distinct_column"),
-        row_filter=_config_str(config, "row_filter"),
+        row_filters=_effective_filter_names(config),
+        filter_sql=_config_str(config, "filter_sql"),
     )
     ds = session.get(DataSource, fact_table.data_source_id)
     if ds is None:
@@ -652,28 +717,27 @@ def _collect_fact_ratio(
 # aggregate equals the same aggregate over the row-filtered subquery.
 
 
-def _resolve_fact_operand_filter(fact_table: FactTable, row_filter_name: str | None) -> str | None:
-    """Resolve a named row filter to its validated boolean WHERE fragment.
+def _resolve_fact_operand_filter(operand: _FactOperand, *, fact_table: FactTable) -> str | None:
+    """Resolve an operand's combined WHERE fragment for the batched path.
 
     Unlike ``_resolve_fact_operand_query`` (which wraps the source in a bounded
     ``WHERE`` subquery for the single-aggregate path), this returns just the
-    validated fragment so it can be injected as a per-aggregate conditional in a
-    shared multi-aggregate scan. ``None`` means no filter (a plain aggregate).
+    combined boolean fragment so it can be injected as a per-aggregate
+    conditional in a shared multi-aggregate scan. The fragment is built by the
+    SAME ``_resolve_combined_filter`` the per-metric path uses, so the conditional
+    aggregate computes the identical value. ``None`` means no filter.
     """
-    if row_filter_name is None:
-        return None
-    for row_filter in fact_table.row_filters or []:
-        if isinstance(row_filter, Mapping) and row_filter.get("name") == row_filter_name:
-            fragment = row_filter.get("sql")
-            if isinstance(fragment, str) and fragment:
-                return validate_sql_fragment(fragment)
-    msg = f"row filter {row_filter_name!r} is not defined on fact table {fact_table.id}"
-    raise ScanError(msg)
+    return _resolve_combined_filter(
+        fact_table, row_filters=operand.row_filters, filter_sql=operand.filter_sql
+    )
 
 
 # A spec's dedup identity: same aggregation, same measure/distinct column and
-# same named row filter aggregate to the SAME warehouse column, so two metrics
-# needing the same aggregate share one column in the scan.
+# the same combined filter expression aggregate to the SAME warehouse column, so
+# two metrics needing the same aggregate share one column in the scan. The
+# combined filter string (built deterministically by ``_resolve_combined_filter``)
+# is the true identity, so equal effective filters — whatever named/free-text mix
+# produced them — dedup to one column.
 _SpecDedupKey = tuple[MetricAggregation, str | None, str | None]
 
 
@@ -694,9 +758,8 @@ class _SpecRegistry:
         aggregation: MetricAggregation,
         measure: str | None,
         filter_sql: str | None,
-        filter_name: str | None,
     ) -> str:
-        dedup: _SpecDedupKey = (aggregation, measure, filter_name)
+        dedup: _SpecDedupKey = (aggregation, measure, filter_sql)
         key = self._keys.get(dedup)
         if key is None:
             key = f"k{len(self.specs)}"
@@ -771,7 +834,7 @@ def _resolve_batch_operand(
             msg = "fact table query returned no columns; cannot validate measure column"
             raise ScanError(msg)
         measure = validate_measure_column(measure, allowed_columns)
-    filter_sql = _resolve_fact_operand_filter(fact_table, operand.row_filter)
+    filter_sql = _resolve_fact_operand_filter(operand, fact_table=fact_table)
     return measure, filter_sql
 
 
@@ -928,7 +991,8 @@ def _plan_single_metric(
         aggregation=coerce_aggregation(definition.aggregation),
         measure_column=_config_str(config, "measure_column"),
         distinct_column=_config_str(config, "distinct_column"),
-        row_filter=_config_str(config, "row_filter"),
+        row_filters=_effective_filter_names(config),
+        filter_sql=_config_str(config, "filter_sql"),
     )
     measure, filter_sql = _resolve_batch_operand(
         operand,
@@ -940,7 +1004,6 @@ def _plan_single_metric(
         aggregation=operand.aggregation,
         measure=measure,
         filter_sql=filter_sql,
-        filter_name=operand.row_filter,
     )
 
     breakdown_columns: list[str] = list(definition.breakdown_columns or [])
@@ -959,7 +1022,6 @@ def _plan_single_metric(
             aggregation=operand.aggregation,
             measure=measure,
             filter_sql=filter_sql,
-            filter_name=operand.row_filter,
         )
         breakdowns.append(
             _BreakdownPlan(
@@ -1008,7 +1070,6 @@ def _plan_ratio_metric(
             aggregation=operand.aggregation,
             measure=measure,
             filter_sql=filter_sql,
-            filter_name=operand.row_filter,
         )
         keys.append((fact_table.id, spec_key))
     (numerator_ft_id, numerator_key), (denominator_ft_id, denominator_key) = keys

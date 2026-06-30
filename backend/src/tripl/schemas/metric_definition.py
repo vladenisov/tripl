@@ -9,6 +9,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 from tripl.core.adapters.measure_validator import (
     validate_identifier,
     validate_select_sql_safety,
+    validate_sql_fragment,
 )
 from tripl.models.domain_enums import (
     MetricAggregation,
@@ -29,6 +30,57 @@ def _validate_optional_identifier(value: str | None) -> str | None:
     untouched; any provided value must pass the allowlist regex or raise.
     """
     return value if value is None else validate_identifier(value)
+
+
+def _validate_row_filter_names(value: list[str]) -> list[str]:
+    """Validate a list of named-filter references (labels, not raw SQL).
+
+    Each name is matched by equality against the fact table's stored row-filter
+    names at collection time; the name itself never reaches SQL, so only a
+    non-empty / length bound is enforced here (membership is checked in the
+    service, which needs the DB). Raises ``ValueError`` on an empty or overlong
+    entry.
+    """
+    names: list[str] = []
+    for raw in value:
+        if not raw or not raw.strip():
+            raise ValueError("row_filters entries must be non-empty")
+        if len(raw) > 255:
+            raise ValueError("row_filters entries must be at most 255 characters")
+        names.append(raw)
+    return names
+
+
+def _validate_optional_filter_sql(value: str | None) -> str | None:
+    """Validate a free-text ``filter_sql`` WHERE fragment at the schema boundary.
+
+    ``filter_sql`` reaches warehouse SQL with no bound parameters, so it is
+    guarded with the SAME validator as a fact table's named row filter
+    (``validate_sql_fragment``): it rejects comment markers, ``;`` separators,
+    and DDL/DML/``UNION``/subquery keywords. An empty-after-strip value is
+    rejected; ``None`` (absent) passes through unchanged.
+    """
+    if value is None:
+        return None
+    stripped = value.strip()
+    if not stripped:
+        raise ValueError("filter_sql must not be empty")
+    return validate_sql_fragment(stripped)
+
+
+def _fold_row_filters(row_filters: list[str], row_filter: str | None) -> list[str]:
+    """Fold a legacy single ``row_filter`` name into the ``row_filters`` set.
+
+    The effective named-filter set is ``row_filters`` plus a present legacy
+    ``row_filter`` (appended if not already present). Order is preserved and
+    duplicates removed so the set — and the WHERE it assembles at collection
+    time — is deterministic.
+    """
+    effective: list[str] = []
+    for name in (*row_filters, *((row_filter,) if row_filter else ())):
+        if name not in effective:
+            effective.append(name)
+    return effective
 
 
 # Aggregations that operate on a measure column. ``count`` is the only one that
@@ -78,8 +130,15 @@ class FactOperand(BaseModel):
     columns. ``measure_column`` / ``distinct_column`` reach warehouse SQL
     unparameterised, so they are identifier-validated here; their membership in
     the referenced fact table's columns is checked in the service (it needs the
-    DB). ``row_filter`` is the NAME of one of that fact table's stored row
-    filters — never a raw SQL fragment — resolved to SQL at collection time.
+    DB).
+
+    Row filtering combines two inputs, ANDed together at collection time:
+    ``row_filters`` is a list of NAMES of that fact table's stored row filters
+    (each resolved to its SQL fragment; membership checked in the service), and
+    ``filter_sql`` is a free-text boolean WHERE fragment (SQL-safety-validated
+    here). The legacy single ``row_filter`` name is still accepted on input and
+    folded into the effective named-filter set; new writes use ``row_filters`` +
+    ``filter_sql``.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -88,12 +147,28 @@ class FactOperand(BaseModel):
     aggregation: MetricAggregation
     measure_column: str | None = Field(default=None, min_length=1, max_length=255)
     distinct_column: str | None = Field(default=None, min_length=1, max_length=255)
+    # Legacy single named filter — accepted on input for back-compat, folded into
+    # ``row_filters`` by ``effective_row_filters`` / ``to_config``.
     row_filter: str | None = Field(default=None, min_length=1, max_length=255)
+    # Names of named filters defined on this operand's fact table; ALL are ANDed.
+    row_filters: list[str] = Field(default_factory=list)
+    # Free-text boolean WHERE fragment, ANDed with the named filters.
+    filter_sql: str | None = Field(default=None, min_length=1)
 
     @field_validator("measure_column", "distinct_column")
     @classmethod
     def _check_identifier_fields(cls, value: str | None) -> str | None:
         return _validate_optional_identifier(value)
+
+    @field_validator("row_filters")
+    @classmethod
+    def _check_row_filters(cls, value: list[str]) -> list[str]:
+        return _validate_row_filter_names(value)
+
+    @field_validator("filter_sql")
+    @classmethod
+    def _check_filter_sql(cls, value: str | None) -> str | None:
+        return _validate_optional_filter_sql(value)
 
     @model_validator(mode="after")
     def validate_operand(self) -> FactOperand:
@@ -105,6 +180,10 @@ class FactOperand(BaseModel):
         )
         return self
 
+    def effective_row_filters(self) -> list[str]:
+        """The effective named-filter set (``row_filters`` + folded legacy name)."""
+        return _fold_row_filters(self.row_filters, self.row_filter)
+
     def to_config(self) -> dict[str, object]:
         """JSON-safe operand dict for the metric ``config`` column."""
         return {
@@ -112,7 +191,8 @@ class FactOperand(BaseModel):
             "aggregation": self.aggregation.value,
             "measure_column": self.measure_column,
             "distinct_column": self.distinct_column,
-            "row_filter": self.row_filter,
+            "row_filters": self.effective_row_filters(),
+            "filter_sql": self.filter_sql,
         }
 
 
@@ -191,7 +271,8 @@ class FactMetricCreate(_MetricDefinitionBase):
 
     SINGLE (``composition=single``, the default): one operand given by the
     top-level ``fact_table_id`` + ``aggregation`` + the ``measure_column`` /
-    ``distinct_column`` / ``row_filter`` config fields.
+    ``distinct_column`` / ``row_filters`` / ``filter_sql`` config fields (the
+    legacy single ``row_filter`` name is still accepted and folded in).
 
     RATIO (``composition=ratio``): ``numerator`` / ``denominator`` operands (each
     a :class:`FactOperand`); the denominator MAY reference a different fact table.
@@ -214,7 +295,12 @@ class FactMetricCreate(_MetricDefinitionBase):
     aggregation: MetricAggregation | None = None
     measure_column: str | None = Field(default=None, min_length=1, max_length=255)
     distinct_column: str | None = Field(default=None, min_length=1, max_length=255)
+    # Legacy single named filter — accepted on input for back-compat, folded into
+    # ``row_filters`` by ``effective_row_filters`` / ``to_create_values``.
     row_filter: str | None = Field(default=None, min_length=1, max_length=255)
+    # Names of named filters on the fact table (ALL ANDed) + a free-text WHERE.
+    row_filters: list[str] = Field(default_factory=list)
+    filter_sql: str | None = Field(default=None, min_length=1)
 
     # RATIO operands.
     numerator: FactOperand | None = None
@@ -224,6 +310,20 @@ class FactMetricCreate(_MetricDefinitionBase):
     @classmethod
     def _check_single_identifier_fields(cls, value: str | None) -> str | None:
         return _validate_optional_identifier(value)
+
+    @field_validator("row_filters")
+    @classmethod
+    def _check_single_row_filters(cls, value: list[str]) -> list[str]:
+        return _validate_row_filter_names(value)
+
+    @field_validator("filter_sql")
+    @classmethod
+    def _check_single_filter_sql(cls, value: str | None) -> str | None:
+        return _validate_optional_filter_sql(value)
+
+    def effective_row_filters(self) -> list[str]:
+        """The effective named-filter set for the single operand."""
+        return _fold_row_filters(self.row_filters, self.row_filter)
 
     @model_validator(mode="after")
     def validate_kind(self) -> FactMetricCreate:
@@ -263,6 +363,8 @@ class FactMetricCreate(_MetricDefinitionBase):
             or self.measure_column is not None
             or self.distinct_column is not None
             or self.row_filter is not None
+            or self.row_filters
+            or self.filter_sql is not None
         ):
             raise ValueError(
                 "ratio fact metric must not set top-level single-operand fields; "
@@ -276,7 +378,8 @@ class FactMetricCreate(_MetricDefinitionBase):
             config: dict[str, object] = {
                 "measure_column": self.measure_column,
                 "distinct_column": self.distinct_column,
-                "row_filter": self.row_filter,
+                "row_filters": self.effective_row_filters(),
+                "filter_sql": self.filter_sql,
             }
         else:
             if self.numerator is None or self.denominator is None:

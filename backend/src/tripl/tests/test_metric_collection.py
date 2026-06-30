@@ -36,6 +36,7 @@ from tripl.models.metric_value_breakdown import MetricValueBreakdown
 from tripl.models.project import Project
 from tripl.models.scan_config import ScanConfig
 from tripl.worker.analyzers.metric_composition import evaluate_composition
+from tripl.worker.tasks._errors import ScanError
 from tripl.worker.tasks.metrics import metric_collect
 from tripl.worker.tasks.metrics import schedule as metrics_schedule
 
@@ -1040,3 +1041,132 @@ def test_check_metric_definitions_due_reaps_stale_running(
     # A stale running marker is reclaimed and the metric is re-dispatched.
     assert result == {"checked": 1, "dispatched": 1}
     assert dispatched == [[str(def_id)]]
+
+
+# ── fact row-filter WHERE assembly (multiple named filters + free-text SQL) ──
+
+
+def _filter_fact_table() -> FactTable:
+    """A transient FactTable with two named row filters (no session needed)."""
+    return FactTable(
+        id=uuid.uuid4(),
+        project_id=uuid.uuid4(),
+        name="orders_ft",
+        display_name="Orders",
+        data_source_id=uuid.uuid4(),
+        sql="SELECT ts, amount FROM orders",
+        timestamp_column="ts",
+        columns=[
+            {"name": "ts", "type": "timestamp"},
+            {"name": "amount", "type": "number"},
+        ],
+        identifier_columns=[],
+        row_filters=[
+            {"name": "positive", "sql": "amount > 0"},
+            {"name": "big", "sql": "amount > 100"},
+        ],
+    )
+
+
+def _filter_operand(
+    *, row_filters: tuple[str, ...] = (), filter_sql: str | None = None
+) -> metric_collect._FactOperand:
+    return metric_collect._FactOperand(
+        fact_table_id=uuid.uuid4(),
+        aggregation=MetricAggregation.count,
+        measure_column=None,
+        distinct_column=None,
+        row_filters=row_filters,
+        filter_sql=filter_sql,
+    )
+
+
+def test_combined_filter_empty_is_none() -> None:
+    fact_table = _filter_fact_table()
+    assert (
+        metric_collect._resolve_combined_filter(fact_table, row_filters=(), filter_sql=None)
+        is None
+    )
+
+
+def test_combined_filter_single_named_is_parenthesised() -> None:
+    fact_table = _filter_fact_table()
+    combined = metric_collect._resolve_combined_filter(
+        fact_table, row_filters=("positive",), filter_sql=None
+    )
+    assert combined == "(amount > 0)"
+
+
+def test_combined_filter_multiple_named_are_anded() -> None:
+    fact_table = _filter_fact_table()
+    combined = metric_collect._resolve_combined_filter(
+        fact_table, row_filters=("positive", "big"), filter_sql=None
+    )
+    assert combined == "(amount > 0) AND (amount > 100)"
+
+
+def test_combined_filter_free_text_only() -> None:
+    fact_table = _filter_fact_table()
+    combined = metric_collect._resolve_combined_filter(
+        fact_table, row_filters=(), filter_sql="status = 'paid'"
+    )
+    assert combined == "(status = 'paid')"
+
+
+def test_combined_filter_named_and_free_text_are_anded() -> None:
+    fact_table = _filter_fact_table()
+    combined = metric_collect._resolve_combined_filter(
+        fact_table, row_filters=("positive",), filter_sql="status = 'paid'"
+    )
+    assert combined == "(amount > 0) AND (status = 'paid')"
+
+
+def test_combined_filter_unknown_name_raises() -> None:
+    fact_table = _filter_fact_table()
+    with pytest.raises(ScanError):
+        metric_collect._resolve_combined_filter(
+            fact_table, row_filters=("ghost",), filter_sql=None
+        )
+
+
+def test_per_metric_query_wraps_with_combined_filter() -> None:
+    fact_table = _filter_fact_table()
+    operand = _filter_operand(row_filters=("positive", "big"), filter_sql="status = 'paid'")
+    query = metric_collect._resolve_fact_operand_query(fact_table, operand)
+    assert query == (
+        "SELECT * FROM (SELECT ts, amount FROM orders) AS _filtered "
+        "WHERE (amount > 0) AND (amount > 100) AND (status = 'paid')"
+    )
+
+
+def test_per_metric_query_unfiltered_returns_source() -> None:
+    fact_table = _filter_fact_table()
+    operand = _filter_operand()
+    assert metric_collect._resolve_fact_operand_query(fact_table, operand) == fact_table.sql
+
+
+def test_per_metric_and_batch_filter_are_value_identical() -> None:
+    """The WHERE the per-metric path embeds == the conditional the batch injects."""
+    fact_table = _filter_fact_table()
+    operand = _filter_operand(row_filters=("positive", "big"), filter_sql="status = 'paid'")
+
+    batch_filter = metric_collect._resolve_fact_operand_filter(operand, fact_table=fact_table)
+    per_metric_query = metric_collect._resolve_fact_operand_query(fact_table, operand)
+
+    assert batch_filter is not None
+    # The exact boolean expression used in both paths must be identical.
+    assert per_metric_query.endswith(f"WHERE {batch_filter}")
+
+
+def test_effective_filter_names_folds_legacy_row_filter() -> None:
+    assert metric_collect._effective_filter_names({"row_filter": "positive"}) == ("positive",)
+
+
+def test_effective_filter_names_merges_list_and_legacy() -> None:
+    config = {"row_filters": ["positive"], "row_filter": "big"}
+    assert metric_collect._effective_filter_names(config) == ("positive", "big")
+
+
+def test_effective_filter_names_dedups_legacy_already_present() -> None:
+    config = {"row_filters": ["positive"], "row_filter": "positive"}
+    assert metric_collect._effective_filter_names(config) == ("positive",)

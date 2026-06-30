@@ -4867,7 +4867,8 @@ export interface components {
          *
          *     SINGLE (``composition=single``, the default): one operand given by the
          *     top-level ``fact_table_id`` + ``aggregation`` + the ``measure_column`` /
-         *     ``distinct_column`` / ``row_filter`` config fields.
+         *     ``distinct_column`` / ``row_filters`` / ``filter_sql`` config fields (the
+         *     legacy single ``row_filter`` name is still accepted and folded in).
          *
          *     RATIO (``composition=ratio``): ``numerator`` / ``denominator`` operands (each
          *     a :class:`FactOperand`); the denominator MAY reference a different fact table.
@@ -4911,6 +4912,8 @@ export interface components {
             distinct_column?: string | null;
             /** Fact Table Id */
             fact_table_id?: string | null;
+            /** Filter Sql */
+            filter_sql?: string | null;
             interval: components["schemas"]["ScanInterval"];
             /**
              * @description discriminator enum property added by openapi-typescript
@@ -4939,6 +4942,8 @@ export interface components {
             reviewed: boolean;
             /** Row Filter */
             row_filter?: string | null;
+            /** Row Filters */
+            row_filters?: string[];
             /** @default draft */
             status: components["schemas"]["MetricStatus"];
             /** Unit */
@@ -4952,8 +4957,15 @@ export interface components {
          *     columns. ``measure_column`` / ``distinct_column`` reach warehouse SQL
          *     unparameterised, so they are identifier-validated here; their membership in
          *     the referenced fact table's columns is checked in the service (it needs the
-         *     DB). ``row_filter`` is the NAME of one of that fact table's stored row
-         *     filters — never a raw SQL fragment — resolved to SQL at collection time.
+         *     DB).
+         *
+         *     Row filtering combines two inputs, ANDed together at collection time:
+         *     ``row_filters`` is a list of NAMES of that fact table's stored row filters
+         *     (each resolved to its SQL fragment; membership checked in the service), and
+         *     ``filter_sql`` is a free-text boolean WHERE fragment (SQL-safety-validated
+         *     here). The legacy single ``row_filter`` name is still accepted on input and
+         *     folded into the effective named-filter set; new writes use ``row_filters`` +
+         *     ``filter_sql``.
          */
         FactOperand: {
             aggregation: components["schemas"]["MetricAggregation"];
@@ -4964,10 +4976,14 @@ export interface components {
              * Format: uuid
              */
             fact_table_id: string;
+            /** Filter Sql */
+            filter_sql?: string | null;
             /** Measure Column */
             measure_column?: string | null;
             /** Row Filter */
             row_filter?: string | null;
+            /** Row Filters */
+            row_filters?: string[];
         };
         /**
          * FactTableColumnSchema

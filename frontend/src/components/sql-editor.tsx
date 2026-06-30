@@ -45,10 +45,31 @@ export function SqlEditor({
     return Object.fromEntries(tables.map(table => [table.name, table.columns.map(c => c.name)]))
   }, [tables])
 
-  const extensions = useMemo(
-    () => [sql({ dialect: highlightDialect(dialect), schema })],
-    [dialect, schema],
-  )
+  const extensions = useMemo(() => {
+    // lang-sql wires up BOTH completion sources for us: keyword/function
+    // completion from the dialect word lists, and (when `schema` is set)
+    // table/column completion. Tables already complete at the top level — not
+    // only after FROM/JOIN — and columns complete after `table.`. When the
+    // source exposes exactly one table we mark it `defaultTable` so its columns
+    // also complete unqualified (the common single-table metric/fact-table
+    // SELECT). `upperCaseKeywords: false` keeps keyword completions lower-case,
+    // matching the verbatim word lists in sql-dialects.ts.
+    //
+    // Note: CodeMirror's own fuzzy matcher only keeps prefix/word-boundary
+    // matches for 2-char queries (it drops scattered "gap" matches like `with`
+    // for "wh"), so a short query surfaces fewer keywords than a longer one;
+    // that ranking lives in @codemirror/autocomplete and is not configurable
+    // from here.
+    const defaultTable = tables?.length === 1 ? tables[0].name : undefined
+    return [
+      sql({
+        dialect: highlightDialect(dialect),
+        schema,
+        defaultTable,
+        upperCaseKeywords: false,
+      }),
+    ]
+  }, [dialect, schema, tables])
 
   const handleFormat = useCallback(() => {
     try {

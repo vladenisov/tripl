@@ -960,7 +960,7 @@ async def create_demo_project(session: AsyncSession) -> ProjectResponse:
         fact_table_id=orders_fact.id,
         aggregation=MetricAggregation.sum,
         measure_column="amount",
-        row_filter="completed",
+        row_filters=["completed"],
     )
     aov_metric_create = FactMetricCreate(
         name="average_order_value",

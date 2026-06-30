@@ -97,6 +97,31 @@ async def _create_sql_metric(
     return resp.json()
 
 
+async def _create_multi_filter_fact_table(client: AsyncClient, slug: str) -> dict:
+    """A fact table with two named row filters (for multi-filter metric tests)."""
+    resp = await client.post(
+        f"/api/v1/projects/{slug}/fact-tables",
+        json={
+            "name": "orders_multi_ft",
+            "display_name": "Orders Multi",
+            "sql": "SELECT created_at, amount, user_id FROM orders",
+            "timestamp_column": "created_at",
+            "columns": [
+                {"name": "created_at", "type": "timestamp"},
+                {"name": "amount", "type": "number"},
+                {"name": "user_id", "type": "string"},
+            ],
+            "identifier_columns": ["user_id"],
+            "row_filters": [
+                {"name": "positive", "sql": "amount > 0"},
+                {"name": "big", "sql": "amount > 100"},
+            ],
+        },
+    )
+    assert resp.status_code == 201, resp.text
+    return resp.json()
+
+
 class TestCreateHappyPaths:
     async def test_create_fact_single_sum(
         self, client: AsyncClient, project: dict, fact_table: dict
@@ -163,7 +188,77 @@ class TestCreateHappyPaths:
             },
         )
         assert resp.status_code == 201, resp.text
-        assert resp.json()["config"]["row_filter"] == "exclude_test"
+        # Legacy single ``row_filter`` is folded into the effective ``row_filters``.
+        config = resp.json()["config"]
+        assert config["row_filters"] == ["exclude_test"]
+        assert config["filter_sql"] is None
+
+    async def test_create_fact_single_with_multiple_row_filters(
+        self, client: AsyncClient, project: dict
+    ):
+        fact_table = await _create_multi_filter_fact_table(client, project["slug"])
+        resp = await client.post(
+            _metrics_url(project["slug"]),
+            json={
+                "kind": "fact",
+                "name": "big_positive_orders",
+                "display_name": "Big positive orders",
+                "composition": "single",
+                "fact_table_id": fact_table["id"],
+                "aggregation": "count",
+                "interval": "1h",
+                "row_filters": ["positive", "big"],
+            },
+        )
+        assert resp.status_code == 201, resp.text
+        config = resp.json()["config"]
+        assert config["row_filters"] == ["positive", "big"]
+        assert config["filter_sql"] is None
+
+    async def test_create_fact_single_with_filter_sql(
+        self, client: AsyncClient, project: dict, fact_table: dict
+    ):
+        resp = await client.post(
+            _metrics_url(project["slug"]),
+            json={
+                "kind": "fact",
+                "name": "free_text_revenue",
+                "display_name": "Free-text Revenue",
+                "composition": "single",
+                "fact_table_id": fact_table["id"],
+                "aggregation": "sum",
+                "interval": "1h",
+                "measure_column": "amount",
+                "filter_sql": "amount > 0",
+            },
+        )
+        assert resp.status_code == 201, resp.text
+        config = resp.json()["config"]
+        assert config["row_filters"] == []
+        assert config["filter_sql"] == "amount > 0"
+
+    async def test_create_fact_single_with_row_filters_and_filter_sql(
+        self, client: AsyncClient, project: dict
+    ):
+        fact_table = await _create_multi_filter_fact_table(client, project["slug"])
+        resp = await client.post(
+            _metrics_url(project["slug"]),
+            json={
+                "kind": "fact",
+                "name": "combo_filtered",
+                "display_name": "Combo filtered",
+                "composition": "single",
+                "fact_table_id": fact_table["id"],
+                "aggregation": "count",
+                "interval": "1h",
+                "row_filters": ["positive"],
+                "filter_sql": "amount < 1000",
+            },
+        )
+        assert resp.status_code == 201, resp.text
+        config = resp.json()["config"]
+        assert config["row_filters"] == ["positive"]
+        assert config["filter_sql"] == "amount < 1000"
 
     async def test_create_fact_ratio_cross_fact_table(
         self, client: AsyncClient, project: dict, fact_table: dict
@@ -446,6 +541,26 @@ class TestConfigValidation:
         )
         assert resp.status_code == 422, resp.text
 
+    async def test_fact_unknown_row_filters_entry_rejected(
+        self, client: AsyncClient, project: dict, fact_table: dict
+    ):
+        # One known name + one unknown name in ``row_filters`` -> 422 (same as the
+        # legacy single ``row_filter`` unknown-name rejection).
+        resp = await client.post(
+            _metrics_url(project["slug"]),
+            json={
+                "kind": "fact",
+                "name": "ghost_in_list",
+                "display_name": "Ghost in list",
+                "composition": "single",
+                "fact_table_id": fact_table["id"],
+                "aggregation": "count",
+                "interval": "1h",
+                "row_filters": ["exclude_test", "does_not_exist"],
+            },
+        )
+        assert resp.status_code == 422, resp.text
+
     async def test_fact_nonexistent_fact_table_rejected(
         self, client: AsyncClient, project: dict
     ):
@@ -604,6 +719,45 @@ class TestSchemaSecurityValidation:
                 "aggregation": "count",
                 "interval": "1h",
                 "row_filter": "1=1 UNION SELECT secret FROM users --",
+            },
+        )
+        assert resp.status_code == 422, resp.text
+
+    async def test_reject_filter_sql_injection(
+        self, client: AsyncClient, project: dict, fact_table: dict
+    ):
+        # ``filter_sql`` is free-text but SQL-safety-validated at the schema
+        # boundary (same guard as a fact table's named row filter): a stacked
+        # statement / UNION / comment probe is rejected.
+        resp = await client.post(
+            _metrics_url(project["slug"]),
+            json={
+                "kind": "fact",
+                "name": "inj_filter_sql",
+                "display_name": "Inj Filter SQL",
+                "composition": "single",
+                "fact_table_id": fact_table["id"],
+                "aggregation": "count",
+                "interval": "1h",
+                "filter_sql": "1=1; DROP TABLE users --",
+            },
+        )
+        assert resp.status_code == 422, resp.text
+
+    async def test_reject_empty_filter_sql(
+        self, client: AsyncClient, project: dict, fact_table: dict
+    ):
+        resp = await client.post(
+            _metrics_url(project["slug"]),
+            json={
+                "kind": "fact",
+                "name": "empty_filter_sql",
+                "display_name": "Empty Filter SQL",
+                "composition": "single",
+                "fact_table_id": fact_table["id"],
+                "aggregation": "count",
+                "interval": "1h",
+                "filter_sql": "   ",
             },
         )
         assert resp.status_code == 422, resp.text
