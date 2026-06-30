@@ -74,6 +74,25 @@ A **relation** records how events connect to each other — for example, that
 `checkout_started` is expected to be followed by `checkout_completed`. It
 captures the structure of a flow, not just the individual events.
 
+### Metric
+
+A **metric** is the number-shaped counterpart to an event: a value you watch over
+time rather than a thing that happens. "Revenue per hour", "the share of checkouts
+that succeed", or "sign-ups per active user" are metrics. Like an event, you define
+it yourself — but instead of a stream of occurrences it produces **one number per
+time bucket**. A metric is one of three kinds:
+
+- **SQL** — a `SELECT` you write that returns one value per bucket, run against a
+  data source on its own interval.
+- **Fact aggregation** — a count, sum, average, min, max, or distinct count over a
+  column of a table, with an optional filter and breakdowns — no SQL to write.
+- **Event composition** — built from events you already collect: a single event's
+  count, a ratio of one event to another, or an event per distinct user.
+
+Each metric has a lifecycle — **draft**, **active**, **archived** — and once
+active it is monitored exactly like an event. Unlike the rest of the plan, metrics
+are **project-wide and aren't branched**.
+
 ---
 
 ## Branches: changing the plan safely
@@ -127,11 +146,12 @@ value lists automatically**. Two ways to use it:
 - **Keeping in step** — you have a plan; a scan tells you where reality has
   moved on without it.
 
-### Metric
+### Event counts
 
-A **metric** is a count of an event over a slice of time — "how many
-`checkout_completed` events happened each hour". tripl collects these on a
-schedule and stores them, building up the history that monitoring needs.
+Behind monitoring, every scan rolls your raw events up into **counts over slices
+of time** — "how many `checkout_completed` events happened each hour". tripl
+collects these on a schedule and stores them, building up the history that
+monitoring — and event-composition [metrics](#metric) — needs.
 
 ---
 
@@ -146,7 +166,8 @@ expectation. Signals come in flavours: a sudden **spike**, an unexpected
 **drop**, or a change in **shape**.
 
 You can monitor at three levels: the **whole project**, an **event type**, or a
-single **event**.
+single **event** — and each active **metric** is watched the same way, as its own
+scope.
 
 ### Schema drift
 

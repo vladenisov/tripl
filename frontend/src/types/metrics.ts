@@ -1,5 +1,5 @@
 // Exhaustive scope-type union mirroring the backend MetricScopeType enum
-// (backend/src/tripl/models/domain_enums.py). Keep all six members in sync;
+// (backend/src/tripl/models/domain_enums.py). Keep all seven members in sync;
 // narrowing this to a subset silently mis-routes the omitted scopes.
 export type MetricScopeType =
   | 'project_total'
@@ -8,6 +8,7 @@ export type MetricScopeType =
   | 'schema'
   | 'distribution'
   | 'release_regression'
+  | 'metric'
 
 export interface EventMetricPoint {
   bucket: string

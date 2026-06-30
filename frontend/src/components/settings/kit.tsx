@@ -298,6 +298,8 @@ export function TextInput({
   type = 'text',
   disabled,
   id,
+  'aria-label': ariaLabel,
+  'aria-required': ariaRequired,
 }: {
   value: string
   onChange?: (value: string) => void
@@ -308,6 +310,8 @@ export function TextInput({
   type?: 'text' | 'password' | 'number'
   disabled?: boolean
   id?: string
+  'aria-label'?: string
+  'aria-required'?: boolean
 }) {
   const input = (
     <input
@@ -316,6 +320,8 @@ export function TextInput({
       value={value}
       placeholder={placeholder}
       disabled={disabled}
+      aria-label={ariaLabel}
+      aria-required={ariaRequired}
       onChange={(e) => onChange?.(e.target.value)}
       className={mono ? 'mono' : undefined}
       style={{
@@ -368,6 +374,7 @@ export function TextArea({
   mono,
   disabled,
   id,
+  'aria-required': ariaRequired,
 }: {
   value: string
   onChange?: (value: string) => void
@@ -376,6 +383,7 @@ export function TextArea({
   mono?: boolean
   disabled?: boolean
   id?: string
+  'aria-required'?: boolean
 }) {
   const props: TextareaHTMLAttributes<HTMLTextAreaElement> = {
     id,
@@ -383,6 +391,7 @@ export function TextArea({
     value,
     placeholder,
     disabled,
+    'aria-required': ariaRequired,
     onChange: (e) => onChange?.(e.target.value),
   }
   return (
@@ -414,12 +423,14 @@ export function Select({
   options,
   disabled,
   id,
+  'aria-required': ariaRequired,
 }: {
   value: string
   onChange?: (value: string) => void
   options: readonly SelectOption[]
   disabled?: boolean
   id?: string
+  'aria-required'?: boolean
 }) {
   return (
     <div className="relative" style={{ maxWidth: 280 }}>
@@ -427,6 +438,7 @@ export function Select({
         id={id}
         value={value}
         disabled={disabled}
+        aria-required={ariaRequired}
         onChange={(e) => onChange?.(e.target.value)}
         className="w-full appearance-none"
         style={{

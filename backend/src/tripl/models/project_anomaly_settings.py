@@ -20,6 +20,10 @@ class ProjectAnomalySettings(UUIDMixin, Base):
     detect_project_total: Mapped[bool] = mapped_column(Boolean, default=True)
     detect_event_types: Mapped[bool] = mapped_column(Boolean, default=True)
     detect_events: Mapped[bool] = mapped_column(Boolean, default=True)
+    # Run anomaly detection over user-defined catalog metric series. On by
+    # default (like the other detect_* scopes); delivery is still opt-in via the
+    # alert rule's ``include_metrics`` flag.
+    detect_metrics: Mapped[bool] = mapped_column(Boolean, default=True, server_default="true")
     baseline_window_buckets: Mapped[int] = mapped_column(Integer, default=14)
     min_history_buckets: Mapped[int] = mapped_column(Integer, default=7)
     sigma_threshold: Mapped[float] = mapped_column(Float, default=3.0)

@@ -32,6 +32,8 @@ from tripl.models.event import Event
 from tripl.models.event_metric import EventMetric
 from tripl.models.event_metric_breakdown import EventMetricBreakdown
 from tripl.models.event_type import EventType
+from tripl.models.metric_value import MetricValue
+from tripl.models.metric_value_breakdown import MetricValueBreakdown
 from tripl.models.scan_config import ScanConfig
 from tripl.models.shadow_event_candidate import ShadowEventCandidate
 from tripl.worker.tasks.metrics._helpers import MAX_BREAKDOWN_VALUE_LENGTH
@@ -1069,3 +1071,130 @@ def _collect_distribution_drift_rows(
             )
 
     return output_rows, significant_count, truncated
+
+
+def _upsert_metric_values_rows(
+    session: Session,
+    *,
+    rows: list[dict[str, object]],
+) -> None:
+    """Insert-or-refresh MetricValue rows keyed by (definition, config, bucket).
+
+    Uses the same dialect-aware ON CONFLICT DO UPDATE pattern as the event
+    helpers, but generalized over the Float ``value`` column. On conflict only
+    ``value`` moves so re-collecting a window overwrites stale values without
+    creating duplicates.
+    """
+    if not rows:
+        return
+
+    is_sqlite = session.bind is not None and session.bind.dialect.name == "sqlite"
+    for chunk in _chunk_rows(rows):
+        if is_sqlite:
+            sqlite_stmt = sqlite_insert(MetricValue).values(chunk)
+            sqlite_stmt = sqlite_stmt.on_conflict_do_update(
+                index_elements=["metric_definition_id", "scan_config_id", "bucket"],
+                set_={"value": sqlite_stmt.excluded.value},
+            )
+            session.execute(sqlite_stmt)
+            continue
+
+        pg_stmt = pg_insert(MetricValue).values(chunk)
+        pg_stmt = pg_stmt.on_conflict_do_update(
+            constraint="uq_metric_value_def_config_bucket",
+            set_={"value": pg_stmt.excluded.value},
+        )
+        session.execute(pg_stmt)
+
+
+def _upsert_metric_value_breakdown_rows(
+    session: Session,
+    *,
+    rows: list[dict[str, object]],
+) -> None:
+    """Insert-or-refresh MetricValueBreakdown rows.
+
+    Keyed by (definition, config, bucket, breakdown_column, breakdown_value,
+    is_other). On conflict ``value`` and ``is_other`` move, mirroring the
+    event-breakdown upsert generalized over the Float ``value`` column.
+    """
+    if not rows:
+        return
+
+    is_sqlite = session.bind is not None and session.bind.dialect.name == "sqlite"
+    for chunk in _chunk_rows(rows):
+        if is_sqlite:
+            sqlite_stmt = sqlite_insert(MetricValueBreakdown).values(chunk)
+            sqlite_stmt = sqlite_stmt.on_conflict_do_update(
+                index_elements=[
+                    "metric_definition_id",
+                    "scan_config_id",
+                    "bucket",
+                    "breakdown_column",
+                    "breakdown_value",
+                    "is_other",
+                ],
+                set_={
+                    "value": sqlite_stmt.excluded.value,
+                    "is_other": sqlite_stmt.excluded.is_other,
+                },
+            )
+            session.execute(sqlite_stmt)
+            continue
+
+        pg_stmt = pg_insert(MetricValueBreakdown).values(chunk)
+        pg_stmt = pg_stmt.on_conflict_do_update(
+            constraint="uq_metric_value_breakdown_def_config_bucket_value",
+            set_={
+                "value": pg_stmt.excluded.value,
+                "is_other": pg_stmt.excluded.is_other,
+            },
+        )
+        session.execute(pg_stmt)
+
+
+def _delete_metric_values_window(
+    session: Session,
+    *,
+    metric_definition_id: uuid.UUID,
+    time_from: datetime,
+    time_to: datetime,
+    scan_config_id: uuid.UUID | None = None,
+) -> int:
+    """Delete MetricValue rows for one definition within a half-open window.
+
+    When ``scan_config_id`` is provided the delete is further scoped to that
+    source grid (used by ``event_composition`` recollection); otherwise every
+    matching definition row in the window is removed.
+    """
+    stmt = delete(MetricValue).where(
+        MetricValue.metric_definition_id == metric_definition_id,
+        MetricValue.bucket >= time_from,
+        MetricValue.bucket < time_to,
+    )
+    if scan_config_id is not None:
+        stmt = stmt.where(MetricValue.scan_config_id == scan_config_id)
+    result = session.execute(stmt)
+    rowcount = getattr(result, "rowcount", 0)
+    return int(rowcount or 0)
+
+
+def _delete_metric_value_breakdowns_window(
+    session: Session,
+    *,
+    metric_definition_id: uuid.UUID,
+    time_from: datetime,
+    time_to: datetime,
+    scan_config_id: uuid.UUID | None = None,
+) -> int:
+    """Delete MetricValueBreakdown rows for one definition within a window."""
+    stmt = delete(MetricValueBreakdown).where(
+        MetricValueBreakdown.metric_definition_id == metric_definition_id,
+        MetricValueBreakdown.bucket >= time_from,
+        MetricValueBreakdown.bucket < time_to,
+    )
+    if scan_config_id is not None:
+        stmt = stmt.where(MetricValueBreakdown.scan_config_id == scan_config_id)
+    result = session.execute(stmt)
+    rowcount = getattr(result, "rowcount", 0)
+    return int(rowcount or 0)

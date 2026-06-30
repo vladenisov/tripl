@@ -100,6 +100,7 @@ These live in the project's **monitoring settings** and apply to every scan in t
 | `detect_project_total` | `true` | Watch the project-wide total volume. |
 | `detect_event_types` | `true` | Watch each event type's volume. |
 | `detect_events` | `true` | Watch each individual event's volume. |
+| `detect_metrics` | `true` | Watch each active metric (the metrics catalog). |
 | `baseline_window_buckets` | `14` | How many recent buckets the rolling fallback baseline averages over. |
 | `min_history_buckets` | `7` | Minimum buckets the rolling fallback needs before it will fire. |
 | `sigma_threshold` | `3.0` | How many normal wobbles of deviation are required to flag a bucket. |
@@ -134,6 +135,15 @@ The test is deliberately careful about young releases:
 2. **Fair comparison.** Counts are normalized by each release's **adoption share**, so a young release with few users isn't unfairly compared head-to-head against a mature one. For each event, the **expected** count under the new release is the previous release's share of that event applied to the new release's total volume.
 3. **Verdict.** The ratio of observed to expected decides the outcome. If an event has nearly disappeared (observed far below expected — under ~5% of expected) it is classed as **missing**; if it merely dropped substantially (roughly half or less of expected) *and* the shortfall is also large in statistical terms — observed below `expected − 3 × √expected` — it is classed as a **volume drop**. Anything in between is not flagged. Only deficits are tested; an event firing *more* in the new release is not a regression.
 
+## Metrics
+
+User-defined **metrics** are watched by the very same detector, at a dedicated **metric scope**. The one twist is the *shape* of the series. Each metric is classified as either **count-shaped** (a count or sum — it behaves just like an event volume) or **fractional** (a ratio, an average, or a free-form SQL value).
+
+- **Count-shaped** metrics keep the standard treatment: missing buckets are zero-filled, and the `min_expected_count` gate applies.
+- **Fractional** metrics drop both. A gap means "no data for this bucket" rather than zero — a ratio whose denominator was zero produces *no value at all* — and the minimum-count gate is lifted, so a ratio that naturally sits below 1, or a sparse average, is neither silenced nor constantly flagged as "too low".
+
+Per project, **`detect_metrics`** turns the metric scope on or off; per alert rule, **`include_metrics`** decides whether metric anomalies are actually delivered (see [Alerting](./alerting.md)). Everything else — the seasonal baseline, the robust spread and its floor, the z-score, and false-positive self-tuning — works exactly as it does for events.
+
 ## From a detected anomaly to a signal
 
 A flagged bucket is written to the scan as an anomaly record carrying its scope (project total / event type / event), bucket, actual count, expected count, spread, z-score, and direction. The detector **replaces** the records for the window it just evaluated on every run, so each scan reflects the current state of the data rather than accumulating stale flags.
@@ -144,7 +154,7 @@ These records become the **signals** you see on the monitoring views, and they a
 
 Detection deciding a bucket is anomalous is **not** the same as you getting notified. Each alert rule applies its **own** set of gates on top of detection before anything is delivered:
 
-- **Scope toggles** — a rule can subscribe to project totals, event types, and/or individual events, and must explicitly opt in to schema-drift, distribution-drift, and release-regression signals (those three are off by default).
+- **Scope toggles** — a rule can subscribe to project totals, event types, and/or individual events, and must explicitly opt in to metric anomalies (`include_metrics`) and to schema-drift, distribution-drift, and release-regression signals (all off by default).
 - **Direction** — a rule can choose to notify on spikes only, drops only, or both.
 - **Its own thresholds** — a minimum expected count, a minimum absolute change, and a minimum percent change, all of which the anomaly must clear *in addition to* the detector's own thresholds.
 - **Cooldown** — a rule won't re-fire for the same scope until its cooldown window has passed.

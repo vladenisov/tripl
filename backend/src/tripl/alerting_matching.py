@@ -21,6 +21,7 @@ from tripl.models.domain_enums import MetricScopeType
 
 SCOPE_DISTRIBUTION_DRIFT = MetricScopeType.distribution.value
 SCOPE_RELEASE_REGRESSION = MetricScopeType.release_regression.value
+SCOPE_METRIC = MetricScopeType.metric.value
 
 
 class AlertMatchCandidate(Protocol):
@@ -102,6 +103,11 @@ def rule_matches_anomaly(rule: AlertRule, anomaly: AlertMatchCandidate) -> bool:
     if anomaly.scope_type == SCOPE_DISTRIBUTION_DRIFT and not rule.include_distribution_drifts:
         return False
     if anomaly.scope_type == SCOPE_RELEASE_REGRESSION and not rule.include_release_regressions:
+        return False
+    # Catalog metric anomalies are opt-in (SAFE OFF): a rule must explicitly
+    # subscribe via include_metrics. They flow through the numeric-threshold
+    # branch below (actual/expected counts), like the volume scopes.
+    if anomaly.scope_type == SCOPE_METRIC and not rule.include_metrics:
         return False
 
     # Direction gates.

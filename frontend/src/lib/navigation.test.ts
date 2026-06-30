@@ -18,6 +18,7 @@ describe('buildNavGroups', () => {
       schema: '/p/demo/settings/meta-fields',
       branches: '/p/demo/settings/branches',
       monitoring: '/p/demo/monitors',
+      metrics: '/p/demo/metrics',
       anomalies: '/p/demo/anomalies',
       alerting: '/p/demo/settings/alerting',
       reconciliation: '/p/demo/reconciliation',
@@ -161,6 +162,22 @@ describe('buildNavGroups', () => {
     expect(items.find((i) => i.id === 'variables')!.href).toBe('/p/demo/settings/variables')
     expect(items.find((i) => i.id === 'relations')!.href).toBe('/p/demo/settings/relations')
   })
+
+  it('no longer exposes a standalone Fact tables nav item', () => {
+    // Fact tables now live as a tab under Metrics, not as a top-level surface.
+    const items = buildNavGroups('demo', undefined).flatMap((g) => g.items)
+    expect(items.find((i) => i.id === 'fact-tables')).toBeUndefined()
+    expect(items.some((i) => i.href.endsWith('/fact-tables'))).toBe(false)
+  })
+
+  it('keeps the Metrics nav item highlighted on the Fact tables tab', () => {
+    // The metrics item matches /metrics*, so the Fact tables tab resolves to
+    // "Observe › Metrics" rather than losing its breadcrumb.
+    expect(resolveNavLocation('demo', '/p/demo/metrics/fact-tables')).toEqual({
+      area: 'Observe',
+      label: 'Metrics',
+    })
+  })
 })
 
 describe('resolveNavLocation', () => {
@@ -174,6 +191,7 @@ describe('resolveNavLocation', () => {
     ['/p/demo/settings/branches', 'Plan', 'Plan branches'],
     ['/p/demo/monitors', 'Observe', 'Monitors'],
     ['/p/demo/settings/monitoring', 'Observe', 'Monitors'],
+    ['/p/demo/metrics', 'Observe', 'Metrics'],
     ['/p/demo/anomalies', 'Observe', 'Anomalies'],
     ['/p/demo/settings/alerting', 'Observe', 'Alerting'],
     ['/p/demo/reconciliation', 'Govern', 'Reconciliation'],

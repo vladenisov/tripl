@@ -6,6 +6,7 @@ import {
   Gauge,
   GitBranch,
   GitCompare,
+  LineChart,
   Link2,
   ScrollText,
   Search,
@@ -119,6 +120,13 @@ export function buildNavGroups(slug: string, summary: ProjectSummary | undefined
           icon: Activity,
           href: `${base}/overview`,
           match: (p) => p.startsWith(`${base}/overview`),
+        },
+        {
+          id: 'metrics',
+          label: 'Metrics',
+          icon: LineChart,
+          href: `${base}/metrics`,
+          match: (p) => p.startsWith(`${base}/metrics`),
         },
         {
           id: 'monitoring',
