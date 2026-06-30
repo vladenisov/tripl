@@ -647,7 +647,7 @@ export function MetricForm({ slug, metric, dataSources, events, onClose }: Metri
         >
           <ChevronLeft size={13} /> Metrics
         </button>
-        <h1 className="mb-[18px] text-[19px] font-semibold tracking-[-0.01em]">
+        <h1 className="mb-[18px] text-[22px] font-semibold tracking-[-0.01em]">
           {isNew ? 'New metric' : 'Edit metric'}
         </h1>
 

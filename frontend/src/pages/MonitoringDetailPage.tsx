@@ -667,7 +667,7 @@ export default function MonitoringDetailPage() {
 
           <div className="space-y-3">
             <div className="flex items-center gap-3 flex-wrap">
-              <h1 className="text-2xl font-bold">{headerTitle}</h1>
+              <h1 className="text-[22px] font-semibold tracking-[-0.01em]">{headerTitle}</h1>
               {eventType && (
                 <Badge style={{ backgroundColor: eventType.color, color: '#fff' }}>
                   {eventType.display_name}

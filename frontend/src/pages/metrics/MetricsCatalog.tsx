@@ -23,7 +23,7 @@ import {
   type MetricStatus,
 } from '@/types'
 
-const METRIC_GRID = 'grid grid-cols-[1.7fr_1fr_104px_84px_84px] items-center gap-3 px-4'
+const METRIC_GRID = 'grid grid-cols-[minmax(0,1.3fr)_minmax(0,1fr)_104px_84px_84px] items-center gap-3 px-4'
 
 const STATUS_TONE: Record<MetricStatus, ChipTone> = {
   draft: 'neutral',
