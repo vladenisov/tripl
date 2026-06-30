@@ -7,9 +7,6 @@ from datetime import datetime
 from typing import override
 
 import clickhouse_connect  # type: ignore[import-untyped]
-from clickhouse_connect.driver.exceptions import (  # type: ignore[import-untyped]
-    ProgrammingError,
-)
 
 from tripl.core.adapters.base import (
     AggregateSpec,
@@ -39,11 +36,6 @@ _SCHEMA_ROW_LIMIT = 50000
 # user tables. ClickHouse exposes both `information_schema` and its uppercase
 # alias `INFORMATION_SCHEMA`; exclude both.
 _SYSTEM_DATABASES = ("system", "information_schema", "INFORMATION_SCHEMA")
-
-# Per-query server-side execution cap for catalog introspection so a hung
-# schema query can't block the worker thread. Scoped to this query only via
-# clickhouse-connect per-query settings (does not touch the shared client).
-_SCHEMA_QUERY_TIMEOUT_SECONDS = 30
 
 logger = logging.getLogger(__name__)
 
@@ -126,17 +118,10 @@ class ClickHouseAdapter(BaseAdapter):
             f"ORDER BY database, table, position LIMIT {_SCHEMA_ROW_LIMIT}"
         )
         logger.debug("CH schema introspection query: %s", sql)
-        # Bound server-side execution time when allowed, but read-only ClickHouse
-        # users (the norm for an analytics connection) and some managed offerings
-        # reject per-query setting overrides ("Setting max_execution_time is
-        # unknown or readonly"). Fall back to a setting-less query — the
-        # connection-level timeout and the row LIMIT still bound it.
-        try:
-            result = self._client.query(
-                sql, settings={"max_execution_time": _SCHEMA_QUERY_TIMEOUT_SECONDS}
-            )
-        except ProgrammingError:
-            result = self._client.query(sql)
+        # No per-query settings: tripl connects with read-only ClickHouse users,
+        # which reject setting overrides ("Setting ... is unknown or readonly").
+        # The row LIMIT and the connection-level timeout bound the query instead.
+        result = self._client.query(sql)
         # Tables in the current/default database keep their bare name (`events`);
         # tables in any other database are qualified as `database.table`
         # (`analytics.orders`). The frontend relies on this: a table name has at

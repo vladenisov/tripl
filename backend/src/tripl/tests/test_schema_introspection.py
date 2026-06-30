@@ -58,8 +58,9 @@ def test_clickhouse_schema_spans_all_databases_with_qualified_names() -> None:
     # System databases are excluded so only queryable user tables surface.
     assert "NOT IN ('system', 'information_schema', 'INFORMATION_SCHEMA')" in sql
     assert "LIMIT 50000" in sql
-    # Hardening: per-query server-side execution cap is scoped to this query.
-    assert client.settings[0] == {"max_execution_time": 30}
+    # No per-query settings: tripl uses read-only ClickHouse users, which reject
+    # setting overrides; the row LIMIT + connection timeout bound the query.
+    assert client.settings[0] is None
     # Other-database tables are qualified; current-database tables stay bare.
     assert tables == [
         SchemaTable(
