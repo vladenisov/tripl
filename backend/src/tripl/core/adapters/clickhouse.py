@@ -100,7 +100,11 @@ class ClickHouseAdapter(BaseAdapter):
         result = self._client.query(f"SELECT * FROM ({base_query}) AS _src LIMIT 0")
         columns: list[ColumnInfo] = []
         for name, type_info in zip(result.column_names, result.column_types, strict=False):
-            type_name = str(type_info)
+            # clickhouse-connect type objects render their object repr under
+            # str() (e.g. "<...Float32 object at 0x...>"); their `.name` is the
+            # real ClickHouse type ("Float32", "Nullable(Float32)"). Use it so
+            # type-based logic (numeric measure detection, JSON inference) works.
+            type_name = getattr(type_info, "name", None) or str(type_info)
             is_nullable = "Nullable" in type_name
             columns.append(ColumnInfo(name=name, type_name=type_name, is_nullable=is_nullable))
         self._allowed_columns = {c.name for c in columns}
