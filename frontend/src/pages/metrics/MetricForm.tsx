@@ -7,6 +7,8 @@ import { eventsApi } from '@/api/events'
 import { factTablesApi } from '@/api/factTablesApi'
 import { metricsCatalogApi } from '@/api/metricsCatalogApi'
 import { ErrorState } from '@/components/error-state'
+import { SqlEditor } from '@/components/sql-editor'
+import { useDataSourceSchema } from '@/hooks/useDataSourceSchema'
 import {
   Field,
   RadioCards,
@@ -447,6 +449,14 @@ export function MetricForm({ slug, metric, dataSources, events, onClose }: Metri
     [events],
   )
 
+  // Drive the SQL editor's dialect highlighting + schema-aware autocomplete from
+  // the selected data source (same wiring as the scans base-query editor).
+  const selectedDataSource = useMemo(
+    () => dataSources.find(ds => ds.id === dataSourceId),
+    [dataSources, dataSourceId],
+  )
+  const { data: sqlSchemaData } = useDataSourceSchema(dataSourceId || undefined)
+
   function validate(): string[] {
     const errs: string[] = []
     if (!displayName.trim()) errs.push('Display name is required.')
@@ -691,7 +701,16 @@ export function MetricForm({ slug, metric, dataSources, events, onClose }: Metri
               />
             </MField>
             <MField label="Metric SQL" htmlFor="metric-sql-query" required stacked>
-              <TextArea id="metric-sql-query" value={metricSql} onChange={setMetricSql} mono rows={5} placeholder="SELECT date_trunc('hour', created_at) AS bucket, count(*) AS value FROM events GROUP BY 1" />
+              <SqlEditor
+                id="metric-sql-query"
+                ariaLabel="Metric SQL"
+                value={metricSql}
+                onChange={setMetricSql}
+                placeholder="SELECT date_trunc('hour', created_at) AS bucket, count(*) AS value FROM events GROUP BY 1"
+                dialect={selectedDataSource?.db_type}
+                tables={sqlSchemaData?.tables}
+                minHeight="150px"
+              />
             </MField>
             <MField label="Time column" htmlFor="metric-sql-time" required last hint="The bucket/time column returned by the query.">
               <TextInput id="metric-sql-time" value={sqlTimeColumn} onChange={setSqlTimeColumn} mono placeholder="bucket" />

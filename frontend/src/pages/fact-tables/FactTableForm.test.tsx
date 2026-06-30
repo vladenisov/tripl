@@ -13,6 +13,37 @@ vi.mock('@/api/factTablesApi', () => ({
   },
 }))
 
+// CodeMirror needs real layout measurement jsdom can't provide; stub it with a
+// plain textarea that forwards value/onChange/placeholder and the aria-label so
+// the SQL editor stays queryable by accessible name.
+vi.mock('@uiw/react-codemirror', () => ({
+  default: ({
+    value,
+    onChange,
+    placeholder,
+    'aria-label': ariaLabel,
+  }: {
+    value: string
+    onChange: (v: string) => void
+    placeholder?: string
+    'aria-label'?: string
+  }) => (
+    <textarea
+      aria-label={ariaLabel}
+      value={value}
+      placeholder={placeholder}
+      onChange={e => onChange(e.target.value)}
+    />
+  ),
+}))
+
+// The SQL editor fetches the data-source schema for autocomplete; stub it so the
+// form test never reaches the network.
+vi.mock('@/hooks/useDataSourceSchema', () => ({
+  useDataSourceSchema: () => ({ data: undefined }),
+  toSQLNamespace: () => ({}),
+}))
+
 import { factTablesApi } from '@/api/factTablesApi'
 
 const DATA_SOURCES = [{ id: 'ds-1', name: 'Warehouse' }] as unknown as DataSource[]
@@ -45,7 +76,7 @@ function fillRequired() {
     target: { value: 'orders' },
   })
   fireEvent.change(document.getElementById('fact-data-source')!, { target: { value: 'ds-1' } })
-  fireEvent.change(document.getElementById('fact-sql')!, {
+  fireEvent.change(screen.getByLabelText('Fact table SQL'), {
     target: { value: 'SELECT id, user_id, created_at FROM orders' },
   })
   fireEvent.change(document.getElementById('fact-timestamp')!, { target: { value: 'created_at' } })

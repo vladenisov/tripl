@@ -19,6 +19,37 @@ vi.mock('@/api/factTablesApi', () => ({
   },
 }))
 
+// CodeMirror needs real layout measurement jsdom can't provide; stub it with a
+// plain textarea that forwards value/onChange/placeholder and the aria-label so
+// the SQL editor stays queryable by accessible name.
+vi.mock('@uiw/react-codemirror', () => ({
+  default: ({
+    value,
+    onChange,
+    placeholder,
+    'aria-label': ariaLabel,
+  }: {
+    value: string
+    onChange: (v: string) => void
+    placeholder?: string
+    'aria-label'?: string
+  }) => (
+    <textarea
+      aria-label={ariaLabel}
+      value={value}
+      placeholder={placeholder}
+      onChange={e => onChange(e.target.value)}
+    />
+  ),
+}))
+
+// The SQL editor fetches the data-source schema for autocomplete; stub it so the
+// form test never reaches the network.
+vi.mock('@/hooks/useDataSourceSchema', () => ({
+  useDataSourceSchema: () => ({ data: undefined }),
+  toSQLNamespace: () => ({}),
+}))
+
 import { metricsCatalogApi } from '@/api/metricsCatalogApi'
 import { factTablesApi } from '@/api/factTablesApi'
 
@@ -117,7 +148,7 @@ describe('MetricForm validation', () => {
       target: { value: 'total_revenue' },
     })
     fireEvent.change(document.getElementById('metric-sql-data-source')!, { target: { value: 'ds-1' } })
-    fireEvent.change(document.getElementById('metric-sql-query')!, {
+    fireEvent.change(screen.getByLabelText('Metric SQL'), {
       target: { value: 'SELECT 1 AS value' },
     })
 
@@ -139,7 +170,7 @@ describe('MetricForm validation', () => {
       target: { value: 'order_count' },
     })
     fireEvent.change(document.getElementById('metric-sql-data-source')!, { target: { value: 'ds-1' } })
-    fireEvent.change(document.getElementById('metric-sql-query')!, {
+    fireEvent.change(screen.getByLabelText('Metric SQL'), {
       target: { value: 'SELECT bucket, count(*) AS value FROM events GROUP BY 1' },
     })
     fireEvent.change(document.getElementById('metric-sql-time')!, { target: { value: 'bucket' } })
@@ -199,7 +230,7 @@ describe('MetricForm validation', () => {
     expect(screen.getByText('order_count')).toBeInTheDocument()
     // The kind-specific config section is not rendered at all.
     expect(document.getElementById('metric-sql-data-source')).toBeNull()
-    expect(document.getElementById('metric-sql-query')).toBeNull()
+    expect(screen.queryByLabelText('Metric SQL')).toBeNull()
     expect(document.getElementById('metric-sql-time')).toBeNull()
   })
 
