@@ -8,6 +8,7 @@ from tripl.api.deps import EditorUserDep, SessionDep, get_editor_user
 from tripl.models.domain_enums import MetricKind, MetricStatus
 from tripl.models.metric_definition import MetricDefinition
 from tripl.schemas.metric_definition import (
+    MetricCollectNowResponse,
     MetricDefinitionBulkUpdate,
     MetricDefinitionCreate,
     MetricDefinitionListResponse,
@@ -162,6 +163,41 @@ async def get_metric_version_series(
         time_from=time_from,
         time_to=time_to,
     )
+
+
+@router.post(
+    "/{metric_id}/collect",
+    response_model=MetricCollectNowResponse,
+    status_code=202,
+)
+async def collect_metric_now(
+    session: SessionDep,
+    slug: str,
+    metric_id: uuid.UUID,
+    current_user: EditorUserDep,
+) -> MetricCollectNowResponse:
+    """Trigger an immediate backfill collection for one metric (editor-gated).
+
+    Dispatches the same Celery collection the scheduler uses, backfilling a
+    bounded recent window so the chart is not empty. Returns 202 once queued;
+    the warehouse query runs in the worker. Unknown metric -> 404.
+    """
+    result = await metric_definition_service.trigger_metric_collection(
+        session, slug, metric_id
+    )
+    await audit_service.record(
+        session,
+        user=current_user,
+        action="metric_definition.collect",
+        target_type="metric_definition",
+        target_id=metric_id,
+        project_slug=slug,
+        payload={
+            "window_from": result.window_from.isoformat() if result.window_from else None,
+            "window_to": result.window_to.isoformat() if result.window_to else None,
+        },
+    )
+    return result
 
 
 @router.patch("/{metric_id}", response_model=MetricDefinitionResponse)

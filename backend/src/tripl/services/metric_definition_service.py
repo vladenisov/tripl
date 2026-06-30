@@ -20,6 +20,7 @@ from tripl.schemas.metric_definition import (
     EventCompositionMetricCreate,
     FactMetricCreate,
     FactOperand,
+    MetricCollectNowResponse,
     MetricDefinitionBulkUpdate,
     MetricDefinitionCreate,
     MetricDefinitionListItem,
@@ -456,6 +457,98 @@ async def delete_metric_definition(session: AsyncSession, slug: str, metric_id: 
     metric = await get_metric_definition(session, slug, metric_id)
     await session.delete(metric)
     await session.commit()
+
+
+def _dispatch_metric_collection(
+    metric_id: uuid.UUID,
+    kind: MetricKind,
+    window: tuple[datetime, datetime] | None,
+) -> str | None:
+    """Enqueue the per-kind collection task and return its Celery id (if any).
+
+    Reuses the SAME tasks the scheduler dispatches: ``fact`` metrics through
+    ``collect_fact_metrics_batch`` (a one-element batch), ``sql`` /
+    ``event_composition`` through ``collect_metric_definitions``. Imported lazily
+    to avoid importing the Celery worker stack at module import time (mirrors
+    ``scan_service``). ``force=True`` is always passed: a user-triggered manual
+    collect must produce data even for a draft/archived metric (the scheduler
+    dispatches without force and stays active-only).
+    """
+    # Imported here to avoid circular imports at module level.
+    from tripl.worker.tasks.metrics.metric_collect import (
+        collect_fact_metrics_batch,
+        collect_metric_definitions,
+    )
+
+    window_from = window[0].isoformat() if window is not None else None
+    window_to = window[1].isoformat() if window is not None else None
+    if kind is MetricKind.fact:
+        async_result = collect_fact_metrics_batch.delay(
+            [str(metric_id)], window_from, window_to, True
+        )
+    else:
+        async_result = collect_metric_definitions.delay(
+            str(metric_id), window_from, window_to, True
+        )
+    return getattr(async_result, "id", None)
+
+
+async def trigger_metric_collection(
+    session: AsyncSession, slug: str, metric_id: uuid.UUID
+) -> MetricCollectNowResponse:
+    """Dispatch an immediate single-metric collection backfilling a recent window.
+
+    Used by ``POST /projects/{slug}/metrics/{metric_id}/collect`` so a newly
+    created metric shows a chart without waiting for the scheduler. The warehouse
+    query runs in the Celery worker, never in this request handler. ``fact`` /
+    ``sql`` metrics backfill ``compute_manual_collect_window`` (~48 buckets capped
+    to 30 days); ``event_composition`` has no interval and recomputes from the
+    full event-metric series, so it carries no window. Collection is idempotent
+    (window-delete then upsert), so re-triggering never duplicates rows.
+    """
+    # Imported here to avoid importing the Celery worker stack at module load.
+    from tripl.worker.tasks.metrics.metric_collect import (
+        COLLECTION_STATUS_ERROR,
+        COLLECTION_STATUS_RUNNING,
+        compute_manual_collect_window,
+    )
+
+    metric = await get_metric_definition(session, slug, metric_id)
+    kind = metric.kind if isinstance(metric.kind, MetricKind) else MetricKind(metric.kind)
+
+    window: tuple[datetime, datetime] | None = None
+    if kind in (MetricKind.fact, MetricKind.sql):
+        if metric.interval is None:
+            raise HTTPException(
+                status_code=400,
+                detail="Metric has no collection interval to backfill",
+            )
+        window = compute_manual_collect_window(metric.interval)
+
+    # Mark running before dispatch so the scheduler's "one active job" guard
+    # (last_collection_status) keeps it from double-dispatching the same metric
+    # while this manual run is queued — mirrors check_metric_definitions_due.
+    metric.last_collection_status = COLLECTION_STATUS_RUNNING
+    await session.commit()
+
+    try:
+        task_id = _dispatch_metric_collection(metric_id, kind, window)
+    except Exception as exc:  # broker unavailable, etc.
+        metric.last_collection_status = COLLECTION_STATUS_ERROR
+        metric.last_collection_error = "Failed to dispatch collection task to worker"
+        await session.commit()
+        raise HTTPException(
+            status_code=503,
+            detail="Failed to dispatch collection task to worker",
+        ) from exc
+
+    return MetricCollectNowResponse(
+        metric_id=metric_id,
+        status="queued",
+        window_from=window[0] if window is not None else None,
+        window_to=window[1] if window is not None else None,
+        task_id=task_id,
+    )
 
 
 async def bulk_update_metric_definitions(

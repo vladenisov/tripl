@@ -658,3 +658,20 @@ class MetricDefinitionListItem(BaseModel):
 class MetricDefinitionListResponse(BaseModel):
     items: list[MetricDefinitionListItem]
     total: int
+
+
+class MetricCollectNowResponse(BaseModel):
+    """202 payload for a manual ``POST /metrics/{id}/collect`` trigger.
+
+    ``window_from`` / ``window_to`` describe the backfilled [from, to) window for
+    ``fact`` / ``sql`` metrics; they are ``None`` for ``event_composition``
+    metrics, which have no interval and recompute from the full event-metric
+    series. ``task_id`` is the dispatched Celery task id when the broker returns
+    one, else ``None``.
+    """
+
+    metric_id: uuid.UUID
+    status: Literal["queued"] = "queued"
+    window_from: datetime | None = None
+    window_to: datetime | None = None
+    task_id: str | None = None

@@ -102,6 +102,13 @@ COLLECT_METRIC_DEFINITIONS_TIME_LIMIT_SECONDS = 35 * 60
 # mirroring collect_metrics' ``time_to - delta * 30`` default.
 DEFAULT_COLLECTION_BUCKETS = 30
 
+# Manual "collect now" backfill: reach back this many interval buckets so a
+# freshly-created metric's chart is not empty, regardless of prior collection
+# state. Capped by ``MANUAL_COLLECT_MAX_WINDOW`` so a coarse interval (1d/1w)
+# does not reach back months/years.
+MANUAL_COLLECT_BACKFILL_BUCKETS = 48
+MANUAL_COLLECT_MAX_WINDOW = timedelta(days=30)
+
 # Per-query row ceiling; one row per bucket (no breakdown) or per
 # (bucket, breakdown_value), so this comfortably bounds a normal window.
 METRIC_QUERY_ROW_LIMIT = 100_000
@@ -203,6 +210,65 @@ def _resolve_value_window(
         time_from = last_bucket - delta
     else:
         time_from = time_to - delta * DEFAULT_COLLECTION_BUCKETS
+    return time_from, time_to
+
+
+def compute_manual_collect_window(interval_code: str) -> tuple[datetime, datetime]:
+    """Resolve the [from, to) backfill window for a manual single-metric collect.
+
+    ``to`` is the latest complete interval boundary; ``from`` reaches back
+    ``MANUAL_COLLECT_BACKFILL_BUCKETS`` buckets, but the span is capped to
+    ``MANUAL_COLLECT_MAX_WINDOW`` so coarse intervals stay bounded. Concretely:
+    15m -> 48 buckets (12h), 1h -> 48 (2d), 6h -> 48 (12d), 1d -> 30 (30d),
+    1w -> 4 (28d). Unlike ``_resolve_value_window`` this ignores any previously
+    stored bucket so a re-trigger always backfills the same recent window.
+    """
+    delta = get_interval(interval_code).delta
+    time_to = _floor_to_interval(datetime.now(UTC), delta)
+    max_buckets = max(1, int(MANUAL_COLLECT_MAX_WINDOW / delta))
+    buckets = min(MANUAL_COLLECT_BACKFILL_BUCKETS, max_buckets)
+    time_from = time_to - delta * buckets
+    return time_from, time_to
+
+
+def _effective_value_window(
+    session: Session,
+    *,
+    metric_definition_id: uuid.UUID,
+    delta: timedelta,
+    window_override: tuple[datetime, datetime] | None,
+) -> tuple[datetime, datetime]:
+    """Use an explicit ``window_override`` when given, else the resume window.
+
+    Keeps the override-vs-default choice in one place so every fact/sql
+    collection path honours a manually-requested window identically.
+    """
+    if window_override is not None:
+        return window_override
+    return _resolve_value_window(
+        session, metric_definition_id=metric_definition_id, delta=delta
+    )
+
+
+def _parse_window_override(
+    window_from: str | None, window_to: str | None
+) -> tuple[datetime, datetime] | None:
+    """Parse the optional manual-collection window passed to the Celery tasks.
+
+    Both bounds are required together (mirrors ``collect_metrics`` replay). ISO
+    strings are coerced to aware datetimes; ``None``/``None`` means "no override"
+    (the scheduler's resume window is used).
+    """
+    if (window_from is None) != (window_to is None):
+        msg = "Both window_from and window_to are required for a manual collection window"
+        raise ValueError(msg)
+    if window_from is None or window_to is None:
+        return None
+    time_from = _parse_task_datetime(window_from)
+    time_to = _parse_task_datetime(window_to)
+    if time_from >= time_to:
+        msg = "window_from must be earlier than window_to"
+        raise ValueError(msg)
     return time_from, time_to
 
 
@@ -488,21 +554,27 @@ def _resolve_fact_composition(definition: MetricDefinition) -> MetricComposition
     return MetricComposition(definition.composition)
 
 
-def _collect_fact(session: Session, *, definition: MetricDefinition) -> dict[str, object]:
+def _collect_fact(
+    session: Session,
+    *,
+    definition: MetricDefinition,
+    window: tuple[datetime, datetime] | None = None,
+) -> dict[str, object]:
     """Collect a ``fact`` metric: an aggregation over a FactTable per bucket.
 
     SINGLE collects one operand series (+ optional per-dimension breakdowns).
     RATIO divides a numerator series by a denominator series (each over a —
     possibly different — FactTable); a zero/absent denominator maps to ``None``
-    (divide-by-zero), which the NOT-NULL row builder drops.
+    (divide-by-zero), which the NOT-NULL row builder drops. ``window`` overrides
+    the resume window for a manual backfill.
     """
     if definition.interval is None:
         msg = "fact metric requires an interval"
         raise ScanError(msg)
     interval_spec = get_interval(definition.interval)
     delta = interval_spec.delta
-    time_from, time_to = _resolve_value_window(
-        session, metric_definition_id=definition.id, delta=delta
+    time_from, time_to = _effective_value_window(
+        session, metric_definition_id=definition.id, delta=delta, window_override=window
     )
     composition = _resolve_fact_composition(definition)
     if composition is MetricComposition.ratio:
@@ -1195,13 +1267,15 @@ def _run_fact_interval_group(
     *,
     definitions: list[MetricDefinition],
     interval_spec: IntervalSpec,
+    window_override: tuple[datetime, datetime] | None = None,
 ) -> dict[str, int]:
     """Collect every fact metric of one interval group in shared warehouse scans.
 
     Builds dedup'd ``AggregateSpec`` lists per fact table (and per breakdown
     dimension), runs ONE multi-aggregate scan per fact table plus one per
     breakdown scan over a covering window, then assembles each metric over its
-    OWN window with isolated per-metric error capture.
+    OWN window with isolated per-metric error capture. ``window_override`` (a
+    manual backfill window) replaces each metric's resume window when set.
     """
     delta = interval_spec.delta
     ch_interval = interval_spec.ch_interval
@@ -1217,8 +1291,11 @@ def _run_fact_interval_group(
         for definition in definitions:
             totals["metrics"] += 1
             try:
-                window = _resolve_value_window(
-                    session, metric_definition_id=definition.id, delta=delta
+                window = _effective_value_window(
+                    session,
+                    metric_definition_id=definition.id,
+                    delta=delta,
+                    window_override=window_override,
                 )
                 if _resolve_fact_composition(definition) is MetricComposition.ratio:
                     ratio_plans.append(
@@ -1379,12 +1456,18 @@ def _run_fact_interval_group(
         context.close()
 
 
-def _collect_sql(session: Session, *, definition: MetricDefinition) -> dict[str, object]:
+def _collect_sql(
+    session: Session,
+    *,
+    definition: MetricDefinition,
+    window: tuple[datetime, datetime] | None = None,
+) -> dict[str, object]:
     """Collect a sql metric: execute the user SELECT and bucket its rows.
 
     The SELECT must project a ``value`` column and the configured time column
     (re-checked here with ``validate_select_sql``). Each returned row is floored
     to the interval; later rows for the same bucket overwrite earlier ones.
+    ``window`` overrides the resume window for a manual backfill.
     """
     if definition.data_source_id is None or definition.interval is None:
         msg = "sql metric requires a data source and interval"
@@ -1412,8 +1495,8 @@ def _collect_sql(session: Session, *, definition: MetricDefinition) -> dict[str,
         adapter.test_connection()
         interval_spec = get_interval(definition.interval)
         delta = interval_spec.delta
-        time_from, time_to = _resolve_value_window(
-            session, metric_definition_id=definition.id, delta=delta
+        time_from, time_to = _effective_value_window(
+            session, metric_definition_id=definition.id, delta=delta, window_override=window
         )
         chunks = _iter_window_chunks(
             time_from,
@@ -1516,7 +1599,10 @@ def _collect_distinct_user_series(
 
 
 def _collect_event_composition(
-    session: Session, *, definition: MetricDefinition
+    session: Session,
+    *,
+    definition: MetricDefinition,
+    window: tuple[datetime, datetime] | None = None,
 ) -> dict[str, object]:
     """Collect an event_composition metric from already-stored event_metrics.
 
@@ -1524,6 +1610,11 @@ def _collect_event_composition(
     each source scan grid, evaluates the composition per grid, and writes
     ``MetricValue`` rows keyed by that ``scan_config_id``. ``per_distinct_user``
     additionally fetches a warehouse distinct-user denominator per grid.
+
+    ``window`` is accepted for a uniform collector signature but ignored: an
+    event_composition metric has no interval of its own — it re-derives from the
+    full already-collected event-metric series, so a manual collect simply
+    recomputes everything available.
     """
     if definition.composition is None:
         msg = "event_composition metric requires a composition"
@@ -1629,23 +1720,37 @@ _COLLECTORS = {
     soft_time_limit=COLLECT_METRIC_DEFINITIONS_SOFT_TIME_LIMIT_SECONDS,
     time_limit=COLLECT_METRIC_DEFINITIONS_TIME_LIMIT_SECONDS,
 )
-def collect_metric_definitions(self: object, metric_definition_id: str) -> dict[str, object]:
+def collect_metric_definitions(
+    self: object,
+    metric_definition_id: str,
+    window_from: str | None = None,
+    window_to: str | None = None,
+    force: bool = False,
+) -> dict[str, object]:
     """Collect one catalog metric's per-bucket values into ``metric_values``.
 
     Dispatches by ``kind`` and stamps ``last_collected_at`` /
     ``last_collection_status`` / ``last_collection_error`` inline (success or a
     sanitized error). The full exception is logged; only a safe summary is
-    persisted.
+    persisted. An optional ``window_from`` / ``window_to`` pair (ISO strings)
+    backfills an explicit recent window for a manual "collect now"; omitted, the
+    scheduler's resume window is used. event_composition ignores the window.
+
+    ``force`` is set only by the manual "collect now" trigger: it bypasses the
+    active-status skip so a freshly-created (draft) metric still produces data.
+    The scheduler always dispatches with ``force=False``, so scheduled collection
+    stays active-only.
     """
     session = _get_sync_session()
     definition: MetricDefinition | None = None
     try:
+        window = _parse_window_override(window_from, window_to)
         definition = session.get(MetricDefinition, uuid.UUID(metric_definition_id))
         if definition is None:
             msg = f"MetricDefinition {metric_definition_id} not found"
             raise ValueError(msg)
 
-        if definition.status != MetricStatus.active:
+        if not force and definition.status != MetricStatus.active:
             logger.info(
                 "MetricDefinition %s is %s, not active; skipping",
                 metric_definition_id,
@@ -1665,7 +1770,7 @@ def collect_metric_definitions(self: object, metric_definition_id: str) -> dict[
             # message rather than a cryptic KeyError.
             msg = f"Metric collection is not implemented for kind {kind.value!r}"
             raise NotImplementedError(msg)
-        summary = collector(session, definition=definition)
+        summary = collector(session, definition=definition, window=window)
 
         definition.last_collected_at = datetime.now(UTC)
         definition.last_collection_status = COLLECTION_STATUS_SUCCESS
@@ -1698,14 +1803,18 @@ def _metric_kind(definition: MetricDefinition) -> MetricKind:
 
 
 def _run_fact_metrics_batch(
-    session: Session, *, definitions: list[MetricDefinition]
+    session: Session,
+    *,
+    definitions: list[MetricDefinition],
+    window_override: tuple[datetime, datetime] | None = None,
 ) -> dict[str, int]:
     """Group fact metrics by interval and collect each group in shared scans.
 
     Metrics dispatched together usually share one interval (the scheduler groups
     by interval before dispatch), but grouping here as well keeps the collector
     correct if a caller mixes intervals: each interval has its own bucket grid /
-    ``ch_interval``, so it gets its own set of shared scans.
+    ``ch_interval``, so it gets its own set of shared scans. ``window_override``
+    (a manual backfill window) is forwarded to every group.
     """
     totals = {"metrics": 0, "collected": 0, "errors": 0, "values": 0, "breakdown_values": 0}
     by_interval: dict[str, list[MetricDefinition]] = {}
@@ -1721,7 +1830,10 @@ def _run_fact_metrics_batch(
 
     for interval_code, group in by_interval.items():
         group_totals = _run_fact_interval_group(
-            session, definitions=group, interval_spec=get_interval(interval_code)
+            session,
+            definitions=group,
+            interval_spec=get_interval(interval_code),
+            window_override=window_override,
         )
         for key, value in group_totals.items():
             totals[key] += value
@@ -1735,16 +1847,30 @@ def _run_fact_metrics_batch(
     soft_time_limit=COLLECT_METRIC_DEFINITIONS_SOFT_TIME_LIMIT_SECONDS,
     time_limit=COLLECT_METRIC_DEFINITIONS_TIME_LIMIT_SECONDS,
 )
-def collect_fact_metrics_batch(self: object, metric_ids: list[str]) -> dict[str, int]:
+def collect_fact_metrics_batch(
+    self: object,
+    metric_ids: list[str],
+    window_from: str | None = None,
+    window_to: str | None = None,
+    force: bool = False,
+) -> dict[str, int]:
     """Collect a batch of fact metrics, sharing one warehouse scan per fact table.
 
     Loads the requested metrics, keeps only the active ``fact`` ones, and runs the
     batched collector. Per-metric ``last_collected_at`` / ``last_collection_status``
     stamping and error capture happen inside the collector, so one metric failing
-    never aborts the others; this wrapper only owns the session lifecycle.
+    never aborts the others; this wrapper only owns the session lifecycle. An
+    optional ``window_from`` / ``window_to`` pair (ISO strings) backfills an
+    explicit recent window for a manual "collect now" of a single fact metric.
+
+    ``force`` is set only by the manual "collect now" trigger: it keeps non-active
+    (draft/archived) fact metrics in the batch so a freshly-created metric still
+    produces data. The scheduler always dispatches with ``force=False``, so
+    scheduled collection stays active-only.
     """
     session = _get_sync_session()
     try:
+        window = _parse_window_override(window_from, window_to)
         requested = [uuid.UUID(metric_id) for metric_id in metric_ids]
         loaded = (
             session.execute(select(MetricDefinition).where(MetricDefinition.id.in_(requested)))
@@ -1754,12 +1880,14 @@ def collect_fact_metrics_batch(self: object, metric_ids: list[str]) -> dict[str,
         definitions = [
             definition
             for definition in loaded
-            if definition.status == MetricStatus.active
+            if (force or definition.status == MetricStatus.active)
             and _metric_kind(definition) is MetricKind.fact
         ]
         if not definitions:
             return {"metrics": 0, "collected": 0, "errors": 0, "values": 0, "breakdown_values": 0}
-        return _run_fact_metrics_batch(session, definitions=definitions)
+        return _run_fact_metrics_batch(
+            session, definitions=definitions, window_override=window
+        )
     except Exception:
         logger.exception("Batch fact metric collection failed for %s", metric_ids)
         session.rollback()

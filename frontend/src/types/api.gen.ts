@@ -1599,6 +1599,30 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/projects/{slug}/metrics/{metric_id}/collect": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Collect Metric Now
+         * @description Trigger an immediate backfill collection for one metric (editor-gated).
+         *
+         *     Dispatches the same Celery collection the scheduler uses, backfilling a
+         *     bounded recent window so the chart is not empty. Returns 202 once queued;
+         *     the warehouse query runs in the worker. Unknown metric -> 404.
+         */
+        post: operations["collect_metric_now_api_v1_projects__slug__metrics__metric_id__collect_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/projects/{slug}/metrics/{metric_id}/move": {
         parameters: {
             query?: never;
@@ -5457,6 +5481,35 @@ export interface components {
             selected_column?: string | null;
             /** Series */
             series: components["schemas"]["MetricBreakdownSeries"][];
+        };
+        /**
+         * MetricCollectNowResponse
+         * @description 202 payload for a manual ``POST /metrics/{id}/collect`` trigger.
+         *
+         *     ``window_from`` / ``window_to`` describe the backfilled [from, to) window for
+         *     ``fact`` / ``sql`` metrics; they are ``None`` for ``event_composition``
+         *     metrics, which have no interval and recompute from the full event-metric
+         *     series. ``task_id`` is the dispatched Celery task id when the broker returns
+         *     one, else ``None``.
+         */
+        MetricCollectNowResponse: {
+            /**
+             * Metric Id
+             * Format: uuid
+             */
+            metric_id: string;
+            /**
+             * Status
+             * @default queued
+             * @constant
+             */
+            status: "queued";
+            /** Task Id */
+            task_id?: string | null;
+            /** Window From */
+            window_from?: string | null;
+            /** Window To */
+            window_to?: string | null;
         };
         /**
          * MetricComposition
@@ -11880,6 +11933,38 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["MetricBreakdownsResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    collect_metric_now_api_v1_projects__slug__metrics__metric_id__collect_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                slug: string;
+                metric_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MetricCollectNowResponse"];
                 };
             };
             /** @description Validation Error */

@@ -1,7 +1,14 @@
 import uuid
+from datetime import datetime, timedelta
 
 import pytest
 from httpx import AsyncClient
+
+import tripl.worker.tasks.metrics.metric_collect as mc
+from tripl.api.deps import get_current_user
+from tripl.main import app
+from tripl.models.domain_enums import UserRole
+from tripl.models.user import User
 
 
 @pytest.fixture
@@ -940,3 +947,188 @@ class TestCrossProjectIsolation:
         # A valid metric_id from project B, fetched under project A's slug, must 404.
         resp = await client.get(f"/api/v1/projects/proj-a/metrics/{metric_b['id']}")
         assert resp.status_code == 404, resp.text
+
+
+class _FakeAsyncResult:
+    """Stand-in for a Celery AsyncResult so the endpoint can read ``.id``."""
+
+    def __init__(self, task_id: str) -> None:
+        self.id = task_id
+
+
+class _DispatchRecorder:
+    """Records the positional args of a patched task ``.delay`` call."""
+
+    def __init__(self, task_id: str) -> None:
+        self.task_id = task_id
+        self.calls: list[tuple] = []
+
+    def __call__(self, *args: object) -> _FakeAsyncResult:
+        self.calls.append(args)
+        return _FakeAsyncResult(self.task_id)
+
+
+@pytest.fixture
+def dispatch_recorder(
+    monkeypatch: pytest.MonkeyPatch,
+) -> dict[str, _DispatchRecorder]:
+    """Patch both collection tasks' ``.delay`` so no broker is needed in tests.
+
+    Returns the recorders so a test can assert which task was dispatched and with
+    which metric id / window.
+    """
+    sql_rec = _DispatchRecorder("task-sql")
+    fact_rec = _DispatchRecorder("task-fact")
+    monkeypatch.setattr(mc.collect_metric_definitions, "delay", sql_rec)
+    monkeypatch.setattr(mc.collect_fact_metrics_batch, "delay", fact_rec)
+    return {"sql": sql_rec, "fact": fact_rec}
+
+
+class TestCollectNow:
+    async def test_sql_metric_dispatches_with_backfill_window(
+        self,
+        client: AsyncClient,
+        project: dict,
+        data_source: dict,
+        dispatch_recorder: dict[str, _DispatchRecorder],
+    ):
+        metric = await _create_sql_metric(
+            client, project["slug"], data_source["id"], "cn_sql"
+        )
+        # A freshly-created metric is draft; collect-now must still dispatch
+        # (and force collection so the worker does not skip on status).
+        assert metric["status"] == "draft"
+        resp = await client.post(
+            f"{_metrics_url(project['slug'])}/{metric['id']}/collect"
+        )
+        assert resp.status_code == 202, resp.text
+        body = resp.json()
+        assert body["metric_id"] == metric["id"]
+        assert body["status"] == "queued"
+        assert body["task_id"] == "task-sql"
+        assert body["window_from"] is not None
+        assert body["window_to"] is not None
+
+        # 1d interval -> 30 buckets, capped at the 30-day ceiling.
+        window_from = datetime.fromisoformat(body["window_from"])
+        window_to = datetime.fromisoformat(body["window_to"])
+        assert window_to - window_from == timedelta(days=30)
+
+        # The single-metric collector is dispatched with (metric_id, from, to);
+        # the fact batch task is NOT used for a sql metric. The dispatched ISO
+        # strings encode the SAME instants as the response window (string form
+        # may differ: "+00:00" vs "Z"), so compare parsed datetimes.
+        sql_calls = dispatch_recorder["sql"].calls
+        assert len(sql_calls) == 1
+        assert sql_calls[0][0] == metric["id"]
+        assert datetime.fromisoformat(sql_calls[0][1]) == window_from
+        assert datetime.fromisoformat(sql_calls[0][2]) == window_to
+        # force=True is always passed by the manual trigger so a draft metric is
+        # not skipped on status by the worker.
+        assert sql_calls[0][3] is True
+        assert dispatch_recorder["fact"].calls == []
+
+    async def test_fact_metric_dispatches_batch_with_window(
+        self,
+        client: AsyncClient,
+        project: dict,
+        fact_table: dict,
+        dispatch_recorder: dict[str, _DispatchRecorder],
+    ):
+        created = await client.post(
+            _metrics_url(project["slug"]),
+            json={
+                "kind": "fact",
+                "name": "cn_fact",
+                "display_name": "CN Fact",
+                "composition": "single",
+                "fact_table_id": fact_table["id"],
+                "aggregation": "sum",
+                "interval": "1h",
+                "measure_column": "amount",
+            },
+        )
+        assert created.status_code == 201, created.text
+        metric = created.json()
+        assert metric["status"] == "draft"
+
+        resp = await client.post(
+            f"{_metrics_url(project['slug'])}/{metric['id']}/collect"
+        )
+        assert resp.status_code == 202, resp.text
+        body = resp.json()
+        assert body["task_id"] == "task-fact"
+
+        # 1h interval -> 48 buckets = 48h (well under the 30-day cap).
+        window_from = datetime.fromisoformat(body["window_from"])
+        window_to = datetime.fromisoformat(body["window_to"])
+        assert window_to - window_from == timedelta(hours=48)
+
+        # Fact metrics reuse the shared-scan batch task with a one-element list.
+        fact_calls = dispatch_recorder["fact"].calls
+        assert len(fact_calls) == 1
+        assert fact_calls[0][0] == [metric["id"]]
+        assert datetime.fromisoformat(fact_calls[0][1]) == window_from
+        assert datetime.fromisoformat(fact_calls[0][2]) == window_to
+        # force=True is always passed so a draft fact metric stays in the batch.
+        assert fact_calls[0][3] is True
+        assert dispatch_recorder["sql"].calls == []
+
+    async def test_collect_marks_metric_running(
+        self,
+        client: AsyncClient,
+        project: dict,
+        data_source: dict,
+        dispatch_recorder: dict[str, _DispatchRecorder],
+    ):
+        metric = await _create_sql_metric(
+            client, project["slug"], data_source["id"], "cn_run"
+        )
+        resp = await client.post(
+            f"{_metrics_url(project['slug'])}/{metric['id']}/collect"
+        )
+        assert resp.status_code == 202, resp.text
+
+        # Stamped running before dispatch so the scheduler won't double-dispatch.
+        got = await client.get(f"{_metrics_url(project['slug'])}/{metric['id']}")
+        assert got.json()["last_collection_status"] == "running"
+
+    async def test_unknown_metric_returns_404(
+        self,
+        client: AsyncClient,
+        project: dict,
+        dispatch_recorder: dict[str, _DispatchRecorder],
+    ):
+        resp = await client.post(
+            f"{_metrics_url(project['slug'])}/{uuid.uuid4()}/collect"
+        )
+        assert resp.status_code == 404, resp.text
+        assert dispatch_recorder["sql"].calls == []
+        assert dispatch_recorder["fact"].calls == []
+
+    async def test_requires_editor_role(
+        self,
+        client: AsyncClient,
+        project: dict,
+        dispatch_recorder: dict[str, _DispatchRecorder],
+    ):
+        async def _viewer() -> User:
+            return User(
+                id=uuid.uuid4(),
+                email="viewer@example.com",
+                name="Viewer",
+                password_hash="x",
+                role=UserRole.viewer.value,
+            )
+
+        app.dependency_overrides[get_current_user] = _viewer
+        try:
+            resp = await client.post(
+                f"{_metrics_url(project['slug'])}/{uuid.uuid4()}/collect"
+            )
+        finally:
+            app.dependency_overrides.pop(get_current_user, None)
+
+        assert resp.status_code == 403, resp.text
+        assert dispatch_recorder["sql"].calls == []
+        assert dispatch_recorder["fact"].calls == []

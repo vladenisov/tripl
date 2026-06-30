@@ -35,6 +35,7 @@ export type MetricDefinitionMove = Schemas['MetricDefinitionMove']
 export type MetricDefinitionListItem = Schemas['MetricDefinitionListItem']
 export type MetricDefinitionListResponse = Schemas['MetricDefinitionListResponse']
 export type MetricDefinitionResponse = Schemas['MetricDefinitionResponse']
+export type MetricCollectNowResponse = Schemas['MetricCollectNowResponse']
 
 // ───────── Series / breakdown / version shapes ─────────
 export type MetricSeriesPoint = Schemas['MetricSeriesPoint']

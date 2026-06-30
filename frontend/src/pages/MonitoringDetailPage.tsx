@@ -61,8 +61,10 @@ import type {
 } from '@/types'
 import {
   AlertTriangle, ArrowDown, ArrowLeft, ArrowUp, CalendarPlus, ChevronDown, ChevronLeft, ChevronUp,
-  Code, Eye, GitBranch, GitCompareArrows, Layers, MoreHorizontal, Pencil, Trash2, TrendingUp,
+  Code, Eye, GitBranch, GitCompareArrows, Layers, Loader2, MoreHorizontal, Pencil, RefreshCw,
+  Trash2, TrendingUp,
 } from 'lucide-react'
+import { toast } from 'sonner'
 
 // Stable empty reference so `metaFieldsQuery.data ?? EMPTY_META_FIELDS`
 // doesn't mint a new array each render and bust the memoized lookup map.
@@ -500,6 +502,22 @@ export default function MonitoringDetailPage() {
       void queryClient.invalidateQueries({ queryKey: annotationsKey })
     },
   })
+  // Manual "collect now": backfill a recent window for this metric so its chart
+  // populates without waiting for the scheduler. Collection runs in the worker,
+  // so refetch the series a few seconds after the trigger (the 60s
+  // refetchInterval is the backstop).
+  const collectMut = useMutation({
+    mutationFn: () => metricsCatalogApi.collect(slug!, scopeId),
+    onSuccess: () => {
+      toast.success('Collection queued — the chart will update shortly.')
+      window.setTimeout(() => {
+        void queryClient.invalidateQueries({
+          queryKey: ['monitoringMetrics', slug, scope, scopeId],
+        })
+      }, 5000)
+    },
+    onError: () => toast.error('Could not start collection.'),
+  })
 
   const eventType = eventTypes.find((candidate: EventType) => (
     scope === 'event'
@@ -619,6 +637,22 @@ export default function MonitoringDetailPage() {
               <ArrowLeft className="mr-2 h-4 w-4" />
               {scope === 'metric' ? 'Back to metrics' : 'Back to events'}
             </Button>
+            {scope === 'metric' && (
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => collectMut.mutate()}
+                disabled={collectMut.isPending}
+                title="Backfill a recent window now so the chart populates without waiting for the scheduler."
+              >
+                {collectMut.isPending ? (
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                ) : (
+                  <RefreshCw className="mr-2 h-4 w-4" />
+                )}
+                {collectMut.isPending ? 'Collecting…' : 'Collect now'}
+              </Button>
+            )}
           </div>
 
           <div className="space-y-3">

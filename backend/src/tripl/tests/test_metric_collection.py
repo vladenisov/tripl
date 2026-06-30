@@ -574,6 +574,91 @@ def test_collect_sql_metric_writes_metric_values(
         }
 
 
+def _seed_draft_sql_metric(session: Session, project: Project, data_source: DataSource) -> str:
+    definition = MetricDefinition(
+        id=uuid.uuid4(),
+        project_id=project.id,
+        name="draft-sql-metric",
+        display_name="Draft sql metric",
+        kind=MetricKind.sql,
+        config={
+            "metric_sql": "SELECT ts AS bucket_ts, count() AS value FROM t GROUP BY bucket_ts",
+            "time_column": "bucket_ts",
+        },
+        data_source_id=data_source.id,
+        interval=ScanInterval.h1,
+        status=MetricStatus.draft,
+    )
+    session.add(definition)
+    session.commit()
+    return str(definition.id)
+
+
+def test_collect_sql_metric_skipped_when_not_active_without_force(
+    sync_session_factory: sessionmaker[Session],
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """The scheduler path (force=False) skips a non-active metric and writes nothing."""
+    with sync_session_factory() as session:
+        project, data_source = _seed_project_and_ds(session)
+        def_id = _seed_draft_sql_metric(session, project, data_source)
+
+    monkeypatch.setattr(metric_collect, "_get_sync_session", sync_session_factory)
+
+    result = metric_collect.collect_metric_definitions.run(def_id)
+
+    assert result == {"skipped": True, "metric_definition_id": def_id}
+    with sync_session_factory() as session:
+        rows = (
+            session.execute(
+                select(MetricValue).where(MetricValue.metric_definition_id == uuid.UUID(def_id))
+            )
+            .scalars()
+            .all()
+        )
+        assert rows == []
+
+
+def test_collect_sql_metric_forced_collects_draft(
+    sync_session_factory: sessionmaker[Session],
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """The manual path (force=True) collects a draft metric anyway, writing values."""
+    with sync_session_factory() as session:
+        project, data_source = _seed_project_and_ds(session)
+        def_id = _seed_draft_sql_metric(session, project, data_source)
+
+    adapter = _SqlAdapter(
+        ["bucket_ts", "value"],
+        [(datetime(2026, 1, 1, 10), 5), (datetime(2026, 1, 1, 11), 9)],
+    )
+    monkeypatch.setattr(metric_collect, "_get_sync_session", sync_session_factory)
+    monkeypatch.setattr(metric_collect, "_build_adapter", lambda ds: adapter)
+    monkeypatch.setattr(
+        metric_collect,
+        "_resolve_value_window",
+        lambda *a, **k: (datetime(2026, 1, 1, 10), datetime(2026, 1, 1, 12)),
+    )
+
+    result = metric_collect.collect_metric_definitions.run(def_id, force=True)
+
+    # Not skipped despite draft status; values are written.
+    assert result.get("skipped") is None
+    assert result["values"] == 2
+    with sync_session_factory() as session:
+        rows = (
+            session.execute(
+                select(MetricValue).where(MetricValue.metric_definition_id == uuid.UUID(def_id))
+            )
+            .scalars()
+            .all()
+        )
+        assert {(row.bucket, row.value) for row in rows} == {
+            (datetime(2026, 1, 1, 10), 5.0),
+            (datetime(2026, 1, 1, 11), 9.0),
+        }
+
+
 # ── event_composition ────────────────────────────────────────────────────────
 
 
@@ -1041,6 +1126,45 @@ def test_check_metric_definitions_due_reaps_stale_running(
     # A stale running marker is reclaimed and the metric is re-dispatched.
     assert result == {"checked": 1, "dispatched": 1}
     assert dispatched == [[str(def_id)]]
+
+
+def test_check_metric_definitions_due_skips_non_active(
+    sync_session_factory: sessionmaker[Session],
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """Scheduled collection stays active-only: a draft metric is never dispatched."""
+    with sync_session_factory() as session:
+        project, data_source = _seed_project_and_ds(session)
+        fact_table = _seed_fact_table(session, project, data_source)
+        definition = MetricDefinition(
+            id=uuid.uuid4(),
+            project_id=project.id,
+            name="draft-due-metric",
+            display_name="Draft Due Metric",
+            kind=MetricKind.fact,
+            composition=MetricComposition.single,
+            aggregation=MetricAggregation.count,
+            fact_table_id=fact_table.id,
+            config={},
+            interval=ScanInterval.h1,
+            status=MetricStatus.draft,
+        )
+        session.add(definition)
+        session.commit()
+
+    dispatched: list[list[str]] = []
+    monkeypatch.setattr(metrics_schedule, "_get_sync_session", sync_session_factory)
+    monkeypatch.setattr(
+        metrics_schedule.collect_fact_metrics_batch,
+        "delay",
+        lambda metric_ids: dispatched.append(metric_ids),
+    )
+
+    result = metrics_schedule.check_metric_definitions_due.run()
+
+    # The dispatcher query only loads active metrics, so the draft is invisible.
+    assert result == {"checked": 0, "dispatched": 0}
+    assert dispatched == []
 
 
 # ── fact row-filter WHERE assembly (multiple named filters + free-text SQL) ──

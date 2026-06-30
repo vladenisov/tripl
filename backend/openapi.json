@@ -8388,6 +8388,62 @@
         "title": "MetricBreakdownsResponse",
         "type": "object"
       },
+      "MetricCollectNowResponse": {
+        "description": "202 payload for a manual ``POST /metrics/{id}/collect`` trigger.\n\n``window_from`` / ``window_to`` describe the backfilled [from, to) window for\n``fact`` / ``sql`` metrics; they are ``None`` for ``event_composition``\nmetrics, which have no interval and recompute from the full event-metric\nseries. ``task_id`` is the dispatched Celery task id when the broker returns\none, else ``None``.",
+        "properties": {
+          "metric_id": {
+            "format": "uuid",
+            "title": "Metric Id",
+            "type": "string"
+          },
+          "status": {
+            "const": "queued",
+            "default": "queued",
+            "title": "Status",
+            "type": "string"
+          },
+          "task_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Task Id"
+          },
+          "window_from": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Window From"
+          },
+          "window_to": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Window To"
+          }
+        },
+        "required": [
+          "metric_id"
+        ],
+        "title": "MetricCollectNowResponse",
+        "type": "object"
+      },
       "MetricComposition": {
         "description": "How an ``event_composition`` or ``fact`` metric combines its series.\n\n``event_composition`` uses ``single`` / ``ratio`` / ``per_distinct_user``;\n``fact`` uses ``single`` (one operand) and ``ratio`` (numerator / denominator\noperands, each over a \u2014 possibly different \u2014 FactTable).",
         "enum": [
@@ -22046,6 +22102,59 @@
           }
         },
         "summary": "Get Metric Breakdowns",
+        "tags": [
+          "metrics-catalog"
+        ]
+      }
+    },
+    "/api/v1/projects/{slug}/metrics/{metric_id}/collect": {
+      "post": {
+        "description": "Trigger an immediate backfill collection for one metric (editor-gated).\n\nDispatches the same Celery collection the scheduler uses, backfilling a\nbounded recent window so the chart is not empty. Returns 202 once queued;\nthe warehouse query runs in the worker. Unknown metric -> 404.",
+        "operationId": "collect_metric_now_api_v1_projects__slug__metrics__metric_id__collect_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "slug",
+            "required": true,
+            "schema": {
+              "title": "Slug",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "metric_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Metric Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MetricCollectNowResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Collect Metric Now",
         "tags": [
           "metrics-catalog"
         ]

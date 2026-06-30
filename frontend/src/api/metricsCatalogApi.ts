@@ -1,6 +1,7 @@
 import { api } from './client'
 import type {
   MetricBreakdownsResponse,
+  MetricCollectNowResponse,
   MetricCreate,
   MetricDefinitionBulkUpdate,
   MetricDefinitionListResponse,
@@ -64,6 +65,10 @@ export const metricsCatalogApi = {
 
   del: (slug: string, metricId: string) =>
     api.del<void>(`/projects/${slug}/metrics/${metricId}`),
+
+  /** Trigger an immediate backfill collection for one metric (editor-gated). */
+  collect: (slug: string, metricId: string) =>
+    api.post<MetricCollectNowResponse>(`/projects/${slug}/metrics/${metricId}/collect`, {}),
 
   bulkUpdate: (slug: string, data: MetricDefinitionBulkUpdate) =>
     api.post<void>(`/projects/${slug}/metrics/bulk-update`, data),
