@@ -1001,18 +1001,22 @@ async def create_demo_project(session: AsyncSession) -> ProjectResponse:
     # 14c. MetricValue series so the catalog + drilldowns render with data.
     #
     # event_composition ratio → ~7 days HOURLY, aligned to the source scan grid
-    # (scan_config_id set). The value is a plausible fractional conversion derived
-    # deterministically from the two event bases (purchases / screen views).
+    # (scan_config_id set). Conversion drifts gently upward over the window with a
+    # daily ripple so the ratio series reads as a live, dynamic line; deriving it
+    # from purchases/screen-views with the same sinusoid base cancels out to a
+    # near-flat constant. Stays a small fraction (~0.04-0.11).
     conversion_metric = metric_defs["purchase_conversion"]
-    for idx, bucket in enumerate(_hour_buckets(now, days=7)):
-        purchases = _sinusoidal_count(120, bucket, idx + 11)
-        screen_views = _sinusoidal_count(1800, bucket, idx + 1)
+    conversion_buckets = _hour_buckets(now, days=7)
+    conversion_span = max(len(conversion_buckets) - 1, 1)
+    for idx, bucket in enumerate(conversion_buckets):
+        progress = idx / conversion_span
+        daily_ripple = 0.015 * math.sin(bucket.hour * math.pi / 12)
         session.add(
             MetricValue(
                 metric_definition_id=conversion_metric.id,
                 scan_config_id=scan_config.id,
                 bucket=bucket,
-                value=purchases / screen_views,
+                value=0.05 + 0.045 * progress + daily_ripple,
             )
         )
 
