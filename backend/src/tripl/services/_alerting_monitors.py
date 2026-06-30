@@ -174,6 +174,7 @@ async def _build_monitor_detail(
         include_schema_drifts=rule.include_schema_drifts,
         include_distribution_drifts=rule.include_distribution_drifts,
         include_release_regressions=rule.include_release_regressions,
+        include_metrics=rule.include_metrics,
         total_deliveries=total_deliveries,
         last_delivery_at=last_delivery[0] if last_delivery else None,
         last_delivery_status=last_delivery[1] if last_delivery else None,

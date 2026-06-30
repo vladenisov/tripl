@@ -26,6 +26,7 @@ from tripl.alerting_matching import (
 from tripl.core.analyzers.anomaly_detector import (
     SCOPE_EVENT,
     SCOPE_EVENT_TYPE,
+    SCOPE_METRIC,
     SCOPE_PROJECT_TOTAL,
 )
 from tripl.models.distribution_drift import DistributionDrift
@@ -33,6 +34,8 @@ from tripl.models.event import Event
 from tripl.models.event_metric import EventMetric
 from tripl.models.event_type import EventType
 from tripl.models.metric_anomaly import MetricAnomaly
+from tripl.models.metric_definition import MetricDefinition
+from tripl.models.metric_value import MetricValue
 from tripl.models.release_regression import ReleaseRegression
 from tripl.models.scan_config import ScanConfig
 from tripl.models.schema_drift import SchemaDrift
@@ -175,6 +178,62 @@ def _get_latest_active_anomalies(
         if _classify_signal_state(
             anomaly_bucket=anomaly.bucket,
             latest_metric_bucket=latest_metrics.get(key),
+        )
+        == "latest_scan"
+    }
+
+
+def _get_active_metric_anomaly_candidates(
+    session: Session,
+    config: ScanConfig,
+) -> dict[tuple[str, str], MetricAnomaly]:
+    """Latest active ``metric``-scope anomaly per catalog metric in the project.
+
+    Catalog metric anomalies are project-global (NULL ``scan_config_id``), so —
+    unlike event scopes — they are not picked up by the config-partitioned
+    ``_get_latest_active_anomalies``. We load them here keyed by their metric
+    definition, classify against the latest stored value bucket, and keep only
+    the ones whose newest anomaly is on the latest scan (an open signal).
+    """
+    scope_refs = [
+        str(metric_id)
+        for metric_id in session.execute(
+            select(MetricDefinition.id).where(
+                MetricDefinition.project_id == config.project_id,
+                MetricDefinition.anomaly_detection_enabled.is_(True),
+            )
+        ).scalars()
+    ]
+    if not scope_refs:
+        return {}
+
+    metric_ids = [uuid.UUID(ref) for ref in scope_refs]
+    latest_value_buckets: dict[str, datetime] = {
+        str(metric_definition_id): bucket
+        for metric_definition_id, bucket in session.execute(
+            select(MetricValue.metric_definition_id, sa_func.max(MetricValue.bucket))
+            .where(MetricValue.metric_definition_id.in_(metric_ids))
+            .group_by(MetricValue.metric_definition_id)
+        ).all()
+    }
+
+    latest_anomalies: dict[str, MetricAnomaly] = {}
+    for anomaly in session.execute(
+        select(MetricAnomaly)
+        .where(
+            MetricAnomaly.scope_type == SCOPE_METRIC,
+            MetricAnomaly.scope_ref.in_(scope_refs),
+        )
+        .order_by(MetricAnomaly.bucket.desc())
+    ).scalars():
+        latest_anomalies.setdefault(anomaly.scope_ref, anomaly)
+
+    return {
+        (SCOPE_METRIC, scope_ref): anomaly
+        for scope_ref, anomaly in latest_anomalies.items()
+        if _classify_signal_state(
+            anomaly_bucket=anomaly.bucket,
+            latest_metric_bucket=latest_value_buckets.get(scope_ref),
         )
         == "latest_scan"
     }

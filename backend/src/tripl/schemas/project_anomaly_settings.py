@@ -9,6 +9,7 @@ class ProjectAnomalySettingsUpdate(BaseModel):
     detect_project_total: bool | None = None
     detect_event_types: bool | None = None
     detect_events: bool | None = None
+    detect_metrics: bool | None = None
     baseline_window_buckets: int | None = Field(None, ge=1)
     min_history_buckets: int | None = Field(None, ge=1)
     sigma_threshold: float | None = Field(None, ge=0.1)
@@ -22,6 +23,7 @@ class ProjectAnomalySettingsResponse(BaseModel):
     detect_project_total: bool
     detect_event_types: bool
     detect_events: bool
+    detect_metrics: bool
     baseline_window_buckets: int
     min_history_buckets: int
     sigma_threshold: float

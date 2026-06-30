@@ -20,6 +20,9 @@ const MonitoringDetailPage = lazy(() => import('./pages/MonitoringDetailPage'))
 const ProjectSettingsPage = lazy(() => import('./pages/ProjectSettingsPage'))
 const ReconciliationPage = lazy(() => import('./pages/ReconciliationPage'))
 const AnomaliesPage = lazy(() => import('./pages/AnomaliesPage'))
+const MetricsPage = lazy(() => import('./pages/metrics/MetricsPage'))
+const MetricEditPage = lazy(() => import('./pages/metrics/MetricForm'))
+const FactTableEditPage = lazy(() => import('./pages/fact-tables/FactTableForm'))
 const CoveragePage = lazy(() => import('./pages/CoveragePage'))
 const ConceptsPage = lazy(() => import('./pages/ConceptsPage'))
 const SettingsArea = lazy(() => import('./pages/settings-area/SettingsArea'))
@@ -36,6 +39,30 @@ function RouteFallback() {
 function withSuspense(element: React.ReactNode) {
   return (
     <Suspense fallback={<RouteFallback />}>
+      {element}
+    </Suspense>
+  )
+}
+
+function MetricRouteFallback() {
+  return (
+    <div className="flex min-h-[240px] items-center justify-center text-sm text-muted-foreground">
+      Loading metrics…
+    </div>
+  )
+}
+
+/**
+ * Keyed Suspense for the lazy metric routes. The shared {@link withSuspense}
+ * reuses a single boundary instance across navigations, so React keeps the
+ * previous (already-resolved) page on screen while the metric chunk loads — a
+ * brief flash of stale content. Keying the boundary by route forces a fresh
+ * mount that shows the fallback immediately. Scoped to metric routes so other
+ * routes keep their existing behavior.
+ */
+function withMetricSuspense(routeKey: string, element: ReactNode) {
+  return (
+    <Suspense key={routeKey} fallback={<MetricRouteFallback />}>
       {element}
     </Suspense>
   )
@@ -121,6 +148,26 @@ function DataSourceRedirect() {
 function EventDetailRedirect() {
   const { slug, eventId } = useParams<{ slug: string; eventId: string }>()
   return <Navigate to={`/p/${slug}/monitoring/event/${eventId}`} replace />
+}
+
+/**
+ * Legacy fact-tables routes → the Fact tables tab under Metrics. Fact tables are
+ * no longer a standalone top-level surface; these redirects keep existing links
+ * and bookmarks working while preserving the `:slug` / `:factTableId` params.
+ */
+function FactTablesRedirect() {
+  const { slug } = useParams<{ slug: string }>()
+  return <Navigate to={`/p/${slug}/metrics/fact-tables`} replace />
+}
+
+function FactTablesNewRedirect() {
+  const { slug } = useParams<{ slug: string }>()
+  return <Navigate to={`/p/${slug}/metrics/fact-tables/new`} replace />
+}
+
+function FactTableEditRedirect() {
+  const { slug, factTableId } = useParams<{ slug: string; factTableId: string }>()
+  return <Navigate to={`/p/${slug}/metrics/fact-tables/${factTableId}/edit`} replace />
 }
 
 const SETTINGS_STORAGE_KEY = 'tripl.settings'
@@ -244,6 +291,18 @@ export default function App() {
             <Route path="/p/:slug/monitors/:monitorId" element={withSuspense(<MonitorDetailPage />)} />
             <Route path="/p/:slug/reconciliation" element={withSuspense(<ReconciliationPage />)} />
             <Route path="/p/:slug/anomalies" element={withSuspense(<AnomaliesPage />)} />
+            <Route path="/p/:slug/metrics/new" element={withMetricSuspense('metrics-new', <MetricEditPage />)} />
+            <Route path="/p/:slug/metrics/:metricId/edit" element={withMetricSuspense('metrics-edit', <MetricEditPage />)} />
+            {/* Fact tables live as a tab inside Metrics — create/edit forms first,
+                then the two tab list routes. */}
+            <Route path="/p/:slug/metrics/fact-tables/new" element={withMetricSuspense('fact-tables-new', <FactTableEditPage />)} />
+            <Route path="/p/:slug/metrics/fact-tables/:factTableId/edit" element={withMetricSuspense('fact-tables-edit', <FactTableEditPage />)} />
+            <Route path="/p/:slug/metrics/fact-tables" element={withMetricSuspense('metrics-fact-tables', <MetricsPage tab="fact-tables" />)} />
+            <Route path="/p/:slug/metrics" element={withMetricSuspense('metrics-list', <MetricsPage tab="catalog" />)} />
+            {/* Legacy fact-tables routes → Metrics › Fact tables tab. */}
+            <Route path="/p/:slug/fact-tables/new" element={<FactTablesNewRedirect />} />
+            <Route path="/p/:slug/fact-tables/:factTableId/edit" element={<FactTableEditRedirect />} />
+            <Route path="/p/:slug/fact-tables" element={<FactTablesRedirect />} />
             <Route path="/p/:slug/coverage" element={withSuspense(<CoveragePage />)} />
             <Route path="/p/:slug/concepts" element={withSuspense(<ConceptsPage />)} />
             <Route path="/p/:slug/settings/:tab/:itemId" element={withSuspense(<ProjectSettingsPage />)} />

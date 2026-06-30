@@ -14,6 +14,7 @@ from tripl.models.domain_enums import MetricScopeType
 SCOPE_PROJECT_TOTAL = MetricScopeType.project_total.value
 SCOPE_EVENT_TYPE = MetricScopeType.event_type.value
 SCOPE_EVENT = MetricScopeType.event.value
+SCOPE_METRIC = MetricScopeType.metric.value
 # Seasonal periods (in buckets) used by the STL/MSTL decomposition for the
 # trend-shift detector and the forecast. Ascending order matters: MSTL drops
 # periods longer than half the series and keeps the shortest survivors first.
@@ -334,6 +335,26 @@ def required_history_buckets(interval: timedelta, settings: AnomalyDetectionSett
     return max(settings.baseline_window_buckets, seasonal)
 
 
+def _present_series(
+    points: list[SeriesPoint],
+    *,
+    end_exclusive: datetime,
+) -> list[SeriesPoint]:
+    """Sorted, de-duplicated points strictly before ``end_exclusive``.
+
+    Used instead of ``expand_series`` when gaps must NOT be zero-filled (e.g.
+    fractional metric series, where a missing bucket means "no data" rather than
+    "the value dropped to zero"). Later points win on duplicate buckets.
+    """
+    counts_by_bucket = {
+        point.bucket: point.count for point in points if point.bucket < end_exclusive
+    }
+    return [
+        SeriesPoint(bucket=bucket, count=counts_by_bucket[bucket])
+        for bucket in sorted(counts_by_bucket)
+    ]
+
+
 def detect_anomalies(
     points: list[SeriesPoint],
     *,
@@ -341,6 +362,7 @@ def detect_anomalies(
     evaluation_start: datetime,
     evaluation_end: datetime,
     settings: AnomalyDetectionSettings,
+    fill_gaps: bool = True,
 ) -> list[DetectedAnomaly]:
     """Hybrid detector.
 
@@ -351,8 +373,16 @@ def detect_anomalies(
 
     Secondary signal: a deseasonalized STL trend-shift detector for slow level
     drifts the per-bucket band would absorb. Merged by larger |z|.
+
+    ``fill_gaps`` (default ``True``) zero-fills missing buckets onto the interval
+    grid — correct for count-shaped series. Set it ``False`` for fractional
+    series (ratios/averages), where a missing bucket means "no data" and must
+    not read as a drop to zero.
     """
-    expanded = expand_series(points, interval=interval, end_exclusive=evaluation_end)
+    if fill_gaps:
+        expanded = expand_series(points, interval=interval, end_exclusive=evaluation_end)
+    else:
+        expanded = _present_series(points, end_exclusive=evaluation_end)
     if not expanded:
         return []
 

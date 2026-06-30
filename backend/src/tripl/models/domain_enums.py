@@ -89,6 +89,50 @@ class MetricScopeType(enum.StrEnum):
     schema = "schema"
     distribution = "distribution"
     release_regression = "release_regression"
+    # ``metric`` (user-defined MetricDefinition series). Added by the metrics
+    # epic's anomaly-scope ticket (tripl-dxhp.6) via an ALTER TYPE migration.
+    metric = "metric"
+
+
+class MetricKind(enum.StrEnum):
+    """How a MetricDefinition produces its per-bucket value."""
+
+    sql = "sql"
+    event_composition = "event_composition"
+    # ``fact``: aggregation over a separately-defined FactTable (fact-table model).
+    fact = "fact"
+
+
+class MetricStatus(enum.StrEnum):
+    """Simple catalog lifecycle for metrics (no dev-implementation states)."""
+
+    draft = "draft"
+    active = "active"
+    archived = "archived"
+
+
+class MetricAggregation(enum.StrEnum):
+    """Aggregation applied by a ``fact`` metric over a FactTable column."""
+
+    count = "count"  # type: ignore[assignment]  # StrEnum member shadows str.count
+    sum = "sum"
+    avg = "avg"
+    min = "min"
+    max = "max"
+    count_distinct = "count_distinct"
+
+
+class MetricComposition(enum.StrEnum):
+    """How an ``event_composition`` or ``fact`` metric combines its series.
+
+    ``event_composition`` uses ``single`` / ``ratio`` / ``per_distinct_user``;
+    ``fact`` uses ``single`` (one operand) and ``ratio`` (numerator / denominator
+    operands, each over a — possibly different — FactTable).
+    """
+
+    single = "single"
+    ratio = "ratio"
+    per_distinct_user = "per_distinct_user"
 
 
 class ChartAnnotationScopeType(enum.StrEnum):

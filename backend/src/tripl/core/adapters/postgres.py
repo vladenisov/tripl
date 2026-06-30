@@ -8,11 +8,18 @@ from datetime import datetime
 import psycopg
 
 from tripl.core.adapters.base import (
+    AggregateSpec,
     BaseAdapter,
     ColumnInfo,
     SchemaColumn,
     SchemaTable,
 )
+from tripl.core.adapters.measure_validator import (
+    build_aggregate_sql,
+    coerce_aggregation,
+    validate_measure_column,
+)
+from tripl.models.domain_enums import MetricAggregation
 
 logger = logging.getLogger(__name__)
 
@@ -141,8 +148,7 @@ class PostgresAdapter(BaseAdapter):
                 SchemaColumn(name=str(column_name), data_type=str(data_type))
             )
         return [
-            SchemaTable(name=table, columns=columns)
-            for table, columns in columns_by_table.items()
+            SchemaTable(name=table, columns=columns) for table, columns in columns_by_table.items()
         ]
 
     def get_preview_rows(
@@ -337,6 +343,337 @@ class PostgresAdapter(BaseAdapter):
         logger.info("PG bucketed done in %.2fs, %s rows", elapsed, len(rows))
 
         return col_names, json_value_names, rows
+
+    def _aggregate_value_sql(self, agg_fn: MetricAggregation, measure_column: str | None) -> str:
+        """Validate + escape the measure and build the safe aggregate fragment."""
+        measure_sql: str | None = None
+        if measure_column is not None:
+            measure_sql = _quote_ident(
+                validate_measure_column(measure_column, self._allowed_columns)
+            )
+        return build_aggregate_sql(agg_fn, measure_sql)
+
+    def get_time_bucketed_aggregate(
+        self,
+        base_query: str,
+        time_column: str,
+        ch_interval: str,
+        agg_fn: MetricAggregation,
+        measure_column: str | None,
+        regular_columns: list[str],
+        json_columns: list[str],
+        json_value_paths: dict[str, list[str]] | None,
+        time_from: datetime,
+        time_to: datetime,
+        limit: int = 100000,
+    ) -> tuple[list[str], list[str], list[tuple[object, ...]]]:
+        tc = self._validate_column(time_column)
+        interval = self._validate_interval(ch_interval)
+        reg_cols = [self._validate_column(c) for c in regular_columns]
+        json_cols = [self._validate_column(c) for c in json_columns]
+        json_value_paths = json_value_paths or {}
+        value_sql = self._aggregate_value_sql(agg_fn, measure_column)
+
+        bucket_expr = f"date_bin(INTERVAL '{interval}', {_quote_ident(tc)}, TIMESTAMP 'epoch')"
+        select_parts: list[str] = [f"{bucket_expr} AS _bucket"]
+        group_parts: list[str] = ["_bucket"]
+        col_names: list[str] = []
+        json_value_names: list[str] = []
+        for c in reg_cols:
+            select_parts.append(_quote_ident(c))
+            group_parts.append(_quote_ident(c))
+            col_names.append(c)
+        for c in json_cols:
+            expr = self._json_paths_expression(c)
+            select_parts.append(f"{expr} AS {_quote_ident(c)}")
+            group_parts.append(expr)
+            col_names.append(c)
+        for c in json_cols:
+            for path in json_value_paths.get(c, []):
+                full_path = f"{c}.{path}"
+                value_expr = f"({self._json_path_expression(c, path)})::text"
+                select_parts.append(f"{value_expr} AS {_quote_ident(full_path)}")
+                group_parts.append(value_expr)
+                json_value_names.append(full_path)
+        select_parts.append(f"{value_sql} AS _value")
+
+        t_from = time_from.strftime("%Y-%m-%d %H:%M:%S")
+        t_to = time_to.strftime("%Y-%m-%d %H:%M:%S")
+        sql = (
+            f"SELECT {', '.join(select_parts)} "
+            f"FROM ({base_query}) AS _src "
+            f"WHERE {_quote_ident(tc)} >= '{t_from}' AND {_quote_ident(tc)} < '{t_to}' "
+            f"GROUP BY {', '.join(group_parts)} "
+            f"ORDER BY _bucket "
+            f"LIMIT {int(limit)}"
+        )
+
+        logger.debug("PG bucketed aggregate query: %s", _truncate_sql(sql))
+        t0 = time.monotonic()
+        with self._conn.cursor() as cur:
+            cur.execute(sql)
+            rows = [tuple(r) for r in cur.fetchall()]
+        elapsed = time.monotonic() - t0
+        logger.info("PG bucketed aggregate done in %.2fs, %s rows", elapsed, len(rows))
+
+        return col_names, json_value_names, rows
+
+    def _breakdown_value_exprs(
+        self,
+        base_query: str,
+        time_column: str,
+        breakdown: str,
+        raw_expr: str,
+        time_from: datetime,
+        time_to: datetime,
+        values_limit: int | None,
+    ) -> tuple[str, str]:
+        """Build the (breakdown_value, is_other) expressions with Other folding."""
+        if values_limit is None:
+            return raw_expr, "0"
+        top_count = max(values_limit - 1, 0)
+        top_values = self._top_breakdown_values_multi(
+            base_query,
+            time_column,
+            [breakdown],
+            time_from,
+            time_to,
+            top_count,
+        ).get(breakdown, [])
+        if not top_values:
+            return "'Other'", "1"
+        quoted = ", ".join(self._quote_string(v) for v in top_values)
+        in_clause = f"{raw_expr} IN ({quoted})"
+        breakdown_expr = f"CASE WHEN {in_clause} THEN {raw_expr} ELSE 'Other' END"
+        is_other_expr = f"CASE WHEN {in_clause} THEN 0 ELSE 1 END"
+        return breakdown_expr, is_other_expr
+
+    def get_time_bucketed_aggregate_breakdown(
+        self,
+        base_query: str,
+        time_column: str,
+        ch_interval: str,
+        agg_fn: MetricAggregation,
+        measure_column: str | None,
+        breakdown_column: str,
+        regular_columns: list[str],
+        json_columns: list[str],
+        json_value_paths: dict[str, list[str]] | None,
+        time_from: datetime,
+        time_to: datetime,
+        values_limit: int | None = None,
+        limit: int = 100000,
+    ) -> tuple[list[str], list[str], list[tuple[object, ...]]]:
+        tc = self._validate_column(time_column)
+        interval = self._validate_interval(ch_interval)
+        reg_cols = [self._validate_column(c) for c in regular_columns]
+        json_cols = [self._validate_column(c) for c in json_columns]
+        breakdown = self._validate_column(breakdown_column)
+        if breakdown not in reg_cols:
+            msg = f"Breakdown column must be a scalar column: {breakdown}"
+            raise ValueError(msg)
+        json_value_paths = json_value_paths or {}
+        value_sql = self._aggregate_value_sql(agg_fn, measure_column)
+
+        raw_expr = self._string_value_expression(breakdown)
+        breakdown_expr, is_other_expr = self._breakdown_value_exprs(
+            base_query,
+            time_column,
+            breakdown,
+            raw_expr,
+            time_from,
+            time_to,
+            values_limit,
+        )
+
+        bucket_expr = f"date_bin(INTERVAL '{interval}', {_quote_ident(tc)}, TIMESTAMP 'epoch')"
+        select_parts: list[str] = [
+            f"{bucket_expr} AS _bucket",
+            f"{breakdown_expr} AS _breakdown_value",
+            f"{is_other_expr} AS _is_other",
+        ]
+        group_parts: list[str] = ["_bucket", "_breakdown_value", "_is_other"]
+        col_names: list[str] = []
+        json_value_names: list[str] = []
+        for c in reg_cols:
+            select_parts.append(_quote_ident(c))
+            group_parts.append(_quote_ident(c))
+            col_names.append(c)
+        for c in json_cols:
+            expr = self._json_paths_expression(c)
+            select_parts.append(f"{expr} AS {_quote_ident(c)}")
+            group_parts.append(expr)
+            col_names.append(c)
+        for c in json_cols:
+            for path in json_value_paths.get(c, []):
+                full_path = f"{c}.{path}"
+                value_expr = f"({self._json_path_expression(c, path)})::text"
+                select_parts.append(f"{value_expr} AS {_quote_ident(full_path)}")
+                group_parts.append(value_expr)
+                json_value_names.append(full_path)
+        select_parts.append(f"{value_sql} AS _value")
+
+        t_from = time_from.strftime("%Y-%m-%d %H:%M:%S")
+        t_to = time_to.strftime("%Y-%m-%d %H:%M:%S")
+        sql = (
+            f"SELECT {', '.join(select_parts)} "
+            f"FROM ({base_query}) AS _src "
+            f"WHERE {_quote_ident(tc)} >= '{t_from}' AND {_quote_ident(tc)} < '{t_to}' "
+            f"GROUP BY {', '.join(group_parts)} "
+            f"ORDER BY _bucket, _breakdown_value "
+            f"LIMIT {int(limit)}"
+        )
+
+        logger.debug(
+            "PG bucketed aggregate breakdown query for %s: %s", breakdown, _truncate_sql(sql)
+        )
+        t0 = time.monotonic()
+        with self._conn.cursor() as cur:
+            cur.execute(sql)
+            rows = [tuple(r) for r in cur.fetchall()]
+        elapsed = time.monotonic() - t0
+        logger.info("PG bucketed aggregate breakdown done in %.2fs, %s rows", elapsed, len(rows))
+
+        return col_names, json_value_names, rows
+
+    def _spec_aggregate_sql(self, spec: AggregateSpec) -> str:
+        """Build one (optionally conditional) aggregate fragment for a spec.
+
+        Reuses the single-aggregate validation/escaping path
+        (``_aggregate_value_sql`` -> validate_measure_column + build_aggregate_sql)
+        and, when ``filter_sql`` is set, wraps the aggregate as a Postgres
+        ``FILTER (WHERE ...)`` conditional so specs with different filters can
+        share one scan. Postgres supports ``FILTER`` on ``count(*)`` and
+        ``count(DISTINCT col)`` alike, so no CASE fallback is needed.
+        ``filter_sql`` is a pre-validated boolean fragment injected as-is, the
+        same trust model as the single-metric row-filter path.
+
+        ``count`` / ``count_distinct`` with a ``FILTER`` return 0 (not NULL) for
+        a bucket whose rows never match ``cond``; the remaining aggregates
+        (``avg`` / ``sum`` / ``min`` / ``max``) already return NULL there. The
+        zero-returning counts are wrapped in ``NULLIF(..., 0)`` so such a bucket
+        reads as absent, matching the per-metric path whose filtered scan emits
+        no row at all for it (a 0 would otherwise render as a spurious data
+        point instead of a gap).
+        """
+        base = self._aggregate_value_sql(spec.aggregation, spec.column)
+        if not spec.filter_sql:
+            return base
+        filtered = f"{base} FILTER (WHERE {spec.filter_sql})"
+        if coerce_aggregation(spec.aggregation) in (
+            MetricAggregation.count,
+            MetricAggregation.count_distinct,
+        ):
+            return f"NULLIF({filtered}, 0)"
+        return filtered
+
+    def get_time_bucketed_multi_aggregate(
+        self,
+        base_query: str,
+        time_column: str,
+        ch_interval: str,
+        specs: list[AggregateSpec],
+        time_from: datetime,
+        time_to: datetime,
+        *,
+        limit: int = 100000,
+    ) -> tuple[list[str], list[tuple[object, ...]]]:
+        tc = self._validate_column(time_column)
+        interval = self._validate_interval(ch_interval)
+
+        bucket_expr = f"date_bin(INTERVAL '{interval}', {_quote_ident(tc)}, TIMESTAMP 'epoch')"
+        select_parts: list[str] = [f"{bucket_expr} AS _bucket"]
+        col_names: list[str] = ["bucket"]
+        for spec in specs:
+            select_parts.append(f"{self._spec_aggregate_sql(spec)} AS {_quote_ident(spec.key)}")
+            col_names.append(spec.key)
+
+        t_from = time_from.strftime("%Y-%m-%d %H:%M:%S")
+        t_to = time_to.strftime("%Y-%m-%d %H:%M:%S")
+        sql = (
+            f"SELECT {', '.join(select_parts)} "
+            f"FROM ({base_query}) AS _src "
+            f"WHERE {_quote_ident(tc)} >= '{t_from}' AND {_quote_ident(tc)} < '{t_to}' "
+            f"GROUP BY _bucket "
+            f"ORDER BY _bucket "
+            f"LIMIT {int(limit)}"
+        )
+
+        logger.debug("PG bucketed multi-aggregate query: %s", _truncate_sql(sql))
+        t0 = time.monotonic()
+        with self._conn.cursor() as cur:
+            cur.execute(sql)
+            rows = [tuple(r) for r in cur.fetchall()]
+        elapsed = time.monotonic() - t0
+        logger.info("PG bucketed multi-aggregate done in %.2fs, %s rows", elapsed, len(rows))
+
+        return col_names, rows
+
+    def get_time_bucketed_multi_aggregate_breakdown(
+        self,
+        base_query: str,
+        time_column: str,
+        ch_interval: str,
+        breakdown_column: str,
+        specs: list[AggregateSpec],
+        time_from: datetime,
+        time_to: datetime,
+        *,
+        values_limit: int | None = None,
+        limit: int = 100000,
+    ) -> tuple[list[str], list[tuple[object, ...]]]:
+        tc = self._validate_column(time_column)
+        interval = self._validate_interval(ch_interval)
+        breakdown = self._validate_column(breakdown_column)
+
+        raw_expr = self._string_value_expression(breakdown)
+        breakdown_expr, is_other_expr = self._breakdown_value_exprs(
+            base_query,
+            time_column,
+            breakdown,
+            raw_expr,
+            time_from,
+            time_to,
+            values_limit,
+        )
+
+        bucket_expr = f"date_bin(INTERVAL '{interval}', {_quote_ident(tc)}, TIMESTAMP 'epoch')"
+        select_parts: list[str] = [
+            f"{bucket_expr} AS _bucket",
+            f"{breakdown_expr} AS _breakdown_value",
+            f"{is_other_expr} AS _is_other",
+        ]
+        col_names: list[str] = ["bucket", "breakdown_value", "is_other"]
+        for spec in specs:
+            select_parts.append(f"{self._spec_aggregate_sql(spec)} AS {_quote_ident(spec.key)}")
+            col_names.append(spec.key)
+
+        t_from = time_from.strftime("%Y-%m-%d %H:%M:%S")
+        t_to = time_to.strftime("%Y-%m-%d %H:%M:%S")
+        sql = (
+            f"SELECT {', '.join(select_parts)} "
+            f"FROM ({base_query}) AS _src "
+            f"WHERE {_quote_ident(tc)} >= '{t_from}' AND {_quote_ident(tc)} < '{t_to}' "
+            f"GROUP BY _bucket, _breakdown_value, _is_other "
+            f"ORDER BY _bucket, _breakdown_value "
+            f"LIMIT {int(limit)}"
+        )
+
+        logger.debug(
+            "PG bucketed multi-aggregate breakdown query for %s: %s",
+            breakdown,
+            _truncate_sql(sql),
+        )
+        t0 = time.monotonic()
+        with self._conn.cursor() as cur:
+            cur.execute(sql)
+            rows = [tuple(r) for r in cur.fetchall()]
+        elapsed = time.monotonic() - t0
+        logger.info(
+            "PG bucketed multi-aggregate breakdown done in %.2fs, %s rows", elapsed, len(rows)
+        )
+
+        return col_names, rows
 
     def get_time_bucketed_breakdown_counts(
         self,

@@ -29,7 +29,7 @@ The project sidebar groups every surface into three job-based areas:
 | Area | Surfaces |
 |------|----------|
 | **Plan** | Events, Event types, Schema & fields, Variables, Relations, Plan branches |
-| **Observe** | Live activity, Monitors, Anomalies, Alerting |
+| **Observe** | Live activity, Monitors, Metrics, Anomalies, Alerting |
 | **Govern** | Reconciliation, Coverage, Scans, Audit log |
 
 Above the groups sit the **project switcher**, the **branch switcher** (shown
@@ -39,8 +39,8 @@ primer), a **Workspace settings** gear, and **Sign out**. Badge counts come from
 the cheap project summary: Events (active events), Event types, Variables,
 Monitors (only when one or more is firing, rendered in red), Anomalies (the count
 of open monitoring signals, in red when any are open), and Alerting (only when
-one or more destinations exist). Schema & fields, Relations, Plan branches,
-Coverage, Scans, and Audit log carry no count.
+one or more destinations exist). Schema & fields, Relations, Metrics, Plan
+branches, Coverage, Scans, and Audit log carry no count.
 
 ---
 
@@ -178,13 +178,47 @@ bands), and **Breakdowns**. The page also surfaces top movers and release
 regressions, plus chart annotations on the Volume tab. For an `event` scope it
 additionally renders the Photos & specs panel.
 
+### Metrics catalog
+
+**Where:** Observe › Metrics (route `/p/<slug>/metrics`). A project-wide catalog of
+user-defined **metrics** — numbers tracked over time, the counterpart to the event
+catalog. Each row shows the metric's name, kind, status (`draft` / `active` /
+`archived`), interval, and latest signal state. Metrics are **not branched**: the
+catalog reads the same on every branch.
+
+The create/edit form picks a **kind** and then reveals kind-specific config:
+
+- **SQL** — a data source, a `SELECT` returning one value per bucket, a time
+  column, and a collection interval.
+- **Fact aggregation** — a data source and table/base query, an **aggregation**
+  (`count`, `sum`, `avg`, `min`, `max`, `count_distinct`), the **measure column**
+  it runs over (a **distinct column** for `count_distinct`), an optional
+  **filter**, optional **breakdowns**, a time column, and an interval.
+- **Event composition** — derived from already-collected event series with no
+  warehouse query of its own: a **single** event's count, a **ratio** of one event
+  to another (A / B), or an event **per distinct user**.
+
+Shared fields are name, description, status, and breakdown columns (`platform`,
+`app_version`, …, exactly like events). A metric is collected only while
+**active**; `draft` metrics are saved but not collected, and `archived` metrics
+stop collecting.
+
+### Metric detail
+
+**Where:** open a metric from the catalog. The drilldown **reuses the monitoring
+detail tabs** (Volume with the latest signal, Heatmap, Distribution, Breakdowns)
+for the metric's own scope, so a metric reads like any other monitored series.
+Count-shaped metrics (counts/sums) and fractional metrics (ratios, averages, SQL
+values) are scored differently so a ratio that naturally sits below 1 isn't
+constantly flagged — see [How anomaly detection works](./anomaly-detection.md).
+
 ### Anomaly signals
 
 A signal is emitted when the latest bucket for a scope deviates from its
 baseline. Signals appear on the overview, as catalog row badges, in the activity
 feed, and on the monitoring detail. Tuning lives at the project **Monitoring
 settings** (route `/p/<slug>/settings/monitoring`): toggle anomaly detection,
-choose the scopes to watch (project total / event types / events), and set the
+choose the scopes to watch (project total / event types / events / metrics), and set the
 baseline window (buckets), minimum history (buckets), sigma threshold, and
 minimum expected count. Scans honor these settings.
 
@@ -193,8 +227,8 @@ minimum expected count. Scans honor these settings.
 **Where:** Observe › Anomalies (route `/p/<slug>/anomalies`). A standalone,
 cross-event list of every open monitoring signal, sorted most-severe-first by
 `|z|`. A rollup shows open-signal, spike, and drop counts; each row shows the
-spike/drop direction, scope (project total / event type / event), actual vs
-expected counts, the z-score, and when it fired — linking to the monitoring
+spike/drop direction, scope (project total / event type / event / metric), actual
+vs expected counts, the z-score, and when it fired — linking to the monitoring
 detail for that scope. The sidebar badge mirrors the open-signal count.
 Sensitivity is tuned in **Monitoring settings** (see
 [How anomaly detection works](./anomaly-detection.md)).
@@ -211,7 +245,8 @@ the chart and deletable.
 **Slack**, **Telegram**, **Webhook**, **Email**, **Jira**, **Linear**. Routing
 rules carry a **cooldown** (minutes); filters on `event_type` / `event` /
 `direction` with operators `=`, `!=`, `IN`, `NOT IN`; thresholds for minimum
-percent delta, minimum absolute delta, and minimum expected count; and message
+percent delta, minimum absolute delta, and minimum expected count; an **include
+metrics** opt-in that routes metric-scope anomalies (off by default); and message
 and items templates with variables such as `${channel}`, `${destination_name}`,
 `${rule_name}`, `${scan_name}`, `${scope_label}`, `${matched_count}`, and
 `${items_text}`. A rule can be **simulated/replayed** over the last N days

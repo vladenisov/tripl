@@ -55,6 +55,14 @@ class AlertRule(UUIDMixin, TimestampMixin, Base):
         default=False,
         server_default="false",
     )
+    # Opt-in to anomalies on user-defined catalog metric series (scope_type
+    # ``metric``). Off by default — SAFE OFF — so metric anomalies only deliver
+    # when a rule deliberately subscribes to them.
+    include_metrics: Mapped[bool] = mapped_column(
+        Boolean,
+        default=False,
+        server_default="false",
+    )
     # Append an LLM-generated explanation paragraph to delivered alert
     # messages. Off by default; a no-op unless AI features are enabled in
     # instance settings.

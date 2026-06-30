@@ -25,10 +25,14 @@ from tripl.models.event_tag import EventTag
 from tripl.models.event_type import EventType
 from tripl.models.event_type_owner import EventTypeOwner
 from tripl.models.event_type_relation import EventTypeRelation
+from tripl.models.fact_table import FactTable
 from tripl.models.field_definition import FieldDefinition
 from tripl.models.meta_field_definition import MetaFieldDefinition
 from tripl.models.metric_anomaly import MetricAnomaly
 from tripl.models.metric_breakdown_anomaly import MetricBreakdownAnomaly
+from tripl.models.metric_definition import MetricDefinition
+from tripl.models.metric_value import MetricValue
+from tripl.models.metric_value_breakdown import MetricValueBreakdown
 from tripl.models.plan_branch import PlanBranch
 from tripl.models.plan_branch_approval import PlanBranchApproval
 from tripl.models.plan_branch_comment import PlanBranchComment
@@ -66,6 +70,7 @@ __all__ = [
     "Project",
     "EventType",
     "EventTypeOwner",
+    "FactTable",
     "FieldDefinition",
     "EventTypeRelation",
     "MetaFieldDefinition",
@@ -80,6 +85,9 @@ __all__ = [
     "EventPhotoComment",
     "MetricAnomaly",
     "MetricBreakdownAnomaly",
+    "MetricDefinition",
+    "MetricValue",
+    "MetricValueBreakdown",
     "PlanBranch",
     "PlanBranchApproval",
     "PlanBranchComment",

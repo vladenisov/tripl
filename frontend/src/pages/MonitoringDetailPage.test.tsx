@@ -6,7 +6,9 @@ import type { EventMetricPoint } from '@/types'
 import MonitoringDetailPage from './MonitoringDetailPage'
 
 vi.mock('@/components/ui/chart-lazy', () => ({
-  MetricsChart: () => <div data-testid="metrics-chart" />,
+  MetricsChart: ({ forecast }: { forecast?: unknown[] }) => (
+    <div data-testid="metrics-chart" data-forecast-count={forecast?.length ?? 0} />
+  ),
   MetricsMultiSeriesChart: ({
     series,
     emptyLabel,

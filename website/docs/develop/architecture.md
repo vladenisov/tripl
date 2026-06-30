@@ -39,7 +39,8 @@ tripl is three cooperating processes plus a database and a message broker:
 - **celery-worker** — runs scans, collects metrics, detects anomalies and drift,
   and dispatches alerts. It is the only process that connects to the external
   warehouses.
-- **celery-beat** — the scheduler. Triggers due metric-collection checks and the
+- **celery-beat** — the scheduler. Triggers due metric-collection checks — for
+  both event counts and the **metric catalog** (a ~300 s due-check) — and the
   schema-drift retention cleanup.
 - **PostgreSQL** — the system of record for the plan, metrics, anomalies, audit
   log, and alert deliveries.
@@ -114,6 +115,13 @@ Locally, all of the above (except the warehouses) run under Docker Compose:
   field values.
 - **Correlation-aware grouping** collapses signals that share an underlying
   cause so one root problem yields one alert, not many.
+- **Metric anomalies** run the same detector at a dedicated **metric scope**.
+  Metrics are classified **count-shaped** (counts/sums) or **fractional** (ratios,
+  averages, raw SQL): count-shaped series keep zero-fill and the
+  `min_expected_count` gate, while fractional series drop both (a missing bucket
+  means "no data", not zero) so sub-unit ratios don't false-fire. Per-project
+  `detect_metrics` enables the scope; per-rule `include_metrics` opts metric
+  anomalies into alerting (off by default).
 
 ### Metrics
 
@@ -121,6 +129,33 @@ Locally, all of the above (except the warehouses) run under Docker Compose:
   (15m / 1h / 6h / 1d / 1w), with **replay-by-chunk** support for backfills.
 - Bulk metric upserts are chunked to stay under PostgreSQL's 65535 bind-parameter
   limit.
+
+### Catalog metrics
+
+- **`MetricDefinition`** is a user-defined, **project-scoped** metric (the
+  catalog) — global rather than branched. Three kinds: **`sql`** (a user `SELECT`
+  returning a per-bucket value against a data source on its own interval),
+  **`fact_aggregation`** (`count` / `sum` / `avg` / `min` / `max` /
+  `count_distinct` over a measure column of a table or base query, with an optional
+  filter and breakdowns), and **`event_composition`** (a `single` event count, a
+  `ratio` A/B, or an event `per_distinct_user`, derived from already-collected
+  `event_metrics`).
+- **Scheduling.** The `check_metric_definitions_due` beat task runs about every
+  **300 s** and dispatches `collect_metric_definitions` for each **active** metric
+  whose interval is due. `sql` / `fact_aggregation` metrics query their own data
+  source through the adapter; `event_composition` metrics read existing event
+  series on the shared scan grid (no warehouse query).
+- **Aggregations.** Adapter `_aggregate_value_sql` builds the per-kind SQL for
+  ClickHouse / BigQuery / PostgreSQL; `core/adapters/measure_validator` checks the
+  measure/distinct column against the source's real columns before it reaches a
+  query.
+- **Storage.** Values land in `metric_values`, with per-split rows in
+  `metric_value_breakdowns` (platform / app-version / …, like event breakdowns).
+  A **divide-by-zero** in a `ratio` bucket produces **no value** — a gap, not a
+  `0` — so the row is dropped rather than written as zero.
+- **Surface.** Catalog CRUD lives at `/projects/{slug}/metrics`; a series read
+  service feeds the frontend **MetricsPage** (list + kind-aware create/edit form)
+  and the metric **drilldown**, which reuses the monitoring detail tabs.
 
 ---
 
@@ -166,6 +201,9 @@ see [RELEASE.md](../run/release.md)); or
 | `ScanConfig` | A saved scan query + extraction rules. |
 | `ScanJob` | One async execution of a scan config. |
 | `EventMetric` | Time-bucketed counts for an event. |
+| `MetricDefinition` | A user-defined metric (the metrics catalog); project-scoped, not branched. |
+| `MetricValue` | Time-bucketed values for a `MetricDefinition`. |
+| `MetricValueBreakdown` | Per-breakdown metric values (platform / app-version / …). |
 | `MetricAnomaly` | A persisted anomaly bucket. |
 | `AlertDestination` | A delivery channel (Slack, Telegram, …). |
 | `AlertRule` | Filtering + delivery configuration for signals. |
@@ -173,7 +211,8 @@ see [RELEASE.md](../run/release.md)); or
 
 Plan branches deep-copy the relevant objects (event types, fields, events,
 variables, meta fields, relations, photos, comments) and merge back via a
-3-way merge that preserves live IDs by natural key.
+3-way merge that preserves live IDs by natural key. Metrics are deliberately
+**not** branched — they are project-scoped and shared across every branch.
 
 ---
 
@@ -196,6 +235,15 @@ variables, meta fields, relations, photos, comments) and merge back via a
 3. Counts are aggregated into `event_metrics`.
 4. Anomalies are recalculated into `metric_anomalies`.
 5. Matching alert rules enqueue deliveries.
+
+### Catalog metric flow
+
+1. Beat (`check_metric_definitions_due`, ~300 s) finds active, due metrics.
+2. `collect_metric_definitions` evaluates each — querying the warehouse
+   (`sql` / `fact_aggregation`) or composing event series (`event_composition`).
+3. Values upsert into `metric_values` / `metric_value_breakdowns`.
+4. Metric-scope anomalies are recalculated into `metric_anomalies`.
+5. Alert rules with `include_metrics` enqueue deliveries.
 
 ### Alert flow
 
