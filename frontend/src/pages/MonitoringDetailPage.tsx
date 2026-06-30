@@ -65,6 +65,7 @@ import {
   Trash2, TrendingUp,
 } from 'lucide-react'
 import { toast } from 'sonner'
+import { useConfirm } from '@/hooks/useConfirm'
 
 // Stable empty reference so `metaFieldsQuery.data ?? EMPTY_META_FIELDS`
 // doesn't mint a new array each render and bust the memoized lookup map.
@@ -519,6 +520,25 @@ export default function MonitoringDetailPage() {
     onError: () => toast.error('Could not start collection.'),
   })
 
+  const { confirm: confirmDelete, dialog: deleteDialog } = useConfirm()
+  const deleteMetric = async (): Promise<void> => {
+    const ok = await confirmDelete({
+      title: 'Delete metric?',
+      message: `"${metricDefinition?.display_name ?? 'This metric'}" and its collected series will be permanently removed. This can't be undone.`,
+      variant: 'danger',
+      confirmLabel: 'Delete',
+    })
+    if (!ok) return
+    try {
+      await metricsCatalogApi.del(slug!, scopeId)
+      toast.success('Metric deleted.')
+      void queryClient.invalidateQueries({ queryKey: ['metrics-catalog', slug] })
+      navigate(`/p/${slug}/metrics`)
+    } catch {
+      toast.error('Could not delete metric.')
+    }
+  }
+
   const eventType = eventTypes.find((candidate: EventType) => (
     scope === 'event'
       ? candidate.id === event?.event_type_id
@@ -661,6 +681,16 @@ export default function MonitoringDetailPage() {
                   )}
                   {collectMut.isPending ? 'Collecting…' : 'Collect now'}
                 </Button>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={deleteMetric}
+                  className="text-[var(--danger)] hover:text-[var(--danger)]"
+                >
+                  <Trash2 className="mr-2 h-4 w-4" />
+                  Delete
+                </Button>
+                {deleteDialog}
               </div>
             )}
           </div>
