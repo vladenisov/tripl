@@ -22,7 +22,6 @@ import {
 import {
   METRIC_AGGREGATIONS,
   METRIC_COMPOSITIONS,
-  METRIC_KIND_LABEL,
   METRIC_SCAN_INTERVALS,
   METRIC_STATUSES,
   METRIC_STATUS_LABEL,
@@ -30,6 +29,7 @@ import {
   type EventCompositionMetricCreate,
   type EventListItem,
   type FactMetricCreate,
+  type MetricDefinitionConfigUpdate,
   type MetricAggregation,
   type MetricComposition,
   type MetricCreate,
@@ -353,11 +353,10 @@ interface MetricFormProps {
 }
 
 /**
- * Create / edit a catalog metric. `kind` + its config define the metric's
- * identity, so they are only editable when creating — editing exposes the
- * presentation / lifecycle / monitoring fields (mirrors the EventType update
- * surface). Client-side validation mirrors the backend discriminated-union
- * rules; server 422s surface through {@link ErrorState}.
+ * Create / edit a catalog metric. The internal name remains immutable after
+ * creation, while kind + collection config can be redefined through the
+ * update `definition` block. Client-side validation mirrors the backend
+ * discriminated-union rules; server 422s surface through {@link ErrorState}.
  */
 export function MetricForm({ slug, metric, dataSources, events, onClose }: MetricFormProps) {
   const qc = useQueryClient()
@@ -391,6 +390,8 @@ export function MetricForm({ slug, metric, dataSources, events, onClose }: Metri
   // Shared collection settings (SQL today; fact metrics arrive in a later slice).
   const [dataSourceId, setDataSourceId] = useState(metric?.data_source_id ?? '')
   const [interval, setIntervalValue] = useState<MetricScanInterval>(metric?.interval ?? '1h')
+  const replayChunkInterval =
+    metric?.kind === kind ? metric.replay_chunk_interval ?? null : null
 
   // SQL
   const [metricSql, setMetricSql] = useState(configString('metric_sql'))
@@ -400,29 +401,42 @@ export function MetricForm({ slug, metric, dataSources, events, onClose }: Metri
   const [composition, setComposition] = useState<MetricComposition>(metric?.composition ?? 'single')
   const [numeratorEventId, setNumeratorEventId] = useState(metric?.numerator_event_id ?? '')
   const [denominatorEventId, setDenominatorEventId] = useState(metric?.denominator_event_id ?? '')
+  const [numeratorEventTypeId, setNumeratorEventTypeId] = useState(
+    metric?.numerator_event_type_id ?? '',
+  )
+  const [denominatorEventTypeId, setDenominatorEventTypeId] = useState(
+    metric?.denominator_event_type_id ?? '',
+  )
 
   // Fact metric. The single operand reuses `numeratorOp`; ratio adds `denominatorOp`.
   const [factComposition, setFactComposition] = useState<FactComposition>(
     metric?.kind === 'fact' && metric.composition === 'ratio' ? 'ratio' : 'single',
   )
-  const [numeratorOp, setNumeratorOp] = useState<FactOperandState>(() => ({
-    factTableId: metric?.fact_table_id ?? '',
-    aggregation: metric?.aggregation ?? 'count',
-    measureColumn: configString('measure_column'),
-    distinctColumn: configString('distinct_column'),
-    filters: filtersFromConfig(
-      initialConfig['row_filters'],
-      configString('row_filter'),
-      configString('filter_sql'),
-    ),
-  }))
+  const [numeratorOp, setNumeratorOp] = useState<FactOperandState>(() => {
+    const singleOperand = {
+      factTableId: metric?.fact_table_id ?? '',
+      aggregation: metric?.aggregation ?? 'count',
+      measureColumn: configString('measure_column'),
+      distinctColumn: configString('distinct_column'),
+      filters: filtersFromConfig(
+        initialConfig['row_filters'],
+        configString('row_filter'),
+        configString('filter_sql'),
+      ),
+    }
+    if (metric?.kind === 'fact' && metric.composition === 'ratio') {
+      const ratioNumerator = readOperandFromConfig(initialConfig['numerator'])
+      return ratioNumerator.factTableId ? ratioNumerator : singleOperand
+    }
+    return singleOperand
+  })
   const [denominatorOp, setDenominatorOp] = useState<FactOperandState>(() =>
     readOperandFromConfig(initialConfig['denominator']),
   )
 
   const [formErrors, setFormErrors] = useState<string[]>([])
 
-  const factEnabled = isNew && kind === 'fact'
+  const factEnabled = kind === 'fact'
   const factTablesQuery = useQuery({
     queryKey: ['fact-tables', slug],
     queryFn: () => factTablesApi.list(slug),
@@ -475,32 +489,91 @@ export function MetricForm({ slug, metric, dataSources, events, onClose }: Metri
     const errs: string[] = []
     if (!displayName.trim()) errs.push('Display name is required.')
 
-    // `name` (identity) and the kind-specific config are immutable after
-    // creation and are excluded from `buildUpdatePayload()`, so only validate
-    // them when creating — otherwise an edit could be blocked by a field the
-    // backend will never receive.
-    if (isNew) {
-      if (!name.trim()) errs.push('Internal name is required.')
+    if (isNew && !name.trim()) errs.push('Internal name is required.')
 
-      if (kind === 'sql') {
-        if (!dataSourceId) errs.push('A data source is required for a SQL metric.')
-        if (!metricSql.trim()) errs.push('The metric SQL query is required.')
-        if (!sqlTimeColumn.trim()) errs.push('A time column is required for a SQL metric.')
-      } else if (kind === 'fact') {
-        if (factComposition === 'ratio') {
-          errs.push(...operandErrors(numeratorOp, 'numerator'))
-          errs.push(...operandErrors(denominatorOp, 'denominator'))
-        } else {
-          errs.push(...operandErrors(numeratorOp, ''))
-        }
+    if (kind === 'sql') {
+      if (!dataSourceId) errs.push('A data source is required for a SQL metric.')
+      if (!metricSql.trim()) errs.push('The metric SQL query is required.')
+      if (!sqlTimeColumn.trim()) errs.push('A time column is required for a SQL metric.')
+    } else if (kind === 'fact') {
+      if (factComposition === 'ratio') {
+        errs.push(...operandErrors(numeratorOp, 'numerator'))
       } else {
-        if (!numeratorEventId) errs.push('A numerator event is required.')
-        if (composition === 'ratio' && !denominatorEventId) {
-          errs.push('A denominator event is required for a ratio metric.')
-        }
+        errs.push(...operandErrors(numeratorOp, ''))
+      }
+      if (factComposition === 'ratio') {
+        errs.push(...operandErrors(denominatorOp, 'denominator'))
+      }
+    } else {
+      if (!numeratorEventId && !numeratorEventTypeId) {
+        errs.push('A numerator event is required.')
+      }
+      if (
+        composition === 'ratio' &&
+        !denominatorEventId &&
+        !denominatorEventTypeId
+      ) {
+        errs.push('A denominator event is required for a ratio metric.')
       }
     }
     return errs
+  }
+
+  function buildDefinitionPayload(): MetricDefinitionConfigUpdate {
+    if (kind === 'sql') {
+      return {
+        kind: 'sql',
+        interval,
+        data_source_id: dataSourceId,
+        config: {
+          metric_sql: metricSql,
+          time_column: sqlTimeColumn.trim(),
+        },
+        replay_chunk_interval: replayChunkInterval,
+      }
+    }
+    if (kind === 'fact') {
+      if (factComposition === 'ratio') {
+        return {
+          kind: 'fact',
+          composition: 'ratio',
+          interval,
+          numerator: toOperandPayload(numeratorOp),
+          denominator: toOperandPayload(denominatorOp),
+          replay_chunk_interval: replayChunkInterval,
+        }
+      }
+      return {
+        kind: 'fact',
+        composition: 'single',
+        interval,
+        fact_table_id: numeratorOp.factTableId,
+        aggregation: numeratorOp.aggregation,
+        measure_column: needsMeasure(numeratorOp.aggregation)
+          ? numeratorOp.measureColumn || null
+          : null,
+        distinct_column: needsDistinct(numeratorOp.aggregation)
+          ? numeratorOp.distinctColumn || null
+          : null,
+        replay_chunk_interval: replayChunkInterval,
+        ...filtersToPayload(numeratorOp.filters),
+      }
+    }
+    if (kind === 'event_composition') {
+      return {
+        kind: 'event_composition',
+        composition,
+        numerator_event_id: numeratorEventId || null,
+        numerator_event_type_id: numeratorEventId ? null : numeratorEventTypeId || null,
+        denominator_event_id: composition === 'ratio' ? denominatorEventId || null : null,
+        denominator_event_type_id:
+          composition === 'ratio' && !denominatorEventId
+            ? denominatorEventTypeId || null
+            : null,
+      }
+    }
+    const _exhaustive: never = kind
+    throw new Error(`unsupported metric kind: ${String(_exhaustive)}`)
   }
 
   function buildCreatePayload(): MetricCreate {
@@ -589,6 +662,7 @@ export function MetricForm({ slug, metric, dataSources, events, onClose }: Metri
       breakdown_columns: splitColumns(breakdownColumns),
       app_version_column: appVersionColumn.trim() || null,
       platform_column: platformColumn.trim() || null,
+      definition: buildDefinitionPayload(),
     }
   }
 
@@ -628,6 +702,14 @@ export function MetricForm({ slug, metric, dataSources, events, onClose }: Metri
   const onInternalNameChange = (value: string) => {
     setNameEdited(true)
     setName(value)
+  }
+  const onNumeratorEventChange = (value: string) => {
+    setNumeratorEventId(value)
+    if (value) setNumeratorEventTypeId('')
+  }
+  const onDenominatorEventChange = (value: string) => {
+    setDenominatorEventId(value)
+    if (value) setDenominatorEventTypeId('')
   }
 
   return (
@@ -702,26 +784,20 @@ export function MetricForm({ slug, metric, dataSources, events, onClose }: Metri
 
           <div>
             <SCard title="Kind" description="How this metric produces its per-bucket value.">
-              <MField label="Metric kind" stacked last hint={isNew ? undefined : "Can't be changed after creation."}>
-                {isNew ? (
-                  <RadioCards
-                    groupLabel="Metric kind"
-                    value={kind}
-                    onChange={value => changeKind(value as MetricKind)}
-                    options={KIND_OPTIONS}
-                  />
-                ) : (
-                  <div className="text-[13px] font-medium" style={{ color: 'var(--fg)' }}>
-                    {METRIC_KIND_LABEL[kind]}
-                  </div>
-                )}
+              <MField label="Metric kind" stacked last>
+                <RadioCards
+                  groupLabel="Metric kind"
+                  value={kind}
+                  onChange={value => changeKind(value as MetricKind)}
+                  options={KIND_OPTIONS}
+                />
               </MField>
             </SCard>
 
             {/* Light, kind-specific config sits beside Details to balance the
                 row; only the wide parts (SQL editor, fact operands) go full-width
                 below. */}
-            {isNew && kind === 'sql' && (
+            {kind === 'sql' && (
               <SCard title="Source" description="Where the query runs, and how often.">
                 <MField label="Data source" htmlFor="metric-sql-data-source" required>
                   <Select id="metric-sql-data-source" value={dataSourceId} onChange={setDataSourceId} options={dataSourceOptions} />
@@ -766,7 +842,7 @@ export function MetricForm({ slug, metric, dataSources, events, onClose }: Metri
               </SCard>
             )}
 
-            {isNew && kind === 'event_composition' && (
+            {kind === 'event_composition' && (
               <SCard title="Event composition" description="Combine existing event series.">
                 <MField label="Composition" htmlFor="metric-composition" required>
                   <Select
@@ -777,7 +853,7 @@ export function MetricForm({ slug, metric, dataSources, events, onClose }: Metri
                   />
                 </MField>
                 <MField label="Numerator event" htmlFor="metric-numerator" required>
-                  <Select id="metric-numerator" value={numeratorEventId} onChange={setNumeratorEventId} options={eventOptions} />
+                  <Select id="metric-numerator" value={numeratorEventId} onChange={onNumeratorEventChange} options={eventOptions} />
                 </MField>
                 <MField
                   label="Denominator event"
@@ -789,7 +865,7 @@ export function MetricForm({ slug, metric, dataSources, events, onClose }: Metri
                   <Select
                     id="metric-denominator"
                     value={denominatorEventId}
-                    onChange={setDenominatorEventId}
+                    onChange={onDenominatorEventChange}
                     options={eventOptions}
                     disabled={composition !== 'ratio'}
                   />
@@ -801,7 +877,7 @@ export function MetricForm({ slug, metric, dataSources, events, onClose }: Metri
 
         {/* Only the wide parts go full-width; data source / interval live in the
             Source card beside Details above. */}
-        {isNew && kind === 'sql' && (
+        {kind === 'sql' && (
           <SCard title="Query" description="A custom query returning one numeric value per bucket.">
             <MField label="Metric SQL" htmlFor="metric-sql-query" required stacked>
               <SqlEditor

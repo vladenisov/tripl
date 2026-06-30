@@ -263,11 +263,18 @@ class _MetricDefinitionBase(BaseModel):
         }
 
 
-# ── Discriminated create variants ────────────────────────────────────────────
+# ── Kind-specific definition variants (kind + collection config) ─────────────
+# Each variant holds ONLY a metric's kind, collection binding and kind-specific
+# config — the identity/config columns recomputed on BOTH create and update.
+# ``to_definition_values()`` returns exactly those columns. The create variants
+# below mix these with the shared presentation fields; the update surface
+# (``MetricDefinitionConfigUpdate``) reuses them verbatim, minus the immutable
+# internal ``name`` and the other presentation fields (which keep their own
+# top-level update fields). Validation is therefore defined ONCE here.
 
 
-class FactMetricCreate(_MetricDefinitionBase):
-    """An aggregation over a separately-defined ``FactTable``.
+class FactMetricDefinition(BaseModel):
+    """Kind + collection config for a ``fact`` metric.
 
     SINGLE (``composition=single``, the default): one operand given by the
     top-level ``fact_table_id`` + ``aggregation`` + the ``measure_column`` /
@@ -296,7 +303,7 @@ class FactMetricCreate(_MetricDefinitionBase):
     measure_column: str | None = Field(default=None, min_length=1, max_length=255)
     distinct_column: str | None = Field(default=None, min_length=1, max_length=255)
     # Legacy single named filter — accepted on input for back-compat, folded into
-    # ``row_filters`` by ``effective_row_filters`` / ``to_create_values``.
+    # ``row_filters`` by ``effective_row_filters`` / ``to_definition_values``.
     row_filter: str | None = Field(default=None, min_length=1, max_length=255)
     # Names of named filters on the fact table (ALL ANDed) + a free-text WHERE.
     row_filters: list[str] = Field(default_factory=list)
@@ -326,7 +333,7 @@ class FactMetricCreate(_MetricDefinitionBase):
         return _fold_row_filters(self.row_filters, self.row_filter)
 
     @model_validator(mode="after")
-    def validate_kind(self) -> FactMetricCreate:
+    def validate_kind(self) -> FactMetricDefinition:
         if self.composition not in _FACT_COMPOSITIONS:
             raise ValueError(
                 f"fact metric composition must be 'single' or 'ratio', got "
@@ -371,7 +378,7 @@ class FactMetricCreate(_MetricDefinitionBase):
                 "use numerator/denominator"
             )
 
-    def to_create_values(self) -> dict[str, object]:
+    def to_definition_values(self) -> dict[str, object]:
         if self.composition is MetricComposition.single:
             fact_table_id = self.fact_table_id
             aggregation = self.aggregation
@@ -391,7 +398,6 @@ class FactMetricCreate(_MetricDefinitionBase):
                 "denominator": self.denominator.to_config(),
             }
         return {
-            **self._shared_values(),
             "kind": self.kind,
             "aggregation": aggregation,
             "composition": self.composition,
@@ -407,7 +413,9 @@ class FactMetricCreate(_MetricDefinitionBase):
         }
 
 
-class SqlMetricCreate(_MetricDefinitionBase):
+class SqlMetricDefinition(BaseModel):
+    """Kind + collection config for a ``sql`` metric: SELECT + its data source."""
+
     kind: Literal[MetricKind.sql] = MetricKind.sql
     config: SqlConfig
     data_source_id: uuid.UUID
@@ -415,16 +423,15 @@ class SqlMetricCreate(_MetricDefinitionBase):
     replay_chunk_interval: ScanInterval | None = None
 
     @model_validator(mode="after")
-    def validate_kind(self) -> SqlMetricCreate:
+    def validate_kind(self) -> SqlMetricDefinition:
         check_replay_chunk_against_interval(
             interval=self.interval,
             replay_chunk_interval=self.replay_chunk_interval,
         )
         return self
 
-    def to_create_values(self) -> dict[str, object]:
+    def to_definition_values(self) -> dict[str, object]:
         return {
-            **self._shared_values(),
             "kind": self.kind,
             "aggregation": None,
             "composition": None,
@@ -440,8 +447,8 @@ class SqlMetricCreate(_MetricDefinitionBase):
         }
 
 
-class EventCompositionMetricCreate(_MetricDefinitionBase):
-    """Derived from already-collected event_metrics; no data source / interval.
+class EventCompositionMetricDefinition(BaseModel):
+    """Kind + config for an ``event_composition`` metric; no data source / interval.
 
     Numerator/denominator are each given as exactly one ref: an ``event_id`` or
     an ``event_type_id``. ``single``/``per_distinct_user`` use the numerator
@@ -456,7 +463,7 @@ class EventCompositionMetricCreate(_MetricDefinitionBase):
     denominator_event_type_id: uuid.UUID | None = None
 
     @model_validator(mode="after")
-    def validate_kind(self) -> EventCompositionMetricCreate:
+    def validate_kind(self) -> EventCompositionMetricDefinition:
         _validate_single_ref(
             self.numerator_event_id,
             self.numerator_event_type_id,
@@ -472,9 +479,8 @@ class EventCompositionMetricCreate(_MetricDefinitionBase):
         )
         return self
 
-    def to_create_values(self) -> dict[str, object]:
+    def to_definition_values(self) -> dict[str, object]:
         return {
-            **self._shared_values(),
             "kind": self.kind,
             "aggregation": None,
             "composition": self.composition,
@@ -488,6 +494,26 @@ class EventCompositionMetricCreate(_MetricDefinitionBase):
             "denominator_event_id": self.denominator_event_id,
             "denominator_event_type_id": self.denominator_event_type_id,
         }
+
+
+# ── Discriminated create variants (presentation + definition) ────────────────
+# Each create variant = shared presentation fields + one kind definition. The
+# full create row is the union of both halves.
+
+
+class FactMetricCreate(_MetricDefinitionBase, FactMetricDefinition):
+    def to_create_values(self) -> dict[str, object]:
+        return {**self._shared_values(), **self.to_definition_values()}
+
+
+class SqlMetricCreate(_MetricDefinitionBase, SqlMetricDefinition):
+    def to_create_values(self) -> dict[str, object]:
+        return {**self._shared_values(), **self.to_definition_values()}
+
+
+class EventCompositionMetricCreate(_MetricDefinitionBase, EventCompositionMetricDefinition):
+    def to_create_values(self) -> dict[str, object]:
+        return {**self._shared_values(), **self.to_definition_values()}
 
 
 def _validate_single_ref(
@@ -512,15 +538,32 @@ MetricDefinitionCreate = Annotated[
 ]
 
 
+# The kind + collection definition accepted on UPDATE: the same discriminated
+# union as create, minus the presentation fields (which keep their own top-level
+# update fields) and minus the immutable internal ``name``. Re-validated with the
+# exact create-time logic; the service overwrites the identity/config columns
+# from ``to_definition_values()``.
+MetricDefinitionConfigUpdate = Annotated[
+    FactMetricDefinition | SqlMetricDefinition | EventCompositionMetricDefinition,
+    Field(discriminator="kind"),
+]
+
+
 # ── Update / bulk ────────────────────────────────────────────────────────────
 
 
 class MetricDefinitionUpdate(BaseModel):
-    """Partial update of presentation, lifecycle, dimension and monitoring fields.
+    """Partial update of presentation, lifecycle, dimension and monitoring fields,
+    plus an optional ``definition`` block that re-defines the metric's kind +
+    collection config.
 
-    ``kind``/``config`` and the collection binding define a metric's identity and
-    are immutable here — recreate the metric to change them (mirrors the simple
-    EventType update surface).
+    The internal ``name`` is the stable query identifier and stays IMMUTABLE: it
+    has no update field and is ignored if supplied. The optional ``definition``
+    block mirrors the create discriminated union (minus ``name`` and the other
+    presentation fields, which keep their own update fields here); when present it
+    is re-validated EXACTLY like creation and the service overwrites the metric's
+    ``kind`` / ``config`` / collection binding from it. A ``kind`` change clears
+    the metric's previously collected values (see the service).
     """
 
     display_name: str | None = Field(default=None, min_length=1, max_length=255)
@@ -536,6 +579,7 @@ class MetricDefinitionUpdate(BaseModel):
     app_version_column: str | None = Field(default=None, max_length=255)
     platform_column: str | None = Field(default=None, max_length=255)
     anomaly_detection_enabled: bool | None = None
+    definition: MetricDefinitionConfigUpdate | None = None
 
     @field_validator("app_version_column", "platform_column")
     @classmethod

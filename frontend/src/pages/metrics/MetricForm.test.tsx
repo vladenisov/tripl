@@ -206,9 +206,6 @@ describe('MetricForm validation', () => {
     ).toBe('my_metric')
   })
 
-  // A saved metric whose `config` is intentionally empty: in create mode that
-  // would fail the "metric SQL query is required" check. It must not block an
-  // edit, since config is immutable and excluded from the update.
   const EDIT_METRIC = {
     id: 'metric-1',
     project_id: 'p-1',
@@ -225,18 +222,22 @@ describe('MetricForm validation', () => {
     platform_column: null,
     data_source_id: 'ds-1',
     interval: '1h',
+    replay_chunk_interval: '1h',
     aggregation: 'count',
     composition: null,
     numerator_event_id: null,
     denominator_event_id: null,
     reviewed: false,
     order: 0,
-    config: {},
+    config: {
+      metric_sql: 'SELECT bucket, count(*) AS value FROM events GROUP BY 1',
+      time_column: 'bucket',
+    },
     created_at: '2026-06-01T00:00:00Z',
     updated_at: '2026-06-20T00:00:00Z',
   } as unknown as MetricDefinitionResponse
 
-  it('hides immutable identity/config and renders the internal name read-only in edit mode', () => {
+  it('keeps the internal name read-only and renders editable kind/config in edit mode', () => {
     renderForm(EDIT_METRIC)
 
     expect(screen.getByRole('heading', { name: 'Edit metric' })).toBeInTheDocument()
@@ -244,13 +245,13 @@ describe('MetricForm validation', () => {
     expect(screen.queryByLabelText('Internal name', { exact: false })).toBeNull()
     expect(document.getElementById('metric-name')).toBeNull()
     expect(screen.getByText('order_count')).toBeInTheDocument()
-    // The kind-specific config section is not rendered at all.
-    expect(document.getElementById('metric-sql-data-source')).toBeNull()
-    expect(screen.queryByLabelText('Metric SQL')).toBeNull()
-    expect(document.getElementById('metric-sql-time')).toBeNull()
+    // The kind-specific config is editable after creation.
+    expect(document.getElementById('metric-sql-data-source')).not.toBeNull()
+    expect(screen.getByLabelText('Metric SQL')).toBeInTheDocument()
+    expect(document.getElementById('metric-sql-time')).not.toBeNull()
   })
 
-  it('saves presentation edits without re-validating immutable config', async () => {
+  it('saves presentation edits together with the current definition', async () => {
     const { onClose } = renderForm(EDIT_METRIC)
 
     fireEvent.change(screen.getByLabelText('Display name', { exact: false }), {
@@ -263,12 +264,163 @@ describe('MetricForm validation', () => {
     expect(metricsCatalogApi.update).toHaveBeenCalledWith(
       'demo',
       'metric-1',
-      expect.objectContaining({ display_name: 'Orders / hour' }),
+      expect.objectContaining({
+        display_name: 'Orders / hour',
+        definition: expect.objectContaining({
+          kind: 'sql',
+          data_source_id: 'ds-1',
+          interval: '1h',
+          replay_chunk_interval: '1h',
+          config: {
+            metric_sql: 'SELECT bucket, count(*) AS value FROM events GROUP BY 1',
+            time_column: 'bucket',
+          },
+        }),
+      }),
     )
-    // The empty config would fail create-mode validation; it must not block an edit.
     expect(screen.queryByText('The metric SQL query is required.')).toBeNull()
     expect(metricsCatalogApi.create).not.toHaveBeenCalled()
     await waitFor(() => expect(onClose).toHaveBeenCalled())
+  })
+
+  it('round-trips an existing fact ratio definition without dropping numerator config', async () => {
+    const metric = {
+      ...EDIT_METRIC,
+      kind: 'fact',
+      name: 'revenue_per_session',
+      display_name: 'Revenue / session',
+      data_source_id: null,
+      interval: '1h',
+      replay_chunk_interval: '15m',
+      fact_table_id: 'ft-1',
+      aggregation: 'sum',
+      composition: 'ratio',
+      config: {
+        numerator: {
+          fact_table_id: 'ft-1',
+          aggregation: 'sum',
+          measure_column: 'amount',
+          row_filters: ['completed'],
+          filter_sql: 'amount > 0',
+        },
+        denominator: {
+          fact_table_id: 'ft-2',
+          aggregation: 'count_distinct',
+          distinct_column: 'session_id',
+        },
+      },
+    } as unknown as MetricDefinitionResponse
+
+    renderForm(metric)
+    submit()
+
+    await waitFor(() => expect(metricsCatalogApi.update).toHaveBeenCalledTimes(1))
+    expect(metricsCatalogApi.update).toHaveBeenCalledWith(
+      'demo',
+      'metric-1',
+      expect.objectContaining({
+        definition: expect.objectContaining({
+          kind: 'fact',
+          composition: 'ratio',
+          replay_chunk_interval: '15m',
+          numerator: expect.objectContaining({
+            fact_table_id: 'ft-1',
+            aggregation: 'sum',
+            measure_column: 'amount',
+            row_filters: ['completed'],
+            filter_sql: '(amount > 0)',
+          }),
+          denominator: expect.objectContaining({
+            fact_table_id: 'ft-2',
+            aggregation: 'count_distinct',
+            distinct_column: 'session_id',
+          }),
+        }),
+      }),
+    )
+  })
+
+  it('preserves event-type refs for existing event-composition metrics', async () => {
+    const metric = {
+      ...EDIT_METRIC,
+      kind: 'event_composition',
+      name: 'signup_type_count',
+      display_name: 'Signup type count',
+      data_source_id: null,
+      interval: null,
+      replay_chunk_interval: null,
+      aggregation: null,
+      composition: 'single',
+      numerator_event_id: null,
+      numerator_event_type_id: 'event-type-1',
+      config: {},
+    } as unknown as MetricDefinitionResponse
+
+    renderForm(metric)
+    submit()
+
+    await waitFor(() => expect(metricsCatalogApi.update).toHaveBeenCalledTimes(1))
+    expect(metricsCatalogApi.update).toHaveBeenCalledWith(
+      'demo',
+      'metric-1',
+      expect.objectContaining({
+        definition: expect.objectContaining({
+          kind: 'event_composition',
+          composition: 'single',
+          numerator_event_id: null,
+          numerator_event_type_id: 'event-type-1',
+          denominator_event_id: null,
+          denominator_event_type_id: null,
+        }),
+      }),
+    )
+  })
+
+  it('validates editable SQL config in edit mode', async () => {
+    renderForm(EDIT_METRIC)
+
+    fireEvent.change(screen.getByLabelText('Metric SQL'), { target: { value: '   ' } })
+
+    submit()
+
+    expect(await screen.findByText('The metric SQL query is required.')).toBeInTheDocument()
+    expect(metricsCatalogApi.update).not.toHaveBeenCalled()
+  })
+
+  it('updates an existing SQL metric into a single fact metric definition', async () => {
+    renderForm(EDIT_METRIC)
+
+    fireEvent.click(screen.getByRole('radio', { name: /Fact/ }))
+    await waitFor(() =>
+      expect(document.querySelector('#metric-fact-table option[value="ft-1"]')).not.toBeNull(),
+    )
+    fireEvent.change(document.getElementById('metric-fact-table')!, { target: { value: 'ft-1' } })
+    fireEvent.change(document.getElementById('metric-fact-aggregation')!, { target: { value: 'sum' } })
+    await waitFor(() =>
+      expect(document.querySelector('#metric-fact-measure option[value="amount"]')).not.toBeNull(),
+    )
+    fireEvent.change(document.getElementById('metric-fact-measure')!, { target: { value: 'amount' } })
+
+    submit()
+
+    await waitFor(() => expect(metricsCatalogApi.update).toHaveBeenCalledTimes(1))
+    expect(metricsCatalogApi.update).toHaveBeenCalledWith(
+      'demo',
+      'metric-1',
+      expect.objectContaining({
+        definition: expect.objectContaining({
+          kind: 'fact',
+          composition: 'single',
+          interval: '1h',
+          fact_table_id: 'ft-1',
+          aggregation: 'sum',
+          measure_column: 'amount',
+          distinct_column: null,
+          row_filters: [],
+          filter_sql: null,
+        }),
+      }),
+    )
   })
 
   it('still requires a display name when editing', async () => {

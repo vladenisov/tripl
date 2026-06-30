@@ -25,6 +25,15 @@ export type MetricCreate =
   | SqlMetricCreate
   | EventCompositionMetricCreate
 
+// ───────── Kind-specific update definition payloads ─────────
+export type FactMetricDefinition = Schemas['FactMetricDefinition']
+export type SqlMetricDefinition = Schemas['SqlMetricDefinition']
+export type EventCompositionMetricDefinition = Schemas['EventCompositionMetricDefinition']
+export type MetricDefinitionConfigUpdate =
+  | FactMetricDefinition
+  | SqlMetricDefinition
+  | EventCompositionMetricDefinition
+
 // ───────── Update / bulk / reorder / move ─────────
 export type MetricDefinitionUpdate = Schemas['MetricDefinitionUpdate']
 export type MetricDefinitionBulkUpdate = Schemas['MetricDefinitionBulkUpdate']

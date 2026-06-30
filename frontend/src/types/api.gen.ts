@@ -4139,14 +4139,7 @@ export interface components {
             /** User Id */
             user_id?: string | null;
         };
-        /**
-         * EventCompositionMetricCreate
-         * @description Derived from already-collected event_metrics; no data source / interval.
-         *
-         *     Numerator/denominator are each given as exactly one ref: an ``event_id`` or
-         *     an ``event_type_id``. ``single``/``per_distinct_user`` use the numerator
-         *     only; ``ratio`` requires both numerator and denominator.
-         */
+        /** EventCompositionMetricCreate */
         EventCompositionMetricCreate: {
             /**
              * Anomaly Detection Enabled
@@ -4205,6 +4198,30 @@ export interface components {
             status: components["schemas"]["MetricStatus"];
             /** Unit */
             unit?: string | null;
+        };
+        /**
+         * EventCompositionMetricDefinition
+         * @description Kind + config for an ``event_composition`` metric; no data source / interval.
+         *
+         *     Numerator/denominator are each given as exactly one ref: an ``event_id`` or
+         *     an ``event_type_id``. ``single``/``per_distinct_user`` use the numerator
+         *     only; ``ratio`` requires both numerator and denominator.
+         */
+        EventCompositionMetricDefinition: {
+            composition: components["schemas"]["MetricComposition"];
+            /** Denominator Event Id */
+            denominator_event_id?: string | null;
+            /** Denominator Event Type Id */
+            denominator_event_type_id?: string | null;
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            kind: "event_composition";
+            /** Numerator Event Id */
+            numerator_event_id?: string | null;
+            /** Numerator Event Type Id */
+            numerator_event_type_id?: string | null;
         };
         /** EventCreate */
         EventCreate: {
@@ -4885,25 +4902,7 @@ export interface components {
             /** Total Count */
             total_count: number;
         };
-        /**
-         * FactMetricCreate
-         * @description An aggregation over a separately-defined ``FactTable``.
-         *
-         *     SINGLE (``composition=single``, the default): one operand given by the
-         *     top-level ``fact_table_id`` + ``aggregation`` + the ``measure_column`` /
-         *     ``distinct_column`` / ``row_filters`` / ``filter_sql`` config fields (the
-         *     legacy single ``row_filter`` name is still accepted and folded in).
-         *
-         *     RATIO (``composition=ratio``): ``numerator`` / ``denominator`` operands (each
-         *     a :class:`FactOperand`); the denominator MAY reference a different fact table.
-         *     The numerator operand is mirrored onto the model's ``fact_table_id`` /
-         *     ``aggregation`` columns for catalog display and FK integrity.
-         *
-         *     The data source and timestamp column are taken from the referenced fact
-         *     table(s) at collection time; only the collection ``interval`` lives here.
-         *     Fact-table existence, project ownership, column membership, and row-filter
-         *     name resolution are checked in the service (they need the DB).
-         */
+        /** FactMetricCreate */
         FactMetricCreate: {
             aggregation?: components["schemas"]["MetricAggregation"] | null;
             /**
@@ -4972,6 +4971,51 @@ export interface components {
             status: components["schemas"]["MetricStatus"];
             /** Unit */
             unit?: string | null;
+        };
+        /**
+         * FactMetricDefinition
+         * @description Kind + collection config for a ``fact`` metric.
+         *
+         *     SINGLE (``composition=single``, the default): one operand given by the
+         *     top-level ``fact_table_id`` + ``aggregation`` + the ``measure_column`` /
+         *     ``distinct_column`` / ``row_filters`` / ``filter_sql`` config fields (the
+         *     legacy single ``row_filter`` name is still accepted and folded in).
+         *
+         *     RATIO (``composition=ratio``): ``numerator`` / ``denominator`` operands (each
+         *     a :class:`FactOperand`); the denominator MAY reference a different fact table.
+         *     The numerator operand is mirrored onto the model's ``fact_table_id`` /
+         *     ``aggregation`` columns for catalog display and FK integrity.
+         *
+         *     The data source and timestamp column are taken from the referenced fact
+         *     table(s) at collection time; only the collection ``interval`` lives here.
+         *     Fact-table existence, project ownership, column membership, and row-filter
+         *     name resolution are checked in the service (they need the DB).
+         */
+        FactMetricDefinition: {
+            aggregation?: components["schemas"]["MetricAggregation"] | null;
+            /** @default single */
+            composition: components["schemas"]["MetricComposition"];
+            denominator?: components["schemas"]["FactOperand"] | null;
+            /** Distinct Column */
+            distinct_column?: string | null;
+            /** Fact Table Id */
+            fact_table_id?: string | null;
+            /** Filter Sql */
+            filter_sql?: string | null;
+            interval: components["schemas"]["ScanInterval"];
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            kind: "fact";
+            /** Measure Column */
+            measure_column?: string | null;
+            numerator?: components["schemas"]["FactOperand"] | null;
+            replay_chunk_interval?: components["schemas"]["ScanInterval"] | null;
+            /** Row Filter */
+            row_filter?: string | null;
+            /** Row Filters */
+            row_filters?: string[];
         };
         /**
          * FactOperand
@@ -5697,11 +5741,17 @@ export interface components {
         };
         /**
          * MetricDefinitionUpdate
-         * @description Partial update of presentation, lifecycle, dimension and monitoring fields.
+         * @description Partial update of presentation, lifecycle, dimension and monitoring fields,
+         *     plus an optional ``definition`` block that re-defines the metric's kind +
+         *     collection config.
          *
-         *     ``kind``/``config`` and the collection binding define a metric's identity and
-         *     are immutable here — recreate the metric to change them (mirrors the simple
-         *     EventType update surface).
+         *     The internal ``name`` is the stable query identifier and stays IMMUTABLE: it
+         *     has no update field and is ignored if supplied. The optional ``definition``
+         *     block mirrors the create discriminated union (minus ``name`` and the other
+         *     presentation fields, which keep their own update fields here); when present it
+         *     is re-validated EXACTLY like creation and the service overwrites the metric's
+         *     ``kind`` / ``config`` / collection binding from it. A ``kind`` change clears
+         *     the metric's previously collected values (see the service).
          */
         MetricDefinitionUpdate: {
             /** Anomaly Detection Enabled */
@@ -5714,6 +5764,8 @@ export interface components {
             breakdown_values_limit?: number | null;
             /** Color */
             color?: string | null;
+            /** Definition */
+            definition?: (components["schemas"]["FactMetricDefinition"] | components["schemas"]["SqlMetricDefinition"] | components["schemas"]["EventCompositionMetricDefinition"]) | null;
             /** Description */
             description?: string | null;
             /** Display Name */
@@ -7515,6 +7567,25 @@ export interface components {
             status: components["schemas"]["MetricStatus"];
             /** Unit */
             unit?: string | null;
+        };
+        /**
+         * SqlMetricDefinition
+         * @description Kind + collection config for a ``sql`` metric: SELECT + its data source.
+         */
+        SqlMetricDefinition: {
+            config: components["schemas"]["SqlConfig"];
+            /**
+             * Data Source Id
+             * Format: uuid
+             */
+            data_source_id: string;
+            interval: components["schemas"]["ScanInterval"];
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            kind: "sql";
+            replay_chunk_interval?: components["schemas"]["ScanInterval"] | null;
         };
         /** StorageSettings */
         StorageSettings: {

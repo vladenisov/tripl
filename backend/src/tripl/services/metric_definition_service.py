@@ -1,8 +1,11 @@
 import uuid
 from dataclasses import dataclass
 from datetime import datetime
+from enum import Enum
+from uuid import UUID
 
 from fastapi import HTTPException
+from sqlalchemy import delete as sql_delete
 from sqlalchemy import func, or_, select
 from sqlalchemy import update as sql_update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -15,19 +18,24 @@ from tripl.models.fact_table import FactTable
 from tripl.models.metric_anomaly import MetricAnomaly
 from tripl.models.metric_definition import MetricDefinition
 from tripl.models.metric_value import MetricValue
+from tripl.models.metric_value_breakdown import MetricValueBreakdown
 from tripl.schemas.event_metric import MetricSignalResponse
 from tripl.schemas.metric_definition import (
     EventCompositionMetricCreate,
+    EventCompositionMetricDefinition,
     FactMetricCreate,
+    FactMetricDefinition,
     FactOperand,
     MetricCollectNowResponse,
     MetricDefinitionBulkUpdate,
+    MetricDefinitionConfigUpdate,
     MetricDefinitionCreate,
     MetricDefinitionListItem,
     MetricDefinitionMove,
     MetricDefinitionReorder,
     MetricDefinitionUpdate,
     SqlMetricCreate,
+    SqlMetricDefinition,
 )
 from tripl.services.metrics_service import _signal_from_anomaly
 from tripl.services.monitoring_utils import classify_signal_state
@@ -50,7 +58,7 @@ async def _verify_data_source(session: AsyncSession, data_source_id: uuid.UUID) 
 async def _verify_composition_refs(
     session: AsyncSession,
     project_id: uuid.UUID,
-    data: EventCompositionMetricCreate,
+    data: EventCompositionMetricDefinition,
 ) -> None:
     """Ensure each event/event_type ref resolves to a row in this project.
 
@@ -147,7 +155,7 @@ async def _verify_fact_operand(
 async def _verify_fact_metric(
     session: AsyncSession,
     project_id: uuid.UUID,
-    data: FactMetricCreate,
+    data: FactMetricDefinition,
 ) -> None:
     """Validate a fact metric's operand(s) against their fact table(s)."""
     if data.numerator is not None and data.denominator is not None:
@@ -438,6 +446,112 @@ async def create_metric_definition(
     return metric
 
 
+async def _clear_collected_metric_data(
+    session: AsyncSession, metric: MetricDefinition
+) -> None:
+    """Delete the values/breakdowns/anomalies a metric owns, on a KIND change.
+
+    A metric's previously collected series was produced under the OLD kind's
+    definition; the new kind computes an incompatible series, so the chart must
+    not mix them. This clears every row keyed to this metric:
+
+    * ``MetricValue`` — collected per-bucket values (``metric_definition_id``);
+    * ``MetricValueBreakdown`` — per-dimension slices (``metric_definition_id``);
+    * ``MetricAnomaly`` — the metric's catalog-scope anomalies
+      (``scope_type='metric'``, ``scope_ref=str(metric_id)``; these carry a NULL
+      ``scan_config_id`` and are not FK-linked, so they are not CASCADE-deleted).
+
+    Catalog metrics never write ``MetricBreakdownAnomaly`` rows (that table is
+    event-scope only and requires a ``scan_config_id``), so there is nothing to
+    clear there. The inline collection-status columns are reset so the catalog
+    row stops advertising a now-stale last-collected timestamp/state.
+
+    This is called for any material definition change, including same-kind config
+    edits; presentation-only updates with an identical definition keep history.
+    """
+    metric_id = metric.id
+    await session.execute(
+        sql_delete(MetricValue).where(MetricValue.metric_definition_id == metric_id)
+    )
+    await session.execute(
+        sql_delete(MetricValueBreakdown).where(
+            MetricValueBreakdown.metric_definition_id == metric_id
+        )
+    )
+    await session.execute(
+        sql_delete(MetricAnomaly).where(
+            MetricAnomaly.scope_type == MetricScopeType.metric.value,
+            MetricAnomaly.scope_ref == str(metric_id),
+        )
+    )
+    metric.last_collected_at = None
+    metric.last_collection_status = None
+    metric.last_collection_error = None
+
+
+def _normalise_definition_value(value: object) -> object:
+    if isinstance(value, Enum):
+        return value.value
+    if isinstance(value, UUID):
+        return str(value)
+    if isinstance(value, dict):
+        return {key: _normalise_definition_value(item) for key, item in sorted(value.items())}
+    if isinstance(value, list):
+        return [_normalise_definition_value(item) for item in value]
+    return value
+
+
+def _definition_values_changed(
+    metric: MetricDefinition, new_values: dict[str, object]
+) -> bool:
+    current_values: dict[str, object] = {
+        "kind": metric.kind,
+        "aggregation": metric.aggregation,
+        "composition": metric.composition,
+        "config": metric.config or {},
+        "fact_table_id": metric.fact_table_id,
+        "data_source_id": metric.data_source_id,
+        "interval": metric.interval,
+        "replay_chunk_interval": metric.replay_chunk_interval,
+        "numerator_event_id": metric.numerator_event_id,
+        "numerator_event_type_id": metric.numerator_event_type_id,
+        "denominator_event_id": metric.denominator_event_id,
+        "denominator_event_type_id": metric.denominator_event_type_id,
+    }
+    return _normalise_definition_value(current_values) != _normalise_definition_value(
+        new_values
+    )
+
+
+async def _apply_definition_update(
+    session: AsyncSession,
+    metric: MetricDefinition,
+    definition: MetricDefinitionConfigUpdate,
+) -> None:
+    """Re-validate a kind/config ``definition`` like creation and apply it.
+
+    Runs the SAME DB-backed existence checks creation runs (data source / fact
+    table+columns+filters / event refs), then overwrites the metric's identity and
+    config columns from ``to_definition_values()``. If the definition changed
+    materially, the metric's previously collected data is cleared (see
+    :func:`_clear_collected_metric_data`).
+    """
+    project_id = metric.project_id
+    if isinstance(definition, SqlMetricDefinition):
+        await _verify_data_source(session, definition.data_source_id)
+    elif isinstance(definition, FactMetricDefinition):
+        await _verify_fact_metric(session, project_id, definition)
+    elif isinstance(definition, EventCompositionMetricDefinition):
+        await _verify_composition_refs(session, project_id, definition)
+
+    new_values = definition.to_definition_values()
+    changed = _definition_values_changed(metric, new_values)
+    for key, value in new_values.items():
+        setattr(metric, key, value)
+    if changed:
+        await _clear_collected_metric_data(session, metric)
+
+
 async def update_metric_definition(
     session: AsyncSession,
     slug: str,
@@ -445,9 +559,14 @@ async def update_metric_definition(
     data: MetricDefinitionUpdate,
 ) -> MetricDefinition:
     metric = await get_metric_definition(session, slug, metric_id)
-    update_data = data.model_dump(exclude_unset=True)
+    # Presentation/lifecycle/dimension/monitoring fields: only the ones the client
+    # explicitly sent. ``definition`` is applied separately below; ``name`` has no
+    # update field and so can never be touched here.
+    update_data = data.model_dump(exclude_unset=True, exclude={"definition"})
     for key, value in update_data.items():
         setattr(metric, key, value)
+    if data.definition is not None:
+        await _apply_definition_update(session, metric, data.definition)
     await session.commit()
     await session.refresh(metric)
     return metric

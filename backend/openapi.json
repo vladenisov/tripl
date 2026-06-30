@@ -4843,7 +4843,6 @@
         "type": "object"
       },
       "EventCompositionMetricCreate": {
-        "description": "Derived from already-collected event_metrics; no data source / interval.\n\nNumerator/denominator are each given as exactly one ref: an ``event_id`` or\nan ``event_type_id``. ``single``/``per_distinct_user`` use the numerator\nonly; ``ratio`` requires both numerator and denominator.",
         "properties": {
           "anomaly_detection_enabled": {
             "default": true,
@@ -5015,11 +5014,78 @@
           }
         },
         "required": [
+          "composition",
           "name",
-          "display_name",
-          "composition"
+          "display_name"
         ],
         "title": "EventCompositionMetricCreate",
+        "type": "object"
+      },
+      "EventCompositionMetricDefinition": {
+        "description": "Kind + config for an ``event_composition`` metric; no data source / interval.\n\nNumerator/denominator are each given as exactly one ref: an ``event_id`` or\nan ``event_type_id``. ``single``/``per_distinct_user`` use the numerator\nonly; ``ratio`` requires both numerator and denominator.",
+        "properties": {
+          "composition": {
+            "$ref": "#/components/schemas/MetricComposition"
+          },
+          "denominator_event_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Denominator Event Id"
+          },
+          "denominator_event_type_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Denominator Event Type Id"
+          },
+          "kind": {
+            "const": "event_composition",
+            "default": "event_composition",
+            "title": "Kind",
+            "type": "string"
+          },
+          "numerator_event_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Numerator Event Id"
+          },
+          "numerator_event_type_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Numerator Event Type Id"
+          }
+        },
+        "required": [
+          "composition"
+        ],
+        "title": "EventCompositionMetricDefinition",
         "type": "object"
       },
       "EventCreate": {
@@ -6659,7 +6725,6 @@
         "type": "object"
       },
       "FactMetricCreate": {
-        "description": "An aggregation over a separately-defined ``FactTable``.\n\nSINGLE (``composition=single``, the default): one operand given by the\ntop-level ``fact_table_id`` + ``aggregation`` + the ``measure_column`` /\n``distinct_column`` / ``row_filters`` / ``filter_sql`` config fields (the\nlegacy single ``row_filter`` name is still accepted and folded in).\n\nRATIO (``composition=ratio``): ``numerator`` / ``denominator`` operands (each\na :class:`FactOperand`); the denominator MAY reference a different fact table.\nThe numerator operand is mirrored onto the model's ``fact_table_id`` /\n``aggregation`` columns for catalog display and FK integrity.\n\nThe data source and timestamp column are taken from the referenced fact\ntable(s) at collection time; only the collection ``interval`` lives here.\nFact-table existence, project ownership, column membership, and row-filter\nname resolution are checked in the service (they need the DB).",
         "properties": {
           "aggregation": {
             "anyOf": [
@@ -6897,11 +6962,144 @@
           }
         },
         "required": [
+          "interval",
           "name",
-          "display_name",
-          "interval"
+          "display_name"
         ],
         "title": "FactMetricCreate",
+        "type": "object"
+      },
+      "FactMetricDefinition": {
+        "description": "Kind + collection config for a ``fact`` metric.\n\nSINGLE (``composition=single``, the default): one operand given by the\ntop-level ``fact_table_id`` + ``aggregation`` + the ``measure_column`` /\n``distinct_column`` / ``row_filters`` / ``filter_sql`` config fields (the\nlegacy single ``row_filter`` name is still accepted and folded in).\n\nRATIO (``composition=ratio``): ``numerator`` / ``denominator`` operands (each\na :class:`FactOperand`); the denominator MAY reference a different fact table.\nThe numerator operand is mirrored onto the model's ``fact_table_id`` /\n``aggregation`` columns for catalog display and FK integrity.\n\nThe data source and timestamp column are taken from the referenced fact\ntable(s) at collection time; only the collection ``interval`` lives here.\nFact-table existence, project ownership, column membership, and row-filter\nname resolution are checked in the service (they need the DB).",
+        "properties": {
+          "aggregation": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/MetricAggregation"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "composition": {
+            "$ref": "#/components/schemas/MetricComposition",
+            "default": "single"
+          },
+          "denominator": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/FactOperand"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "distinct_column": {
+            "anyOf": [
+              {
+                "maxLength": 255,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Distinct Column"
+          },
+          "fact_table_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Fact Table Id"
+          },
+          "filter_sql": {
+            "anyOf": [
+              {
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Filter Sql"
+          },
+          "interval": {
+            "$ref": "#/components/schemas/ScanInterval"
+          },
+          "kind": {
+            "const": "fact",
+            "default": "fact",
+            "title": "Kind",
+            "type": "string"
+          },
+          "measure_column": {
+            "anyOf": [
+              {
+                "maxLength": 255,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Measure Column"
+          },
+          "numerator": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/FactOperand"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "replay_chunk_interval": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ScanInterval"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "row_filter": {
+            "anyOf": [
+              {
+                "maxLength": 255,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Row Filter"
+          },
+          "row_filters": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Row Filters",
+            "type": "array"
+          }
+        },
+        "required": [
+          "interval"
+        ],
+        "title": "FactMetricDefinition",
         "type": "object"
       },
       "FactOperand": {
@@ -9097,7 +9295,7 @@
         "type": "object"
       },
       "MetricDefinitionUpdate": {
-        "description": "Partial update of presentation, lifecycle, dimension and monitoring fields.\n\n``kind``/``config`` and the collection binding define a metric's identity and\nare immutable here \u2014 recreate the metric to change them (mirrors the simple\nEventType update surface).",
+        "description": "Partial update of presentation, lifecycle, dimension and monitoring fields,\nplus an optional ``definition`` block that re-defines the metric's kind +\ncollection config.\n\nThe internal ``name`` is the stable query identifier and stays IMMUTABLE: it\nhas no update field and is ignored if supplied. The optional ``definition``\nblock mirrors the create discriminated union (minus ``name`` and the other\npresentation fields, which keep their own update fields here); when present it\nis re-validated EXACTLY like creation and the service overwrites the metric's\n``kind`` / ``config`` / collection binding from it. A ``kind`` change clears\nthe metric's previously collected values (see the service).",
         "properties": {
           "anomaly_detection_enabled": {
             "anyOf": [
@@ -9159,6 +9357,35 @@
               }
             ],
             "title": "Color"
+          },
+          "definition": {
+            "anyOf": [
+              {
+                "discriminator": {
+                  "mapping": {
+                    "event_composition": "#/components/schemas/EventCompositionMetricDefinition",
+                    "fact": "#/components/schemas/FactMetricDefinition",
+                    "sql": "#/components/schemas/SqlMetricDefinition"
+                  },
+                  "propertyName": "kind"
+                },
+                "oneOf": [
+                  {
+                    "$ref": "#/components/schemas/FactMetricDefinition"
+                  },
+                  {
+                    "$ref": "#/components/schemas/SqlMetricDefinition"
+                  },
+                  {
+                    "$ref": "#/components/schemas/EventCompositionMetricDefinition"
+                  }
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Definition"
           },
           "description": {
             "anyOf": [
@@ -14057,13 +14284,52 @@
           }
         },
         "required": [
+          "config",
+          "data_source_id",
+          "interval",
           "name",
-          "display_name",
+          "display_name"
+        ],
+        "title": "SqlMetricCreate",
+        "type": "object"
+      },
+      "SqlMetricDefinition": {
+        "description": "Kind + collection config for a ``sql`` metric: SELECT + its data source.",
+        "properties": {
+          "config": {
+            "$ref": "#/components/schemas/SqlConfig"
+          },
+          "data_source_id": {
+            "format": "uuid",
+            "title": "Data Source Id",
+            "type": "string"
+          },
+          "interval": {
+            "$ref": "#/components/schemas/ScanInterval"
+          },
+          "kind": {
+            "const": "sql",
+            "default": "sql",
+            "title": "Kind",
+            "type": "string"
+          },
+          "replay_chunk_interval": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ScanInterval"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
           "config",
           "data_source_id",
           "interval"
         ],
-        "title": "SqlMetricCreate",
+        "title": "SqlMetricDefinition",
         "type": "object"
       },
       "StorageSettings": {

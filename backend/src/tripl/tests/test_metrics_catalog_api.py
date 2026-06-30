@@ -1,14 +1,19 @@
 import uuid
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 
 import pytest
 from httpx import AsyncClient
+from sqlalchemy import func, select
 
 import tripl.worker.tasks.metrics.metric_collect as mc
 from tripl.api.deps import get_current_user
 from tripl.main import app
-from tripl.models.domain_enums import UserRole
+from tripl.models.domain_enums import AnomalyDirection, MetricScopeType, UserRole
+from tripl.models.metric_anomaly import MetricAnomaly
+from tripl.models.metric_value import MetricValue
+from tripl.models.metric_value_breakdown import MetricValueBreakdown
 from tripl.models.user import User
+from tripl.tests.conftest import TestSessionLocal
 
 
 @pytest.fixture
@@ -1132,3 +1137,312 @@ class TestCollectNow:
         assert resp.status_code == 403, resp.text
         assert dispatch_recorder["sql"].calls == []
         assert dispatch_recorder["fact"].calls == []
+
+
+async def _seed_collected_data(metric_id: str) -> None:
+    """Insert a value + breakdown + metric-scope anomaly + collection stamp.
+
+    Lets the kind-change tests assert that everything the metric owns is cleared
+    (and presentation-only edits assert that identical definitions keep history).
+    """
+    mid = uuid.UUID(metric_id)
+    bucket = datetime(2026, 1, 1, tzinfo=UTC)
+    async with TestSessionLocal() as session:
+        session.add(MetricValue(metric_definition_id=mid, bucket=bucket, value=1.0))
+        session.add(
+            MetricValueBreakdown(
+                metric_definition_id=mid,
+                bucket=bucket,
+                breakdown_column="country",
+                breakdown_value="US",
+                value=1.0,
+            )
+        )
+        session.add(
+            MetricAnomaly(
+                scope_type=MetricScopeType.metric.value,
+                scope_ref=metric_id,
+                bucket=bucket,
+                actual_count=10,
+                expected_count=2.0,
+                stddev=1.0,
+                z_score=8.0,
+                direction=AnomalyDirection.spike.value,
+            )
+        )
+        await session.commit()
+
+
+async def _count_collected_data(metric_id: str) -> tuple[int, int, int]:
+    """(values, breakdowns, metric-scope anomalies) currently stored for a metric."""
+    mid = uuid.UUID(metric_id)
+    async with TestSessionLocal() as session:
+        values = await session.scalar(
+            select(func.count(MetricValue.id)).where(MetricValue.metric_definition_id == mid)
+        )
+        breakdowns = await session.scalar(
+            select(func.count(MetricValueBreakdown.id)).where(
+                MetricValueBreakdown.metric_definition_id == mid
+            )
+        )
+        anomalies = await session.scalar(
+            select(func.count(MetricAnomaly.id)).where(
+                MetricAnomaly.scope_type == MetricScopeType.metric.value,
+                MetricAnomaly.scope_ref == metric_id,
+            )
+        )
+    return int(values or 0), int(breakdowns or 0), int(anomalies or 0)
+
+
+class TestUpdateDefinition:
+    """PATCH /metrics/{id} can re-define a metric's kind + collection config."""
+
+    async def test_edit_sql_config_data_source_interval_and_sql(
+        self, client: AsyncClient, project: dict, data_source: dict
+    ):
+        slug = project["slug"]
+        metric = await _create_sql_metric(client, slug, data_source["id"], "edit_sql")
+        # A second data source the metric can be repointed at.
+        other_ds = (
+            await client.post(
+                "/api/v1/data-sources",
+                json={
+                    "name": "Other CH",
+                    "db_type": "clickhouse",
+                    "host": "localhost",
+                    "port": 8123,
+                    "database_name": "other_db",
+                },
+            )
+        ).json()
+
+        resp = await client.patch(
+            f"{_metrics_url(slug)}/{metric['id']}",
+            json={
+                "definition": {
+                    "kind": "sql",
+                    "data_source_id": other_ds["id"],
+                    "interval": "6h",
+                    "config": {
+                        "metric_sql": "SELECT toStartOfHour(t) AS bucket, count() AS v FROM e",
+                        "time_column": "bucket",
+                    },
+                }
+            },
+        )
+        assert resp.status_code == 200, resp.text
+        data = resp.json()
+        assert data["kind"] == "sql"
+        assert data["data_source_id"] == other_ds["id"]
+        assert data["interval"] == "6h"
+        assert data["config"]["metric_sql"].endswith("FROM e")
+        assert data["config"]["time_column"] == "bucket"
+
+    async def test_edit_fact_operand_aggregation_measure_and_filter(
+        self, client: AsyncClient, project: dict, fact_table: dict
+    ):
+        slug = project["slug"]
+        created = await client.post(
+            _metrics_url(slug),
+            json={
+                "kind": "fact",
+                "name": "edit_fact",
+                "display_name": "Edit Fact",
+                "composition": "single",
+                "fact_table_id": fact_table["id"],
+                "aggregation": "count",
+                "interval": "1h",
+            },
+        )
+        assert created.status_code == 201, created.text
+        metric = created.json()
+        assert metric["aggregation"] == "count"
+
+        resp = await client.patch(
+            f"{_metrics_url(slug)}/{metric['id']}",
+            json={
+                "definition": {
+                    "kind": "fact",
+                    "composition": "single",
+                    "fact_table_id": fact_table["id"],
+                    "aggregation": "sum",
+                    "interval": "1h",
+                    "measure_column": "amount",
+                    "row_filter": "exclude_test",
+                }
+            },
+        )
+        assert resp.status_code == 200, resp.text
+        data = resp.json()
+        assert data["kind"] == "fact"
+        assert data["aggregation"] == "sum"
+        assert data["config"]["measure_column"] == "amount"
+        # Legacy single ``row_filter`` is folded into the effective ``row_filters``.
+        assert data["config"]["row_filters"] == ["exclude_test"]
+
+    async def test_edit_fact_operand_unknown_column_rejected(
+        self, client: AsyncClient, project: dict, fact_table: dict
+    ):
+        # The same service-level allowlist that guards create also guards update.
+        slug = project["slug"]
+        created = await client.post(
+            _metrics_url(slug),
+            json={
+                "kind": "fact",
+                "name": "edit_fact_bad",
+                "display_name": "Edit Fact Bad",
+                "composition": "single",
+                "fact_table_id": fact_table["id"],
+                "aggregation": "count",
+                "interval": "1h",
+            },
+        )
+        assert created.status_code == 201, created.text
+        resp = await client.patch(
+            f"{_metrics_url(slug)}/{created.json()['id']}",
+            json={
+                "definition": {
+                    "kind": "fact",
+                    "composition": "single",
+                    "fact_table_id": fact_table["id"],
+                    "aggregation": "sum",
+                    "interval": "1h",
+                    "measure_column": "not_a_column",
+                }
+            },
+        )
+        assert resp.status_code == 422, resp.text
+
+    async def test_change_kind_sql_to_fact_clears_values_and_stores_config(
+        self, client: AsyncClient, project: dict, data_source: dict, fact_table: dict
+    ):
+        slug = project["slug"]
+        metric = await _create_sql_metric(client, slug, data_source["id"], "kind_change")
+        await _seed_collected_data(metric["id"])
+        # Stamp a collection state so we can assert it is reset on the kind change.
+        async with TestSessionLocal() as session:
+            from tripl.models.metric_definition import MetricDefinition
+
+            row = await session.get(MetricDefinition, uuid.UUID(metric["id"]))
+            assert row is not None
+            row.last_collection_status = "ok"
+            row.last_collected_at = datetime(2026, 1, 1, tzinfo=UTC)
+            await session.commit()
+        assert await _count_collected_data(metric["id"]) == (1, 1, 1)
+
+        resp = await client.patch(
+            f"{_metrics_url(slug)}/{metric['id']}",
+            json={
+                "definition": {
+                    "kind": "fact",
+                    "composition": "single",
+                    "fact_table_id": fact_table["id"],
+                    "aggregation": "sum",
+                    "interval": "1h",
+                    "measure_column": "amount",
+                }
+            },
+        )
+        assert resp.status_code == 200, resp.text
+        data = resp.json()
+        # New definition stored.
+        assert data["kind"] == "fact"
+        assert data["aggregation"] == "sum"
+        assert data["fact_table_id"] == fact_table["id"]
+        assert data["config"]["measure_column"] == "amount"
+        # ``sql`` left its data source behind; ``fact`` takes it from the table.
+        assert data["data_source_id"] is None
+        # Collection stamp reset.
+        assert data["last_collection_status"] is None
+        assert data["last_collected_at"] is None
+        # Every incompatible collected row was cleared.
+        assert await _count_collected_data(metric["id"]) == (0, 0, 0)
+
+    async def test_same_kind_config_tweak_clears_collected_values(
+        self, client: AsyncClient, project: dict, data_source: dict
+    ):
+        slug = project["slug"]
+        metric = await _create_sql_metric(client, slug, data_source["id"], "same_kind")
+        await _seed_collected_data(metric["id"])
+        async with TestSessionLocal() as session:
+            from tripl.models.metric_definition import MetricDefinition
+
+            row = await session.get(MetricDefinition, uuid.UUID(metric["id"]))
+            assert row is not None
+            row.last_collection_status = "ok"
+            row.last_collected_at = datetime(2026, 1, 1, tzinfo=UTC)
+            await session.commit()
+
+        resp = await client.patch(
+            f"{_metrics_url(slug)}/{metric['id']}",
+            json={
+                "definition": {
+                    "kind": "sql",
+                    "data_source_id": data_source["id"],
+                    "interval": "1d",
+                    "config": {
+                        "metric_sql": "SELECT t AS bucket, count() AS v FROM e2",
+                        "time_column": "bucket",
+                    },
+                }
+            },
+        )
+        assert resp.status_code == 200, resp.text
+        data = resp.json()
+        assert data["config"]["metric_sql"].endswith("FROM e2")
+        assert data["last_collection_status"] is None
+        assert data["last_collected_at"] is None
+        assert await _count_collected_data(metric["id"]) == (0, 0, 0)
+
+    async def test_same_definition_presentation_edit_keeps_collected_values(
+        self, client: AsyncClient, project: dict, data_source: dict
+    ):
+        slug = project["slug"]
+        metric = await _create_sql_metric(client, slug, data_source["id"], "same_definition")
+        await _seed_collected_data(metric["id"])
+
+        resp = await client.patch(
+            f"{_metrics_url(slug)}/{metric['id']}",
+            json={
+                "display_name": "Same Definition Renamed",
+                "definition": {
+                    "kind": "sql",
+                    "data_source_id": data_source["id"],
+                    "interval": metric["interval"],
+                    "config": {
+                        "metric_sql": metric["config"]["metric_sql"],
+                        "time_column": metric["config"]["time_column"],
+                    },
+                },
+            },
+        )
+        assert resp.status_code == 200, resp.text
+        data = resp.json()
+        assert data["display_name"] == "Same Definition Renamed"
+        assert data["config"] == metric["config"]
+        assert await _count_collected_data(metric["id"]) == (1, 1, 1)
+
+    async def test_internal_name_is_immutable_on_update(
+        self, client: AsyncClient, project: dict, data_source: dict
+    ):
+        slug = project["slug"]
+        metric = await _create_sql_metric(client, slug, data_source["id"], "stable_name")
+        resp = await client.patch(
+            f"{_metrics_url(slug)}/{metric['id']}",
+            json={
+                "name": "renamed",
+                "display_name": "Renamed Display",
+                "definition": {
+                    "kind": "sql",
+                    "name": "renamed_in_definition",
+                    "data_source_id": data_source["id"],
+                    "interval": "1d",
+                    "config": {"metric_sql": "SELECT 1 AS v, now() AS t", "time_column": "t"},
+                },
+            },
+        )
+        assert resp.status_code == 200, resp.text
+        data = resp.json()
+        # The internal query identifier is unchanged; only display_name moved.
+        assert data["name"] == "stable_name"
+        assert data["display_name"] == "Renamed Display"
