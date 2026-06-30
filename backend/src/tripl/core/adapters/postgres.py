@@ -8,6 +8,7 @@ from datetime import datetime
 import psycopg
 
 from tripl.core.adapters.base import (
+    AggregateSpec,
     BaseAdapter,
     ColumnInfo,
     SchemaColumn,
@@ -15,6 +16,7 @@ from tripl.core.adapters.base import (
 )
 from tripl.core.adapters.measure_validator import (
     build_aggregate_sql,
+    coerce_aggregation,
     validate_measure_column,
 )
 from tripl.models.domain_enums import MetricAggregation
@@ -533,6 +535,145 @@ class PostgresAdapter(BaseAdapter):
         logger.info("PG bucketed aggregate breakdown done in %.2fs, %s rows", elapsed, len(rows))
 
         return col_names, json_value_names, rows
+
+    def _spec_aggregate_sql(self, spec: AggregateSpec) -> str:
+        """Build one (optionally conditional) aggregate fragment for a spec.
+
+        Reuses the single-aggregate validation/escaping path
+        (``_aggregate_value_sql`` -> validate_measure_column + build_aggregate_sql)
+        and, when ``filter_sql`` is set, wraps the aggregate as a Postgres
+        ``FILTER (WHERE ...)`` conditional so specs with different filters can
+        share one scan. Postgres supports ``FILTER`` on ``count(*)`` and
+        ``count(DISTINCT col)`` alike, so no CASE fallback is needed.
+        ``filter_sql`` is a pre-validated boolean fragment injected as-is, the
+        same trust model as the single-metric row-filter path.
+
+        ``count`` / ``count_distinct`` with a ``FILTER`` return 0 (not NULL) for
+        a bucket whose rows never match ``cond``; the remaining aggregates
+        (``avg`` / ``sum`` / ``min`` / ``max``) already return NULL there. The
+        zero-returning counts are wrapped in ``NULLIF(..., 0)`` so such a bucket
+        reads as absent, matching the per-metric path whose filtered scan emits
+        no row at all for it (a 0 would otherwise render as a spurious data
+        point instead of a gap).
+        """
+        base = self._aggregate_value_sql(spec.aggregation, spec.column)
+        if not spec.filter_sql:
+            return base
+        filtered = f"{base} FILTER (WHERE {spec.filter_sql})"
+        if coerce_aggregation(spec.aggregation) in (
+            MetricAggregation.count,
+            MetricAggregation.count_distinct,
+        ):
+            return f"NULLIF({filtered}, 0)"
+        return filtered
+
+    def get_time_bucketed_multi_aggregate(
+        self,
+        base_query: str,
+        time_column: str,
+        ch_interval: str,
+        specs: list[AggregateSpec],
+        time_from: datetime,
+        time_to: datetime,
+        *,
+        limit: int = 100000,
+    ) -> tuple[list[str], list[tuple[object, ...]]]:
+        tc = self._validate_column(time_column)
+        interval = self._validate_interval(ch_interval)
+
+        bucket_expr = f"date_bin(INTERVAL '{interval}', {_quote_ident(tc)}, TIMESTAMP 'epoch')"
+        select_parts: list[str] = [f"{bucket_expr} AS _bucket"]
+        col_names: list[str] = ["bucket"]
+        for spec in specs:
+            select_parts.append(f"{self._spec_aggregate_sql(spec)} AS {_quote_ident(spec.key)}")
+            col_names.append(spec.key)
+
+        t_from = time_from.strftime("%Y-%m-%d %H:%M:%S")
+        t_to = time_to.strftime("%Y-%m-%d %H:%M:%S")
+        sql = (
+            f"SELECT {', '.join(select_parts)} "
+            f"FROM ({base_query}) AS _src "
+            f"WHERE {_quote_ident(tc)} >= '{t_from}' AND {_quote_ident(tc)} < '{t_to}' "
+            f"GROUP BY _bucket "
+            f"ORDER BY _bucket "
+            f"LIMIT {int(limit)}"
+        )
+
+        logger.debug("PG bucketed multi-aggregate query: %s", _truncate_sql(sql))
+        t0 = time.monotonic()
+        with self._conn.cursor() as cur:
+            cur.execute(sql)
+            rows = [tuple(r) for r in cur.fetchall()]
+        elapsed = time.monotonic() - t0
+        logger.info("PG bucketed multi-aggregate done in %.2fs, %s rows", elapsed, len(rows))
+
+        return col_names, rows
+
+    def get_time_bucketed_multi_aggregate_breakdown(
+        self,
+        base_query: str,
+        time_column: str,
+        ch_interval: str,
+        breakdown_column: str,
+        specs: list[AggregateSpec],
+        time_from: datetime,
+        time_to: datetime,
+        *,
+        values_limit: int | None = None,
+        limit: int = 100000,
+    ) -> tuple[list[str], list[tuple[object, ...]]]:
+        tc = self._validate_column(time_column)
+        interval = self._validate_interval(ch_interval)
+        breakdown = self._validate_column(breakdown_column)
+
+        raw_expr = self._string_value_expression(breakdown)
+        breakdown_expr, is_other_expr = self._breakdown_value_exprs(
+            base_query,
+            time_column,
+            breakdown,
+            raw_expr,
+            time_from,
+            time_to,
+            values_limit,
+        )
+
+        bucket_expr = f"date_bin(INTERVAL '{interval}', {_quote_ident(tc)}, TIMESTAMP 'epoch')"
+        select_parts: list[str] = [
+            f"{bucket_expr} AS _bucket",
+            f"{breakdown_expr} AS _breakdown_value",
+            f"{is_other_expr} AS _is_other",
+        ]
+        col_names: list[str] = ["bucket", "breakdown_value", "is_other"]
+        for spec in specs:
+            select_parts.append(f"{self._spec_aggregate_sql(spec)} AS {_quote_ident(spec.key)}")
+            col_names.append(spec.key)
+
+        t_from = time_from.strftime("%Y-%m-%d %H:%M:%S")
+        t_to = time_to.strftime("%Y-%m-%d %H:%M:%S")
+        sql = (
+            f"SELECT {', '.join(select_parts)} "
+            f"FROM ({base_query}) AS _src "
+            f"WHERE {_quote_ident(tc)} >= '{t_from}' AND {_quote_ident(tc)} < '{t_to}' "
+            f"GROUP BY _bucket, _breakdown_value, _is_other "
+            f"ORDER BY _bucket, _breakdown_value "
+            f"LIMIT {int(limit)}"
+        )
+
+        logger.debug(
+            "PG bucketed multi-aggregate breakdown query for %s: %s",
+            breakdown,
+            _truncate_sql(sql),
+        )
+        t0 = time.monotonic()
+        with self._conn.cursor() as cur:
+            cur.execute(sql)
+            rows = [tuple(r) for r in cur.fetchall()]
+        elapsed = time.monotonic() - t0
+        logger.info(
+            "PG bucketed multi-aggregate breakdown done in %.2fs, %s rows", elapsed, len(rows)
+        )
+
+        return col_names, rows
 
     def get_time_bucketed_breakdown_counts(
         self,

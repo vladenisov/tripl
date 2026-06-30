@@ -11,6 +11,7 @@ from google.cloud import bigquery
 from google.oauth2 import service_account
 
 from tripl.core.adapters.base import (
+    AggregateSpec,
     BaseAdapter,
     ColumnInfo,
     SchemaColumn,
@@ -18,6 +19,7 @@ from tripl.core.adapters.base import (
 )
 from tripl.core.adapters.measure_validator import (
     build_aggregate_sql,
+    coerce_aggregation,
     validate_measure_column,
 )
 from tripl.models.domain_enums import MetricAggregation
@@ -359,6 +361,48 @@ class BigQueryAdapter(BaseAdapter):
             measure_sql = f"`{validate_measure_column(measure_column, self._allowed_columns)}`"
         return build_aggregate_sql(agg_fn, measure_sql)
 
+    def _validate_alias(self, alias: str) -> str:
+        """Validate a caller-supplied output column alias before interpolation."""
+        if not _IDENTIFIER_PART_RE.match(alias):
+            msg = f"Invalid aggregate key alias: {alias!r}"
+            raise ValueError(msg)
+        return alias
+
+    def _conditional_aggregate_sql(self, spec: AggregateSpec) -> str:
+        """Build one (optionally conditional) aggregate fragment for a spec.
+
+        With no ``filter_sql`` this reuses the exact single-aggregate fragment
+        (``build_aggregate_sql``) so values match the per-metric path. With a
+        filter, BigQuery lacks the ``FILTER (WHERE ...)`` clause, so the
+        condition is folded into the aggregate per the dialect rules:
+        ``count`` -> ``count(CASE WHEN cond THEN 1 END)``; ``count_distinct`` ->
+        ``count(DISTINCT IF(cond, col, NULL))``; ``sum/avg/min/max`` ->
+        ``agg(CASE WHEN cond THEN col END)``. ``filter_sql`` is a pre-validated
+        boolean fragment injected as-is, matching the row-filter trust model.
+
+        ``count`` / ``count_distinct`` return 0 (not NULL) for a bucket whose
+        rows never match ``cond``; ``avg`` / ``sum`` / ``min`` / ``max`` over the
+        ``CASE WHEN`` form already return NULL there. The zero-returning counts
+        are wrapped in ``NULLIF(..., 0)`` so such a bucket reads as absent,
+        matching the per-metric path whose filtered scan emits no row at all for
+        it (a 0 would otherwise render as a spurious data point instead of a gap).
+        """
+        measure_sql: str | None = None
+        if spec.column is not None:
+            measure_sql = f"`{validate_measure_column(spec.column, self._allowed_columns)}`"
+        agg = coerce_aggregation(spec.aggregation)
+        if spec.filter_sql is None:
+            return build_aggregate_sql(agg, measure_sql)
+        cond = spec.filter_sql
+        if agg is MetricAggregation.count:
+            return f"NULLIF(count(CASE WHEN {cond} THEN 1 END), 0)"
+        if not measure_sql:
+            msg = f"Aggregation {agg.value!r} requires a measure column"
+            raise ValueError(msg)
+        if agg is MetricAggregation.count_distinct:
+            return f"NULLIF(count(DISTINCT IF({cond}, {measure_sql}, NULL)), 0)"
+        return f"{agg.value}(CASE WHEN {cond} THEN {measure_sql} END)"
+
     def get_time_bucketed_aggregate(
         self,
         base_query: str,
@@ -533,6 +577,110 @@ class BigQueryAdapter(BaseAdapter):
         logger.info("BQ bucketed aggregate breakdown done in %.2fs, %s rows", elapsed, len(rows))
 
         return col_names, json_value_names, rows
+
+    def get_time_bucketed_multi_aggregate(
+        self,
+        base_query: str,
+        time_column: str,
+        ch_interval: str,
+        specs: list[AggregateSpec],
+        time_from: datetime,
+        time_to: datetime,
+        *,
+        limit: int = 100000,
+    ) -> tuple[list[str], list[tuple[object, ...]]]:
+        tc = self._validate_column(time_column)
+        bucket_expr = self._bucket_expression(time_column, ch_interval)
+        if not specs:
+            return ["bucket"], []
+
+        select_parts: list[str] = [f"{bucket_expr} AS _bucket"]
+        column_names: list[str] = ["bucket"]
+        for spec in specs:
+            key = self._validate_alias(spec.key)
+            select_parts.append(f"{self._conditional_aggregate_sql(spec)} AS `{key}`")
+            column_names.append(spec.key)
+
+        t_from = time_from.strftime("%Y-%m-%d %H:%M:%S")
+        t_to = time_to.strftime("%Y-%m-%d %H:%M:%S")
+        sql = (
+            f"SELECT {', '.join(select_parts)} "
+            f"FROM ({base_query}) AS _src "
+            f"WHERE `{tc}` >= TIMESTAMP '{t_from}' AND `{tc}` < TIMESTAMP '{t_to}' "
+            f"GROUP BY _bucket "
+            f"ORDER BY _bucket "
+            f"LIMIT {int(limit)}"
+        )
+
+        logger.info("BQ bucketed multi-aggregate query: %s", sql)
+        t0 = time.monotonic()
+        _, rows = self._query_rows(sql)
+        elapsed = time.monotonic() - t0
+        logger.info("BQ bucketed multi-aggregate done in %.2fs, %s rows", elapsed, len(rows))
+
+        return column_names, rows
+
+    def get_time_bucketed_multi_aggregate_breakdown(
+        self,
+        base_query: str,
+        time_column: str,
+        ch_interval: str,
+        breakdown_column: str,
+        specs: list[AggregateSpec],
+        time_from: datetime,
+        time_to: datetime,
+        *,
+        values_limit: int | None = None,
+        limit: int = 100000,
+    ) -> tuple[list[str], list[tuple[object, ...]]]:
+        tc = self._validate_column(time_column)
+        bucket_expr = self._bucket_expression(time_column, ch_interval)
+        breakdown = self._validate_column(breakdown_column)
+        if not specs:
+            return ["bucket", "breakdown_value", "is_other"], []
+
+        raw_expr = self._string_value_expression(breakdown)
+        breakdown_expr, is_other_expr = self._breakdown_value_exprs(
+            base_query,
+            time_column,
+            breakdown,
+            raw_expr,
+            time_from,
+            time_to,
+            values_limit,
+        )
+
+        select_parts: list[str] = [
+            f"{bucket_expr} AS _bucket",
+            f"{breakdown_expr} AS _breakdown_value",
+            f"{is_other_expr} AS _is_other",
+        ]
+        column_names: list[str] = ["bucket", "breakdown_value", "is_other"]
+        for spec in specs:
+            key = self._validate_alias(spec.key)
+            select_parts.append(f"{self._conditional_aggregate_sql(spec)} AS `{key}`")
+            column_names.append(spec.key)
+
+        t_from = time_from.strftime("%Y-%m-%d %H:%M:%S")
+        t_to = time_to.strftime("%Y-%m-%d %H:%M:%S")
+        sql = (
+            f"SELECT {', '.join(select_parts)} "
+            f"FROM ({base_query}) AS _src "
+            f"WHERE `{tc}` >= TIMESTAMP '{t_from}' AND `{tc}` < TIMESTAMP '{t_to}' "
+            f"GROUP BY _bucket, _breakdown_value, _is_other "
+            f"ORDER BY _bucket, _breakdown_value "
+            f"LIMIT {int(limit)}"
+        )
+
+        logger.info("BQ bucketed multi-aggregate breakdown query for %s: %s", breakdown, sql)
+        t0 = time.monotonic()
+        _, rows = self._query_rows(sql)
+        elapsed = time.monotonic() - t0
+        logger.info(
+            "BQ bucketed multi-aggregate breakdown done in %.2fs, %s rows", elapsed, len(rows)
+        )
+
+        return column_names, rows
 
     def get_time_bucketed_breakdown_counts(
         self,

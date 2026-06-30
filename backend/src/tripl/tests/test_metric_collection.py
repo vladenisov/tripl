@@ -968,18 +968,19 @@ def test_check_metric_definitions_due_dispatches_and_marks_running(
         definition = _make_active_fact_metric_for_dispatch(session, project, data_source)
         def_id = definition.id
 
-    dispatched: list[str] = []
+    dispatched: list[list[str]] = []
     monkeypatch.setattr(metrics_schedule, "_get_sync_session", sync_session_factory)
+    # Fact metrics route through the batched collector (grouped by interval).
     monkeypatch.setattr(
-        metrics_schedule.collect_metric_definitions,
+        metrics_schedule.collect_fact_metrics_batch,
         "delay",
-        lambda metric_definition_id: dispatched.append(metric_definition_id),
+        lambda metric_ids: dispatched.append(metric_ids),
     )
 
     result = metrics_schedule.check_metric_definitions_due.run()
 
     assert result == {"checked": 1, "dispatched": 1}
-    assert dispatched == [str(def_id)]
+    assert dispatched == [[str(def_id)]]
     with sync_session_factory() as session:
         reloaded = session.get(MetricDefinition, def_id)
         assert reloaded is not None
@@ -1026,16 +1027,16 @@ def test_check_metric_definitions_due_reaps_stale_running(
         session.commit()
         def_id = definition.id
 
-    dispatched: list[str] = []
+    dispatched: list[list[str]] = []
     monkeypatch.setattr(metrics_schedule, "_get_sync_session", sync_session_factory)
     monkeypatch.setattr(
-        metrics_schedule.collect_metric_definitions,
+        metrics_schedule.collect_fact_metrics_batch,
         "delay",
-        lambda metric_definition_id: dispatched.append(metric_definition_id),
+        lambda metric_ids: dispatched.append(metric_ids),
     )
 
     result = metrics_schedule.check_metric_definitions_due.run()
 
     # A stale running marker is reclaimed and the metric is re-dispatched.
     assert result == {"checked": 1, "dispatched": 1}
-    assert dispatched == [str(def_id)]
+    assert dispatched == [[str(def_id)]]

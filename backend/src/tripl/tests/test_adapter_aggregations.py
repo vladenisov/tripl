@@ -5,6 +5,7 @@ from datetime import datetime
 
 import pytest
 
+from tripl.core.adapters.base import AggregateSpec
 from tripl.core.adapters.bigquery import BigQueryAdapter
 from tripl.core.adapters.clickhouse import ClickHouseAdapter
 from tripl.core.adapters.postgres import PostgresAdapter
@@ -288,6 +289,145 @@ def test_postgres_aggregate_breakdown_sql() -> None:
     assert "0 AS _is_other" in sql
     assert "GROUP BY _bucket, _breakdown_value, _is_other" in sql
     assert "ORDER BY _bucket, _breakdown_value" in sql
+
+
+# --- Postgres multi-aggregate -----------------------------------------------
+
+
+def test_postgres_multi_aggregate_select_shape() -> None:
+    adapter, conn = _pg()
+    conn.rows = [(datetime(2026, 4, 1, 0, 0), 5, 100.0, 3)]
+    col_names, rows = adapter.get_time_bucketed_multi_aggregate(
+        _BASE,
+        "time",
+        "1 hour",
+        [
+            AggregateSpec(key="c", aggregation=MetricAggregation.count),
+            AggregateSpec(key="s", aggregation=MetricAggregation.sum, column="amount"),
+            AggregateSpec(
+                key="d", aggregation=MetricAggregation.count_distinct, column="user_id"
+            ),
+        ],
+        time_from=_FROM,
+        time_to=_TO,
+    )
+    assert col_names == ["bucket", "c", "s", "d"]
+    assert rows == [(datetime(2026, 4, 1, 0, 0), 5, 100.0, 3)]
+    sql = conn.sql[0]
+    # One scan, three aggregate columns aliased by their keys.
+    assert 'count(*) AS "c"' in sql
+    assert 'sum("amount") AS "s"' in sql
+    assert 'count(DISTINCT "user_id") AS "d"' in sql
+    assert "date_bin(INTERVAL '1 hour', \"time\", TIMESTAMP 'epoch') AS _bucket" in sql
+    assert "GROUP BY _bucket" in sql
+    assert "ORDER BY _bucket" in sql
+    assert "WHERE \"time\" >= '2026-04-01 00:00:00' AND \"time\" < '2026-04-02 00:00:00'" in sql
+
+
+def test_postgres_multi_aggregate_conditional_filter() -> None:
+    adapter, conn = _pg()
+    col_names, _ = adapter.get_time_bucketed_multi_aggregate(
+        _BASE,
+        "time",
+        "1 day",
+        [
+            AggregateSpec(
+                key="paid",
+                aggregation=MetricAggregation.sum,
+                column="amount",
+                filter_sql="event_name = 'purchase'",
+            ),
+            AggregateSpec(key="total", aggregation=MetricAggregation.sum, column="amount"),
+        ],
+        time_from=_FROM,
+        time_to=_TO,
+    )
+    assert col_names == ["bucket", "paid", "total"]
+    sql = conn.sql[0]
+    # Filtered spec becomes a FILTER (WHERE ...) conditional; unfiltered stays plain.
+    assert "sum(\"amount\") FILTER (WHERE event_name = 'purchase') AS \"paid\"" in sql
+    assert 'sum("amount") AS "total"' in sql
+
+
+def test_postgres_multi_aggregate_count_filter() -> None:
+    adapter, conn = _pg()
+    adapter.get_time_bucketed_multi_aggregate(
+        _BASE,
+        "time",
+        "1 hour",
+        [
+            AggregateSpec(
+                key="hits",
+                aggregation=MetricAggregation.count,
+                filter_sql="amount > 0",
+            ),
+        ],
+        time_from=_FROM,
+        time_to=_TO,
+    )
+    sql = conn.sql[0]
+    # count FILTER returns 0 (not NULL) for an empty group, so it is NULLIF-wrapped
+    # to read as absent — matching the per-metric path's filtered scan.
+    assert 'NULLIF(count(*) FILTER (WHERE amount > 0), 0) AS "hits"' in sql
+
+
+def test_postgres_multi_aggregate_breakdown_select_shape() -> None:
+    adapter, conn = _pg()
+    conn.rows = [(datetime(2026, 4, 1, 0, 0), "click", 0, 7, 42.0)]
+    col_names, rows = adapter.get_time_bucketed_multi_aggregate_breakdown(
+        _BASE,
+        "time",
+        "1 day",
+        "event_name",
+        [
+            AggregateSpec(key="c", aggregation=MetricAggregation.count),
+            AggregateSpec(key="s", aggregation=MetricAggregation.sum, column="amount"),
+        ],
+        time_from=_FROM,
+        time_to=_TO,
+    )
+    assert col_names == ["bucket", "breakdown_value", "is_other", "c", "s"]
+    assert rows == [(datetime(2026, 4, 1, 0, 0), "click", 0, 7, 42.0)]
+    sql = conn.sql[0]
+    assert 'count(*) AS "c"' in sql
+    assert 'sum("amount") AS "s"' in sql
+    assert "COALESCE(\"event_name\"::text, '') AS _breakdown_value" in sql
+    assert "0 AS _is_other" in sql
+    assert "GROUP BY _bucket, _breakdown_value, _is_other" in sql
+    assert "ORDER BY _bucket, _breakdown_value" in sql
+
+
+def test_postgres_multi_aggregate_breakdown_folds_other_with_limit() -> None:
+    adapter, conn = _pg()
+    # Seed the top-values scan so Other-folding takes the IN (...) branch.
+    conn.rows = [("event_name", "click"), ("event_name", "view")]
+    adapter.get_time_bucketed_multi_aggregate_breakdown(
+        _BASE,
+        "time",
+        "1 day",
+        "event_name",
+        [AggregateSpec(key="s", aggregation=MetricAggregation.sum, column="amount")],
+        time_from=_FROM,
+        time_to=_TO,
+        values_limit=3,
+    )
+    sql = conn.sql[-1]
+    assert "CASE WHEN" in sql
+    assert "IN (" in sql
+    assert "ELSE 'Other'" in sql
+
+
+def test_postgres_multi_aggregate_rejects_unknown_measure() -> None:
+    adapter, _ = _pg()
+    with pytest.raises(ValueError, match="not found in query result"):
+        adapter.get_time_bucketed_multi_aggregate(
+            _BASE,
+            "time",
+            "1 hour",
+            [AggregateSpec(key="s", aggregation=MetricAggregation.sum, column="revenue")],
+            time_from=_FROM,
+            time_to=_TO,
+        )
 
 
 # --- BigQuery aggregate -----------------------------------------------------

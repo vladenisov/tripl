@@ -9,6 +9,7 @@ from typing import override
 import clickhouse_connect  # type: ignore[import-untyped]
 
 from tripl.core.adapters.base import (
+    AggregateSpec,
     BaseAdapter,
     ColumnInfo,
     FieldContractExpectation,
@@ -18,6 +19,7 @@ from tripl.core.adapters.base import (
 )
 from tripl.core.adapters.measure_validator import (
     build_aggregate_sql,
+    coerce_aggregation,
     validate_measure_column,
 )
 from tripl.models.domain_enums import MetricAggregation
@@ -781,6 +783,167 @@ class ClickHouseAdapter(BaseAdapter):
         quoted = ", ".join(self._quote_string(value) for value in top_values)
         in_values = f"{raw_expr} IN ({quoted})"
         return f"if({in_values}, {raw_expr}, 'Other')", f"if({in_values}, 0, 1)"
+
+    def _spec_aggregate_sql(self, spec: AggregateSpec) -> str:
+        """Build one (optionally conditional) aggregate fragment for a spec.
+
+        With no ``filter_sql`` this reuses the single-aggregate path
+        (``validate_measure_column`` + ``build_aggregate_sql``) so the unfiltered
+        value is IDENTICAL to ``get_time_bucketed_aggregate`` (``count(*)`` /
+        ``sum(m)`` / ``avg(m)`` / ``min(m)`` / ``max(m)`` / ``count(DISTINCT m)``).
+        When ``filter_sql`` is set, the aggregate becomes a ClickHouse conditional
+        ``-If`` variant (``countIf`` / ``sumIf`` / ``avgIf`` / ``minIf`` /
+        ``maxIf`` / ``uniqExactIf``) so specs with different filters share one
+        scan. ``filter_sql`` is a pre-validated boolean fragment injected as-is,
+        the same trust model as the single-metric row-filter path.
+
+        Each conditional aggregate is wrapped in ``if(countIf(cond) = 0, NULL,
+        ...)`` so a bucket with rows but none matching ``cond`` reads as NULL
+        (absent) for that key. This is required for value-identity with the
+        per-metric path, whose filtered scan emits no row at all for such a
+        bucket: ClickHouse ``-If`` functions instead return the numeric default
+        (``countIf``/``sumIf`` -> 0) or a type extreme/NaN (``minIf``/``maxIf``/
+        ``avgIf``) for empty groups, none of which is NULL. The count sentinel
+        also preserves a genuine aggregate of 0 (e.g. ``sumIf`` over rows that
+        net to zero) because the bucket still has matching rows.
+        """
+        agg = coerce_aggregation(spec.aggregation)
+        measure_sql: str | None = None
+        if spec.column is not None:
+            measure_sql = f"`{validate_measure_column(spec.column, self._allowed_columns)}`"
+
+        if not spec.filter_sql:
+            return build_aggregate_sql(agg, measure_sql)
+
+        cond = spec.filter_sql
+        if agg is MetricAggregation.count:
+            inner = f"countIf({cond})"
+        elif agg is MetricAggregation.count_distinct:
+            if not measure_sql:
+                msg = f"Aggregation {agg.value!r} requires a measure column"
+                raise ValueError(msg)
+            inner = f"uniqExactIf({measure_sql}, {cond})"
+        else:
+            if not measure_sql:
+                msg = f"Aggregation {agg.value!r} requires a measure column"
+                raise ValueError(msg)
+            # sum/avg/min/max map their enum value onto the conditional -If variant.
+            inner = f"{agg.value}If({measure_sql}, {cond})"
+        return f"if(countIf({cond}) = 0, NULL, {inner})"
+
+    def get_time_bucketed_multi_aggregate(
+        self,
+        base_query: str,
+        time_column: str,
+        ch_interval: str,
+        specs: list[AggregateSpec],
+        time_from: datetime,
+        time_to: datetime,
+        *,
+        limit: int = 100000,
+    ) -> tuple[list[str], list[tuple[object, ...]]]:
+        """Many bucketed aggregates from ONE source scan.
+
+        Mirrors get_time_bucketed_aggregate's windowing, bucketing, quoting and
+        row limit, but emits one (optionally conditional) aggregate column per
+        spec aliased by ``spec.key``.
+        """
+        tc = self._validate_column(time_column)
+        interval = self._validate_interval(ch_interval)
+
+        select_parts = [f"toStartOfInterval(`{tc}`, INTERVAL {interval}) AS _bucket"]
+        col_names: list[str] = ["bucket"]
+        for spec in specs:
+            select_parts.append(f"{self._spec_aggregate_sql(spec)} AS `{spec.key}`")
+            col_names.append(spec.key)
+
+        t_from = time_from.strftime("%Y-%m-%d %H:%M:%S")
+        t_to = time_to.strftime("%Y-%m-%d %H:%M:%S")
+        sql = (
+            f"SELECT {', '.join(select_parts)} "
+            f"FROM ({base_query}) AS _src "
+            f"WHERE `{tc}` >= '{t_from}' AND `{tc}` < '{t_to}' "
+            f"GROUP BY _bucket "
+            f"ORDER BY _bucket "
+            f"LIMIT {int(limit)}"
+        )
+
+        logger.info("CH bucketed multi-aggregate query: %s", sql)
+        t0 = time.monotonic()
+        result = self._client.query(sql)
+        elapsed = time.monotonic() - t0
+        n_rows = len(result.result_rows)
+        logger.info("CH bucketed multi-aggregate done in %.2fs, %s rows", elapsed, n_rows)
+
+        return col_names, result.result_rows
+
+    def get_time_bucketed_multi_aggregate_breakdown(
+        self,
+        base_query: str,
+        time_column: str,
+        ch_interval: str,
+        breakdown_column: str,
+        specs: list[AggregateSpec],
+        time_from: datetime,
+        time_to: datetime,
+        *,
+        values_limit: int | None = None,
+        limit: int = 100000,
+    ) -> tuple[list[str], list[tuple[object, ...]]]:
+        """Many bucketed aggregates grouped by one breakdown column, ONE scan.
+
+        Reuses ``_breakdown_value_exprs`` so the top-N "Other" folding matches
+        get_time_bucketed_aggregate_breakdown exactly, then emits one aggregate
+        column per spec.
+        """
+        tc = self._validate_column(time_column)
+        interval = self._validate_interval(ch_interval)
+        breakdown = self._validate_column(breakdown_column)
+
+        raw_expr = self._string_value_expression(breakdown)
+        breakdown_expr, is_other_expr = self._breakdown_value_exprs(
+            base_query,
+            time_column,
+            breakdown,
+            raw_expr,
+            time_from,
+            time_to,
+            values_limit,
+        )
+
+        select_parts = [
+            f"toStartOfInterval(`{tc}`, INTERVAL {interval}) AS _bucket",
+            f"{breakdown_expr} AS _breakdown_value",
+            f"{is_other_expr} AS _is_other",
+        ]
+        col_names: list[str] = ["bucket", "breakdown_value", "is_other"]
+        for spec in specs:
+            select_parts.append(f"{self._spec_aggregate_sql(spec)} AS `{spec.key}`")
+            col_names.append(spec.key)
+
+        t_from = time_from.strftime("%Y-%m-%d %H:%M:%S")
+        t_to = time_to.strftime("%Y-%m-%d %H:%M:%S")
+        sql = (
+            f"SELECT {', '.join(select_parts)} "
+            f"FROM ({base_query}) AS _src "
+            f"WHERE `{tc}` >= '{t_from}' AND `{tc}` < '{t_to}' "
+            f"GROUP BY ALL "
+            f"ORDER BY _bucket, _breakdown_value "
+            f"LIMIT {int(limit)}"
+        )
+
+        logger.info(
+            "CH bucketed multi-aggregate breakdown query for %s: %s", breakdown, sql
+        )
+        t0 = time.monotonic()
+        result = self._client.query(sql)
+        elapsed = time.monotonic() - t0
+        n_rows = len(result.result_rows)
+        logger.info(
+            "CH bucketed multi-aggregate breakdown done in %.2fs, %s rows", elapsed, n_rows
+        )
+
+        return col_names, result.result_rows
 
     def get_time_bucketed_breakdown_counts(
         self,

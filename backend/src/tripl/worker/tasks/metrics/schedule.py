@@ -37,6 +37,7 @@ from tripl.worker.tasks.metrics._helpers import (
 from tripl.worker.tasks.metrics.metric_collect import (
     COLLECTION_STATUS_ERROR,
     COLLECTION_STATUS_RUNNING,
+    collect_fact_metrics_batch,
     collect_metric_definitions,
 )
 from tripl.worker.tasks.metrics.tasks import collect_metrics
@@ -329,6 +330,11 @@ def check_metric_definitions_due() -> dict[str, int]:
 
         now = datetime.now(UTC)
         dispatched = 0
+        # Fact metrics are collected in shared warehouse scans, so they are
+        # grouped by interval (one bucket grid per group) and dispatched as a
+        # single batch task per group. ``sql`` / ``event_composition`` metrics
+        # have no shared scan to exploit and stay per-metric.
+        fact_groups: dict[str, list[MetricDefinition]] = {}
         for definition in definitions:
             if _metric_collection_in_progress(definition, now=now):
                 logger.info(
@@ -337,6 +343,15 @@ def check_metric_definitions_due() -> dict[str, int]:
                 )
                 continue
             if not _metric_definition_due(session, definition, now=now):
+                continue
+
+            kind = (
+                definition.kind
+                if isinstance(definition.kind, MetricKind)
+                else MetricKind(definition.kind)
+            )
+            if kind is MetricKind.fact and definition.interval is not None:
+                fact_groups.setdefault(str(definition.interval), []).append(definition)
                 continue
 
             # Mark running before dispatch (the one-active guard, analogous to
@@ -359,6 +374,31 @@ def check_metric_definitions_due() -> dict[str, int]:
                 session.commit()
                 raise
             dispatched += 1
+
+        for interval_code, group in fact_groups.items():
+            # Mark ALL members running before dispatch so the one-active guard
+            # holds for the whole batch (mirrors the per-metric path above).
+            for definition in group:
+                definition.last_collection_status = COLLECTION_STATUS_RUNNING
+            session.commit()
+
+            metric_ids = [str(definition.id) for definition in group]
+            logger.info(
+                "Dispatching collect_fact_metrics_batch for %s fact metrics (interval=%s)",
+                len(group),
+                interval_code,
+            )
+            try:
+                collect_fact_metrics_batch.delay(metric_ids)
+            except Exception as exc:
+                for definition in group:
+                    definition.last_collection_status = COLLECTION_STATUS_ERROR
+                    definition.last_collection_error = (
+                        f"Failed to dispatch collect_fact_metrics_batch: {exc}"
+                    )
+                session.commit()
+                raise
+            dispatched += len(group)
 
         logger.info(
             "check_metric_definitions_due: %s metrics checked, %s dispatched",

@@ -40,7 +40,7 @@ from __future__ import annotations
 import logging
 import uuid
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import cast
 
@@ -48,7 +48,7 @@ from sqlalchemy import func as sa_func
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from tripl.core.adapters.base import BaseAdapter
+from tripl.core.adapters.base import AggregateSpec, BaseAdapter
 from tripl.core.adapters.measure_validator import (
     coerce_aggregation,
     requires_measure,
@@ -640,6 +640,684 @@ def _collect_fact_ratio(
     return {"values": total_values, "breakdown_values": 0}
 
 
+# ── batched fact collection ──────────────────────────────────────────────────
+#
+# The per-metric path above runs one warehouse query per metric (per operand for
+# a ratio, plus one per breakdown column). The batched path below collapses every
+# fact metric of a fact table into ONE multi-aggregate scan (plus one scan per
+# distinct breakdown dimension), turning each per-metric row filter into a
+# per-aggregate conditional so metrics with different filters still share one
+# scan. The per-bucket VALUES are identical to the per-metric path: an unfiltered
+# aggregate over the fact SQL equals the single-aggregate path, and a conditional
+# aggregate equals the same aggregate over the row-filtered subquery.
+
+
+def _resolve_fact_operand_filter(fact_table: FactTable, row_filter_name: str | None) -> str | None:
+    """Resolve a named row filter to its validated boolean WHERE fragment.
+
+    Unlike ``_resolve_fact_operand_query`` (which wraps the source in a bounded
+    ``WHERE`` subquery for the single-aggregate path), this returns just the
+    validated fragment so it can be injected as a per-aggregate conditional in a
+    shared multi-aggregate scan. ``None`` means no filter (a plain aggregate).
+    """
+    if row_filter_name is None:
+        return None
+    for row_filter in fact_table.row_filters or []:
+        if isinstance(row_filter, Mapping) and row_filter.get("name") == row_filter_name:
+            fragment = row_filter.get("sql")
+            if isinstance(fragment, str) and fragment:
+                return validate_sql_fragment(fragment)
+    msg = f"row filter {row_filter_name!r} is not defined on fact table {fact_table.id}"
+    raise ScanError(msg)
+
+
+# A spec's dedup identity: same aggregation, same measure/distinct column and
+# same named row filter aggregate to the SAME warehouse column, so two metrics
+# needing the same aggregate share one column in the scan.
+_SpecDedupKey = tuple[MetricAggregation, str | None, str | None]
+
+
+@dataclass
+class _SpecRegistry:
+    """Dedup'd ``AggregateSpec`` list for one scan (a fact table or a breakdown).
+
+    ``register`` returns the stable column alias key for an operand, reusing the
+    same key (and column) for operands that share aggregation / measure / filter.
+    """
+
+    specs: list[AggregateSpec] = field(default_factory=list)
+    _keys: dict[_SpecDedupKey, str] = field(default_factory=dict)
+
+    def register(
+        self,
+        *,
+        aggregation: MetricAggregation,
+        measure: str | None,
+        filter_sql: str | None,
+        filter_name: str | None,
+    ) -> str:
+        dedup: _SpecDedupKey = (aggregation, measure, filter_name)
+        key = self._keys.get(dedup)
+        if key is None:
+            key = f"k{len(self.specs)}"
+            self._keys[dedup] = key
+            self.specs.append(
+                AggregateSpec(
+                    key=key,
+                    aggregation=aggregation,
+                    column=measure,
+                    filter_sql=filter_sql,
+                )
+            )
+        return key
+
+
+@dataclass(frozen=True)
+class _BreakdownPlan:
+    """One breakdown dimension a single metric reads from a shared scan."""
+
+    column: str
+    values_limit: int | None
+    spec_key: str
+
+
+@dataclass(frozen=True)
+class _SingleMetricPlan:
+    definition: MetricDefinition
+    fact_table_id: uuid.UUID
+    spec_key: str
+    window: tuple[datetime, datetime]
+    breakdowns: tuple[_BreakdownPlan, ...]
+
+
+@dataclass(frozen=True)
+class _RatioMetricPlan:
+    definition: MetricDefinition
+    numerator_fact_table_id: uuid.UUID
+    numerator_key: str
+    denominator_fact_table_id: uuid.UUID
+    denominator_key: str
+    window: tuple[datetime, datetime]
+
+
+# A breakdown scan is keyed by (fact table, column, values_limit): the top-N
+# "Other" rollup depends on values_limit, so metrics that share a column but not
+# a limit cannot share one scan (different rollups). Everything else (the per-spec
+# aggregate columns) is layered on top of the shared GROUP BY.
+_BreakdownScanKey = tuple[uuid.UUID, str, int | None]
+
+
+def _resolve_batch_operand(
+    operand: _FactOperand,
+    *,
+    fact_table: FactTable,
+    allowed_columns: set[str],
+) -> tuple[str | None, str | None]:
+    """Validate one operand's measure column and resolve its row filter fragment.
+
+    Returns ``(validated_measure, filter_sql)``. Mirrors ``_aggregate_fact_window``'s
+    measure validation (empty allowlist -> ``ScanError``) so the batched path
+    enforces the same column guard as the per-metric path.
+    """
+    measure = _fact_operand_measure(operand)
+    if requires_measure(operand.aggregation):
+        if measure is None:
+            msg = (
+                f"aggregation {operand.aggregation.value!r} requires a "
+                "measure_column / distinct_column"
+            )
+            raise ScanError(msg)
+        if not allowed_columns:
+            msg = "fact table query returned no columns; cannot validate measure column"
+            raise ScanError(msg)
+        measure = validate_measure_column(measure, allowed_columns)
+    filter_sql = _resolve_fact_operand_filter(fact_table, operand.row_filter)
+    return measure, filter_sql
+
+
+def _index_multi_aggregate(
+    col_names: list[str], rows: list[tuple[object, ...]], delta: timedelta
+) -> dict[str, dict[datetime, float]]:
+    """Index a multi-aggregate result into ``{spec_key: {bucket: value}}``.
+
+    ``col_names`` is ``["bucket", key1, key2, ...]``. ``NULL`` cells (a
+    conditional aggregate over an empty group, e.g. ``avgIf`` with no matching
+    rows) are skipped so the bucket reads as absent for that key — matching the
+    per-metric path, where a filtered scan would not emit that bucket at all.
+    """
+    out: dict[str, dict[datetime, float]] = {name: {} for name in col_names[1:]}
+    for row in rows:
+        bucket = _coerce_bucket(row[0], delta)
+        for index, name in enumerate(col_names[1:], start=1):
+            cell = row[index]
+            if cell is None:
+                continue
+            out[name][bucket] = _coerce_value(cell)
+    return out
+
+
+def _clip_series(
+    series: Mapping[datetime, float], window: tuple[datetime, datetime]
+) -> dict[datetime, float]:
+    """Restrict a per-bucket series to a metric's own ``[from, to)`` window."""
+    time_from, time_to = window
+    return {bucket: value for bucket, value in series.items() if time_from <= bucket < time_to}
+
+
+def _merge_multi_aggregate(
+    dst: dict[str, dict[datetime, float]], src: Mapping[str, dict[datetime, float]]
+) -> None:
+    """Merge one chunk's ``{spec_key: {bucket: value}}`` into the accumulator.
+
+    Chunks are interval-aligned (see ``_iter_window_chunks``), so a bucket never
+    straddles two chunks and the merged series is IDENTICAL to what a single
+    covering scan would have produced — value-identity is preserved.
+    """
+    for key, bucket_values in src.items():
+        dst.setdefault(key, {}).update(bucket_values)
+
+
+def _batch_chunk_interval_code(definitions: list[MetricDefinition]) -> str | None:
+    """Smallest ``replay_chunk_interval`` configured across the group's metrics.
+
+    The batch's covering window is chunked by the most aggressive (smallest)
+    chunk any member requested, so no member's warehouse scan ends up wider than
+    it would have been on the per-metric path. ``None`` (no member configures
+    chunking) keeps the legacy single covering query. Unknown codes are ignored
+    so one metric's bad config never aborts the whole group.
+    """
+    codes = {definition.replay_chunk_interval for definition in definitions}
+    deltas: list[tuple[str, timedelta]] = []
+    for code in codes:
+        if not code:
+            continue
+        try:
+            deltas.append((code, get_interval(code).delta))
+        except ValueError:
+            logger.warning("Ignoring unknown replay_chunk_interval %r in batch", code)
+    if not deltas:
+        return None
+    return min(deltas, key=lambda item: item[1])[0]
+
+
+def _stamp_metric_success(session: Session, definition: MetricDefinition) -> None:
+    """Mark a metric collected successfully and commit (per-metric isolation)."""
+    definition.last_collected_at = datetime.now(UTC)
+    definition.last_collection_status = COLLECTION_STATUS_SUCCESS
+    definition.last_collection_error = None
+    session.commit()
+
+
+def _stamp_metric_error(session: Session, definition: MetricDefinition, exc: Exception) -> None:
+    """Roll back any partial writes for one metric and persist a sanitized error."""
+    try:
+        session.rollback()
+        definition.last_collection_status = COLLECTION_STATUS_ERROR
+        definition.last_collection_error = user_facing_error(exc)
+        session.commit()
+    except Exception:  # pragma: no cover - best-effort status write
+        session.rollback()
+
+
+@dataclass
+class _FactBatchContext:
+    """Lazily-built fact-table / data-source / adapter caches for one batch."""
+
+    session: Session
+    fact_tables: dict[uuid.UUID, FactTable] = field(default_factory=dict)
+    adapters: dict[uuid.UUID, BaseAdapter] = field(default_factory=dict)
+    columns: dict[uuid.UUID, set[str]] = field(default_factory=dict)
+
+    def resolve(
+        self, fact_table_id: uuid.UUID | None, *, project_id: uuid.UUID
+    ) -> tuple[FactTable, BaseAdapter]:
+        fact_table = self.fact_tables.get(fact_table_id) if fact_table_id else None
+        if fact_table is None:
+            fact_table = _load_fact_table(self.session, fact_table_id, project_id=project_id)
+            self.fact_tables[fact_table.id] = fact_table
+        # ``_load_fact_table`` rejects a fact table without a bound data source.
+        data_source_id = fact_table.data_source_id
+        assert data_source_id is not None
+        adapter = self.adapters.get(data_source_id)
+        if adapter is None:
+            ds = self.session.get(DataSource, data_source_id)
+            if ds is None:
+                msg = "DataSource for fact metric not found"
+                raise ScanError(msg)
+            adapter = _build_adapter(ds)
+            adapter.test_connection()
+            self.adapters[data_source_id] = adapter
+        return fact_table, adapter
+
+    def adapter_for(self, fact_table: FactTable) -> BaseAdapter:
+        """Return the cached adapter that serves ``fact_table``'s data source."""
+        data_source_id = fact_table.data_source_id
+        assert data_source_id is not None
+        return self.adapters[data_source_id]
+
+    def allowed_columns(self, fact_table: FactTable, adapter: BaseAdapter) -> set[str]:
+        cached = self.columns.get(fact_table.id)
+        if cached is None:
+            cached = {column.name for column in adapter.get_columns(fact_table.sql)}
+            self.columns[fact_table.id] = cached
+        return cached
+
+    def close(self) -> None:
+        for adapter in self.adapters.values():
+            adapter.close()
+
+
+def _plan_single_metric(
+    context: _FactBatchContext,
+    *,
+    definition: MetricDefinition,
+    window: tuple[datetime, datetime],
+    ft_registries: dict[uuid.UUID, _SpecRegistry],
+    bd_registries: dict[_BreakdownScanKey, _SpecRegistry],
+) -> _SingleMetricPlan:
+    """Resolve a single-operand fact metric into a shared-scan plan."""
+    if definition.aggregation is None:
+        msg = "single fact metric requires an aggregation"
+        raise ScanError(msg)
+    config = definition.config or {}
+    fact_table, adapter = context.resolve(
+        definition.fact_table_id, project_id=definition.project_id
+    )
+    operand = _FactOperand(
+        fact_table_id=fact_table.id,
+        aggregation=coerce_aggregation(definition.aggregation),
+        measure_column=_config_str(config, "measure_column"),
+        distinct_column=_config_str(config, "distinct_column"),
+        row_filter=_config_str(config, "row_filter"),
+    )
+    measure, filter_sql = _resolve_batch_operand(
+        operand,
+        fact_table=fact_table,
+        allowed_columns=context.allowed_columns(fact_table, adapter),
+    )
+    registry = ft_registries.setdefault(fact_table.id, _SpecRegistry())
+    spec_key = registry.register(
+        aggregation=operand.aggregation,
+        measure=measure,
+        filter_sql=filter_sql,
+        filter_name=operand.row_filter,
+    )
+
+    breakdown_columns: list[str] = list(definition.breakdown_columns or [])
+    for extra in (definition.app_version_column, definition.platform_column):
+        if extra and extra not in breakdown_columns:
+            breakdown_columns.append(extra)
+    breakdowns: list[_BreakdownPlan] = []
+    for column in breakdown_columns:
+        scan_key: _BreakdownScanKey = (
+            fact_table.id,
+            column,
+            definition.breakdown_values_limit,
+        )
+        bd_registry = bd_registries.setdefault(scan_key, _SpecRegistry())
+        bd_key = bd_registry.register(
+            aggregation=operand.aggregation,
+            measure=measure,
+            filter_sql=filter_sql,
+            filter_name=operand.row_filter,
+        )
+        breakdowns.append(
+            _BreakdownPlan(
+                column=column,
+                values_limit=definition.breakdown_values_limit,
+                spec_key=bd_key,
+            )
+        )
+
+    return _SingleMetricPlan(
+        definition=definition,
+        fact_table_id=fact_table.id,
+        spec_key=spec_key,
+        window=window,
+        breakdowns=tuple(breakdowns),
+    )
+
+
+def _plan_ratio_metric(
+    context: _FactBatchContext,
+    *,
+    definition: MetricDefinition,
+    window: tuple[datetime, datetime],
+    ft_registries: dict[uuid.UUID, _SpecRegistry],
+) -> _RatioMetricPlan:
+    """Resolve a ratio fact metric's two operands into shared-scan plans."""
+    config = definition.config or {}
+    numerator_raw = config.get("numerator")
+    denominator_raw = config.get("denominator")
+    if not isinstance(numerator_raw, Mapping) or not isinstance(denominator_raw, Mapping):
+        msg = "ratio fact metric requires numerator and denominator operands in config"
+        raise ScanError(msg)
+    keys: list[tuple[uuid.UUID, str]] = []
+    for raw in (numerator_raw, denominator_raw):
+        operand = _operand_from_config(raw)
+        fact_table, adapter = context.resolve(
+            operand.fact_table_id, project_id=definition.project_id
+        )
+        measure, filter_sql = _resolve_batch_operand(
+            operand,
+            fact_table=fact_table,
+            allowed_columns=context.allowed_columns(fact_table, adapter),
+        )
+        registry = ft_registries.setdefault(fact_table.id, _SpecRegistry())
+        spec_key = registry.register(
+            aggregation=operand.aggregation,
+            measure=measure,
+            filter_sql=filter_sql,
+            filter_name=operand.row_filter,
+        )
+        keys.append((fact_table.id, spec_key))
+    (numerator_ft_id, numerator_key), (denominator_ft_id, denominator_key) = keys
+    return _RatioMetricPlan(
+        definition=definition,
+        numerator_fact_table_id=numerator_ft_id,
+        numerator_key=numerator_key,
+        denominator_fact_table_id=denominator_ft_id,
+        denominator_key=denominator_key,
+        window=window,
+    )
+
+
+def _assemble_single_metric(
+    session: Session,
+    *,
+    plan: _SingleMetricPlan,
+    results: Mapping[uuid.UUID, Mapping[str, dict[datetime, float]]],
+    breakdown_results: Mapping[_BreakdownScanKey, tuple[dict[str, int], list[tuple[object, ...]]]],
+    delta: timedelta,
+) -> tuple[int, int]:
+    """Write one single metric's values + breakdowns from the shared scan results.
+
+    Returns ``(values_written, breakdown_values_written)``.
+    """
+    definition = plan.definition
+    series = _clip_series(results.get(plan.fact_table_id, {}).get(plan.spec_key, {}), plan.window)
+    value_rows = _build_metric_value_rows(
+        metric_definition_id=definition.id,
+        scan_config_id=None,
+        values=series,
+    )
+    time_from, time_to = plan.window
+    _delete_metric_values_window(
+        session,
+        metric_definition_id=definition.id,
+        time_from=time_from,
+        time_to=time_to,
+    )
+    _upsert_metric_values_rows(session, rows=value_rows)
+
+    breakdown_rows: list[dict[str, object]] = []
+    for breakdown in plan.breakdowns:
+        scan_key: _BreakdownScanKey = (
+            plan.fact_table_id,
+            breakdown.column,
+            breakdown.values_limit,
+        )
+        entry = breakdown_results.get(scan_key)
+        if entry is None:
+            continue
+        index_by_key, rows = entry
+        value_index = index_by_key[breakdown.spec_key]
+        for row in rows:
+            bucket = _coerce_bucket(row[0], delta)
+            if not (time_from <= bucket < time_to):
+                continue
+            cell = row[value_index]
+            if cell is None:
+                continue
+            breakdown_rows.append(
+                {
+                    "id": uuid.uuid4(),
+                    "metric_definition_id": definition.id,
+                    "scan_config_id": None,
+                    "bucket": bucket,
+                    "breakdown_column": breakdown.column,
+                    "breakdown_value": str(row[1])[:MAX_BREAKDOWN_VALUE_LENGTH],
+                    "is_other": bool(row[2]),
+                    "value": _coerce_value(cell),
+                }
+            )
+
+    if plan.breakdowns:
+        _delete_metric_value_breakdowns_window(
+            session,
+            metric_definition_id=definition.id,
+            time_from=time_from,
+            time_to=time_to,
+        )
+        _upsert_metric_value_breakdown_rows(session, rows=breakdown_rows)
+
+    return len(value_rows), len(breakdown_rows)
+
+
+def _assemble_ratio_metric(
+    session: Session,
+    *,
+    plan: _RatioMetricPlan,
+    results: Mapping[uuid.UUID, Mapping[str, dict[datetime, float]]],
+) -> int:
+    """Write one ratio metric's values from the shared scan results (cross-table OK)."""
+    definition = plan.definition
+    numerator = _clip_series(
+        results.get(plan.numerator_fact_table_id, {}).get(plan.numerator_key, {}), plan.window
+    )
+    denominator = _clip_series(
+        results.get(plan.denominator_fact_table_id, {}).get(plan.denominator_key, {}), plan.window
+    )
+    values = evaluate_composition(
+        MetricComposition.ratio,
+        numerator=numerator,
+        denominator=denominator,
+    )
+    value_rows = _build_metric_value_rows(
+        metric_definition_id=definition.id,
+        scan_config_id=None,
+        values=values,
+    )
+    time_from, time_to = plan.window
+    _delete_metric_values_window(
+        session,
+        metric_definition_id=definition.id,
+        time_from=time_from,
+        time_to=time_to,
+    )
+    _upsert_metric_values_rows(session, rows=value_rows)
+    return len(value_rows)
+
+
+def _run_fact_interval_group(
+    session: Session,
+    *,
+    definitions: list[MetricDefinition],
+    interval_spec: IntervalSpec,
+) -> dict[str, int]:
+    """Collect every fact metric of one interval group in shared warehouse scans.
+
+    Builds dedup'd ``AggregateSpec`` lists per fact table (and per breakdown
+    dimension), runs ONE multi-aggregate scan per fact table plus one per
+    breakdown scan over a covering window, then assembles each metric over its
+    OWN window with isolated per-metric error capture.
+    """
+    delta = interval_spec.delta
+    ch_interval = interval_spec.ch_interval
+    context = _FactBatchContext(session=session)
+
+    totals = {"metrics": 0, "collected": 0, "errors": 0, "values": 0, "breakdown_values": 0}
+    try:
+        ft_registries: dict[uuid.UUID, _SpecRegistry] = {}
+        bd_registries: dict[_BreakdownScanKey, _SpecRegistry] = {}
+        single_plans: list[_SingleMetricPlan] = []
+        ratio_plans: list[_RatioMetricPlan] = []
+
+        for definition in definitions:
+            totals["metrics"] += 1
+            try:
+                window = _resolve_value_window(
+                    session, metric_definition_id=definition.id, delta=delta
+                )
+                if _resolve_fact_composition(definition) is MetricComposition.ratio:
+                    ratio_plans.append(
+                        _plan_ratio_metric(
+                            context,
+                            definition=definition,
+                            window=window,
+                            ft_registries=ft_registries,
+                        )
+                    )
+                else:
+                    single_plans.append(
+                        _plan_single_metric(
+                            context,
+                            definition=definition,
+                            window=window,
+                            ft_registries=ft_registries,
+                            bd_registries=bd_registries,
+                        )
+                    )
+            except Exception as exc:
+                logger.exception("Batch planning failed for metric %s", definition.id)
+                _stamp_metric_error(session, definition, exc)
+                totals["errors"] += 1
+
+        windows = [plan.window for plan in single_plans] + [plan.window for plan in ratio_plans]
+        if not windows:
+            return totals
+        covering_from = min(window[0] for window in windows)
+        covering_to = max(window[1] for window in windows)
+
+        results: dict[uuid.UUID, dict[str, dict[datetime, float]]] = {}
+        fact_errors: dict[uuid.UUID, Exception] = {}
+        breakdown_results: dict[
+            _BreakdownScanKey, tuple[dict[str, int], list[tuple[object, ...]]]
+        ] = {}
+        breakdown_errors: dict[_BreakdownScanKey, Exception] = {}
+
+        # Bound each warehouse scan's time range the way the per-metric path does:
+        # split the covering window into interval-aligned chunks (smallest
+        # replay_chunk_interval among the group's metrics) so no single query
+        # spans the whole window, which on fine-grained intervals could exceed the
+        # task soft_time_limit. Merging the per-chunk results reproduces the same
+        # per-bucket series a single covering scan would (value-identity holds).
+        chunks = _iter_window_chunks(
+            covering_from,
+            covering_to,
+            interval_delta=delta,
+            chunk_interval_code=_batch_chunk_interval_code(definitions),
+        )
+        for chunk_from, chunk_to in chunks:
+            for fact_table_id, registry in ft_registries.items():
+                if not registry.specs or fact_table_id in fact_errors:
+                    continue
+                try:
+                    fact_table = context.fact_tables[fact_table_id]
+                    adapter = context.adapter_for(fact_table)
+                    # Refresh the adapter's column allowlist for THIS fact table's
+                    # query (a shared adapter serves several fact tables in turn).
+                    adapter.get_columns(fact_table.sql)
+                    col_names, rows = adapter.get_time_bucketed_multi_aggregate(
+                        fact_table.sql,
+                        fact_table.timestamp_column,
+                        ch_interval,
+                        registry.specs,
+                        chunk_from,
+                        chunk_to,
+                        limit=METRIC_QUERY_ROW_LIMIT,
+                    )
+                    _merge_multi_aggregate(
+                        results.setdefault(fact_table_id, {}),
+                        _index_multi_aggregate(col_names, rows, delta),
+                    )
+                except Exception as exc:  # noqa: BLE001 - attributed per metric below
+                    logger.exception(
+                        "Batch multi-aggregate failed for fact table %s", fact_table_id
+                    )
+                    fact_errors[fact_table_id] = exc
+
+            for scan_key, registry in bd_registries.items():
+                if not registry.specs or scan_key in breakdown_errors:
+                    continue
+                fact_table_id, column, values_limit = scan_key
+                try:
+                    fact_table = context.fact_tables[fact_table_id]
+                    adapter = context.adapter_for(fact_table)
+                    adapter.get_columns(fact_table.sql)
+                    col_names, rows = adapter.get_time_bucketed_multi_aggregate_breakdown(
+                        fact_table.sql,
+                        fact_table.timestamp_column,
+                        ch_interval,
+                        column,
+                        registry.specs,
+                        chunk_from,
+                        chunk_to,
+                        values_limit=values_limit,
+                        limit=METRIC_QUERY_ROW_LIMIT,
+                    )
+                    index_by_name = {name: index for index, name in enumerate(col_names)}
+                    existing = breakdown_results.get(scan_key)
+                    if existing is None:
+                        breakdown_results[scan_key] = (index_by_name, list(rows))
+                    else:
+                        existing[1].extend(rows)
+                except Exception as exc:  # noqa: BLE001 - attributed per metric below
+                    logger.exception("Batch breakdown scan failed for %s", scan_key)
+                    breakdown_errors[scan_key] = exc
+
+        for plan in single_plans:
+            try:
+                fact_error = fact_errors.get(plan.fact_table_id)
+                if fact_error is not None:
+                    raise fact_error
+                for breakdown in plan.breakdowns:
+                    bd_error = breakdown_errors.get(
+                        (plan.fact_table_id, breakdown.column, breakdown.values_limit)
+                    )
+                    if bd_error is not None:
+                        raise bd_error
+                values_written, breakdown_written = _assemble_single_metric(
+                    session,
+                    plan=plan,
+                    results=results,
+                    breakdown_results=breakdown_results,
+                    delta=delta,
+                )
+                _stamp_metric_success(session, plan.definition)
+                totals["collected"] += 1
+                totals["values"] += values_written
+                totals["breakdown_values"] += breakdown_written
+            except Exception as exc:
+                logger.exception("Batch assembly failed for metric %s", plan.definition.id)
+                _stamp_metric_error(session, plan.definition, exc)
+                totals["errors"] += 1
+
+        for ratio_plan in ratio_plans:
+            try:
+                for fact_table_id in (
+                    ratio_plan.numerator_fact_table_id,
+                    ratio_plan.denominator_fact_table_id,
+                ):
+                    fact_error = fact_errors.get(fact_table_id)
+                    if fact_error is not None:
+                        raise fact_error
+                values_written = _assemble_ratio_metric(
+                    session, plan=ratio_plan, results=results
+                )
+                _stamp_metric_success(session, ratio_plan.definition)
+                totals["collected"] += 1
+                totals["values"] += values_written
+            except Exception as exc:
+                logger.exception("Batch assembly failed for metric %s", ratio_plan.definition.id)
+                _stamp_metric_error(session, ratio_plan.definition, exc)
+                totals["errors"] += 1
+
+        return totals
+    finally:
+        context.close()
+
+
 def _collect_sql(session: Session, *, definition: MetricDefinition) -> dict[str, object]:
     """Collect a sql metric: execute the user SELECT and bucket its rows.
 
@@ -946,6 +1624,84 @@ def collect_metric_definitions(self: object, metric_definition_id: str) -> dict[
                 session.rollback()
         else:
             session.rollback()
+        raise
+    finally:
+        session.close()
+
+
+def _metric_kind(definition: MetricDefinition) -> MetricKind:
+    """Coerce a definition's stored kind to the ``MetricKind`` enum."""
+    if isinstance(definition.kind, MetricKind):
+        return definition.kind
+    return MetricKind(definition.kind)
+
+
+def _run_fact_metrics_batch(
+    session: Session, *, definitions: list[MetricDefinition]
+) -> dict[str, int]:
+    """Group fact metrics by interval and collect each group in shared scans.
+
+    Metrics dispatched together usually share one interval (the scheduler groups
+    by interval before dispatch), but grouping here as well keeps the collector
+    correct if a caller mixes intervals: each interval has its own bucket grid /
+    ``ch_interval``, so it gets its own set of shared scans.
+    """
+    totals = {"metrics": 0, "collected": 0, "errors": 0, "values": 0, "breakdown_values": 0}
+    by_interval: dict[str, list[MetricDefinition]] = {}
+    for definition in definitions:
+        if definition.interval is None:
+            totals["metrics"] += 1
+            totals["errors"] += 1
+            _stamp_metric_error(
+                session, definition, ScanError("fact metric requires an interval")
+            )
+            continue
+        by_interval.setdefault(str(definition.interval), []).append(definition)
+
+    for interval_code, group in by_interval.items():
+        group_totals = _run_fact_interval_group(
+            session, definitions=group, interval_spec=get_interval(interval_code)
+        )
+        for key, value in group_totals.items():
+            totals[key] += value
+    return totals
+
+
+@celery_app.task(  # type: ignore[untyped-decorator]
+    name="tripl.worker.tasks.metrics.collect_fact_metrics_batch",
+    bind=True,
+    max_retries=0,
+    soft_time_limit=COLLECT_METRIC_DEFINITIONS_SOFT_TIME_LIMIT_SECONDS,
+    time_limit=COLLECT_METRIC_DEFINITIONS_TIME_LIMIT_SECONDS,
+)
+def collect_fact_metrics_batch(self: object, metric_ids: list[str]) -> dict[str, int]:
+    """Collect a batch of fact metrics, sharing one warehouse scan per fact table.
+
+    Loads the requested metrics, keeps only the active ``fact`` ones, and runs the
+    batched collector. Per-metric ``last_collected_at`` / ``last_collection_status``
+    stamping and error capture happen inside the collector, so one metric failing
+    never aborts the others; this wrapper only owns the session lifecycle.
+    """
+    session = _get_sync_session()
+    try:
+        requested = [uuid.UUID(metric_id) for metric_id in metric_ids]
+        loaded = (
+            session.execute(select(MetricDefinition).where(MetricDefinition.id.in_(requested)))
+            .scalars()
+            .all()
+        )
+        definitions = [
+            definition
+            for definition in loaded
+            if definition.status == MetricStatus.active
+            and _metric_kind(definition) is MetricKind.fact
+        ]
+        if not definitions:
+            return {"metrics": 0, "collected": 0, "errors": 0, "values": 0, "breakdown_values": 0}
+        return _run_fact_metrics_batch(session, definitions=definitions)
+    except Exception:
+        logger.exception("Batch fact metric collection failed for %s", metric_ids)
+        session.rollback()
         raise
     finally:
         session.close()

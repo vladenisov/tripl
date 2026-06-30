@@ -20,6 +20,28 @@ class ColumnInfo:
 
 
 @dataclass(frozen=True)
+class AggregateSpec:
+    """One conditional aggregate within a multi-aggregate bucketed query.
+
+    A single warehouse scan can compute many aggregates at once. Each spec maps
+    to one output column aliased by ``key`` (a caller-stable alias used to read
+    the value back out of the result rows).
+
+    ``aggregation`` selects the aggregate function and ``column`` the
+    measure/distinct column it operates on (``None`` for plain ``count``).
+    ``filter_sql``, when set, is an already-validated boolean WHERE fragment that
+    turns the aggregate into a conditional one (e.g. ``sumIf`` / ``... FILTER
+    (WHERE ...)``), so specs with different filters can share one scan. It is
+    trusted and injected as-is, exactly like the single-metric row-filter path.
+    """
+
+    key: str
+    aggregation: MetricAggregation
+    column: str | None = None
+    filter_sql: str | None = None
+
+
+@dataclass(frozen=True)
 class SchemaColumn:
     name: str
     data_type: str
@@ -406,6 +428,72 @@ class BaseAdapter(abc.ABC):
             _bucket, _breakdown_value, _is_other,
             col1_val, ..., json_paths1, ..., aggregate_value
         ).
+        """
+        ...
+
+    @abc.abstractmethod
+    def get_time_bucketed_multi_aggregate(
+        self,
+        base_query: str,
+        time_column: str,
+        ch_interval: str,
+        specs: list[AggregateSpec],
+        time_from: datetime,
+        time_to: datetime,
+        *,
+        limit: int = 100000,
+    ) -> tuple[list[str], list[tuple[object, ...]]]:
+        """Many bucketed aggregates from ONE source scan.
+
+        Builds: SELECT <bucket(time_column)> AS bucket,
+                       <agg_expr(spec1)> AS k1, <agg_expr(spec2)> AS k2, ...
+                FROM (base_query)
+                WHERE time_column >= time_from AND time_column < time_to
+                GROUP BY bucket ORDER BY bucket [LIMIT limit]
+
+        Each spec becomes one conditional/plain aggregate column aliased by its
+        ``key``. The measure/distinct column is validated against the
+        ``get_columns`` allowlist and escaped with the same identifier helper as
+        the single-aggregate path; ``filter_sql`` is a pre-validated boolean
+        fragment injected as-is to form a conditional aggregate. There are NO
+        bound parameters.
+
+        Returns (column_names, rows) where ``column_names`` is
+        ``["bucket", spec1.key, spec2.key, ...]`` and each row is
+        ``(bucket, k1_value, k2_value, ...)``. Unlike the single-aggregate
+        method, this does NOT return a json_value_names element.
+        """
+        ...
+
+    @abc.abstractmethod
+    def get_time_bucketed_multi_aggregate_breakdown(
+        self,
+        base_query: str,
+        time_column: str,
+        ch_interval: str,
+        breakdown_column: str,
+        specs: list[AggregateSpec],
+        time_from: datetime,
+        time_to: datetime,
+        *,
+        values_limit: int | None = None,
+        limit: int = 100000,
+    ) -> tuple[list[str], list[tuple[object, ...]]]:
+        """Many bucketed aggregates grouped by one breakdown column, ONE scan.
+
+        Like get_time_bucketed_multi_aggregate but additionally groups by
+        ``breakdown_column``. When ``values_limit`` is set, breakdown values
+        beyond the top ``values_limit`` (ranked deterministically by total row
+        count in the window) are folded into an ``'Other'`` rollup row
+        (``is_other = True``), matching the top-N semantics of the single
+        breakdown method get_time_bucketed_aggregate_breakdown.
+
+        Returns (column_names, rows) where ``column_names`` is
+        ``["bucket", "breakdown_value", "is_other", spec1.key, spec2.key, ...]``
+        and each row is
+        ``(bucket, breakdown_value, is_other, k1_value, k2_value, ...)``. Unlike
+        the single-aggregate method, this does NOT return a json_value_names
+        element.
         """
         ...
 
