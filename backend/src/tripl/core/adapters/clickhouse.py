@@ -7,6 +7,9 @@ from datetime import datetime
 from typing import override
 
 import clickhouse_connect  # type: ignore[import-untyped]
+from clickhouse_connect.driver.exceptions import (  # type: ignore[import-untyped]
+    ProgrammingError,
+)
 
 from tripl.core.adapters.base import (
     AggregateSpec,
@@ -119,9 +122,17 @@ class ClickHouseAdapter(BaseAdapter):
             f"ORDER BY database, table, position LIMIT {_SCHEMA_ROW_LIMIT}"
         )
         logger.debug("CH schema introspection query: %s", sql)
-        result = self._client.query(
-            sql, settings={"max_execution_time": _SCHEMA_QUERY_TIMEOUT_SECONDS}
-        )
+        # Bound server-side execution time when allowed, but read-only ClickHouse
+        # users (the norm for an analytics connection) and some managed offerings
+        # reject per-query setting overrides ("Setting max_execution_time is
+        # unknown or readonly"). Fall back to a setting-less query — the
+        # connection-level timeout and the row LIMIT still bound it.
+        try:
+            result = self._client.query(
+                sql, settings={"max_execution_time": _SCHEMA_QUERY_TIMEOUT_SECONDS}
+            )
+        except ProgrammingError:
+            result = self._client.query(sql)
         # Tables in the current/default database keep their bare name (`events`);
         # tables in any other database are qualified as `database.table`
         # (`analytics.orders`). The frontend relies on this: a table name has at

@@ -1,4 +1,5 @@
-import { useState } from 'react'
+import { useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 import { Plus, Trash2 } from 'lucide-react'
 import { SqlEditor } from '@/components/sql-editor'
 import { Select, type SelectOption } from '@/components/settings/kit'
@@ -32,6 +33,21 @@ export function FactFilterEditor({
   disabled,
 }: FactFilterEditorProps) {
   const [menuOpen, setMenuOpen] = useState(false)
+  const [menuPos, setMenuPos] = useState({ top: 0, left: 0 })
+  const buttonRef = useRef<HTMLButtonElement>(null)
+
+  // The menu is portaled to <body> with fixed coordinates so it escapes the
+  // settings card's `overflow-hidden`, which would otherwise clip (and make
+  // unclickable) an absolutely-positioned dropdown.
+  const toggleMenu = (): void => {
+    if (menuOpen) {
+      setMenuOpen(false)
+      return
+    }
+    const rect = buttonRef.current?.getBoundingClientRect()
+    setMenuPos({ top: (rect?.bottom ?? 0) + 4, left: rect?.left ?? 0 })
+    setMenuOpen(true)
+  }
 
   const setName = (id: string, name: string): void =>
     onChange(filters.map(f => (f.id === id && f.kind === 'named' ? { ...f, name } : f)))
@@ -89,11 +105,12 @@ export function FactFilterEditor({
         </ul>
       )}
 
-      <div className="relative inline-block">
+      <div className="inline-block">
         <button
+          ref={buttonRef}
           type="button"
           disabled={disabled}
-          onClick={() => setMenuOpen(open => !open)}
+          onClick={toggleMenu}
           aria-haspopup="menu"
           aria-expanded={menuOpen}
           className="inline-flex h-8 items-center gap-[6px] rounded-[7px] border px-3 text-[12px] font-medium transition-colors hover:bg-[var(--surface-hover)] disabled:opacity-60"
@@ -101,15 +118,22 @@ export function FactFilterEditor({
         >
           <Plus size={12} /> Add filter
         </button>
-        {menuOpen && (
+      </div>
+      {menuOpen &&
+        createPortal(
           <>
             {/* Backdrop closes the menu on an outside click. */}
-            <div className="fixed inset-0 z-40" aria-hidden onClick={() => setMenuOpen(false)} />
+            <div className="fixed inset-0 z-[60]" aria-hidden onClick={() => setMenuOpen(false)} />
             <div
               role="menu"
               aria-label="Add filter"
-              className="absolute left-0 z-50 mt-1 min-w-[160px] overflow-hidden rounded-[8px] border py-1 shadow-md"
-              style={{ background: 'var(--surface)', borderColor: 'var(--border)' }}
+              className="fixed z-[61] min-w-[160px] overflow-hidden rounded-[8px] border py-1 shadow-md"
+              style={{
+                top: menuPos.top,
+                left: menuPos.left,
+                background: 'var(--surface)',
+                borderColor: 'var(--border)',
+              }}
             >
               {namedOptions.length > 0 && (
                 <button
@@ -132,9 +156,9 @@ export function FactFilterEditor({
                 SQL filter
               </button>
             </div>
-          </>
+          </>,
+          document.body,
         )}
-      </div>
     </div>
   )
 }
