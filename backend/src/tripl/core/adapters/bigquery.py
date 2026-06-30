@@ -38,8 +38,10 @@ _BQ_DATASET_RE = re.compile(r"^[a-zA-Z0-9_]+$")
 # This does not tighten the character class above; currently-valid ids still pass.
 _BQ_IDENTIFIER_MAX_LEN = 1024
 
-# Hard cap on catalog rows pulled for SQL-editor autocomplete.
-_SCHEMA_ROW_LIMIT = 5000
+# Hard cap on catalog rows pulled for SQL-editor autocomplete. Kept generous and
+# in line with the ClickHouse/Postgres adapters so a dataset with thousands of
+# wide tables can't blow up the response.
+_SCHEMA_ROW_LIMIT = 50000
 
 # Wall-clock cap on the catalog introspection job so a hung BQ job can't block
 # the worker thread forever. Scoped to schema introspection only.
@@ -197,6 +199,16 @@ class BigQueryAdapter(BaseAdapter):
         return columns
 
     def get_schema_tables(self) -> list[SchemaTable]:
+        # Unlike ClickHouse/Postgres, this stays scoped to the connection's
+        # default dataset and returns every table BARE. BigQuery's
+        # INFORMATION_SCHEMA.COLUMNS view is dataset-qualified, so covering every
+        # dataset would mean either listing datasets and issuing one job per
+        # dataset (N extra round-trips / billed jobs) or a region-qualified
+        # `region-<location>` view that requires the connection's location to be
+        # known and correct. Both are expensive/fragile for autocomplete, so we
+        # deliberately keep the single-dataset scan and leave cross-dataset
+        # qualification (`dataset.table`) to a future change if it proves needed.
+        #
         # project/dataset come only from the validated DataSource model, never
         # from a request; still validate before interpolating into the query.
         if len(self._project) > _BQ_IDENTIFIER_MAX_LEN or not _BQ_PROJECT_RE.match(self._project):

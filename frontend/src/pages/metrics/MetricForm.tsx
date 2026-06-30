@@ -41,6 +41,8 @@ import {
   type SqlMetricCreate,
 } from '@/types'
 import type { FactTable, FactTableColumn } from '@/types/factTables'
+import { FactFilterEditor } from './FactFilterEditor'
+import { filtersFromConfig, filtersToPayload, type FactFilter } from './factFilters'
 
 // The single fact operand shape sent to the backend (numerator / denominator /
 // the implicit single operand) — derived from the generated create schema so it
@@ -87,10 +89,8 @@ interface FactOperandState {
   aggregation: MetricAggregation
   measureColumn: string
   distinctColumn: string
-  // Named filters defined on the fact table, all combined with AND, plus an
-  // optional free-text WHERE fragment ANDed on top.
-  rowFilters: string[]
-  filterSql: string
+  // An ordered list of named/SQL filters, all combined with AND.
+  filters: FactFilter[]
 }
 
 const EMPTY_OPERAND: FactOperandState = {
@@ -98,17 +98,7 @@ const EMPTY_OPERAND: FactOperandState = {
   aggregation: 'count',
   measureColumn: '',
   distinctColumn: '',
-  rowFilters: [],
-  filterSql: '',
-}
-
-// Read a string[] from an untrusted config value, with back-compat for the
-// legacy single `row_filter` string.
-function readRowFilters(rowFilters: unknown, legacy: string): string[] {
-  if (Array.isArray(rowFilters)) {
-    return rowFilters.filter((value): value is string => typeof value === 'string')
-  }
-  return legacy ? [legacy] : []
+  filters: [],
 }
 
 // Backend required-field rules per aggregation: sum/avg/min/max measure a
@@ -162,8 +152,7 @@ function readOperandFromConfig(raw: unknown): FactOperandState {
     aggregation: isMetricAggregation(aggregation) ? aggregation : 'count',
     measureColumn: str('measure_column'),
     distinctColumn: str('distinct_column'),
-    rowFilters: readRowFilters(obj['row_filters'], str('row_filter')),
-    filterSql: str('filter_sql'),
+    filters: filtersFromConfig(obj['row_filters'], str('row_filter'), str('filter_sql')),
   }
 }
 
@@ -173,8 +162,7 @@ function toOperandPayload(operand: FactOperandState): FactOperandPayload {
     aggregation: operand.aggregation,
     measure_column: needsMeasure(operand.aggregation) ? operand.measureColumn || null : null,
     distinct_column: needsDistinct(operand.aggregation) ? operand.distinctColumn || null : null,
-    row_filters: operand.rowFilters,
-    filter_sql: operand.filterSql.trim() || null,
+    ...filtersToPayload(operand.filters),
   }
 }
 
@@ -247,14 +235,6 @@ function FactOperandEditor({
     )
   }, [detail.columns, detail.identifierColumns])
 
-  const toggleRowFilter = (name: string): void =>
-    set(
-      'rowFilters',
-      operand.rowFilters.includes(name)
-        ? operand.rowFilters.filter(n => n !== name)
-        : [...operand.rowFilters, name],
-    )
-
   const columnHint = loading ? 'Loading columns…' : undefined
 
   return (
@@ -310,40 +290,16 @@ function FactOperandEditor({
           />
         </MField>
       )}
-      {detail.rowFilters.length > 0 && (
-        <MField
-          label="Named filters"
-          htmlFor={`${idPrefix}-row-filters`}
-          hint="Named filters defined on the fact table. All selected ones are combined with AND."
-        >
-          <div id={`${idPrefix}-row-filters`} className="flex flex-col gap-1.5">
-            {detail.rowFilters.map(name => (
-              <label key={name} className="flex items-center gap-2 text-[12.5px]" style={{ color: 'var(--fg)' }}>
-                <input
-                  type="checkbox"
-                  checked={operand.rowFilters.includes(name)}
-                  onChange={() => toggleRowFilter(name)}
-                  disabled={!operand.factTableId}
-                  aria-label={`Apply the ${name} row filter`}
-                />
-                <span className="mono">{name}</span>
-              </label>
-            ))}
-          </div>
-        </MField>
-      )}
       <MField
-        label="Filter (SQL)"
-        htmlFor={`${idPrefix}-filter-sql`}
+        label="Filters"
         last
-        hint="Optional raw WHERE condition, combined with AND. Write SQL directly — no need to predefine a named filter."
+        stacked
+        hint="Optional. Add named filters from the fact table or write SQL conditions inline; all are combined with AND."
       >
-        <TextInput
-          id={`${idPrefix}-filter-sql`}
-          value={operand.filterSql}
-          onChange={value => set('filterSql', value)}
-          mono
-          placeholder="status = 'completed' AND amount > 0"
+        <FactFilterEditor
+          filters={operand.filters}
+          onChange={filters => set('filters', filters)}
+          namedOptions={detail.rowFilters}
           disabled={!operand.factTableId}
         />
       </MField>
@@ -454,8 +410,11 @@ export function MetricForm({ slug, metric, dataSources, events, onClose }: Metri
     aggregation: metric?.aggregation ?? 'count',
     measureColumn: configString('measure_column'),
     distinctColumn: configString('distinct_column'),
-    rowFilters: readRowFilters(initialConfig['row_filters'], configString('row_filter')),
-    filterSql: configString('filter_sql'),
+    filters: filtersFromConfig(
+      initialConfig['row_filters'],
+      configString('row_filter'),
+      configString('filter_sql'),
+    ),
   }))
   const [denominatorOp, setDenominatorOp] = useState<FactOperandState>(() =>
     readOperandFromConfig(initialConfig['denominator']),
@@ -598,8 +557,7 @@ export function MetricForm({ slug, metric, dataSources, events, onClose }: Metri
         distinct_column: needsDistinct(numeratorOp.aggregation)
           ? numeratorOp.distinctColumn || null
           : null,
-        row_filters: numeratorOp.rowFilters,
-        filter_sql: numeratorOp.filterSql.trim() || null,
+        ...filtersToPayload(numeratorOp.filters),
       }
       return payload
     }
@@ -759,99 +717,101 @@ export function MetricForm({ slug, metric, dataSources, events, onClose }: Metri
                 )}
               </MField>
             </SCard>
-
-            {isNew && kind === 'sql' && (
-              <SCard title="SQL" description="A custom query returning one numeric value per bucket.">
-                <MField label="Data source" htmlFor="metric-sql-data-source" required>
-                  <Select id="metric-sql-data-source" value={dataSourceId} onChange={setDataSourceId} options={dataSourceOptions} />
-                </MField>
-                <MField label="Collection interval" htmlFor="metric-sql-interval" required>
-                  <Select
-                    id="metric-sql-interval"
-                    value={interval}
-                    onChange={value => setIntervalValue(value as MetricScanInterval)}
-                    options={METRIC_SCAN_INTERVALS.map(i => ({ value: i, label: i }))}
-                  />
-                </MField>
-                <MField label="Metric SQL" htmlFor="metric-sql-query" required stacked>
-                  <SqlEditor
-                    id="metric-sql-query"
-                    ariaLabel="Metric SQL"
-                    value={metricSql}
-                    onChange={setMetricSql}
-                    placeholder="SELECT date_trunc('hour', created_at) AS bucket, count(*) AS value FROM events GROUP BY 1"
-                    dialect={selectedDataSource?.db_type}
-                    tables={sqlSchemaData?.tables}
-                    minHeight="150px"
-                  />
-                </MField>
-                <MField label="Time column" htmlFor="metric-sql-time" required last hint="The bucket/time column returned by the query.">
-                  <TextInput id="metric-sql-time" value={sqlTimeColumn} onChange={setSqlTimeColumn} mono placeholder="bucket" />
-                </MField>
-              </SCard>
-            )}
-
-            {factEnabled && (
-              <SCard title="Fact" description="Aggregate a reusable fact table into one value per bucket.">
-                <MField
-                  label="Composition"
-                  htmlFor="metric-fact-composition"
-                  required
-                  hint="A single aggregation, or a ratio of two."
-                >
-                  <Select
-                    id="metric-fact-composition"
-                    value={factComposition}
-                    onChange={value => setFactComposition(value as FactComposition)}
-                    options={FACT_COMPOSITIONS.map(c => ({
-                      value: c,
-                      label: c === 'single' ? 'Single' : 'Ratio',
-                    }))}
-                  />
-                </MField>
-                <MField label="Collection interval" htmlFor="metric-fact-interval" required last>
-                  <Select
-                    id="metric-fact-interval"
-                    value={interval}
-                    onChange={value => setIntervalValue(value as MetricScanInterval)}
-                    options={METRIC_SCAN_INTERVALS.map(i => ({ value: i, label: i }))}
-                  />
-                </MField>
-              </SCard>
-            )}
-
-            {isNew && kind === 'event_composition' && (
-              <SCard title="Event composition" description="Combine existing event series.">
-                <MField label="Composition" htmlFor="metric-composition" required>
-                  <Select
-                    id="metric-composition"
-                    value={composition}
-                    onChange={value => setComposition(value as MetricComposition)}
-                    options={METRIC_COMPOSITIONS.map(c => ({ value: c, label: c }))}
-                  />
-                </MField>
-                <MField label="Numerator event" htmlFor="metric-numerator" required>
-                  <Select id="metric-numerator" value={numeratorEventId} onChange={setNumeratorEventId} options={eventOptions} />
-                </MField>
-                <MField
-                  label="Denominator event"
-                  htmlFor="metric-denominator"
-                  required={composition === 'ratio'}
-                  last
-                  hint={composition === 'ratio' ? 'Required for a ratio metric.' : 'Only used by ratio metrics.'}
-                >
-                  <Select
-                    id="metric-denominator"
-                    value={denominatorEventId}
-                    onChange={setDenominatorEventId}
-                    options={eventOptions}
-                    disabled={composition !== 'ratio'}
-                  />
-                </MField>
-              </SCard>
-            )}
           </div>
         </div>
+
+        {/* Kind-specific config gets its own full-width row — the SQL editor in
+            particular needs the width. */}
+        {isNew && kind === 'sql' && (
+          <SCard title="SQL" description="A custom query returning one numeric value per bucket.">
+            <MField label="Data source" htmlFor="metric-sql-data-source" required>
+              <Select id="metric-sql-data-source" value={dataSourceId} onChange={setDataSourceId} options={dataSourceOptions} />
+            </MField>
+            <MField label="Collection interval" htmlFor="metric-sql-interval" required>
+              <Select
+                id="metric-sql-interval"
+                value={interval}
+                onChange={value => setIntervalValue(value as MetricScanInterval)}
+                options={METRIC_SCAN_INTERVALS.map(i => ({ value: i, label: i }))}
+              />
+            </MField>
+            <MField label="Metric SQL" htmlFor="metric-sql-query" required stacked>
+              <SqlEditor
+                id="metric-sql-query"
+                ariaLabel="Metric SQL"
+                value={metricSql}
+                onChange={setMetricSql}
+                placeholder="SELECT date_trunc('hour', created_at) AS bucket, count(*) AS value FROM events GROUP BY 1"
+                dialect={selectedDataSource?.db_type}
+                tables={sqlSchemaData?.tables}
+                minHeight="220px"
+              />
+            </MField>
+            <MField label="Time column" htmlFor="metric-sql-time" required last hint="The bucket/time column returned by the query.">
+              <TextInput id="metric-sql-time" value={sqlTimeColumn} onChange={setSqlTimeColumn} mono placeholder="bucket" />
+            </MField>
+          </SCard>
+        )}
+
+        {factEnabled && (
+          <SCard title="Fact" description="Aggregate a reusable fact table into one value per bucket.">
+            <MField
+              label="Composition"
+              htmlFor="metric-fact-composition"
+              required
+              hint="A single aggregation, or a ratio of two."
+            >
+              <Select
+                id="metric-fact-composition"
+                value={factComposition}
+                onChange={value => setFactComposition(value as FactComposition)}
+                options={FACT_COMPOSITIONS.map(c => ({
+                  value: c,
+                  label: c === 'single' ? 'Single' : 'Ratio',
+                }))}
+              />
+            </MField>
+            <MField label="Collection interval" htmlFor="metric-fact-interval" required last>
+              <Select
+                id="metric-fact-interval"
+                value={interval}
+                onChange={value => setIntervalValue(value as MetricScanInterval)}
+                options={METRIC_SCAN_INTERVALS.map(i => ({ value: i, label: i }))}
+              />
+            </MField>
+          </SCard>
+        )}
+
+        {isNew && kind === 'event_composition' && (
+          <SCard title="Event composition" description="Combine existing event series.">
+            <MField label="Composition" htmlFor="metric-composition" required>
+              <Select
+                id="metric-composition"
+                value={composition}
+                onChange={value => setComposition(value as MetricComposition)}
+                options={METRIC_COMPOSITIONS.map(c => ({ value: c, label: c }))}
+              />
+            </MField>
+            <MField label="Numerator event" htmlFor="metric-numerator" required>
+              <Select id="metric-numerator" value={numeratorEventId} onChange={setNumeratorEventId} options={eventOptions} />
+            </MField>
+            <MField
+              label="Denominator event"
+              htmlFor="metric-denominator"
+              required={composition === 'ratio'}
+              last
+              hint={composition === 'ratio' ? 'Required for a ratio metric.' : 'Only used by ratio metrics.'}
+            >
+              <Select
+                id="metric-denominator"
+                value={denominatorEventId}
+                onChange={setDenominatorEventId}
+                options={eventOptions}
+                disabled={composition !== 'ratio'}
+              />
+            </MField>
+          </SCard>
+        )}
 
         {/* Fact aggregation operands span full width below the top row: a single
             operand, or numerator | denominator side by side for a ratio. */}

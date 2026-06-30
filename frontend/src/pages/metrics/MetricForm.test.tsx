@@ -368,7 +368,7 @@ describe('MetricForm validation', () => {
     )
   })
 
-  it('combines a named row filter with a free-text SQL filter', async () => {
+  it('combines a named filter with a free-text SQL filter via Add filter', async () => {
     renderForm()
     fillFactIdentity('Completed revenue', 'completed_revenue')
 
@@ -376,14 +376,23 @@ describe('MetricForm validation', () => {
       expect(document.querySelector('#metric-fact-table option[value="ft-1"]')).not.toBeNull(),
     )
     fireEvent.change(document.getElementById('metric-fact-table')!, { target: { value: 'ft-1' } })
-    // Detail (columns + named row filters) loads asynchronously.
+    await waitFor(() => expect(factTablesApi.get).toHaveBeenCalledWith('demo', 'ft-1'))
+
+    // Add a named filter (the "Named filter" option appears once the fact
+    // table's named filters have loaded).
+    fireEvent.click(screen.getByRole('button', { name: 'Add filter' }))
     await waitFor(() =>
-      expect(screen.getByRole('checkbox', { name: 'Apply the completed row filter' })).toBeInTheDocument(),
+      expect(screen.getByRole('menuitem', { name: 'Named filter' })).toBeInTheDocument(),
     )
-    fireEvent.click(screen.getByRole('checkbox', { name: 'Apply the completed row filter' }))
-    fireEvent.change(document.getElementById('metric-fact-filter-sql')!, {
-      target: { value: 'amount > 0' },
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Named filter' }))
+    fireEvent.change(screen.getByLabelText('Filter 1 named filter'), {
+      target: { value: 'completed' },
     })
+
+    // Add a free-text SQL filter.
+    fireEvent.click(screen.getByRole('button', { name: 'Add filter' }))
+    fireEvent.click(screen.getByRole('menuitem', { name: 'SQL filter' }))
+    fireEvent.change(screen.getByLabelText('Filter 2 SQL'), { target: { value: 'amount > 0' } })
 
     submit()
 
@@ -395,7 +404,7 @@ describe('MetricForm validation', () => {
         composition: 'single',
         fact_table_id: 'ft-1',
         row_filters: ['completed'],
-        filter_sql: 'amount > 0',
+        filter_sql: '(amount > 0)',
       }),
     )
   })

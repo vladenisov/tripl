@@ -8,6 +8,30 @@ import type { TableSchema } from '@/types/dataSourceSchema'
 import { formatLanguage, highlightDialect } from '@/components/sql-dialects'
 import { SqlSchemaBrowser } from '@/components/sql-schema-browser'
 
+// Build the `SQLNamespace` CodeMirror's sql() uses for table/column completion.
+// Schema introspection returns cross-database/schema tables qualified as
+// `db.table` (bare for the connection's default database); split those on the
+// first dot into a nested namespace so `db.` suggests tables and `db.table.`
+// suggests columns, while bare tables complete at the top level.
+function buildSqlNamespace(tables: readonly TableSchema[]): SQLNamespace {
+  const ns: Record<string, string[] | Record<string, string[]>> = {}
+  for (const table of tables) {
+    const columns = table.columns.map(column => column.name)
+    const dot = table.name.indexOf('.')
+    if (dot > 0) {
+      const db = table.name.slice(0, dot)
+      const rest = table.name.slice(dot + 1)
+      const existing = ns[db]
+      const bucket = existing && !Array.isArray(existing) ? existing : {}
+      bucket[rest] = columns
+      ns[db] = bucket
+    } else if (!(table.name in ns)) {
+      ns[table.name] = columns
+    }
+  }
+  return ns as SQLNamespace
+}
+
 /**
  * Shared SQL editor: CodeMirror with dialect-aware syntax highlighting and
  * keyword/function completion (ClickHouse / BigQuery / Postgres), schema-aware
@@ -42,7 +66,7 @@ export function SqlEditor({
   // for table/column autocomplete.
   const schema = useMemo<SQLNamespace | undefined>(() => {
     if (!tables || tables.length === 0) return undefined
-    return Object.fromEntries(tables.map(table => [table.name, table.columns.map(c => c.name)]))
+    return buildSqlNamespace(tables)
   }, [tables])
 
   const extensions = useMemo(() => {
@@ -60,7 +84,11 @@ export function SqlEditor({
     // for "wh"), so a short query surfaces fewer keywords than a longer one;
     // that ranking lives in @codemirror/autocomplete and is not configurable
     // from here.
-    const defaultTable = tables?.length === 1 ? tables[0].name : undefined
+    // Only the common single, default-database (bare) table is marked default
+    // so its columns complete unqualified; a qualified `db.table` is nested and
+    // not a valid defaultTable lookup.
+    const defaultTable =
+      tables?.length === 1 && !tables[0].name.includes('.') ? tables[0].name : undefined
     return [
       sql({
         dialect: highlightDialect(dialect),

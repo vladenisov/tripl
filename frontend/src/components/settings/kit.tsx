@@ -424,6 +424,7 @@ export function Select({
   disabled,
   id,
   'aria-required': ariaRequired,
+  'aria-label': ariaLabel,
 }: {
   value: string
   onChange?: (value: string) => void
@@ -431,6 +432,7 @@ export function Select({
   disabled?: boolean
   id?: string
   'aria-required'?: boolean
+  'aria-label'?: string
 }) {
   return (
     <div className="relative" style={{ maxWidth: 280 }}>
@@ -439,6 +441,7 @@ export function Select({
         value={value}
         disabled={disabled}
         aria-required={ariaRequired}
+        aria-label={ariaLabel}
         onChange={(e) => onChange?.(e.target.value)}
         className="w-full appearance-none"
         style={{
