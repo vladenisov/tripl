@@ -104,6 +104,16 @@ export function buildNavGroups(slug: string, summary: ProjectSummary | undefined
           match: (p) => p.startsWith(`${base}/settings/relations`),
         },
         {
+          // A fact table is a reusable data definition (a read-only SELECT +
+          // introspected columns) that fact metrics are built on — a modeling
+          // primitive, so it lives in Plan alongside events/variables, not Observe.
+          id: 'fact-tables',
+          label: 'Fact tables',
+          icon: Sheet,
+          href: `${base}/fact-tables`,
+          match: (p) => p.startsWith(`${base}/fact-tables`),
+        },
+        {
           id: 'branches',
           label: 'Plan branches',
           icon: GitBranch,
@@ -123,6 +133,13 @@ export function buildNavGroups(slug: string, summary: ProjectSummary | undefined
           match: (p) => p.startsWith(`${base}/overview`),
         },
         {
+          id: 'metrics',
+          label: 'Metrics',
+          icon: LineChart,
+          href: `${base}/metrics`,
+          match: (p) => p.startsWith(`${base}/metrics`),
+        },
+        {
           id: 'monitoring',
           label: 'Monitors',
           icon: Gauge,
@@ -138,20 +155,6 @@ export function buildNavGroups(slug: string, summary: ProjectSummary | undefined
           // count, no tone) when nothing is firing.
           count: firingMonitors > 0 ? formatCount(firingMonitors) : undefined,
           tone: firingMonitors > 0 ? 'danger' : undefined,
-        },
-        {
-          id: 'metrics',
-          label: 'Metrics',
-          icon: LineChart,
-          href: `${base}/metrics`,
-          match: (p) => p.startsWith(`${base}/metrics`),
-        },
-        {
-          id: 'fact-tables',
-          label: 'Fact tables',
-          icon: Sheet,
-          href: `${base}/fact-tables`,
-          match: (p) => p.startsWith(`${base}/fact-tables`),
         },
         {
           id: 'anomalies',
