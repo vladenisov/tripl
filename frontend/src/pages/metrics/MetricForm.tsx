@@ -717,24 +717,92 @@ export function MetricForm({ slug, metric, dataSources, events, onClose }: Metri
                 )}
               </MField>
             </SCard>
+
+            {/* Light, kind-specific config sits beside Details to balance the
+                row; only the wide parts (SQL editor, fact operands) go full-width
+                below. */}
+            {isNew && kind === 'sql' && (
+              <SCard title="Source" description="Where the query runs, and how often.">
+                <MField label="Data source" htmlFor="metric-sql-data-source" required>
+                  <Select id="metric-sql-data-source" value={dataSourceId} onChange={setDataSourceId} options={dataSourceOptions} />
+                </MField>
+                <MField label="Collection interval" htmlFor="metric-sql-interval" required last>
+                  <Select
+                    id="metric-sql-interval"
+                    value={interval}
+                    onChange={value => setIntervalValue(value as MetricScanInterval)}
+                    options={METRIC_SCAN_INTERVALS.map(i => ({ value: i, label: i }))}
+                  />
+                </MField>
+              </SCard>
+            )}
+
+            {factEnabled && (
+              <SCard title="Fact" description="Aggregate a reusable fact table into one value per bucket.">
+                <MField
+                  label="Composition"
+                  htmlFor="metric-fact-composition"
+                  required
+                  hint="A single aggregation, or a ratio of two."
+                >
+                  <Select
+                    id="metric-fact-composition"
+                    value={factComposition}
+                    onChange={value => setFactComposition(value as FactComposition)}
+                    options={FACT_COMPOSITIONS.map(c => ({
+                      value: c,
+                      label: c === 'single' ? 'Single' : 'Ratio',
+                    }))}
+                  />
+                </MField>
+                <MField label="Collection interval" htmlFor="metric-fact-interval" required last>
+                  <Select
+                    id="metric-fact-interval"
+                    value={interval}
+                    onChange={value => setIntervalValue(value as MetricScanInterval)}
+                    options={METRIC_SCAN_INTERVALS.map(i => ({ value: i, label: i }))}
+                  />
+                </MField>
+              </SCard>
+            )}
+
+            {isNew && kind === 'event_composition' && (
+              <SCard title="Event composition" description="Combine existing event series.">
+                <MField label="Composition" htmlFor="metric-composition" required>
+                  <Select
+                    id="metric-composition"
+                    value={composition}
+                    onChange={value => setComposition(value as MetricComposition)}
+                    options={METRIC_COMPOSITIONS.map(c => ({ value: c, label: c }))}
+                  />
+                </MField>
+                <MField label="Numerator event" htmlFor="metric-numerator" required>
+                  <Select id="metric-numerator" value={numeratorEventId} onChange={setNumeratorEventId} options={eventOptions} />
+                </MField>
+                <MField
+                  label="Denominator event"
+                  htmlFor="metric-denominator"
+                  required={composition === 'ratio'}
+                  last
+                  hint={composition === 'ratio' ? 'Required for a ratio metric.' : 'Only used by ratio metrics.'}
+                >
+                  <Select
+                    id="metric-denominator"
+                    value={denominatorEventId}
+                    onChange={setDenominatorEventId}
+                    options={eventOptions}
+                    disabled={composition !== 'ratio'}
+                  />
+                </MField>
+              </SCard>
+            )}
           </div>
         </div>
 
-        {/* Kind-specific config gets its own full-width row — the SQL editor in
-            particular needs the width. */}
+        {/* Only the wide parts go full-width; data source / interval live in the
+            Source card beside Details above. */}
         {isNew && kind === 'sql' && (
-          <SCard title="SQL" description="A custom query returning one numeric value per bucket.">
-            <MField label="Data source" htmlFor="metric-sql-data-source" required>
-              <Select id="metric-sql-data-source" value={dataSourceId} onChange={setDataSourceId} options={dataSourceOptions} />
-            </MField>
-            <MField label="Collection interval" htmlFor="metric-sql-interval" required>
-              <Select
-                id="metric-sql-interval"
-                value={interval}
-                onChange={value => setIntervalValue(value as MetricScanInterval)}
-                options={METRIC_SCAN_INTERVALS.map(i => ({ value: i, label: i }))}
-              />
-            </MField>
+          <SCard title="Query" description="A custom query returning one numeric value per bucket.">
             <MField label="Metric SQL" htmlFor="metric-sql-query" required stacked>
               <SqlEditor
                 id="metric-sql-query"
@@ -749,66 +817,6 @@ export function MetricForm({ slug, metric, dataSources, events, onClose }: Metri
             </MField>
             <MField label="Time column" htmlFor="metric-sql-time" required last hint="The bucket/time column returned by the query.">
               <TextInput id="metric-sql-time" value={sqlTimeColumn} onChange={setSqlTimeColumn} mono placeholder="bucket" />
-            </MField>
-          </SCard>
-        )}
-
-        {factEnabled && (
-          <SCard title="Fact" description="Aggregate a reusable fact table into one value per bucket.">
-            <MField
-              label="Composition"
-              htmlFor="metric-fact-composition"
-              required
-              hint="A single aggregation, or a ratio of two."
-            >
-              <Select
-                id="metric-fact-composition"
-                value={factComposition}
-                onChange={value => setFactComposition(value as FactComposition)}
-                options={FACT_COMPOSITIONS.map(c => ({
-                  value: c,
-                  label: c === 'single' ? 'Single' : 'Ratio',
-                }))}
-              />
-            </MField>
-            <MField label="Collection interval" htmlFor="metric-fact-interval" required last>
-              <Select
-                id="metric-fact-interval"
-                value={interval}
-                onChange={value => setIntervalValue(value as MetricScanInterval)}
-                options={METRIC_SCAN_INTERVALS.map(i => ({ value: i, label: i }))}
-              />
-            </MField>
-          </SCard>
-        )}
-
-        {isNew && kind === 'event_composition' && (
-          <SCard title="Event composition" description="Combine existing event series.">
-            <MField label="Composition" htmlFor="metric-composition" required>
-              <Select
-                id="metric-composition"
-                value={composition}
-                onChange={value => setComposition(value as MetricComposition)}
-                options={METRIC_COMPOSITIONS.map(c => ({ value: c, label: c }))}
-              />
-            </MField>
-            <MField label="Numerator event" htmlFor="metric-numerator" required>
-              <Select id="metric-numerator" value={numeratorEventId} onChange={setNumeratorEventId} options={eventOptions} />
-            </MField>
-            <MField
-              label="Denominator event"
-              htmlFor="metric-denominator"
-              required={composition === 'ratio'}
-              last
-              hint={composition === 'ratio' ? 'Required for a ratio metric.' : 'Only used by ratio metrics.'}
-            >
-              <Select
-                id="metric-denominator"
-                value={denominatorEventId}
-                onChange={setDenominatorEventId}
-                options={eventOptions}
-                disabled={composition !== 'ratio'}
-              />
             </MField>
           </SCard>
         )}
