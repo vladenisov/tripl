@@ -1,5 +1,5 @@
 import { useMemo } from 'react'
-import { Link, useParams } from 'react-router-dom'
+import { Link } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 import { Plus, Sheet } from 'lucide-react'
 import { dataSourcesApi } from '@/api/dataSources'
@@ -7,16 +7,21 @@ import { factTablesApi } from '@/api/factTablesApi'
 import { Button } from '@/components/ui/button'
 import { EmptyState } from '@/components/empty-state'
 import { ErrorState } from '@/components/error-state'
-import { PageHead, Panel } from '@/components/settings/kit'
+import { Panel } from '@/components/settings/kit'
 import { MiniStat, MiniStatDivider } from '@/components/primitives/mini-stat'
 import { formatRelativeTime } from '@/lib/datetime'
 import type { FactTableListItem } from '@/types'
 
 const FACT_TABLE_GRID = 'grid grid-cols-[1.7fr_1fr_1fr_84px] items-center gap-3 px-4'
 
-export default function FactTablesPage() {
-  const { slug } = useParams<{ slug: string }>()
-
+/**
+ * Fact tables list body — the stat rollup and table rows. Rendered as the
+ * "Fact tables" tab inside {@link MetricsPage}; owns its own data fetching and
+ * spacing but not the page header/tab chrome (the parent provides those). Fact
+ * tables exist only to back fact metrics, so they live under Metrics rather
+ * than as a standalone surface.
+ */
+export function FactTablesList({ slug }: { slug?: string }) {
   const factTablesQuery = useQuery({
     queryKey: ['fact-tables', slug],
     queryFn: () => factTablesApi.list(slug!),
@@ -45,28 +50,7 @@ export default function FactTablesPage() {
   const isEmpty = !factTablesQuery.isError && !!data && factTables.length === 0
 
   return (
-    <div
-      className={
-        isEmpty
-          ? 'flex min-h-[calc(100vh-7rem)] min-w-0 flex-col gap-6'
-          : 'min-w-0 space-y-6 pb-12'
-      }
-    >
-      <PageHead
-        eyebrow="Observe"
-        title="Fact tables"
-        right={
-          slug ? (
-            <Button asChild size="sm">
-              <Link to={`/p/${slug}/fact-tables/new`} className="no-underline">
-                <Plus className="h-3.5 w-3.5" />
-                New fact table
-              </Link>
-            </Button>
-          ) : undefined
-        }
-      />
-
+    <div className={isEmpty ? 'flex min-h-[calc(100vh-14rem)] flex-col gap-6' : 'space-y-6'}>
       {factTablesQuery.isError ? (
         <ErrorState
           title="Fact tables unavailable"
@@ -106,7 +90,7 @@ export default function FactTablesPage() {
               action={
                 slug ? (
                   <Button asChild size="sm">
-                    <Link to={`/p/${slug}/fact-tables/new`} className="no-underline">
+                    <Link to={`/p/${slug}/metrics/fact-tables/new`} className="no-underline">
                       <Plus className="h-3.5 w-3.5" />
                       New fact table
                     </Link>
@@ -171,7 +155,7 @@ interface FactTableRowProps {
 }
 
 function FactTableRow({ table, slug, dataSourceName }: FactTableRowProps) {
-  const href = slug ? `/p/${slug}/fact-tables/${table.id}/edit` : undefined
+  const href = slug ? `/p/${slug}/metrics/fact-tables/${table.id}/edit` : undefined
 
   return (
     <div

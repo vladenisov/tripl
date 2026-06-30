@@ -508,14 +508,16 @@ const EMPTY_DATA_SOURCES: DataSource[] = []
 /**
  * Route wrapper: loads the data the form needs (data sources, and — when
  * editing — the fact table itself) and renders the form full-page. Reached via
- * `/p/:slug/fact-tables/new` and `/p/:slug/fact-tables/:factTableId/edit`.
+ * `/p/:slug/metrics/fact-tables/new` and
+ * `/p/:slug/metrics/fact-tables/:factTableId/edit` (fact tables are a tab under
+ * Metrics), so closing returns to the Fact tables tab.
  */
 export default function FactTableEditPage() {
   const { slug, factTableId } = useParams<{ slug: string; factTableId?: string }>()
   const navigate = useNavigate()
   const isNew = !factTableId
 
-  const goBack = () => navigate(`/p/${slug}/fact-tables`)
+  const goBack = () => navigate(`/p/${slug}/metrics/fact-tables`)
 
   const dataSourcesQuery = useQuery({
     queryKey: ['data-sources'],

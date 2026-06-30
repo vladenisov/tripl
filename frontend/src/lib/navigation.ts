@@ -10,7 +10,6 @@ import {
   Link2,
   ScrollText,
   Search,
-  Sheet,
   ShieldCheck,
   Table2,
   Tag,
@@ -102,16 +101,6 @@ export function buildNavGroups(slug: string, summary: ProjectSummary | undefined
           icon: Link2,
           href: `${base}/settings/relations`,
           match: (p) => p.startsWith(`${base}/settings/relations`),
-        },
-        {
-          // A fact table is a reusable data definition (a read-only SELECT +
-          // introspected columns) that fact metrics are built on — a modeling
-          // primitive, so it lives in Plan alongside events/variables, not Observe.
-          id: 'fact-tables',
-          label: 'Fact tables',
-          icon: Sheet,
-          href: `${base}/fact-tables`,
-          match: (p) => p.startsWith(`${base}/fact-tables`),
         },
         {
           id: 'branches',

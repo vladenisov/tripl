@@ -162,6 +162,22 @@ describe('buildNavGroups', () => {
     expect(items.find((i) => i.id === 'variables')!.href).toBe('/p/demo/settings/variables')
     expect(items.find((i) => i.id === 'relations')!.href).toBe('/p/demo/settings/relations')
   })
+
+  it('no longer exposes a standalone Fact tables nav item', () => {
+    // Fact tables now live as a tab under Metrics, not as a top-level surface.
+    const items = buildNavGroups('demo', undefined).flatMap((g) => g.items)
+    expect(items.find((i) => i.id === 'fact-tables')).toBeUndefined()
+    expect(items.some((i) => i.href.endsWith('/fact-tables'))).toBe(false)
+  })
+
+  it('keeps the Metrics nav item highlighted on the Fact tables tab', () => {
+    // The metrics item matches /metrics*, so the Fact tables tab resolves to
+    // "Observe › Metrics" rather than losing its breadcrumb.
+    expect(resolveNavLocation('demo', '/p/demo/metrics/fact-tables')).toEqual({
+      area: 'Observe',
+      label: 'Metrics',
+    })
+  })
 })
 
 describe('resolveNavLocation', () => {
