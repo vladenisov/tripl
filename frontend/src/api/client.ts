@@ -15,6 +15,8 @@ export class ApiError extends Error {
   fields?: ApiFieldError[]
   /** Backend request id (`X-Request-ID` / 500 body) for support references. */
   requestId?: string
+  /** Raw structured `detail` body (e.g. merge-gate 409 payloads), when not a string. */
+  detail?: unknown
 
   constructor(message: string, status: number, requestId?: string) {
     super(message)
@@ -111,7 +113,11 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     }
 
     const detail = typeof body.detail === 'string' ? body.detail : undefined
-    throw new ApiError(detail || `${res.status} ${res.statusText}`, res.status, requestId)
+    const error = new ApiError(detail || `${res.status} ${res.statusText}`, res.status, requestId)
+    if (detail === undefined && body.detail !== undefined) {
+      error.detail = body.detail
+    }
+    throw error
   }
   if (res.status === 204) return undefined as T
   return res.json()

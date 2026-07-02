@@ -49,6 +49,7 @@ from tripl.schemas.plan_branch import (
     PlanBranchResponse,
 )
 from tripl.services.plan_revision_service import build_plan_snapshot, compute_plan_diff_entries
+from tripl.services.project_branch_settings_service import read_branch_merge_policy
 
 MAIN_BRANCH_NAME = "main"
 
@@ -62,7 +63,13 @@ _TRANSITIONS: dict[str, tuple[set[str], str]] = {
         {BranchStatus.ready_for_review.value, BranchStatus.approved.value},
         BranchStatus.changes_requested.value,
     ),
-    "approve": ({BranchStatus.ready_for_review.value}, BranchStatus.approved.value),
+    # approve is also legal from "approved" so further reviewers can stack
+    # approvals toward the project's min_approvals quota — the first approve
+    # flips the status, later ones only add PlanBranchApproval rows.
+    "approve": (
+        {BranchStatus.ready_for_review.value, BranchStatus.approved.value},
+        BranchStatus.approved.value,
+    ),
     "reopen": (
         {
             BranchStatus.approved.value,
@@ -608,6 +615,14 @@ async def transition_branch(
             status_code=409,
             detail=f"Cannot {action} from status '{branch.status}'",
         )
+
+    if action == "approve":
+        policy = await read_branch_merge_policy(session, project.id)
+        if policy.block_self_approval and branch.created_by == user_id:
+            raise HTTPException(
+                status_code=403,
+                detail="Branch authors cannot approve their own branch",
+            )
 
     branch.status = target
 

@@ -45,6 +45,44 @@ from tripl.services.plan_branch_service import (
     ensure_main_branch_id,
 )
 from tripl.services.plan_revision_service import build_plan_snapshot
+from tripl.services.project_branch_settings_service import read_branch_merge_policy
+
+
+async def _check_min_approvals(
+    session: AsyncSession,
+    *,
+    project_id: uuid.UUID,
+    branch: PlanBranch,
+) -> None:
+    """Block the merge until the project's approval quota is met.
+
+    Counts distinct users with a live approval on the branch. Approvals whose
+    user was deleted (``user_id`` is NULL) never count; the author's own
+    approval is discarded when the policy blocks self-approval (defense in
+    depth — the approve transition already rejects it, but rows created before
+    the policy flipped on must not satisfy the gate either).
+    """
+    policy = await read_branch_merge_policy(session, project_id)
+    if policy.min_approvals <= 0:
+        return
+
+    approvals = await session.execute(
+        select(PlanBranchApproval.user_id).where(PlanBranchApproval.branch_id == branch.id)
+    )
+    approver_ids = {row[0] for row in approvals.all() if row[0] is not None}
+    if policy.block_self_approval and branch.created_by is not None:
+        approver_ids.discard(branch.created_by)
+
+    if len(approver_ids) < policy.min_approvals:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "insufficient_approvals": {
+                    "required": policy.min_approvals,
+                    "current": len(approver_ids),
+                }
+            },
+        )
 
 
 async def _apply_merge(
@@ -726,6 +764,8 @@ async def merge_branch(
                 status_code=409,
                 detail={"unresolved_field_conflicts": unresolved},
             )
+
+    await _check_min_approvals(session, project_id=project.id, branch=branch)
 
     await _check_owner_approvals(
         session,
