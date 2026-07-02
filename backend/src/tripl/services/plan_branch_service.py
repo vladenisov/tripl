@@ -48,7 +48,11 @@ from tripl.schemas.plan_branch import (
     PlanBranchList,
     PlanBranchResponse,
 )
-from tripl.services.plan_revision_service import build_plan_snapshot, compute_plan_diff_entries
+from tripl.services.plan_revision_service import (
+    build_plan_snapshot,
+    compute_plan_diff_entries,
+    plan_snapshot_hash,
+)
 from tripl.services.project_branch_settings_service import read_branch_merge_policy
 
 MAIN_BRANCH_NAME = "main"
@@ -641,7 +645,12 @@ async def transition_branch(
         )
 
     if action == "approve":
-        # Upsert: re-approving by the same user just refreshes the timestamp.
+        # Pin the approval to the content being approved: the merge gates only
+        # count approvals whose hash still matches the branch (tripl-d8v6).
+        current_hash = plan_snapshot_hash(
+            await build_plan_snapshot(session, project.id, branch_id=branch.id)
+        )
+        # Upsert: re-approving by the same user restamps the content hash.
         existing = await session.scalar(
             select(PlanBranchApproval).where(
                 PlanBranchApproval.branch_id == branch.id,
@@ -649,7 +658,11 @@ async def transition_branch(
             )
         )
         if existing is None:
-            session.add(PlanBranchApproval(branch_id=branch.id, user_id=user_id))
+            session.add(
+                PlanBranchApproval(branch_id=branch.id, user_id=user_id, plan_hash=current_hash)
+            )
+        else:
+            existing.plan_hash = current_hash
 
     if action == "submit":
         # Surface the owners of touched event types as expected reviewers up

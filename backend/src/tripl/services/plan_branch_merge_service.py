@@ -44,8 +44,38 @@ from tripl.services.plan_branch_service import (
     _to_detail,
     ensure_main_branch_id,
 )
-from tripl.services.plan_revision_service import build_plan_snapshot
+from tripl.services.plan_revision_service import build_plan_snapshot, plan_snapshot_hash
 from tripl.services.project_branch_settings_service import read_branch_merge_policy
+
+
+async def _load_fresh_approver_ids(
+    session: AsyncSession,
+    *,
+    branch_id: uuid.UUID,
+    current_plan_hash: str,
+) -> tuple[set[uuid.UUID], int]:
+    """Distinct users whose approval matches the branch's CURRENT content.
+
+    An approval stamped for earlier content (or a legacy NULL-hash row) is
+    stale — the branch changed after the review, so it must not satisfy any
+    merge gate (tripl-d8v6). Returns ``(fresh_ids, stale_count)``; approvals
+    whose user was deleted (NULL user_id) never count.
+    """
+    approvals = await session.execute(
+        select(PlanBranchApproval.user_id, PlanBranchApproval.plan_hash).where(
+            PlanBranchApproval.branch_id == branch_id
+        )
+    )
+    fresh: set[uuid.UUID] = set()
+    stale = 0
+    for user_id, plan_hash in approvals.all():
+        if user_id is None:
+            continue
+        if plan_hash == current_plan_hash:
+            fresh.add(user_id)
+        else:
+            stale += 1
+    return fresh, stale
 
 
 async def _check_min_approvals(
@@ -53,23 +83,23 @@ async def _check_min_approvals(
     *,
     project_id: uuid.UUID,
     branch: PlanBranch,
+    current_plan_hash: str,
 ) -> None:
     """Block the merge until the project's approval quota is met.
 
-    Counts distinct users with a live approval on the branch. Approvals whose
-    user was deleted (``user_id`` is NULL) never count; the author's own
-    approval is discarded when the policy blocks self-approval (defense in
-    depth — the approve transition already rejects it, but rows created before
-    the policy flipped on must not satisfy the gate either).
+    Counts distinct users with a FRESH approval (content hash matches the
+    branch's current plan). The author's own approval is discarded when the
+    policy blocks self-approval (defense in depth — the approve transition
+    already rejects it, but rows created before the policy flipped on must
+    not satisfy the gate either).
     """
     policy = await read_branch_merge_policy(session, project_id)
     if policy.min_approvals <= 0:
         return
 
-    approvals = await session.execute(
-        select(PlanBranchApproval.user_id).where(PlanBranchApproval.branch_id == branch.id)
+    approver_ids, stale_count = await _load_fresh_approver_ids(
+        session, branch_id=branch.id, current_plan_hash=current_plan_hash
     )
-    approver_ids = {row[0] for row in approvals.all() if row[0] is not None}
     if policy.block_self_approval and branch.created_by is not None:
         approver_ids.discard(branch.created_by)
 
@@ -80,6 +110,7 @@ async def _check_min_approvals(
                 "insufficient_approvals": {
                     "required": policy.min_approvals,
                     "current": len(approver_ids),
+                    "stale": stale_count,
                 }
             },
         )
@@ -591,9 +622,11 @@ async def _check_owner_approvals(
     branch_id: uuid.UUID,
     base_payload: dict[str, Any],
     branch_payload: dict[str, Any],
+    current_plan_hash: str,
 ) -> None:
     """Block the merge when an owned event type is touched without an owner's
-    approval. Owners attach to live main rows only, so unowned event types
+    FRESH approval (stale approvals — content edited after review — don't
+    count). Owners attach to live main rows only, so unowned event types
     (including freshly added ones that don't exist on main yet) auto-pass."""
     touched = _touched_event_type_names(base_payload, branch_payload)
     if not touched:
@@ -621,10 +654,9 @@ async def _check_owner_approvals(
     if not owners_by_et:
         return
 
-    approvals = await session.execute(
-        select(PlanBranchApproval.user_id).where(PlanBranchApproval.branch_id == branch_id)
+    approver_ids, _stale = await _load_fresh_approver_ids(
+        session, branch_id=branch_id, current_plan_hash=current_plan_hash
     )
-    approver_ids = {row[0] for row in approvals.all()}
 
     missing: list[dict[str, Any]] = []
     for name, et_id in main_name_to_id.items():
@@ -765,7 +797,10 @@ async def merge_branch(
                 detail={"unresolved_field_conflicts": unresolved},
             )
 
-    await _check_min_approvals(session, project_id=project.id, branch=branch)
+    current_plan_hash = plan_snapshot_hash(branch_payload)
+    await _check_min_approvals(
+        session, project_id=project.id, branch=branch, current_plan_hash=current_plan_hash
+    )
 
     await _check_owner_approvals(
         session,
@@ -774,6 +809,7 @@ async def merge_branch(
         branch_id=branch.id,
         base_payload=base_payload,
         branch_payload=branch_payload,
+        current_plan_hash=current_plan_hash,
     )
 
     await _apply_merge(

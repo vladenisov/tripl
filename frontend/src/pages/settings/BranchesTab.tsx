@@ -101,10 +101,14 @@ function describeBranchActionError(error: unknown): string {
   if (error instanceof ApiError && error.detail && typeof error.detail === 'object') {
     const detail = error.detail as Record<string, unknown>
     const quota = detail.insufficient_approvals as
-      | { required?: number; current?: number }
+      | { required?: number; current?: number; stale?: number }
       | undefined
     if (quota) {
-      return `Not enough approvals to merge: ${quota.current ?? 0} of ${quota.required ?? 0} required.`
+      const stale =
+        (quota.stale ?? 0) > 0
+          ? ` ${quota.stale} approval(s) went stale after later edits — re-approve.`
+          : ''
+      return `Not enough approvals to merge: ${quota.current ?? 0} of ${quota.required ?? 0} required.${stale}`
     }
     if (detail.missing_owner_approvals) {
       return 'Merge blocked: owners of the touched event types have not approved.'

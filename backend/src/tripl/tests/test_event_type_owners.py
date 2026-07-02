@@ -219,6 +219,80 @@ async def test_merge_passes_when_owner_is_the_approver(client: AsyncClient) -> N
     assert merge.json()["status"] == "merged"
 
 
+async def _set_branch_et_color(branch_id: str, color: str) -> None:
+    async with TestSessionLocal() as session:
+        branch_et = (
+            (
+                await session.execute(
+                    select(EventType).where(
+                        EventType.branch_id == uuid.UUID(branch_id),
+                        EventType.name == "track",
+                    )
+                )
+            )
+            .scalars()
+            .first()
+        )
+        branch_et.color = color
+        await session.commit()
+
+
+@pytest.mark.asyncio
+async def test_owner_approval_goes_stale_after_content_edit(client: AsyncClient) -> None:
+    """An owner's approval stops satisfying the owner gate once the branch
+    content changes after the review (tripl-d8v6). min_approvals is zeroed so
+    the owner gate — not the quota gate — is what blocks."""
+    et_id, slug = await _seed_project_with_type(client, "own-merge-stale")
+    zeroed = await client.patch(
+        f"/api/v1/projects/{slug}/branch-settings", json={"min_approvals": 0}
+    )
+    assert zeroed.status_code == 200
+
+    async with TestSessionLocal() as session:
+        test_user = (
+            (await session.execute(select(User).where(User.email == "test@example.com")))
+            .scalars()
+            .first()
+        )
+        test_user_id = test_user.id
+
+    add = await client.post(
+        f"/api/v1/projects/{slug}/event-types/{et_id}/owners",
+        json={"user_id": str(test_user_id)},
+    )
+    assert add.status_code == 201
+
+    branch_resp = await client.post(
+        f"/api/v1/projects/{slug}/branches", json={"name": "stale-owner-approval"}
+    )
+    branch_id = branch_resp.json()["id"]
+
+    await _set_branch_et_color(branch_id, "#101010")
+    await client.post(
+        f"/api/v1/projects/{slug}/branches/{branch_id}/transition",
+        json={"action": "submit"},
+    )
+    await client.post(
+        f"/api/v1/projects/{slug}/branches/{branch_id}/transition",
+        json={"action": "approve"},
+    )
+
+    # Post-approval edit: the recorded owner approval no longer matches.
+    await _set_branch_et_color(branch_id, "#202020")
+
+    merge = await client.post(f"/api/v1/projects/{slug}/branches/{branch_id}/merge")
+    assert merge.status_code == 409
+    assert "missing_owner_approvals" in merge.json()["detail"]
+
+    # Re-approving restamps the hash; the merge then proceeds.
+    await client.post(
+        f"/api/v1/projects/{slug}/branches/{branch_id}/transition",
+        json={"action": "approve"},
+    )
+    merged = await client.post(f"/api/v1/projects/{slug}/branches/{branch_id}/merge")
+    assert merged.status_code == 200, merged.text
+
+
 @pytest.mark.asyncio
 async def test_merge_passes_when_event_type_unowned(client: AsyncClient) -> None:
     """No owners on the touched event type ⇒ no gating ⇒ merge proceeds."""

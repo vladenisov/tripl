@@ -15,6 +15,7 @@ from tripl.models.plan_branch_approval import PlanBranchApproval
 from tripl.models.plan_branch_reviewer import PlanBranchReviewer
 from tripl.models.project_branch_settings import ProjectBranchSettings
 from tripl.models.user import User
+from tripl.services.plan_revision_service import build_plan_snapshot, plan_snapshot_hash
 from tripl.tests.conftest import TestSessionLocal
 
 
@@ -1247,8 +1248,19 @@ async def _seed_second_user(email: str) -> uuid.UUID:
 
 
 async def _add_approval(branch_id: str, user_id: uuid.UUID) -> None:
+    """Insert an approval stamped fresh for the branch's CURRENT content —
+    mirrors what the approve transition records for another user."""
     async with TestSessionLocal() as session:
-        session.add(PlanBranchApproval(branch_id=uuid.UUID(branch_id), user_id=user_id))
+        branch = await session.get(PlanBranch, uuid.UUID(branch_id))
+        assert branch is not None
+        payload = await build_plan_snapshot(session, branch.project_id, branch_id=branch.id)
+        session.add(
+            PlanBranchApproval(
+                branch_id=uuid.UUID(branch_id),
+                user_id=user_id,
+                plan_hash=plan_snapshot_hash(payload),
+            )
+        )
         await session.commit()
 
 
@@ -1345,6 +1357,7 @@ async def test_merge_blocked_until_min_approvals_met(client: AsyncClient) -> Non
     assert blocked.json()["detail"]["insufficient_approvals"] == {
         "required": 2,
         "current": 1,
+        "stale": 0,
     }
 
     second_user = await _seed_second_user("approver2@example.com")
@@ -1391,6 +1404,34 @@ async def test_self_approval_blocked_by_policy(client: AsyncClient) -> None:
 
 
 @pytest.mark.asyncio
+async def test_stale_approval_blocks_merge_until_reapproved(client: AsyncClient) -> None:
+    """Editing branch content after an approval voids it (tripl-d8v6): the
+    merge gate only counts approvals stamped for the current content."""
+    await _seed_plan(client, "branch-stale")
+    branch_id = await _create_branch(client, "branch-stale")
+    await _transition(client, "branch-stale", branch_id, "submit")
+    detail = await _transition(client, "branch-stale", branch_id, "approve")
+    assert detail["status"] == "approved"
+
+    # Author rewrites the branch AFTER the approval was recorded.
+    await _touch_branch_event_type(branch_id)
+
+    blocked = await client.post(f"/api/v1/projects/branch-stale/branches/{branch_id}/merge")
+    assert blocked.status_code == 409
+    assert blocked.json()["detail"]["insufficient_approvals"] == {
+        "required": 1,
+        "current": 0,
+        "stale": 1,
+    }
+
+    # A fresh approve restamps the content hash and unblocks the merge.
+    reapproved = await _transition(client, "branch-stale", branch_id, "approve")
+    assert reapproved["status"] == "approved"
+    merged = await client.post(f"/api/v1/projects/branch-stale/branches/{branch_id}/merge")
+    assert merged.status_code == 200, merged.text
+
+
+@pytest.mark.asyncio
 async def test_merge_discards_author_approval_when_self_approval_blocked(
     client: AsyncClient,
 ) -> None:
@@ -1414,6 +1455,7 @@ async def test_merge_discards_author_approval_when_self_approval_blocked(
     assert blocked.json()["detail"]["insufficient_approvals"] == {
         "required": 1,
         "current": 0,
+        "stale": 0,
     }
 
     reviewer = await _seed_second_user("approver3@example.com")
