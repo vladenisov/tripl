@@ -113,8 +113,9 @@ MANUAL_COLLECT_MAX_WINDOW = timedelta(days=30)
 # (bucket, breakdown_value), so this comfortably bounds a normal window.
 METRIC_QUERY_ROW_LIMIT = 100_000
 
-# Convention for the value column a ``sql`` metric must project (alias the
-# measure ``AS value``). The time column name is taken from the metric config.
+# Default value column a ``sql`` metric must project (alias the measure
+# ``AS value``); override per metric with config ``value_column``. The time
+# column name is taken from the metric config.
 SQL_VALUE_COLUMN = "value"
 
 # Column used for the per_distinct_user denominator when the metric config does
@@ -1464,10 +1465,11 @@ def _collect_sql(
 ) -> dict[str, object]:
     """Collect a sql metric: execute the user SELECT and bucket its rows.
 
-    The SELECT must project a ``value`` column and the configured time column
-    (re-checked here with ``validate_select_sql``). Each returned row is floored
-    to the interval; later rows for the same bucket overwrite earlier ones.
-    ``window`` overrides the resume window for a manual backfill.
+    The SELECT must project the configured value column (default ``value``)
+    and the configured time column (re-checked here with
+    ``validate_select_sql``). Each returned row is floored to the interval;
+    later rows for the same bucket overwrite earlier ones. ``window``
+    overrides the resume window for a manual backfill.
     """
     if definition.data_source_id is None or definition.interval is None:
         msg = "sql metric requires a data source and interval"
@@ -1479,9 +1481,10 @@ def _collect_sql(
     if metric_sql is None or time_column is None:
         msg = "sql metric requires metric_sql and time_column in config"
         raise ScanError(msg)
+    value_column = _config_str(config, "value_column") or SQL_VALUE_COLUMN
 
     safe_sql = validate_select_sql(
-        metric_sql, value_column=SQL_VALUE_COLUMN, time_column=time_column
+        metric_sql, value_column=value_column, time_column=time_column
     )
 
     ds = session.get(DataSource, definition.data_source_id)
@@ -1513,10 +1516,10 @@ def _collect_sql(
                 time_to=chunk_to,
             )
             index_by_name = {name: i for i, name in enumerate(column_names)}
-            if SQL_VALUE_COLUMN not in index_by_name or time_column not in index_by_name:
-                msg = f"sql metric must project {SQL_VALUE_COLUMN!r} and {time_column!r} columns"
+            if value_column not in index_by_name or time_column not in index_by_name:
+                msg = f"sql metric must project {value_column!r} and {time_column!r} columns"
                 raise ScanError(msg)
-            value_idx = index_by_name[SQL_VALUE_COLUMN]
+            value_idx = index_by_name[value_column]
             time_idx = index_by_name[time_column]
             values: dict[datetime, float] = {}
             for row in rows:

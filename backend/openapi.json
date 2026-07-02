@@ -5011,6 +5011,19 @@
               }
             ],
             "title": "Unit"
+          },
+          "user_id_column": {
+            "anyOf": [
+              {
+                "maxLength": 255,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "User Id Column"
           }
         },
         "required": [
@@ -5080,6 +5093,19 @@
               }
             ],
             "title": "Numerator Event Type Id"
+          },
+          "user_id_column": {
+            "anyOf": [
+              {
+                "maxLength": 255,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "User Id Column"
           }
         },
         "required": [
@@ -11141,6 +11167,97 @@
         "title": "ProjectAnomalySettingsUpdate",
         "type": "object"
       },
+      "ProjectBranchSettingsResponse": {
+        "description": "``id``/timestamps are None while the project still rides the defaults \u2014\nthe settings row is only materialized on the first PATCH.",
+        "properties": {
+          "block_self_approval": {
+            "title": "Block Self Approval",
+            "type": "boolean"
+          },
+          "created_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Created At"
+          },
+          "id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Id"
+          },
+          "min_approvals": {
+            "title": "Min Approvals",
+            "type": "integer"
+          },
+          "project_id": {
+            "format": "uuid",
+            "title": "Project Id",
+            "type": "string"
+          },
+          "updated_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Updated At"
+          }
+        },
+        "required": [
+          "project_id",
+          "min_approvals",
+          "block_self_approval"
+        ],
+        "title": "ProjectBranchSettingsResponse",
+        "type": "object"
+      },
+      "ProjectBranchSettingsUpdate": {
+        "properties": {
+          "block_self_approval": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Block Self Approval"
+          },
+          "min_approvals": {
+            "anyOf": [
+              {
+                "maximum": 100.0,
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Min Approvals"
+          }
+        },
+        "title": "ProjectBranchSettingsUpdate",
+        "type": "object"
+      },
       "ProjectCreate": {
         "properties": {
           "description": {
@@ -14133,6 +14250,19 @@
             "minLength": 1,
             "title": "Time Column",
             "type": "string"
+          },
+          "value_column": {
+            "anyOf": [
+              {
+                "maxLength": 255,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Value Column"
           }
         },
         "required": [
@@ -17572,6 +17702,99 @@
         "summary": "Update Project Anomaly Settings",
         "tags": [
           "anomaly-settings"
+        ]
+      }
+    },
+    "/api/v1/projects/{slug}/branch-settings": {
+      "get": {
+        "operationId": "get_project_branch_settings_api_v1_projects__slug__branch_settings_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "slug",
+            "required": true,
+            "schema": {
+              "title": "Slug",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProjectBranchSettingsResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Project Branch Settings",
+        "tags": [
+          "branch-settings"
+        ]
+      },
+      "patch": {
+        "description": "Owner-only: min_approvals/block_self_approval govern what editors may\nmerge, so editors must not be able to loosen the policy on themselves.",
+        "operationId": "update_project_branch_settings_api_v1_projects__slug__branch_settings_patch",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "slug",
+            "required": true,
+            "schema": {
+              "title": "Slug",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProjectBranchSettingsUpdate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProjectBranchSettingsResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Update Project Branch Settings",
+        "tags": [
+          "branch-settings"
         ]
       }
     },

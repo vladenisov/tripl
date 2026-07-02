@@ -203,6 +203,9 @@ class SqlConfig(BaseModel):
 
     metric_sql: str = Field(min_length=1)
     time_column: str = Field(min_length=1, max_length=255)
+    # Which projected column carries the measure. None keeps the documented
+    # ``value`` convention (tripl-0l0p elevated this from convention to config).
+    value_column: str | None = Field(default=None, min_length=1, max_length=255)
 
     @field_validator("metric_sql")
     @classmethod
@@ -213,6 +216,11 @@ class SqlConfig(BaseModel):
     @classmethod
     def _check_time_column(cls, value: str) -> str:
         return validate_identifier(value)
+
+    @field_validator("value_column")
+    @classmethod
+    def _check_value_column(cls, value: str | None) -> str | None:
+        return _validate_optional_identifier(value)
 
 
 # ── Shared catalog fields ────────────────────────────────────────────────────
@@ -461,6 +469,15 @@ class EventCompositionMetricDefinition(BaseModel):
     numerator_event_type_id: uuid.UUID | None = None
     denominator_event_id: uuid.UUID | None = None
     denominator_event_type_id: uuid.UUID | None = None
+    # per_distinct_user denominator column; None keeps the documented
+    # ``user_id`` default. The collector already honored this config key —
+    # the schema layer just used to drop it (tripl-0l0p).
+    user_id_column: str | None = Field(default=None, min_length=1, max_length=255)
+
+    @field_validator("user_id_column")
+    @classmethod
+    def _check_user_id_column(cls, value: str | None) -> str | None:
+        return _validate_optional_identifier(value)
 
     @model_validator(mode="after")
     def validate_kind(self) -> EventCompositionMetricDefinition:
@@ -477,6 +494,12 @@ class EventCompositionMetricDefinition(BaseModel):
             role="denominator",
             required=denominator_required,
         )
+        if (
+            self.user_id_column is not None
+            and self.composition != MetricComposition.per_distinct_user
+        ):
+            msg = "user_id_column only applies to per_distinct_user composition"
+            raise ValueError(msg)
         return self
 
     def to_definition_values(self) -> dict[str, object]:
@@ -484,7 +507,11 @@ class EventCompositionMetricDefinition(BaseModel):
             "kind": self.kind,
             "aggregation": None,
             "composition": self.composition,
-            "config": {},
+            "config": (
+                {"user_id_column": self.user_id_column}
+                if self.user_id_column is not None
+                else {}
+            ),
             "fact_table_id": None,
             "data_source_id": None,
             "interval": None,

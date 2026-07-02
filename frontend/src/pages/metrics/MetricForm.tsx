@@ -396,9 +396,11 @@ export function MetricForm({ slug, metric, dataSources, events, onClose }: Metri
   // SQL
   const [metricSql, setMetricSql] = useState(configString('metric_sql'))
   const [sqlTimeColumn, setSqlTimeColumn] = useState(configString('time_column'))
+  const [sqlValueColumn, setSqlValueColumn] = useState(configString('value_column'))
 
   // Event composition
   const [composition, setComposition] = useState<MetricComposition>(metric?.composition ?? 'single')
+  const [userIdColumn, setUserIdColumn] = useState(configString('user_id_column'))
   const [numeratorEventId, setNumeratorEventId] = useState(metric?.numerator_event_id ?? '')
   const [denominatorEventId, setDenominatorEventId] = useState(metric?.denominator_event_id ?? '')
   const [numeratorEventTypeId, setNumeratorEventTypeId] = useState(
@@ -528,6 +530,7 @@ export function MetricForm({ slug, metric, dataSources, events, onClose }: Metri
         config: {
           metric_sql: metricSql,
           time_column: sqlTimeColumn.trim(),
+          value_column: sqlValueColumn.trim() || null,
         },
         replay_chunk_interval: replayChunkInterval,
       }
@@ -570,6 +573,8 @@ export function MetricForm({ slug, metric, dataSources, events, onClose }: Metri
           composition === 'ratio' && !denominatorEventId
             ? denominatorEventTypeId || null
             : null,
+        user_id_column:
+          composition === 'per_distinct_user' ? userIdColumn.trim() || null : null,
       }
     }
     const _exhaustive: never = kind
@@ -601,6 +606,7 @@ export function MetricForm({ slug, metric, dataSources, events, onClose }: Metri
         config: {
           metric_sql: metricSql,
           time_column: sqlTimeColumn.trim(),
+          value_column: sqlValueColumn.trim() || null,
         },
       }
       return payload
@@ -641,6 +647,8 @@ export function MetricForm({ slug, metric, dataSources, events, onClose }: Metri
         composition,
         numerator_event_id: numeratorEventId || null,
         denominator_event_id: composition === 'ratio' ? denominatorEventId || null : null,
+        user_id_column:
+          composition === 'per_distinct_user' ? userIdColumn.trim() || null : null,
       }
       return payload
     }
@@ -859,7 +867,7 @@ export function MetricForm({ slug, metric, dataSources, events, onClose }: Metri
                   label="Denominator event"
                   htmlFor="metric-denominator"
                   required={composition === 'ratio'}
-                  last
+                  last={composition !== 'per_distinct_user'}
                   hint={composition === 'ratio' ? 'Required for a ratio metric.' : 'Only used by ratio metrics.'}
                 >
                   <Select
@@ -870,6 +878,22 @@ export function MetricForm({ slug, metric, dataSources, events, onClose }: Metri
                     disabled={composition !== 'ratio'}
                   />
                 </MField>
+                {composition === 'per_distinct_user' && (
+                  <MField
+                    label="User ID column"
+                    htmlFor="metric-user-id-column"
+                    last
+                    hint="Column counted for distinct users. Defaults to user_id."
+                  >
+                    <TextInput
+                      id="metric-user-id-column"
+                      value={userIdColumn}
+                      onChange={setUserIdColumn}
+                      mono
+                      placeholder="user_id"
+                    />
+                  </MField>
+                )}
               </SCard>
             )}
           </div>
@@ -891,8 +915,11 @@ export function MetricForm({ slug, metric, dataSources, events, onClose }: Metri
                 minHeight="220px"
               />
             </MField>
-            <MField label="Time column" htmlFor="metric-sql-time" required last hint="The bucket/time column returned by the query.">
+            <MField label="Time column" htmlFor="metric-sql-time" required hint="The bucket/time column returned by the query.">
               <TextInput id="metric-sql-time" value={sqlTimeColumn} onChange={setSqlTimeColumn} mono placeholder="bucket" />
+            </MField>
+            <MField label="Value column" htmlFor="metric-sql-value" last hint="The projected measure column. Defaults to value.">
+              <TextInput id="metric-sql-value" value={sqlValueColumn} onChange={setSqlValueColumn} mono placeholder="value" />
             </MField>
           </SCard>
         )}

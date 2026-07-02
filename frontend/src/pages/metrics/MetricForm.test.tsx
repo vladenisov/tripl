@@ -274,6 +274,7 @@ describe('MetricForm validation', () => {
           config: {
             metric_sql: 'SELECT bucket, count(*) AS value FROM events GROUP BY 1',
             time_column: 'bucket',
+            value_column: null,
           },
         }),
       }),

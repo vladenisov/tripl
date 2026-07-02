@@ -383,6 +383,78 @@ class TestCreateHappyPaths:
         assert data["numerator_event_id"] == event["id"]
         assert data["denominator_event_type_id"] == event_type["id"]
 
+    async def test_create_sql_metric_custom_value_column(
+        self, client: AsyncClient, project: dict, data_source: dict
+    ):
+        resp = await client.post(
+            _metrics_url(project["slug"]),
+            json={
+                "kind": "sql",
+                "name": "sessions",
+                "display_name": "Sessions",
+                "data_source_id": data_source["id"],
+                "interval": "1d",
+                "config": {
+                    "metric_sql": (
+                        "SELECT toDate(t) AS bucket, count() AS sessions FROM e GROUP BY bucket"
+                    ),
+                    "time_column": "t",
+                    "value_column": "sessions",
+                },
+            },
+        )
+        assert resp.status_code == 201, resp.text
+        assert resp.json()["config"]["value_column"] == "sessions"
+
+        bad = await client.post(
+            _metrics_url(project["slug"]),
+            json={
+                "kind": "sql",
+                "name": "bad-value-col",
+                "display_name": "Bad",
+                "data_source_id": data_source["id"],
+                "interval": "1d",
+                "config": {
+                    "metric_sql": "SELECT 1 AS v, now() AS t",
+                    "time_column": "t",
+                    "value_column": "not a column!!",
+                },
+            },
+        )
+        assert bad.status_code == 422
+
+    async def test_create_per_distinct_user_with_user_id_column(
+        self, client: AsyncClient, project: dict, event: dict
+    ):
+        resp = await client.post(
+            _metrics_url(project["slug"]),
+            json={
+                "kind": "event_composition",
+                "name": "events_per_device",
+                "display_name": "Events per device",
+                "composition": "per_distinct_user",
+                "numerator_event_id": event["id"],
+                "user_id_column": "device_id",
+            },
+        )
+        assert resp.status_code == 201, resp.text
+        assert resp.json()["config"] == {"user_id_column": "device_id"}
+
+        # The override is meaningless outside per_distinct_user — reject it so
+        # a stray value doesn't silently sit in config.
+        bad = await client.post(
+            _metrics_url(project["slug"]),
+            json={
+                "kind": "event_composition",
+                "name": "single_with_user_col",
+                "display_name": "Single",
+                "composition": "single",
+                "numerator_event_id": event["id"],
+                "user_id_column": "device_id",
+            },
+        )
+        assert bad.status_code == 422
+
 
 class TestListFilterPagination:
     async def _seed(self, client: AsyncClient, slug: str, data_source_id: str) -> None:

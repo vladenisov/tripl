@@ -574,6 +574,64 @@ def test_collect_sql_metric_writes_metric_values(
         }
 
 
+def test_collect_sql_metric_honors_custom_value_column(
+    sync_session_factory: sessionmaker[Session],
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """config.value_column redirects the measure read off the projected row
+    (tripl-0l0p) — the documented ``value`` alias is only the default."""
+    with sync_session_factory() as session:
+        project, data_source = _seed_project_and_ds(session)
+        definition = MetricDefinition(
+            id=uuid.uuid4(),
+            project_id=project.id,
+            name="sql-metric-custom-col",
+            display_name="Sessions",
+            kind=MetricKind.sql,
+            config={
+                "metric_sql": (
+                    "SELECT ts AS bucket_ts, count() AS sessions FROM t GROUP BY bucket_ts"
+                ),
+                "time_column": "bucket_ts",
+                "value_column": "sessions",
+            },
+            data_source_id=data_source.id,
+            interval=ScanInterval.h1,
+            status=MetricStatus.active,
+        )
+        session.add(definition)
+        session.commit()
+        def_id = str(definition.id)
+
+    adapter = _SqlAdapter(
+        ["bucket_ts", "sessions"],
+        [(datetime(2026, 1, 1, 10), 5), (datetime(2026, 1, 1, 11), 9)],
+    )
+    monkeypatch.setattr(metric_collect, "_get_sync_session", sync_session_factory)
+    monkeypatch.setattr(metric_collect, "_build_adapter", lambda ds: adapter)
+    monkeypatch.setattr(
+        metric_collect,
+        "_resolve_value_window",
+        lambda *a, **k: (datetime(2026, 1, 1, 10), datetime(2026, 1, 1, 12)),
+    )
+
+    result = metric_collect.collect_metric_definitions.run(def_id)
+
+    assert result["values"] == 2
+    with sync_session_factory() as session:
+        rows = (
+            session.execute(
+                select(MetricValue).where(MetricValue.metric_definition_id == uuid.UUID(def_id))
+            )
+            .scalars()
+            .all()
+        )
+        assert {(row.bucket, row.value) for row in rows} == {
+            (datetime(2026, 1, 1, 10), 5.0),
+            (datetime(2026, 1, 1, 11), 9.0),
+        }
+
+
 def _seed_draft_sql_metric(session: Session, project: Project, data_source: DataSource) -> str:
     definition = MetricDefinition(
         id=uuid.uuid4(),
