@@ -1,4 +1,4 @@
-import { render, screen, within } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -12,7 +12,7 @@ import type {
 import MetricsPage, { type MetricsTab } from './MetricsPage'
 
 vi.mock('@/api/metricsCatalogApi', () => ({
-  metricsCatalogApi: { list: vi.fn() },
+  metricsCatalogApi: { list: vi.fn(), bulkUpdate: vi.fn(), reorder: vi.fn() },
 }))
 vi.mock('@/api/factTablesApi', () => ({
   factTablesApi: { list: vi.fn() },
@@ -223,6 +223,94 @@ describe('MetricsPage', () => {
     expect(await screen.findByText('No metrics yet')).toBeInTheDocument()
     const links = await screen.findAllByRole('link', { name: /New metric/ })
     expect(links[0]).toHaveAttribute('href', '/p/demo/metrics/new')
+  })
+
+  describe('bulk actions and reorder (tripl-57o8)', () => {
+    it('selects rows and applies a bulk status change', async () => {
+      mockList({
+        items: [
+          makeItem({ id: 'm-1', display_name: 'Checkout conversion' }),
+          makeItem({ id: 'm-2', display_name: 'Revenue', name: 'revenue' }),
+        ],
+        total: 2,
+      })
+      vi.mocked(metricsCatalogApi.bulkUpdate).mockResolvedValue(undefined)
+
+      renderMetrics()
+
+      fireEvent.click(await screen.findByRole('checkbox', { name: 'Select Checkout conversion' }))
+      expect(await screen.findByText('1 selected')).toBeInTheDocument()
+
+      fireEvent.click(screen.getByRole('button', { name: 'Set archived' }))
+      await waitFor(() =>
+        expect(metricsCatalogApi.bulkUpdate).toHaveBeenCalledWith('demo', {
+          metric_ids: ['m-1'],
+          status: 'archived',
+        }),
+      )
+    })
+
+    it('select-all covers every visible row', async () => {
+      mockList({
+        items: [
+          makeItem({ id: 'm-1', display_name: 'Checkout conversion' }),
+          makeItem({ id: 'm-2', display_name: 'Revenue', name: 'revenue' }),
+        ],
+        total: 2,
+      })
+
+      renderMetrics()
+
+      fireEvent.click(await screen.findByRole('checkbox', { name: 'Select all metrics' }))
+      expect(await screen.findByText('2 selected')).toBeInTheDocument()
+    })
+
+    it('clears the selection when the filter view changes', async () => {
+      mockList({
+        items: [
+          makeItem({ id: 'm-1', display_name: 'Checkout conversion' }),
+          makeItem({ id: 'm-2', display_name: 'Revenue', name: 'revenue' }),
+        ],
+        total: 2,
+      })
+
+      renderMetrics()
+
+      fireEvent.click(await screen.findByRole('checkbox', { name: 'Select Checkout conversion' }))
+      expect(await screen.findByText('1 selected')).toBeInTheDocument()
+
+      fireEvent.change(screen.getByLabelText('Filter by status'), {
+        target: { value: 'active' },
+      })
+      await waitFor(() => expect(screen.queryByText('1 selected')).not.toBeInTheDocument())
+    })
+
+    it('shows drag handles only when the full unfiltered catalog is listed', async () => {
+      mockList({
+        items: [
+          makeItem({ id: 'm-1', display_name: 'Checkout conversion' }),
+          makeItem({ id: 'm-2', display_name: 'Revenue', name: 'revenue' }),
+        ],
+        total: 2,
+      })
+
+      renderMetrics()
+
+      expect(
+        await screen.findByRole('button', { name: 'Reorder Checkout conversion' }),
+      ).toBeInTheDocument()
+
+      // A status filter narrows the list — partial orders can't be persisted,
+      // so the handles disappear.
+      fireEvent.change(screen.getByLabelText('Filter by status'), {
+        target: { value: 'active' },
+      })
+      await waitFor(() =>
+        expect(
+          screen.queryByRole('button', { name: 'Reorder Checkout conversion' }),
+        ).not.toBeInTheDocument(),
+      )
+    })
   })
 
   describe('Fact tables tab', () => {

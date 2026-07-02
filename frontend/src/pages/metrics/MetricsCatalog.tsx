@@ -1,9 +1,18 @@
 import { useMemo, useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
-import { useQuery } from '@tanstack/react-query'
-import { LineChart, Plus, Search } from 'lucide-react'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { DndContext, closestCenter, type DragEndEvent } from '@dnd-kit/core'
+import {
+  SortableContext,
+  arrayMove,
+  useSortable,
+  verticalListSortingStrategy,
+} from '@dnd-kit/sortable'
+import { CSS } from '@dnd-kit/utilities'
+import { GripVertical, LineChart, Plus, Search } from 'lucide-react'
 import { metricsCatalogApi } from '@/api/metricsCatalogApi'
 import { Button } from '@/components/ui/button'
+import { Checkbox } from '@/components/ui/checkbox'
 import { EmptyState } from '@/components/empty-state'
 import { ErrorState } from '@/components/error-state'
 import { Panel } from '@/components/settings/kit'
@@ -12,18 +21,22 @@ import { Dot } from '@/components/primitives/dot'
 import { MiniStat, MiniStatDivider } from '@/components/primitives/mini-stat'
 import { Sparkline } from '@/components/primitives/sparkline'
 import { useDebouncedValue } from '@/hooks/useDebouncedValue'
+import { useEventsDndSensors } from '@/pages/events/useEventsDndSensors'
 import { formatRelativeTime } from '@/lib/datetime'
 import { getMetricMonitoringPath } from '@/lib/monitoring'
+import { getErrorMessage } from '@/lib/utils'
 import {
   METRIC_KIND_LABEL,
   METRIC_STATUS_LABEL,
   METRIC_STATUSES,
   type MetricDefinitionListItem,
+  type MetricDefinitionListResponse,
   type MetricKind,
   type MetricStatus,
 } from '@/types'
 
-const METRIC_GRID = 'grid grid-cols-[minmax(0,1.3fr)_minmax(0,1fr)_104px_84px_84px] items-center gap-3 px-4'
+const METRIC_GRID =
+  'grid grid-cols-[18px_20px_minmax(0,1.3fr)_minmax(0,1fr)_104px_84px_84px] items-center gap-3 px-4'
 
 const STATUS_TONE: Record<MetricStatus, ChipTone> = {
   draft: 'neutral',
@@ -54,13 +67,16 @@ function formatValue(value: number | null | undefined, unit: string | null): str
  * spacing but not the page header/tab chrome (the parent provides those).
  */
 export function MetricsCatalog({ slug }: { slug?: string }) {
+  const qc = useQueryClient()
   const [searchInput, setSearchInput] = useState('')
   const [statusFilter, setStatusFilter] = useState<'' | MetricStatus>('')
   const [kindFilter, setKindFilter] = useState<'' | MetricKind>('')
+  const [selectedIds, setSelectedIds] = useState<ReadonlySet<string>>(new Set())
   const search = useDebouncedValue(searchInput, 250)
 
+  const queryKey = ['metrics-catalog', slug, statusFilter, kindFilter, search] as const
   const metricsQuery = useQuery({
-    queryKey: ['metrics-catalog', slug, statusFilter, kindFilter, search],
+    queryKey,
     queryFn: () =>
       metricsCatalogApi.list(slug!, {
         status: statusFilter ? [statusFilter] : undefined,
@@ -80,6 +96,85 @@ export function MetricsCatalog({ slug }: { slug?: string }) {
   // Loaded with no metrics AND no active filters — the true "nothing here yet"
   // state, distinct from loading, error, and "filters matched nothing".
   const isEmpty = !metricsQuery.isError && !!data && metrics.length === 0 && !hasFilters
+
+  // Reorder only makes sense against the full, unfiltered catalog: a partial
+  // list can't express the canonical order the backend persists.
+  const canReorder = !hasFilters && metrics.length > 1
+
+  const selected = useMemo(
+    () => metrics.filter(m => selectedIds.has(m.id)),
+    [metrics, selectedIds],
+  )
+  const allSelected = metrics.length > 0 && selected.length === metrics.length
+
+  const toggleSelected = (id: string) => {
+    setSelectedIds(prev => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
+  }
+  const toggleAll = () => {
+    setSelectedIds(allSelected ? new Set() : new Set(metrics.map(m => m.id)))
+  }
+  // Filter/search changes swap the visible set; carrying hidden selections
+  // across views would let a later bulk action silently hit rows the user
+  // no longer sees — so every view change starts with a clean slate.
+  const clearSelectionAnd = <T,>(setter: (value: T) => void) => (value: T) => {
+    setSelectedIds(new Set())
+    setter(value)
+  }
+
+  const bulkStatusMut = useMutation({
+    mutationFn: (status: MetricStatus) =>
+      metricsCatalogApi.bulkUpdate(slug!, {
+        metric_ids: selected.map(m => m.id),
+        status,
+      }),
+    onSuccess: () => {
+      setSelectedIds(new Set())
+      void qc.invalidateQueries({ queryKey: ['metrics-catalog', slug] })
+    },
+  })
+
+  const reorderMut = useMutation({
+    mutationFn: (metricIds: string[]) =>
+      metricsCatalogApi.reorder(slug!, { metric_ids: metricIds }),
+    onMutate: async (metricIds: string[]) => {
+      // Optimistic: repaint rows in the dropped order while the PATCH runs.
+      await qc.cancelQueries({ queryKey })
+      const previous = qc.getQueryData<MetricDefinitionListResponse>(queryKey)
+      if (previous) {
+        const byId = new Map(previous.items.map(item => [item.id, item]))
+        qc.setQueryData<MetricDefinitionListResponse>(queryKey, {
+          ...previous,
+          items: metricIds
+            .map(id => byId.get(id))
+            .filter((item): item is MetricDefinitionListItem => item !== undefined),
+        })
+      }
+      return { previous }
+    },
+    onError: (_error, _ids, context) => {
+      if (context?.previous) qc.setQueryData(queryKey, context.previous)
+    },
+    onSettled: () => {
+      void qc.invalidateQueries({ queryKey: ['metrics-catalog', slug] })
+    },
+  })
+
+  // Shared pointer+keyboard sensor pair — keyboard so the handle's injected
+  // "press space to lift" instructions are actually true.
+  const sensors = useEventsDndSensors()
+  const handleDragEnd = (event: DragEndEvent) => {
+    const { active: dragged, over } = event
+    if (!over || dragged.id === over.id) return
+    const oldIndex = metrics.findIndex(m => m.id === dragged.id)
+    const newIndex = metrics.findIndex(m => m.id === over.id)
+    if (oldIndex < 0 || newIndex < 0) return
+    reorderMut.mutate(arrayMove(metrics, oldIndex, newIndex).map(m => m.id))
+  }
 
   return (
     <div className={isEmpty ? 'flex min-h-[calc(100vh-14rem)] flex-col gap-6' : 'space-y-6'}>
@@ -147,7 +242,7 @@ export function MetricsCatalog({ slug }: { slug?: string }) {
                   <input
                     aria-label="Search metrics"
                     value={searchInput}
-                    onChange={e => setSearchInput(e.target.value)}
+                    onChange={e => clearSelectionAnd(setSearchInput)(e.target.value)}
                     placeholder="Search…"
                     className={`${FILTER_SELECT_CLASS} w-[160px] pl-7`}
                   />
@@ -155,7 +250,9 @@ export function MetricsCatalog({ slug }: { slug?: string }) {
                 <select
                   aria-label="Filter by status"
                   value={statusFilter}
-                  onChange={e => setStatusFilter(e.target.value as '' | MetricStatus)}
+                  onChange={e =>
+                    clearSelectionAnd(setStatusFilter)(e.target.value as '' | MetricStatus)
+                  }
                   className={FILTER_SELECT_CLASS}
                 >
                   <option value="">All statuses</option>
@@ -168,7 +265,9 @@ export function MetricsCatalog({ slug }: { slug?: string }) {
                 <select
                   aria-label="Filter by kind"
                   value={kindFilter}
-                  onChange={e => setKindFilter(e.target.value as '' | MetricKind)}
+                  onChange={e =>
+                    clearSelectionAnd(setKindFilter)(e.target.value as '' | MetricKind)
+                  }
                   className={FILTER_SELECT_CLASS}
                 >
                   {KIND_FILTER_OPTIONS.map(o => (
@@ -180,6 +279,41 @@ export function MetricsCatalog({ slug }: { slug?: string }) {
               </div>
             }
           >
+            {selected.length > 0 && (
+              <div
+                className="flex flex-wrap items-center gap-2 border-b px-4 py-2"
+                style={{ borderColor: 'var(--border-subtle)', background: 'var(--bg-sunken)' }}
+              >
+                <span className="text-[12px] font-medium" style={{ color: 'var(--fg)' }}>
+                  {selected.length} selected
+                </span>
+                {METRIC_STATUSES.map(status => (
+                  <Button
+                    key={status}
+                    size="sm"
+                    variant="outline"
+                    className="h-7 px-2 text-[11.5px]"
+                    disabled={bulkStatusMut.isPending}
+                    onClick={() => bulkStatusMut.mutate(status)}
+                  >
+                    Set {METRIC_STATUS_LABEL[status].toLowerCase()}
+                  </Button>
+                ))}
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  className="h-7 px-2 text-[11.5px]"
+                  onClick={() => setSelectedIds(new Set())}
+                >
+                  Clear
+                </Button>
+                {bulkStatusMut.isError && (
+                  <span className="text-[11.5px]" style={{ color: 'var(--danger)' }}>
+                    {getErrorMessage(bulkStatusMut.error)}
+                  </span>
+                )}
+              </div>
+            )}
             {metricsQuery.isLoading ? (
               <div className="px-4 py-6 text-[12px]" style={{ color: 'var(--fg-subtle)' }}>
                 Loading…
@@ -190,13 +324,21 @@ export function MetricsCatalog({ slug }: { slug?: string }) {
               </div>
             ) : (
               <div className="overflow-x-auto">
-                <div role="table" aria-label="Metrics" className="min-w-[680px]">
+                <div role="table" aria-label="Metrics" className="min-w-[720px]">
                   <div role="rowgroup">
                     <div
                       role="row"
                       className={`${METRIC_GRID} border-b py-2 text-[10.5px] font-semibold uppercase tracking-[0.05em]`}
                       style={{ borderColor: 'var(--border-subtle)', color: 'var(--fg-faint)' }}
                     >
+                      <span role="columnheader" aria-label="Reorder" />
+                      <span role="columnheader">
+                        <Checkbox
+                          aria-label="Select all metrics"
+                          checked={allSelected}
+                          onCheckedChange={toggleAll}
+                        />
+                      </span>
                       <span role="columnheader">Metric</span>
                       <span role="columnheader">Latest</span>
                       <span role="columnheader">Trend</span>
@@ -204,11 +346,29 @@ export function MetricsCatalog({ slug }: { slug?: string }) {
                       <span role="columnheader" className="text-right">Updated</span>
                     </div>
                   </div>
-                  <div role="rowgroup">
-                    {metrics.map(metric => (
-                      <MetricRow key={metric.id} metric={metric} slug={slug} />
-                    ))}
-                  </div>
+                  <DndContext
+                    sensors={sensors}
+                    collisionDetection={closestCenter}
+                    onDragEnd={handleDragEnd}
+                  >
+                    <SortableContext
+                      items={metrics.map(m => m.id)}
+                      strategy={verticalListSortingStrategy}
+                    >
+                      <div role="rowgroup">
+                        {metrics.map(metric => (
+                          <MetricRow
+                            key={metric.id}
+                            metric={metric}
+                            slug={slug}
+                            canReorder={canReorder}
+                            isSelected={selectedIds.has(metric.id)}
+                            onToggleSelected={() => toggleSelected(metric.id)}
+                          />
+                        ))}
+                      </div>
+                    </SortableContext>
+                  </DndContext>
                 </div>
               </div>
             )}
@@ -218,9 +378,21 @@ export function MetricsCatalog({ slug }: { slug?: string }) {
   )
 }
 
-function MetricRow({ metric, slug }: { metric: MetricDefinitionListItem; slug?: string }) {
+interface MetricRowProps {
+  metric: MetricDefinitionListItem
+  slug?: string
+  canReorder: boolean
+  isSelected: boolean
+  onToggleSelected: () => void
+}
+
+function MetricRow({ metric, slug, canReorder, isSelected, onToggleSelected }: MetricRowProps) {
   const navigate = useNavigate()
   const href = slug ? getMetricMonitoringPath(slug, metric.id) : undefined
+  const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
+    id: metric.id,
+    disabled: !canReorder,
+  })
   const signal = metric.latest_signal
   // Only a signal from the latest scan reflects an active anomaly. A "recent"
   // (older) signal means the most recent scan was clean, so the current
@@ -236,12 +408,20 @@ function MetricRow({ metric, slug }: { metric: MetricDefinitionListItem; slug?: 
 
   return (
     <div
+      ref={setNodeRef}
       role="row"
       tabIndex={href ? 0 : undefined}
       className={`${METRIC_GRID} border-b py-2.5 last:border-0 ${
         href ? 'cursor-pointer transition-colors hover:bg-[var(--surface-hover)]' : 'cursor-default'
       }`}
-      style={{ borderColor: 'var(--border-subtle)' }}
+      style={{
+        borderColor: 'var(--border-subtle)',
+        transform: CSS.Transform.toString(transform),
+        transition,
+        opacity: isDragging ? 0.6 : undefined,
+        position: 'relative',
+        zIndex: isDragging ? 1 : undefined,
+      }}
       onClick={href ? () => navigate(href) : undefined}
       onKeyDown={
         href
@@ -257,6 +437,29 @@ function MetricRow({ metric, slug }: { metric: MetricDefinitionListItem; slug?: 
           : undefined
       }
     >
+      <span role="cell">
+        {canReorder ? (
+          <button
+            type="button"
+            aria-label={`Reorder ${metric.display_name}`}
+            className="flex cursor-grab touch-none items-center justify-center rounded p-0.5 hover:bg-[var(--surface-hover)] active:cursor-grabbing"
+            style={{ color: 'var(--fg-faint)' }}
+            onClick={event => event.stopPropagation()}
+            {...attributes}
+            {...listeners}
+          >
+            <GripVertical className="h-3.5 w-3.5" />
+          </button>
+        ) : null}
+      </span>
+      <span role="cell">
+        <Checkbox
+          aria-label={`Select ${metric.display_name}`}
+          checked={isSelected}
+          onCheckedChange={onToggleSelected}
+          onClick={event => event.stopPropagation()}
+        />
+      </span>
       <span role="cell" className="flex min-w-0 items-center gap-2">
         {signalTone ? (
           <Dot tone={signalTone} pulse size={7} />
