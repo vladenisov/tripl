@@ -6,8 +6,19 @@ import type { EventMetricPoint } from '@/types'
 import MonitoringDetailPage from './MonitoringDetailPage'
 
 vi.mock('@/components/ui/chart-lazy', () => ({
-  MetricsChart: ({ forecast }: { forecast?: unknown[] }) => (
-    <div data-testid="metrics-chart" data-forecast-count={forecast?.length ?? 0} />
+  MetricsChart: ({
+    data,
+    forecast,
+  }: {
+    data?: Array<{ bucket: string }>
+    forecast?: unknown[]
+  }) => (
+    <div
+      data-testid="metrics-chart"
+      data-forecast-count={forecast?.length ?? 0}
+      data-points={data?.length ?? 0}
+      data-first-bucket={data?.[0]?.bucket ?? ''}
+    />
   ),
   MetricsMultiSeriesChart: ({
     series,
@@ -494,5 +505,126 @@ describe('MonitoringDetailPage event-detail header and semantics', () => {
     expect(properties).toBeInTheDocument()
     expect(within(properties).getAllByRole('row').length).toBeGreaterThan(0)
     expect(within(properties).getAllByRole('rowheader')[0]).toHaveTextContent('Event type')
+  })
+})
+
+describe('MonitoringDetailPage catalog-metric drilldown', () => {
+  function metricSeriesPoint(bucket: string, value: number) {
+    return {
+      bucket,
+      value,
+      expected_count: null,
+      stddev: null,
+      is_anomaly: false,
+      anomaly_direction: null,
+      z_score: null,
+    }
+  }
+
+  function metricDefinitionResponse(interval: string | null) {
+    return {
+      id: 'metric-1',
+      project_id: 'p-1',
+      name: 'dau',
+      display_name: 'Daily Active Users',
+      description: '',
+      color: '#8884d8',
+      order: 0,
+      unit: null,
+      status: 'active',
+      owner_id: null,
+      reviewed: false,
+      kind: 'sql',
+      aggregation: null,
+      composition: null,
+      config: {},
+      breakdown_columns: [],
+      breakdown_values_limit: null,
+      app_version_column: null,
+      platform_column: null,
+      data_source_id: null,
+      interval,
+      replay_chunk_interval: null,
+      numerator_event_id: null,
+      numerator_event_type_id: null,
+      denominator_event_id: null,
+      denominator_event_type_id: null,
+      anomaly_detection_enabled: true,
+      last_collected_at: null,
+      last_collection_status: null,
+      last_collection_error: null,
+      created_at: '2026-01-01T00:00:00Z',
+      updated_at: '2026-01-01T00:00:00Z',
+    }
+  }
+
+  function installMetricDetailFetch(interval: string) {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async input => {
+      const url = String(input)
+
+      if (url.endsWith('/api/v1/projects/demo/event-types')) return mockJsonResponse([])
+      if (url.includes('/api/v1/projects/demo/metrics/metric-1/series')) {
+        return mockJsonResponse({
+          metric_id: 'metric-1',
+          scan_config_id: null,
+          interval,
+          latest_signal: null,
+          // Two same-day points: they collapse into one daily bucket only when
+          // the effective granularity is 'day'.
+          data: [
+            metricSeriesPoint('2026-01-02T05:00:00Z', 10),
+            metricSeriesPoint('2026-01-02T18:00:00Z', 20),
+          ],
+        })
+      }
+      if (url.includes('/api/v1/projects/demo/metrics/metric-1/breakdowns')) {
+        return mockJsonResponse({
+          metric_id: 'metric-1',
+          scan_config_id: null,
+          interval,
+          columns: [],
+          selected_column: null,
+          series: [],
+        })
+      }
+      if (url.endsWith('/api/v1/projects/demo/metrics/metric-1')) {
+        return mockJsonResponse(metricDefinitionResponse(interval))
+      }
+      if (url.includes('/api/v1/projects/demo/annotations')) return mockJsonResponse([])
+
+      throw new Error(`Unhandled fetch: ${url}`)
+    })
+  }
+
+  function renderMetricDetail() {
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    })
+    return render(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter initialEntries={['/p/demo/monitoring/metric/metric-1']}>
+          <Routes>
+            <Route path="/p/:slug/monitoring/:scope/:id" element={<MonitoringDetailPage />} />
+          </Routes>
+        </MemoryRouter>
+      </QueryClientProvider>,
+    )
+  }
+
+  it('defaults granularity to the metric interval for 1d metrics (tripl-4m86)', async () => {
+    installMetricDetailFetch('1d')
+    renderMetricDetail()
+
+    const chart = await screen.findByTestId('metrics-chart')
+    await waitFor(() => expect(chart).toHaveAttribute('data-points', '1'))
+    expect(chart).toHaveAttribute('data-first-bucket', '2026-01-02T00:00:00.000Z')
+  })
+
+  it('keeps the hourly default for sub-daily metrics', async () => {
+    installMetricDetailFetch('1h')
+    renderMetricDetail()
+
+    const chart = await screen.findByTestId('metrics-chart')
+    await waitFor(() => expect(chart).toHaveAttribute('data-points', '2'))
   })
 })

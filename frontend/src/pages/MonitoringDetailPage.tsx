@@ -204,7 +204,9 @@ export default function MonitoringDetailPage() {
   // affordance returns to the metrics list rather than the events list.
   const goToMetrics = () => navigate(`/p/${slug}/metrics`)
   const [rangeDays, setRangeDays] = useState(30)
-  const [granularity, setGranularity] = useState<MetricsGranularity>('hour')
+  // null = "no manual pick yet": the effective granularity then follows the
+  // scope's default (interval-aware for catalog metrics, hourly otherwise).
+  const [granularityOverride, setGranularityOverride] = useState<MetricsGranularity | null>(null)
   const [activeTab, setActiveTab] = useState<MonitoringDetailTab>('volume')
   const metricsRef = useRef<HTMLSpanElement>(null)
   const [versionFilter, setVersionFilter] = useState<VersionFilter>('all')
@@ -282,6 +284,16 @@ export default function MonitoringDetailPage() {
     refetchInterval: 60000,
   })
   const metrics = metricsQuery.data
+  // Interval-based catalog metrics chart one point per interval, so 'Hours'
+  // is a misleading default (tripl-4m86): follow the collection cadence
+  // instead. Event(-type) drilldowns keep their hourly default.
+  const defaultGranularity: MetricsGranularity =
+    scope === 'metric' && metrics?.interval === '1d'
+      ? 'day'
+      : scope === 'metric' && metrics?.interval === '1w'
+        ? 'week'
+        : 'hour'
+  const granularity = granularityOverride ?? defaultGranularity
   const scanConfigId = metrics?.scan_config_id ?? (scope === 'project_total' ? scopeId : null)
 
   const scanConfigQuery = useQuery({
@@ -794,7 +806,7 @@ export default function MonitoringDetailPage() {
                   rangeDays={rangeDays}
                   granularity={granularity}
                   onRangeDaysChange={setRangeDays}
-                  onGranularityChange={setGranularity}
+                  onGranularityChange={setGranularityOverride}
                 />
               </div>
               {metricsQuery.isLoading ? (
@@ -966,7 +978,7 @@ export default function MonitoringDetailPage() {
                       rangeDays={rangeDays}
                       granularity={granularity}
                       onRangeDaysChange={setRangeDays}
-                      onGranularityChange={setGranularity}
+                      onGranularityChange={setGranularityOverride}
                     />
                   </div>
                 </div>
