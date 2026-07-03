@@ -634,6 +634,28 @@ export interface paths {
         patch: operations["update_project_anomaly_settings_api_v1_projects__slug__anomaly_settings_patch"];
         trace?: never;
     };
+    "/api/v1/projects/{slug}/branch-settings": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Project Branch Settings */
+        get: operations["get_project_branch_settings_api_v1_projects__slug__branch_settings_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /**
+         * Update Project Branch Settings
+         * @description Owner-only: min_approvals/block_self_approval govern what editors may
+         *     merge, so editors must not be able to loosen the policy on themselves.
+         */
+        patch: operations["update_project_branch_settings_api_v1_projects__slug__branch_settings_patch"];
+        trace?: never;
+    };
     "/api/v1/projects/{slug}/branches": {
         parameters: {
             query?: never;
@@ -4198,6 +4220,8 @@ export interface components {
             status: components["schemas"]["MetricStatus"];
             /** Unit */
             unit?: string | null;
+            /** User Id Column */
+            user_id_column?: string | null;
         };
         /**
          * EventCompositionMetricDefinition
@@ -4222,6 +4246,8 @@ export interface components {
             numerator_event_id?: string | null;
             /** Numerator Event Type Id */
             numerator_event_type_id?: string | null;
+            /** User Id Column */
+            user_id_column?: string | null;
         };
         /** EventCreate */
         EventCreate: {
@@ -6428,6 +6454,35 @@ export interface components {
             /** Sigma Threshold */
             sigma_threshold?: number | null;
         };
+        /**
+         * ProjectBranchSettingsResponse
+         * @description ``id``/timestamps are None while the project still rides the defaults —
+         *     the settings row is only materialized on the first PATCH.
+         */
+        ProjectBranchSettingsResponse: {
+            /** Block Self Approval */
+            block_self_approval: boolean;
+            /** Created At */
+            created_at?: string | null;
+            /** Id */
+            id?: string | null;
+            /** Min Approvals */
+            min_approvals: number;
+            /**
+             * Project Id
+             * Format: uuid
+             */
+            project_id: string;
+            /** Updated At */
+            updated_at?: string | null;
+        };
+        /** ProjectBranchSettingsUpdate */
+        ProjectBranchSettingsUpdate: {
+            /** Block Self Approval */
+            block_self_approval?: boolean | null;
+            /** Min Approvals */
+            min_approvals?: number | null;
+        };
         /** ProjectCreate */
         ProjectCreate: {
             /**
@@ -7508,6 +7563,8 @@ export interface components {
             metric_sql: string;
             /** Time Column */
             time_column: string;
+            /** Value Column */
+            value_column?: string | null;
         };
         /** SqlMetricCreate */
         SqlMetricCreate: {
@@ -9397,6 +9454,72 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ProjectAnomalySettingsResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_project_branch_settings_api_v1_projects__slug__branch_settings_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                slug: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProjectBranchSettingsResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    update_project_branch_settings_api_v1_projects__slug__branch_settings_patch: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                slug: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ProjectBranchSettingsUpdate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProjectBranchSettingsResponse"];
                 };
             };
             /** @description Validation Error */

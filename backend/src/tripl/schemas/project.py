@@ -41,7 +41,7 @@ class ProjectLatestSignal(BaseModel):
     scope_name: str
     state: str
     bucket: datetime
-    actual_count: int
+    actual_count: float
     expected_count: float
     z_score: float
     direction: AnomalyDirection

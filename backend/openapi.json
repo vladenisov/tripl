@@ -657,11 +657,11 @@
         "properties": {
           "absolute_delta": {
             "title": "Absolute Delta",
-            "type": "integer"
+            "type": "number"
           },
           "actual_count": {
             "title": "Actual Count",
-            "type": "integer"
+            "type": "number"
           },
           "bucket": {
             "format": "date-time",
@@ -746,7 +746,7 @@
           },
           "expected_count": {
             "title": "Expected Count",
-            "type": "integer"
+            "type": "number"
           },
           "id": {
             "format": "uuid",
@@ -9671,7 +9671,7 @@
         "properties": {
           "actual_count": {
             "title": "Actual Count",
-            "type": "integer"
+            "type": "number"
           },
           "bucket": {
             "format": "date-time",
@@ -11376,7 +11376,7 @@
         "properties": {
           "actual_count": {
             "title": "Actual Count",
-            "type": "integer"
+            "type": "number"
           },
           "bucket": {
             "format": "date-time",
@@ -14117,7 +14117,7 @@
           },
           "actual_count": {
             "title": "Actual Count",
-            "type": "integer"
+            "type": "number"
           },
           "anomaly_id": {
             "format": "uuid",
@@ -14714,7 +14714,7 @@
         "properties": {
           "actual_count": {
             "title": "Actual Count",
-            "type": "integer"
+            "type": "number"
           },
           "breakdown_column": {
             "title": "Breakdown Column",

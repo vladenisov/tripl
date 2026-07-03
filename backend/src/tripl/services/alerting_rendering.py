@@ -57,9 +57,11 @@ def render_firing_item(
             "up" if firing.direction == "spike" else "down",
             message_format,
         ),
+        # Raw floats: the shared stringifier renders integral values without a
+        # decimal point and keeps a decimal for fractional metrics.
         "actual_count": escape_alert_value(firing.actual_count, message_format),
-        "expected_count": escape_alert_value(int(round(firing.expected_count)), message_format),
-        "absolute_delta": escape_alert_value(int(round(firing.absolute_delta)), message_format),
+        "expected_count": escape_alert_value(firing.expected_count, message_format),
+        "absolute_delta": escape_alert_value(firing.absolute_delta, message_format),
         "percent_delta": escape_alert_value(f"{firing.percent_delta:.1f}", message_format),
         "bucket": escape_alert_value(firing.bucket, message_format),
         "details_url": "",

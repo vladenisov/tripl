@@ -48,7 +48,7 @@ def build_sparkline(values: Iterable[float | int], width: int = SPARKLINE_WIDTH)
     return "".join(chars)
 
 
-def _percent_signed(actual: int, expected: float) -> str:
+def _percent_signed(actual: float, expected: float) -> str:
     """+320% / -75% / inf% style label, always rounded to integer."""
     if expected <= 0:
         return "+inf%" if actual > 0 else "0%"

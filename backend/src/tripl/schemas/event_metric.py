@@ -35,7 +35,7 @@ class MetricSignalResponse(BaseModel):
     event_id: uuid.UUID | None = None
     event_type_id: uuid.UUID | None = None
     bucket: datetime
-    actual_count: int
+    actual_count: float
     expected_count: float
     stddev: float
     z_score: float
@@ -205,7 +205,7 @@ class TopMoverItem(BaseModel):
     breakdown_column: str
     breakdown_value: str
     is_other: bool
-    actual_count: int
+    actual_count: float
     expected_count: float
     stddev: float
     z_score: float
