@@ -970,7 +970,7 @@ export function MetricForm({ slug, metric, dataSources, events, onClose }: Metri
               <MField label="Description" htmlFor="metric-description">
                 <TextArea id="metric-description" value={description} onChange={setDescription} rows={2} placeholder="What does this metric measure?" />
               </MField>
-              <MField label="Unit" htmlFor="metric-unit" hint="Optional display unit (e.g. %, ms).">
+              <MField label="Unit" htmlFor="metric-unit" hint="Optional display unit (e.g. %, ms). With %, stored fractions render ×100 (0.08 → 8 %).">
                 <TextInput id="metric-unit" value={unit} onChange={setUnit} placeholder="%" />
               </MField>
               <MField label="Color" htmlFor="metric-color">

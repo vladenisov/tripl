@@ -38,6 +38,7 @@ import { Separator } from '@/components/ui/separator'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { useActiveBranchId } from '@/hooks/useBranch'
 import { formatRelativeTime, formatTimestamp } from '@/lib/datetime'
+import { formatMetricValue, isPercentUnit, metricAxisFormatter } from '@/lib/metricFormat'
 import { GRANULARITY_OPTIONS, RANGE_OPTIONS, aggregateMetricPoints, type MetricsGranularity } from '@/lib/metrics'
 import { resolveMetaFieldHref } from '@/lib/metaFields'
 import { resolveDetailScope } from '@/lib/monitoring'
@@ -268,6 +269,17 @@ export default function MonitoringDetailPage() {
     enabled: scope === 'metric' && !!slug && !!scopeId,
   })
   const metricDefinition = metricDefinitionQuery.data
+
+  // Percent-unit catalog metrics store fractions (0.08 for 8 %): render them
+  // ×100 everywhere on this page (chart ticks, tooltip, stat card). Every
+  // other unit keeps the raw-number rendering it always had, so the formatter
+  // is only threaded through for '%' (tripl-nxk2.1).
+  const metricUnit = metricDefinition?.unit ?? null
+  const metricIsPercent = scope === 'metric' && isPercentUnit(metricUnit)
+  const metricValueFormatter = useMemo(
+    () => (metricIsPercent ? metricAxisFormatter(metricUnit) : undefined),
+    [metricIsPercent, metricUnit],
+  )
 
   const metricsQuery = useQuery({
     queryKey: ['monitoringMetrics', slug, scope, scopeId, rangeDays],
@@ -783,11 +795,19 @@ export default function MonitoringDetailPage() {
                 </div>
                 <div>
                   <p className="text-xs uppercase tracking-wide text-muted-foreground">Actual</p>
-                  <p className="text-sm font-medium">{latestSignal.actual_count.toLocaleString()}</p>
+                  <p className="text-sm font-medium">
+                    {metricIsPercent
+                      ? formatMetricValue(latestSignal.actual_count, metricUnit)
+                      : latestSignal.actual_count.toLocaleString()}
+                  </p>
                 </div>
                 <div>
                   <p className="text-xs uppercase tracking-wide text-muted-foreground">Expected</p>
-                  <p className="text-sm font-medium">{Math.round(latestSignal.expected_count).toLocaleString()}</p>
+                  <p className="text-sm font-medium">
+                    {metricIsPercent
+                      ? formatMetricValue(latestSignal.expected_count, metricUnit)
+                      : Math.round(latestSignal.expected_count).toLocaleString()}
+                  </p>
                 </div>
                 <div>
                   <p className="text-xs uppercase tracking-wide text-muted-foreground">Z-Score</p>
@@ -841,6 +861,7 @@ export default function MonitoringDetailPage() {
                   color={eventType?.color || metricDefinition?.color || 'var(--chart-3)'}
                   granularity={granularity}
                   seriesLabel={scope === 'metric' ? metricDefinition?.unit || 'value' : 'events'}
+                  valueFormatter={metricValueFormatter}
                 />
               )}
               {metrics?.interval && (

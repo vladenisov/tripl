@@ -53,7 +53,8 @@ function makeItem(overrides: Partial<MetricDefinitionListItem>): MetricDefinitio
     owner_id: null,
     order: 0,
     spark: [1, 2, 3, 4, 5],
-    latest_value: 42,
+    // Percent-unit metrics store fractions; 0.42 renders as '42 %' (tripl-nxk2.1).
+    latest_value: 0.42,
     latest_bucket: null,
     latest_signal: null,
     last_collected_at: null,
@@ -190,7 +191,7 @@ afterEach(() => {
 describe('MetricsPage', () => {
   it('renders the rollup and a metric row from the mocked api', async () => {
     mockList({
-      items: [makeItem({ id: 'm-1', display_name: 'Checkout conversion', kind: 'sql', latest_value: 42 })],
+      items: [makeItem({ id: 'm-1', display_name: 'Checkout conversion', kind: 'sql', latest_value: 0.42 })],
       total: 1,
     })
 

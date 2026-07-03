@@ -9,15 +9,19 @@ vi.mock('@/components/ui/chart-lazy', () => ({
   MetricsChart: ({
     data,
     forecast,
+    valueFormatter,
   }: {
     data?: Array<{ bucket: string }>
     forecast?: unknown[]
+    valueFormatter?: (value: number) => string
   }) => (
     <div
       data-testid="metrics-chart"
       data-forecast-count={forecast?.length ?? 0}
       data-points={data?.length ?? 0}
       data-first-bucket={data?.[0]?.bucket ?? ''}
+      // Probe the optional formatter: percent metrics turn 0.08 into '8%'.
+      data-value-sample={valueFormatter ? valueFormatter(0.08) : ''}
     />
   ),
   MetricsMultiSeriesChart: ({
@@ -571,6 +575,7 @@ describe('MonitoringDetailPage catalog-metric drilldown', () => {
   function installMetricDetailFetch(
     interval: string,
     definitionOverrides: Record<string, unknown> = {},
+    seriesOverrides: Record<string, unknown> = {},
   ) {
     vi.spyOn(globalThis, 'fetch').mockImplementation(async input => {
       const url = String(input)
@@ -598,6 +603,7 @@ describe('MonitoringDetailPage catalog-metric drilldown', () => {
             metricSeriesPoint('2026-01-02T05:00:00Z', 10),
             metricSeriesPoint('2026-01-02T18:00:00Z', 20),
           ],
+          ...seriesOverrides,
         })
       }
       if (url.includes('/api/v1/projects/demo/metrics/metric-1/breakdowns')) {
@@ -649,6 +655,45 @@ describe('MonitoringDetailPage catalog-metric drilldown', () => {
 
     const chart = await screen.findByTestId('metrics-chart')
     await waitFor(() => expect(chart).toHaveAttribute('data-points', '2'))
+  })
+
+  it('renders percent-unit metrics ×100 in the stat card and chart formatter (tripl-nxk2.1)', async () => {
+    installMetricDetailFetch(
+      '1d',
+      { unit: '%' },
+      {
+        latest_signal: {
+          scan_config_id: null,
+          scope_type: 'metric',
+          scope_ref: 'metric-1',
+          state: 'latest_scan',
+          event_id: null,
+          event_type_id: null,
+          bucket: '2026-01-02T00:00:00Z',
+          actual_count: 0.08,
+          expected_count: 0.05,
+          stddev: 0.01,
+          z_score: 3,
+          direction: 'spike',
+        },
+      },
+    )
+    renderMetricDetail()
+
+    const chart = await screen.findByTestId('metrics-chart')
+    // The percent-aware formatter reached the chart: 0.08 → '8%'.
+    expect(chart).toHaveAttribute('data-value-sample', '8%')
+    // The latest-signal stat card renders the stored fractions ×100.
+    expect(screen.getByText('8 %')).toBeInTheDocument()
+    expect(screen.getByText('5 %')).toBeInTheDocument()
+  })
+
+  it('passes no value formatter for metrics without a percent unit', async () => {
+    installMetricDetailFetch('1d')
+    renderMetricDetail()
+
+    const chart = await screen.findByTestId('metrics-chart')
+    expect(chart).toHaveAttribute('data-value-sample', '')
   })
 
   it('labels the primary tab and card "Value" for the metric scope, not "Volume"', async () => {

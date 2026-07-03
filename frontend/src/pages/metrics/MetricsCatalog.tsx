@@ -42,6 +42,7 @@ import { Sparkline } from '@/components/primitives/sparkline'
 import { useDebouncedValue } from '@/hooks/useDebouncedValue'
 import { useEventsDndSensors } from '@/pages/events/useEventsDndSensors'
 import { formatRelativeTime } from '@/lib/datetime'
+import { formatMetricValue } from '@/lib/metricFormat'
 import { getMetricMonitoringPath } from '@/lib/monitoring'
 import { getErrorMessage } from '@/lib/utils'
 import {
@@ -78,13 +79,6 @@ const KIND_FILTER_OPTIONS: { value: '' | MetricKind; label: string }[] = [
 
 const FILTER_SELECT_CLASS =
   'h-8 rounded-md border bg-[var(--bg)] px-2 text-[12px] text-[var(--fg)] outline-none'
-
-function formatValue(value: number | null | undefined, unit: string | null): string {
-  if (value === null || value === undefined) return '—'
-  const rounded = Math.abs(value) >= 100 ? Math.round(value) : Math.round(value * 100) / 100
-  const text = rounded.toLocaleString()
-  return unit ? `${text} ${unit}` : text
-}
 
 // The single fact operand shape (numerator / denominator) sent to the backend —
 // derived from the generated create schema so it stays in lock-step.
@@ -651,7 +645,7 @@ function MetricRow({
         className="mono truncate text-[12px]"
         style={{ color: signalTone ? `var(--${signalTone})` : 'var(--fg-subtle)' }}
       >
-        {formatValue(metric.latest_value, metric.unit)}
+        {formatMetricValue(metric.latest_value, metric.unit)}
       </span>
       <span role="cell">
         {metric.spark.length > 0 ? (
