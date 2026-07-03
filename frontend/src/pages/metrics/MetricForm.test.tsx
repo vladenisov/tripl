@@ -44,10 +44,15 @@ vi.mock('@uiw/react-codemirror', () => ({
   ),
 }))
 
-// The SQL editor fetches the data-source schema for autocomplete; stub it so the
-// form test never reaches the network.
+// The SQL editor and the column-suggestion inputs fetch the data-source schema;
+// stub the hook so the form test never reaches the network. The default
+// implementation (set in beforeEach) returns DS_SCHEMA once a source is picked
+// and nothing otherwise, mirroring the real hook's `enabled: Boolean(dsId)`.
+const { useDataSourceSchemaMock } = vi.hoisted(() => ({
+  useDataSourceSchemaMock: vi.fn<(dsId?: string) => { data: unknown }>(),
+}))
 vi.mock('@/hooks/useDataSourceSchema', () => ({
-  useDataSourceSchema: () => ({ data: undefined }),
+  useDataSourceSchema: useDataSourceSchemaMock,
   toSQLNamespace: () => ({}),
 }))
 
@@ -57,6 +62,21 @@ import { factTablesApi } from '@/api/factTablesApi'
 const DATA_SOURCES = [
   { id: 'ds-1', name: 'Warehouse' },
 ] as unknown as DataSource[]
+
+const DS_SCHEMA = {
+  tables: [
+    {
+      name: 'events',
+      columns: [
+        { name: 'bucket', data_type: 'timestamptz' },
+        { name: 'value', data_type: 'numeric' },
+        { name: 'platform', data_type: 'text' },
+        { name: 'country', data_type: 'text' },
+        { name: 'app_version', data_type: 'text' },
+      ],
+    },
+  ],
+}
 
 const EVENTS = [
   { id: 'ev-1', name: 'checkout:start' },
@@ -110,6 +130,10 @@ function submit() {
 
 beforeEach(() => {
   queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+  useDataSourceSchemaMock.mockReset()
+  useDataSourceSchemaMock.mockImplementation((dsId?: string) => ({
+    data: dsId ? DS_SCHEMA : undefined,
+  }))
   vi.mocked(metricsCatalogApi.create).mockClear()
   vi.mocked(metricsCatalogApi.update).mockClear()
   vi.mocked(metricsCatalogApi.preview).mockReset()
@@ -741,5 +765,61 @@ describe('MetricForm validation', () => {
     expect(document.getElementById('metric-sql-data-source')).not.toBeNull()
     expect(document.getElementById('metric-fact-table')).toBeNull()
     expect(screen.getByRole('radio', { name: /SQL/ })).toHaveAttribute('aria-checked', 'true')
+  })
+
+  it('suggests schema columns for the time column and fills on pick', async () => {
+    renderForm()
+
+    fireEvent.change(document.getElementById('metric-sql-data-source')!, { target: { value: 'ds-1' } })
+    const timeInput = document.getElementById('metric-sql-time') as HTMLInputElement
+    fireEvent.change(timeInput, { target: { value: 'buck' } })
+
+    const listbox = await screen.findByRole('listbox', { name: 'Column suggestions' })
+    fireEvent.click(within(listbox).getByRole('option', { name: 'bucket' }))
+
+    expect(timeInput.value).toBe('bucket')
+    expect(screen.queryByRole('listbox', { name: 'Column suggestions' })).toBeNull()
+  })
+
+  it('adds breakdown columns as chips and submits them in the payload', async () => {
+    renderForm()
+
+    fireEvent.change(screen.getByLabelText('Display name', { exact: false }), {
+      target: { value: 'Order count' },
+    })
+    fireEvent.change(document.getElementById('metric-sql-data-source')!, { target: { value: 'ds-1' } })
+    fireEvent.change(screen.getByLabelText('Metric SQL'), {
+      target: { value: 'SELECT bucket, count(*) AS value FROM events GROUP BY 1' },
+    })
+    fireEvent.change(document.getElementById('metric-sql-time')!, { target: { value: 'bucket' } })
+
+    const breakdowns = document.getElementById('metric-breakdowns') as HTMLInputElement
+    fireEvent.change(breakdowns, { target: { value: 'platform' } })
+    fireEvent.keyDown(breakdowns, { key: 'Enter' })
+    fireEvent.change(breakdowns, { target: { value: 'country' } })
+    fireEvent.keyDown(breakdowns, { key: 'Enter' })
+
+    // Both chips render with remove affordances before submitting.
+    expect(screen.getByRole('button', { name: 'Remove platform' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Remove country' })).toBeInTheDocument()
+
+    submit()
+
+    await waitFor(() => expect(metricsCatalogApi.create).toHaveBeenCalledTimes(1))
+    expect(metricsCatalogApi.create).toHaveBeenCalledWith(
+      'demo',
+      expect.objectContaining({ breakdown_columns: ['platform', 'country'] }),
+    )
+  })
+
+  it('keeps column inputs plain when no data source is selected', () => {
+    renderForm()
+
+    const timeInput = document.getElementById('metric-sql-time') as HTMLInputElement
+    fireEvent.change(timeInput, { target: { value: 'buck' } })
+
+    // No schema loaded -> no suggestion listbox; the field is a plain input.
+    expect(screen.queryByRole('listbox', { name: 'Column suggestions' })).toBeNull()
+    expect(timeInput.value).toBe('buck')
   })
 })

@@ -6,6 +6,7 @@ import { dataSourcesApi } from '@/api/dataSources'
 import { eventsApi } from '@/api/events'
 import { factTablesApi } from '@/api/factTablesApi'
 import { metricsCatalogApi } from '@/api/metricsCatalogApi'
+import { ColumnChipsInput, ColumnSuggestInput } from '@/components/column-suggest'
 import { ErrorState } from '@/components/error-state'
 import { Sparkline } from '@/components/primitives/sparkline'
 import { SqlEditor } from '@/components/sql-editor'
@@ -363,18 +364,6 @@ function toOptions(prefix: string, items: { value: string; label: string }[]): S
   return [{ value: '', label: prefix }, ...items]
 }
 
-function splitColumns(raw: string): string[] {
-  const seen = new Set<string>()
-  return raw
-    .split(',')
-    .map(part => part.trim())
-    .filter(part => {
-      if (!part || seen.has(part)) return false
-      seen.add(part)
-      return true
-    })
-}
-
 // Derive a snake_case identifier from a display name: lower-case, runs of
 // non-alphanumerics collapsed to single underscores, trimmed. Used to pre-fill
 // the internal name as the user types the display name.
@@ -501,8 +490,8 @@ export function MetricForm({ slug, metric, dataSources, events, onClose }: Metri
   const [anomalyDetection, setAnomalyDetection] = useState(
     metric?.anomaly_detection_enabled ?? true,
   )
-  const [breakdownColumns, setBreakdownColumns] = useState(
-    (metric?.breakdown_columns ?? []).join(', '),
+  const [breakdownColumns, setBreakdownColumns] = useState<string[]>(
+    metric?.breakdown_columns ?? [],
   )
   const [appVersionColumn, setAppVersionColumn] = useState(metric?.app_version_column ?? '')
   const [platformColumn, setPlatformColumn] = useState(metric?.platform_column ?? '')
@@ -614,6 +603,23 @@ export function MetricForm({ slug, metric, dataSources, events, onClose }: Metri
   )
   const { data: sqlSchemaData } = useDataSourceSchema(dataSourceId || undefined)
 
+  // Unique column names across every table of the selected data source, in
+  // schema order — feeds the column-name comboboxes (time/value column,
+  // breakdowns, app version, platform). Empty until a source is picked, which
+  // leaves those inputs behaving as plain text.
+  const schemaColumns = useMemo(() => {
+    const seen = new Set<string>()
+    const names: string[] = []
+    for (const table of sqlSchemaData?.tables ?? []) {
+      for (const column of table.columns) {
+        if (seen.has(column.name)) continue
+        seen.add(column.name)
+        names.push(column.name)
+      }
+    }
+    return names
+  }, [sqlSchemaData])
+
   // Field-keyed validation: each entry maps an input DOM id to its message.
   // Insertion order is top-to-bottom so the first key is the first offending
   // field to scroll to.
@@ -714,7 +720,9 @@ export function MetricForm({ slug, metric, dataSources, events, onClose }: Metri
     const base = {
       anomaly_detection_enabled: anomalyDetection,
       app_version_column: appVersionColumn.trim() || null,
-      breakdown_columns: splitColumns(breakdownColumns),
+      // Chips are trimmed/deduped as they are added, so the state array is
+      // already the exact string[] the payload expects.
+      breakdown_columns: breakdownColumns,
       color,
       description,
       display_name: displayName.trim(),
@@ -796,7 +804,7 @@ export function MetricForm({ slug, metric, dataSources, events, onClose }: Metri
       unit: unit.trim() || null,
       color,
       anomaly_detection_enabled: anomalyDetection,
-      breakdown_columns: splitColumns(breakdownColumns),
+      breakdown_columns: breakdownColumns,
       app_version_column: appVersionColumn.trim() || null,
       platform_column: platformColumn.trim() || null,
       definition: buildDefinitionPayload(),
@@ -1173,12 +1181,24 @@ export function MetricForm({ slug, metric, dataSources, events, onClose }: Metri
               error={fieldErrors['metric-sql-time']}
             >
               <div className="max-w-[280px]">
-                <TextInput id="metric-sql-time" value={sqlTimeColumn} onChange={onSqlTimeColumnChange} mono placeholder="bucket" />
+                <ColumnSuggestInput
+                  id="metric-sql-time"
+                  value={sqlTimeColumn}
+                  onChange={onSqlTimeColumnChange}
+                  suggestions={schemaColumns}
+                  placeholder="bucket"
+                />
               </div>
             </MField>
             <MField label="Value column" htmlFor="metric-sql-value" last hint="The projected measure column. Defaults to value.">
               <div className="max-w-[280px]">
-                <TextInput id="metric-sql-value" value={sqlValueColumn} onChange={onSqlValueColumnChange} mono placeholder="value" />
+                <ColumnSuggestInput
+                  id="metric-sql-value"
+                  value={sqlValueColumn}
+                  onChange={onSqlValueColumnChange}
+                  suggestions={schemaColumns}
+                  placeholder="value"
+                />
               </div>
             </MField>
           </SCard>
@@ -1249,19 +1269,37 @@ export function MetricForm({ slug, metric, dataSources, events, onClose }: Metri
               no data source, so hide these dimension inputs for that kind. */}
           {kind !== 'event_composition' && (
             <>
-              <MField label="Breakdown columns" htmlFor="metric-breakdowns" hint="Comma-separated warehouse columns to roll up by.">
+              <MField label="Breakdown columns" htmlFor="metric-breakdowns" hint="Warehouse columns to roll up by. Pick a suggestion or type a name and press Enter.">
                 <div className="max-w-[280px]">
-                  <TextInput id="metric-breakdowns" value={breakdownColumns} onChange={setBreakdownColumns} mono placeholder="platform, country" />
+                  <ColumnChipsInput
+                    id="metric-breakdowns"
+                    value={breakdownColumns}
+                    onChange={setBreakdownColumns}
+                    suggestions={schemaColumns}
+                    placeholder="platform, country"
+                  />
                 </div>
               </MField>
               <MField label="App version column" htmlFor="metric-app-version" hint="Optional column used for by-version series.">
                 <div className="max-w-[280px]">
-                  <TextInput id="metric-app-version" value={appVersionColumn} onChange={setAppVersionColumn} mono placeholder="app_version" />
+                  <ColumnSuggestInput
+                    id="metric-app-version"
+                    value={appVersionColumn}
+                    onChange={setAppVersionColumn}
+                    suggestions={schemaColumns}
+                    placeholder="app_version"
+                  />
                 </div>
               </MField>
               <MField label="Platform column" htmlFor="metric-platform" last hint="Optional platform dimension column.">
                 <div className="max-w-[280px]">
-                  <TextInput id="metric-platform" value={platformColumn} onChange={setPlatformColumn} mono placeholder="platform" />
+                  <ColumnSuggestInput
+                    id="metric-platform"
+                    value={platformColumn}
+                    onChange={setPlatformColumn}
+                    suggestions={schemaColumns}
+                    placeholder="platform"
+                  />
                 </div>
               </MField>
             </>
