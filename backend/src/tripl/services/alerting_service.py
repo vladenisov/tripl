@@ -124,6 +124,7 @@ async def _build_scope_name_map(
 
     from tripl.models.event import Event
     from tripl.models.event_type import EventType
+    from tripl.models.metric_definition import MetricDefinition
 
     event_ids = {anomaly.event_id for anomaly in anomalies if anomaly.event_id is not None}
     event_type_ids = {
@@ -159,6 +160,28 @@ async def _build_scope_name_map(
             continue
         drift_field = getattr(anomaly, "drift_field", None) or anomaly.scope_ref
         names[(SCOPE_DISTRIBUTION_DRIFT, anomaly.scope_ref)] = f"All events.{drift_field}"
+
+    # Catalog metric anomalies resolve to the metric's display name (scope_ref is
+    # the metric-definition id), mirroring the live worker's _build_alert_scope_names.
+    # scope_ref is a string while MetricDefinition.id is a UUID, so parse defensively
+    # and skip anything that is not a valid id. Unknown ids fall through to the
+    # scope_ref fallback applied by the caller (same as the live setdefault).
+    metric_ids: list[uuid.UUID] = []
+    for anomaly in anomalies:
+        if anomaly.scope_type != SCOPE_METRIC:
+            continue
+        try:
+            metric_ids.append(uuid.UUID(anomaly.scope_ref))
+        except ValueError:
+            continue
+    if metric_ids:
+        rows = await session.execute(
+            select(MetricDefinition.id, MetricDefinition.display_name).where(
+                MetricDefinition.id.in_(set(metric_ids))
+            )
+        )
+        for metric_id, display_name in rows.all():
+            names[(SCOPE_METRIC, str(metric_id))] = display_name
     return names
 
 
@@ -310,6 +333,8 @@ async def simulate_rule(
     from fastapi import HTTPException
     from sqlalchemy import select
 
+    from tripl.models.metric_definition import MetricDefinition
+
     if days <= 0 or days > SIMULATE_MAX_DAYS:
         raise HTTPException(
             status_code=422,
@@ -348,6 +373,42 @@ async def simulate_rule(
         .scalars()
         .all()
     )
+    # Catalog metric anomalies are project-global (scope_type='metric', NULL
+    # scan_config_id), so the scan-config inner join above drops them. Load them
+    # separately, scoped to the project via their MetricDefinition — mirroring the
+    # live detect/signals path (MetricDefinition.project_id) — then merge, keeping
+    # the combined list ordered by bucket for the cooldown replay.
+    project_metric_scope_refs = [
+        str(metric_id)
+        for metric_id in (
+            await session.execute(
+                select(MetricDefinition.id).where(MetricDefinition.project_id == project.id)
+            )
+        ).scalars()
+    ]
+    if project_metric_scope_refs:
+        global_metric_anomalies = list(
+            (
+                await session.execute(
+                    select(MetricAnomaly)
+                    .where(
+                        MetricAnomaly.scan_config_id.is_(None),
+                        MetricAnomaly.scope_type == SCOPE_METRIC,
+                        MetricAnomaly.scope_ref.in_(project_metric_scope_refs),
+                        MetricAnomaly.bucket >= window_from,
+                        MetricAnomaly.bucket < window_to,
+                    )
+                    .order_by(MetricAnomaly.bucket)
+                )
+            )
+            .scalars()
+            .all()
+        )
+        if global_metric_anomalies:
+            metric_anomalies = sorted(
+                [*metric_anomalies, *global_metric_anomalies],
+                key=lambda anomaly: anomaly.bucket,
+            )
     schema_candidates = await _load_schema_drift_candidates(
         session,
         project_id=project.id,

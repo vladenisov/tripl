@@ -1926,6 +1926,160 @@ async def test_alert_rule_simulate_renders_percent_metric_values(client: AsyncCl
     assert "delta=4% (100.0%)" in rendered_item
 
 
+@pytest.mark.asyncio
+async def test_alert_rule_simulate_includes_project_global_metric_anomaly(
+    client: AsyncClient,
+) -> None:
+    """Regression (tripl-nxk2.18): catalog metric anomalies are project-global,
+    stored with scope_type='metric' and a NULL scan_config_id. The simulator's
+    old scan_config inner join silently dropped them, so metric-including rules
+    never fired. The simulator must now load them (scoped via MetricDefinition)
+    and resolve their scope_name to the metric's display name — while non-metric
+    (event) loading stays byte-identical.
+    """
+    from tripl.models.metric_anomaly import MetricAnomaly
+    from tripl.models.metric_definition import MetricDefinition
+
+    project_resp = await client.post(
+        "/api/v1/projects",
+        json={"name": "Sim Global", "slug": "alert-sim-global"},
+    )
+    assert project_resp.status_code == 201
+    project_id = uuid.UUID(project_resp.json()["id"])
+
+    destination_resp = await client.post(
+        "/api/v1/projects/alert-sim-global/alert-destinations",
+        json={
+            "type": "slack",
+            "name": "Sim Global Slack",
+            "enabled": True,
+            "webhook_url": "https://hooks.slack.com/services/T1/B1/simglobal",
+        },
+    )
+    assert destination_resp.status_code == 201
+    destination_id = destination_resp.json()["id"]
+
+    rule_resp = await client.post(
+        f"/api/v1/projects/alert-sim-global/alert-destinations/{destination_id}/rules",
+        json={
+            "name": "Metric + Event Rule",
+            "enabled": True,
+            "include_project_total": True,
+            "include_event_types": True,
+            "include_events": True,
+            "include_metrics": True,
+            "notify_on_spike": True,
+            "notify_on_drop": True,
+            "min_percent_delta": 0,
+            "min_absolute_delta": 0,
+            "min_expected_count": 0,
+            "cooldown_minutes": 60,
+            "filters": [],
+        },
+    )
+    assert rule_resp.status_code == 201
+    rule_id = rule_resp.json()["id"]
+
+    now = datetime.now(UTC)
+    metric_id = uuid.uuid4()
+    event_scope_ref = str(uuid.uuid4())
+    async with TestSessionLocal() as session, session.begin():
+        data_source = DataSource(
+            id=uuid.uuid4(),
+            name="ds-global",
+            db_type="clickhouse",
+            host="h",
+            port=8123,
+            database_name="d",
+            username="u",
+            password_encrypted="",
+        )
+        session.add(data_source)
+        await session.flush()
+        scan = ScanConfig(
+            id=uuid.uuid4(),
+            data_source_id=data_source.id,
+            project_id=project_id,
+            name="sc-global",
+            base_query="SELECT 1",
+            cardinality_threshold=100,
+            interval="1h",
+        )
+        metric = MetricDefinition(
+            id=metric_id,
+            project_id=project_id,
+            name="signups",
+            display_name="Signups",
+            kind="sql",
+            config={},
+            data_source_id=data_source.id,
+            interval="1h",
+            status="active",
+            unit=None,
+        )
+        session.add_all([scan, metric])
+        await session.flush()
+        # Project-global catalog metric anomaly: NULL scan_config_id. The old
+        # simulator inner-joined scan_configs and silently dropped these rows.
+        session.add(
+            MetricAnomaly(
+                id=uuid.uuid4(),
+                scan_config_id=None,
+                scope_type="metric",
+                scope_ref=str(metric_id),
+                event_id=None,
+                event_type_id=None,
+                bucket=now - timedelta(days=1),
+                actual_count=200.0,
+                expected_count=20.0,
+                stddev=1.0,
+                z_score=10.0,
+                direction="spike",
+            )
+        )
+        # Non-metric (event) anomaly stays anchored to a scan config and must
+        # still load exactly as before (unchanged behavior).
+        session.add(
+            MetricAnomaly(
+                id=uuid.uuid4(),
+                scan_config_id=scan.id,
+                scope_type="event",
+                scope_ref=event_scope_ref,
+                event_id=None,
+                event_type_id=None,
+                bucket=now - timedelta(days=1, minutes=5),
+                actual_count=150.0,
+                expected_count=15.0,
+                stddev=1.0,
+                z_score=9.0,
+                direction="spike",
+            )
+        )
+
+    resp = await client.post(
+        f"/api/v1/projects/alert-sim-global/alert-destinations/"
+        f"{destination_id}/rules/{rule_id}/simulate?days=7"
+    )
+    assert resp.status_code == 200
+    payload = resp.json()
+
+    # Both the project-global metric anomaly and the event anomaly are loaded.
+    assert payload["anomalies_considered"] == 2
+    assert payload["matched_before_cooldown"] == 2
+
+    firings_by_scope = {f["scope_type"]: f for f in payload["firings"]}
+    # Regression: the event anomaly still fires (non-metric loading unchanged),
+    # and the previously-dropped project-global metric anomaly now fires too.
+    assert set(firings_by_scope) == {"metric", "event"}
+
+    # Core defect fix: the metric anomaly's scope_name resolves to the metric's
+    # display name, not the raw UUID scope_ref.
+    metric_firing = firings_by_scope["metric"]
+    assert metric_firing["scope_ref"] == str(metric_id)
+    assert metric_firing["scope_name"] == "Signups"
+    assert metric_firing["scope_name"] != metric_firing["scope_ref"]
+
+
 def test_simulate_rule_firings_respects_cooldown_override() -> None:
     from tripl.alerting_matching import simulate_rule_firings
 
