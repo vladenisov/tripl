@@ -731,6 +731,42 @@ class MetricDefinitionListResponse(BaseModel):
     total: int
 
 
+class MetricPreviewRequest(BaseModel):
+    """Stateless dry-run of a ``sql``-kind metric SELECT (nothing is persisted).
+
+    SQL semantics (read-only shape, projected columns, identifier validity) are
+    deliberately NOT validated at this schema boundary: those are expected user
+    mistakes while drafting a query, and the preview endpoint reports them as a
+    200 response with ``error`` set (see ``metric_preview_service``) instead of
+    a 422. Only structural shape (types, lengths, interval enum) is enforced
+    here.
+    """
+
+    data_source_id: uuid.UUID
+    sql: str = Field(min_length=1)
+    time_column: str = Field(min_length=1, max_length=255)
+    # None keeps the documented ``value`` convention (same default as SqlConfig).
+    value_column: str | None = Field(default=None, min_length=1, max_length=255)
+    interval: ScanInterval
+
+
+class MetricPreviewPoint(BaseModel):
+    """One interval-floored (bucket, value) preview point."""
+
+    bucket: datetime
+    value: float
+
+
+class MetricPreviewResponse(BaseModel):
+    """Preview outcome; user-level failures set ``error`` with empty ``points``."""
+
+    columns: list[str] = Field(default_factory=list)
+    points: list[MetricPreviewPoint] = Field(default_factory=list)
+    point_count: int = 0
+    truncated: bool = False
+    error: str | None = None
+
+
 class MetricCollectNowResponse(BaseModel):
     """202 payload for a manual ``POST /metrics/{id}/collect`` trigger.
 

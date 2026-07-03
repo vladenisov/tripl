@@ -16,13 +16,20 @@ from tripl.schemas.metric_definition import (
     MetricDefinitionReorder,
     MetricDefinitionResponse,
     MetricDefinitionUpdate,
+    MetricPreviewRequest,
+    MetricPreviewResponse,
 )
 from tripl.schemas.metric_series import (
     MetricBreakdownsResponse,
     MetricSeriesResponse,
     MetricVersionSeriesResponse,
 )
-from tripl.services import audit_service, metric_definition_service, metric_series_service
+from tripl.services import (
+    audit_service,
+    metric_definition_service,
+    metric_preview_service,
+    metric_series_service,
+)
 
 router = APIRouter(prefix="/projects/{slug}/metrics", tags=["metrics-catalog"])
 _editor_required = [Depends(get_editor_user)]
@@ -85,6 +92,28 @@ async def bulk_update_metric_definitions(
     data: MetricDefinitionBulkUpdate,
 ) -> None:
     await metric_definition_service.bulk_update_metric_definitions(session, slug, data)
+
+
+@router.post(
+    "/preview",
+    response_model=MetricPreviewResponse,
+    dependencies=_editor_required,
+)
+async def preview_metric_sql(
+    session: SessionDep,
+    slug: str,
+    data: MetricPreviewRequest,
+) -> MetricPreviewResponse:
+    """Stateless dry-run of a sql-kind metric SELECT (editor-gated).
+
+    Validates the SQL with the same safety gate the worker uses and executes it
+    against the data source over the last 50 buckets of the requested interval
+    (hard-capped at 200 rows); nothing is persisted. Expected user mistakes —
+    bad SQL, missing time/value columns, warehouse errors — return 200 with
+    ``error`` set so the editor can render them inline; unknown data source is
+    a 404.
+    """
+    return await metric_preview_service.preview_sql_metric(session, slug, data)
 
 
 @router.patch(

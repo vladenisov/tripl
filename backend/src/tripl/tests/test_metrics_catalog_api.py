@@ -5,6 +5,7 @@ import pytest
 from httpx import AsyncClient
 from sqlalchemy import func, select
 
+import tripl.core.adapters.registry as adapter_registry
 import tripl.worker.tasks.metrics.metric_collect as mc
 from tripl.api.deps import get_current_user
 from tripl.main import app
@@ -1518,3 +1519,287 @@ class TestUpdateDefinition:
         # The internal query identifier is unchanged; only display_name moved.
         assert data["name"] == "stable_name"
         assert data["display_name"] == "Renamed Display"
+
+
+class _PreviewStubAdapter:
+    """Warehouse stub for the preview endpoint; records the wrapped call."""
+
+    def __init__(
+        self,
+        columns: list[str],
+        rows: list[tuple[object, ...]],
+        error: Exception | None = None,
+    ) -> None:
+        self.columns = columns
+        self.rows = rows
+        self.error = error
+        self.calls: list[dict[str, object]] = []
+        self.closed = False
+
+    def get_preview_rows(
+        self,
+        base_query: str,
+        limit: int = 10,
+        *,
+        time_column: str | None = None,
+        time_from: datetime | None = None,
+        time_to: datetime | None = None,
+    ) -> tuple[list[str], list[tuple[object, ...]]]:
+        self.calls.append(
+            {
+                "sql": base_query,
+                "limit": limit,
+                "time_column": time_column,
+                "time_from": time_from,
+                "time_to": time_to,
+            }
+        )
+        if self.error is not None:
+            raise self.error
+        return self.columns, self.rows
+
+    def close(self) -> None:
+        self.closed = True
+
+
+def _patch_preview_adapter(
+    monkeypatch: pytest.MonkeyPatch, adapter: _PreviewStubAdapter
+) -> list[uuid.UUID]:
+    """Patch ``registry.build_adapter`` (the service imports it lazily) to
+    return the stub; returns the list of data-source ids it was built for."""
+    built: list[uuid.UUID] = []
+
+    def _build(ds: object) -> _PreviewStubAdapter:
+        built.append(ds.id)  # type: ignore[attr-defined]
+        return adapter
+
+    monkeypatch.setattr(adapter_registry, "build_adapter", _build)
+    return built
+
+
+def _preview_url(slug: str) -> str:
+    return f"{_metrics_url(slug)}/preview"
+
+
+class TestPreview:
+    """POST /metrics/preview: stateless dry-run of a sql-kind SELECT."""
+
+    async def test_happy_path_returns_columns_and_bucketed_points(
+        self,
+        client: AsyncClient,
+        project: dict,
+        data_source: dict,
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        adapter = _PreviewStubAdapter(
+            ["t", "value"],
+            [
+                (datetime(2026, 7, 1, 10, 0, tzinfo=UTC), 5),
+                # Coerced like a real collection: string value, mid-bucket time.
+                (datetime(2026, 7, 1, 11, 30, tzinfo=UTC), "7.5"),
+            ],
+        )
+        built = _patch_preview_adapter(monkeypatch, adapter)
+
+        resp = await client.post(
+            _preview_url(project["slug"]),
+            json={
+                "data_source_id": data_source["id"],
+                "sql": "SELECT toStartOfHour(ts) AS t, count() AS value FROM e GROUP BY t",
+                "time_column": "t",
+                "interval": "1h",
+            },
+        )
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        assert body["error"] is None
+        assert body["columns"] == ["t", "value"]
+        assert body["truncated"] is False
+        assert body["point_count"] == 2
+        points = body["points"]
+        assert [point["value"] for point in points] == [5.0, 7.5]
+        assert datetime.fromisoformat(points[0]["bucket"]) == datetime(2026, 7, 1, 10, tzinfo=UTC)
+        # 11:30 floors to the 11:00 bucket on a 1h interval.
+        assert datetime.fromisoformat(points[1]["bucket"]) == datetime(2026, 7, 1, 11, tzinfo=UTC)
+
+        # The adapter was built for the requested data source, queried once with
+        # the hard row cap and a 50-bucket window ending now, and closed.
+        assert built == [uuid.UUID(data_source["id"])]
+        assert len(adapter.calls) == 1
+        call = adapter.calls[0]
+        assert call["limit"] == 200
+        assert call["time_column"] == "t"
+        assert call["time_to"] - call["time_from"] == timedelta(hours=50)
+        assert adapter.closed is True
+
+    async def test_custom_value_column_and_truncation_flag(
+        self,
+        client: AsyncClient,
+        project: dict,
+        data_source: dict,
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        # Exactly the row cap comes back -> flagged truncated; same-bucket rows
+        # overwrite (worker semantics), so one point remains per bucket.
+        rows = [(datetime(2026, 7, 1, 10, 0, tzinfo=UTC), float(index)) for index in range(200)]
+        adapter = _PreviewStubAdapter(["t", "sessions"], rows)
+        _patch_preview_adapter(monkeypatch, adapter)
+
+        resp = await client.post(
+            _preview_url(project["slug"]),
+            json={
+                "data_source_id": data_source["id"],
+                "sql": "SELECT t, sessions FROM e",
+                "time_column": "t",
+                "value_column": "sessions",
+                "interval": "1h",
+            },
+        )
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        assert body["error"] is None
+        assert body["truncated"] is True
+        assert body["point_count"] == 1
+        assert body["points"][0]["value"] == 199.0
+
+    async def test_non_select_sql_returns_error_payload(
+        self,
+        client: AsyncClient,
+        project: dict,
+        data_source: dict,
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        adapter = _PreviewStubAdapter(["t", "value"], [])
+        _patch_preview_adapter(monkeypatch, adapter)
+
+        resp = await client.post(
+            _preview_url(project["slug"]),
+            json={
+                "data_source_id": data_source["id"],
+                "sql": "DROP TABLE users",
+                "time_column": "t",
+                "interval": "1h",
+            },
+        )
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        assert body["error"] is not None
+        assert "read-only SELECT" in body["error"]
+        assert body["points"] == []
+        assert body["point_count"] == 0
+        assert body["truncated"] is False
+        # Invalid SQL never reaches the warehouse.
+        assert adapter.calls == []
+
+    async def test_missing_time_column_in_result_returns_error_payload(
+        self,
+        client: AsyncClient,
+        project: dict,
+        data_source: dict,
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        # The SELECT projects both columns textually, but the warehouse result
+        # comes back without the time column -> reported as a user-level error.
+        adapter = _PreviewStubAdapter(["value", "other"], [(1.0, "x")])
+        _patch_preview_adapter(monkeypatch, adapter)
+
+        resp = await client.post(
+            _preview_url(project["slug"]),
+            json={
+                "data_source_id": data_source["id"],
+                "sql": "SELECT t, value FROM e",
+                "time_column": "t",
+                "interval": "1d",
+            },
+        )
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        assert body["error"] is not None
+        assert "'t'" in body["error"]
+        assert body["columns"] == ["value", "other"]
+        assert body["points"] == []
+
+    async def test_warehouse_error_is_trimmed_into_error_payload(
+        self,
+        client: AsyncClient,
+        project: dict,
+        data_source: dict,
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        adapter = _PreviewStubAdapter([], [], error=RuntimeError("x" * 800))
+        _patch_preview_adapter(monkeypatch, adapter)
+
+        resp = await client.post(
+            _preview_url(project["slug"]),
+            json={
+                "data_source_id": data_source["id"],
+                "sql": "SELECT t, value FROM e",
+                "time_column": "t",
+                "interval": "1h",
+            },
+        )
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        assert body["error"] is not None
+        assert body["error"].startswith("x")
+        # Trimmed to ~500 chars so a driver dump never reaches the client.
+        assert len(body["error"]) <= 510
+        assert body["points"] == []
+
+    async def test_unknown_data_source_returns_404(
+        self,
+        client: AsyncClient,
+        project: dict,
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        adapter = _PreviewStubAdapter(["t", "value"], [])
+        _patch_preview_adapter(monkeypatch, adapter)
+
+        resp = await client.post(
+            _preview_url(project["slug"]),
+            json={
+                "data_source_id": str(uuid.uuid4()),
+                "sql": "SELECT t, value FROM e",
+                "time_column": "t",
+                "interval": "1h",
+            },
+        )
+        assert resp.status_code == 404, resp.text
+        assert adapter.calls == []
+
+    async def test_requires_editor_role(
+        self,
+        client: AsyncClient,
+        project: dict,
+        data_source: dict,
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        # Same auth gate as metric create: a viewer is rejected with 403.
+        adapter = _PreviewStubAdapter(["t", "value"], [])
+        _patch_preview_adapter(monkeypatch, adapter)
+
+        async def _viewer() -> User:
+            return User(
+                id=uuid.uuid4(),
+                email="viewer@example.com",
+                name="Viewer",
+                password_hash="x",
+                role=UserRole.viewer.value,
+            )
+
+        app.dependency_overrides[get_current_user] = _viewer
+        try:
+            resp = await client.post(
+                _preview_url(project["slug"]),
+                json={
+                    "data_source_id": data_source["id"],
+                    "sql": "SELECT t, value FROM e",
+                    "time_column": "t",
+                    "interval": "1h",
+                },
+            )
+        finally:
+            app.dependency_overrides.pop(get_current_user, None)
+
+        assert resp.status_code == 403, resp.text
+        assert adapter.calls == []

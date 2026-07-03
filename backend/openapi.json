@@ -9519,6 +9519,113 @@
         "title": "MetricKind",
         "type": "string"
       },
+      "MetricPreviewPoint": {
+        "description": "One interval-floored (bucket, value) preview point.",
+        "properties": {
+          "bucket": {
+            "format": "date-time",
+            "title": "Bucket",
+            "type": "string"
+          },
+          "value": {
+            "title": "Value",
+            "type": "number"
+          }
+        },
+        "required": [
+          "bucket",
+          "value"
+        ],
+        "title": "MetricPreviewPoint",
+        "type": "object"
+      },
+      "MetricPreviewRequest": {
+        "description": "Stateless dry-run of a ``sql``-kind metric SELECT (nothing is persisted).\n\nSQL semantics (read-only shape, projected columns, identifier validity) are\ndeliberately NOT validated at this schema boundary: those are expected user\nmistakes while drafting a query, and the preview endpoint reports them as a\n200 response with ``error`` set (see ``metric_preview_service``) instead of\na 422. Only structural shape (types, lengths, interval enum) is enforced\nhere.",
+        "properties": {
+          "data_source_id": {
+            "format": "uuid",
+            "title": "Data Source Id",
+            "type": "string"
+          },
+          "interval": {
+            "$ref": "#/components/schemas/ScanInterval"
+          },
+          "sql": {
+            "minLength": 1,
+            "title": "Sql",
+            "type": "string"
+          },
+          "time_column": {
+            "maxLength": 255,
+            "minLength": 1,
+            "title": "Time Column",
+            "type": "string"
+          },
+          "value_column": {
+            "anyOf": [
+              {
+                "maxLength": 255,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Value Column"
+          }
+        },
+        "required": [
+          "data_source_id",
+          "sql",
+          "time_column",
+          "interval"
+        ],
+        "title": "MetricPreviewRequest",
+        "type": "object"
+      },
+      "MetricPreviewResponse": {
+        "description": "Preview outcome; user-level failures set ``error`` with empty ``points``.",
+        "properties": {
+          "columns": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Columns",
+            "type": "array"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          },
+          "point_count": {
+            "default": 0,
+            "title": "Point Count",
+            "type": "integer"
+          },
+          "points": {
+            "items": {
+              "$ref": "#/components/schemas/MetricPreviewPoint"
+            },
+            "title": "Points",
+            "type": "array"
+          },
+          "truncated": {
+            "default": false,
+            "title": "Truncated",
+            "type": "boolean"
+          }
+        },
+        "title": "MetricPreviewResponse",
+        "type": "object"
+      },
       "MetricScopeType": {
         "enum": [
           "project_total",
@@ -22185,6 +22292,59 @@
           }
         },
         "summary": "Bulk Update Metric Definitions",
+        "tags": [
+          "metrics-catalog"
+        ]
+      }
+    },
+    "/api/v1/projects/{slug}/metrics/preview": {
+      "post": {
+        "description": "Stateless dry-run of a sql-kind metric SELECT (editor-gated).\n\nValidates the SQL with the same safety gate the worker uses and executes it\nagainst the data source over the last 50 buckets of the requested interval\n(hard-capped at 200 rows); nothing is persisted. Expected user mistakes \u2014\nbad SQL, missing time/value columns, warehouse errors \u2014 return 200 with\n``error`` set so the editor can render them inline; unknown data source is\na 404.",
+        "operationId": "preview_metric_sql_api_v1_projects__slug__metrics_preview_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "slug",
+            "required": true,
+            "schema": {
+              "title": "Slug",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MetricPreviewRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MetricPreviewResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Preview Metric Sql",
         "tags": [
           "metrics-catalog"
         ]
