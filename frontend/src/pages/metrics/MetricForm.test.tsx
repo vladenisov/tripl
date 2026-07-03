@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { createElement, type ReactNode } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -132,9 +132,10 @@ describe('MetricForm validation', () => {
     // Fresh form: kind defaults to SQL, with no display name, data source, or query.
     submit()
 
-    expect(await screen.findByText('Display name is required.')).toBeInTheDocument()
-    expect(screen.getByText('A data source is required for a SQL metric.')).toBeInTheDocument()
-    expect(screen.getByText('The metric SQL query is required.')).toBeInTheDocument()
+    // Each message renders both inline (under its field) and in the summary list.
+    expect((await screen.findAllByText('Display name is required.')).length).toBeGreaterThan(0)
+    expect(screen.getAllByText('A data source is required for a SQL metric.').length).toBeGreaterThan(0)
+    expect(screen.getAllByText('The metric SQL query is required.').length).toBeGreaterThan(0)
     expect(metricsCatalogApi.create).not.toHaveBeenCalled()
   })
 
@@ -155,8 +156,8 @@ describe('MetricForm validation', () => {
     submit()
 
     expect(
-      await screen.findByText('A time column is required for a SQL metric.'),
-    ).toBeInTheDocument()
+      (await screen.findAllByText('A time column is required for a SQL metric.')).length,
+    ).toBeGreaterThan(0)
     expect(metricsCatalogApi.create).not.toHaveBeenCalled()
   })
 
@@ -384,14 +385,18 @@ describe('MetricForm validation', () => {
 
     submit()
 
-    expect(await screen.findByText('The metric SQL query is required.')).toBeInTheDocument()
+    expect(
+      (await screen.findAllByText('The metric SQL query is required.')).length,
+    ).toBeGreaterThan(0)
     expect(metricsCatalogApi.update).not.toHaveBeenCalled()
   })
 
   it('updates an existing SQL metric into a single fact metric definition', async () => {
     renderForm(EDIT_METRIC)
 
+    // Switching kind while editing is destructive, so it goes through a confirm.
     fireEvent.click(screen.getByRole('radio', { name: /Fact/ }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Change kind' }))
     await waitFor(() =>
       expect(document.querySelector('#metric-fact-table option[value="ft-1"]')).not.toBeNull(),
     )
@@ -433,7 +438,7 @@ describe('MetricForm validation', () => {
 
     submit()
 
-    expect(await screen.findByText('Display name is required.')).toBeInTheDocument()
+    expect((await screen.findAllByText('Display name is required.')).length).toBeGreaterThan(0)
     expect(metricsCatalogApi.update).not.toHaveBeenCalled()
   })
 
@@ -454,8 +459,8 @@ describe('MetricForm validation', () => {
     submit()
 
     expect(
-      await screen.findByText('A denominator event is required for a ratio metric.'),
-    ).toBeInTheDocument()
+      (await screen.findAllByText('A denominator event is required for a ratio metric.')).length,
+    ).toBeGreaterThan(0)
     expect(metricsCatalogApi.create).not.toHaveBeenCalled()
 
     // Provide the denominator and resubmit.
@@ -572,8 +577,8 @@ describe('MetricForm validation', () => {
     submit()
 
     expect(
-      await screen.findByText('A measure column is required for the sum aggregation.'),
-    ).toBeInTheDocument()
+      (await screen.findAllByText('A measure column is required for the sum aggregation.')).length,
+    ).toBeGreaterThan(0)
     expect(metricsCatalogApi.create).not.toHaveBeenCalled()
   })
 
@@ -602,5 +607,60 @@ describe('MetricForm validation', () => {
         denominator: expect.objectContaining({ fact_table_id: 'ft-2', aggregation: 'count' }),
       }),
     )
+  })
+
+  it('renders an inline error under the display name field on submit', async () => {
+    renderForm()
+
+    submit()
+
+    // The message appears twice: once inline under the field, once in the summary.
+    const matches = await screen.findAllByText('Display name is required.')
+    const alert = screen.getByRole('alert')
+    const inline = matches.filter(node => !alert.contains(node))
+    expect(inline).toHaveLength(1)
+  })
+
+  it('labels the event select "Event" and hides the denominator for single composition', () => {
+    renderForm()
+
+    fireEvent.click(screen.getByRole('radio', { name: /Event composition/ }))
+
+    // Default composition is single: the event select is labelled "Event".
+    expect(screen.getByLabelText('Event').id).toBe('metric-numerator')
+    expect(screen.queryByLabelText('Numerator event')).toBeNull()
+    // No denominator select is rendered for single composition.
+    expect(document.getElementById('metric-denominator')).toBeNull()
+  })
+
+  it('hides warehouse monitoring fields for an event-composition metric', () => {
+    renderForm()
+
+    fireEvent.click(screen.getByRole('radio', { name: /Event composition/ }))
+
+    expect(document.getElementById('metric-breakdowns')).toBeNull()
+    expect(document.getElementById('metric-app-version')).toBeNull()
+    expect(document.getElementById('metric-platform')).toBeNull()
+    // Anomaly detection stays available for every kind.
+    expect(screen.getByRole('switch', { name: 'Anomaly detection' })).toBeInTheDocument()
+  })
+
+  it('confirms a destructive kind switch on edit and cancel keeps the saved kind', async () => {
+    renderForm(EDIT_METRIC)
+
+    fireEvent.click(screen.getByRole('radio', { name: /Fact/ }))
+
+    const dialog = await screen.findByRole('alertdialog')
+    expect(
+      within(dialog).getByText("Changing the kind clears this metric's collected values. Continue?"),
+    ).toBeInTheDocument()
+
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }))
+    await waitFor(() => expect(screen.queryByRole('alertdialog')).toBeNull())
+
+    // The kind is unchanged: SQL config stays, no fact table select appears.
+    expect(document.getElementById('metric-sql-data-source')).not.toBeNull()
+    expect(document.getElementById('metric-fact-table')).toBeNull()
+    expect(screen.getByRole('radio', { name: /SQL/ })).toHaveAttribute('aria-checked', 'true')
   })
 })

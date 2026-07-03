@@ -8,6 +8,7 @@ import { factTablesApi } from '@/api/factTablesApi'
 import { metricsCatalogApi } from '@/api/metricsCatalogApi'
 import { ErrorState } from '@/components/error-state'
 import { SqlEditor } from '@/components/sql-editor'
+import { useConfirm } from '@/hooks/useConfirm'
 import { useDataSourceSchema } from '@/hooks/useDataSourceSchema'
 import {
   Field,
@@ -76,6 +77,37 @@ const AGGREGATION_LABEL: Record<MetricAggregation, string> = {
   min: 'Min',
   max: 'Max',
   count_distinct: 'Count distinct',
+}
+
+// Human-readable labels for the event-composition select (raw option values are
+// kept as-is on the wire).
+const COMPOSITION_LABEL: Record<MetricComposition, string> = {
+  single: 'Single',
+  ratio: 'Ratio',
+  per_distinct_user: 'Per distinct user',
+}
+
+// Human-readable labels for the collection-interval selects. The option values
+// stay the raw cron-ish tokens the backend expects.
+const INTERVAL_LABEL: Record<MetricScanInterval, string> = {
+  '15m': 'Every 15 min',
+  '1h': 'Hourly',
+  '6h': 'Every 6 h',
+  '1d': 'Daily',
+  '1w': 'Weekly',
+}
+
+// Scroll the first errored field into view and focus it after a failed submit.
+// scrollIntoView is guarded because jsdom (tests) may not implement it.
+function scrollToField(id: string): void {
+  const el = document.getElementById(id)
+  if (!el) return
+  if (typeof el.scrollIntoView === 'function') {
+    el.scrollIntoView({ behavior: 'smooth', block: 'center' })
+  }
+  if (typeof (el as HTMLElement).focus === 'function') {
+    ;(el as HTMLElement).focus()
+  }
 }
 
 const FACT_COMPOSITIONS = ['single', 'ratio'] as const
@@ -166,20 +198,27 @@ function toOperandPayload(operand: FactOperandState): FactOperandPayload {
   }
 }
 
-// Validate one operand against the backend required-field rules. `prefix` names
+// Validate one operand against the backend required-field rules. `label` names
 // the side for ratio operands ('numerator' / 'denominator'); empty for a single
-// operand.
-function operandErrors(operand: FactOperandState, prefix: string): string[] {
-  const errs: string[] = []
-  const qualifier = prefix ? `${prefix} ` : ''
+// operand. Keys are the DOM ids of the offending inputs (`${idPrefix}-table`
+// etc.) so the caller can render inline errors and scroll to the first one.
+function operandErrors(
+  operand: FactOperandState,
+  idPrefix: string,
+  label: string,
+): Record<string, string> {
+  const errs: Record<string, string> = {}
+  const qualifier = label ? `${label} ` : ''
   if (!operand.factTableId) {
-    errs.push(prefix ? `A ${prefix} fact table is required.` : 'A fact table is required for a fact metric.')
+    errs[`${idPrefix}-table`] = label
+      ? `A ${label} fact table is required.`
+      : 'A fact table is required for a fact metric.'
   }
   if (needsMeasure(operand.aggregation) && !operand.measureColumn) {
-    errs.push(`A ${qualifier}measure column is required for the ${operand.aggregation} aggregation.`)
+    errs[`${idPrefix}-measure`] = `A ${qualifier}measure column is required for the ${operand.aggregation} aggregation.`
   }
   if (needsDistinct(operand.aggregation) && !operand.distinctColumn) {
-    errs.push(`A ${qualifier}distinct column is required for the count_distinct aggregation.`)
+    errs[`${idPrefix}-distinct`] = `A ${qualifier}distinct column is required for the count_distinct aggregation.`
   }
   return errs
 }
@@ -191,6 +230,8 @@ interface FactOperandEditorProps {
   factTableOptions: SelectOption[]
   detail: FactTableDetail
   loading: boolean
+  // Inline validation messages keyed by input DOM id (`${idPrefix}-table` etc.).
+  errors?: Record<string, string>
 }
 
 /**
@@ -206,6 +247,7 @@ function FactOperandEditor({
   factTableOptions,
   detail,
   loading,
+  errors,
 }: FactOperandEditorProps) {
   const set = <K extends keyof FactOperandState>(key: K, value: FactOperandState[K]): void =>
     onChange({ ...operand, [key]: value })
@@ -239,7 +281,12 @@ function FactOperandEditor({
 
   return (
     <>
-      <MField label="Fact table" htmlFor={`${idPrefix}-table`} required>
+      <MField
+        label="Fact table"
+        htmlFor={`${idPrefix}-table`}
+        required
+        error={errors?.[`${idPrefix}-table`]}
+      >
         <Select
           id={`${idPrefix}-table`}
           value={operand.factTableId}
@@ -262,6 +309,7 @@ function FactOperandEditor({
           htmlFor={`${idPrefix}-measure`}
           required
           hint={columnHint ?? 'Column to aggregate (numeric preferred).'}
+          error={errors?.[`${idPrefix}-measure`]}
         >
           <Select
             id={`${idPrefix}-measure`}
@@ -279,6 +327,7 @@ function FactOperandEditor({
           htmlFor={`${idPrefix}-distinct`}
           required
           hint={columnHint ?? 'Column whose distinct values are counted.'}
+          error={errors?.[`${idPrefix}-distinct`]}
         >
           <Select
             id={`${idPrefix}-distinct`}
@@ -333,15 +382,34 @@ function toSnakeCase(input: string): string {
     .replace(/^_+|_+$/g, '')
 }
 
-// kit's Field has no `required` flag; this thin wrapper renders the red marker
-// to the right of the label (kit's `labelRight` slot) when a field is required.
-function MField({ required, ...props }: { required?: boolean } & ComponentProps<typeof Field>) {
+// kit's Field has no `required` flag or error slot; this thin wrapper renders
+// the red required marker (kit's `labelRight` slot) and appends an inline error
+// message beneath the control (kit's `hint` sits in the label column, so the
+// error goes into the children column to read directly under the input).
+function MField({
+  required,
+  error,
+  children,
+  ...props
+}: { required?: boolean; error?: string } & ComponentProps<typeof Field>) {
   const labelRight = required ? (
     <span style={{ color: 'var(--danger)' }}>*</span>
   ) : (
     props.labelRight
   )
-  return <Field {...props} labelRight={labelRight} />
+  return (
+    <Field {...props} labelRight={labelRight}>
+      {children}
+      {error && (
+        <p
+          className="mt-[6px] text-[12px] leading-[1.45]"
+          style={{ color: 'var(--danger)' }}
+        >
+          {error}
+        </p>
+      )}
+    </Field>
+  )
 }
 
 interface MetricFormProps {
@@ -436,7 +504,10 @@ export function MetricForm({ slug, metric, dataSources, events, onClose }: Metri
     readOperandFromConfig(initialConfig['denominator']),
   )
 
-  const [formErrors, setFormErrors] = useState<string[]>([])
+  // Inline validation messages keyed by the offending input's DOM id; the same
+  // record drives both the per-field errors and the bottom summary list.
+  const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({})
+  const { confirm: confirmKind, dialog: kindDialog } = useConfirm()
 
   const factEnabled = kind === 'fact'
   const factTablesQuery = useQuery({
@@ -487,35 +558,37 @@ export function MetricForm({ slug, metric, dataSources, events, onClose }: Metri
   )
   const { data: sqlSchemaData } = useDataSourceSchema(dataSourceId || undefined)
 
-  function validate(): string[] {
-    const errs: string[] = []
-    if (!displayName.trim()) errs.push('Display name is required.')
+  // Field-keyed validation: each entry maps an input DOM id to its message.
+  // Insertion order is top-to-bottom so the first key is the first offending
+  // field to scroll to.
+  function validate(): Record<string, string> {
+    const errs: Record<string, string> = {}
+    if (!displayName.trim()) errs['metric-display-name'] = 'Display name is required.'
 
-    if (isNew && !name.trim()) errs.push('Internal name is required.')
+    if (isNew && !name.trim()) errs['metric-name'] = 'Internal name is required.'
 
     if (kind === 'sql') {
-      if (!dataSourceId) errs.push('A data source is required for a SQL metric.')
-      if (!metricSql.trim()) errs.push('The metric SQL query is required.')
-      if (!sqlTimeColumn.trim()) errs.push('A time column is required for a SQL metric.')
+      if (!dataSourceId) errs['metric-sql-data-source'] = 'A data source is required for a SQL metric.'
+      if (!metricSql.trim()) errs['metric-sql-query'] = 'The metric SQL query is required.'
+      if (!sqlTimeColumn.trim()) errs['metric-sql-time'] = 'A time column is required for a SQL metric.'
     } else if (kind === 'fact') {
       if (factComposition === 'ratio') {
-        errs.push(...operandErrors(numeratorOp, 'numerator'))
+        Object.assign(errs, operandErrors(numeratorOp, 'metric-fact-num', 'numerator'))
+        Object.assign(errs, operandErrors(denominatorOp, 'metric-fact-den', 'denominator'))
       } else {
-        errs.push(...operandErrors(numeratorOp, ''))
-      }
-      if (factComposition === 'ratio') {
-        errs.push(...operandErrors(denominatorOp, 'denominator'))
+        Object.assign(errs, operandErrors(numeratorOp, 'metric-fact', ''))
       }
     } else {
       if (!numeratorEventId && !numeratorEventTypeId) {
-        errs.push('A numerator event is required.')
+        errs['metric-numerator'] =
+          composition === 'ratio' ? 'A numerator event is required.' : 'An event is required.'
       }
       if (
         composition === 'ratio' &&
         !denominatorEventId &&
         !denominatorEventTypeId
       ) {
-        errs.push('A denominator event is required for a ratio metric.')
+        errs['metric-denominator'] = 'A denominator event is required for a ratio metric.'
       }
     }
     return errs
@@ -688,17 +761,39 @@ export function MetricForm({ slug, metric, dataSources, events, onClose }: Metri
 
   const onSubmit = () => {
     const errs = validate()
-    setFormErrors(errs)
-    if (errs.length > 0) return
+    setFieldErrors(errs)
+    const firstKey = Object.keys(errs)[0]
+    if (firstKey) {
+      scrollToField(firstKey)
+      return
+    }
     saveMut.mutate()
   }
 
   // Switching kind swaps which config fields render, so a stale error list would
   // show messages for fields that no longer exist. Clear it on kind change;
   // re-validation still runs on the next submit.
-  const changeKind = (next: MetricKind) => {
+  const applyKind = (next: MetricKind) => {
     setKind(next)
-    setFormErrors([])
+    setFieldErrors({})
+  }
+  // On edit, switching to a kind other than the saved one discards the metric's
+  // collected values server-side, so confirm first. Creating (or switching back
+  // to the saved kind) applies immediately.
+  const changeKind = (next: MetricKind) => {
+    if (next === kind) return
+    if (isNew || !metric || next === metric.kind) {
+      applyKind(next)
+      return
+    }
+    void confirmKind({
+      title: 'Change metric kind?',
+      message: "Changing the kind clears this metric's collected values. Continue?",
+      variant: 'danger',
+      confirmLabel: 'Change kind',
+    }).then(ok => {
+      if (ok) applyKind(next)
+    })
   }
 
   const onDisplayNameChange = (value: string) => {
@@ -746,7 +841,12 @@ export function MetricForm({ slug, metric, dataSources, events, onClose }: Metri
         <div className="grid grid-cols-1 gap-x-5 lg:grid-cols-2">
           <div>
             <SCard title="Details">
-              <MField label="Display name" htmlFor="metric-display-name" required>
+              <MField
+                label="Display name"
+                htmlFor="metric-display-name"
+                required
+                error={fieldErrors['metric-display-name']}
+              >
                 <TextInput id="metric-display-name" value={displayName} onChange={onDisplayNameChange} placeholder="Checkout conversion" aria-required />
               </MField>
               <MField
@@ -754,6 +854,7 @@ export function MetricForm({ slug, metric, dataSources, events, onClose }: Metri
                 htmlFor={isNew ? 'metric-name' : undefined}
                 required={isNew}
                 hint={isNew ? 'Stable identifier used in queries.' : "Can't be changed after creation."}
+                error={isNew ? fieldErrors['metric-name'] : undefined}
               >
                 {isNew ? (
                   <TextInput id="metric-name" value={name} onChange={onInternalNameChange} mono placeholder="checkout_conversion" aria-required />
@@ -807,7 +908,12 @@ export function MetricForm({ slug, metric, dataSources, events, onClose }: Metri
                 below. */}
             {kind === 'sql' && (
               <SCard title="Source" description="Where the query runs, and how often.">
-                <MField label="Data source" htmlFor="metric-sql-data-source" required>
+                <MField
+                  label="Data source"
+                  htmlFor="metric-sql-data-source"
+                  required
+                  error={fieldErrors['metric-sql-data-source']}
+                >
                   <Select id="metric-sql-data-source" value={dataSourceId} onChange={setDataSourceId} options={dataSourceOptions} />
                 </MField>
                 <MField label="Collection interval" htmlFor="metric-sql-interval" required last>
@@ -815,7 +921,7 @@ export function MetricForm({ slug, metric, dataSources, events, onClose }: Metri
                     id="metric-sql-interval"
                     value={interval}
                     onChange={value => setIntervalValue(value as MetricScanInterval)}
-                    options={METRIC_SCAN_INTERVALS.map(i => ({ value: i, label: i }))}
+                    options={METRIC_SCAN_INTERVALS.map(i => ({ value: i, label: INTERVAL_LABEL[i] }))}
                   />
                 </MField>
               </SCard>
@@ -844,7 +950,7 @@ export function MetricForm({ slug, metric, dataSources, events, onClose }: Metri
                     id="metric-fact-interval"
                     value={interval}
                     onChange={value => setIntervalValue(value as MetricScanInterval)}
-                    options={METRIC_SCAN_INTERVALS.map(i => ({ value: i, label: i }))}
+                    options={METRIC_SCAN_INTERVALS.map(i => ({ value: i, label: INTERVAL_LABEL[i] }))}
                   />
                 </MField>
               </SCard>
@@ -857,27 +963,35 @@ export function MetricForm({ slug, metric, dataSources, events, onClose }: Metri
                     id="metric-composition"
                     value={composition}
                     onChange={value => setComposition(value as MetricComposition)}
-                    options={METRIC_COMPOSITIONS.map(c => ({ value: c, label: c }))}
+                    options={METRIC_COMPOSITIONS.map(c => ({ value: c, label: COMPOSITION_LABEL[c] }))}
                   />
-                </MField>
-                <MField label="Numerator event" htmlFor="metric-numerator" required>
-                  <Select id="metric-numerator" value={numeratorEventId} onChange={onNumeratorEventChange} options={eventOptions} />
                 </MField>
                 <MField
-                  label="Denominator event"
-                  htmlFor="metric-denominator"
-                  required={composition === 'ratio'}
-                  last={composition !== 'per_distinct_user'}
-                  hint={composition === 'ratio' ? 'Required for a ratio metric.' : 'Only used by ratio metrics.'}
+                  label={composition === 'ratio' ? 'Numerator event' : 'Event'}
+                  htmlFor="metric-numerator"
+                  required
+                  last={composition === 'single'}
+                  error={fieldErrors['metric-numerator']}
                 >
-                  <Select
-                    id="metric-denominator"
-                    value={denominatorEventId}
-                    onChange={onDenominatorEventChange}
-                    options={eventOptions}
-                    disabled={composition !== 'ratio'}
-                  />
+                  <Select id="metric-numerator" value={numeratorEventId} onChange={onNumeratorEventChange} options={eventOptions} />
                 </MField>
+                {composition === 'ratio' && (
+                  <MField
+                    label="Denominator event"
+                    htmlFor="metric-denominator"
+                    required
+                    last
+                    hint="Required for a ratio metric."
+                    error={fieldErrors['metric-denominator']}
+                  >
+                    <Select
+                      id="metric-denominator"
+                      value={denominatorEventId}
+                      onChange={onDenominatorEventChange}
+                      options={eventOptions}
+                    />
+                  </MField>
+                )}
                 {composition === 'per_distinct_user' && (
                   <MField
                     label="User ID column"
@@ -885,13 +999,15 @@ export function MetricForm({ slug, metric, dataSources, events, onClose }: Metri
                     last
                     hint="Column counted for distinct users. Defaults to user_id."
                   >
-                    <TextInput
-                      id="metric-user-id-column"
-                      value={userIdColumn}
-                      onChange={setUserIdColumn}
-                      mono
-                      placeholder="user_id"
-                    />
+                    <div className="max-w-[280px]">
+                      <TextInput
+                        id="metric-user-id-column"
+                        value={userIdColumn}
+                        onChange={setUserIdColumn}
+                        mono
+                        placeholder="user_id"
+                      />
+                    </div>
                   </MField>
                 )}
               </SCard>
@@ -903,7 +1019,13 @@ export function MetricForm({ slug, metric, dataSources, events, onClose }: Metri
             Source card beside Details above. */}
         {kind === 'sql' && (
           <SCard title="Query" description="A custom query returning one numeric value per bucket.">
-            <MField label="Metric SQL" htmlFor="metric-sql-query" required stacked>
+            <MField
+              label="Metric SQL"
+              htmlFor="metric-sql-query"
+              required
+              stacked
+              error={fieldErrors['metric-sql-query']}
+            >
               <SqlEditor
                 id="metric-sql-query"
                 ariaLabel="Metric SQL"
@@ -915,11 +1037,21 @@ export function MetricForm({ slug, metric, dataSources, events, onClose }: Metri
                 minHeight="220px"
               />
             </MField>
-            <MField label="Time column" htmlFor="metric-sql-time" required hint="The bucket/time column returned by the query.">
-              <TextInput id="metric-sql-time" value={sqlTimeColumn} onChange={setSqlTimeColumn} mono placeholder="bucket" />
+            <MField
+              label="Time column"
+              htmlFor="metric-sql-time"
+              required
+              hint="The bucket/time column returned by the query."
+              error={fieldErrors['metric-sql-time']}
+            >
+              <div className="max-w-[280px]">
+                <TextInput id="metric-sql-time" value={sqlTimeColumn} onChange={setSqlTimeColumn} mono placeholder="bucket" />
+              </div>
             </MField>
             <MField label="Value column" htmlFor="metric-sql-value" last hint="The projected measure column. Defaults to value.">
-              <TextInput id="metric-sql-value" value={sqlValueColumn} onChange={setSqlValueColumn} mono placeholder="value" />
+              <div className="max-w-[280px]">
+                <TextInput id="metric-sql-value" value={sqlValueColumn} onChange={setSqlValueColumn} mono placeholder="value" />
+              </div>
             </MField>
           </SCard>
         )}
@@ -942,6 +1074,7 @@ export function MetricForm({ slug, metric, dataSources, events, onClose }: Metri
                 factTableOptions={factTableOptions}
                 detail={numeratorDetail}
                 loading={numeratorDetailQuery.isFetching}
+                errors={fieldErrors}
               />
             </SCard>
           ) : (
@@ -955,6 +1088,7 @@ export function MetricForm({ slug, metric, dataSources, events, onClose }: Metri
                     factTableOptions={factTableOptions}
                     detail={numeratorDetail}
                     loading={numeratorDetailQuery.isFetching}
+                    errors={fieldErrors}
                   />
                 </SCard>
               </div>
@@ -967,6 +1101,7 @@ export function MetricForm({ slug, metric, dataSources, events, onClose }: Metri
                     factTableOptions={factTableOptions}
                     detail={denominatorDetail}
                     loading={denominatorDetailQuery.isFetching}
+                    errors={fieldErrors}
                   />
                 </SCard>
               </div>
@@ -980,19 +1115,32 @@ export function MetricForm({ slug, metric, dataSources, events, onClose }: Metri
             hint="Learn a baseline and flag spikes/drops on this metric."
             value={anomalyDetection}
             onChange={setAnomalyDetection}
+            last={kind === 'event_composition'}
           />
-          <MField label="Breakdown columns" htmlFor="metric-breakdowns" hint="Comma-separated warehouse columns to roll up by.">
-            <TextInput id="metric-breakdowns" value={breakdownColumns} onChange={setBreakdownColumns} mono placeholder="platform, country" />
-          </MField>
-          <MField label="App version column" htmlFor="metric-app-version" hint="Optional column used for by-version series.">
-            <TextInput id="metric-app-version" value={appVersionColumn} onChange={setAppVersionColumn} mono placeholder="app_version" />
-          </MField>
-          <MField label="Platform column" htmlFor="metric-platform" last hint="Optional platform dimension column.">
-            <TextInput id="metric-platform" value={platformColumn} onChange={setPlatformColumn} mono placeholder="platform" />
-          </MField>
+          {/* Breakdowns roll up warehouse columns; event-composition metrics have
+              no data source, so hide these dimension inputs for that kind. */}
+          {kind !== 'event_composition' && (
+            <>
+              <MField label="Breakdown columns" htmlFor="metric-breakdowns" hint="Comma-separated warehouse columns to roll up by.">
+                <div className="max-w-[280px]">
+                  <TextInput id="metric-breakdowns" value={breakdownColumns} onChange={setBreakdownColumns} mono placeholder="platform, country" />
+                </div>
+              </MField>
+              <MField label="App version column" htmlFor="metric-app-version" hint="Optional column used for by-version series.">
+                <div className="max-w-[280px]">
+                  <TextInput id="metric-app-version" value={appVersionColumn} onChange={setAppVersionColumn} mono placeholder="app_version" />
+                </div>
+              </MField>
+              <MField label="Platform column" htmlFor="metric-platform" last hint="Optional platform dimension column.">
+                <div className="max-w-[280px]">
+                  <TextInput id="metric-platform" value={platformColumn} onChange={setPlatformColumn} mono placeholder="platform" />
+                </div>
+              </MField>
+            </>
+          )}
         </SCard>
 
-        {formErrors.length > 0 && (
+        {Object.keys(fieldErrors).length > 0 && (
           <div
             role="alert"
             className="mb-[18px] rounded-[10px] border px-4 py-3 text-[12.5px]"
@@ -1003,8 +1151,8 @@ export function MetricForm({ slug, metric, dataSources, events, onClose }: Metri
             }}
           >
             <ul className="list-disc space-y-1 pl-4">
-              {formErrors.map(error => (
-                <li key={error}>{error}</li>
+              {Object.entries(fieldErrors).map(([key, error]) => (
+                <li key={key}>{error}</li>
               ))}
             </ul>
           </div>
@@ -1042,6 +1190,7 @@ export function MetricForm({ slug, metric, dataSources, events, onClose }: Metri
           </button>
         </div>
       </form>
+      {kindDialog}
     </div>
   )
 }
