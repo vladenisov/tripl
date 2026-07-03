@@ -9,10 +9,29 @@ import {
   verticalListSortingStrategy,
 } from '@dnd-kit/sortable'
 import { CSS } from '@dnd-kit/utilities'
-import { GripVertical, LineChart, Plus, Search } from 'lucide-react'
+import {
+  Archive,
+  ArchiveRestore,
+  Copy,
+  GripVertical,
+  LineChart,
+  MoreVertical,
+  Pencil,
+  Plus,
+  RefreshCw,
+  Search,
+} from 'lucide-react'
+import { toast } from 'sonner'
 import { metricsCatalogApi } from '@/api/metricsCatalogApi'
 import { Button } from '@/components/ui/button'
 import { Checkbox } from '@/components/ui/checkbox'
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu'
 import { EmptyState } from '@/components/empty-state'
 import { ErrorState } from '@/components/error-state'
 import { Panel } from '@/components/settings/kit'
@@ -29,14 +48,20 @@ import {
   METRIC_KIND_LABEL,
   METRIC_STATUS_LABEL,
   METRIC_STATUSES,
+  type EventCompositionMetricCreate,
+  type FactMetricCreate,
+  type MetricAggregation,
+  type MetricCreate,
   type MetricDefinitionListItem,
   type MetricDefinitionListResponse,
+  type MetricDefinitionResponse,
   type MetricKind,
   type MetricStatus,
+  type SqlMetricCreate,
 } from '@/types'
 
 const METRIC_GRID =
-  'grid grid-cols-[18px_20px_minmax(0,1.3fr)_minmax(0,1fr)_104px_84px_84px] items-center gap-3 px-4'
+  'grid grid-cols-[18px_20px_minmax(0,1.3fr)_minmax(0,1fr)_104px_84px_84px_28px] items-center gap-3 px-4'
 
 const STATUS_TONE: Record<MetricStatus, ChipTone> = {
   draft: 'neutral',
@@ -59,6 +84,129 @@ function formatValue(value: number | null | undefined, unit: string | null): str
   const rounded = Math.abs(value) >= 100 ? Math.round(value) : Math.round(value * 100) / 100
   const text = rounded.toLocaleString()
   return unit ? `${text} ${unit}` : text
+}
+
+// The single fact operand shape (numerator / denominator) sent to the backend —
+// derived from the generated create schema so it stays in lock-step.
+type FactOperandPayload = NonNullable<FactMetricCreate['numerator']>
+
+// A metric's internal name is a lowercase [a-z0-9_] identifier. Derive a unique
+// copy name: `<name>_copy`, then `_2` / `_3`… on collision against the loaded
+// catalog. The source name is already a valid identifier, so the suffix keeps it
+// one (tripl-nxk2.9).
+function makeCopyName(baseName: string, existing: ReadonlySet<string>): string {
+  const root = `${baseName}_copy`
+  if (!existing.has(root)) return root
+  let suffix = 2
+  while (existing.has(`${root}_${suffix}`)) suffix += 1
+  return `${root}_${suffix}`
+}
+
+// Narrow one fact operand out of a stored fact-metric config sub-object (a ratio
+// numerator/denominator). Untrusted JSON, so every field is read defensively.
+function readFactOperand(raw: unknown): FactOperandPayload {
+  const obj = raw && typeof raw === 'object' ? (raw as Record<string, unknown>) : {}
+  const strOrNull = (key: string): string | null =>
+    typeof obj[key] === 'string' ? (obj[key] as string) : null
+  return {
+    fact_table_id: typeof obj['fact_table_id'] === 'string' ? (obj['fact_table_id'] as string) : '',
+    aggregation: (obj['aggregation'] as MetricAggregation | undefined) ?? 'count',
+    measure_column: strOrNull('measure_column'),
+    distinct_column: strOrNull('distinct_column'),
+    row_filters: Array.isArray(obj['row_filters']) ? (obj['row_filters'] as string[]) : [],
+    filter_sql: strOrNull('filter_sql'),
+  }
+}
+
+/**
+ * Map a loaded metric definition to a fresh create payload for "Duplicate as
+ * draft": copy presentation + kind-specific collection config verbatim for all
+ * three kinds, overriding only identity (display/internal name) and forcing
+ * `status: 'draft'`. The response nests kind config under `config`; the create
+ * union expects it at the shapes {@link MetricForm} builds, so each kind is
+ * remapped explicitly.
+ */
+function buildDuplicatePayload(
+  def: MetricDefinitionResponse,
+  displayName: string,
+  name: string,
+): MetricCreate {
+  const config = def.config
+  const strOrNull = (key: string): string | null =>
+    typeof config[key] === 'string' ? (config[key] as string) : null
+  const base = {
+    anomaly_detection_enabled: def.anomaly_detection_enabled,
+    app_version_column: def.app_version_column,
+    breakdown_columns: def.breakdown_columns,
+    breakdown_values_limit: def.breakdown_values_limit,
+    color: def.color,
+    description: def.description,
+    display_name: displayName,
+    name,
+    order: def.order,
+    owner_id: def.owner_id,
+    platform_column: def.platform_column,
+    reviewed: def.reviewed,
+    status: 'draft' as const,
+    unit: def.unit,
+  }
+
+  if (def.kind === 'sql') {
+    const payload: SqlMetricCreate = {
+      ...base,
+      kind: 'sql',
+      interval: def.interval ?? '1h',
+      data_source_id: def.data_source_id ?? '',
+      config: {
+        metric_sql: typeof config['metric_sql'] === 'string' ? (config['metric_sql'] as string) : '',
+        time_column: typeof config['time_column'] === 'string' ? (config['time_column'] as string) : '',
+        value_column: strOrNull('value_column'),
+      },
+      replay_chunk_interval: def.replay_chunk_interval,
+    }
+    return payload
+  }
+
+  if (def.kind === 'fact') {
+    if (def.composition === 'ratio') {
+      const payload: FactMetricCreate = {
+        ...base,
+        kind: 'fact',
+        composition: 'ratio',
+        interval: def.interval ?? '1h',
+        numerator: readFactOperand(config['numerator']),
+        denominator: readFactOperand(config['denominator']),
+        replay_chunk_interval: def.replay_chunk_interval,
+      }
+      return payload
+    }
+    const payload: FactMetricCreate = {
+      ...base,
+      kind: 'fact',
+      composition: 'single',
+      interval: def.interval ?? '1h',
+      fact_table_id: def.fact_table_id,
+      aggregation: def.aggregation,
+      measure_column: strOrNull('measure_column'),
+      distinct_column: strOrNull('distinct_column'),
+      row_filters: Array.isArray(config['row_filters']) ? (config['row_filters'] as string[]) : [],
+      filter_sql: strOrNull('filter_sql'),
+      replay_chunk_interval: def.replay_chunk_interval,
+    }
+    return payload
+  }
+
+  const payload: EventCompositionMetricCreate = {
+    ...base,
+    kind: 'event_composition',
+    composition: def.composition ?? 'single',
+    numerator_event_id: def.numerator_event_id,
+    numerator_event_type_id: def.numerator_event_type_id,
+    denominator_event_id: def.denominator_event_id,
+    denominator_event_type_id: def.denominator_event_type_id,
+    user_id_column: strOrNull('user_id_column'),
+  }
+  return payload
 }
 
 /**
@@ -89,6 +237,9 @@ export function MetricsCatalog({ slug }: { slug?: string }) {
 
   const data = metricsQuery.data
   const metrics = useMemo(() => data?.items ?? [], [data])
+  // Internal names of the loaded catalog — the collision set for the "Duplicate
+  // as draft" copy-name suffixing.
+  const existingNames = useMemo(() => new Set(metrics.map(m => m.name)), [metrics])
   const active = metrics.filter(m => m.status === 'active').length
   const draft = metrics.filter(m => m.status === 'draft').length
   const archived = metrics.filter(m => m.status === 'archived').length
@@ -324,7 +475,7 @@ export function MetricsCatalog({ slug }: { slug?: string }) {
               </div>
             ) : (
               <div className="overflow-x-auto">
-                <div role="table" aria-label="Metrics" className="min-w-[720px]">
+                <div role="table" aria-label="Metrics" className="min-w-[748px]">
                   <div role="rowgroup">
                     <div
                       role="row"
@@ -344,6 +495,7 @@ export function MetricsCatalog({ slug }: { slug?: string }) {
                       <span role="columnheader">Trend</span>
                       <span role="columnheader">Status</span>
                       <span role="columnheader" className="text-right">Updated</span>
+                      <span role="columnheader" aria-label="Actions" />
                     </div>
                   </div>
                   <DndContext
@@ -362,6 +514,7 @@ export function MetricsCatalog({ slug }: { slug?: string }) {
                             metric={metric}
                             slug={slug}
                             canReorder={canReorder}
+                            existingNames={existingNames}
                             isSelected={selectedIds.has(metric.id)}
                             onToggleSelected={() => toggleSelected(metric.id)}
                           />
@@ -382,11 +535,19 @@ interface MetricRowProps {
   metric: MetricDefinitionListItem
   slug?: string
   canReorder: boolean
+  existingNames: ReadonlySet<string>
   isSelected: boolean
   onToggleSelected: () => void
 }
 
-function MetricRow({ metric, slug, canReorder, isSelected, onToggleSelected }: MetricRowProps) {
+function MetricRow({
+  metric,
+  slug,
+  canReorder,
+  existingNames,
+  isSelected,
+  onToggleSelected,
+}: MetricRowProps) {
   const navigate = useNavigate()
   const href = slug ? getMetricMonitoringPath(slug, metric.id) : undefined
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
@@ -509,6 +670,118 @@ function MetricRow({ metric, slug, canReorder, isSelected, onToggleSelected }: M
       <span role="cell" className="mono text-right text-[10.5px]" style={{ color: 'var(--fg-faint)' }}>
         {formatRelativeTime(metric.updated_at)}
       </span>
+      <span role="cell" className="flex justify-end">
+        {slug ? (
+          <MetricRowMenu metric={metric} slug={slug} existingNames={existingNames} />
+        ) : null}
+      </span>
     </div>
+  )
+}
+
+interface MetricRowMenuProps {
+  metric: MetricDefinitionListItem
+  slug: string
+  existingNames: ReadonlySet<string>
+}
+
+/**
+ * Per-row overflow (kebab) menu: Edit, Duplicate as draft, Collect now, and
+ * Archive/Restore. Reuses the shared Radix DropdownMenu primitive (same one the
+ * monitoring detail page uses). The trigger stops click propagation so opening
+ * the menu never fires the row's navigate-on-click (mirrors the reorder handle /
+ * checkbox); the menu content is portaled, so item clicks never bubble to the
+ * row either.
+ */
+function MetricRowMenu({ metric, slug, existingNames }: MetricRowMenuProps) {
+  const qc = useQueryClient()
+  const navigate = useNavigate()
+  const isArchived = metric.status === 'archived'
+
+  const duplicateMut = useMutation({
+    mutationFn: async () => {
+      const def = await metricsCatalogApi.get(slug, metric.id)
+      const name = makeCopyName(def.name, existingNames)
+      const payload = buildDuplicatePayload(def, `${def.display_name} (copy)`, name)
+      return metricsCatalogApi.create(slug, payload)
+    },
+    onSuccess: created => {
+      void qc.invalidateQueries({ queryKey: ['metrics-catalog', slug] })
+      toast.success('Metric duplicated as a draft.')
+      navigate(`/p/${slug}/metrics/${created.id}/edit`)
+    },
+    onError: error => toast.error(getErrorMessage(error)),
+  })
+
+  const statusMut = useMutation({
+    mutationFn: (status: MetricStatus) => metricsCatalogApi.update(slug, metric.id, { status }),
+    onSuccess: (_data, status) => {
+      void qc.invalidateQueries({ queryKey: ['metrics-catalog', slug] })
+      toast.success(status === 'archived' ? 'Metric archived.' : 'Metric restored.')
+    },
+    onError: error => toast.error(getErrorMessage(error)),
+  })
+
+  const collectMut = useMutation({
+    mutationFn: () => metricsCatalogApi.collect(slug, metric.id),
+    onSuccess: () => toast.success('Collection queued — the chart will update shortly.'),
+    onError: () => toast.error('Could not start collection.'),
+  })
+
+  const busy = duplicateMut.isPending || statusMut.isPending || collectMut.isPending
+
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <button
+          type="button"
+          aria-label={`Actions for ${metric.display_name}`}
+          className="flex items-center justify-center rounded p-0.5 hover:bg-[var(--surface-hover)]"
+          style={{ color: 'var(--fg-faint)' }}
+          onClick={event => event.stopPropagation()}
+        >
+          <MoreVertical className="h-3.5 w-3.5" />
+        </button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="end" sideOffset={6} className="w-[184px]">
+        <DropdownMenuItem
+          className="text-[12.5px]"
+          onSelect={() => navigate(`/p/${slug}/metrics/${metric.id}/edit`)}
+        >
+          <Pencil className="h-3.5 w-3.5 shrink-0" style={{ color: 'var(--fg-subtle)' }} /> Edit
+        </DropdownMenuItem>
+        <DropdownMenuItem
+          className="text-[12.5px]"
+          disabled={busy}
+          onSelect={() => duplicateMut.mutate()}
+        >
+          <Copy className="h-3.5 w-3.5 shrink-0" style={{ color: 'var(--fg-subtle)' }} /> Duplicate as draft
+        </DropdownMenuItem>
+        <DropdownMenuItem
+          className="text-[12.5px]"
+          disabled={busy}
+          onSelect={() => collectMut.mutate()}
+        >
+          <RefreshCw className="h-3.5 w-3.5 shrink-0" style={{ color: 'var(--fg-subtle)' }} /> Collect now
+        </DropdownMenuItem>
+        <DropdownMenuSeparator />
+        <DropdownMenuItem
+          className="text-[12.5px]"
+          variant={isArchived ? 'default' : 'destructive'}
+          disabled={busy}
+          onSelect={() => statusMut.mutate(isArchived ? 'active' : 'archived')}
+        >
+          {isArchived ? (
+            <>
+              <ArchiveRestore className="h-3.5 w-3.5 shrink-0" style={{ color: 'var(--fg-subtle)' }} /> Restore
+            </>
+          ) : (
+            <>
+              <Archive className="h-3.5 w-3.5 shrink-0" /> Archive
+            </>
+          )}
+        </DropdownMenuItem>
+      </DropdownMenuContent>
+    </DropdownMenu>
   )
 }

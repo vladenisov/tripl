@@ -1,18 +1,27 @@
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { MemoryRouter, Route, Routes } from 'react-router-dom'
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { MemoryRouter, Route, Routes, useParams } from 'react-router-dom'
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import type {
   DataSource,
   FactTableListItem,
   FactTableListResponse,
   MetricDefinitionListItem,
   MetricDefinitionListResponse,
+  MetricDefinitionResponse,
 } from '@/types'
 import MetricsPage, { type MetricsTab } from './MetricsPage'
 
 vi.mock('@/api/metricsCatalogApi', () => ({
-  metricsCatalogApi: { list: vi.fn(), bulkUpdate: vi.fn(), reorder: vi.fn() },
+  metricsCatalogApi: {
+    list: vi.fn(),
+    get: vi.fn(),
+    create: vi.fn(),
+    update: vi.fn(),
+    collect: vi.fn(),
+    bulkUpdate: vi.fn(),
+    reorder: vi.fn(),
+  },
 }))
 vi.mock('@/api/factTablesApi', () => ({
   factTablesApi: { list: vi.fn() },
@@ -55,6 +64,49 @@ function makeItem(overrides: Partial<MetricDefinitionListItem>): MetricDefinitio
   }
 }
 
+// Full definition returned by `metricsCatalogApi.get` — what "Duplicate as
+// draft" reads to build the create payload. Defaults to a SQL metric.
+function makeDefinition(
+  overrides: Partial<MetricDefinitionResponse>,
+): MetricDefinitionResponse {
+  return {
+    id: 'm-1',
+    project_id: 'p-1',
+    name: 'checkout_conversion',
+    display_name: 'Checkout conversion',
+    description: '',
+    color: '#6366f1',
+    order: 0,
+    unit: '%',
+    status: 'active',
+    owner_id: null,
+    reviewed: false,
+    kind: 'sql',
+    aggregation: null,
+    composition: null,
+    config: { metric_sql: 'SELECT 1', time_column: 'bucket', value_column: null },
+    fact_table_id: null,
+    breakdown_columns: [],
+    breakdown_values_limit: null,
+    app_version_column: null,
+    platform_column: null,
+    data_source_id: 'ds-1',
+    interval: '1h',
+    replay_chunk_interval: null,
+    numerator_event_id: null,
+    numerator_event_type_id: null,
+    denominator_event_id: null,
+    denominator_event_type_id: null,
+    anomaly_detection_enabled: true,
+    last_collected_at: null,
+    last_collection_status: null,
+    last_collection_error: null,
+    created_at: '2026-06-01T00:00:00Z',
+    updated_at: '2026-06-20T00:00:00Z',
+    ...overrides,
+  }
+}
+
 function makeFactTable(overrides: Partial<FactTableListItem>): FactTableListItem {
   return {
     id: 'ft-1',
@@ -91,6 +143,13 @@ function makeSignal(
   >
 }
 
+// Probe standing in for the metric edit page, so a row-menu navigation to the
+// edit route is observable (the real editor is a separate route/module).
+function EditRouteProbe() {
+  const { metricId } = useParams<{ metricId: string }>()
+  return <div data-testid="edit-route">{metricId}</div>
+}
+
 function renderMetrics(tab: MetricsTab = 'catalog') {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   const path = tab === 'fact-tables' ? '/p/demo/metrics/fact-tables' : '/p/demo/metrics'
@@ -100,11 +159,20 @@ function renderMetrics(tab: MetricsTab = 'catalog') {
         <Routes>
           <Route path="/p/:slug/metrics" element={<MetricsPage tab="catalog" />} />
           <Route path="/p/:slug/metrics/fact-tables" element={<MetricsPage tab="fact-tables" />} />
+          <Route path="/p/:slug/metrics/:metricId/edit" element={<EditRouteProbe />} />
         </Routes>
       </MemoryRouter>
     </QueryClientProvider>,
   )
 }
+
+// Radix DropdownMenu drives open/close through pointer-capture APIs that jsdom
+// omits; stub them so the trigger opens under test.
+beforeAll(() => {
+  Element.prototype.hasPointerCapture = vi.fn(() => false)
+  Element.prototype.setPointerCapture = vi.fn()
+  Element.prototype.releasePointerCapture = vi.fn()
+})
 
 beforeEach(() => {
   vi.mocked(metricsCatalogApi.list).mockReset()
@@ -189,8 +257,10 @@ describe('MetricsPage', () => {
     const row = cell.closest('[role="row"]') as HTMLElement
     expect(row).not.toBeNull()
     // Pulsing dot + sparkline anomaly marker on the latest (current) point.
+    // Scope to the sparkline's danger-filled marker so the row-action kebab
+    // icon's own <circle> dots don't satisfy the assertion.
     expect(row.querySelector('.pulse-dot')).not.toBeNull()
-    expect(row.querySelector('circle')).not.toBeNull()
+    expect(row.querySelector('circle[fill="var(--danger)"]')).not.toBeNull()
   })
 
   it('suppresses active-anomaly visuals for a recent (already-cleared) signal', async () => {
@@ -210,9 +280,11 @@ describe('MetricsPage', () => {
     const cell = await screen.findByText('Recent metric')
     const row = cell.closest('[role="row"]') as HTMLElement
     expect(row).not.toBeNull()
-    // The most recent scan was clean: no pulse, no anomaly marker.
+    // The most recent scan was clean: no pulse, no anomaly marker. Scope to the
+    // sparkline's danger-filled marker so the row-action kebab icon's own
+    // <circle> dots don't trip the assertion.
     expect(row.querySelector('.pulse-dot')).toBeNull()
-    expect(row.querySelector('circle')).toBeNull()
+    expect(row.querySelector('circle[fill="var(--danger)"]')).toBeNull()
   })
 
   it('shows an empty state with a create CTA when the catalog is empty', async () => {
@@ -309,6 +381,77 @@ describe('MetricsPage', () => {
         expect(
           screen.queryByRole('button', { name: 'Reorder Checkout conversion' }),
         ).not.toBeInTheDocument(),
+      )
+    })
+  })
+
+  describe('row actions menu (tripl-nxk2.9)', () => {
+    async function openRowMenu(name: string) {
+      const trigger = await screen.findByRole('button', { name: `Actions for ${name}` })
+      fireEvent.keyDown(trigger, { key: 'Enter' })
+    }
+
+    it('duplicates a metric as a draft and navigates to its edit page', async () => {
+      mockList({
+        items: [
+          makeItem({ id: 'm-1', name: 'checkout_conversion', display_name: 'Checkout conversion' }),
+        ],
+        total: 1,
+      })
+      vi.mocked(metricsCatalogApi.get).mockResolvedValue(
+        makeDefinition({
+          id: 'm-1',
+          name: 'checkout_conversion',
+          display_name: 'Checkout conversion',
+        }),
+      )
+      vi.mocked(metricsCatalogApi.create).mockResolvedValue(
+        makeDefinition({
+          id: 'm-copy',
+          name: 'checkout_conversion_copy',
+          display_name: 'Checkout conversion (copy)',
+          status: 'draft',
+        }),
+      )
+
+      renderMetrics()
+
+      await openRowMenu('Checkout conversion')
+      fireEvent.click(await screen.findByRole('menuitem', { name: 'Duplicate as draft' }))
+
+      await waitFor(() =>
+        expect(metricsCatalogApi.create).toHaveBeenCalledWith(
+          'demo',
+          expect.objectContaining({
+            kind: 'sql',
+            status: 'draft',
+            display_name: 'Checkout conversion (copy)',
+            name: 'checkout_conversion_copy',
+          }),
+        ),
+      )
+      // Lands on the freshly created draft's edit route.
+      expect(await screen.findByTestId('edit-route')).toHaveTextContent('m-copy')
+    })
+
+    it('archives an active metric from the row menu', async () => {
+      mockList({
+        items: [makeItem({ id: 'm-1', display_name: 'Checkout conversion', status: 'active' })],
+        total: 1,
+      })
+      vi.mocked(metricsCatalogApi.update).mockResolvedValue(
+        makeDefinition({ id: 'm-1', status: 'archived' }),
+      )
+
+      renderMetrics()
+
+      await openRowMenu('Checkout conversion')
+      fireEvent.click(await screen.findByRole('menuitem', { name: 'Archive' }))
+
+      await waitFor(() =>
+        expect(metricsCatalogApi.update).toHaveBeenCalledWith('demo', 'm-1', {
+          status: 'archived',
+        }),
       )
     })
   })
