@@ -1,12 +1,13 @@
 import { useMemo, useState, type ComponentProps } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { ChevronLeft, Loader2, Plus, Save } from 'lucide-react'
+import { ChevronLeft, Loader2, Play, Plus, Save } from 'lucide-react'
 import { dataSourcesApi } from '@/api/dataSources'
 import { eventsApi } from '@/api/events'
 import { factTablesApi } from '@/api/factTablesApi'
 import { metricsCatalogApi } from '@/api/metricsCatalogApi'
 import { ErrorState } from '@/components/error-state'
+import { Sparkline } from '@/components/primitives/sparkline'
 import { SqlEditor } from '@/components/sql-editor'
 import { useConfirm } from '@/hooks/useConfirm'
 import { useDataSourceSchema } from '@/hooks/useDataSourceSchema'
@@ -37,6 +38,8 @@ import {
   type MetricDefinitionResponse,
   type MetricDefinitionUpdate,
   type MetricKind,
+  type MetricPreviewRequest,
+  type MetricPreviewResponse,
   type MetricScanInterval,
   type MetricStatus,
   type SqlMetricCreate,
@@ -412,6 +415,55 @@ function MField({
   )
 }
 
+interface SqlPreviewPanelProps {
+  result: MetricPreviewResponse
+  color: string
+}
+
+/**
+ * Compact result panel for the SQL dry-run. Expected user mistakes (bad SQL,
+ * missing columns, warehouse errors) arrive as a 200 with `error` set and
+ * render in the standard danger style; a successful run renders a small line
+ * chart of the returned points plus a mono summary line.
+ */
+function SqlPreviewPanel({ result, color }: SqlPreviewPanelProps) {
+  if (result.error) {
+    return (
+      <div
+        role="alert"
+        className="mt-[10px] rounded-[10px] border px-4 py-3 text-[12.5px]"
+        style={{
+          background: 'var(--danger-soft)',
+          borderColor: 'color-mix(in oklab, var(--danger) 35%, var(--border))',
+          color: 'var(--danger)',
+        }}
+      >
+        {result.error}
+      </div>
+    )
+  }
+  const points = result.points ?? []
+  const columns = result.columns ?? []
+  const summary = `${result.point_count} buckets · columns: ${columns.join(', ')}${
+    result.truncated ? ' · truncated' : ''
+  }`
+  return (
+    <div
+      className="mt-[10px] rounded-[10px] border px-4 py-3"
+      style={{ borderColor: 'var(--border)' }}
+    >
+      {points.length > 1 && (
+        <div className="mb-[8px] overflow-x-auto">
+          <Sparkline data={points.map(p => p.value)} color={color} width={560} height={64} />
+        </div>
+      )}
+      <p className="mono text-[12px]" style={{ color: 'var(--fg-muted)' }}>
+        {summary}
+      </p>
+    </div>
+  )
+}
+
 interface MetricFormProps {
   slug: string
   metric: MetricDefinitionResponse | null
@@ -465,6 +517,10 @@ export function MetricForm({ slug, metric, dataSources, events, onClose }: Metri
   const [metricSql, setMetricSql] = useState(configString('metric_sql'))
   const [sqlTimeColumn, setSqlTimeColumn] = useState(configString('time_column'))
   const [sqlValueColumn, setSqlValueColumn] = useState(configString('value_column'))
+  // Last SQL dry-run result. Transient client state: any edit to an input the
+  // preview ran against (data source, SQL, time/value column) clears it via the
+  // onChange handlers below so a stale chart never sits beside a changed query.
+  const [preview, setPreview] = useState<MetricPreviewResponse | null>(null)
 
   // Event composition
   const [composition, setComposition] = useState<MetricComposition>(metric?.composition ?? 'single')
@@ -759,6 +815,53 @@ export function MetricForm({ slug, metric, dataSources, events, onClose }: Metri
     },
   })
 
+  // Stateless dry-run of the current SQL config against the warehouse. User
+  // mistakes come back as 200 with `error` set and render inside the result
+  // panel; transport failures / unknown data source (404) land in
+  // `previewMut.error` and render through ErrorState like the save path.
+  const previewMut = useMutation({
+    mutationFn: (payload: MetricPreviewRequest) => metricsCatalogApi.preview(slug, payload),
+    onSuccess: result => setPreview(result),
+  })
+
+  const canPreview =
+    !!dataSourceId && !!metricSql.trim() && !!sqlTimeColumn.trim() && !previewMut.isPending
+
+  const onPreview = () => {
+    setPreview(null)
+    previewMut.mutate({
+      data_source_id: dataSourceId,
+      sql: metricSql,
+      time_column: sqlTimeColumn.trim(),
+      value_column: sqlValueColumn.trim() || null,
+      interval,
+    })
+  }
+
+  // The preview snapshot only describes the inputs it ran against; editing any
+  // of them invalidates it. Clearing happens inline in these handlers (not a
+  // set-state effect) before delegating to the plain setters.
+  const resetPreview = () => {
+    setPreview(null)
+    previewMut.reset()
+  }
+  const onDataSourceChange = (value: string) => {
+    setDataSourceId(value)
+    resetPreview()
+  }
+  const onMetricSqlChange = (value: string) => {
+    setMetricSql(value)
+    resetPreview()
+  }
+  const onSqlTimeColumnChange = (value: string) => {
+    setSqlTimeColumn(value)
+    resetPreview()
+  }
+  const onSqlValueColumnChange = (value: string) => {
+    setSqlValueColumn(value)
+    resetPreview()
+  }
+
   const onSubmit = () => {
     const errs = validate()
     setFieldErrors(errs)
@@ -914,7 +1017,7 @@ export function MetricForm({ slug, metric, dataSources, events, onClose }: Metri
                   required
                   error={fieldErrors['metric-sql-data-source']}
                 >
-                  <Select id="metric-sql-data-source" value={dataSourceId} onChange={setDataSourceId} options={dataSourceOptions} />
+                  <Select id="metric-sql-data-source" value={dataSourceId} onChange={onDataSourceChange} options={dataSourceOptions} />
                 </MField>
                 <MField label="Collection interval" htmlFor="metric-sql-interval" required last>
                   <Select
@@ -1030,12 +1133,37 @@ export function MetricForm({ slug, metric, dataSources, events, onClose }: Metri
                 id="metric-sql-query"
                 ariaLabel="Metric SQL"
                 value={metricSql}
-                onChange={setMetricSql}
+                onChange={onMetricSqlChange}
                 placeholder="SELECT date_trunc('hour', created_at) AS bucket, count(*) AS value FROM events GROUP BY 1"
                 dialect={selectedDataSource?.db_type}
                 tables={sqlSchemaData?.tables}
                 minHeight="220px"
               />
+              <div className="mt-[10px] flex items-center gap-[10px]">
+                <button
+                  type="button"
+                  onClick={onPreview}
+                  disabled={!canPreview}
+                  className="inline-flex h-8 items-center gap-[6px] rounded-[7px] border px-3 text-[12px] font-medium transition-colors hover:bg-[var(--surface-hover)] disabled:opacity-50"
+                  style={{ borderColor: 'var(--border)', color: 'var(--fg-muted)' }}
+                >
+                  {previewMut.isPending ? (
+                    <Loader2 className="animate-spin" size={12} />
+                  ) : (
+                    <Play size={12} />
+                  )}
+                  {previewMut.isPending ? 'Running…' : 'Preview'}
+                </button>
+                <span className="text-[11.5px]" style={{ color: 'var(--fg-subtle)' }}>
+                  Dry-run against the data source over recent buckets; nothing is saved.
+                </span>
+              </div>
+              {previewMut.isError && (
+                <div className="mt-[10px]">
+                  <ErrorState compact title="Preview failed" error={previewMut.error} />
+                </div>
+              )}
+              {preview && <SqlPreviewPanel result={preview} color={color} />}
             </MField>
             <MField
               label="Time column"
@@ -1045,12 +1173,12 @@ export function MetricForm({ slug, metric, dataSources, events, onClose }: Metri
               error={fieldErrors['metric-sql-time']}
             >
               <div className="max-w-[280px]">
-                <TextInput id="metric-sql-time" value={sqlTimeColumn} onChange={setSqlTimeColumn} mono placeholder="bucket" />
+                <TextInput id="metric-sql-time" value={sqlTimeColumn} onChange={onSqlTimeColumnChange} mono placeholder="bucket" />
               </div>
             </MField>
             <MField label="Value column" htmlFor="metric-sql-value" last hint="The projected measure column. Defaults to value.">
               <div className="max-w-[280px]">
-                <TextInput id="metric-sql-value" value={sqlValueColumn} onChange={setSqlValueColumn} mono placeholder="value" />
+                <TextInput id="metric-sql-value" value={sqlValueColumn} onChange={onSqlValueColumnChange} mono placeholder="value" />
               </div>
             </MField>
           </SCard>

@@ -10,6 +10,8 @@ import type {
   MetricDefinitionResponse,
   MetricDefinitionUpdate,
   MetricKind,
+  MetricPreviewRequest,
+  MetricPreviewResponse,
   MetricSeriesResponse,
   MetricStatus,
   MetricVersionSeriesResponse,
@@ -69,6 +71,14 @@ export const metricsCatalogApi = {
   /** Trigger an immediate backfill collection for one metric (editor-gated). */
   collect: (slug: string, metricId: string) =>
     api.post<MetricCollectNowResponse>(`/projects/${slug}/metrics/${metricId}/collect`, {}),
+
+  /**
+   * Stateless dry-run of a sql-kind metric SELECT. Expected user mistakes
+   * (bad SQL, missing columns, warehouse errors) come back as 200 with
+   * `error` set; an unknown data source is a 404.
+   */
+  preview: (slug: string, data: MetricPreviewRequest) =>
+    api.post<MetricPreviewResponse>(`/projects/${slug}/metrics/preview`, data),
 
   bulkUpdate: (slug: string, data: MetricDefinitionBulkUpdate) =>
     api.post<void>(`/projects/${slug}/metrics/bulk-update`, data),

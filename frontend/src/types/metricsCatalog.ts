@@ -55,6 +55,11 @@ export type MetricBreakdownsResponse = Schemas['MetricBreakdownsResponse']
 export type MetricVersionSeries = Schemas['MetricVersionSeries']
 export type MetricVersionSeriesResponse = Schemas['MetricVersionSeriesResponse']
 
+// ───────── SQL preview (stateless dry-run) ─────────
+export type MetricPreviewRequest = Schemas['MetricPreviewRequest']
+export type MetricPreviewResponse = Schemas['MetricPreviewResponse']
+export type MetricPreviewPoint = Schemas['MetricPreviewPoint']
+
 // ───────── UI option lists ─────────
 export const METRIC_KINDS: readonly MetricKind[] = [
   'fact',

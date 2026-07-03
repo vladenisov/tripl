@@ -1551,6 +1551,33 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/projects/{slug}/metrics/preview": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Preview Metric Sql
+         * @description Stateless dry-run of a sql-kind metric SELECT (editor-gated).
+         *
+         *     Validates the SQL with the same safety gate the worker uses and executes it
+         *     against the data source over the last 50 buckets of the requested interval
+         *     (hard-capped at 200 rows); nothing is persisted. Expected user mistakes —
+         *     bad SQL, missing time/value columns, warehouse errors — return 200 with
+         *     ``error`` set so the editor can render them inline; unknown data source is
+         *     a 404.
+         */
+        post: operations["preview_metric_sql_api_v1_projects__slug__metrics_preview_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/projects/{slug}/metrics/reorder": {
         parameters: {
             query?: never;
@@ -5814,6 +5841,66 @@ export interface components {
          * @enum {string}
          */
         MetricKind: "sql" | "event_composition" | "fact";
+        /**
+         * MetricPreviewPoint
+         * @description One interval-floored (bucket, value) preview point.
+         */
+        MetricPreviewPoint: {
+            /**
+             * Bucket
+             * Format: date-time
+             */
+            bucket: string;
+            /** Value */
+            value: number;
+        };
+        /**
+         * MetricPreviewRequest
+         * @description Stateless dry-run of a ``sql``-kind metric SELECT (nothing is persisted).
+         *
+         *     SQL semantics (read-only shape, projected columns, identifier validity) are
+         *     deliberately NOT validated at this schema boundary: those are expected user
+         *     mistakes while drafting a query, and the preview endpoint reports them as a
+         *     200 response with ``error`` set (see ``metric_preview_service``) instead of
+         *     a 422. Only structural shape (types, lengths, interval enum) is enforced
+         *     here.
+         */
+        MetricPreviewRequest: {
+            /**
+             * Data Source Id
+             * Format: uuid
+             */
+            data_source_id: string;
+            interval: components["schemas"]["ScanInterval"];
+            /** Sql */
+            sql: string;
+            /** Time Column */
+            time_column: string;
+            /** Value Column */
+            value_column?: string | null;
+        };
+        /**
+         * MetricPreviewResponse
+         * @description Preview outcome; user-level failures set ``error`` with empty ``points``.
+         */
+        MetricPreviewResponse: {
+            /** Columns */
+            columns?: string[];
+            /** Error */
+            error?: string | null;
+            /**
+             * Point Count
+             * @default 0
+             */
+            point_count: number;
+            /** Points */
+            points?: components["schemas"]["MetricPreviewPoint"][];
+            /**
+             * Truncated
+             * @default false
+             */
+            truncated: boolean;
+        };
         /**
          * MetricScopeType
          * @enum {string}
@@ -11924,6 +12011,41 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    preview_metric_sql_api_v1_projects__slug__metrics_preview_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                slug: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["MetricPreviewRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MetricPreviewResponse"];
+                };
             };
             /** @description Validation Error */
             422: {

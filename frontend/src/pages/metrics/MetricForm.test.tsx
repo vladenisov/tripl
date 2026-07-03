@@ -9,6 +9,7 @@ vi.mock('@/api/metricsCatalogApi', () => ({
   metricsCatalogApi: {
     create: vi.fn().mockResolvedValue({ id: 'created' }),
     update: vi.fn().mockResolvedValue({ id: 'updated' }),
+    preview: vi.fn(),
   },
 }))
 
@@ -111,6 +112,7 @@ beforeEach(() => {
   queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   vi.mocked(metricsCatalogApi.create).mockClear()
   vi.mocked(metricsCatalogApi.update).mockClear()
+  vi.mocked(metricsCatalogApi.preview).mockReset()
   vi.mocked(factTablesApi.list).mockReset()
   vi.mocked(factTablesApi.get).mockReset()
   vi.mocked(factTablesApi.list).mockResolvedValue(
@@ -643,6 +645,83 @@ describe('MetricForm validation', () => {
     expect(document.getElementById('metric-platform')).toBeNull()
     // Anomaly detection stays available for every kind.
     expect(screen.getByRole('switch', { name: 'Anomaly detection' })).toBeInTheDocument()
+  })
+
+  // Fill the three inputs the SQL preview needs (data source + SQL + time column).
+  function fillSqlPreviewPrerequisites() {
+    fireEvent.change(document.getElementById('metric-sql-data-source')!, { target: { value: 'ds-1' } })
+    fireEvent.change(screen.getByLabelText('Metric SQL'), {
+      target: { value: 'SELECT bucket, count(*) AS value FROM events GROUP BY 1' },
+    })
+    fireEvent.change(document.getElementById('metric-sql-time')!, { target: { value: 'bucket' } })
+  }
+
+  it('enables Preview only once data source, SQL, and time column are set', () => {
+    renderForm()
+
+    const previewButton = screen.getByRole('button', { name: 'Preview' })
+    expect(previewButton).toBeDisabled()
+
+    fireEvent.change(document.getElementById('metric-sql-data-source')!, { target: { value: 'ds-1' } })
+    fireEvent.change(screen.getByLabelText('Metric SQL'), {
+      target: { value: 'SELECT bucket, count(*) AS value FROM events GROUP BY 1' },
+    })
+    // Still missing the time column.
+    expect(previewButton).toBeDisabled()
+
+    fireEvent.change(document.getElementById('metric-sql-time')!, { target: { value: 'bucket' } })
+    expect(previewButton).toBeEnabled()
+  })
+
+  it('runs a preview and renders the bucket summary for a successful dry-run', async () => {
+    vi.mocked(metricsCatalogApi.preview).mockResolvedValue({
+      columns: ['bucket', 'value'],
+      points: [
+        { bucket: '2026-07-01T00:00:00Z', value: 1 },
+        { bucket: '2026-07-01T01:00:00Z', value: 4 },
+        { bucket: '2026-07-01T02:00:00Z', value: 2 },
+      ],
+      point_count: 3,
+      truncated: false,
+      error: null,
+    })
+    renderForm()
+    fillSqlPreviewPrerequisites()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Preview' }))
+
+    expect(await screen.findByText('3 buckets · columns: bucket, value')).toBeInTheDocument()
+    expect(metricsCatalogApi.preview).toHaveBeenCalledWith('demo', {
+      data_source_id: 'ds-1',
+      sql: 'SELECT bucket, count(*) AS value FROM events GROUP BY 1',
+      time_column: 'bucket',
+      value_column: null,
+      interval: '1h',
+    })
+    // No save call happens as part of previewing.
+    expect(metricsCatalogApi.create).not.toHaveBeenCalled()
+  })
+
+  it('surfaces a warehouse/SQL error returned by the preview', async () => {
+    vi.mocked(metricsCatalogApi.preview).mockResolvedValue({
+      columns: [],
+      points: [],
+      point_count: 0,
+      truncated: false,
+      error: 'relation "evnts" does not exist',
+    })
+    renderForm()
+    fillSqlPreviewPrerequisites()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Preview' }))
+
+    expect(await screen.findByText('relation "evnts" does not exist')).toBeInTheDocument()
+
+    // Editing the SQL invalidates the transient result panel.
+    fireEvent.change(screen.getByLabelText('Metric SQL'), {
+      target: { value: 'SELECT bucket, count(*) AS value FROM events GROUP BY 1 -- fixed' },
+    })
+    expect(screen.queryByText('relation "evnts" does not exist')).toBeNull()
   })
 
   it('confirms a destructive kind switch on edit and cancel keeps the saved kind', async () => {
