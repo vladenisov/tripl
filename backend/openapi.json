@@ -3656,7 +3656,8 @@
         "enum": [
           "project_total",
           "event_type",
-          "event"
+          "event",
+          "metric"
         ],
         "title": "ChartAnnotationScopeType",
         "type": "string"

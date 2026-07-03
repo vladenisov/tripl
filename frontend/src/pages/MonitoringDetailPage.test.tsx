@@ -572,12 +572,29 @@ describe('MonitoringDetailPage catalog-metric drilldown', () => {
     }
   }
 
+  function metricAnnotationFixture(overrides: Record<string, unknown> = {}) {
+    return {
+      id: 'ann-1',
+      project_id: 'p-1',
+      scope_type: 'metric',
+      scope_ref: 'metric-1',
+      bucket: '2026-01-02T00:00:00Z',
+      label: 'v2.0 release',
+      description: null,
+      color: '#ef4444',
+      created_by_user_id: null,
+      created_at: '2026-01-01T00:00:00Z',
+      ...overrides,
+    }
+  }
+
   function installMetricDetailFetch(
     interval: string,
     definitionOverrides: Record<string, unknown> = {},
     seriesOverrides: Record<string, unknown> = {},
+    annotations: Array<Record<string, unknown>> = [],
   ) {
-    vi.spyOn(globalThis, 'fetch').mockImplementation(async input => {
+    return vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
       const url = String(input)
 
       if (url.endsWith('/api/v1/projects/demo/event-types')) return mockJsonResponse([])
@@ -619,7 +636,16 @@ describe('MonitoringDetailPage catalog-metric drilldown', () => {
       if (url.endsWith('/api/v1/projects/demo/metrics/metric-1')) {
         return mockJsonResponse(metricDefinitionResponse(interval, definitionOverrides))
       }
-      if (url.includes('/api/v1/projects/demo/annotations')) return mockJsonResponse([])
+      if (url.includes('/api/v1/projects/demo/annotations')) {
+        if (init?.method === 'POST') {
+          const posted = JSON.parse(String(init.body)) as Record<string, unknown>
+          return new Response(JSON.stringify(metricAnnotationFixture(posted)), {
+            status: 201,
+            headers: { 'Content-Type': 'application/json' },
+          })
+        }
+        return mockJsonResponse(annotations)
+      }
 
       throw new Error(`Unhandled fetch: ${url}`)
     })
@@ -706,6 +732,43 @@ describe('MonitoringDetailPage catalog-metric drilldown', () => {
     expect(screen.getByRole('heading', { name: 'Value' })).toBeInTheDocument()
     expect(screen.queryByRole('tab', { name: 'Volume' })).not.toBeInTheDocument()
     expect(screen.queryByRole('heading', { name: 'Volume' })).not.toBeInTheDocument()
+  })
+
+  it('renders the Annotations card with metric-scope annotations (tripl-nxk2.13)', async () => {
+    installMetricDetailFetch('1d', {}, {}, [metricAnnotationFixture()])
+    renderMetricDetail()
+
+    await screen.findByTestId('metrics-chart')
+    expect(screen.getByRole('heading', { name: 'Annotations' })).toBeInTheDocument()
+    expect(await screen.findByText('v2.0 release')).toBeInTheDocument()
+    expect(screen.getByText('(1)')).toBeInTheDocument()
+  })
+
+  it('creates a metric-scope annotation with scope_type metric and the metric id', async () => {
+    const fetchSpy = installMetricDetailFetch('1d')
+    renderMetricDetail()
+
+    await screen.findByTestId('metrics-chart')
+    fireEvent.change(screen.getByLabelText('Date and time'), {
+      target: { value: '2026-01-02T10:00' },
+    })
+    fireEvent.change(screen.getByPlaceholderText('Label (e.g. v1.4 deploy)'), {
+      target: { value: 'campaign launch' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Add' }))
+
+    await waitFor(() => {
+      const postCall = fetchSpy.mock.calls.find(
+        ([callUrl, callInit]) =>
+          String(callUrl).includes('/api/v1/projects/demo/annotations')
+          && callInit?.method === 'POST',
+      )
+      expect(postCall).toBeDefined()
+      const body = JSON.parse(String(postCall![1]?.body)) as Record<string, unknown>
+      expect(body.scope_type).toBe('metric')
+      expect(body.scope_ref).toBe('metric-1')
+      expect(body.label).toBe('campaign launch')
+    })
   })
 
   it('coaches the metric-scope Breakdowns empty state with an Edit metric link', async () => {

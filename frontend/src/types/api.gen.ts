@@ -3785,7 +3785,7 @@ export interface components {
          * ChartAnnotationScopeType
          * @enum {string}
          */
-        ChartAnnotationScopeType: "project_total" | "event_type" | "event";
+        ChartAnnotationScopeType: "project_total" | "event_type" | "event" | "metric";
         /** ColumnSchema */
         ColumnSchema: {
             /** Data Type */

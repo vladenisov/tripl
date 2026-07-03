@@ -505,9 +505,7 @@ export default function MonitoringDetailPage() {
         from: timeRange.from,
         to: timeRange.to,
       }),
-    // Annotations are scoped to event/event-type/project-total; the catalog
-    // metric scope has no annotation surface.
-    enabled: scope !== 'metric' && !!slug && !!scopeId,
+    enabled: !!slug && !!scopeId,
   })
   const annotations = annotationsQuery.data ?? []
 
@@ -518,7 +516,7 @@ export default function MonitoringDetailPage() {
       chartAnnotationsApi.create(slug!, {
         bucket: new Date(annotationBucket).toISOString(),
         label: annotationLabel.trim(),
-        scope_type: scope === 'metric' ? null : scope,
+        scope_type: scope,
         scope_ref: scopeId,
       }),
     onSuccess: () => {
@@ -872,7 +870,6 @@ export default function MonitoringDetailPage() {
             </CardContent>
           </Card>
 
-          {scope !== 'metric' && (
           <Card>
             <CardContent className="space-y-3 p-4">
               <div className="flex items-center gap-2">
@@ -967,7 +964,6 @@ export default function MonitoringDetailPage() {
               )}
             </CardContent>
           </Card>
-          )}
         </TabsContent>
 
         {hasVersionColumn && (

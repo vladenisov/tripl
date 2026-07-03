@@ -73,6 +73,72 @@ async def test_scope_filter_includes_project_wide_and_matching_scope(
 
 
 @pytest.mark.asyncio
+async def test_create_and_list_metric_scope_annotation(client: AsyncClient) -> None:
+    slug = await _setup_project(client, slug="ann-metric")
+    metric_id = "00000000-0000-0000-0000-00000000000a"
+
+    resp = await client.post(
+        f"/api/v1/projects/{slug}/annotations",
+        json={
+            "bucket": "2026-05-01T10:00:00Z",
+            "label": "v2.0 release",
+            "scope_type": "metric",
+            "scope_ref": metric_id,
+        },
+    )
+    assert resp.status_code == 201, resp.text
+    body = resp.json()
+    assert body["scope_type"] == "metric"
+    assert body["scope_ref"] == metric_id
+
+    listed = await client.get(
+        f"/api/v1/projects/{slug}/annotations",
+        params={"scope_type": "metric", "scope_ref": metric_id},
+    )
+    assert listed.status_code == 200
+    assert [item["label"] for item in listed.json()] == ["v2.0 release"]
+
+
+@pytest.mark.asyncio
+async def test_metric_scope_filter_excludes_other_refs(client: AsyncClient) -> None:
+    slug = await _setup_project(client, slug="ann-metric-filter")
+
+    await client.post(
+        f"/api/v1/projects/{slug}/annotations",
+        json={"bucket": "2026-05-01T10:00:00Z", "label": "global"},
+    )
+    await client.post(
+        f"/api/v1/projects/{slug}/annotations",
+        json={
+            "bucket": "2026-05-02T10:00:00Z",
+            "label": "mine",
+            "scope_type": "metric",
+            "scope_ref": "00000000-0000-0000-0000-00000000000a",
+        },
+    )
+    await client.post(
+        f"/api/v1/projects/{slug}/annotations",
+        json={
+            "bucket": "2026-05-03T10:00:00Z",
+            "label": "other-metric",
+            "scope_type": "metric",
+            "scope_ref": "00000000-0000-0000-0000-00000000000b",
+        },
+    )
+
+    resp = await client.get(
+        f"/api/v1/projects/{slug}/annotations",
+        params={
+            "scope_type": "metric",
+            "scope_ref": "00000000-0000-0000-0000-00000000000a",
+        },
+    )
+    assert resp.status_code == 200
+    labels = sorted(item["label"] for item in resp.json())
+    assert labels == ["global", "mine"]
+
+
+@pytest.mark.asyncio
 async def test_partial_scope_is_rejected(client: AsyncClient) -> None:
     slug = await _setup_project(client, slug="ann-partial")
 
