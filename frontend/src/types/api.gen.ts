@@ -863,6 +863,51 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/projects/{slug}/danger/reset-anomalies": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Reset Anomalies
+         * @description Owner-only: clear every anomaly (+ breakdown) in the project's period.
+         *
+         *     Destructive and irreversible. Derived monitoring signals disappear with the
+         *     anomalies they are computed from.
+         */
+        post: operations["reset_anomalies_api_v1_projects__slug__danger_reset_anomalies_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/projects/{slug}/danger/reset-drifts": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Reset Drifts
+         * @description Owner-only: clear every schema + distribution drift in the project's period.
+         *
+         *     Destructive and irreversible.
+         */
+        post: operations["reset_drifts_api_v1_projects__slug__danger_reset_drifts_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/projects/{slug}/distribution-drifts": {
         parameters: {
             query?: never;
@@ -3370,6 +3415,13 @@ export interface components {
          * @enum {string}
          */
         AnomalyDirection: "spike" | "drop";
+        /** AnomalyResetCounts */
+        AnomalyResetCounts: {
+            /** Metric Anomalies */
+            metric_anomalies: number;
+            /** Metric Breakdown Anomalies */
+            metric_breakdown_anomalies: number;
+        };
         /** ApiKeyCreate */
         ApiKeyCreate: {
             /** Expires In Days */
@@ -4054,6 +4106,18 @@ export interface components {
             total: number;
         };
         /**
+         * DetectionResetPeriod
+         * @description Optional half-open window (``after <= t < before``) for a danger-zone reset.
+         *
+         *     Both bounds are optional; omitting both clears the whole project.
+         */
+        DetectionResetPeriod: {
+            /** After */
+            after?: string | null;
+            /** Before */
+            before?: string | null;
+        };
+        /**
          * DistributionDriftBand
          * @enum {string}
          */
@@ -4112,6 +4176,13 @@ export interface components {
             scan_config_id?: string | null;
             /** Scope */
             scope: string;
+        };
+        /** DriftResetCounts */
+        DriftResetCounts: {
+            /** Distribution Drifts */
+            distribution_drifts: number;
+            /** Schema Drifts */
+            schema_drifts: number;
         };
         /** EmailSettings */
         EmailSettings: {
@@ -10100,6 +10171,76 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["PlanBranchDetailResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    reset_anomalies_api_v1_projects__slug__danger_reset_anomalies_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                slug: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["DetectionResetPeriod"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AnomalyResetCounts"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    reset_drifts_api_v1_projects__slug__danger_reset_drifts_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                slug: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["DetectionResetPeriod"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DriftResetCounts"];
                 };
             };
             /** @description Validation Error */

@@ -21,6 +21,26 @@ class ProjectUpdate(BaseModel):
     description: str | None = None
 
 
+class DetectionResetPeriod(BaseModel):
+    """Optional half-open window (``after <= t < before``) for a danger-zone reset.
+
+    Both bounds are optional; omitting both clears the whole project.
+    """
+
+    before: datetime | None = None
+    after: datetime | None = None
+
+
+class AnomalyResetCounts(BaseModel):
+    metric_anomalies: int
+    metric_breakdown_anomalies: int
+
+
+class DriftResetCounts(BaseModel):
+    schema_drifts: int
+    distribution_drifts: int
+
+
 class ProjectLatestScanJob(BaseModel):
     id: uuid.UUID
     scan_config_id: uuid.UUID

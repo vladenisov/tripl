@@ -2548,6 +2548,24 @@
         "title": "AnomalyDirection",
         "type": "string"
       },
+      "AnomalyResetCounts": {
+        "properties": {
+          "metric_anomalies": {
+            "title": "Metric Anomalies",
+            "type": "integer"
+          },
+          "metric_breakdown_anomalies": {
+            "title": "Metric Breakdown Anomalies",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "metric_anomalies",
+          "metric_breakdown_anomalies"
+        ],
+        "title": "AnomalyResetCounts",
+        "type": "object"
+      },
       "ApiKeyCreate": {
         "properties": {
           "expires_in_days": {
@@ -4413,6 +4431,37 @@
         "title": "DeadEventListResponse",
         "type": "object"
       },
+      "DetectionResetPeriod": {
+        "description": "Optional half-open window (``after <= t < before``) for a danger-zone reset.\n\nBoth bounds are optional; omitting both clears the whole project.",
+        "properties": {
+          "after": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "After"
+          },
+          "before": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Before"
+          }
+        },
+        "title": "DetectionResetPeriod",
+        "type": "object"
+      },
       "DistributionDriftBand": {
         "enum": [
           "stable",
@@ -4571,6 +4620,24 @@
           "data"
         ],
         "title": "DistributionDriftsResponse",
+        "type": "object"
+      },
+      "DriftResetCounts": {
+        "properties": {
+          "distribution_drifts": {
+            "title": "Distribution Drifts",
+            "type": "integer"
+          },
+          "schema_drifts": {
+            "title": "Schema Drifts",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "schema_drifts",
+          "distribution_drifts"
+        ],
+        "title": "DriftResetCounts",
         "type": "object"
       },
       "EmailSettings": {
@@ -18713,6 +18780,112 @@
         "summary": "Transition Branch",
         "tags": [
           "plan-branches"
+        ]
+      }
+    },
+    "/api/v1/projects/{slug}/danger/reset-anomalies": {
+      "post": {
+        "description": "Owner-only: clear every anomaly (+ breakdown) in the project's period.\n\nDestructive and irreversible. Derived monitoring signals disappear with the\nanomalies they are computed from.",
+        "operationId": "reset_anomalies_api_v1_projects__slug__danger_reset_anomalies_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "slug",
+            "required": true,
+            "schema": {
+              "title": "Slug",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DetectionResetPeriod"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AnomalyResetCounts"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Reset Anomalies",
+        "tags": [
+          "projects"
+        ]
+      }
+    },
+    "/api/v1/projects/{slug}/danger/reset-drifts": {
+      "post": {
+        "description": "Owner-only: clear every schema + distribution drift in the project's period.\n\nDestructive and irreversible.",
+        "operationId": "reset_drifts_api_v1_projects__slug__danger_reset_drifts_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "slug",
+            "required": true,
+            "schema": {
+              "title": "Slug",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DetectionResetPeriod"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DriftResetCounts"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Reset Drifts",
+        "tags": [
+          "projects"
         ]
       }
     },

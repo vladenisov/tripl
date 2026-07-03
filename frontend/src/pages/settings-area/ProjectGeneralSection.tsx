@@ -1,8 +1,13 @@
 import { type ReactNode, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { RefreshCw, Save, Trash2, TriangleAlert } from 'lucide-react'
-import { projectsApi } from '@/api/projects'
+import { RefreshCw, RotateCcw, Save, Trash2, TriangleAlert } from 'lucide-react'
+import {
+  projectsApi,
+  type AnomalyResetCounts,
+  type DetectionResetPeriod,
+  type DriftResetCounts,
+} from '@/api/projects'
 import { searchApi } from '@/api/search'
 import { useAuth } from '@/components/auth-context'
 import { Button } from '@/components/ui/button'
@@ -65,6 +70,107 @@ function DangerRow({
         </div>
       </div>
       {action}
+    </div>
+  )
+}
+
+/** Danger-zone reset windows. Each maps to a `before` cutoff (older rows go). */
+const RESET_PERIODS: { value: string; label: string; days: number | null }[] = [
+  { value: '7d', label: 'Older than 7 days', days: 7 },
+  { value: '30d', label: 'Older than 30 days', days: 30 },
+  { value: '90d', label: 'Older than 90 days', days: 90 },
+  { value: 'all', label: 'All time', days: null },
+]
+
+const DAY_MS = 24 * 60 * 60 * 1000
+
+// Query prefixes refreshed after a reset so the cleared state is reflected
+// everywhere the deleted detections (and their derived signals) surface.
+const ANOMALY_INVALIDATE_KEYS: readonly (readonly string[])[] = [
+  ['anomalies'],
+  ['metrics-catalog'],
+  ['overview'],
+  ['activeSignals'],
+  ['monitoringMetrics'],
+  ['project'],
+  ['projects'],
+]
+const DRIFT_INVALIDATE_KEYS: readonly (readonly string[])[] = [
+  ['eventTypeDrifts'],
+  ['distributionDrifts'],
+  ['eventTypes'],
+  ['events'],
+  ['project'],
+  ['projects'],
+]
+
+function resetPeriodPayload(value: string): DetectionResetPeriod {
+  const option = RESET_PERIODS.find((period) => period.value === value)
+  if (!option || option.days === null) return { before: null, after: null }
+  return { before: new Date(Date.now() - option.days * DAY_MS).toISOString(), after: null }
+}
+
+function periodLabel(value: string): string {
+  return (RESET_PERIODS.find((period) => period.value === value)?.label ?? 'All time').toLowerCase()
+}
+
+function summarizeAnomalyCounts(counts: AnomalyResetCounts): string {
+  return `Cleared ${counts.metric_anomalies} anomalies and ${counts.metric_breakdown_anomalies} breakdown anomalies.`
+}
+
+function summarizeDriftCounts(counts: DriftResetCounts): string {
+  return `Cleared ${counts.schema_drifts} schema drifts and ${counts.distribution_drifts} distribution drifts.`
+}
+
+/**
+ * A danger-zone row that clears a category of detections over a chosen period.
+ * The period selector sits next to a destructive button; confirmation and the
+ * mutation are owned by the caller. Feedback (counts / error) renders under it.
+ */
+function DangerResetRow({
+  title,
+  hint,
+  buttonLabel,
+  period,
+  onPeriodChange,
+  onReset,
+  busy,
+  feedback,
+}: {
+  title: string
+  hint: string
+  buttonLabel: string
+  period: string
+  onPeriodChange: (value: string) => void
+  onReset: () => void
+  busy: boolean
+  feedback: ReactNode
+}) {
+  return (
+    <div
+      className="flex items-center gap-[18px] px-[18px] py-[14px]"
+      style={{ borderBottom: '1px solid var(--border-subtle)' }}
+    >
+      <div className="min-w-0 flex-1">
+        <div className="text-[13px] font-medium">{title}</div>
+        <div className="mt-[3px] text-[12px] leading-[1.45]" style={{ color: 'var(--fg-subtle)' }}>
+          {hint}
+        </div>
+        {feedback}
+      </div>
+      <div className="flex items-center gap-2">
+        <Select
+          aria-label={`${title} period`}
+          value={period}
+          onChange={onPeriodChange}
+          options={RESET_PERIODS}
+          disabled={busy}
+        />
+        <Button variant="destructive" size="sm" disabled={busy} onClick={onReset}>
+          <RotateCcw className="h-3 w-3" />
+          {busy ? 'Resetting…' : buttonLabel}
+        </Button>
+      </div>
     </div>
   )
 }
@@ -133,6 +239,42 @@ function ProjectGeneralBody({ slug }: { slug: string }) {
       navigate('/', { replace: true })
     },
   })
+
+  const [anomaliesPeriod, setAnomaliesPeriod] = useState('30d')
+  const [driftsPeriod, setDriftsPeriod] = useState('30d')
+
+  const resetAnomaliesMut = useMutation({
+    mutationFn: (period: DetectionResetPeriod) => projectsApi.resetAnomalies(slug, period),
+    onSuccess: () => {
+      for (const key of ANOMALY_INVALIDATE_KEYS) qc.invalidateQueries({ queryKey: key })
+    },
+  })
+  const resetDriftsMut = useMutation({
+    mutationFn: (period: DetectionResetPeriod) => projectsApi.resetDrifts(slug, period),
+    onSuccess: () => {
+      for (const key of DRIFT_INVALIDATE_KEYS) qc.invalidateQueries({ queryKey: key })
+    },
+  })
+
+  const handleResetAnomalies = async () => {
+    const ok = await confirm({
+      title: 'Reset anomalies',
+      message: `Permanently delete anomaly detections (${periodLabel(anomaliesPeriod)}) across this entire project — every scan and catalog metric. Monitoring signals derived from them are cleared too. This cannot be undone.`,
+      confirmLabel: 'Reset anomalies',
+      variant: 'danger',
+    })
+    if (ok) resetAnomaliesMut.mutate(resetPeriodPayload(anomaliesPeriod))
+  }
+
+  const handleResetDrifts = async () => {
+    const ok = await confirm({
+      title: 'Reset drifts',
+      message: `Permanently delete schema and distribution drift detections (${periodLabel(driftsPeriod)}) across this entire project. This cannot be undone.`,
+      confirmLabel: 'Reset drifts',
+      variant: 'danger',
+    })
+    if (ok) resetDriftsMut.mutate(resetPeriodPayload(driftsPeriod))
+  }
 
   const handleDelete = async () => {
     const projectName = projectQuery.data?.name ?? slug
@@ -318,6 +460,54 @@ function ProjectGeneralBody({ slug }: { slug: string }) {
           </SCard>
 
           <SCard title="Danger zone" tone="danger" icon={<TriangleAlert className="h-[15px] w-[15px]" />}>
+            {canDelete && (
+              <>
+                <DangerResetRow
+                  title="Reset anomalies"
+                  hint="Delete anomaly detections (and the signals derived from them) across the whole project for the chosen period."
+                  buttonLabel="Reset anomalies"
+                  period={anomaliesPeriod}
+                  onPeriodChange={setAnomaliesPeriod}
+                  onReset={() => {
+                    void handleResetAnomalies()
+                  }}
+                  busy={resetAnomaliesMut.isPending}
+                  feedback={
+                    resetAnomaliesMut.isSuccess ? (
+                      <div className="mt-2 text-[12px]" style={{ color: 'var(--success)' }}>
+                        {summarizeAnomalyCounts(resetAnomaliesMut.data)}
+                      </div>
+                    ) : resetAnomaliesMut.isError ? (
+                      <div className="mt-2 text-[12px]" style={{ color: 'var(--danger)' }}>
+                        {getErrorMessage(resetAnomaliesMut.error)}
+                      </div>
+                    ) : null
+                  }
+                />
+                <DangerResetRow
+                  title="Reset drifts"
+                  hint="Delete schema and distribution drift detections across the whole project for the chosen period."
+                  buttonLabel="Reset drifts"
+                  period={driftsPeriod}
+                  onPeriodChange={setDriftsPeriod}
+                  onReset={() => {
+                    void handleResetDrifts()
+                  }}
+                  busy={resetDriftsMut.isPending}
+                  feedback={
+                    resetDriftsMut.isSuccess ? (
+                      <div className="mt-2 text-[12px]" style={{ color: 'var(--success)' }}>
+                        {summarizeDriftCounts(resetDriftsMut.data)}
+                      </div>
+                    ) : resetDriftsMut.isError ? (
+                      <div className="mt-2 text-[12px]" style={{ color: 'var(--danger)' }}>
+                        {getErrorMessage(resetDriftsMut.error)}
+                      </div>
+                    ) : null
+                  }
+                />
+              </>
+            )}
             <DangerRow
               title="Archive project"
               hint="Hide from the workspace and stop ingesting. Reversible."
