@@ -25,6 +25,15 @@ export type MetricCreate =
   | SqlMetricCreate
   | EventCompositionMetricCreate
 
+// ───────── Kind-specific update definition payloads ─────────
+export type FactMetricDefinition = Schemas['FactMetricDefinition']
+export type SqlMetricDefinition = Schemas['SqlMetricDefinition']
+export type EventCompositionMetricDefinition = Schemas['EventCompositionMetricDefinition']
+export type MetricDefinitionConfigUpdate =
+  | FactMetricDefinition
+  | SqlMetricDefinition
+  | EventCompositionMetricDefinition
+
 // ───────── Update / bulk / reorder / move ─────────
 export type MetricDefinitionUpdate = Schemas['MetricDefinitionUpdate']
 export type MetricDefinitionBulkUpdate = Schemas['MetricDefinitionBulkUpdate']
@@ -35,6 +44,7 @@ export type MetricDefinitionMove = Schemas['MetricDefinitionMove']
 export type MetricDefinitionListItem = Schemas['MetricDefinitionListItem']
 export type MetricDefinitionListResponse = Schemas['MetricDefinitionListResponse']
 export type MetricDefinitionResponse = Schemas['MetricDefinitionResponse']
+export type MetricCollectNowResponse = Schemas['MetricCollectNowResponse']
 
 // ───────── Series / breakdown / version shapes ─────────
 export type MetricSeriesPoint = Schemas['MetricSeriesPoint']
@@ -44,6 +54,11 @@ export type MetricBreakdownSeries = Schemas['MetricBreakdownSeries']
 export type MetricBreakdownsResponse = Schemas['MetricBreakdownsResponse']
 export type MetricVersionSeries = Schemas['MetricVersionSeries']
 export type MetricVersionSeriesResponse = Schemas['MetricVersionSeriesResponse']
+
+// ───────── SQL preview (stateless dry-run) ─────────
+export type MetricPreviewRequest = Schemas['MetricPreviewRequest']
+export type MetricPreviewResponse = Schemas['MetricPreviewResponse']
+export type MetricPreviewPoint = Schemas['MetricPreviewPoint']
 
 // ───────── UI option lists ─────────
 export const METRIC_KINDS: readonly MetricKind[] = [

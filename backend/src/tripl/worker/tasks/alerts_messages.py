@@ -18,12 +18,13 @@ from tripl.alert_templates import (
     ALERT_MESSAGE_FORMAT_PLAIN,
     AlertTemplateContext,
     escape_alert_value,
+    format_metric_alert_value,
     get_default_items_template,
     get_default_message_template,
     normalize_message_template,
     render_alert_template,
 )
-from tripl.alerting_matching import SCOPE_RELEASE_REGRESSION
+from tripl.alerting_matching import SCOPE_METRIC, SCOPE_RELEASE_REGRESSION
 from tripl.anomaly_context import build_alert_item_context
 from tripl.models.alert_delivery import AlertDelivery
 from tripl.models.alert_delivery_item import AlertDeliveryItem
@@ -33,6 +34,7 @@ from tripl.models.distribution_drift import DistributionDrift
 from tripl.models.event import Event, EventStatus
 from tripl.models.event_type import EventType
 from tripl.models.metric_anomaly import MetricAnomaly
+from tripl.models.metric_definition import MetricDefinition
 from tripl.models.project import Project
 from tripl.models.scan_config import ScanConfig
 from tripl.models.schema_drift import SchemaDrift
@@ -47,6 +49,45 @@ _AI_EXPLANATION_MAX_ITEMS = 10
 _AI_EXPLANATION_MAX_TOKENS = 250
 
 
+def _resolve_metric_units(
+    session: Session | None,
+    items: list[AlertDeliveryItem],
+    cache: dict[str, str | None] | None,
+) -> dict[str, str | None]:
+    """Unit per metric-definition id for the delivery's metric-scope items.
+
+    One batched query for all unresolved scope_refs; results land in ``cache``
+    (when provided) so a re-render without a session — e.g. the MarkdownV2 →
+    plain fallback — reuses them instead of losing the percent formatting.
+    """
+    units = cache if cache is not None else {}
+    if session is None:
+        return units
+    missing = {
+        item.scope_ref
+        for item in items
+        if item.scope_type == SCOPE_METRIC and item.scope_ref not in units
+    }
+    if not missing:
+        return units
+    metric_ids: list[uuid.UUID] = []
+    for scope_ref in missing:
+        try:
+            metric_ids.append(uuid.UUID(scope_ref))
+        except ValueError:
+            units[scope_ref] = None
+    if metric_ids:
+        for metric_id, unit in session.execute(
+            select(MetricDefinition.id, MetricDefinition.unit).where(
+                MetricDefinition.id.in_(metric_ids)
+            )
+        ).all():
+            units[str(metric_id)] = unit
+    for scope_ref in missing:
+        units.setdefault(scope_ref, None)
+    return units
+
+
 def _build_item_template_context(
     item: AlertDeliveryItem,
     *,
@@ -54,6 +95,7 @@ def _build_item_template_context(
     session: Session | None = None,
     scan_config_id: uuid.UUID | None = None,
     item_context_cache: dict[uuid.UUID, tuple[str, str]] | None = None,
+    metric_unit: str | None = None,
 ) -> AlertTemplateContext:
     scope_label = {
         "project_total": "Project total",
@@ -119,9 +161,18 @@ def _build_item_template_context(
             "up" if item.direction == "spike" else "down",
             message_format,
         ),
-        "actual_count": escape_alert_value(item.actual_count, message_format),
-        "expected_count": escape_alert_value(item.expected_count, message_format),
-        "absolute_delta": escape_alert_value(item.absolute_delta, message_format),
+        # Percent-unit catalog metrics render stored fractions ×100 with a "%"
+        # suffix; every other unit/scope passes the raw float through to the
+        # shared stringifier unchanged. percent_delta stays a relative change.
+        "actual_count": escape_alert_value(
+            format_metric_alert_value(item.actual_count, metric_unit), message_format
+        ),
+        "expected_count": escape_alert_value(
+            format_metric_alert_value(item.expected_count, metric_unit), message_format
+        ),
+        "absolute_delta": escape_alert_value(
+            format_metric_alert_value(item.absolute_delta, metric_unit), message_format
+        ),
         "percent_delta": escape_alert_value(f"{item.percent_delta:.1f}", message_format),
         "bucket": escape_alert_value(item.bucket, message_format),
         "details_url": escape_alert_value(item.details_path or "", message_format),
@@ -148,7 +199,9 @@ def _build_items_text(
     session: Session | None = None,
     scan_config_id: uuid.UUID | None = None,
     item_context_cache: dict[uuid.UUID, tuple[str, str]] | None = None,
+    metric_units_cache: dict[str, str | None] | None = None,
 ) -> str:
+    metric_units = _resolve_metric_units(session, items, metric_units_cache)
     lines: list[str] = []
     for item in items:
         rendered_item = render_alert_template(
@@ -159,6 +212,9 @@ def _build_items_text(
                 session=session,
                 scan_config_id=scan_config_id,
                 item_context_cache=item_context_cache,
+                metric_unit=(
+                    metric_units.get(item.scope_ref) if item.scope_type == SCOPE_METRIC else None
+                ),
             ),
         ).rstrip()
         if rendered_item:
@@ -176,6 +232,7 @@ def _build_template_context(
     message_format_override: str | None = None,
     session: Session | None = None,
     item_context_cache: dict[uuid.UUID, tuple[str, str]] | None = None,
+    metric_units_cache: dict[str, str | None] | None = None,
 ) -> AlertTemplateContext:
     message_format = message_format_override or rule.message_format or ALERT_MESSAGE_FORMAT_PLAIN
     items_template = normalize_message_template(rule.items_template)
@@ -198,6 +255,7 @@ def _build_template_context(
             session=session,
             scan_config_id=delivery.scan_config_id,
             item_context_cache=item_context_cache,
+            metric_units_cache=metric_units_cache,
         ),
     }
     return AlertTemplateContext(variables=variables, message_format=message_format)
@@ -213,6 +271,7 @@ def _render_delivery_message(
     message_format_override: str | None = None,
     session: Session | None = None,
     item_context_cache: dict[uuid.UUID, tuple[str, str]] | None = None,
+    metric_units_cache: dict[str, str | None] | None = None,
 ) -> tuple[str, str]:
     template = normalize_message_template(rule.message_template)
     context = _build_template_context(
@@ -224,6 +283,7 @@ def _render_delivery_message(
         message_format_override=message_format_override,
         session=session,
         item_context_cache=item_context_cache,
+        metric_units_cache=metric_units_cache,
     )
     if template is None:
         template = get_default_message_template(context.message_format)

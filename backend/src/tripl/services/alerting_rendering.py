@@ -4,12 +4,13 @@ from tripl.alert_templates import (
     ALERT_MESSAGE_FORMAT_PLAIN,
     AlertTemplateContext,
     escape_alert_value,
+    format_metric_alert_value,
     get_default_items_template,
     get_default_message_template,
     normalize_message_template,
     render_alert_template,
 )
-from tripl.alerting_matching import SCOPE_DISTRIBUTION_DRIFT
+from tripl.alerting_matching import SCOPE_DISTRIBUTION_DRIFT, SCOPE_METRIC
 from tripl.models.alert_destination import AlertDestination
 from tripl.models.alert_rule import AlertRule
 from tripl.models.distribution_drift import DistributionDrift
@@ -33,12 +34,15 @@ def render_firing_item(
     *,
     message_format: str,
     items_template: str,
+    metric_unit: str | None = None,
 ) -> str:
     """Render a single simulated firing through the rule's items_template.
 
     Mirrors the worker's _build_item_template_context — sparkline/top_movers
     are left empty because preview is sync-friendly and shouldn't burn extra
-    queries per firing.
+    queries per firing. ``metric_unit`` is the firing metric's display unit
+    (metric scope only) so percent metrics render the same numbers as the
+    live send path.
     """
     scope_label = _SCOPE_LABELS.get(firing.scope_type, firing.scope_type)
     drift_line = ""
@@ -57,9 +61,19 @@ def render_firing_item(
             "up" if firing.direction == "spike" else "down",
             message_format,
         ),
-        "actual_count": escape_alert_value(firing.actual_count, message_format),
-        "expected_count": escape_alert_value(int(round(firing.expected_count)), message_format),
-        "absolute_delta": escape_alert_value(int(round(firing.absolute_delta)), message_format),
+        # Percent-unit catalog metrics render stored fractions ×100 with a "%"
+        # suffix; otherwise the raw float flows to the shared stringifier
+        # (integral values lose the decimal point, fractional ones keep one).
+        # percent_delta stays a relative change.
+        "actual_count": escape_alert_value(
+            format_metric_alert_value(firing.actual_count, metric_unit), message_format
+        ),
+        "expected_count": escape_alert_value(
+            format_metric_alert_value(firing.expected_count, metric_unit), message_format
+        ),
+        "absolute_delta": escape_alert_value(
+            format_metric_alert_value(firing.absolute_delta, metric_unit), message_format
+        ),
         "percent_delta": escape_alert_value(f"{firing.percent_delta:.1f}", message_format),
         "bucket": escape_alert_value(firing.bucket, message_format),
         "details_url": "",
@@ -87,14 +101,29 @@ def render_firings_message(
     *,
     destination: AlertDestination,
     project: Project,
+    metric_units: dict[str, str | None] | None = None,
 ) -> tuple[list[str], str]:
-    """Render per-firing items + the overall message text for the preview."""
+    """Render per-firing items + the overall message text for the preview.
+
+    ``metric_units`` maps metric-definition ids (metric-scope ``scope_ref``) to
+    display units so percent metrics preview with the same ×100 values the
+    live worker sends.
+    """
     message_format = rule.message_format or ALERT_MESSAGE_FORMAT_PLAIN
     items_template = normalize_message_template(rule.items_template) or get_default_items_template(
         message_format
     )
     rendered_items = [
-        render_firing_item(firing, message_format=message_format, items_template=items_template)
+        render_firing_item(
+            firing,
+            message_format=message_format,
+            items_template=items_template,
+            metric_unit=(
+                (metric_units or {}).get(firing.scope_ref)
+                if firing.scope_type == SCOPE_METRIC
+                else None
+            ),
+        )
         for firing in firings
     ]
     items_text = "\n".join(item for item in rendered_items if item)

@@ -658,3 +658,81 @@ def test_metric_scope_cooldown_shared_across_scan_configs(
         )
         assert len(states_after) == 1
         assert states_after[0].scan_config_id == canonical
+
+
+def test_percent_metric_items_render_scaled_values_via_batched_unit_lookup(
+    sync_session_factory: sessionmaker[Session],
+) -> None:
+    """Live send path: _build_items_text resolves unit='%' for metric-scope
+    items with one batched MetricDefinition query and renders the stored
+    fractions ×100 with a '%' suffix; the cached units keep the session-less
+    fallback render (MarkdownV2 → plain) byte-identical."""
+    from tripl.alert_templates import get_default_items_template
+    from tripl.worker.tasks import alerts_messages
+
+    with sync_session_factory() as session:
+        config = _seed_project(session)
+        percent_metric = _add_metric(
+            session,
+            config,
+            kind=MetricKind.sql,
+            name="conversion_rate",
+        )
+        percent_metric.unit = "%"
+        plain_metric = _add_metric(
+            session,
+            config,
+            kind=MetricKind.sql,
+            name="latency_ms",
+        )
+        plain_metric.unit = "ms"
+        session.commit()
+
+        def _item(metric: MetricDefinition, *, actual: float, expected: float) -> AlertDeliveryItem:
+            return AlertDeliveryItem(
+                id=uuid.uuid4(),
+                delivery_id=uuid.uuid4(),
+                scope_type="metric",
+                scope_ref=str(metric.id),
+                scope_name=metric.display_name,
+                event_id=None,
+                event_type_id=None,
+                bucket=_BASE + timedelta(hours=9),
+                direction="spike",
+                actual_count=actual,
+                expected_count=expected,
+                absolute_delta=abs(actual - expected),
+                percent_delta=100.0,
+            )
+
+        items = [
+            _item(percent_metric, actual=0.08, expected=0.04),
+            _item(plain_metric, actual=120.5, expected=60.0),
+        ]
+        units_cache: dict[str, str | None] = {}
+        text = alerts_messages._build_items_text(
+            items,
+            message_format="plain",
+            items_template=get_default_items_template("plain"),
+            session=session,
+            scan_config_id=None,
+            metric_units_cache=units_cache,
+        )
+        assert "actual=8%" in text
+        assert "expected=4%" in text
+        assert "delta=4% (100.0%)" in text
+        # Non-percent metric on the same delivery stays raw.
+        assert "actual=120.5" in text
+        assert "expected=60," in text
+        assert units_cache == {str(percent_metric.id): "%", str(plain_metric.id): "ms"}
+
+        # Fallback re-render without a session reuses the cache: same text.
+        fallback = alerts_messages._build_items_text(
+            items,
+            message_format="plain",
+            items_template=get_default_items_template("plain"),
+            session=None,
+            scan_config_id=None,
+            metric_units_cache=units_cache,
+        )
+        assert fallback == text

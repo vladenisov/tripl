@@ -292,7 +292,10 @@ def _build_metric_points(
     anomalies_by_bucket = {anomaly.bucket: anomaly for anomaly in anomalies}
 
     for anomaly in anomalies:
-        counts_by_bucket.setdefault(anomaly.bucket, anomaly.actual_count)
+        # Event-scope actuals are whole counts stored in a float column; round
+        # keeps the int-typed volume series exact (catalog-metric series render
+        # through metric_series_service, not this builder).
+        counts_by_bucket.setdefault(anomaly.bucket, round(anomaly.actual_count))
 
     if interval and counts_by_bucket:
         delta = get_interval(interval).delta

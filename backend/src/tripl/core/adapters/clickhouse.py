@@ -25,13 +25,17 @@ from tripl.core.adapters.measure_validator import (
 from tripl.models.domain_enums import MetricAggregation
 
 # Hard cap on rows pulled from the catalog so a warehouse with thousands of
-# wide tables can't blow up the autocomplete payload or the request.
-_SCHEMA_ROW_LIMIT = 5000
+# wide tables can't blow up the autocomplete payload or the request. The cap is
+# generous because introspection now spans every non-system database (one row
+# per column per table across all of them), so a multi-database warehouse needs
+# plenty of headroom before its visible tables get truncated.
+_SCHEMA_ROW_LIMIT = 50000
 
-# Per-query server-side execution cap for catalog introspection so a hung
-# schema query can't block the worker thread. Scoped to this query only via
-# clickhouse-connect per-query settings (does not touch the shared client).
-_SCHEMA_QUERY_TIMEOUT_SECONDS = 30
+# System databases that hold ClickHouse internals, not user data. They are
+# excluded from catalog introspection so autocomplete only surfaces queryable
+# user tables. ClickHouse exposes both `information_schema` and its uppercase
+# alias `INFORMATION_SCHEMA`; exclude both.
+_SYSTEM_DATABASES = ("system", "information_schema", "INFORMATION_SCHEMA")
 
 logger = logging.getLogger(__name__)
 
@@ -88,25 +92,44 @@ class ClickHouseAdapter(BaseAdapter):
         result = self._client.query(f"SELECT * FROM ({base_query}) AS _src LIMIT 0")
         columns: list[ColumnInfo] = []
         for name, type_info in zip(result.column_names, result.column_types, strict=False):
-            type_name = str(type_info)
+            # clickhouse-connect type objects render their object repr under
+            # str() (e.g. "<...Float32 object at 0x...>"); their `.name` is the
+            # real ClickHouse type ("Float32", "Nullable(Float32)"). Use it so
+            # type-based logic (numeric measure detection, JSON inference) works.
+            type_name = getattr(type_info, "name", None) or str(type_info)
             is_nullable = "Nullable" in type_name
             columns.append(ColumnInfo(name=name, type_name=type_name, is_nullable=is_nullable))
         self._allowed_columns = {c.name for c in columns}
         return columns
 
     def get_schema_tables(self) -> list[SchemaTable]:
+        # Introspect every non-system database, not just the connection's current
+        # one: on real ClickHouse the user's tables often live in a different
+        # database than the connection default, or they reference `db.table`
+        # across databases. `database = currentDatabase()` is computed server-side
+        # so the "bare vs qualified" decision is correct even when the connection
+        # has no/`default` database set (the server resolves currentDatabase()).
+        excluded = ", ".join(f"'{name}'" for name in _SYSTEM_DATABASES)
         sql = (
-            "SELECT table, name, type FROM system.columns "
-            "WHERE database = currentDatabase() "
-            f"ORDER BY table, position LIMIT {_SCHEMA_ROW_LIMIT}"
+            "SELECT database, table, name, type, "
+            "database = currentDatabase() AS is_current_database "
+            "FROM system.columns "
+            f"WHERE database NOT IN ({excluded}) "
+            f"ORDER BY database, table, position LIMIT {_SCHEMA_ROW_LIMIT}"
         )
         logger.debug("CH schema introspection query: %s", sql)
-        result = self._client.query(
-            sql, settings={"max_execution_time": _SCHEMA_QUERY_TIMEOUT_SECONDS}
-        )
+        # No per-query settings: tripl connects with read-only ClickHouse users,
+        # which reject setting overrides ("Setting ... is unknown or readonly").
+        # The row LIMIT and the connection-level timeout bound the query instead.
+        result = self._client.query(sql)
+        # Tables in the current/default database keep their bare name (`events`);
+        # tables in any other database are qualified as `database.table`
+        # (`analytics.orders`). The frontend relies on this: a table name has at
+        # most one dot, and only when it lives outside the default database.
         columns_by_table: dict[str, list[SchemaColumn]] = {}
-        for table, name, type_name in result.result_rows:
-            columns_by_table.setdefault(str(table), []).append(
+        for database, table, name, type_name, is_current_database in result.result_rows:
+            qualified_name = str(table) if is_current_database else f"{database}.{table}"
+            columns_by_table.setdefault(qualified_name, []).append(
                 SchemaColumn(name=str(name), data_type=str(type_name))
             )
         return [

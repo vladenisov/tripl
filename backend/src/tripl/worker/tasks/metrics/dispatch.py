@@ -311,8 +311,8 @@ def _prepare_alert_deliveries(
                         bucket=anomaly.bucket,
                         direction=anomaly.direction,
                         actual_count=anomaly.actual_count,
-                        expected_count=round(anomaly.expected_count),
-                        absolute_delta=round(absolute_delta),
+                        expected_count=anomaly.expected_count,
+                        absolute_delta=absolute_delta,
                         percent_delta=percent_delta,
                         details_path=_build_event_details_url(
                             project_slug,

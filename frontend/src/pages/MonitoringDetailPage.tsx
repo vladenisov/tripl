@@ -22,6 +22,7 @@ import { SensitivityChip } from '@/components/primitives/sensitivity-chip'
 import { EmptyState } from '@/components/empty-state'
 import { ErrorState } from '@/components/error-state'
 import EventPhotosSection from '@/components/event-photos-section'
+import { MetricDefinitionCard } from '@/components/monitoring/metric-definition-card'
 import { ReleaseRegressionPanel } from '@/components/monitoring/release-regression-panel'
 import { SeasonalityHeatmap } from '@/components/monitoring/seasonality-heatmap'
 import { TopMoversPanel } from '@/components/monitoring/top-movers-panel'
@@ -37,6 +38,7 @@ import { Separator } from '@/components/ui/separator'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { useActiveBranchId } from '@/hooks/useBranch'
 import { formatRelativeTime, formatTimestamp } from '@/lib/datetime'
+import { formatMetricValue, isPercentUnit, metricAxisFormatter } from '@/lib/metricFormat'
 import { GRANULARITY_OPTIONS, RANGE_OPTIONS, aggregateMetricPoints, type MetricsGranularity } from '@/lib/metrics'
 import { resolveMetaFieldHref } from '@/lib/metaFields'
 import { resolveDetailScope } from '@/lib/monitoring'
@@ -61,8 +63,11 @@ import type {
 } from '@/types'
 import {
   AlertTriangle, ArrowDown, ArrowLeft, ArrowUp, CalendarPlus, ChevronDown, ChevronLeft, ChevronUp,
-  Code, Eye, GitBranch, GitCompareArrows, Layers, MoreHorizontal, Pencil, Trash2, TrendingUp,
+  Code, Eye, GitBranch, GitCompareArrows, Layers, Loader2, MoreHorizontal, Pencil, RefreshCw,
+  Trash2, TrendingUp,
 } from 'lucide-react'
+import { toast } from 'sonner'
+import { useConfirm } from '@/hooks/useConfirm'
 
 // Stable empty reference so `metaFieldsQuery.data ?? EMPTY_META_FIELDS`
 // doesn't mint a new array each render and bust the memoized lookup map.
@@ -201,7 +206,9 @@ export default function MonitoringDetailPage() {
   // affordance returns to the metrics list rather than the events list.
   const goToMetrics = () => navigate(`/p/${slug}/metrics`)
   const [rangeDays, setRangeDays] = useState(30)
-  const [granularity, setGranularity] = useState<MetricsGranularity>('hour')
+  // null = "no manual pick yet": the effective granularity then follows the
+  // scope's default (interval-aware for catalog metrics, hourly otherwise).
+  const [granularityOverride, setGranularityOverride] = useState<MetricsGranularity | null>(null)
   const [activeTab, setActiveTab] = useState<MonitoringDetailTab>('volume')
   const metricsRef = useRef<HTMLSpanElement>(null)
   const [versionFilter, setVersionFilter] = useState<VersionFilter>('all')
@@ -214,6 +221,11 @@ export default function MonitoringDetailPage() {
   // undefined scope (it now redirects to the canonical URL, but stay defensive).
   const scope = resolveDetailScope(scopeParam, eventId)
   const scopeId = id ?? eventId ?? ''
+  // Reused by the header Edit button and the metric-scope Breakdowns empty state.
+  const metricEditPath = `/p/${slug}/metrics/${scopeId}/edit`
+  // Catalog metrics measure values (ratios, averages), not event volumes, so the
+  // primary chart/tab reads "Value" for the metric scope and "Volume" elsewhere.
+  const volumeLabel = scope === 'metric' ? 'Value' : 'Volume'
 
   const timeRange = useMemo(() => {
     const to = new Date()
@@ -258,6 +270,17 @@ export default function MonitoringDetailPage() {
   })
   const metricDefinition = metricDefinitionQuery.data
 
+  // Percent-unit catalog metrics store fractions (0.08 for 8 %): render them
+  // ×100 everywhere on this page (chart ticks, tooltip, stat card). Every
+  // other unit keeps the raw-number rendering it always had, so the formatter
+  // is only threaded through for '%' (tripl-nxk2.1).
+  const metricUnit = metricDefinition?.unit ?? null
+  const metricIsPercent = scope === 'metric' && isPercentUnit(metricUnit)
+  const metricValueFormatter = useMemo(
+    () => (metricIsPercent ? metricAxisFormatter(metricUnit) : undefined),
+    [metricIsPercent, metricUnit],
+  )
+
   const metricsQuery = useQuery({
     queryKey: ['monitoringMetrics', slug, scope, scopeId, rangeDays],
     queryFn: () => {
@@ -279,6 +302,16 @@ export default function MonitoringDetailPage() {
     refetchInterval: 60000,
   })
   const metrics = metricsQuery.data
+  // Interval-based catalog metrics chart one point per interval, so 'Hours'
+  // is a misleading default (tripl-4m86): follow the collection cadence
+  // instead. Event(-type) drilldowns keep their hourly default.
+  const defaultGranularity: MetricsGranularity =
+    scope === 'metric' && metrics?.interval === '1d'
+      ? 'day'
+      : scope === 'metric' && metrics?.interval === '1w'
+        ? 'week'
+        : 'hour'
+  const granularity = granularityOverride ?? defaultGranularity
   const scanConfigId = metrics?.scan_config_id ?? (scope === 'project_total' ? scopeId : null)
 
   const scanConfigQuery = useQuery({
@@ -472,9 +505,7 @@ export default function MonitoringDetailPage() {
         from: timeRange.from,
         to: timeRange.to,
       }),
-    // Annotations are scoped to event/event-type/project-total; the catalog
-    // metric scope has no annotation surface.
-    enabled: scope !== 'metric' && !!slug && !!scopeId,
+    enabled: !!slug && !!scopeId,
   })
   const annotations = annotationsQuery.data ?? []
 
@@ -485,7 +516,7 @@ export default function MonitoringDetailPage() {
       chartAnnotationsApi.create(slug!, {
         bucket: new Date(annotationBucket).toISOString(),
         label: annotationLabel.trim(),
-        scope_type: scope === 'metric' ? null : scope,
+        scope_type: scope,
         scope_ref: scopeId,
       }),
     onSuccess: () => {
@@ -500,6 +531,41 @@ export default function MonitoringDetailPage() {
       void queryClient.invalidateQueries({ queryKey: annotationsKey })
     },
   })
+  // Manual "collect now": backfill a recent window for this metric so its chart
+  // populates without waiting for the scheduler. Collection runs in the worker,
+  // so refetch the series a few seconds after the trigger (the 60s
+  // refetchInterval is the backstop).
+  const collectMut = useMutation({
+    mutationFn: () => metricsCatalogApi.collect(slug!, scopeId),
+    onSuccess: () => {
+      toast.success('Collection queued — the chart will update shortly.')
+      window.setTimeout(() => {
+        void queryClient.invalidateQueries({
+          queryKey: ['monitoringMetrics', slug, scope, scopeId],
+        })
+      }, 5000)
+    },
+    onError: () => toast.error('Could not start collection.'),
+  })
+
+  const { confirm: confirmDelete, dialog: deleteDialog } = useConfirm()
+  const deleteMetric = async (): Promise<void> => {
+    const ok = await confirmDelete({
+      title: 'Delete metric?',
+      message: `"${metricDefinition?.display_name ?? 'This metric'}" and its collected series will be permanently removed. This can't be undone.`,
+      variant: 'danger',
+      confirmLabel: 'Delete',
+    })
+    if (!ok) return
+    try {
+      await metricsCatalogApi.del(slug!, scopeId)
+      toast.success('Metric deleted.')
+      void queryClient.invalidateQueries({ queryKey: ['metrics-catalog', slug] })
+      navigate(`/p/${slug}/metrics`)
+    } catch {
+      toast.error('Could not delete metric.')
+    }
+  }
 
   const eventType = eventTypes.find((candidate: EventType) => (
     scope === 'event'
@@ -619,11 +685,47 @@ export default function MonitoringDetailPage() {
               <ArrowLeft className="mr-2 h-4 w-4" />
               {scope === 'metric' ? 'Back to metrics' : 'Back to events'}
             </Button>
+            {scope === 'metric' && (
+              <div className="flex items-center gap-2">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => navigate(metricEditPath)}
+                >
+                  <Pencil className="mr-2 h-4 w-4" />
+                  Edit
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => collectMut.mutate()}
+                  disabled={collectMut.isPending}
+                  title="Backfill a recent window now so the chart populates without waiting for the scheduler."
+                >
+                  {collectMut.isPending ? (
+                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                  ) : (
+                    <RefreshCw className="mr-2 h-4 w-4" />
+                  )}
+                  {collectMut.isPending ? 'Collecting…' : 'Collect now'}
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={deleteMetric}
+                  className="text-[var(--danger)] hover:text-[var(--danger)]"
+                >
+                  <Trash2 className="mr-2 h-4 w-4" />
+                  Delete
+                </Button>
+                {deleteDialog}
+              </div>
+            )}
           </div>
 
           <div className="space-y-3">
             <div className="flex items-center gap-3 flex-wrap">
-              <h1 className="text-2xl font-bold">{headerTitle}</h1>
+              <h1 className="text-[22px] font-semibold tracking-[-0.01em]">{headerTitle}</h1>
               {eventType && (
                 <Badge style={{ backgroundColor: eventType.color, color: '#fff' }}>
                   {eventType.display_name}
@@ -651,10 +753,15 @@ export default function MonitoringDetailPage() {
         </>
       )}
 
+      {/* What this catalog metric computes, visible without opening Edit. */}
+      {scope === 'metric' && slug && metricDefinition && (
+        <MetricDefinitionCard slug={slug} definition={metricDefinition} />
+      )}
+
       {isEventDetail && <span ref={metricsRef} aria-hidden className="-mt-5 block scroll-mt-4" />}
       <Tabs value={selectedTab} onValueChange={value => setActiveTab(value as MonitoringDetailTab)}>
-        <TabsList>
-          <TabsTrigger value="volume">Volume</TabsTrigger>
+        <TabsList className="text-fg-muted">
+          <TabsTrigger value="volume">{volumeLabel}</TabsTrigger>
           {hasVersionColumn && (
             <TabsTrigger value="versions">
               <GitBranch className="h-3.5 w-3.5" />
@@ -686,11 +793,19 @@ export default function MonitoringDetailPage() {
                 </div>
                 <div>
                   <p className="text-xs uppercase tracking-wide text-muted-foreground">Actual</p>
-                  <p className="text-sm font-medium">{latestSignal.actual_count.toLocaleString()}</p>
+                  <p className="text-sm font-medium">
+                    {metricIsPercent
+                      ? formatMetricValue(latestSignal.actual_count, metricUnit)
+                      : latestSignal.actual_count.toLocaleString()}
+                  </p>
                 </div>
                 <div>
                   <p className="text-xs uppercase tracking-wide text-muted-foreground">Expected</p>
-                  <p className="text-sm font-medium">{Math.round(latestSignal.expected_count).toLocaleString()}</p>
+                  <p className="text-sm font-medium">
+                    {metricIsPercent
+                      ? formatMetricValue(latestSignal.expected_count, metricUnit)
+                      : Math.round(latestSignal.expected_count).toLocaleString()}
+                  </p>
                 </div>
                 <div>
                   <p className="text-xs uppercase tracking-wide text-muted-foreground">Z-Score</p>
@@ -715,12 +830,12 @@ export default function MonitoringDetailPage() {
           <Card>
             <CardContent className="p-6">
               <div className="flex items-center justify-between mb-4">
-                <h2 className="text-lg font-semibold">Volume</h2>
+                <h2 className="text-lg font-semibold">{volumeLabel}</h2>
                 <MetricsRangeControls
                   rangeDays={rangeDays}
                   granularity={granularity}
                   onRangeDaysChange={setRangeDays}
-                  onGranularityChange={setGranularity}
+                  onGranularityChange={setGranularityOverride}
                 />
               </div>
               {metricsQuery.isLoading ? (
@@ -744,6 +859,7 @@ export default function MonitoringDetailPage() {
                   color={eventType?.color || metricDefinition?.color || 'var(--chart-3)'}
                   granularity={granularity}
                   seriesLabel={scope === 'metric' ? metricDefinition?.unit || 'value' : 'events'}
+                  valueFormatter={metricValueFormatter}
                 />
               )}
               {metrics?.interval && (
@@ -754,7 +870,6 @@ export default function MonitoringDetailPage() {
             </CardContent>
           </Card>
 
-          {scope !== 'metric' && (
           <Card>
             <CardContent className="space-y-3 p-4">
               <div className="flex items-center gap-2">
@@ -849,7 +964,6 @@ export default function MonitoringDetailPage() {
               )}
             </CardContent>
           </Card>
-          )}
         </TabsContent>
 
         {hasVersionColumn && (
@@ -892,7 +1006,7 @@ export default function MonitoringDetailPage() {
                       rangeDays={rangeDays}
                       granularity={granularity}
                       onRangeDaysChange={setRangeDays}
-                      onGranularityChange={setGranularity}
+                      onGranularityChange={setGranularityOverride}
                     />
                   </div>
                 </div>
@@ -1027,10 +1141,29 @@ export default function MonitoringDetailPage() {
               ) : !breakdowns?.columns.length ? (
                 <div className="flex h-[280px] flex-col items-center justify-center gap-1 text-center text-sm text-muted-foreground">
                   <p>No breakdown groups yet.</p>
-                  <p className="text-xs">
-                    Edit this event and add a column under “Metric breakdowns”, then run a
-                    scan — its volume will split into a series per value of that column.
-                  </p>
+                  {scope === 'metric' ? (
+                    <>
+                      <p className="text-xs">
+                        Add breakdown columns in the metric settings — each configured
+                        column splits this metric into a series per value after the next
+                        collection.
+                      </p>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        className="mt-2"
+                        onClick={() => navigate(metricEditPath)}
+                      >
+                        <Pencil className="mr-2 h-4 w-4" />
+                        Edit metric
+                      </Button>
+                    </>
+                  ) : (
+                    <p className="text-xs">
+                      Edit this event and add a column under “Metric breakdowns”, then run a
+                      scan — its volume will split into a series per value of that column.
+                    </p>
+                  )}
                 </div>
               ) : (
                 <>

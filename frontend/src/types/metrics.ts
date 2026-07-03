@@ -97,7 +97,7 @@ export interface ForecastPoint {
 export interface ChartAnnotation {
   id: string
   project_id: string
-  scope_type: 'project_total' | 'event_type' | 'event' | null
+  scope_type: 'project_total' | 'event_type' | 'event' | 'metric' | null
   scope_ref: string | null
   bucket: string
   label: string

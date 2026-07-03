@@ -1,6 +1,6 @@
 import { Play } from 'lucide-react'
 import type { DataSource, EventType, IntervalCode } from '@/types'
-import { toSQLNamespace, useDataSourceSchema } from '@/hooks/useDataSourceSchema'
+import { useDataSourceSchema } from '@/hooks/useDataSourceSchema'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { ErrorState } from '@/components/error-state'
@@ -10,7 +10,7 @@ import { DistributionDriftPicker } from './DistributionDriftPicker'
 import { EventGroupRulesEditor } from './EventGroupRulesEditor'
 import { MetricBreakdownPicker } from './MetricBreakdownPicker'
 import { ScanPreviewPanel } from './ScanPreviewPanel'
-import { SqlEditor } from './SqlEditor'
+import { SqlEditor } from '@/components/sql-editor'
 import { Field, SCard } from './scanLayout'
 import { CHUNK_LABELS, SELECT_CLASS, eligibleChunkIntervals } from './scanUtils'
 import type { UseScanFormResult } from './useScanForm'
@@ -48,7 +48,6 @@ export function SourceQuerySection({
   const selectedSource = dataSources.find(ds => ds.id === state.dataSourceId)
   const sourceName = selectedSource?.name ?? ''
   const { data: schemaData } = useDataSourceSchema(state.dataSourceId || undefined)
-  const sqlNamespace = schemaData ? toSQLNamespace(schemaData.tables) : undefined
   return (
     <SCard title="Source & query" footer={footerFor?.()}>
       <Field label="Name" id="scan-name">
@@ -78,11 +77,12 @@ export function SourceQuerySection({
       </Field>
       <Field label="Base query" hint="Used as a subquery. tripl wraps it to scan windows.">
         <SqlEditor
+          ariaLabel="SQL base query"
           value={state.baseQuery}
           onChange={setBaseQuery}
           placeholder="SELECT * FROM analytics.events"
           dialect={selectedSource?.db_type}
-          schema={sqlNamespace}
+          tables={schemaData?.tables}
         />
       </Field>
       <Field

@@ -139,6 +139,7 @@ class ChartAnnotationScopeType(enum.StrEnum):
     project_total = "project_total"
     event_type = "event_type"
     event = "event"
+    metric = "metric"
 
 
 class AnomalyDirection(enum.StrEnum):

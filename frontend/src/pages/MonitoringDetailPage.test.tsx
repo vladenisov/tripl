@@ -6,8 +6,23 @@ import type { EventMetricPoint } from '@/types'
 import MonitoringDetailPage from './MonitoringDetailPage'
 
 vi.mock('@/components/ui/chart-lazy', () => ({
-  MetricsChart: ({ forecast }: { forecast?: unknown[] }) => (
-    <div data-testid="metrics-chart" data-forecast-count={forecast?.length ?? 0} />
+  MetricsChart: ({
+    data,
+    forecast,
+    valueFormatter,
+  }: {
+    data?: Array<{ bucket: string }>
+    forecast?: unknown[]
+    valueFormatter?: (value: number) => string
+  }) => (
+    <div
+      data-testid="metrics-chart"
+      data-forecast-count={forecast?.length ?? 0}
+      data-points={data?.length ?? 0}
+      data-first-bucket={data?.[0]?.bucket ?? ''}
+      // Probe the optional formatter: percent metrics turn 0.08 into '8%'.
+      data-value-sample={valueFormatter ? valueFormatter(0.08) : ''}
+    />
   ),
   MetricsMultiSeriesChart: ({
     series,
@@ -494,5 +509,341 @@ describe('MonitoringDetailPage event-detail header and semantics', () => {
     expect(properties).toBeInTheDocument()
     expect(within(properties).getAllByRole('row').length).toBeGreaterThan(0)
     expect(within(properties).getAllByRole('rowheader')[0]).toHaveTextContent('Event type')
+  })
+})
+
+describe('MonitoringDetailPage catalog-metric drilldown', () => {
+  function metricSeriesPoint(bucket: string, value: number) {
+    return {
+      bucket,
+      value,
+      expected_count: null,
+      stddev: null,
+      is_anomaly: false,
+      anomaly_direction: null,
+      z_score: null,
+    }
+  }
+
+  function metricDefinitionResponse(
+    interval: string | null,
+    overrides: Record<string, unknown> = {},
+  ) {
+    return {
+      ...metricDefinitionBase(interval),
+      ...overrides,
+    }
+  }
+
+  function metricDefinitionBase(interval: string | null) {
+    return {
+      id: 'metric-1',
+      project_id: 'p-1',
+      name: 'dau',
+      display_name: 'Daily Active Users',
+      description: '',
+      color: '#8884d8',
+      order: 0,
+      unit: null,
+      status: 'active',
+      owner_id: null,
+      reviewed: false,
+      kind: 'sql',
+      aggregation: null,
+      composition: null,
+      config: {},
+      breakdown_columns: [],
+      breakdown_values_limit: null,
+      app_version_column: null,
+      platform_column: null,
+      data_source_id: null,
+      interval,
+      replay_chunk_interval: null,
+      numerator_event_id: null,
+      numerator_event_type_id: null,
+      denominator_event_id: null,
+      denominator_event_type_id: null,
+      anomaly_detection_enabled: true,
+      last_collected_at: null,
+      last_collection_status: null,
+      last_collection_error: null,
+      created_at: '2026-01-01T00:00:00Z',
+      updated_at: '2026-01-01T00:00:00Z',
+    }
+  }
+
+  function metricAnnotationFixture(overrides: Record<string, unknown> = {}) {
+    return {
+      id: 'ann-1',
+      project_id: 'p-1',
+      scope_type: 'metric',
+      scope_ref: 'metric-1',
+      bucket: '2026-01-02T00:00:00Z',
+      label: 'v2.0 release',
+      description: null,
+      color: '#ef4444',
+      created_by_user_id: null,
+      created_at: '2026-01-01T00:00:00Z',
+      ...overrides,
+    }
+  }
+
+  function installMetricDetailFetch(
+    interval: string,
+    definitionOverrides: Record<string, unknown> = {},
+    seriesOverrides: Record<string, unknown> = {},
+    annotations: Array<Record<string, unknown>> = [],
+  ) {
+    return vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const url = String(input)
+
+      if (url.endsWith('/api/v1/projects/demo/event-types')) return mockJsonResponse([])
+      // Events list backing the Definition card's event-name resolution.
+      if (url.endsWith('/api/v1/projects/demo/events')) {
+        return mockJsonResponse({
+          items: [
+            { id: 'event-a', name: 'checkout_completed' },
+            { id: 'event-b', name: 'session_started' },
+          ],
+          total: 2,
+        })
+      }
+      if (url.includes('/api/v1/projects/demo/metrics/metric-1/series')) {
+        return mockJsonResponse({
+          metric_id: 'metric-1',
+          scan_config_id: null,
+          interval,
+          latest_signal: null,
+          // Two same-day points: they collapse into one daily bucket only when
+          // the effective granularity is 'day'.
+          data: [
+            metricSeriesPoint('2026-01-02T05:00:00Z', 10),
+            metricSeriesPoint('2026-01-02T18:00:00Z', 20),
+          ],
+          ...seriesOverrides,
+        })
+      }
+      if (url.includes('/api/v1/projects/demo/metrics/metric-1/breakdowns')) {
+        return mockJsonResponse({
+          metric_id: 'metric-1',
+          scan_config_id: null,
+          interval,
+          columns: [],
+          selected_column: null,
+          series: [],
+        })
+      }
+      if (url.endsWith('/api/v1/projects/demo/metrics/metric-1')) {
+        return mockJsonResponse(metricDefinitionResponse(interval, definitionOverrides))
+      }
+      if (url.includes('/api/v1/projects/demo/annotations')) {
+        if (init?.method === 'POST') {
+          const posted = JSON.parse(String(init.body)) as Record<string, unknown>
+          return new Response(JSON.stringify(metricAnnotationFixture(posted)), {
+            status: 201,
+            headers: { 'Content-Type': 'application/json' },
+          })
+        }
+        return mockJsonResponse(annotations)
+      }
+
+      throw new Error(`Unhandled fetch: ${url}`)
+    })
+  }
+
+  function renderMetricDetail() {
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    })
+    return render(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter initialEntries={['/p/demo/monitoring/metric/metric-1']}>
+          <Routes>
+            <Route path="/p/:slug/monitoring/:scope/:id" element={<MonitoringDetailPage />} />
+          </Routes>
+        </MemoryRouter>
+      </QueryClientProvider>,
+    )
+  }
+
+  it('defaults granularity to the metric interval for 1d metrics (tripl-4m86)', async () => {
+    installMetricDetailFetch('1d')
+    renderMetricDetail()
+
+    const chart = await screen.findByTestId('metrics-chart')
+    await waitFor(() => expect(chart).toHaveAttribute('data-points', '1'))
+    expect(chart).toHaveAttribute('data-first-bucket', '2026-01-02T00:00:00.000Z')
+  })
+
+  it('keeps the hourly default for sub-daily metrics', async () => {
+    installMetricDetailFetch('1h')
+    renderMetricDetail()
+
+    const chart = await screen.findByTestId('metrics-chart')
+    await waitFor(() => expect(chart).toHaveAttribute('data-points', '2'))
+  })
+
+  it('renders percent-unit metrics ×100 in the stat card and chart formatter (tripl-nxk2.1)', async () => {
+    installMetricDetailFetch(
+      '1d',
+      { unit: '%' },
+      {
+        latest_signal: {
+          scan_config_id: null,
+          scope_type: 'metric',
+          scope_ref: 'metric-1',
+          state: 'latest_scan',
+          event_id: null,
+          event_type_id: null,
+          bucket: '2026-01-02T00:00:00Z',
+          actual_count: 0.08,
+          expected_count: 0.05,
+          stddev: 0.01,
+          z_score: 3,
+          direction: 'spike',
+        },
+      },
+    )
+    renderMetricDetail()
+
+    const chart = await screen.findByTestId('metrics-chart')
+    // The percent-aware formatter reached the chart: 0.08 → '8%'.
+    expect(chart).toHaveAttribute('data-value-sample', '8%')
+    // The latest-signal stat card renders the stored fractions ×100.
+    expect(screen.getByText('8 %')).toBeInTheDocument()
+    expect(screen.getByText('5 %')).toBeInTheDocument()
+  })
+
+  it('passes no value formatter for metrics without a percent unit', async () => {
+    installMetricDetailFetch('1d')
+    renderMetricDetail()
+
+    const chart = await screen.findByTestId('metrics-chart')
+    expect(chart).toHaveAttribute('data-value-sample', '')
+  })
+
+  it('labels the primary tab and card "Value" for the metric scope, not "Volume"', async () => {
+    installMetricDetailFetch('1d')
+    renderMetricDetail()
+
+    await screen.findByTestId('metrics-chart')
+    // Catalog metrics (ratios/averages) are values, not volumes.
+    expect(screen.getByRole('tab', { name: 'Value' })).toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: 'Value' })).toBeInTheDocument()
+    expect(screen.queryByRole('tab', { name: 'Volume' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('heading', { name: 'Volume' })).not.toBeInTheDocument()
+  })
+
+  it('renders the Annotations card with metric-scope annotations (tripl-nxk2.13)', async () => {
+    installMetricDetailFetch('1d', {}, {}, [metricAnnotationFixture()])
+    renderMetricDetail()
+
+    await screen.findByTestId('metrics-chart')
+    expect(screen.getByRole('heading', { name: 'Annotations' })).toBeInTheDocument()
+    expect(await screen.findByText('v2.0 release')).toBeInTheDocument()
+    expect(screen.getByText('(1)')).toBeInTheDocument()
+  })
+
+  it('creates a metric-scope annotation with scope_type metric and the metric id', async () => {
+    const fetchSpy = installMetricDetailFetch('1d')
+    renderMetricDetail()
+
+    await screen.findByTestId('metrics-chart')
+    fireEvent.change(screen.getByLabelText('Date and time'), {
+      target: { value: '2026-01-02T10:00' },
+    })
+    fireEvent.change(screen.getByPlaceholderText('Label (e.g. v1.4 deploy)'), {
+      target: { value: 'campaign launch' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Add' }))
+
+    await waitFor(() => {
+      const postCall = fetchSpy.mock.calls.find(
+        ([callUrl, callInit]) =>
+          String(callUrl).includes('/api/v1/projects/demo/annotations')
+          && callInit?.method === 'POST',
+      )
+      expect(postCall).toBeDefined()
+      const body = JSON.parse(String(postCall![1]?.body)) as Record<string, unknown>
+      expect(body.scope_type).toBe('metric')
+      expect(body.scope_ref).toBe('metric-1')
+      expect(body.label).toBe('campaign launch')
+    })
+  })
+
+  it('coaches the metric-scope Breakdowns empty state with an Edit metric link', async () => {
+    installMetricDetailFetch('1d')
+    renderMetricDetail()
+
+    await screen.findByTestId('metrics-chart')
+
+    const breakdownsTab = screen.getByRole('tab', { name: /Breakdowns/i })
+    fireEvent.pointerDown(breakdownsTab, { button: 0, ctrlKey: false })
+    fireEvent.mouseDown(breakdownsTab, { button: 0, ctrlKey: false })
+    fireEvent.pointerUp(breakdownsTab, { button: 0, ctrlKey: false })
+    fireEvent.mouseUp(breakdownsTab, { button: 0, ctrlKey: false })
+    fireEvent.click(breakdownsTab)
+
+    // Metric-scope copy — no "event"/"scan" language, points at the metric settings.
+    expect(
+      await screen.findByText(/Add breakdown columns in the metric settings/i),
+    ).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /Edit metric/i })).toBeInTheDocument()
+    // Event-scope copy must not leak into the metric scope.
+    expect(
+      screen.queryByText(/Edit this event and add a column/i),
+    ).not.toBeInTheDocument()
+  })
+
+  it('renders the Definition card for a SQL metric with collapsed SQL that expands', async () => {
+    installMetricDetailFetch('1d', {
+      config: {
+        metric_sql: 'SELECT day, dau FROM daily_users',
+        time_column: 'day',
+        value_column: 'dau',
+      },
+    })
+    renderMetricDetail()
+
+    expect(await screen.findByRole('heading', { name: 'Definition' })).toBeInTheDocument()
+    // Kind chip + collection-interval meta chip.
+    expect(screen.getByText('SQL')).toBeInTheDocument()
+    expect(screen.getByText('every 1d')).toBeInTheDocument()
+    // Time/value column chips from the SQL config.
+    expect(screen.getByText('day')).toBeInTheDocument()
+    expect(screen.getByText('dau')).toBeInTheDocument()
+
+    // The SQL itself is collapsed behind a "Show SQL" disclosure by default…
+    const sql = screen.getByText('SELECT day, dau FROM daily_users')
+    expect(sql).not.toBeVisible()
+    // …and expands on click.
+    fireEvent.click(screen.getByText('Show SQL'))
+    expect(sql).toBeVisible()
+  })
+
+  it('renders an event-composition ratio as "A ÷ B" with resolved event names', async () => {
+    installMetricDetailFetch('1d', {
+      kind: 'event_composition',
+      composition: 'ratio',
+      numerator_event_id: 'event-a',
+      denominator_event_id: 'event-b',
+    })
+    renderMetricDetail()
+
+    expect(await screen.findByRole('heading', { name: 'Definition' })).toBeInTheDocument()
+    expect(screen.getByText('Event composition')).toBeInTheDocument()
+    // Event ids resolve to names via the events list; joined by ÷.
+    expect(await screen.findByText('checkout_completed')).toBeInTheDocument()
+    expect(screen.getByText('session_started')).toBeInTheDocument()
+    expect(screen.getByText('÷')).toBeInTheDocument()
+  })
+
+  it('does not render the Definition card outside the metric scope', async () => {
+    installEventDetailFetch()
+    renderEventDetail()
+    await screen.findByRole('heading', { name: 'checkout_completed' })
+
+    expect(screen.queryByRole('heading', { name: 'Definition' })).not.toBeInTheDocument()
+    expect(screen.queryByText('Show SQL')).not.toBeInTheDocument()
   })
 })

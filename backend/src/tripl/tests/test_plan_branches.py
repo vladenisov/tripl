@@ -13,7 +13,9 @@ from tripl.models.field_definition import FieldDefinition
 from tripl.models.plan_branch import PlanBranch
 from tripl.models.plan_branch_approval import PlanBranchApproval
 from tripl.models.plan_branch_reviewer import PlanBranchReviewer
+from tripl.models.project_branch_settings import ProjectBranchSettings
 from tripl.models.user import User
+from tripl.services.plan_revision_service import build_plan_snapshot, plan_snapshot_hash
 from tripl.tests.conftest import TestSessionLocal
 
 
@@ -1230,3 +1232,236 @@ async def test_deep_copy_carries_event_source_name_so_merge_preserves_it(
         )
         # Merge must not have written None over main's good source_name.
         assert merged_main_event.source_name == "purchase_success_raw"
+
+
+# --- merge policy: min approvals + self-approval guard (tripl-s8t0) ---------
+
+
+async def _seed_second_user(email: str) -> uuid.UUID:
+    """Insert an extra user directly — the auth endpoints would switch the
+    client's session to the new user, which these tests don't want."""
+    user_id = uuid.uuid4()
+    async with TestSessionLocal() as session:
+        session.add(User(id=user_id, email=email, password_hash="!seed", role="editor"))
+        await session.commit()
+    return user_id
+
+
+async def _add_approval(branch_id: str, user_id: uuid.UUID) -> None:
+    """Insert an approval stamped fresh for the branch's CURRENT content —
+    mirrors what the approve transition records for another user."""
+    async with TestSessionLocal() as session:
+        branch = await session.get(PlanBranch, uuid.UUID(branch_id))
+        assert branch is not None
+        payload = await build_plan_snapshot(session, branch.project_id, branch_id=branch.id)
+        session.add(
+            PlanBranchApproval(
+                branch_id=uuid.UUID(branch_id),
+                user_id=user_id,
+                plan_hash=plan_snapshot_hash(payload),
+            )
+        )
+        await session.commit()
+
+
+@pytest.mark.asyncio
+async def test_branch_settings_defaults_and_update(client: AsyncClient) -> None:
+    await _seed_plan(client, "branch-policy")
+
+    resp = await client.get("/api/v1/projects/branch-policy/branch-settings")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["min_approvals"] == 1
+    assert body["block_self_approval"] is False
+
+    updated = await client.patch(
+        "/api/v1/projects/branch-policy/branch-settings",
+        json={"min_approvals": 2, "block_self_approval": True},
+    )
+    assert updated.status_code == 200
+    assert updated.json()["min_approvals"] == 2
+    assert updated.json()["block_self_approval"] is True
+
+    # Partial update keeps the other field.
+    partial = await client.patch(
+        "/api/v1/projects/branch-policy/branch-settings",
+        json={"min_approvals": 3},
+    )
+    assert partial.status_code == 200
+    assert partial.json()["block_self_approval"] is True
+
+    bad = await client.patch(
+        "/api/v1/projects/branch-policy/branch-settings",
+        json={"min_approvals": -1},
+    )
+    assert bad.status_code == 422
+
+    # Explicit JSON null is not a valid value for a NOT NULL column — it's
+    # treated as "field omitted", not as a write.
+    nulled = await client.patch(
+        "/api/v1/projects/branch-policy/branch-settings",
+        json={"min_approvals": None},
+    )
+    assert nulled.status_code == 200
+    assert nulled.json()["min_approvals"] == 3
+
+
+@pytest.mark.asyncio
+async def test_branch_settings_get_does_not_write(client: AsyncClient) -> None:
+    """GET must stay read-only: defaults come back without a row being created."""
+    await _seed_plan(client, "branch-policy-ro")
+
+    resp = await client.get("/api/v1/projects/branch-policy-ro/branch-settings")
+    assert resp.status_code == 200
+    assert resp.json()["min_approvals"] == 1
+    assert resp.json()["id"] is None
+
+    async with TestSessionLocal() as session:
+        rows = (await session.execute(select(ProjectBranchSettings))).scalars().all()
+        assert all(str(r.project_id) != resp.json()["project_id"] for r in rows)
+
+
+@pytest.mark.asyncio
+async def test_approve_stacks_from_approved_status(client: AsyncClient) -> None:
+    """approve is legal from 'approved' so later reviewers can add approvals
+    toward the quota; a repeat approve by the same user stays idempotent."""
+    await _seed_plan(client, "branch-stack")
+    branch_id = await _create_branch(client, "branch-stack")
+    await _transition(client, "branch-stack", branch_id, "submit")
+
+    first = await _transition(client, "branch-stack", branch_id, "approve")
+    assert first["status"] == "approved"
+    assert len(first["approvals"]) == 1
+
+    again = await _transition(client, "branch-stack", branch_id, "approve")
+    assert again["status"] == "approved"
+    assert len(again["approvals"]) == 1  # same user — upsert, not a duplicate
+
+
+@pytest.mark.asyncio
+async def test_merge_blocked_until_min_approvals_met(client: AsyncClient) -> None:
+    await _seed_plan(client, "branch-minappr")
+    patched = await client.patch(
+        "/api/v1/projects/branch-minappr/branch-settings",
+        json={"min_approvals": 2},
+    )
+    assert patched.status_code == 200
+
+    branch_id = await _create_branch(client, "branch-minappr")
+    await _transition(client, "branch-minappr", branch_id, "submit")
+    detail = await _transition(client, "branch-minappr", branch_id, "approve")
+    assert detail["status"] == "approved"
+
+    blocked = await client.post(f"/api/v1/projects/branch-minappr/branches/{branch_id}/merge")
+    assert blocked.status_code == 409
+    assert blocked.json()["detail"]["insufficient_approvals"] == {
+        "required": 2,
+        "current": 1,
+        "stale": 0,
+    }
+
+    second_user = await _seed_second_user("approver2@example.com")
+    await _add_approval(branch_id, second_user)
+
+    merged = await client.post(f"/api/v1/projects/branch-minappr/branches/{branch_id}/merge")
+    assert merged.status_code == 200
+    assert merged.json()["status"] == "merged"
+
+
+@pytest.mark.asyncio
+async def test_merge_allows_zero_min_approvals(client: AsyncClient) -> None:
+    """min_approvals=0 disables the quota — approved status alone gates merge."""
+    await _seed_plan(client, "branch-zeroappr")
+    await client.patch(
+        "/api/v1/projects/branch-zeroappr/branch-settings",
+        json={"min_approvals": 0},
+    )
+    branch_id = await _create_branch(client, "branch-zeroappr")
+    resp = await _approve_and_merge(client, "branch-zeroappr", branch_id)
+    assert resp.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_self_approval_blocked_by_policy(client: AsyncClient) -> None:
+    await _seed_plan(client, "branch-selfappr")
+    await client.patch(
+        "/api/v1/projects/branch-selfappr/branch-settings",
+        json={"block_self_approval": True},
+    )
+    branch_id = await _create_branch(client, "branch-selfappr")
+    await _transition(client, "branch-selfappr", branch_id, "submit")
+
+    denied = await client.post(
+        f"/api/v1/projects/branch-selfappr/branches/{branch_id}/transition",
+        json={"action": "approve"},
+    )
+    assert denied.status_code == 403
+
+    # The branch stays in review — the rejected approve must not flip status.
+    detail = await client.get(f"/api/v1/projects/branch-selfappr/branches/{branch_id}")
+    assert detail.json()["status"] == "ready_for_review"
+    assert detail.json()["approvals"] == []
+
+
+@pytest.mark.asyncio
+async def test_stale_approval_blocks_merge_until_reapproved(client: AsyncClient) -> None:
+    """Editing branch content after an approval voids it (tripl-d8v6): the
+    merge gate only counts approvals stamped for the current content."""
+    await _seed_plan(client, "branch-stale")
+    branch_id = await _create_branch(client, "branch-stale")
+    await _transition(client, "branch-stale", branch_id, "submit")
+    detail = await _transition(client, "branch-stale", branch_id, "approve")
+    assert detail["status"] == "approved"
+
+    # Author rewrites the branch AFTER the approval was recorded.
+    await _touch_branch_event_type(branch_id)
+
+    blocked = await client.post(f"/api/v1/projects/branch-stale/branches/{branch_id}/merge")
+    assert blocked.status_code == 409
+    assert blocked.json()["detail"]["insufficient_approvals"] == {
+        "required": 1,
+        "current": 0,
+        "stale": 1,
+    }
+
+    # A fresh approve restamps the content hash and unblocks the merge.
+    reapproved = await _transition(client, "branch-stale", branch_id, "approve")
+    assert reapproved["status"] == "approved"
+    merged = await client.post(f"/api/v1/projects/branch-stale/branches/{branch_id}/merge")
+    assert merged.status_code == 200, merged.text
+
+
+@pytest.mark.asyncio
+async def test_merge_discards_author_approval_when_self_approval_blocked(
+    client: AsyncClient,
+) -> None:
+    """An author approval recorded while the policy was off must not satisfy
+    the merge gate after block_self_approval flips on."""
+    await _seed_plan(client, "branch-selfappr-merge")
+    branch_id = await _create_branch(client, "branch-selfappr-merge")
+    await _transition(client, "branch-selfappr-merge", branch_id, "submit")
+    detail = await _transition(client, "branch-selfappr-merge", branch_id, "approve")
+    assert detail["status"] == "approved"
+
+    await client.patch(
+        "/api/v1/projects/branch-selfappr-merge/branch-settings",
+        json={"block_self_approval": True},
+    )
+
+    blocked = await client.post(
+        f"/api/v1/projects/branch-selfappr-merge/branches/{branch_id}/merge"
+    )
+    assert blocked.status_code == 409
+    assert blocked.json()["detail"]["insufficient_approvals"] == {
+        "required": 1,
+        "current": 0,
+        "stale": 0,
+    }
+
+    reviewer = await _seed_second_user("approver3@example.com")
+    await _add_approval(branch_id, reviewer)
+
+    merged = await client.post(
+        f"/api/v1/projects/branch-selfappr-merge/branches/{branch_id}/merge"
+    )
+    assert merged.status_code == 200

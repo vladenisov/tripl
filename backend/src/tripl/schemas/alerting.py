@@ -440,9 +440,9 @@ class AlertDeliveryItemResponse(BaseModel):
     event_id: uuid.UUID | None
     bucket: datetime
     direction: AnomalyDirection
-    actual_count: int
-    expected_count: int
-    absolute_delta: int
+    actual_count: float
+    expected_count: float
+    absolute_delta: float
     percent_delta: float
     details_path: str | None
     monitoring_path: str | None
@@ -535,7 +535,7 @@ class SimulatedRuleFiring(BaseModel):
     sample_value: str | None = None
     bucket: datetime
     direction: AnomalyDirection
-    actual_count: int
+    actual_count: float
     expected_count: float
     absolute_delta: float
     percent_delta: float

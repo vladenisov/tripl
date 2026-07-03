@@ -25,6 +25,14 @@ interface MetricsChartProps {
   height?: number
   granularity?: MetricsGranularity
   seriesLabel?: string
+  /**
+   * Optional formatter for the numeric values on the Y axis and in the
+   * tooltip (e.g. percent-unit catalog metrics render stored fractions ×100).
+   * The formatted string carries its own unit, so the tooltip skips the
+   * `seriesLabel` suffix. When omitted, the chart keeps its default
+   * compact-count ticks and `value seriesLabel` tooltip lines.
+   */
+  valueFormatter?: (value: number) => string
 }
 
 interface MiniMetricsChartProps {
@@ -162,33 +170,43 @@ function buildChartData(
   return points
 }
 
-function CustomTooltip({
+// Exported for unit tests only — recharts never paints its tooltip in jsdom.
+export function CustomTooltip({
   active,
   payload,
   label,
   granularity,
   seriesLabel,
+  valueFormatter,
 }: {
   active?: boolean
   payload?: Array<{ value: number; dataKey?: string; payload: ChartDataPoint }>
   label?: string | number
   granularity: MetricsGranularity
   seriesLabel: string
+  valueFormatter?: (value: number) => string
 }) {
   if (!active || !payload?.length) return null
   const point = payload[0].payload
+  // A caller-provided formatter carries its own unit (e.g. '8%'), so the
+  // secondary lines route through it instead of the default whole-number
+  // rounding (which would collapse fractional metric values to 0).
+  const formatSecondary = (value: number) =>
+    valueFormatter ? valueFormatter(value) : Math.round(value).toLocaleString()
 
   if (point.is_forecast && point.forecast_expected != null) {
     return (
       <div className="rounded-lg border border-dashed bg-background px-3 py-2 shadow-md">
         <p className="text-xs text-muted-foreground">{formatTooltipLabel(String(label ?? ''), granularity)}</p>
         <p className="text-sm font-semibold">
-          ~{Math.round(point.forecast_expected).toLocaleString()} {seriesLabel}
+          ~{valueFormatter
+            ? valueFormatter(point.forecast_expected)
+            : `${Math.round(point.forecast_expected).toLocaleString()} ${seriesLabel}`}
         </p>
         <p className="text-xs text-muted-foreground">Forecast (next bucket)</p>
         {point.forecast_band && (
           <p className="text-xs text-muted-foreground">
-            ±{CONFIDENCE_BAND_K}σ band: {Math.round(point.forecast_band[0]).toLocaleString()}–{Math.round(point.forecast_band[1]).toLocaleString()}
+            ±{CONFIDENCE_BAND_K}σ band: {formatSecondary(point.forecast_band[0])}–{formatSecondary(point.forecast_band[1])}
           </p>
         )}
       </div>
@@ -202,20 +220,22 @@ function CustomTooltip({
   return (
     <div className="rounded-lg border bg-background px-3 py-2 shadow-md">
       <p className="text-xs text-muted-foreground">{formatTooltipLabel(String(label ?? ''), granularity)}</p>
-      <p className="text-sm font-semibold">{count.toLocaleString()} {seriesLabel}</p>
+      <p className="text-sm font-semibold">
+        {valueFormatter ? valueFormatter(count) : `${count.toLocaleString()} ${seriesLabel}`}
+      </p>
       {expectedCount !== null && (
         <p className="text-xs text-muted-foreground">
-          Expected: {Math.round(expectedCount).toLocaleString()}
+          Expected: {formatSecondary(expectedCount)}
         </p>
       )}
       {point.band && (
         <p className="text-xs text-muted-foreground">
-          ±{CONFIDENCE_BAND_K}σ band: {Math.round(point.band[0]).toLocaleString()}–{Math.round(point.band[1]).toLocaleString()}
+          ±{CONFIDENCE_BAND_K}σ band: {formatSecondary(point.band[0])}–{formatSecondary(point.band[1])}
         </p>
       )}
       {deviation !== null && (
         <p className={cn('text-xs', point.is_anomaly ? 'text-destructive' : 'text-muted-foreground')}>
-          Deviation: {deviation > 0 ? '+' : ''}{Math.round(deviation).toLocaleString()}
+          Deviation: {deviation > 0 ? '+' : ''}{formatSecondary(deviation)}
         </p>
       )}
     </div>
@@ -301,6 +321,7 @@ export function MetricsChart({
   height = 300,
   granularity = 'hour',
   seriesLabel = 'events',
+  valueFormatter,
 }: MetricsChartProps) {
   const { chartStyle } = useTheme()
   const chartColor = color || 'var(--chart-1)'
@@ -366,14 +387,22 @@ export function MetricsChart({
             tickMargin={8}
           />
           <YAxis
-            tickFormatter={formatCount}
+            tickFormatter={valueFormatter ?? formatCount}
             className="text-xs fill-muted-foreground"
             tickLine={false}
             axisLine={false}
             tickMargin={8}
             width={48}
           />
-          <Tooltip content={<CustomTooltip granularity={granularity} seriesLabel={seriesLabel} />} />
+          <Tooltip
+            content={
+              <CustomTooltip
+                granularity={granularity}
+                seriesLabel={seriesLabel}
+                valueFormatter={valueFormatter}
+              />
+            }
+          />
           {/* Confidence band — recharts renders a 2-tuple dataKey as a vertical range area. */}
           <Area
             type="monotone"

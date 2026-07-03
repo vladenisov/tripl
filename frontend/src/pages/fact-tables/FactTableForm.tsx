@@ -5,6 +5,8 @@ import { ChevronLeft, Eye, Loader2, Plus, Save, Trash2 } from 'lucide-react'
 import { dataSourcesApi } from '@/api/dataSources'
 import { factTablesApi } from '@/api/factTablesApi'
 import { ErrorState } from '@/components/error-state'
+import { SqlEditor } from '@/components/sql-editor'
+import { useDataSourceSchema } from '@/hooks/useDataSourceSchema'
 import { Chip, type ChipTone } from '@/components/primitives/chip'
 import {
   Field,
@@ -104,6 +106,14 @@ export function FactTableForm({ slug, factTable, dataSources, onClose }: FactTab
     () => toOptions('Select data source…', dataSources.map(ds => ({ value: ds.id, label: ds.name }))),
     [dataSources],
   )
+
+  // Drive the SQL editor's dialect highlighting + schema-aware autocomplete from
+  // the selected data source (same wiring as the scans base-query editor).
+  const selectedDataSource = useMemo(
+    () => dataSources.find(ds => ds.id === dataSourceId),
+    [dataSources, dataSourceId],
+  )
+  const { data: sqlSchemaData } = useDataSourceSchema(dataSourceId || undefined)
 
   const previewMut = useMutation({
     mutationFn: (): Promise<FactTablePreviewResponse> =>
@@ -285,14 +295,15 @@ export function FactTableForm({ slug, factTable, dataSources, onClose }: FactTab
             />
           </FField>
           <FField label="SQL" htmlFor="fact-sql" required stacked hint="A single read-only SELECT.">
-            <TextArea
+            <SqlEditor
               id="fact-sql"
+              ariaLabel="Fact table SQL"
               value={sql}
               onChange={setSql}
-              mono
-              rows={6}
               placeholder="SELECT id, user_id, amount, created_at FROM orders"
-              aria-required
+              dialect={selectedDataSource?.db_type}
+              tables={sqlSchemaData?.tables}
+              minHeight="160px"
             />
           </FField>
           <FField

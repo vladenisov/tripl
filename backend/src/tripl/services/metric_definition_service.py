@@ -1,8 +1,11 @@
 import uuid
 from dataclasses import dataclass
 from datetime import datetime
+from enum import Enum
+from uuid import UUID
 
 from fastapi import HTTPException
+from sqlalchemy import delete as sql_delete
 from sqlalchemy import func, or_, select
 from sqlalchemy import update as sql_update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -15,18 +18,24 @@ from tripl.models.fact_table import FactTable
 from tripl.models.metric_anomaly import MetricAnomaly
 from tripl.models.metric_definition import MetricDefinition
 from tripl.models.metric_value import MetricValue
+from tripl.models.metric_value_breakdown import MetricValueBreakdown
 from tripl.schemas.event_metric import MetricSignalResponse
 from tripl.schemas.metric_definition import (
     EventCompositionMetricCreate,
+    EventCompositionMetricDefinition,
     FactMetricCreate,
+    FactMetricDefinition,
     FactOperand,
+    MetricCollectNowResponse,
     MetricDefinitionBulkUpdate,
+    MetricDefinitionConfigUpdate,
     MetricDefinitionCreate,
     MetricDefinitionListItem,
     MetricDefinitionMove,
     MetricDefinitionReorder,
     MetricDefinitionUpdate,
     SqlMetricCreate,
+    SqlMetricDefinition,
 )
 from tripl.services.metrics_service import _signal_from_anomaly
 from tripl.services.monitoring_utils import classify_signal_state
@@ -49,7 +58,7 @@ async def _verify_data_source(session: AsyncSession, data_source_id: uuid.UUID) 
 async def _verify_composition_refs(
     session: AsyncSession,
     project_id: uuid.UUID,
-    data: EventCompositionMetricCreate,
+    data: EventCompositionMetricDefinition,
 ) -> None:
     """Ensure each event/event_type ref resolves to a row in this project.
 
@@ -95,16 +104,19 @@ async def _verify_fact_operand(
     fact_table_id: uuid.UUID,
     measure_column: str | None,
     distinct_column: str | None,
-    row_filter: str | None,
+    row_filters: list[str],
     role: str,
 ) -> None:
     """Validate one fact operand against its referenced fact table.
 
     The fact table must exist and belong to the metric's project; any
     ``measure_column`` / ``distinct_column`` must be one of the fact table's
-    introspected column names; any ``row_filter`` must be the NAME of one of the
-    fact table's stored row filters (never a raw SQL fragment). Identifier-shape
-    and per-aggregation requirements were already enforced at the schema boundary.
+    introspected column names; EVERY name in ``row_filters`` must be the NAME of
+    one of the fact table's stored row filters (never a raw SQL fragment).
+    ``filter_sql`` is a free-text fragment guarded at the schema boundary (same
+    trust model as the named fragments), so it needs no DB-backed check here.
+    Identifier-shape and per-aggregation requirements were already enforced at
+    the schema boundary.
     """
     fact_table = await session.get(FactTable, fact_table_id)
     if fact_table is None or fact_table.project_id != project_id:
@@ -125,24 +137,25 @@ async def _verify_fact_operand(
                 detail=f"{role}: column {column!r} is not a column of the referenced fact table",
             )
 
-    if row_filter is not None:
+    if row_filters:
         filter_names = {
             row["name"]
             for row in (fact_table.row_filters or [])
             if isinstance(row, dict) and "name" in row
         }
-        if row_filter not in filter_names:
-            raise HTTPException(
-                status_code=422,
-                detail=f"{role}: row filter {row_filter!r} is not defined on the referenced "
-                "fact table",
-            )
+        for name in row_filters:
+            if name not in filter_names:
+                raise HTTPException(
+                    status_code=422,
+                    detail=f"{role}: row filter {name!r} is not defined on the referenced "
+                    "fact table",
+                )
 
 
 async def _verify_fact_metric(
     session: AsyncSession,
     project_id: uuid.UUID,
-    data: FactMetricCreate,
+    data: FactMetricDefinition,
 ) -> None:
     """Validate a fact metric's operand(s) against their fact table(s)."""
     if data.numerator is not None and data.denominator is not None:
@@ -157,7 +170,7 @@ async def _verify_fact_metric(
                 fact_table_id=operand.fact_table_id,
                 measure_column=operand.measure_column,
                 distinct_column=operand.distinct_column,
-                row_filter=operand.row_filter,
+                row_filters=operand.effective_row_filters(),
                 role=role,
             )
         return
@@ -171,7 +184,7 @@ async def _verify_fact_metric(
         fact_table_id=data.fact_table_id,
         measure_column=data.measure_column,
         distinct_column=data.distinct_column,
-        row_filter=data.row_filter,
+        row_filters=data.effective_row_filters(),
         role="single",
     )
 
@@ -433,6 +446,112 @@ async def create_metric_definition(
     return metric
 
 
+async def _clear_collected_metric_data(
+    session: AsyncSession, metric: MetricDefinition
+) -> None:
+    """Delete the values/breakdowns/anomalies a metric owns, on a KIND change.
+
+    A metric's previously collected series was produced under the OLD kind's
+    definition; the new kind computes an incompatible series, so the chart must
+    not mix them. This clears every row keyed to this metric:
+
+    * ``MetricValue`` — collected per-bucket values (``metric_definition_id``);
+    * ``MetricValueBreakdown`` — per-dimension slices (``metric_definition_id``);
+    * ``MetricAnomaly`` — the metric's catalog-scope anomalies
+      (``scope_type='metric'``, ``scope_ref=str(metric_id)``; these carry a NULL
+      ``scan_config_id`` and are not FK-linked, so they are not CASCADE-deleted).
+
+    Catalog metrics never write ``MetricBreakdownAnomaly`` rows (that table is
+    event-scope only and requires a ``scan_config_id``), so there is nothing to
+    clear there. The inline collection-status columns are reset so the catalog
+    row stops advertising a now-stale last-collected timestamp/state.
+
+    This is called for any material definition change, including same-kind config
+    edits; presentation-only updates with an identical definition keep history.
+    """
+    metric_id = metric.id
+    await session.execute(
+        sql_delete(MetricValue).where(MetricValue.metric_definition_id == metric_id)
+    )
+    await session.execute(
+        sql_delete(MetricValueBreakdown).where(
+            MetricValueBreakdown.metric_definition_id == metric_id
+        )
+    )
+    await session.execute(
+        sql_delete(MetricAnomaly).where(
+            MetricAnomaly.scope_type == MetricScopeType.metric.value,
+            MetricAnomaly.scope_ref == str(metric_id),
+        )
+    )
+    metric.last_collected_at = None
+    metric.last_collection_status = None
+    metric.last_collection_error = None
+
+
+def _normalise_definition_value(value: object) -> object:
+    if isinstance(value, Enum):
+        return value.value
+    if isinstance(value, UUID):
+        return str(value)
+    if isinstance(value, dict):
+        return {key: _normalise_definition_value(item) for key, item in sorted(value.items())}
+    if isinstance(value, list):
+        return [_normalise_definition_value(item) for item in value]
+    return value
+
+
+def _definition_values_changed(
+    metric: MetricDefinition, new_values: dict[str, object]
+) -> bool:
+    current_values: dict[str, object] = {
+        "kind": metric.kind,
+        "aggregation": metric.aggregation,
+        "composition": metric.composition,
+        "config": metric.config or {},
+        "fact_table_id": metric.fact_table_id,
+        "data_source_id": metric.data_source_id,
+        "interval": metric.interval,
+        "replay_chunk_interval": metric.replay_chunk_interval,
+        "numerator_event_id": metric.numerator_event_id,
+        "numerator_event_type_id": metric.numerator_event_type_id,
+        "denominator_event_id": metric.denominator_event_id,
+        "denominator_event_type_id": metric.denominator_event_type_id,
+    }
+    return _normalise_definition_value(current_values) != _normalise_definition_value(
+        new_values
+    )
+
+
+async def _apply_definition_update(
+    session: AsyncSession,
+    metric: MetricDefinition,
+    definition: MetricDefinitionConfigUpdate,
+) -> None:
+    """Re-validate a kind/config ``definition`` like creation and apply it.
+
+    Runs the SAME DB-backed existence checks creation runs (data source / fact
+    table+columns+filters / event refs), then overwrites the metric's identity and
+    config columns from ``to_definition_values()``. If the definition changed
+    materially, the metric's previously collected data is cleared (see
+    :func:`_clear_collected_metric_data`).
+    """
+    project_id = metric.project_id
+    if isinstance(definition, SqlMetricDefinition):
+        await _verify_data_source(session, definition.data_source_id)
+    elif isinstance(definition, FactMetricDefinition):
+        await _verify_fact_metric(session, project_id, definition)
+    elif isinstance(definition, EventCompositionMetricDefinition):
+        await _verify_composition_refs(session, project_id, definition)
+
+    new_values = definition.to_definition_values()
+    changed = _definition_values_changed(metric, new_values)
+    for key, value in new_values.items():
+        setattr(metric, key, value)
+    if changed:
+        await _clear_collected_metric_data(session, metric)
+
+
 async def update_metric_definition(
     session: AsyncSession,
     slug: str,
@@ -440,9 +559,14 @@ async def update_metric_definition(
     data: MetricDefinitionUpdate,
 ) -> MetricDefinition:
     metric = await get_metric_definition(session, slug, metric_id)
-    update_data = data.model_dump(exclude_unset=True)
+    # Presentation/lifecycle/dimension/monitoring fields: only the ones the client
+    # explicitly sent. ``definition`` is applied separately below; ``name`` has no
+    # update field and so can never be touched here.
+    update_data = data.model_dump(exclude_unset=True, exclude={"definition"})
     for key, value in update_data.items():
         setattr(metric, key, value)
+    if data.definition is not None:
+        await _apply_definition_update(session, metric, data.definition)
     await session.commit()
     await session.refresh(metric)
     return metric
@@ -452,6 +576,98 @@ async def delete_metric_definition(session: AsyncSession, slug: str, metric_id: 
     metric = await get_metric_definition(session, slug, metric_id)
     await session.delete(metric)
     await session.commit()
+
+
+def _dispatch_metric_collection(
+    metric_id: uuid.UUID,
+    kind: MetricKind,
+    window: tuple[datetime, datetime] | None,
+) -> str | None:
+    """Enqueue the per-kind collection task and return its Celery id (if any).
+
+    Reuses the SAME tasks the scheduler dispatches: ``fact`` metrics through
+    ``collect_fact_metrics_batch`` (a one-element batch), ``sql`` /
+    ``event_composition`` through ``collect_metric_definitions``. Imported lazily
+    to avoid importing the Celery worker stack at module import time (mirrors
+    ``scan_service``). ``force=True`` is always passed: a user-triggered manual
+    collect must produce data even for a draft/archived metric (the scheduler
+    dispatches without force and stays active-only).
+    """
+    # Imported here to avoid circular imports at module level.
+    from tripl.worker.tasks.metrics.metric_collect import (
+        collect_fact_metrics_batch,
+        collect_metric_definitions,
+    )
+
+    window_from = window[0].isoformat() if window is not None else None
+    window_to = window[1].isoformat() if window is not None else None
+    if kind is MetricKind.fact:
+        async_result = collect_fact_metrics_batch.delay(
+            [str(metric_id)], window_from, window_to, True
+        )
+    else:
+        async_result = collect_metric_definitions.delay(
+            str(metric_id), window_from, window_to, True
+        )
+    return getattr(async_result, "id", None)
+
+
+async def trigger_metric_collection(
+    session: AsyncSession, slug: str, metric_id: uuid.UUID
+) -> MetricCollectNowResponse:
+    """Dispatch an immediate single-metric collection backfilling a recent window.
+
+    Used by ``POST /projects/{slug}/metrics/{metric_id}/collect`` so a newly
+    created metric shows a chart without waiting for the scheduler. The warehouse
+    query runs in the Celery worker, never in this request handler. ``fact`` /
+    ``sql`` metrics backfill ``compute_manual_collect_window`` (~48 buckets capped
+    to 30 days); ``event_composition`` has no interval and recomputes from the
+    full event-metric series, so it carries no window. Collection is idempotent
+    (window-delete then upsert), so re-triggering never duplicates rows.
+    """
+    # Imported here to avoid importing the Celery worker stack at module load.
+    from tripl.worker.tasks.metrics.metric_collect import (
+        COLLECTION_STATUS_ERROR,
+        COLLECTION_STATUS_RUNNING,
+        compute_manual_collect_window,
+    )
+
+    metric = await get_metric_definition(session, slug, metric_id)
+    kind = metric.kind if isinstance(metric.kind, MetricKind) else MetricKind(metric.kind)
+
+    window: tuple[datetime, datetime] | None = None
+    if kind in (MetricKind.fact, MetricKind.sql):
+        if metric.interval is None:
+            raise HTTPException(
+                status_code=400,
+                detail="Metric has no collection interval to backfill",
+            )
+        window = compute_manual_collect_window(metric.interval)
+
+    # Mark running before dispatch so the scheduler's "one active job" guard
+    # (last_collection_status) keeps it from double-dispatching the same metric
+    # while this manual run is queued — mirrors check_metric_definitions_due.
+    metric.last_collection_status = COLLECTION_STATUS_RUNNING
+    await session.commit()
+
+    try:
+        task_id = _dispatch_metric_collection(metric_id, kind, window)
+    except Exception as exc:  # broker unavailable, etc.
+        metric.last_collection_status = COLLECTION_STATUS_ERROR
+        metric.last_collection_error = "Failed to dispatch collection task to worker"
+        await session.commit()
+        raise HTTPException(
+            status_code=503,
+            detail="Failed to dispatch collection task to worker",
+        ) from exc
+
+    return MetricCollectNowResponse(
+        metric_id=metric_id,
+        status="queued",
+        window_from=window[0] if window is not None else None,
+        window_to=window[1] if window is not None else None,
+        task_id=task_id,
+    )
 
 
 async def bulk_update_metric_definitions(

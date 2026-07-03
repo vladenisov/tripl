@@ -1,18 +1,27 @@
-import { render, screen, within } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { MemoryRouter, Route, Routes } from 'react-router-dom'
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { MemoryRouter, Route, Routes, useParams } from 'react-router-dom'
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import type {
   DataSource,
   FactTableListItem,
   FactTableListResponse,
   MetricDefinitionListItem,
   MetricDefinitionListResponse,
+  MetricDefinitionResponse,
 } from '@/types'
 import MetricsPage, { type MetricsTab } from './MetricsPage'
 
 vi.mock('@/api/metricsCatalogApi', () => ({
-  metricsCatalogApi: { list: vi.fn() },
+  metricsCatalogApi: {
+    list: vi.fn(),
+    get: vi.fn(),
+    create: vi.fn(),
+    update: vi.fn(),
+    collect: vi.fn(),
+    bulkUpdate: vi.fn(),
+    reorder: vi.fn(),
+  },
 }))
 vi.mock('@/api/factTablesApi', () => ({
   factTablesApi: { list: vi.fn() },
@@ -44,11 +53,55 @@ function makeItem(overrides: Partial<MetricDefinitionListItem>): MetricDefinitio
     owner_id: null,
     order: 0,
     spark: [1, 2, 3, 4, 5],
-    latest_value: 42,
+    // Percent-unit metrics store fractions; 0.42 renders as '42 %' (tripl-nxk2.1).
+    latest_value: 0.42,
     latest_bucket: null,
     latest_signal: null,
     last_collected_at: null,
     last_collection_status: null,
+    created_at: '2026-06-01T00:00:00Z',
+    updated_at: '2026-06-20T00:00:00Z',
+    ...overrides,
+  }
+}
+
+// Full definition returned by `metricsCatalogApi.get` — what "Duplicate as
+// draft" reads to build the create payload. Defaults to a SQL metric.
+function makeDefinition(
+  overrides: Partial<MetricDefinitionResponse>,
+): MetricDefinitionResponse {
+  return {
+    id: 'm-1',
+    project_id: 'p-1',
+    name: 'checkout_conversion',
+    display_name: 'Checkout conversion',
+    description: '',
+    color: '#6366f1',
+    order: 0,
+    unit: '%',
+    status: 'active',
+    owner_id: null,
+    reviewed: false,
+    kind: 'sql',
+    aggregation: null,
+    composition: null,
+    config: { metric_sql: 'SELECT 1', time_column: 'bucket', value_column: null },
+    fact_table_id: null,
+    breakdown_columns: [],
+    breakdown_values_limit: null,
+    app_version_column: null,
+    platform_column: null,
+    data_source_id: 'ds-1',
+    interval: '1h',
+    replay_chunk_interval: null,
+    numerator_event_id: null,
+    numerator_event_type_id: null,
+    denominator_event_id: null,
+    denominator_event_type_id: null,
+    anomaly_detection_enabled: true,
+    last_collected_at: null,
+    last_collection_status: null,
+    last_collection_error: null,
     created_at: '2026-06-01T00:00:00Z',
     updated_at: '2026-06-20T00:00:00Z',
     ...overrides,
@@ -91,6 +144,13 @@ function makeSignal(
   >
 }
 
+// Probe standing in for the metric edit page, so a row-menu navigation to the
+// edit route is observable (the real editor is a separate route/module).
+function EditRouteProbe() {
+  const { metricId } = useParams<{ metricId: string }>()
+  return <div data-testid="edit-route">{metricId}</div>
+}
+
 function renderMetrics(tab: MetricsTab = 'catalog') {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   const path = tab === 'fact-tables' ? '/p/demo/metrics/fact-tables' : '/p/demo/metrics'
@@ -100,11 +160,20 @@ function renderMetrics(tab: MetricsTab = 'catalog') {
         <Routes>
           <Route path="/p/:slug/metrics" element={<MetricsPage tab="catalog" />} />
           <Route path="/p/:slug/metrics/fact-tables" element={<MetricsPage tab="fact-tables" />} />
+          <Route path="/p/:slug/metrics/:metricId/edit" element={<EditRouteProbe />} />
         </Routes>
       </MemoryRouter>
     </QueryClientProvider>,
   )
 }
+
+// Radix DropdownMenu drives open/close through pointer-capture APIs that jsdom
+// omits; stub them so the trigger opens under test.
+beforeAll(() => {
+  Element.prototype.hasPointerCapture = vi.fn(() => false)
+  Element.prototype.setPointerCapture = vi.fn()
+  Element.prototype.releasePointerCapture = vi.fn()
+})
 
 beforeEach(() => {
   vi.mocked(metricsCatalogApi.list).mockReset()
@@ -122,7 +191,7 @@ afterEach(() => {
 describe('MetricsPage', () => {
   it('renders the rollup and a metric row from the mocked api', async () => {
     mockList({
-      items: [makeItem({ id: 'm-1', display_name: 'Checkout conversion', kind: 'sql', latest_value: 42 })],
+      items: [makeItem({ id: 'm-1', display_name: 'Checkout conversion', kind: 'sql', latest_value: 0.42 })],
       total: 1,
     })
 
@@ -189,8 +258,10 @@ describe('MetricsPage', () => {
     const row = cell.closest('[role="row"]') as HTMLElement
     expect(row).not.toBeNull()
     // Pulsing dot + sparkline anomaly marker on the latest (current) point.
+    // Scope to the sparkline's danger-filled marker so the row-action kebab
+    // icon's own <circle> dots don't satisfy the assertion.
     expect(row.querySelector('.pulse-dot')).not.toBeNull()
-    expect(row.querySelector('circle')).not.toBeNull()
+    expect(row.querySelector('circle[fill="var(--danger)"]')).not.toBeNull()
   })
 
   it('suppresses active-anomaly visuals for a recent (already-cleared) signal', async () => {
@@ -210,9 +281,11 @@ describe('MetricsPage', () => {
     const cell = await screen.findByText('Recent metric')
     const row = cell.closest('[role="row"]') as HTMLElement
     expect(row).not.toBeNull()
-    // The most recent scan was clean: no pulse, no anomaly marker.
+    // The most recent scan was clean: no pulse, no anomaly marker. Scope to the
+    // sparkline's danger-filled marker so the row-action kebab icon's own
+    // <circle> dots don't trip the assertion.
     expect(row.querySelector('.pulse-dot')).toBeNull()
-    expect(row.querySelector('circle')).toBeNull()
+    expect(row.querySelector('circle[fill="var(--danger)"]')).toBeNull()
   })
 
   it('shows an empty state with a create CTA when the catalog is empty', async () => {
@@ -223,6 +296,264 @@ describe('MetricsPage', () => {
     expect(await screen.findByText('No metrics yet')).toBeInTheDocument()
     const links = await screen.findAllByRole('link', { name: /New metric/ })
     expect(links[0]).toHaveAttribute('href', '/p/demo/metrics/new')
+  })
+
+  describe('bulk actions and reorder (tripl-57o8)', () => {
+    it('selects rows and applies a bulk status change', async () => {
+      mockList({
+        items: [
+          makeItem({ id: 'm-1', display_name: 'Checkout conversion' }),
+          makeItem({ id: 'm-2', display_name: 'Revenue', name: 'revenue' }),
+        ],
+        total: 2,
+      })
+      vi.mocked(metricsCatalogApi.bulkUpdate).mockResolvedValue(undefined)
+
+      renderMetrics()
+
+      fireEvent.click(await screen.findByRole('checkbox', { name: 'Select Checkout conversion' }))
+      expect(await screen.findByText('1 selected')).toBeInTheDocument()
+
+      fireEvent.click(screen.getByRole('button', { name: 'Set archived' }))
+      await waitFor(() =>
+        expect(metricsCatalogApi.bulkUpdate).toHaveBeenCalledWith('demo', {
+          metric_ids: ['m-1'],
+          status: 'archived',
+        }),
+      )
+    })
+
+    it('select-all covers every visible row', async () => {
+      mockList({
+        items: [
+          makeItem({ id: 'm-1', display_name: 'Checkout conversion' }),
+          makeItem({ id: 'm-2', display_name: 'Revenue', name: 'revenue' }),
+        ],
+        total: 2,
+      })
+
+      renderMetrics()
+
+      fireEvent.click(await screen.findByRole('checkbox', { name: 'Select all metrics' }))
+      expect(await screen.findByText('2 selected')).toBeInTheDocument()
+    })
+
+    it('clears the selection when the filter view changes', async () => {
+      mockList({
+        items: [
+          makeItem({ id: 'm-1', display_name: 'Checkout conversion' }),
+          makeItem({ id: 'm-2', display_name: 'Revenue', name: 'revenue' }),
+        ],
+        total: 2,
+      })
+
+      renderMetrics()
+
+      fireEvent.click(await screen.findByRole('checkbox', { name: 'Select Checkout conversion' }))
+      expect(await screen.findByText('1 selected')).toBeInTheDocument()
+
+      fireEvent.change(screen.getByLabelText('Filter by status'), {
+        target: { value: 'active' },
+      })
+      await waitFor(() => expect(screen.queryByText('1 selected')).not.toBeInTheDocument())
+    })
+
+    it('shows drag handles only when the full unfiltered catalog is listed', async () => {
+      mockList({
+        items: [
+          makeItem({ id: 'm-1', display_name: 'Checkout conversion' }),
+          makeItem({ id: 'm-2', display_name: 'Revenue', name: 'revenue' }),
+        ],
+        total: 2,
+      })
+
+      renderMetrics()
+
+      expect(
+        await screen.findByRole('button', { name: 'Reorder Checkout conversion' }),
+      ).toBeInTheDocument()
+
+      // A status filter narrows the list — partial orders can't be persisted,
+      // so the handles disappear.
+      fireEvent.change(screen.getByLabelText('Filter by status'), {
+        target: { value: 'active' },
+      })
+      await waitFor(() =>
+        expect(
+          screen.queryByRole('button', { name: 'Reorder Checkout conversion' }),
+        ).not.toBeInTheDocument(),
+      )
+    })
+  })
+
+  describe('row actions menu (tripl-nxk2.9)', () => {
+    async function openRowMenu(name: string) {
+      const trigger = await screen.findByRole('button', { name: `Actions for ${name}` })
+      fireEvent.keyDown(trigger, { key: 'Enter' })
+    }
+
+    it('duplicates a metric as a draft and navigates to its edit page', async () => {
+      mockList({
+        items: [
+          makeItem({ id: 'm-1', name: 'checkout_conversion', display_name: 'Checkout conversion' }),
+        ],
+        total: 1,
+      })
+      vi.mocked(metricsCatalogApi.get).mockResolvedValue(
+        makeDefinition({
+          id: 'm-1',
+          name: 'checkout_conversion',
+          display_name: 'Checkout conversion',
+        }),
+      )
+      vi.mocked(metricsCatalogApi.create).mockResolvedValue(
+        makeDefinition({
+          id: 'm-copy',
+          name: 'checkout_conversion_copy',
+          display_name: 'Checkout conversion (copy)',
+          status: 'draft',
+        }),
+      )
+
+      renderMetrics()
+
+      await openRowMenu('Checkout conversion')
+      fireEvent.click(await screen.findByRole('menuitem', { name: 'Duplicate as draft' }))
+
+      await waitFor(() =>
+        expect(metricsCatalogApi.create).toHaveBeenCalledWith(
+          'demo',
+          expect.objectContaining({
+            kind: 'sql',
+            status: 'draft',
+            display_name: 'Checkout conversion (copy)',
+            name: 'checkout_conversion_copy',
+          }),
+        ),
+      )
+      // Lands on the freshly created draft's edit route.
+      expect(await screen.findByTestId('edit-route')).toHaveTextContent('m-copy')
+    })
+
+    it('archives an active metric from the row menu', async () => {
+      mockList({
+        items: [makeItem({ id: 'm-1', display_name: 'Checkout conversion', status: 'active' })],
+        total: 1,
+      })
+      vi.mocked(metricsCatalogApi.update).mockResolvedValue(
+        makeDefinition({ id: 'm-1', status: 'archived' }),
+      )
+
+      renderMetrics()
+
+      await openRowMenu('Checkout conversion')
+      fireEvent.click(await screen.findByRole('menuitem', { name: 'Archive' }))
+
+      await waitFor(() =>
+        expect(metricsCatalogApi.update).toHaveBeenCalledWith('demo', 'm-1', {
+          status: 'archived',
+        }),
+      )
+    })
+  })
+
+  describe('operational stat bar and column context (tripl-nxk2.10 / tripl-nxk2.11)', () => {
+    function firingAndQuiet(): MetricDefinitionListResponse {
+      return {
+        items: [
+          makeItem({
+            id: 'm-firing',
+            name: 'firing',
+            display_name: 'Firing metric',
+            latest_signal: makeSignal('latest_scan', 'spike'),
+          }),
+          makeItem({ id: 'm-quiet', name: 'quiet', display_name: 'Quiet metric', latest_signal: null }),
+        ],
+        total: 2,
+      }
+    }
+
+    it('counts active anomalies and filters the table to them on click', async () => {
+      mockList(firingAndQuiet())
+
+      renderMetrics()
+
+      // Wait for the data to load: both rows visible before filtering.
+      expect(await screen.findByText('Firing metric')).toBeInTheDocument()
+      expect(screen.getByText('Quiet metric')).toBeInTheDocument()
+      const anomaliesFilter = screen.getByRole('button', { name: 'Filter by active anomalies' })
+      // One of the two loaded metrics is firing on the latest scan.
+      expect(within(anomaliesFilter).getByText('1')).toBeInTheDocument()
+
+      fireEvent.click(anomaliesFilter)
+
+      // Filtered down to just the firing metric.
+      expect(screen.getByText('Firing metric')).toBeInTheDocument()
+      expect(screen.queryByText('Quiet metric')).not.toBeInTheDocument()
+      expect(anomaliesFilter).toHaveAttribute('aria-pressed', 'true')
+    })
+
+    it('restores the full list when the anomalies filter is toggled off', async () => {
+      mockList(firingAndQuiet())
+
+      renderMetrics()
+
+      expect(await screen.findByText('Quiet metric')).toBeInTheDocument()
+      const anomaliesFilter = screen.getByRole('button', { name: 'Filter by active anomalies' })
+      fireEvent.click(anomaliesFilter)
+      expect(screen.queryByText('Quiet metric')).not.toBeInTheDocument()
+
+      // Clicking the active stat again clears the client-side filter.
+      fireEvent.click(anomaliesFilter)
+      expect(await screen.findByText('Quiet metric')).toBeInTheDocument()
+      expect(anomaliesFilter).toHaveAttribute('aria-pressed', 'false')
+    })
+
+    it('clears the anomalies filter when a server-side filter changes', async () => {
+      mockList(firingAndQuiet())
+
+      renderMetrics()
+
+      expect(await screen.findByText('Quiet metric')).toBeInTheDocument()
+      const anomaliesFilter = screen.getByRole('button', { name: 'Filter by active anomalies' })
+      fireEvent.click(anomaliesFilter)
+      expect(screen.queryByText('Quiet metric')).not.toBeInTheDocument()
+
+      // Changing the status filter swaps the loaded set, so the signal filter is
+      // dropped and both rows return (the mock ignores server-side filter args).
+      fireEvent.change(screen.getByLabelText('Filter by status'), { target: { value: 'active' } })
+      expect(await screen.findByText('Quiet metric')).toBeInTheDocument()
+      expect(anomaliesFilter).toHaveAttribute('aria-pressed', 'false')
+    })
+
+    it('labels the Trend column header with the real sparkline point count', async () => {
+      mockList({ items: [makeItem({ id: 'm-1', spark: [1, 2, 3, 4, 5, 6, 7, 8] })], total: 1 })
+
+      renderMetrics()
+
+      expect(await screen.findByText('Trend · 8 pts')).toBeInTheDocument()
+    })
+
+    it('titles the Latest cell with the latest bucket time when available', async () => {
+      mockList({ items: [makeItem({ id: 'm-1', latest_bucket: '2026-06-20T00:00:00Z' })], total: 1 })
+
+      renderMetrics()
+
+      const cell = await screen.findByText('42 %')
+      expect(cell.getAttribute('title')).toMatch(/^Latest point:/)
+    })
+
+    it('falls back to the collection interval as the Latest-cell title', async () => {
+      mockList({
+        items: [makeItem({ id: 'm-1', latest_bucket: null, latest_signal: null, interval: '1h' })],
+        total: 1,
+      })
+
+      renderMetrics()
+
+      const cell = await screen.findByText('42 %')
+      expect(cell).toHaveAttribute('title', 'Collected hourly')
+    })
   })
 
   describe('Fact tables tab', () => {

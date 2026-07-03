@@ -1529,6 +1529,152 @@ def test_release_regression_item_renders_readable_release_line() -> None:
     assert "expected=200" in rendered
 
 
+def test_format_metric_alert_value_percent_rules() -> None:
+    from tripl.alert_templates import format_metric_alert_value
+
+    # Percent metrics store fractions: scale ×100, integral drops the decimal.
+    assert format_metric_alert_value(0.08, "%") == "8%"
+    assert format_metric_alert_value(0.083, "%") == "8.3%"
+    assert format_metric_alert_value(1.0, "%") == "100%"
+    assert format_metric_alert_value(0.0, "%") == "0%"
+    # Binary float noise must not force a decimal: 0.08 - 0.04 != exact 0.04.
+    assert format_metric_alert_value(0.08 - 0.04, "%") == "4%"
+    # Any other unit passes through unchanged for the shared stringifier.
+    assert format_metric_alert_value(0.08, None) == 0.08
+    assert format_metric_alert_value(0.08, "ms") == 0.08
+    assert format_metric_alert_value(12.0, "users") == 12.0
+
+
+def _metric_scope_delivery_item(
+    *,
+    scope_ref: str | None = None,
+    actual: float,
+    expected: float,
+    delta: float,
+) -> AlertDeliveryItem:
+    return AlertDeliveryItem(
+        id=uuid.uuid4(),
+        delivery_id=uuid.uuid4(),
+        scope_type="metric",
+        scope_ref=scope_ref or str(uuid.uuid4()),
+        scope_name="Signup CR",
+        event_id=None,
+        event_type_id=None,
+        bucket=datetime(2026, 5, 1, 12, tzinfo=UTC),
+        direction="spike",
+        actual_count=actual,
+        expected_count=expected,
+        absolute_delta=delta,
+        percent_delta=100.0,
+    )
+
+
+def test_metric_scope_percent_item_renders_scaled_values() -> None:
+    from tripl.alert_templates import get_default_items_template, render_alert_template
+    from tripl.worker.tasks.alerts_messages import _build_item_template_context
+
+    item = _metric_scope_delivery_item(actual=0.08, expected=0.04, delta=0.04)
+    context = _build_item_template_context(item, message_format="plain", metric_unit="%")
+    rendered = render_alert_template(get_default_items_template("plain"), context)
+    assert "actual=8%" in rendered
+    assert "expected=4%" in rendered
+    assert "delta=4% (100.0%)" in rendered
+
+    fractional = _metric_scope_delivery_item(actual=0.083, expected=0.04, delta=0.043)
+    context = _build_item_template_context(fractional, message_format="plain", metric_unit="%")
+    rendered = render_alert_template(get_default_items_template("plain"), context)
+    assert "actual=8.3%" in rendered
+    assert "delta=4.3% (100.0%)" in rendered
+
+
+def test_metric_scope_non_percent_and_event_items_render_unchanged() -> None:
+    """Regression: only unit='%' opts in — other units and scopes stay raw."""
+    from tripl.alert_templates import get_default_items_template, render_alert_template
+    from tripl.worker.tasks.alerts_messages import _build_item_template_context
+
+    template = get_default_items_template("plain")
+    item = _metric_scope_delivery_item(actual=12.0, expected=4.0, delta=8.0)
+    for unit in (None, "users", "ms"):
+        rendered = render_alert_template(
+            template,
+            _build_item_template_context(item, message_format="plain", metric_unit=unit),
+        )
+        assert "actual=12" in rendered
+        assert "expected=4," in rendered
+        assert "delta=8 (100.0%)" in rendered
+
+    event_item = AlertDeliveryItem(
+        id=uuid.uuid4(),
+        delivery_id=uuid.uuid4(),
+        scope_type="event",
+        scope_ref=str(uuid.uuid4()),
+        scope_name="Login",
+        event_id=uuid.uuid4(),
+        event_type_id=None,
+        bucket=datetime(2026, 5, 1, 12, tzinfo=UTC),
+        direction="spike",
+        actual_count=200,
+        expected_count=20.5,
+        absolute_delta=179.5,
+        percent_delta=875.6,
+    )
+    rendered = render_alert_template(
+        template,
+        _build_item_template_context(event_item, message_format="plain"),
+    )
+    assert "actual=200" in rendered
+    assert "expected=20.5" in rendered
+    assert "delta=179.5 (875.6%)" in rendered
+
+
+def test_simulator_renders_same_percent_values_as_worker() -> None:
+    """Shared-predicates parity: preview and live send must show identical
+    numbers for the same percent metric."""
+    from tripl.alert_templates import get_default_items_template, render_alert_template
+    from tripl.schemas.alerting import SimulatedRuleFiring
+    from tripl.services.alerting_rendering import render_firing_item
+    from tripl.worker.tasks.alerts_messages import _build_item_template_context
+
+    metric_id = str(uuid.uuid4())
+    bucket = datetime(2026, 5, 1, 12, tzinfo=UTC)
+    template = get_default_items_template("plain")
+
+    firing = SimulatedRuleFiring(
+        anomaly_id=uuid.uuid4(),
+        scope_type="metric",
+        scope_ref=metric_id,
+        scope_name="Signup CR",
+        event_type_id=None,
+        event_id=None,
+        bucket=bucket,
+        direction="spike",
+        actual_count=0.083,
+        expected_count=0.04,
+        absolute_delta=0.043,
+        percent_delta=100.0,
+    )
+    simulated = render_firing_item(
+        firing,
+        message_format="plain",
+        items_template=template,
+        metric_unit="%",
+    )
+
+    item = _metric_scope_delivery_item(
+        scope_ref=metric_id, actual=0.083, expected=0.04, delta=0.043
+    )
+    item.bucket = bucket
+    live = render_alert_template(
+        template,
+        _build_item_template_context(item, message_format="plain", metric_unit="%"),
+    ).rstrip()
+
+    assert "actual=8.3%" in simulated
+    assert "expected=4%" in simulated
+    assert "delta=4.3%" in simulated
+    assert simulated == live
+
+
 @pytest.mark.asyncio
 async def test_alert_rule_simulate_endpoint(client: AsyncClient) -> None:
     from datetime import timedelta
@@ -1661,6 +1807,277 @@ async def test_alert_rule_simulate_endpoint(client: AsyncClient) -> None:
     payload_long = resp_long.json()
     assert payload_long["cooldown_minutes_used"] == 600
     assert len(payload_long["firings"]) == 1
+
+
+@pytest.mark.asyncio
+async def test_alert_rule_simulate_renders_percent_metric_values(client: AsyncClient) -> None:
+    """Simulate resolves the metric's unit ('%') with one batched query and
+    previews the same ×100 values the live worker would send."""
+    from tripl.models.metric_anomaly import MetricAnomaly
+    from tripl.models.metric_definition import MetricDefinition
+
+    project_resp = await client.post(
+        "/api/v1/projects",
+        json={"name": "Sim Pct", "slug": "alert-sim-pct"},
+    )
+    assert project_resp.status_code == 201
+    project_id = uuid.UUID(project_resp.json()["id"])
+
+    destination_resp = await client.post(
+        "/api/v1/projects/alert-sim-pct/alert-destinations",
+        json={
+            "type": "slack",
+            "name": "Sim Pct Slack",
+            "enabled": True,
+            "webhook_url": "https://hooks.slack.com/services/T1/B1/simpct",
+        },
+    )
+    assert destination_resp.status_code == 201
+    destination_id = destination_resp.json()["id"]
+
+    rule_resp = await client.post(
+        f"/api/v1/projects/alert-sim-pct/alert-destinations/{destination_id}/rules",
+        json={
+            "name": "Percent Metric Rule",
+            "enabled": True,
+            "include_project_total": False,
+            "include_event_types": False,
+            "include_events": False,
+            "include_metrics": True,
+            "notify_on_spike": True,
+            "notify_on_drop": True,
+            "min_percent_delta": 0,
+            "min_absolute_delta": 0,
+            "min_expected_count": 0,
+            "cooldown_minutes": 60,
+            "filters": [],
+        },
+    )
+    assert rule_resp.status_code == 201
+    rule_id = rule_resp.json()["id"]
+
+    now = datetime.now(UTC)
+    async with TestSessionLocal() as session, session.begin():
+        data_source = DataSource(
+            id=uuid.uuid4(),
+            name="ds-pct",
+            db_type="clickhouse",
+            host="h",
+            port=8123,
+            database_name="d",
+            username="u",
+            password_encrypted="",
+        )
+        session.add(data_source)
+        await session.flush()
+        scan = ScanConfig(
+            id=uuid.uuid4(),
+            data_source_id=data_source.id,
+            project_id=project_id,
+            name="sc-pct",
+            base_query="SELECT 1",
+            cardinality_threshold=100,
+            interval="1h",
+        )
+        metric = MetricDefinition(
+            id=uuid.uuid4(),
+            project_id=project_id,
+            name="conversion_rate",
+            display_name="Conversion Rate",
+            kind="sql",
+            config={},
+            data_source_id=data_source.id,
+            interval="1h",
+            status="active",
+            unit="%",
+        )
+        session.add_all([scan, metric])
+        await session.flush()
+        # NOTE: live metric-scope anomalies are project-global (NULL
+        # scan_config_id); the simulator window query joins scan_configs, so
+        # anchor on the scan to surface this anomaly in the window.
+        session.add(
+            MetricAnomaly(
+                id=uuid.uuid4(),
+                scan_config_id=scan.id,
+                scope_type="metric",
+                scope_ref=str(metric.id),
+                event_id=None,
+                event_type_id=None,
+                bucket=now - timedelta(days=1),
+                actual_count=0.08,
+                expected_count=0.04,
+                stddev=0.01,
+                z_score=4.0,
+                direction="spike",
+            )
+        )
+
+    resp = await client.post(
+        f"/api/v1/projects/alert-sim-pct/alert-destinations/"
+        f"{destination_id}/rules/{rule_id}/simulate?days=7"
+    )
+    assert resp.status_code == 200
+    payload = resp.json()
+    assert len(payload["firings"]) == 1
+    rendered_item = payload["firings"][0]["rendered_item"]
+    assert "actual=8%" in rendered_item
+    assert "expected=4%" in rendered_item
+    assert "delta=4% (100.0%)" in rendered_item
+
+
+@pytest.mark.asyncio
+async def test_alert_rule_simulate_includes_project_global_metric_anomaly(
+    client: AsyncClient,
+) -> None:
+    """Regression (tripl-nxk2.18): catalog metric anomalies are project-global,
+    stored with scope_type='metric' and a NULL scan_config_id. The simulator's
+    old scan_config inner join silently dropped them, so metric-including rules
+    never fired. The simulator must now load them (scoped via MetricDefinition)
+    and resolve their scope_name to the metric's display name — while non-metric
+    (event) loading stays byte-identical.
+    """
+    from tripl.models.metric_anomaly import MetricAnomaly
+    from tripl.models.metric_definition import MetricDefinition
+
+    project_resp = await client.post(
+        "/api/v1/projects",
+        json={"name": "Sim Global", "slug": "alert-sim-global"},
+    )
+    assert project_resp.status_code == 201
+    project_id = uuid.UUID(project_resp.json()["id"])
+
+    destination_resp = await client.post(
+        "/api/v1/projects/alert-sim-global/alert-destinations",
+        json={
+            "type": "slack",
+            "name": "Sim Global Slack",
+            "enabled": True,
+            "webhook_url": "https://hooks.slack.com/services/T1/B1/simglobal",
+        },
+    )
+    assert destination_resp.status_code == 201
+    destination_id = destination_resp.json()["id"]
+
+    rule_resp = await client.post(
+        f"/api/v1/projects/alert-sim-global/alert-destinations/{destination_id}/rules",
+        json={
+            "name": "Metric + Event Rule",
+            "enabled": True,
+            "include_project_total": True,
+            "include_event_types": True,
+            "include_events": True,
+            "include_metrics": True,
+            "notify_on_spike": True,
+            "notify_on_drop": True,
+            "min_percent_delta": 0,
+            "min_absolute_delta": 0,
+            "min_expected_count": 0,
+            "cooldown_minutes": 60,
+            "filters": [],
+        },
+    )
+    assert rule_resp.status_code == 201
+    rule_id = rule_resp.json()["id"]
+
+    now = datetime.now(UTC)
+    metric_id = uuid.uuid4()
+    event_scope_ref = str(uuid.uuid4())
+    async with TestSessionLocal() as session, session.begin():
+        data_source = DataSource(
+            id=uuid.uuid4(),
+            name="ds-global",
+            db_type="clickhouse",
+            host="h",
+            port=8123,
+            database_name="d",
+            username="u",
+            password_encrypted="",
+        )
+        session.add(data_source)
+        await session.flush()
+        scan = ScanConfig(
+            id=uuid.uuid4(),
+            data_source_id=data_source.id,
+            project_id=project_id,
+            name="sc-global",
+            base_query="SELECT 1",
+            cardinality_threshold=100,
+            interval="1h",
+        )
+        metric = MetricDefinition(
+            id=metric_id,
+            project_id=project_id,
+            name="signups",
+            display_name="Signups",
+            kind="sql",
+            config={},
+            data_source_id=data_source.id,
+            interval="1h",
+            status="active",
+            unit=None,
+        )
+        session.add_all([scan, metric])
+        await session.flush()
+        # Project-global catalog metric anomaly: NULL scan_config_id. The old
+        # simulator inner-joined scan_configs and silently dropped these rows.
+        session.add(
+            MetricAnomaly(
+                id=uuid.uuid4(),
+                scan_config_id=None,
+                scope_type="metric",
+                scope_ref=str(metric_id),
+                event_id=None,
+                event_type_id=None,
+                bucket=now - timedelta(days=1),
+                actual_count=200.0,
+                expected_count=20.0,
+                stddev=1.0,
+                z_score=10.0,
+                direction="spike",
+            )
+        )
+        # Non-metric (event) anomaly stays anchored to a scan config and must
+        # still load exactly as before (unchanged behavior).
+        session.add(
+            MetricAnomaly(
+                id=uuid.uuid4(),
+                scan_config_id=scan.id,
+                scope_type="event",
+                scope_ref=event_scope_ref,
+                event_id=None,
+                event_type_id=None,
+                bucket=now - timedelta(days=1, minutes=5),
+                actual_count=150.0,
+                expected_count=15.0,
+                stddev=1.0,
+                z_score=9.0,
+                direction="spike",
+            )
+        )
+
+    resp = await client.post(
+        f"/api/v1/projects/alert-sim-global/alert-destinations/"
+        f"{destination_id}/rules/{rule_id}/simulate?days=7"
+    )
+    assert resp.status_code == 200
+    payload = resp.json()
+
+    # Both the project-global metric anomaly and the event anomaly are loaded.
+    assert payload["anomalies_considered"] == 2
+    assert payload["matched_before_cooldown"] == 2
+
+    firings_by_scope = {f["scope_type"]: f for f in payload["firings"]}
+    # Regression: the event anomaly still fires (non-metric loading unchanged),
+    # and the previously-dropped project-global metric anomaly now fires too.
+    assert set(firings_by_scope) == {"metric", "event"}
+
+    # Core defect fix: the metric anomaly's scope_name resolves to the metric's
+    # display name, not the raw UUID scope_ref.
+    metric_firing = firings_by_scope["metric"]
+    assert metric_firing["scope_ref"] == str(metric_id)
+    assert metric_firing["scope_name"] == "Signups"
+    assert metric_firing["scope_name"] != metric_firing["scope_ref"]
 
 
 def test_simulate_rule_firings_respects_cooldown_override() -> None:

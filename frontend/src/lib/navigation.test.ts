@@ -178,6 +178,35 @@ describe('buildNavGroups', () => {
       label: 'Metrics',
     })
   })
+
+  it('activates Metrics — and not Monitors — on the metric monitoring drilldown (tripl-nxk2.3)', () => {
+    // /p/:slug/monitoring/metric/:id is the catalog-metric detail page
+    // (getMetricMonitoringPath). Breadcrumbs read "Metrics › Detail", so the
+    // sidebar must highlight Metrics; the blanket /monitoring prefix on the
+    // Monitors item used to win instead.
+    const items = buildNavGroups('demo', undefined).flatMap((g) => g.items)
+    const metrics = items.find((i) => i.id === 'metrics')!
+    const monitors = items.find((i) => i.id === 'monitoring')!
+    const path = '/p/demo/monitoring/metric/9136d575'
+    expect(metrics.match(path)).toBe(true)
+    expect(monitors.match(path)).toBe(false)
+  })
+
+  it('keeps the other monitoring drilldowns on the Monitors item', () => {
+    // Only the metric case moved to Metrics; event / event-type / project-total
+    // drilldowns still activate Monitors (and never Metrics).
+    const items = buildNavGroups('demo', undefined).flatMap((g) => g.items)
+    const metrics = items.find((i) => i.id === 'metrics')!
+    const monitors = items.find((i) => i.id === 'monitoring')!
+    for (const path of [
+      '/p/demo/monitoring/event/evt-1',
+      '/p/demo/monitoring/event-type/et-1',
+      '/p/demo/monitoring/project-total/pt-1',
+    ]) {
+      expect(monitors.match(path)).toBe(true)
+      expect(metrics.match(path)).toBe(false)
+    }
+  })
 })
 
 describe('resolveNavLocation', () => {

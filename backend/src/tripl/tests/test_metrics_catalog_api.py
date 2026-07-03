@@ -1,7 +1,20 @@
 import uuid
+from datetime import UTC, datetime, timedelta
 
 import pytest
 from httpx import AsyncClient
+from sqlalchemy import func, select
+
+import tripl.core.adapters.registry as adapter_registry
+import tripl.worker.tasks.metrics.metric_collect as mc
+from tripl.api.deps import get_current_user
+from tripl.main import app
+from tripl.models.domain_enums import AnomalyDirection, MetricScopeType, UserRole
+from tripl.models.metric_anomaly import MetricAnomaly
+from tripl.models.metric_value import MetricValue
+from tripl.models.metric_value_breakdown import MetricValueBreakdown
+from tripl.models.user import User
+from tripl.tests.conftest import TestSessionLocal
 
 
 @pytest.fixture
@@ -97,6 +110,31 @@ async def _create_sql_metric(
     return resp.json()
 
 
+async def _create_multi_filter_fact_table(client: AsyncClient, slug: str) -> dict:
+    """A fact table with two named row filters (for multi-filter metric tests)."""
+    resp = await client.post(
+        f"/api/v1/projects/{slug}/fact-tables",
+        json={
+            "name": "orders_multi_ft",
+            "display_name": "Orders Multi",
+            "sql": "SELECT created_at, amount, user_id FROM orders",
+            "timestamp_column": "created_at",
+            "columns": [
+                {"name": "created_at", "type": "timestamp"},
+                {"name": "amount", "type": "number"},
+                {"name": "user_id", "type": "string"},
+            ],
+            "identifier_columns": ["user_id"],
+            "row_filters": [
+                {"name": "positive", "sql": "amount > 0"},
+                {"name": "big", "sql": "amount > 100"},
+            ],
+        },
+    )
+    assert resp.status_code == 201, resp.text
+    return resp.json()
+
+
 class TestCreateHappyPaths:
     async def test_create_fact_single_sum(
         self, client: AsyncClient, project: dict, fact_table: dict
@@ -163,7 +201,77 @@ class TestCreateHappyPaths:
             },
         )
         assert resp.status_code == 201, resp.text
-        assert resp.json()["config"]["row_filter"] == "exclude_test"
+        # Legacy single ``row_filter`` is folded into the effective ``row_filters``.
+        config = resp.json()["config"]
+        assert config["row_filters"] == ["exclude_test"]
+        assert config["filter_sql"] is None
+
+    async def test_create_fact_single_with_multiple_row_filters(
+        self, client: AsyncClient, project: dict
+    ):
+        fact_table = await _create_multi_filter_fact_table(client, project["slug"])
+        resp = await client.post(
+            _metrics_url(project["slug"]),
+            json={
+                "kind": "fact",
+                "name": "big_positive_orders",
+                "display_name": "Big positive orders",
+                "composition": "single",
+                "fact_table_id": fact_table["id"],
+                "aggregation": "count",
+                "interval": "1h",
+                "row_filters": ["positive", "big"],
+            },
+        )
+        assert resp.status_code == 201, resp.text
+        config = resp.json()["config"]
+        assert config["row_filters"] == ["positive", "big"]
+        assert config["filter_sql"] is None
+
+    async def test_create_fact_single_with_filter_sql(
+        self, client: AsyncClient, project: dict, fact_table: dict
+    ):
+        resp = await client.post(
+            _metrics_url(project["slug"]),
+            json={
+                "kind": "fact",
+                "name": "free_text_revenue",
+                "display_name": "Free-text Revenue",
+                "composition": "single",
+                "fact_table_id": fact_table["id"],
+                "aggregation": "sum",
+                "interval": "1h",
+                "measure_column": "amount",
+                "filter_sql": "amount > 0",
+            },
+        )
+        assert resp.status_code == 201, resp.text
+        config = resp.json()["config"]
+        assert config["row_filters"] == []
+        assert config["filter_sql"] == "amount > 0"
+
+    async def test_create_fact_single_with_row_filters_and_filter_sql(
+        self, client: AsyncClient, project: dict
+    ):
+        fact_table = await _create_multi_filter_fact_table(client, project["slug"])
+        resp = await client.post(
+            _metrics_url(project["slug"]),
+            json={
+                "kind": "fact",
+                "name": "combo_filtered",
+                "display_name": "Combo filtered",
+                "composition": "single",
+                "fact_table_id": fact_table["id"],
+                "aggregation": "count",
+                "interval": "1h",
+                "row_filters": ["positive"],
+                "filter_sql": "amount < 1000",
+            },
+        )
+        assert resp.status_code == 201, resp.text
+        config = resp.json()["config"]
+        assert config["row_filters"] == ["positive"]
+        assert config["filter_sql"] == "amount < 1000"
 
     async def test_create_fact_ratio_cross_fact_table(
         self, client: AsyncClient, project: dict, fact_table: dict
@@ -275,6 +383,78 @@ class TestCreateHappyPaths:
         assert data["composition"] == "ratio"
         assert data["numerator_event_id"] == event["id"]
         assert data["denominator_event_type_id"] == event_type["id"]
+
+    async def test_create_sql_metric_custom_value_column(
+        self, client: AsyncClient, project: dict, data_source: dict
+    ):
+        resp = await client.post(
+            _metrics_url(project["slug"]),
+            json={
+                "kind": "sql",
+                "name": "sessions",
+                "display_name": "Sessions",
+                "data_source_id": data_source["id"],
+                "interval": "1d",
+                "config": {
+                    "metric_sql": (
+                        "SELECT toDate(t) AS bucket, count() AS sessions FROM e GROUP BY bucket"
+                    ),
+                    "time_column": "t",
+                    "value_column": "sessions",
+                },
+            },
+        )
+        assert resp.status_code == 201, resp.text
+        assert resp.json()["config"]["value_column"] == "sessions"
+
+        bad = await client.post(
+            _metrics_url(project["slug"]),
+            json={
+                "kind": "sql",
+                "name": "bad-value-col",
+                "display_name": "Bad",
+                "data_source_id": data_source["id"],
+                "interval": "1d",
+                "config": {
+                    "metric_sql": "SELECT 1 AS v, now() AS t",
+                    "time_column": "t",
+                    "value_column": "not a column!!",
+                },
+            },
+        )
+        assert bad.status_code == 422
+
+    async def test_create_per_distinct_user_with_user_id_column(
+        self, client: AsyncClient, project: dict, event: dict
+    ):
+        resp = await client.post(
+            _metrics_url(project["slug"]),
+            json={
+                "kind": "event_composition",
+                "name": "events_per_device",
+                "display_name": "Events per device",
+                "composition": "per_distinct_user",
+                "numerator_event_id": event["id"],
+                "user_id_column": "device_id",
+            },
+        )
+        assert resp.status_code == 201, resp.text
+        assert resp.json()["config"] == {"user_id_column": "device_id"}
+
+        # The override is meaningless outside per_distinct_user — reject it so
+        # a stray value doesn't silently sit in config.
+        bad = await client.post(
+            _metrics_url(project["slug"]),
+            json={
+                "kind": "event_composition",
+                "name": "single_with_user_col",
+                "display_name": "Single",
+                "composition": "single",
+                "numerator_event_id": event["id"],
+                "user_id_column": "device_id",
+            },
+        )
+        assert bad.status_code == 422
 
 
 class TestListFilterPagination:
@@ -446,6 +626,26 @@ class TestConfigValidation:
         )
         assert resp.status_code == 422, resp.text
 
+    async def test_fact_unknown_row_filters_entry_rejected(
+        self, client: AsyncClient, project: dict, fact_table: dict
+    ):
+        # One known name + one unknown name in ``row_filters`` -> 422 (same as the
+        # legacy single ``row_filter`` unknown-name rejection).
+        resp = await client.post(
+            _metrics_url(project["slug"]),
+            json={
+                "kind": "fact",
+                "name": "ghost_in_list",
+                "display_name": "Ghost in list",
+                "composition": "single",
+                "fact_table_id": fact_table["id"],
+                "aggregation": "count",
+                "interval": "1h",
+                "row_filters": ["exclude_test", "does_not_exist"],
+            },
+        )
+        assert resp.status_code == 422, resp.text
+
     async def test_fact_nonexistent_fact_table_rejected(
         self, client: AsyncClient, project: dict
     ):
@@ -604,6 +804,45 @@ class TestSchemaSecurityValidation:
                 "aggregation": "count",
                 "interval": "1h",
                 "row_filter": "1=1 UNION SELECT secret FROM users --",
+            },
+        )
+        assert resp.status_code == 422, resp.text
+
+    async def test_reject_filter_sql_injection(
+        self, client: AsyncClient, project: dict, fact_table: dict
+    ):
+        # ``filter_sql`` is free-text but SQL-safety-validated at the schema
+        # boundary (same guard as a fact table's named row filter): a stacked
+        # statement / UNION / comment probe is rejected.
+        resp = await client.post(
+            _metrics_url(project["slug"]),
+            json={
+                "kind": "fact",
+                "name": "inj_filter_sql",
+                "display_name": "Inj Filter SQL",
+                "composition": "single",
+                "fact_table_id": fact_table["id"],
+                "aggregation": "count",
+                "interval": "1h",
+                "filter_sql": "1=1; DROP TABLE users --",
+            },
+        )
+        assert resp.status_code == 422, resp.text
+
+    async def test_reject_empty_filter_sql(
+        self, client: AsyncClient, project: dict, fact_table: dict
+    ):
+        resp = await client.post(
+            _metrics_url(project["slug"]),
+            json={
+                "kind": "fact",
+                "name": "empty_filter_sql",
+                "display_name": "Empty Filter SQL",
+                "composition": "single",
+                "fact_table_id": fact_table["id"],
+                "aggregation": "count",
+                "interval": "1h",
+                "filter_sql": "   ",
             },
         )
         assert resp.status_code == 422, resp.text
@@ -786,3 +1025,781 @@ class TestCrossProjectIsolation:
         # A valid metric_id from project B, fetched under project A's slug, must 404.
         resp = await client.get(f"/api/v1/projects/proj-a/metrics/{metric_b['id']}")
         assert resp.status_code == 404, resp.text
+
+
+class _FakeAsyncResult:
+    """Stand-in for a Celery AsyncResult so the endpoint can read ``.id``."""
+
+    def __init__(self, task_id: str) -> None:
+        self.id = task_id
+
+
+class _DispatchRecorder:
+    """Records the positional args of a patched task ``.delay`` call."""
+
+    def __init__(self, task_id: str) -> None:
+        self.task_id = task_id
+        self.calls: list[tuple] = []
+
+    def __call__(self, *args: object) -> _FakeAsyncResult:
+        self.calls.append(args)
+        return _FakeAsyncResult(self.task_id)
+
+
+@pytest.fixture
+def dispatch_recorder(
+    monkeypatch: pytest.MonkeyPatch,
+) -> dict[str, _DispatchRecorder]:
+    """Patch both collection tasks' ``.delay`` so no broker is needed in tests.
+
+    Returns the recorders so a test can assert which task was dispatched and with
+    which metric id / window.
+    """
+    sql_rec = _DispatchRecorder("task-sql")
+    fact_rec = _DispatchRecorder("task-fact")
+    monkeypatch.setattr(mc.collect_metric_definitions, "delay", sql_rec)
+    monkeypatch.setattr(mc.collect_fact_metrics_batch, "delay", fact_rec)
+    return {"sql": sql_rec, "fact": fact_rec}
+
+
+class TestCollectNow:
+    async def test_sql_metric_dispatches_with_backfill_window(
+        self,
+        client: AsyncClient,
+        project: dict,
+        data_source: dict,
+        dispatch_recorder: dict[str, _DispatchRecorder],
+    ):
+        metric = await _create_sql_metric(
+            client, project["slug"], data_source["id"], "cn_sql"
+        )
+        # A freshly-created metric is draft; collect-now must still dispatch
+        # (and force collection so the worker does not skip on status).
+        assert metric["status"] == "draft"
+        resp = await client.post(
+            f"{_metrics_url(project['slug'])}/{metric['id']}/collect"
+        )
+        assert resp.status_code == 202, resp.text
+        body = resp.json()
+        assert body["metric_id"] == metric["id"]
+        assert body["status"] == "queued"
+        assert body["task_id"] == "task-sql"
+        assert body["window_from"] is not None
+        assert body["window_to"] is not None
+
+        # 1d interval -> 30 buckets, capped at the 30-day ceiling.
+        window_from = datetime.fromisoformat(body["window_from"])
+        window_to = datetime.fromisoformat(body["window_to"])
+        assert window_to - window_from == timedelta(days=30)
+
+        # The single-metric collector is dispatched with (metric_id, from, to);
+        # the fact batch task is NOT used for a sql metric. The dispatched ISO
+        # strings encode the SAME instants as the response window (string form
+        # may differ: "+00:00" vs "Z"), so compare parsed datetimes.
+        sql_calls = dispatch_recorder["sql"].calls
+        assert len(sql_calls) == 1
+        assert sql_calls[0][0] == metric["id"]
+        assert datetime.fromisoformat(sql_calls[0][1]) == window_from
+        assert datetime.fromisoformat(sql_calls[0][2]) == window_to
+        # force=True is always passed by the manual trigger so a draft metric is
+        # not skipped on status by the worker.
+        assert sql_calls[0][3] is True
+        assert dispatch_recorder["fact"].calls == []
+
+    async def test_fact_metric_dispatches_batch_with_window(
+        self,
+        client: AsyncClient,
+        project: dict,
+        fact_table: dict,
+        dispatch_recorder: dict[str, _DispatchRecorder],
+    ):
+        created = await client.post(
+            _metrics_url(project["slug"]),
+            json={
+                "kind": "fact",
+                "name": "cn_fact",
+                "display_name": "CN Fact",
+                "composition": "single",
+                "fact_table_id": fact_table["id"],
+                "aggregation": "sum",
+                "interval": "1h",
+                "measure_column": "amount",
+            },
+        )
+        assert created.status_code == 201, created.text
+        metric = created.json()
+        assert metric["status"] == "draft"
+
+        resp = await client.post(
+            f"{_metrics_url(project['slug'])}/{metric['id']}/collect"
+        )
+        assert resp.status_code == 202, resp.text
+        body = resp.json()
+        assert body["task_id"] == "task-fact"
+
+        # 1h interval -> 48 buckets = 48h (well under the 30-day cap).
+        window_from = datetime.fromisoformat(body["window_from"])
+        window_to = datetime.fromisoformat(body["window_to"])
+        assert window_to - window_from == timedelta(hours=48)
+
+        # Fact metrics reuse the shared-scan batch task with a one-element list.
+        fact_calls = dispatch_recorder["fact"].calls
+        assert len(fact_calls) == 1
+        assert fact_calls[0][0] == [metric["id"]]
+        assert datetime.fromisoformat(fact_calls[0][1]) == window_from
+        assert datetime.fromisoformat(fact_calls[0][2]) == window_to
+        # force=True is always passed so a draft fact metric stays in the batch.
+        assert fact_calls[0][3] is True
+        assert dispatch_recorder["sql"].calls == []
+
+    async def test_collect_marks_metric_running(
+        self,
+        client: AsyncClient,
+        project: dict,
+        data_source: dict,
+        dispatch_recorder: dict[str, _DispatchRecorder],
+    ):
+        metric = await _create_sql_metric(
+            client, project["slug"], data_source["id"], "cn_run"
+        )
+        resp = await client.post(
+            f"{_metrics_url(project['slug'])}/{metric['id']}/collect"
+        )
+        assert resp.status_code == 202, resp.text
+
+        # Stamped running before dispatch so the scheduler won't double-dispatch.
+        got = await client.get(f"{_metrics_url(project['slug'])}/{metric['id']}")
+        assert got.json()["last_collection_status"] == "running"
+
+    async def test_unknown_metric_returns_404(
+        self,
+        client: AsyncClient,
+        project: dict,
+        dispatch_recorder: dict[str, _DispatchRecorder],
+    ):
+        resp = await client.post(
+            f"{_metrics_url(project['slug'])}/{uuid.uuid4()}/collect"
+        )
+        assert resp.status_code == 404, resp.text
+        assert dispatch_recorder["sql"].calls == []
+        assert dispatch_recorder["fact"].calls == []
+
+    async def test_requires_editor_role(
+        self,
+        client: AsyncClient,
+        project: dict,
+        dispatch_recorder: dict[str, _DispatchRecorder],
+    ):
+        async def _viewer() -> User:
+            return User(
+                id=uuid.uuid4(),
+                email="viewer@example.com",
+                name="Viewer",
+                password_hash="x",
+                role=UserRole.viewer.value,
+            )
+
+        app.dependency_overrides[get_current_user] = _viewer
+        try:
+            resp = await client.post(
+                f"{_metrics_url(project['slug'])}/{uuid.uuid4()}/collect"
+            )
+        finally:
+            app.dependency_overrides.pop(get_current_user, None)
+
+        assert resp.status_code == 403, resp.text
+        assert dispatch_recorder["sql"].calls == []
+        assert dispatch_recorder["fact"].calls == []
+
+
+async def _seed_collected_data(metric_id: str) -> None:
+    """Insert a value + breakdown + metric-scope anomaly + collection stamp.
+
+    Lets the kind-change tests assert that everything the metric owns is cleared
+    (and presentation-only edits assert that identical definitions keep history).
+    """
+    mid = uuid.UUID(metric_id)
+    bucket = datetime(2026, 1, 1, tzinfo=UTC)
+    async with TestSessionLocal() as session:
+        session.add(MetricValue(metric_definition_id=mid, bucket=bucket, value=1.0))
+        session.add(
+            MetricValueBreakdown(
+                metric_definition_id=mid,
+                bucket=bucket,
+                breakdown_column="country",
+                breakdown_value="US",
+                value=1.0,
+            )
+        )
+        session.add(
+            MetricAnomaly(
+                scope_type=MetricScopeType.metric.value,
+                scope_ref=metric_id,
+                bucket=bucket,
+                actual_count=10,
+                expected_count=2.0,
+                stddev=1.0,
+                z_score=8.0,
+                direction=AnomalyDirection.spike.value,
+            )
+        )
+        await session.commit()
+
+
+async def _count_collected_data(metric_id: str) -> tuple[int, int, int]:
+    """(values, breakdowns, metric-scope anomalies) currently stored for a metric."""
+    mid = uuid.UUID(metric_id)
+    async with TestSessionLocal() as session:
+        values = await session.scalar(
+            select(func.count(MetricValue.id)).where(MetricValue.metric_definition_id == mid)
+        )
+        breakdowns = await session.scalar(
+            select(func.count(MetricValueBreakdown.id)).where(
+                MetricValueBreakdown.metric_definition_id == mid
+            )
+        )
+        anomalies = await session.scalar(
+            select(func.count(MetricAnomaly.id)).where(
+                MetricAnomaly.scope_type == MetricScopeType.metric.value,
+                MetricAnomaly.scope_ref == metric_id,
+            )
+        )
+    return int(values or 0), int(breakdowns or 0), int(anomalies or 0)
+
+
+class TestUpdateDefinition:
+    """PATCH /metrics/{id} can re-define a metric's kind + collection config."""
+
+    async def test_edit_sql_config_data_source_interval_and_sql(
+        self, client: AsyncClient, project: dict, data_source: dict
+    ):
+        slug = project["slug"]
+        metric = await _create_sql_metric(client, slug, data_source["id"], "edit_sql")
+        # A second data source the metric can be repointed at.
+        other_ds = (
+            await client.post(
+                "/api/v1/data-sources",
+                json={
+                    "name": "Other CH",
+                    "db_type": "clickhouse",
+                    "host": "localhost",
+                    "port": 8123,
+                    "database_name": "other_db",
+                },
+            )
+        ).json()
+
+        resp = await client.patch(
+            f"{_metrics_url(slug)}/{metric['id']}",
+            json={
+                "definition": {
+                    "kind": "sql",
+                    "data_source_id": other_ds["id"],
+                    "interval": "6h",
+                    "config": {
+                        "metric_sql": "SELECT toStartOfHour(t) AS bucket, count() AS v FROM e",
+                        "time_column": "bucket",
+                    },
+                }
+            },
+        )
+        assert resp.status_code == 200, resp.text
+        data = resp.json()
+        assert data["kind"] == "sql"
+        assert data["data_source_id"] == other_ds["id"]
+        assert data["interval"] == "6h"
+        assert data["config"]["metric_sql"].endswith("FROM e")
+        assert data["config"]["time_column"] == "bucket"
+
+    async def test_edit_fact_operand_aggregation_measure_and_filter(
+        self, client: AsyncClient, project: dict, fact_table: dict
+    ):
+        slug = project["slug"]
+        created = await client.post(
+            _metrics_url(slug),
+            json={
+                "kind": "fact",
+                "name": "edit_fact",
+                "display_name": "Edit Fact",
+                "composition": "single",
+                "fact_table_id": fact_table["id"],
+                "aggregation": "count",
+                "interval": "1h",
+            },
+        )
+        assert created.status_code == 201, created.text
+        metric = created.json()
+        assert metric["aggregation"] == "count"
+
+        resp = await client.patch(
+            f"{_metrics_url(slug)}/{metric['id']}",
+            json={
+                "definition": {
+                    "kind": "fact",
+                    "composition": "single",
+                    "fact_table_id": fact_table["id"],
+                    "aggregation": "sum",
+                    "interval": "1h",
+                    "measure_column": "amount",
+                    "row_filter": "exclude_test",
+                }
+            },
+        )
+        assert resp.status_code == 200, resp.text
+        data = resp.json()
+        assert data["kind"] == "fact"
+        assert data["aggregation"] == "sum"
+        assert data["config"]["measure_column"] == "amount"
+        # Legacy single ``row_filter`` is folded into the effective ``row_filters``.
+        assert data["config"]["row_filters"] == ["exclude_test"]
+
+    async def test_edit_fact_operand_unknown_column_rejected(
+        self, client: AsyncClient, project: dict, fact_table: dict
+    ):
+        # The same service-level allowlist that guards create also guards update.
+        slug = project["slug"]
+        created = await client.post(
+            _metrics_url(slug),
+            json={
+                "kind": "fact",
+                "name": "edit_fact_bad",
+                "display_name": "Edit Fact Bad",
+                "composition": "single",
+                "fact_table_id": fact_table["id"],
+                "aggregation": "count",
+                "interval": "1h",
+            },
+        )
+        assert created.status_code == 201, created.text
+        resp = await client.patch(
+            f"{_metrics_url(slug)}/{created.json()['id']}",
+            json={
+                "definition": {
+                    "kind": "fact",
+                    "composition": "single",
+                    "fact_table_id": fact_table["id"],
+                    "aggregation": "sum",
+                    "interval": "1h",
+                    "measure_column": "not_a_column",
+                }
+            },
+        )
+        assert resp.status_code == 422, resp.text
+
+    async def test_change_kind_sql_to_fact_clears_values_and_stores_config(
+        self, client: AsyncClient, project: dict, data_source: dict, fact_table: dict
+    ):
+        slug = project["slug"]
+        metric = await _create_sql_metric(client, slug, data_source["id"], "kind_change")
+        await _seed_collected_data(metric["id"])
+        # Stamp a collection state so we can assert it is reset on the kind change.
+        async with TestSessionLocal() as session:
+            from tripl.models.metric_definition import MetricDefinition
+
+            row = await session.get(MetricDefinition, uuid.UUID(metric["id"]))
+            assert row is not None
+            row.last_collection_status = "ok"
+            row.last_collected_at = datetime(2026, 1, 1, tzinfo=UTC)
+            await session.commit()
+        assert await _count_collected_data(metric["id"]) == (1, 1, 1)
+
+        resp = await client.patch(
+            f"{_metrics_url(slug)}/{metric['id']}",
+            json={
+                "definition": {
+                    "kind": "fact",
+                    "composition": "single",
+                    "fact_table_id": fact_table["id"],
+                    "aggregation": "sum",
+                    "interval": "1h",
+                    "measure_column": "amount",
+                }
+            },
+        )
+        assert resp.status_code == 200, resp.text
+        data = resp.json()
+        # New definition stored.
+        assert data["kind"] == "fact"
+        assert data["aggregation"] == "sum"
+        assert data["fact_table_id"] == fact_table["id"]
+        assert data["config"]["measure_column"] == "amount"
+        # ``sql`` left its data source behind; ``fact`` takes it from the table.
+        assert data["data_source_id"] is None
+        # Collection stamp reset.
+        assert data["last_collection_status"] is None
+        assert data["last_collected_at"] is None
+        # Every incompatible collected row was cleared.
+        assert await _count_collected_data(metric["id"]) == (0, 0, 0)
+
+    async def test_same_kind_config_tweak_clears_collected_values(
+        self, client: AsyncClient, project: dict, data_source: dict
+    ):
+        slug = project["slug"]
+        metric = await _create_sql_metric(client, slug, data_source["id"], "same_kind")
+        await _seed_collected_data(metric["id"])
+        async with TestSessionLocal() as session:
+            from tripl.models.metric_definition import MetricDefinition
+
+            row = await session.get(MetricDefinition, uuid.UUID(metric["id"]))
+            assert row is not None
+            row.last_collection_status = "ok"
+            row.last_collected_at = datetime(2026, 1, 1, tzinfo=UTC)
+            await session.commit()
+
+        resp = await client.patch(
+            f"{_metrics_url(slug)}/{metric['id']}",
+            json={
+                "definition": {
+                    "kind": "sql",
+                    "data_source_id": data_source["id"],
+                    "interval": "1d",
+                    "config": {
+                        "metric_sql": "SELECT t AS bucket, count() AS v FROM e2",
+                        "time_column": "bucket",
+                    },
+                }
+            },
+        )
+        assert resp.status_code == 200, resp.text
+        data = resp.json()
+        assert data["config"]["metric_sql"].endswith("FROM e2")
+        assert data["last_collection_status"] is None
+        assert data["last_collected_at"] is None
+        assert await _count_collected_data(metric["id"]) == (0, 0, 0)
+
+    async def test_same_definition_presentation_edit_keeps_collected_values(
+        self, client: AsyncClient, project: dict, data_source: dict
+    ):
+        slug = project["slug"]
+        metric = await _create_sql_metric(client, slug, data_source["id"], "same_definition")
+        await _seed_collected_data(metric["id"])
+
+        resp = await client.patch(
+            f"{_metrics_url(slug)}/{metric['id']}",
+            json={
+                "display_name": "Same Definition Renamed",
+                "definition": {
+                    "kind": "sql",
+                    "data_source_id": data_source["id"],
+                    "interval": metric["interval"],
+                    "config": {
+                        "metric_sql": metric["config"]["metric_sql"],
+                        "time_column": metric["config"]["time_column"],
+                    },
+                },
+            },
+        )
+        assert resp.status_code == 200, resp.text
+        data = resp.json()
+        assert data["display_name"] == "Same Definition Renamed"
+        assert data["config"] == metric["config"]
+        assert await _count_collected_data(metric["id"]) == (1, 1, 1)
+
+    async def test_internal_name_is_immutable_on_update(
+        self, client: AsyncClient, project: dict, data_source: dict
+    ):
+        slug = project["slug"]
+        metric = await _create_sql_metric(client, slug, data_source["id"], "stable_name")
+        resp = await client.patch(
+            f"{_metrics_url(slug)}/{metric['id']}",
+            json={
+                "name": "renamed",
+                "display_name": "Renamed Display",
+                "definition": {
+                    "kind": "sql",
+                    "name": "renamed_in_definition",
+                    "data_source_id": data_source["id"],
+                    "interval": "1d",
+                    "config": {"metric_sql": "SELECT 1 AS v, now() AS t", "time_column": "t"},
+                },
+            },
+        )
+        assert resp.status_code == 200, resp.text
+        data = resp.json()
+        # The internal query identifier is unchanged; only display_name moved.
+        assert data["name"] == "stable_name"
+        assert data["display_name"] == "Renamed Display"
+
+
+class _PreviewStubAdapter:
+    """Warehouse stub for the preview endpoint; records the wrapped call."""
+
+    def __init__(
+        self,
+        columns: list[str],
+        rows: list[tuple[object, ...]],
+        error: Exception | None = None,
+    ) -> None:
+        self.columns = columns
+        self.rows = rows
+        self.error = error
+        self.calls: list[dict[str, object]] = []
+        self.closed = False
+
+    def get_preview_rows(
+        self,
+        base_query: str,
+        limit: int = 10,
+        *,
+        time_column: str | None = None,
+        time_from: datetime | None = None,
+        time_to: datetime | None = None,
+    ) -> tuple[list[str], list[tuple[object, ...]]]:
+        self.calls.append(
+            {
+                "sql": base_query,
+                "limit": limit,
+                "time_column": time_column,
+                "time_from": time_from,
+                "time_to": time_to,
+            }
+        )
+        if self.error is not None:
+            raise self.error
+        return self.columns, self.rows
+
+    def close(self) -> None:
+        self.closed = True
+
+
+def _patch_preview_adapter(
+    monkeypatch: pytest.MonkeyPatch, adapter: _PreviewStubAdapter
+) -> list[uuid.UUID]:
+    """Patch ``registry.build_adapter`` (the service imports it lazily) to
+    return the stub; returns the list of data-source ids it was built for."""
+    built: list[uuid.UUID] = []
+
+    def _build(ds: object) -> _PreviewStubAdapter:
+        built.append(ds.id)  # type: ignore[attr-defined]
+        return adapter
+
+    monkeypatch.setattr(adapter_registry, "build_adapter", _build)
+    return built
+
+
+def _preview_url(slug: str) -> str:
+    return f"{_metrics_url(slug)}/preview"
+
+
+class TestPreview:
+    """POST /metrics/preview: stateless dry-run of a sql-kind SELECT."""
+
+    async def test_happy_path_returns_columns_and_bucketed_points(
+        self,
+        client: AsyncClient,
+        project: dict,
+        data_source: dict,
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        adapter = _PreviewStubAdapter(
+            ["t", "value"],
+            [
+                (datetime(2026, 7, 1, 10, 0, tzinfo=UTC), 5),
+                # Coerced like a real collection: string value, mid-bucket time.
+                (datetime(2026, 7, 1, 11, 30, tzinfo=UTC), "7.5"),
+            ],
+        )
+        built = _patch_preview_adapter(monkeypatch, adapter)
+
+        resp = await client.post(
+            _preview_url(project["slug"]),
+            json={
+                "data_source_id": data_source["id"],
+                "sql": "SELECT toStartOfHour(ts) AS t, count() AS value FROM e GROUP BY t",
+                "time_column": "t",
+                "interval": "1h",
+            },
+        )
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        assert body["error"] is None
+        assert body["columns"] == ["t", "value"]
+        assert body["truncated"] is False
+        assert body["point_count"] == 2
+        points = body["points"]
+        assert [point["value"] for point in points] == [5.0, 7.5]
+        assert datetime.fromisoformat(points[0]["bucket"]) == datetime(2026, 7, 1, 10, tzinfo=UTC)
+        # 11:30 floors to the 11:00 bucket on a 1h interval.
+        assert datetime.fromisoformat(points[1]["bucket"]) == datetime(2026, 7, 1, 11, tzinfo=UTC)
+
+        # The adapter was built for the requested data source, queried once with
+        # the hard row cap and a 50-bucket window ending now, and closed.
+        assert built == [uuid.UUID(data_source["id"])]
+        assert len(adapter.calls) == 1
+        call = adapter.calls[0]
+        assert call["limit"] == 200
+        assert call["time_column"] == "t"
+        assert call["time_to"] - call["time_from"] == timedelta(hours=50)
+        assert adapter.closed is True
+
+    async def test_custom_value_column_and_truncation_flag(
+        self,
+        client: AsyncClient,
+        project: dict,
+        data_source: dict,
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        # Exactly the row cap comes back -> flagged truncated; same-bucket rows
+        # overwrite (worker semantics), so one point remains per bucket.
+        rows = [(datetime(2026, 7, 1, 10, 0, tzinfo=UTC), float(index)) for index in range(200)]
+        adapter = _PreviewStubAdapter(["t", "sessions"], rows)
+        _patch_preview_adapter(monkeypatch, adapter)
+
+        resp = await client.post(
+            _preview_url(project["slug"]),
+            json={
+                "data_source_id": data_source["id"],
+                "sql": "SELECT t, sessions FROM e",
+                "time_column": "t",
+                "value_column": "sessions",
+                "interval": "1h",
+            },
+        )
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        assert body["error"] is None
+        assert body["truncated"] is True
+        assert body["point_count"] == 1
+        assert body["points"][0]["value"] == 199.0
+
+    async def test_non_select_sql_returns_error_payload(
+        self,
+        client: AsyncClient,
+        project: dict,
+        data_source: dict,
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        adapter = _PreviewStubAdapter(["t", "value"], [])
+        _patch_preview_adapter(monkeypatch, adapter)
+
+        resp = await client.post(
+            _preview_url(project["slug"]),
+            json={
+                "data_source_id": data_source["id"],
+                "sql": "DROP TABLE users",
+                "time_column": "t",
+                "interval": "1h",
+            },
+        )
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        assert body["error"] is not None
+        assert "read-only SELECT" in body["error"]
+        assert body["points"] == []
+        assert body["point_count"] == 0
+        assert body["truncated"] is False
+        # Invalid SQL never reaches the warehouse.
+        assert adapter.calls == []
+
+    async def test_missing_time_column_in_result_returns_error_payload(
+        self,
+        client: AsyncClient,
+        project: dict,
+        data_source: dict,
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        # The SELECT projects both columns textually, but the warehouse result
+        # comes back without the time column -> reported as a user-level error.
+        adapter = _PreviewStubAdapter(["value", "other"], [(1.0, "x")])
+        _patch_preview_adapter(monkeypatch, adapter)
+
+        resp = await client.post(
+            _preview_url(project["slug"]),
+            json={
+                "data_source_id": data_source["id"],
+                "sql": "SELECT t, value FROM e",
+                "time_column": "t",
+                "interval": "1d",
+            },
+        )
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        assert body["error"] is not None
+        assert "'t'" in body["error"]
+        assert body["columns"] == ["value", "other"]
+        assert body["points"] == []
+
+    async def test_warehouse_error_is_trimmed_into_error_payload(
+        self,
+        client: AsyncClient,
+        project: dict,
+        data_source: dict,
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        adapter = _PreviewStubAdapter([], [], error=RuntimeError("x" * 800))
+        _patch_preview_adapter(monkeypatch, adapter)
+
+        resp = await client.post(
+            _preview_url(project["slug"]),
+            json={
+                "data_source_id": data_source["id"],
+                "sql": "SELECT t, value FROM e",
+                "time_column": "t",
+                "interval": "1h",
+            },
+        )
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        assert body["error"] is not None
+        assert body["error"].startswith("x")
+        # Trimmed to ~500 chars so a driver dump never reaches the client.
+        assert len(body["error"]) <= 510
+        assert body["points"] == []
+
+    async def test_unknown_data_source_returns_404(
+        self,
+        client: AsyncClient,
+        project: dict,
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        adapter = _PreviewStubAdapter(["t", "value"], [])
+        _patch_preview_adapter(monkeypatch, adapter)
+
+        resp = await client.post(
+            _preview_url(project["slug"]),
+            json={
+                "data_source_id": str(uuid.uuid4()),
+                "sql": "SELECT t, value FROM e",
+                "time_column": "t",
+                "interval": "1h",
+            },
+        )
+        assert resp.status_code == 404, resp.text
+        assert adapter.calls == []
+
+    async def test_requires_editor_role(
+        self,
+        client: AsyncClient,
+        project: dict,
+        data_source: dict,
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        # Same auth gate as metric create: a viewer is rejected with 403.
+        adapter = _PreviewStubAdapter(["t", "value"], [])
+        _patch_preview_adapter(monkeypatch, adapter)
+
+        async def _viewer() -> User:
+            return User(
+                id=uuid.uuid4(),
+                email="viewer@example.com",
+                name="Viewer",
+                password_hash="x",
+                role=UserRole.viewer.value,
+            )
+
+        app.dependency_overrides[get_current_user] = _viewer
+        try:
+            resp = await client.post(
+                _preview_url(project["slug"]),
+                json={
+                    "data_source_id": data_source["id"],
+                    "sql": "SELECT t, value FROM e",
+                    "time_column": "t",
+                    "interval": "1h",
+                },
+            )
+        finally:
+            app.dependency_overrides.pop(get_current_user, None)
+
+        assert resp.status_code == 403, resp.text
+        assert adapter.calls == []

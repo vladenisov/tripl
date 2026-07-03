@@ -634,6 +634,28 @@ export interface paths {
         patch: operations["update_project_anomaly_settings_api_v1_projects__slug__anomaly_settings_patch"];
         trace?: never;
     };
+    "/api/v1/projects/{slug}/branch-settings": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Project Branch Settings */
+        get: operations["get_project_branch_settings_api_v1_projects__slug__branch_settings_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /**
+         * Update Project Branch Settings
+         * @description Owner-only: min_approvals/block_self_approval govern what editors may
+         *     merge, so editors must not be able to loosen the policy on themselves.
+         */
+        patch: operations["update_project_branch_settings_api_v1_projects__slug__branch_settings_patch"];
+        trace?: never;
+    };
     "/api/v1/projects/{slug}/branches": {
         parameters: {
             query?: never;
@@ -835,6 +857,51 @@ export interface paths {
         put?: never;
         /** Transition Branch */
         post: operations["transition_branch_api_v1_projects__slug__branches__branch_id__transition_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/projects/{slug}/danger/reset-anomalies": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Reset Anomalies
+         * @description Owner-only: clear every anomaly (+ breakdown) in the project's period.
+         *
+         *     Destructive and irreversible. Derived monitoring signals disappear with the
+         *     anomalies they are computed from.
+         */
+        post: operations["reset_anomalies_api_v1_projects__slug__danger_reset_anomalies_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/projects/{slug}/danger/reset-drifts": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Reset Drifts
+         * @description Owner-only: clear every schema + distribution drift in the project's period.
+         *
+         *     Destructive and irreversible.
+         */
+        post: operations["reset_drifts_api_v1_projects__slug__danger_reset_drifts_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -1529,6 +1596,33 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/projects/{slug}/metrics/preview": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Preview Metric Sql
+         * @description Stateless dry-run of a sql-kind metric SELECT (editor-gated).
+         *
+         *     Validates the SQL with the same safety gate the worker uses and executes it
+         *     against the data source over the last 50 buckets of the requested interval
+         *     (hard-capped at 200 rows); nothing is persisted. Expected user mistakes —
+         *     bad SQL, missing time/value columns, warehouse errors — return 200 with
+         *     ``error`` set so the editor can render them inline; unknown data source is
+         *     a 404.
+         */
+        post: operations["preview_metric_sql_api_v1_projects__slug__metrics_preview_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/projects/{slug}/metrics/reorder": {
         parameters: {
             query?: never;
@@ -1593,6 +1687,30 @@ export interface paths {
         get: operations["get_metric_breakdowns_api_v1_projects__slug__metrics__metric_id__breakdowns_get"];
         put?: never;
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/projects/{slug}/metrics/{metric_id}/collect": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Collect Metric Now
+         * @description Trigger an immediate backfill collection for one metric (editor-gated).
+         *
+         *     Dispatches the same Celery collection the scheduler uses, backfilling a
+         *     bounded recent window so the chart is not empty. Returns 202 once queued;
+         *     the warehouse query runs in the worker. Unknown metric -> 404.
+         */
+        post: operations["collect_metric_now_api_v1_projects__slug__metrics__metric_id__collect_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -3297,6 +3415,13 @@ export interface components {
          * @enum {string}
          */
         AnomalyDirection: "spike" | "drop";
+        /** AnomalyResetCounts */
+        AnomalyResetCounts: {
+            /** Metric Anomalies */
+            metric_anomalies: number;
+            /** Metric Breakdown Anomalies */
+            metric_breakdown_anomalies: number;
+        };
         /** ApiKeyCreate */
         ApiKeyCreate: {
             /** Expires In Days */
@@ -3712,7 +3837,7 @@ export interface components {
          * ChartAnnotationScopeType
          * @enum {string}
          */
-        ChartAnnotationScopeType: "project_total" | "event_type" | "event";
+        ChartAnnotationScopeType: "project_total" | "event_type" | "event" | "metric";
         /** ColumnSchema */
         ColumnSchema: {
             /** Data Type */
@@ -3981,6 +4106,18 @@ export interface components {
             total: number;
         };
         /**
+         * DetectionResetPeriod
+         * @description Optional half-open window (``after <= t < before``) for a danger-zone reset.
+         *
+         *     Both bounds are optional; omitting both clears the whole project.
+         */
+        DetectionResetPeriod: {
+            /** After */
+            after?: string | null;
+            /** Before */
+            before?: string | null;
+        };
+        /**
          * DistributionDriftBand
          * @enum {string}
          */
@@ -4039,6 +4176,13 @@ export interface components {
             scan_config_id?: string | null;
             /** Scope */
             scope: string;
+        };
+        /** DriftResetCounts */
+        DriftResetCounts: {
+            /** Distribution Drifts */
+            distribution_drifts: number;
+            /** Schema Drifts */
+            schema_drifts: number;
         };
         /** EmailSettings */
         EmailSettings: {
@@ -4115,14 +4259,7 @@ export interface components {
             /** User Id */
             user_id?: string | null;
         };
-        /**
-         * EventCompositionMetricCreate
-         * @description Derived from already-collected event_metrics; no data source / interval.
-         *
-         *     Numerator/denominator are each given as exactly one ref: an ``event_id`` or
-         *     an ``event_type_id``. ``single``/``per_distinct_user`` use the numerator
-         *     only; ``ratio`` requires both numerator and denominator.
-         */
+        /** EventCompositionMetricCreate */
         EventCompositionMetricCreate: {
             /**
              * Anomaly Detection Enabled
@@ -4181,6 +4318,34 @@ export interface components {
             status: components["schemas"]["MetricStatus"];
             /** Unit */
             unit?: string | null;
+            /** User Id Column */
+            user_id_column?: string | null;
+        };
+        /**
+         * EventCompositionMetricDefinition
+         * @description Kind + config for an ``event_composition`` metric; no data source / interval.
+         *
+         *     Numerator/denominator are each given as exactly one ref: an ``event_id`` or
+         *     an ``event_type_id``. ``single``/``per_distinct_user`` use the numerator
+         *     only; ``ratio`` requires both numerator and denominator.
+         */
+        EventCompositionMetricDefinition: {
+            composition: components["schemas"]["MetricComposition"];
+            /** Denominator Event Id */
+            denominator_event_id?: string | null;
+            /** Denominator Event Type Id */
+            denominator_event_type_id?: string | null;
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            kind: "event_composition";
+            /** Numerator Event Id */
+            numerator_event_id?: string | null;
+            /** Numerator Event Type Id */
+            numerator_event_type_id?: string | null;
+            /** User Id Column */
+            user_id_column?: string | null;
         };
         /** EventCreate */
         EventCreate: {
@@ -4861,24 +5026,7 @@ export interface components {
             /** Total Count */
             total_count: number;
         };
-        /**
-         * FactMetricCreate
-         * @description An aggregation over a separately-defined ``FactTable``.
-         *
-         *     SINGLE (``composition=single``, the default): one operand given by the
-         *     top-level ``fact_table_id`` + ``aggregation`` + the ``measure_column`` /
-         *     ``distinct_column`` / ``row_filter`` config fields.
-         *
-         *     RATIO (``composition=ratio``): ``numerator`` / ``denominator`` operands (each
-         *     a :class:`FactOperand`); the denominator MAY reference a different fact table.
-         *     The numerator operand is mirrored onto the model's ``fact_table_id`` /
-         *     ``aggregation`` columns for catalog display and FK integrity.
-         *
-         *     The data source and timestamp column are taken from the referenced fact
-         *     table(s) at collection time; only the collection ``interval`` lives here.
-         *     Fact-table existence, project ownership, column membership, and row-filter
-         *     name resolution are checked in the service (they need the DB).
-         */
+        /** FactMetricCreate */
         FactMetricCreate: {
             aggregation?: components["schemas"]["MetricAggregation"] | null;
             /**
@@ -4911,6 +5059,8 @@ export interface components {
             distinct_column?: string | null;
             /** Fact Table Id */
             fact_table_id?: string | null;
+            /** Filter Sql */
+            filter_sql?: string | null;
             interval: components["schemas"]["ScanInterval"];
             /**
              * @description discriminator enum property added by openapi-typescript
@@ -4939,10 +5089,57 @@ export interface components {
             reviewed: boolean;
             /** Row Filter */
             row_filter?: string | null;
+            /** Row Filters */
+            row_filters?: string[];
             /** @default draft */
             status: components["schemas"]["MetricStatus"];
             /** Unit */
             unit?: string | null;
+        };
+        /**
+         * FactMetricDefinition
+         * @description Kind + collection config for a ``fact`` metric.
+         *
+         *     SINGLE (``composition=single``, the default): one operand given by the
+         *     top-level ``fact_table_id`` + ``aggregation`` + the ``measure_column`` /
+         *     ``distinct_column`` / ``row_filters`` / ``filter_sql`` config fields (the
+         *     legacy single ``row_filter`` name is still accepted and folded in).
+         *
+         *     RATIO (``composition=ratio``): ``numerator`` / ``denominator`` operands (each
+         *     a :class:`FactOperand`); the denominator MAY reference a different fact table.
+         *     The numerator operand is mirrored onto the model's ``fact_table_id`` /
+         *     ``aggregation`` columns for catalog display and FK integrity.
+         *
+         *     The data source and timestamp column are taken from the referenced fact
+         *     table(s) at collection time; only the collection ``interval`` lives here.
+         *     Fact-table existence, project ownership, column membership, and row-filter
+         *     name resolution are checked in the service (they need the DB).
+         */
+        FactMetricDefinition: {
+            aggregation?: components["schemas"]["MetricAggregation"] | null;
+            /** @default single */
+            composition: components["schemas"]["MetricComposition"];
+            denominator?: components["schemas"]["FactOperand"] | null;
+            /** Distinct Column */
+            distinct_column?: string | null;
+            /** Fact Table Id */
+            fact_table_id?: string | null;
+            /** Filter Sql */
+            filter_sql?: string | null;
+            interval: components["schemas"]["ScanInterval"];
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            kind: "fact";
+            /** Measure Column */
+            measure_column?: string | null;
+            numerator?: components["schemas"]["FactOperand"] | null;
+            replay_chunk_interval?: components["schemas"]["ScanInterval"] | null;
+            /** Row Filter */
+            row_filter?: string | null;
+            /** Row Filters */
+            row_filters?: string[];
         };
         /**
          * FactOperand
@@ -4952,8 +5149,15 @@ export interface components {
          *     columns. ``measure_column`` / ``distinct_column`` reach warehouse SQL
          *     unparameterised, so they are identifier-validated here; their membership in
          *     the referenced fact table's columns is checked in the service (it needs the
-         *     DB). ``row_filter`` is the NAME of one of that fact table's stored row
-         *     filters — never a raw SQL fragment — resolved to SQL at collection time.
+         *     DB).
+         *
+         *     Row filtering combines two inputs, ANDed together at collection time:
+         *     ``row_filters`` is a list of NAMES of that fact table's stored row filters
+         *     (each resolved to its SQL fragment; membership checked in the service), and
+         *     ``filter_sql`` is a free-text boolean WHERE fragment (SQL-safety-validated
+         *     here). The legacy single ``row_filter`` name is still accepted on input and
+         *     folded into the effective named-filter set; new writes use ``row_filters`` +
+         *     ``filter_sql``.
          */
         FactOperand: {
             aggregation: components["schemas"]["MetricAggregation"];
@@ -4964,10 +5168,14 @@ export interface components {
              * Format: uuid
              */
             fact_table_id: string;
+            /** Filter Sql */
+            filter_sql?: string | null;
             /** Measure Column */
             measure_column?: string | null;
             /** Row Filter */
             row_filter?: string | null;
+            /** Row Filters */
+            row_filters?: string[];
         };
         /**
          * FactTableColumnSchema
@@ -5443,6 +5651,35 @@ export interface components {
             series: components["schemas"]["MetricBreakdownSeries"][];
         };
         /**
+         * MetricCollectNowResponse
+         * @description 202 payload for a manual ``POST /metrics/{id}/collect`` trigger.
+         *
+         *     ``window_from`` / ``window_to`` describe the backfilled [from, to) window for
+         *     ``fact`` / ``sql`` metrics; they are ``None`` for ``event_composition``
+         *     metrics, which have no interval and recompute from the full event-metric
+         *     series. ``task_id`` is the dispatched Celery task id when the broker returns
+         *     one, else ``None``.
+         */
+        MetricCollectNowResponse: {
+            /**
+             * Metric Id
+             * Format: uuid
+             */
+            metric_id: string;
+            /**
+             * Status
+             * @default queued
+             * @constant
+             */
+            status: "queued";
+            /** Task Id */
+            task_id?: string | null;
+            /** Window From */
+            window_from?: string | null;
+            /** Window To */
+            window_to?: string | null;
+        };
+        /**
          * MetricComposition
          * @description How an ``event_composition`` or ``fact`` metric combines its series.
          *
@@ -5628,11 +5865,17 @@ export interface components {
         };
         /**
          * MetricDefinitionUpdate
-         * @description Partial update of presentation, lifecycle, dimension and monitoring fields.
+         * @description Partial update of presentation, lifecycle, dimension and monitoring fields,
+         *     plus an optional ``definition`` block that re-defines the metric's kind +
+         *     collection config.
          *
-         *     ``kind``/``config`` and the collection binding define a metric's identity and
-         *     are immutable here — recreate the metric to change them (mirrors the simple
-         *     EventType update surface).
+         *     The internal ``name`` is the stable query identifier and stays IMMUTABLE: it
+         *     has no update field and is ignored if supplied. The optional ``definition``
+         *     block mirrors the create discriminated union (minus ``name`` and the other
+         *     presentation fields, which keep their own update fields here); when present it
+         *     is re-validated EXACTLY like creation and the service overwrites the metric's
+         *     ``kind`` / ``config`` / collection binding from it. A ``kind`` change clears
+         *     the metric's previously collected values (see the service).
          */
         MetricDefinitionUpdate: {
             /** Anomaly Detection Enabled */
@@ -5645,6 +5888,8 @@ export interface components {
             breakdown_values_limit?: number | null;
             /** Color */
             color?: string | null;
+            /** Definition */
+            definition?: (components["schemas"]["FactMetricDefinition"] | components["schemas"]["SqlMetricDefinition"] | components["schemas"]["EventCompositionMetricDefinition"]) | null;
             /** Description */
             description?: string | null;
             /** Display Name */
@@ -5667,6 +5912,66 @@ export interface components {
          * @enum {string}
          */
         MetricKind: "sql" | "event_composition" | "fact";
+        /**
+         * MetricPreviewPoint
+         * @description One interval-floored (bucket, value) preview point.
+         */
+        MetricPreviewPoint: {
+            /**
+             * Bucket
+             * Format: date-time
+             */
+            bucket: string;
+            /** Value */
+            value: number;
+        };
+        /**
+         * MetricPreviewRequest
+         * @description Stateless dry-run of a ``sql``-kind metric SELECT (nothing is persisted).
+         *
+         *     SQL semantics (read-only shape, projected columns, identifier validity) are
+         *     deliberately NOT validated at this schema boundary: those are expected user
+         *     mistakes while drafting a query, and the preview endpoint reports them as a
+         *     200 response with ``error`` set (see ``metric_preview_service``) instead of
+         *     a 422. Only structural shape (types, lengths, interval enum) is enforced
+         *     here.
+         */
+        MetricPreviewRequest: {
+            /**
+             * Data Source Id
+             * Format: uuid
+             */
+            data_source_id: string;
+            interval: components["schemas"]["ScanInterval"];
+            /** Sql */
+            sql: string;
+            /** Time Column */
+            time_column: string;
+            /** Value Column */
+            value_column?: string | null;
+        };
+        /**
+         * MetricPreviewResponse
+         * @description Preview outcome; user-level failures set ``error`` with empty ``points``.
+         */
+        MetricPreviewResponse: {
+            /** Columns */
+            columns?: string[];
+            /** Error */
+            error?: string | null;
+            /**
+             * Point Count
+             * @default 0
+             */
+            point_count: number;
+            /** Points */
+            points?: components["schemas"]["MetricPreviewPoint"][];
+            /**
+             * Truncated
+             * @default false
+             */
+            truncated: boolean;
+        };
         /**
          * MetricScopeType
          * @enum {string}
@@ -6306,6 +6611,35 @@ export interface components {
             min_history_buckets?: number | null;
             /** Sigma Threshold */
             sigma_threshold?: number | null;
+        };
+        /**
+         * ProjectBranchSettingsResponse
+         * @description ``id``/timestamps are None while the project still rides the defaults —
+         *     the settings row is only materialized on the first PATCH.
+         */
+        ProjectBranchSettingsResponse: {
+            /** Block Self Approval */
+            block_self_approval: boolean;
+            /** Created At */
+            created_at?: string | null;
+            /** Id */
+            id?: string | null;
+            /** Min Approvals */
+            min_approvals: number;
+            /**
+             * Project Id
+             * Format: uuid
+             */
+            project_id: string;
+            /** Updated At */
+            updated_at?: string | null;
+        };
+        /** ProjectBranchSettingsUpdate */
+        ProjectBranchSettingsUpdate: {
+            /** Block Self Approval */
+            block_self_approval?: boolean | null;
+            /** Min Approvals */
+            min_approvals?: number | null;
         };
         /** ProjectCreate */
         ProjectCreate: {
@@ -7387,6 +7721,8 @@ export interface components {
             metric_sql: string;
             /** Time Column */
             time_column: string;
+            /** Value Column */
+            value_column?: string | null;
         };
         /** SqlMetricCreate */
         SqlMetricCreate: {
@@ -7446,6 +7782,25 @@ export interface components {
             status: components["schemas"]["MetricStatus"];
             /** Unit */
             unit?: string | null;
+        };
+        /**
+         * SqlMetricDefinition
+         * @description Kind + collection config for a ``sql`` metric: SELECT + its data source.
+         */
+        SqlMetricDefinition: {
+            config: components["schemas"]["SqlConfig"];
+            /**
+             * Data Source Id
+             * Format: uuid
+             */
+            data_source_id: string;
+            interval: components["schemas"]["ScanInterval"];
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            kind: "sql";
+            replay_chunk_interval?: components["schemas"]["ScanInterval"] | null;
         };
         /** StorageSettings */
         StorageSettings: {
@@ -9270,6 +9625,72 @@ export interface operations {
             };
         };
     };
+    get_project_branch_settings_api_v1_projects__slug__branch_settings_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                slug: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProjectBranchSettingsResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    update_project_branch_settings_api_v1_projects__slug__branch_settings_patch: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                slug: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ProjectBranchSettingsUpdate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProjectBranchSettingsResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     list_branches_api_v1_projects__slug__branches_get: {
         parameters: {
             query?: never;
@@ -9750,6 +10171,76 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["PlanBranchDetailResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    reset_anomalies_api_v1_projects__slug__danger_reset_anomalies_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                slug: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["DetectionResetPeriod"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AnomalyResetCounts"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    reset_drifts_api_v1_projects__slug__danger_reset_drifts_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                slug: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["DetectionResetPeriod"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DriftResetCounts"];
                 };
             };
             /** @description Validation Error */
@@ -11673,6 +12164,41 @@ export interface operations {
             };
         };
     };
+    preview_metric_sql_api_v1_projects__slug__metrics_preview_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                slug: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["MetricPreviewRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MetricPreviewResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     reorder_metric_definitions_api_v1_projects__slug__metrics_reorder_patch: {
         parameters: {
             query?: never;
@@ -11864,6 +12390,38 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["MetricBreakdownsResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    collect_metric_now_api_v1_projects__slug__metrics__metric_id__collect_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                slug: string;
+                metric_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MetricCollectNowResponse"];
                 };
             };
             /** @description Validation Error */

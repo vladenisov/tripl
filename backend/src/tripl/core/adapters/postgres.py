@@ -24,8 +24,15 @@ from tripl.models.domain_enums import MetricAggregation
 logger = logging.getLogger(__name__)
 
 # Hard cap on catalog rows pulled for SQL-editor autocomplete so a schema with
-# thousands of wide tables can't blow up the response.
-_SCHEMA_ROW_LIMIT = 5000
+# thousands of wide tables can't blow up the response. The cap is generous
+# because introspection now spans every non-system schema (one row per column
+# per table across all of them), so a multi-schema database needs plenty of
+# headroom before its visible tables get truncated.
+_SCHEMA_ROW_LIMIT = 50000
+
+# System schemas that hold Postgres internals, not user data. They are excluded
+# from catalog introspection so autocomplete only surfaces queryable user tables.
+_SYSTEM_SCHEMAS = ("pg_catalog", "information_schema")
 
 # Cap on how much user-supplied SQL (which may embed warehouse credentials or
 # PII column names) we ever emit to logs. Query logs go to DEBUG so the full
@@ -132,19 +139,34 @@ class PostgresAdapter(BaseAdapter):
         return columns
 
     def get_schema_tables(self) -> list[SchemaTable]:
+        # Introspect every non-system schema, not just the search_path: on real
+        # Postgres the user's tables often live in a schema outside the connection
+        # search_path, or they reference `schema.table` across schemas.
+        # `table_schema = current_schema()` is computed server-side so the
+        # "bare vs qualified" decision tracks the connection's default schema
+        # (the first existing entry of search_path, typically `public`).
+        excluded = ", ".join(f"'{name}'" for name in _SYSTEM_SCHEMAS)
         sql = (
-            "SELECT table_name, column_name, data_type "
+            "SELECT table_schema, table_name, column_name, data_type, "
+            "(table_schema = current_schema()) AS is_current_schema "
             "FROM information_schema.columns "
-            "WHERE table_schema = ANY(current_schemas(false)) "
-            f"ORDER BY table_name, ordinal_position LIMIT {_SCHEMA_ROW_LIMIT}"
+            f"WHERE table_schema NOT IN ({excluded}) "
+            f"ORDER BY table_schema, table_name, ordinal_position LIMIT {_SCHEMA_ROW_LIMIT}"
         )
         logger.debug("PG schema introspection query: %s", _truncate_sql(sql))
         with self._conn.cursor() as cur:
             cur.execute(sql)
             rows = cur.fetchall()
+        # Tables in the default schema keep their bare name (`events`); tables in
+        # any other schema are qualified as `schema.table` (`analytics.orders`).
+        # The frontend relies on this: a table name has at most one dot, and only
+        # when it lives outside the default schema.
         columns_by_table: dict[str, list[SchemaColumn]] = {}
-        for table_name, column_name, data_type in rows:
-            columns_by_table.setdefault(str(table_name), []).append(
+        for table_schema, table_name, column_name, data_type, is_current_schema in rows:
+            qualified_name = (
+                str(table_name) if is_current_schema else f"{table_schema}.{table_name}"
+            )
+            columns_by_table.setdefault(qualified_name, []).append(
                 SchemaColumn(name=str(column_name), data_type=str(data_type))
             )
         return [

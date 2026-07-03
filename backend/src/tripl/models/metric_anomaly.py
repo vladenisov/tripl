@@ -4,7 +4,6 @@ import uuid
 from datetime import datetime
 
 from sqlalchemy import (
-    BigInteger,
     DateTime,
     Float,
     ForeignKey,
@@ -80,7 +79,9 @@ class MetricAnomaly(UUIDMixin, Base):
         nullable=True,
     )
     bucket: Mapped[datetime] = mapped_column(DateTime(timezone=True))
-    actual_count: Mapped[int] = mapped_column(BigInteger)
+    # Float: catalog metrics carry fractional actuals (ratios/averages); volume
+    # scopes keep storing whole counts in the same column (tripl-68bc).
+    actual_count: Mapped[float] = mapped_column(Float)
     expected_count: Mapped[float] = mapped_column(Float)
     stddev: Mapped[float] = mapped_column(Float)
     z_score: Mapped[float] = mapped_column(Float)

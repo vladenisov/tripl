@@ -657,11 +657,11 @@
         "properties": {
           "absolute_delta": {
             "title": "Absolute Delta",
-            "type": "integer"
+            "type": "number"
           },
           "actual_count": {
             "title": "Actual Count",
-            "type": "integer"
+            "type": "number"
           },
           "bucket": {
             "format": "date-time",
@@ -746,7 +746,7 @@
           },
           "expected_count": {
             "title": "Expected Count",
-            "type": "integer"
+            "type": "number"
           },
           "id": {
             "format": "uuid",
@@ -2548,6 +2548,24 @@
         "title": "AnomalyDirection",
         "type": "string"
       },
+      "AnomalyResetCounts": {
+        "properties": {
+          "metric_anomalies": {
+            "title": "Metric Anomalies",
+            "type": "integer"
+          },
+          "metric_breakdown_anomalies": {
+            "title": "Metric Breakdown Anomalies",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "metric_anomalies",
+          "metric_breakdown_anomalies"
+        ],
+        "title": "AnomalyResetCounts",
+        "type": "object"
+      },
       "ApiKeyCreate": {
         "properties": {
           "expires_in_days": {
@@ -3656,7 +3674,8 @@
         "enum": [
           "project_total",
           "event_type",
-          "event"
+          "event",
+          "metric"
         ],
         "title": "ChartAnnotationScopeType",
         "type": "string"
@@ -4412,6 +4431,37 @@
         "title": "DeadEventListResponse",
         "type": "object"
       },
+      "DetectionResetPeriod": {
+        "description": "Optional half-open window (``after <= t < before``) for a danger-zone reset.\n\nBoth bounds are optional; omitting both clears the whole project.",
+        "properties": {
+          "after": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "After"
+          },
+          "before": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Before"
+          }
+        },
+        "title": "DetectionResetPeriod",
+        "type": "object"
+      },
       "DistributionDriftBand": {
         "enum": [
           "stable",
@@ -4570,6 +4620,24 @@
           "data"
         ],
         "title": "DistributionDriftsResponse",
+        "type": "object"
+      },
+      "DriftResetCounts": {
+        "properties": {
+          "distribution_drifts": {
+            "title": "Distribution Drifts",
+            "type": "integer"
+          },
+          "schema_drifts": {
+            "title": "Schema Drifts",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "schema_drifts",
+          "distribution_drifts"
+        ],
+        "title": "DriftResetCounts",
         "type": "object"
       },
       "EmailSettings": {
@@ -4843,7 +4911,6 @@
         "type": "object"
       },
       "EventCompositionMetricCreate": {
-        "description": "Derived from already-collected event_metrics; no data source / interval.\n\nNumerator/denominator are each given as exactly one ref: an ``event_id`` or\nan ``event_type_id``. ``single``/``per_distinct_user`` use the numerator\nonly; ``ratio`` requires both numerator and denominator.",
         "properties": {
           "anomaly_detection_enabled": {
             "default": true,
@@ -5012,14 +5079,107 @@
               }
             ],
             "title": "Unit"
+          },
+          "user_id_column": {
+            "anyOf": [
+              {
+                "maxLength": 255,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "User Id Column"
           }
         },
         "required": [
+          "composition",
           "name",
-          "display_name",
-          "composition"
+          "display_name"
         ],
         "title": "EventCompositionMetricCreate",
+        "type": "object"
+      },
+      "EventCompositionMetricDefinition": {
+        "description": "Kind + config for an ``event_composition`` metric; no data source / interval.\n\nNumerator/denominator are each given as exactly one ref: an ``event_id`` or\nan ``event_type_id``. ``single``/``per_distinct_user`` use the numerator\nonly; ``ratio`` requires both numerator and denominator.",
+        "properties": {
+          "composition": {
+            "$ref": "#/components/schemas/MetricComposition"
+          },
+          "denominator_event_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Denominator Event Id"
+          },
+          "denominator_event_type_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Denominator Event Type Id"
+          },
+          "kind": {
+            "const": "event_composition",
+            "default": "event_composition",
+            "title": "Kind",
+            "type": "string"
+          },
+          "numerator_event_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Numerator Event Id"
+          },
+          "numerator_event_type_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Numerator Event Type Id"
+          },
+          "user_id_column": {
+            "anyOf": [
+              {
+                "maxLength": 255,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "User Id Column"
+          }
+        },
+        "required": [
+          "composition"
+        ],
+        "title": "EventCompositionMetricDefinition",
         "type": "object"
       },
       "EventCreate": {
@@ -6659,7 +6819,6 @@
         "type": "object"
       },
       "FactMetricCreate": {
-        "description": "An aggregation over a separately-defined ``FactTable``.\n\nSINGLE (``composition=single``, the default): one operand given by the\ntop-level ``fact_table_id`` + ``aggregation`` + the ``measure_column`` /\n``distinct_column`` / ``row_filter`` config fields.\n\nRATIO (``composition=ratio``): ``numerator`` / ``denominator`` operands (each\na :class:`FactOperand`); the denominator MAY reference a different fact table.\nThe numerator operand is mirrored onto the model's ``fact_table_id`` /\n``aggregation`` columns for catalog display and FK integrity.\n\nThe data source and timestamp column are taken from the referenced fact\ntable(s) at collection time; only the collection ``interval`` lives here.\nFact-table existence, project ownership, column membership, and row-filter\nname resolution are checked in the service (they need the DB).",
         "properties": {
           "aggregation": {
             "anyOf": [
@@ -6764,6 +6923,18 @@
             ],
             "title": "Fact Table Id"
           },
+          "filter_sql": {
+            "anyOf": [
+              {
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Filter Sql"
+          },
           "interval": {
             "$ref": "#/components/schemas/ScanInterval"
           },
@@ -6860,6 +7031,13 @@
             ],
             "title": "Row Filter"
           },
+          "row_filters": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Row Filters",
+            "type": "array"
+          },
           "status": {
             "$ref": "#/components/schemas/MetricStatus",
             "default": "draft"
@@ -6878,16 +7056,149 @@
           }
         },
         "required": [
+          "interval",
           "name",
-          "display_name",
-          "interval"
+          "display_name"
         ],
         "title": "FactMetricCreate",
         "type": "object"
       },
+      "FactMetricDefinition": {
+        "description": "Kind + collection config for a ``fact`` metric.\n\nSINGLE (``composition=single``, the default): one operand given by the\ntop-level ``fact_table_id`` + ``aggregation`` + the ``measure_column`` /\n``distinct_column`` / ``row_filters`` / ``filter_sql`` config fields (the\nlegacy single ``row_filter`` name is still accepted and folded in).\n\nRATIO (``composition=ratio``): ``numerator`` / ``denominator`` operands (each\na :class:`FactOperand`); the denominator MAY reference a different fact table.\nThe numerator operand is mirrored onto the model's ``fact_table_id`` /\n``aggregation`` columns for catalog display and FK integrity.\n\nThe data source and timestamp column are taken from the referenced fact\ntable(s) at collection time; only the collection ``interval`` lives here.\nFact-table existence, project ownership, column membership, and row-filter\nname resolution are checked in the service (they need the DB).",
+        "properties": {
+          "aggregation": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/MetricAggregation"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "composition": {
+            "$ref": "#/components/schemas/MetricComposition",
+            "default": "single"
+          },
+          "denominator": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/FactOperand"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "distinct_column": {
+            "anyOf": [
+              {
+                "maxLength": 255,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Distinct Column"
+          },
+          "fact_table_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Fact Table Id"
+          },
+          "filter_sql": {
+            "anyOf": [
+              {
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Filter Sql"
+          },
+          "interval": {
+            "$ref": "#/components/schemas/ScanInterval"
+          },
+          "kind": {
+            "const": "fact",
+            "default": "fact",
+            "title": "Kind",
+            "type": "string"
+          },
+          "measure_column": {
+            "anyOf": [
+              {
+                "maxLength": 255,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Measure Column"
+          },
+          "numerator": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/FactOperand"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "replay_chunk_interval": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ScanInterval"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "row_filter": {
+            "anyOf": [
+              {
+                "maxLength": 255,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Row Filter"
+          },
+          "row_filters": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Row Filters",
+            "type": "array"
+          }
+        },
+        "required": [
+          "interval"
+        ],
+        "title": "FactMetricDefinition",
+        "type": "object"
+      },
       "FactOperand": {
         "additionalProperties": false,
-        "description": "One fact-table aggregation operand (a single metric, or one ratio side).\n\nReferences a ``FactTable`` by id and aggregates one of its introspected\ncolumns. ``measure_column`` / ``distinct_column`` reach warehouse SQL\nunparameterised, so they are identifier-validated here; their membership in\nthe referenced fact table's columns is checked in the service (it needs the\nDB). ``row_filter`` is the NAME of one of that fact table's stored row\nfilters \u2014 never a raw SQL fragment \u2014 resolved to SQL at collection time.",
+        "description": "One fact-table aggregation operand (a single metric, or one ratio side).\n\nReferences a ``FactTable`` by id and aggregates one of its introspected\ncolumns. ``measure_column`` / ``distinct_column`` reach warehouse SQL\nunparameterised, so they are identifier-validated here; their membership in\nthe referenced fact table's columns is checked in the service (it needs the\nDB).\n\nRow filtering combines two inputs, ANDed together at collection time:\n``row_filters`` is a list of NAMES of that fact table's stored row filters\n(each resolved to its SQL fragment; membership checked in the service), and\n``filter_sql`` is a free-text boolean WHERE fragment (SQL-safety-validated\nhere). The legacy single ``row_filter`` name is still accepted on input and\nfolded into the effective named-filter set; new writes use ``row_filters`` +\n``filter_sql``.",
         "properties": {
           "aggregation": {
             "$ref": "#/components/schemas/MetricAggregation"
@@ -6909,6 +7220,18 @@
             "format": "uuid",
             "title": "Fact Table Id",
             "type": "string"
+          },
+          "filter_sql": {
+            "anyOf": [
+              {
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Filter Sql"
           },
           "measure_column": {
             "anyOf": [
@@ -6935,6 +7258,13 @@
               }
             ],
             "title": "Row Filter"
+          },
+          "row_filters": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Row Filters",
+            "type": "array"
           }
         },
         "required": [
@@ -8350,6 +8680,62 @@
         "title": "MetricBreakdownsResponse",
         "type": "object"
       },
+      "MetricCollectNowResponse": {
+        "description": "202 payload for a manual ``POST /metrics/{id}/collect`` trigger.\n\n``window_from`` / ``window_to`` describe the backfilled [from, to) window for\n``fact`` / ``sql`` metrics; they are ``None`` for ``event_composition``\nmetrics, which have no interval and recompute from the full event-metric\nseries. ``task_id`` is the dispatched Celery task id when the broker returns\none, else ``None``.",
+        "properties": {
+          "metric_id": {
+            "format": "uuid",
+            "title": "Metric Id",
+            "type": "string"
+          },
+          "status": {
+            "const": "queued",
+            "default": "queued",
+            "title": "Status",
+            "type": "string"
+          },
+          "task_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Task Id"
+          },
+          "window_from": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Window From"
+          },
+          "window_to": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Window To"
+          }
+        },
+        "required": [
+          "metric_id"
+        ],
+        "title": "MetricCollectNowResponse",
+        "type": "object"
+      },
       "MetricComposition": {
         "description": "How an ``event_composition`` or ``fact`` metric combines its series.\n\n``event_composition`` uses ``single`` / ``ratio`` / ``per_distinct_user``;\n``fact`` uses ``single`` (one operand) and ``ratio`` (numerator / denominator\noperands, each over a \u2014 possibly different \u2014 FactTable).",
         "enum": [
@@ -9003,7 +9389,7 @@
         "type": "object"
       },
       "MetricDefinitionUpdate": {
-        "description": "Partial update of presentation, lifecycle, dimension and monitoring fields.\n\n``kind``/``config`` and the collection binding define a metric's identity and\nare immutable here \u2014 recreate the metric to change them (mirrors the simple\nEventType update surface).",
+        "description": "Partial update of presentation, lifecycle, dimension and monitoring fields,\nplus an optional ``definition`` block that re-defines the metric's kind +\ncollection config.\n\nThe internal ``name`` is the stable query identifier and stays IMMUTABLE: it\nhas no update field and is ignored if supplied. The optional ``definition``\nblock mirrors the create discriminated union (minus ``name`` and the other\npresentation fields, which keep their own update fields here); when present it\nis re-validated EXACTLY like creation and the service overwrites the metric's\n``kind`` / ``config`` / collection binding from it. A ``kind`` change clears\nthe metric's previously collected values (see the service).",
         "properties": {
           "anomaly_detection_enabled": {
             "anyOf": [
@@ -9065,6 +9451,35 @@
               }
             ],
             "title": "Color"
+          },
+          "definition": {
+            "anyOf": [
+              {
+                "discriminator": {
+                  "mapping": {
+                    "event_composition": "#/components/schemas/EventCompositionMetricDefinition",
+                    "fact": "#/components/schemas/FactMetricDefinition",
+                    "sql": "#/components/schemas/SqlMetricDefinition"
+                  },
+                  "propertyName": "kind"
+                },
+                "oneOf": [
+                  {
+                    "$ref": "#/components/schemas/FactMetricDefinition"
+                  },
+                  {
+                    "$ref": "#/components/schemas/SqlMetricDefinition"
+                  },
+                  {
+                    "$ref": "#/components/schemas/EventCompositionMetricDefinition"
+                  }
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Definition"
           },
           "description": {
             "anyOf": [
@@ -9171,6 +9586,113 @@
         ],
         "title": "MetricKind",
         "type": "string"
+      },
+      "MetricPreviewPoint": {
+        "description": "One interval-floored (bucket, value) preview point.",
+        "properties": {
+          "bucket": {
+            "format": "date-time",
+            "title": "Bucket",
+            "type": "string"
+          },
+          "value": {
+            "title": "Value",
+            "type": "number"
+          }
+        },
+        "required": [
+          "bucket",
+          "value"
+        ],
+        "title": "MetricPreviewPoint",
+        "type": "object"
+      },
+      "MetricPreviewRequest": {
+        "description": "Stateless dry-run of a ``sql``-kind metric SELECT (nothing is persisted).\n\nSQL semantics (read-only shape, projected columns, identifier validity) are\ndeliberately NOT validated at this schema boundary: those are expected user\nmistakes while drafting a query, and the preview endpoint reports them as a\n200 response with ``error`` set (see ``metric_preview_service``) instead of\na 422. Only structural shape (types, lengths, interval enum) is enforced\nhere.",
+        "properties": {
+          "data_source_id": {
+            "format": "uuid",
+            "title": "Data Source Id",
+            "type": "string"
+          },
+          "interval": {
+            "$ref": "#/components/schemas/ScanInterval"
+          },
+          "sql": {
+            "minLength": 1,
+            "title": "Sql",
+            "type": "string"
+          },
+          "time_column": {
+            "maxLength": 255,
+            "minLength": 1,
+            "title": "Time Column",
+            "type": "string"
+          },
+          "value_column": {
+            "anyOf": [
+              {
+                "maxLength": 255,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Value Column"
+          }
+        },
+        "required": [
+          "data_source_id",
+          "sql",
+          "time_column",
+          "interval"
+        ],
+        "title": "MetricPreviewRequest",
+        "type": "object"
+      },
+      "MetricPreviewResponse": {
+        "description": "Preview outcome; user-level failures set ``error`` with empty ``points``.",
+        "properties": {
+          "columns": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Columns",
+            "type": "array"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          },
+          "point_count": {
+            "default": 0,
+            "title": "Point Count",
+            "type": "integer"
+          },
+          "points": {
+            "items": {
+              "$ref": "#/components/schemas/MetricPreviewPoint"
+            },
+            "title": "Points",
+            "type": "array"
+          },
+          "truncated": {
+            "default": false,
+            "title": "Truncated",
+            "type": "boolean"
+          }
+        },
+        "title": "MetricPreviewResponse",
+        "type": "object"
       },
       "MetricScopeType": {
         "enum": [
@@ -9324,7 +9846,7 @@
         "properties": {
           "actual_count": {
             "title": "Actual Count",
-            "type": "integer"
+            "type": "number"
           },
           "bucket": {
             "format": "date-time",
@@ -10820,6 +11342,97 @@
         "title": "ProjectAnomalySettingsUpdate",
         "type": "object"
       },
+      "ProjectBranchSettingsResponse": {
+        "description": "``id``/timestamps are None while the project still rides the defaults \u2014\nthe settings row is only materialized on the first PATCH.",
+        "properties": {
+          "block_self_approval": {
+            "title": "Block Self Approval",
+            "type": "boolean"
+          },
+          "created_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Created At"
+          },
+          "id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Id"
+          },
+          "min_approvals": {
+            "title": "Min Approvals",
+            "type": "integer"
+          },
+          "project_id": {
+            "format": "uuid",
+            "title": "Project Id",
+            "type": "string"
+          },
+          "updated_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Updated At"
+          }
+        },
+        "required": [
+          "project_id",
+          "min_approvals",
+          "block_self_approval"
+        ],
+        "title": "ProjectBranchSettingsResponse",
+        "type": "object"
+      },
+      "ProjectBranchSettingsUpdate": {
+        "properties": {
+          "block_self_approval": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Block Self Approval"
+          },
+          "min_approvals": {
+            "anyOf": [
+              {
+                "maximum": 100.0,
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Min Approvals"
+          }
+        },
+        "title": "ProjectBranchSettingsUpdate",
+        "type": "object"
+      },
       "ProjectCreate": {
         "properties": {
           "description": {
@@ -10938,7 +11551,7 @@
         "properties": {
           "actual_count": {
             "title": "Actual Count",
-            "type": "integer"
+            "type": "number"
           },
           "bucket": {
             "format": "date-time",
@@ -13679,7 +14292,7 @@
           },
           "actual_count": {
             "title": "Actual Count",
-            "type": "integer"
+            "type": "number"
           },
           "anomaly_id": {
             "format": "uuid",
@@ -13812,6 +14425,19 @@
             "minLength": 1,
             "title": "Time Column",
             "type": "string"
+          },
+          "value_column": {
+            "anyOf": [
+              {
+                "maxLength": 255,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Value Column"
           }
         },
         "required": [
@@ -13963,13 +14589,52 @@
           }
         },
         "required": [
+          "config",
+          "data_source_id",
+          "interval",
           "name",
-          "display_name",
+          "display_name"
+        ],
+        "title": "SqlMetricCreate",
+        "type": "object"
+      },
+      "SqlMetricDefinition": {
+        "description": "Kind + collection config for a ``sql`` metric: SELECT + its data source.",
+        "properties": {
+          "config": {
+            "$ref": "#/components/schemas/SqlConfig"
+          },
+          "data_source_id": {
+            "format": "uuid",
+            "title": "Data Source Id",
+            "type": "string"
+          },
+          "interval": {
+            "$ref": "#/components/schemas/ScanInterval"
+          },
+          "kind": {
+            "const": "sql",
+            "default": "sql",
+            "title": "Kind",
+            "type": "string"
+          },
+          "replay_chunk_interval": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ScanInterval"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
           "config",
           "data_source_id",
           "interval"
         ],
-        "title": "SqlMetricCreate",
+        "title": "SqlMetricDefinition",
         "type": "object"
       },
       "StorageSettings": {
@@ -14224,7 +14889,7 @@
         "properties": {
           "actual_count": {
             "title": "Actual Count",
-            "type": "integer"
+            "type": "number"
           },
           "breakdown_column": {
             "title": "Breakdown Column",
@@ -17215,6 +17880,99 @@
         ]
       }
     },
+    "/api/v1/projects/{slug}/branch-settings": {
+      "get": {
+        "operationId": "get_project_branch_settings_api_v1_projects__slug__branch_settings_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "slug",
+            "required": true,
+            "schema": {
+              "title": "Slug",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProjectBranchSettingsResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Project Branch Settings",
+        "tags": [
+          "branch-settings"
+        ]
+      },
+      "patch": {
+        "description": "Owner-only: min_approvals/block_self_approval govern what editors may\nmerge, so editors must not be able to loosen the policy on themselves.",
+        "operationId": "update_project_branch_settings_api_v1_projects__slug__branch_settings_patch",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "slug",
+            "required": true,
+            "schema": {
+              "title": "Slug",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProjectBranchSettingsUpdate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProjectBranchSettingsResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Update Project Branch Settings",
+        "tags": [
+          "branch-settings"
+        ]
+      }
+    },
     "/api/v1/projects/{slug}/branches": {
       "get": {
         "operationId": "list_branches_api_v1_projects__slug__branches_get",
@@ -18022,6 +18780,112 @@
         "summary": "Transition Branch",
         "tags": [
           "plan-branches"
+        ]
+      }
+    },
+    "/api/v1/projects/{slug}/danger/reset-anomalies": {
+      "post": {
+        "description": "Owner-only: clear every anomaly (+ breakdown) in the project's period.\n\nDestructive and irreversible. Derived monitoring signals disappear with the\nanomalies they are computed from.",
+        "operationId": "reset_anomalies_api_v1_projects__slug__danger_reset_anomalies_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "slug",
+            "required": true,
+            "schema": {
+              "title": "Slug",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DetectionResetPeriod"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AnomalyResetCounts"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Reset Anomalies",
+        "tags": [
+          "projects"
+        ]
+      }
+    },
+    "/api/v1/projects/{slug}/danger/reset-drifts": {
+      "post": {
+        "description": "Owner-only: clear every schema + distribution drift in the project's period.\n\nDestructive and irreversible.",
+        "operationId": "reset_drifts_api_v1_projects__slug__danger_reset_drifts_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "slug",
+            "required": true,
+            "schema": {
+              "title": "Slug",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DetectionResetPeriod"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DriftResetCounts"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Reset Drifts",
+        "tags": [
+          "projects"
         ]
       }
     },
@@ -21607,6 +22471,59 @@
         ]
       }
     },
+    "/api/v1/projects/{slug}/metrics/preview": {
+      "post": {
+        "description": "Stateless dry-run of a sql-kind metric SELECT (editor-gated).\n\nValidates the SQL with the same safety gate the worker uses and executes it\nagainst the data source over the last 50 buckets of the requested interval\n(hard-capped at 200 rows); nothing is persisted. Expected user mistakes \u2014\nbad SQL, missing time/value columns, warehouse errors \u2014 return 200 with\n``error`` set so the editor can render them inline; unknown data source is\na 404.",
+        "operationId": "preview_metric_sql_api_v1_projects__slug__metrics_preview_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "slug",
+            "required": true,
+            "schema": {
+              "title": "Slug",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MetricPreviewRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MetricPreviewResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Preview Metric Sql",
+        "tags": [
+          "metrics-catalog"
+        ]
+      }
+    },
     "/api/v1/projects/{slug}/metrics/reorder": {
       "patch": {
         "operationId": "reorder_metric_definitions_api_v1_projects__slug__metrics_reorder_patch",
@@ -22008,6 +22925,59 @@
           }
         },
         "summary": "Get Metric Breakdowns",
+        "tags": [
+          "metrics-catalog"
+        ]
+      }
+    },
+    "/api/v1/projects/{slug}/metrics/{metric_id}/collect": {
+      "post": {
+        "description": "Trigger an immediate backfill collection for one metric (editor-gated).\n\nDispatches the same Celery collection the scheduler uses, backfilling a\nbounded recent window so the chart is not empty. Returns 202 once queued;\nthe warehouse query runs in the worker. Unknown metric -> 404.",
+        "operationId": "collect_metric_now_api_v1_projects__slug__metrics__metric_id__collect_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "slug",
+            "required": true,
+            "schema": {
+              "title": "Slug",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "metric_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Metric Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MetricCollectNowResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Collect Metric Now",
         "tags": [
           "metrics-catalog"
         ]

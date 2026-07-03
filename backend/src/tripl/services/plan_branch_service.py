@@ -48,7 +48,12 @@ from tripl.schemas.plan_branch import (
     PlanBranchList,
     PlanBranchResponse,
 )
-from tripl.services.plan_revision_service import build_plan_snapshot, compute_plan_diff_entries
+from tripl.services.plan_revision_service import (
+    build_plan_snapshot,
+    compute_plan_diff_entries,
+    plan_snapshot_hash,
+)
+from tripl.services.project_branch_settings_service import read_branch_merge_policy
 
 MAIN_BRANCH_NAME = "main"
 
@@ -62,7 +67,13 @@ _TRANSITIONS: dict[str, tuple[set[str], str]] = {
         {BranchStatus.ready_for_review.value, BranchStatus.approved.value},
         BranchStatus.changes_requested.value,
     ),
-    "approve": ({BranchStatus.ready_for_review.value}, BranchStatus.approved.value),
+    # approve is also legal from "approved" so further reviewers can stack
+    # approvals toward the project's min_approvals quota — the first approve
+    # flips the status, later ones only add PlanBranchApproval rows.
+    "approve": (
+        {BranchStatus.ready_for_review.value, BranchStatus.approved.value},
+        BranchStatus.approved.value,
+    ),
     "reopen": (
         {
             BranchStatus.approved.value,
@@ -609,6 +620,14 @@ async def transition_branch(
             detail=f"Cannot {action} from status '{branch.status}'",
         )
 
+    if action == "approve":
+        policy = await read_branch_merge_policy(session, project.id)
+        if policy.block_self_approval and branch.created_by == user_id:
+            raise HTTPException(
+                status_code=403,
+                detail="Branch authors cannot approve their own branch",
+            )
+
     branch.status = target
 
     if action in _APPROVAL_CLEARING_ACTIONS:
@@ -626,7 +645,12 @@ async def transition_branch(
         )
 
     if action == "approve":
-        # Upsert: re-approving by the same user just refreshes the timestamp.
+        # Pin the approval to the content being approved: the merge gates only
+        # count approvals whose hash still matches the branch (tripl-d8v6).
+        current_hash = plan_snapshot_hash(
+            await build_plan_snapshot(session, project.id, branch_id=branch.id)
+        )
+        # Upsert: re-approving by the same user restamps the content hash.
         existing = await session.scalar(
             select(PlanBranchApproval).where(
                 PlanBranchApproval.branch_id == branch.id,
@@ -634,7 +658,11 @@ async def transition_branch(
             )
         )
         if existing is None:
-            session.add(PlanBranchApproval(branch_id=branch.id, user_id=user_id))
+            session.add(
+                PlanBranchApproval(branch_id=branch.id, user_id=user_id, plan_hash=current_hash)
+            )
+        else:
+            existing.plan_hash = current_hash
 
     if action == "submit":
         # Surface the owners of touched event types as expected reviewers up

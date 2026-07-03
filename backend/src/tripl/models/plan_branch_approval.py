@@ -3,7 +3,7 @@ from __future__ import annotations
 import uuid
 from datetime import datetime
 
-from sqlalchemy import DateTime, ForeignKey, UniqueConstraint, func
+from sqlalchemy import DateTime, ForeignKey, String, UniqueConstraint, func
 from sqlalchemy.orm import Mapped, mapped_column
 
 from tripl.models.base import Base, UUIDMixin
@@ -11,7 +11,13 @@ from tripl.models.base import Base, UUIDMixin
 
 class PlanBranchApproval(UUIDMixin, Base):
     """Records that a user approved a branch. Cleared when the branch goes back
-    to draft/changes_requested so stale approvals don't gate a later merge."""
+    to draft/changes_requested so stale approvals don't gate a later merge.
+
+    ``plan_hash`` pins the approval to the branch content it was given for
+    (sha256 of the plan snapshot). The merge gates only count approvals whose
+    hash matches the branch's current content, so a post-approval edit voids
+    the review. NULL (legacy rows) reads as stale.
+    """
 
     __tablename__ = "plan_branch_approvals"
     __table_args__ = (UniqueConstraint("branch_id", "user_id", name="uq_plan_branch_approval"),)
@@ -25,3 +31,4 @@ class PlanBranchApproval(UUIDMixin, Base):
     approved_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
+    plan_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
