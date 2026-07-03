@@ -10,7 +10,8 @@ vi.mock('recharts', async () => {
   }
 })
 
-import { MetricsChart } from './chart'
+import { metricAxisFormatter } from '@/lib/metricFormat'
+import { CustomTooltip, MetricsChart } from './chart'
 
 describe('MetricsChart', () => {
   it('renders anomaly dots for anomalous points', () => {
@@ -118,5 +119,50 @@ describe('MetricsChart', () => {
     const marker = screen.getByTestId('forecast-point')
     expect(marker.textContent).toContain('2026-01-01T11:00:00Z')
     expect(marker.textContent).toContain('12')
+  })
+})
+
+// The tooltip never paints under jsdom (recharts needs real dimensions), so
+// the valueFormatter threading is covered on the exported tooltip directly.
+describe('CustomTooltip', () => {
+  const point = {
+    bucket: '2026-01-01T10:00:00Z',
+    count: 0.08,
+    expected_count: 0.05,
+    stddev: 0.01,
+    band: [0.03, 0.07] as [number, number],
+  }
+
+  it('keeps the default raw value + series label without a formatter', () => {
+    render(
+      <CustomTooltip
+        active
+        payload={[{ value: 0.08, payload: point }]}
+        label="2026-01-01T10:00:00Z"
+        granularity="hour"
+        seriesLabel="%"
+      />,
+    )
+
+    expect(screen.getByText('0.08 %')).toBeInTheDocument()
+    expect(screen.getByText('Expected: 0')).toBeInTheDocument()
+  })
+
+  it('routes value, expected, band, and deviation through valueFormatter', () => {
+    render(
+      <CustomTooltip
+        active
+        payload={[{ value: 0.08, payload: point }]}
+        label="2026-01-01T10:00:00Z"
+        granularity="hour"
+        seriesLabel="%"
+        valueFormatter={metricAxisFormatter('%')}
+      />,
+    )
+
+    expect(screen.getByText('8%')).toBeInTheDocument()
+    expect(screen.getByText('Expected: 5%')).toBeInTheDocument()
+    expect(screen.getByText('±2σ band: 3%–7%')).toBeInTheDocument()
+    expect(screen.getByText('Deviation: +3%')).toBeInTheDocument()
   })
 })

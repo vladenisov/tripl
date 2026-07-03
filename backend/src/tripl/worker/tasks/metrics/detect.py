@@ -523,13 +523,12 @@ def _load_metric_value_points(
     history_from: datetime,
     time_to: datetime,
 ) -> list[SeriesPoint]:
-    """Load a catalog metric's stored value series as integer ``SeriesPoint``s.
+    """Load a catalog metric's stored value series as ``SeriesPoint``s.
 
     Values are summed per bucket (an ``event_composition`` metric may have been
-    collected across more than one source grid) and rounded to the int the
-    detector consumes. For fractional metrics this collapses sub-unit ratios
-    toward 0; the fractional gate (no zero-fill, no ``min_expected_count``) is
-    what keeps that from producing false anomalies.
+    collected across more than one source grid) and kept as floats — the
+    detector is scale-aware, so sub-unit ratio/average movements survive
+    instead of rounding toward 0 (tripl-68bc).
     """
     rows = session.execute(
         select(MetricValue.bucket, sa_func.sum(MetricValue.value))
@@ -541,7 +540,7 @@ def _load_metric_value_points(
         .group_by(MetricValue.bucket)
         .order_by(MetricValue.bucket)
     ).all()
-    return [SeriesPoint(bucket=bucket, count=round(float(value))) for bucket, value in rows]
+    return [SeriesPoint(bucket=bucket, count=float(value)) for bucket, value in rows]
 
 
 def _resolve_metric_interval(session: Session, metric: MetricDefinition) -> str | None:

@@ -231,6 +231,9 @@ def send_alert_delivery(self: object, delivery_id: str) -> dict[str, object]:
         # fallback) so the warehouse/DB queries behind sparkline + top-movers
         # don't run a second time when something is already failing.
         item_context_cache: dict[uuid.UUID, tuple[str, str]] = {}
+        # Same idea for metric units: resolved once (one batched query) and
+        # reused by the session-less fallback render below.
+        metric_units_cache: dict[str, str | None] = {}
         text, message_format = _render_delivery_message(
             delivery,
             destination=destination,
@@ -239,6 +242,7 @@ def send_alert_delivery(self: object, delivery_id: str) -> dict[str, object]:
             project=project,
             session=session,
             item_context_cache=item_context_cache,
+            metric_units_cache=metric_units_cache,
         )
         # AI explanation is generated once (LLM round-trip) and appended after
         # template rendering so custom templates stay untouched; the Telegram
@@ -309,6 +313,7 @@ def send_alert_delivery(self: object, delivery_id: str) -> dict[str, object]:
                         message_format_override=ALERT_MESSAGE_FORMAT_PLAIN,
                         session=None,
                         item_context_cache=item_context_cache,
+                        metric_units_cache=metric_units_cache,
                     )
                     if ai_explanation:
                         fallback_text = _append_ai_explanation(

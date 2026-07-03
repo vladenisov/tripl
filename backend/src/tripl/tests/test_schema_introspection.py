@@ -5,16 +5,19 @@ from tripl.core.adapters.bigquery import BigQueryAdapter
 from tripl.core.adapters.clickhouse import ClickHouseAdapter
 from tripl.core.adapters.postgres import PostgresAdapter
 
-# Rows shaped as the catalog queries return them: (table, column, type),
-# already ordered by (table, position) so grouping preserves column order.
-_CATALOG_ROWS: list[tuple[object, ...]] = [
-    ("events", "id", "UInt64"),
-    ("events", "name", "String"),
-    ("users", "email", "String"),
-]
-
-
 # --- ClickHouse -------------------------------------------------------------
+
+# Rows shaped as the CH catalog query returns them:
+# (database, table, column, type, is_current_database), already ordered by
+# (database, table, position) so grouping preserves column order. Tables in the
+# current/default database (is_current_database = 1) stay bare; tables in any
+# other database are qualified `database.table`.
+_CH_CATALOG_ROWS: list[tuple[object, ...]] = [
+    ("analytics", "orders", "amount", "Float64", 0),
+    ("analytics", "orders", "currency", "String", 0),
+    ("default", "events", "id", "UInt64", 1),
+    ("default", "events", "name", "String", 1),
+]
 
 
 class _CHResult:
@@ -42,21 +45,68 @@ def _clickhouse_adapter(rows: list[tuple[object, ...]]) -> tuple[ClickHouseAdapt
     return adapter, client
 
 
-def test_clickhouse_schema_uses_system_columns() -> None:
-    adapter, client = _clickhouse_adapter(_CATALOG_ROWS)
+def test_clickhouse_schema_spans_all_databases_with_qualified_names() -> None:
+    adapter, client = _clickhouse_adapter(_CH_CATALOG_ROWS)
 
     tables = adapter.get_schema_tables()
 
     sql = client.sql[0]
     assert "FROM system.columns" in sql
-    assert "WHERE database = currentDatabase()" in sql
-    assert "LIMIT 5000" in sql
-    # Hardening: per-query server-side execution cap is scoped to this query.
-    assert client.settings[0] == {"max_execution_time": 30}
-    _assert_grouped(tables)
+    # The bare-vs-qualified decision is computed server-side against the
+    # connection's current database, so it is robust to an empty/`default` one.
+    assert "database = currentDatabase()" in sql
+    # System databases are excluded so only queryable user tables surface.
+    assert "NOT IN ('system', 'information_schema', 'INFORMATION_SCHEMA')" in sql
+    assert "LIMIT 50000" in sql
+    # No per-query settings: tripl uses read-only ClickHouse users, which reject
+    # setting overrides; the row LIMIT + connection timeout bound the query.
+    assert client.settings[0] is None
+    # Other-database tables are qualified; current-database tables stay bare.
+    assert tables == [
+        SchemaTable(
+            name="analytics.orders",
+            columns=[
+                SchemaColumn(name="amount", data_type="Float64"),
+                SchemaColumn(name="currency", data_type="String"),
+            ],
+        ),
+        SchemaTable(
+            name="events",
+            columns=[
+                SchemaColumn(name="id", data_type="UInt64"),
+                SchemaColumn(name="name", data_type="String"),
+            ],
+        ),
+    ]
+
+
+def test_clickhouse_schema_keeps_current_database_tables_bare() -> None:
+    # Every table lives in the current database, so none is qualified.
+    rows: list[tuple[object, ...]] = [
+        ("default", "events", "id", "UInt64", 1),
+        ("default", "events", "name", "String", 1),
+        ("default", "users", "email", "String", 1),
+    ]
+    adapter, _client = _clickhouse_adapter(rows)
+
+    tables = adapter.get_schema_tables()
+
+    assert [table.name for table in tables] == ["events", "users"]
+    assert all("." not in table.name for table in tables)
 
 
 # --- Postgres ---------------------------------------------------------------
+
+# Rows shaped as the PG catalog query returns them:
+# (table_schema, table_name, column_name, data_type, is_current_schema),
+# ordered by (table_schema, table_name, ordinal_position). Tables in the default
+# schema (is_current_schema = True) stay bare; others are qualified
+# `schema.table`.
+_PG_CATALOG_ROWS: list[tuple[object, ...]] = [
+    ("analytics", "orders", "amount", "numeric", False),
+    ("public", "events", "id", "bigint", True),
+    ("public", "events", "name", "text", True),
+]
 
 
 class _PGCursor:
@@ -93,19 +143,56 @@ def _postgres_adapter(rows: list[tuple[object, ...]]) -> tuple[PostgresAdapter, 
     return adapter, conn
 
 
-def test_postgres_schema_uses_information_schema() -> None:
-    adapter, conn = _postgres_adapter(_CATALOG_ROWS)
+def test_postgres_schema_spans_all_schemas_with_qualified_names() -> None:
+    adapter, conn = _postgres_adapter(_PG_CATALOG_ROWS)
 
     tables = adapter.get_schema_tables()
 
     sql = conn.sql[0]
     assert "FROM information_schema.columns" in sql
-    assert "current_schemas(false)" in sql
-    assert "LIMIT 5000" in sql
-    _assert_grouped(tables)
+    # The bare-vs-qualified decision tracks the connection's default schema.
+    assert "current_schema()" in sql
+    # System schemas are excluded so only queryable user tables surface.
+    assert "NOT IN ('pg_catalog', 'information_schema')" in sql
+    assert "LIMIT 50000" in sql
+    # Non-default-schema tables are qualified; default-schema tables stay bare.
+    assert tables == [
+        SchemaTable(
+            name="analytics.orders",
+            columns=[SchemaColumn(name="amount", data_type="numeric")],
+        ),
+        SchemaTable(
+            name="events",
+            columns=[
+                SchemaColumn(name="id", data_type="bigint"),
+                SchemaColumn(name="name", data_type="text"),
+            ],
+        ),
+    ]
+
+
+def test_postgres_schema_keeps_default_schema_tables_bare() -> None:
+    rows: list[tuple[object, ...]] = [
+        ("public", "events", "id", "bigint", True),
+        ("public", "users", "email", "text", True),
+    ]
+    adapter, _conn = _postgres_adapter(rows)
+
+    tables = adapter.get_schema_tables()
+
+    assert [table.name for table in tables] == ["events", "users"]
+    assert all("." not in table.name for table in tables)
 
 
 # --- BigQuery ---------------------------------------------------------------
+
+# BigQuery introspection stays scoped to the connection's default dataset (see
+# BigQueryAdapter.get_schema_tables for why), so every table is returned bare.
+_BQ_CATALOG_ROWS: list[tuple[object, ...]] = [
+    ("events", "id", "INT64"),
+    ("events", "name", "STRING"),
+    ("users", "email", "STRING"),
+]
 
 
 class _BQField:
@@ -162,20 +249,33 @@ def _bigquery_adapter(rows: list[tuple[object, ...]]) -> tuple[BigQueryAdapter, 
 
 
 def test_bigquery_schema_uses_information_schema_columns() -> None:
-    adapter, client = _bigquery_adapter(_CATALOG_ROWS)
+    adapter, client = _bigquery_adapter(_BQ_CATALOG_ROWS)
 
     tables = adapter.get_schema_tables()
 
     sql = client.sql[0]
     assert "`my-project.analytics.INFORMATION_SCHEMA.COLUMNS`" in sql
-    assert "LIMIT 5000" in sql
+    assert "LIMIT 50000" in sql
     # Hardening: wall-clock timeout is scoped to the schema introspection job.
     assert client.result_timeouts == [30]
-    _assert_grouped(tables)
+    # Single-dataset scope: every table is returned bare (no `dataset.` prefix).
+    assert tables == [
+        SchemaTable(
+            name="events",
+            columns=[
+                SchemaColumn(name="id", data_type="INT64"),
+                SchemaColumn(name="name", data_type="STRING"),
+            ],
+        ),
+        SchemaTable(
+            name="users",
+            columns=[SchemaColumn(name="email", data_type="STRING")],
+        ),
+    ]
 
 
 def test_bigquery_schema_rejects_invalid_project() -> None:
-    adapter, _client = _bigquery_adapter(_CATALOG_ROWS)
+    adapter, _client = _bigquery_adapter(_BQ_CATALOG_ROWS)
     adapter._project = "bad project; DROP"
 
     import pytest
@@ -187,29 +287,10 @@ def test_bigquery_schema_rejects_invalid_project() -> None:
 def test_bigquery_schema_rejects_overlong_dataset() -> None:
     # Hardening: a pathologically long (but char-class-valid) id is rejected
     # before it can reach logs/SQL.
-    adapter, _client = _bigquery_adapter(_CATALOG_ROWS)
+    adapter, _client = _bigquery_adapter(_BQ_CATALOG_ROWS)
     adapter._dataset = "a" * 1025
 
     import pytest
 
     with pytest.raises(ValueError, match="dataset"):
         adapter.get_schema_tables()
-
-
-# --- Shared grouping assertion ----------------------------------------------
-
-
-def _assert_grouped(tables: list[SchemaTable]) -> None:
-    assert tables == [
-        SchemaTable(
-            name="events",
-            columns=[
-                SchemaColumn(name="id", data_type="UInt64"),
-                SchemaColumn(name="name", data_type="String"),
-            ],
-        ),
-        SchemaTable(
-            name="users",
-            columns=[SchemaColumn(name="email", data_type="String")],
-        ),
-    ]

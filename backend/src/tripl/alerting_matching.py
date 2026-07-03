@@ -32,7 +32,8 @@ class AlertMatchCandidate(Protocol):
     event_type_id: uuid.UUID | None
     bucket: datetime
     direction: str
-    actual_count: int
+    # Float: fractional catalog metrics carry sub-unit actuals (tripl-68bc).
+    actual_count: float
     expected_count: float
 
 
@@ -52,7 +53,7 @@ class DriftAlertCandidate:
     event_type_id: uuid.UUID | None
     bucket: datetime
     direction: str
-    actual_count: int
+    actual_count: float
     expected_count: float
     drift_field: str | None
     drift_type: str | None

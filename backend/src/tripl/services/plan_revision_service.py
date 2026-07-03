@@ -8,6 +8,8 @@ entity's natural identifier (so deleted-and-recreated rows still align).
 
 from __future__ import annotations
 
+import hashlib
+import json
 import uuid
 from collections.abc import Callable, Iterable
 from typing import Any
@@ -36,6 +38,17 @@ from tripl.schemas.plan_revision import (
 from tripl.services.project_lookup import get_project_by_slug
 
 PLAN_REVISIONS_DEFAULT_LIMIT = 50
+
+
+def plan_snapshot_hash(payload: dict[str, Any]) -> str:
+    """Stable sha256 of a plan snapshot payload.
+
+    Used to pin a branch approval to the exact content it reviewed
+    (PlanBranchApproval.plan_hash): the snapshot builder is deterministic
+    (name-ordered queries), so canonical JSON of equal content hashes equal.
+    """
+    canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str)
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 # Field-level keys we compare per entity type. Fields not listed are
 # treated as metadata and ignored by the diff (so cosmetic edits like

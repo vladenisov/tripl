@@ -2,6 +2,7 @@ import { Link, useNavigate, useParams } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 import { Activity, ArrowDown, ArrowUp, Settings2 } from 'lucide-react'
 import { metricsApi } from '@/api/metrics'
+import { metricsCatalogApi } from '@/api/metricsCatalogApi'
 import { EmptyState } from '@/components/empty-state'
 import { ErrorState } from '@/components/error-state'
 import { PageHead, Panel } from '@/components/settings/kit'
@@ -13,21 +14,32 @@ import type { MonitoringSignal } from '@/types'
 
 const ANOMALY_GRID = 'grid grid-cols-[1.7fr_1fr_72px_96px] items-center gap-3 px-4'
 
-// The three scopes that have a monitoring detail route; getMonitoringPath throws
-// for the rest, so non-linkable signals render as a plain (unlinked) row.
+/** Metric definition id → catalog display name, for labelling metric signals. */
+type MetricNameMap = ReadonlyMap<string, string>
+
+// The four scopes that have a monitoring detail route (metric scope_ref is the
+// metric definition id, routed via getMetricMonitoringPath); getMonitoringPath
+// throws for the rest, so non-linkable signals render as a plain (unlinked) row.
 function isLinkableScope(signal: MonitoringSignal): boolean {
   return (
     signal.scope_type === 'project_total'
     || signal.scope_type === 'event_type'
     || signal.scope_type === 'event'
+    || signal.scope_type === 'metric'
   )
 }
 
-function signalScopeLabel(signal: MonitoringSignal): string {
+function signalScopeLabel(signal: MonitoringSignal, metricNames: MetricNameMap): string {
   if (signal.scope_type === 'project_total') return 'Project total'
   const ref = signal.scope_ref.slice(0, 8)
   if (signal.scope_type === 'event_type') return `Event type ${ref}`
   if (signal.scope_type === 'event') return `Event ${ref}`
+  if (signal.scope_type === 'metric') {
+    // Resolved from the metrics catalog; fall back to the short ref while the
+    // catalog loads or when the definition is gone (e.g. deleted metric).
+    const name = metricNames.get(signal.scope_ref)
+    return name ? `Metric · ${name}` : `Metric ${ref}`
+  }
   return `${signal.scope_type} ${ref}`
 }
 
@@ -41,6 +53,20 @@ export default function AnomaliesPage() {
     staleTime: 30_000,
     refetchInterval: 60_000,
   })
+
+  // Metric-scope signals only carry the definition id; the catalog list
+  // resolves it to a display name. Shares the 'metrics-catalog' key prefix so
+  // catalog mutations invalidate this copy too. Purely additive — a failed or
+  // pending fetch just leaves the short-ref fallback label.
+  const metricsCatalogQuery = useQuery({
+    queryKey: ['metrics-catalog', slug, 'names'],
+    queryFn: () => metricsCatalogApi.list(slug!),
+    enabled: !!slug,
+    staleTime: 60_000,
+  })
+  const metricNames: MetricNameMap = new Map(
+    (metricsCatalogQuery.data?.items ?? []).map((m) => [m.id, m.display_name]),
+  )
 
   const signals = signalsQuery.data ?? []
   // Most severe first: the largest |z| is the most extreme deviation.
@@ -155,6 +181,7 @@ export default function AnomaliesPage() {
                         key={`${signal.scope_type}:${signal.scope_ref}:${signal.bucket}`}
                         slug={slug}
                         signal={signal}
+                        metricNames={metricNames}
                       />
                     ))}
                   </div>
@@ -167,7 +194,15 @@ export default function AnomaliesPage() {
   )
 }
 
-function AnomalyRow({ slug, signal }: { slug?: string; signal: MonitoringSignal }) {
+function AnomalyRow({
+  slug,
+  signal,
+  metricNames,
+}: {
+  slug?: string
+  signal: MonitoringSignal
+  metricNames: MetricNameMap
+}) {
   const navigate = useNavigate()
   const isDrop = signal.direction === 'drop'
   const DirIcon = isDrop ? ArrowDown : ArrowUp
@@ -201,7 +236,7 @@ function AnomalyRow({ slug, signal }: { slug?: string; signal: MonitoringSignal 
         <Dot tone={isDrop ? 'warning' : 'danger'} pulse size={7} />
         <DirIcon className="h-3.5 w-3.5 shrink-0" style={{ color: severityColor }} />
         <span className="truncate text-[12.5px] font-medium" style={{ color: 'var(--fg)' }}>
-          {isDrop ? 'Drop' : 'Spike'} on {signalScopeLabel(signal)}
+          {isDrop ? 'Drop' : 'Spike'} on {signalScopeLabel(signal, metricNames)}
         </span>
       </span>
       <span role="cell" className="mono truncate text-[11px]" style={{ color: 'var(--fg-subtle)' }}>

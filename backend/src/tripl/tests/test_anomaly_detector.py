@@ -88,6 +88,56 @@ def test_detect_anomalies_uses_effective_stddev_for_flat_baseline() -> None:
     assert anomalies[0].z_score == 4
 
 
+def test_detect_anomalies_detects_fractional_spike_without_zero_fill() -> None:
+    """A sub-unit ratio movement (0.5 -> 0.9) must be detectable: fractional
+    series swap the 1.0 absolute stddev floor for a magnitude-derived one and
+    keep their float values instead of rounding toward 0 (tripl-68bc)."""
+    fractional_settings = AnomalyDetectionSettings(
+        baseline_window_buckets=14,
+        min_history_buckets=7,
+        sigma_threshold=3.0,
+        min_expected_count=0,  # the fractional path always zeroes this gate
+    )
+    points = [SeriesPoint(bucket=_bucket(hour), count=0.5) for hour in range(10)]
+    points.append(SeriesPoint(bucket=_bucket(10), count=0.9))
+
+    anomalies = detect_anomalies(
+        points,
+        interval=timedelta(hours=1),
+        evaluation_start=_bucket(10),
+        evaluation_end=_bucket(11),
+        settings=fractional_settings,
+        fill_gaps=False,
+    )
+
+    assert [anomaly.direction for anomaly in anomalies] == ["spike"]
+    assert anomalies[0].actual_count == 0.9
+    assert anomalies[0].expected_count == 0.5
+
+
+def test_detect_anomalies_fractional_noise_stays_quiet() -> None:
+    """Micro-wobble below the magnitude-derived floor must not fire."""
+    fractional_settings = AnomalyDetectionSettings(
+        baseline_window_buckets=14,
+        min_history_buckets=7,
+        sigma_threshold=3.0,
+        min_expected_count=0,
+    )
+    points = [SeriesPoint(bucket=_bucket(hour), count=0.5) for hour in range(10)]
+    points.append(SeriesPoint(bucket=_bucket(10), count=0.508))
+
+    anomalies = detect_anomalies(
+        points,
+        interval=timedelta(hours=1),
+        evaluation_start=_bucket(10),
+        evaluation_end=_bucket(11),
+        settings=fractional_settings,
+        fill_gaps=False,
+    )
+
+    assert anomalies == []
+
+
 def test_detect_anomalies_respects_min_history_gate() -> None:
     points = [SeriesPoint(bucket=_bucket(hour), count=10) for hour in range(6)]
     points.append(SeriesPoint(bucket=_bucket(6), count=40))

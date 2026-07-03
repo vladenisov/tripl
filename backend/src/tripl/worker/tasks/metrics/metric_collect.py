@@ -102,12 +102,20 @@ COLLECT_METRIC_DEFINITIONS_TIME_LIMIT_SECONDS = 35 * 60
 # mirroring collect_metrics' ``time_to - delta * 30`` default.
 DEFAULT_COLLECTION_BUCKETS = 30
 
+# Manual "collect now" backfill: reach back this many interval buckets so a
+# freshly-created metric's chart is not empty, regardless of prior collection
+# state. Capped by ``MANUAL_COLLECT_MAX_WINDOW`` so a coarse interval (1d/1w)
+# does not reach back months/years.
+MANUAL_COLLECT_BACKFILL_BUCKETS = 48
+MANUAL_COLLECT_MAX_WINDOW = timedelta(days=30)
+
 # Per-query row ceiling; one row per bucket (no breakdown) or per
 # (bucket, breakdown_value), so this comfortably bounds a normal window.
 METRIC_QUERY_ROW_LIMIT = 100_000
 
-# Convention for the value column a ``sql`` metric must project (alias the
-# measure ``AS value``). The time column name is taken from the metric config.
+# Default value column a ``sql`` metric must project (alias the measure
+# ``AS value``); override per metric with config ``value_column``. The time
+# column name is taken from the metric config.
 SQL_VALUE_COLUMN = "value"
 
 # Column used for the per_distinct_user denominator when the metric config does
@@ -122,6 +130,30 @@ def _config_str(config: Mapping[str, object], key: str) -> str | None:
     """Return ``config[key]`` only when it is a non-empty string, else ``None``."""
     value = config.get(key)
     return value if isinstance(value, str) and value else None
+
+
+def _config_str_list(config: Mapping[str, object], key: str) -> list[str]:
+    """Return ``config[key]`` as a list of non-empty strings (else ``[]``)."""
+    value = config.get(key)
+    if not isinstance(value, list):
+        return []
+    return [item for item in value if isinstance(item, str) and item]
+
+
+def _effective_filter_names(config: Mapping[str, object]) -> tuple[str, ...]:
+    """Effective named-filter set from a stored operand ``config``.
+
+    Reads the new ``row_filters`` list and folds in a legacy single
+    ``row_filter`` name (back-compat with configs written before multi-filter
+    support). Order is preserved and duplicates removed so the WHERE assembled
+    from it is deterministic and identical across the per-metric and batched
+    collection paths.
+    """
+    effective: list[str] = list(_config_str_list(config, "row_filters"))
+    legacy = _config_str(config, "row_filter")
+    if legacy is not None and legacy not in effective:
+        effective.append(legacy)
+    return tuple(effective)
 
 
 def _coerce_value(raw: object) -> float:
@@ -182,6 +214,65 @@ def _resolve_value_window(
     return time_from, time_to
 
 
+def compute_manual_collect_window(interval_code: str) -> tuple[datetime, datetime]:
+    """Resolve the [from, to) backfill window for a manual single-metric collect.
+
+    ``to`` is the latest complete interval boundary; ``from`` reaches back
+    ``MANUAL_COLLECT_BACKFILL_BUCKETS`` buckets, but the span is capped to
+    ``MANUAL_COLLECT_MAX_WINDOW`` so coarse intervals stay bounded. Concretely:
+    15m -> 48 buckets (12h), 1h -> 48 (2d), 6h -> 48 (12d), 1d -> 30 (30d),
+    1w -> 4 (28d). Unlike ``_resolve_value_window`` this ignores any previously
+    stored bucket so a re-trigger always backfills the same recent window.
+    """
+    delta = get_interval(interval_code).delta
+    time_to = _floor_to_interval(datetime.now(UTC), delta)
+    max_buckets = max(1, int(MANUAL_COLLECT_MAX_WINDOW / delta))
+    buckets = min(MANUAL_COLLECT_BACKFILL_BUCKETS, max_buckets)
+    time_from = time_to - delta * buckets
+    return time_from, time_to
+
+
+def _effective_value_window(
+    session: Session,
+    *,
+    metric_definition_id: uuid.UUID,
+    delta: timedelta,
+    window_override: tuple[datetime, datetime] | None,
+) -> tuple[datetime, datetime]:
+    """Use an explicit ``window_override`` when given, else the resume window.
+
+    Keeps the override-vs-default choice in one place so every fact/sql
+    collection path honours a manually-requested window identically.
+    """
+    if window_override is not None:
+        return window_override
+    return _resolve_value_window(
+        session, metric_definition_id=metric_definition_id, delta=delta
+    )
+
+
+def _parse_window_override(
+    window_from: str | None, window_to: str | None
+) -> tuple[datetime, datetime] | None:
+    """Parse the optional manual-collection window passed to the Celery tasks.
+
+    Both bounds are required together (mirrors ``collect_metrics`` replay). ISO
+    strings are coerced to aware datetimes; ``None``/``None`` means "no override"
+    (the scheduler's resume window is used).
+    """
+    if (window_from is None) != (window_to is None):
+        msg = "Both window_from and window_to are required for a manual collection window"
+        raise ValueError(msg)
+    if window_from is None or window_to is None:
+        return None
+    time_from = _parse_task_datetime(window_from)
+    time_to = _parse_task_datetime(window_to)
+    if time_from >= time_to:
+        msg = "window_from must be earlier than window_to"
+        raise ValueError(msg)
+    return time_from, time_to
+
+
 def _read_event_metric_series(
     session: Session,
     *,
@@ -212,13 +303,20 @@ def _read_event_metric_series(
 
 @dataclass(frozen=True)
 class _FactOperand:
-    """One resolved fact operand (the single metric, or one ratio side)."""
+    """One resolved fact operand (the single metric, or one ratio side).
+
+    ``row_filters`` is the effective named-filter set (legacy single
+    ``row_filter`` already folded in) and ``filter_sql`` is the optional
+    free-text WHERE fragment; both are resolved to one ANDed WHERE expression at
+    collection time.
+    """
 
     fact_table_id: uuid.UUID
     aggregation: MetricAggregation
     measure_column: str | None
     distinct_column: str | None
-    row_filter: str | None
+    row_filters: tuple[str, ...]
+    filter_sql: str | None
 
 
 def _operand_from_config(raw: Mapping[str, object]) -> _FactOperand:
@@ -233,7 +331,8 @@ def _operand_from_config(raw: Mapping[str, object]) -> _FactOperand:
         aggregation=coerce_aggregation(aggregation),
         measure_column=_config_str(raw, "measure_column"),
         distinct_column=_config_str(raw, "distinct_column"),
-        row_filter=_config_str(raw, "row_filter"),
+        row_filters=_effective_filter_names(raw),
+        filter_sql=_config_str(raw, "filter_sql"),
     )
 
 
@@ -251,25 +350,57 @@ def _fact_operand_measure(operand: _FactOperand) -> str | None:
     return operand.measure_column
 
 
-def _resolve_fact_operand_query(fact_table: FactTable, row_filter_name: str | None) -> str:
-    """Resolve a fact operand's base query, applying its named row filter.
+def _resolve_named_filter_fragment(fact_table: FactTable, name: str) -> str:
+    """Resolve one named row filter to its validated boolean WHERE fragment.
 
-    The base query is the fact table's stored ``sql``. A ``row_filter_name`` (if
-    set) must match one of the fact table's stored row filters by NAME; the
-    associated (already-validated) fragment wraps the source in a bounded
-    ``WHERE`` subquery. The fragment is re-validated here as defence in depth.
+    ``name`` must match one of the fact table's stored row filters by NAME; the
+    associated fragment is re-validated here as defence in depth. Raises a
+    ``ScanError`` for an unknown name.
     """
-    source = fact_table.sql
-    if row_filter_name is None:
-        return source
     for row_filter in fact_table.row_filters or []:
-        if isinstance(row_filter, Mapping) and row_filter.get("name") == row_filter_name:
+        if isinstance(row_filter, Mapping) and row_filter.get("name") == name:
             fragment = row_filter.get("sql")
             if isinstance(fragment, str) and fragment:
-                safe = validate_sql_fragment(fragment)
-                return f"SELECT * FROM ({source}) AS _filtered WHERE {safe}"
-    msg = f"row filter {row_filter_name!r} is not defined on fact table {fact_table.id}"
+                return validate_sql_fragment(fragment)
+    msg = f"row filter {name!r} is not defined on fact table {fact_table.id}"
     raise ScanError(msg)
+
+
+def _resolve_combined_filter(
+    fact_table: FactTable, *, row_filters: tuple[str, ...], filter_sql: str | None
+) -> str | None:
+    """Resolve an operand's named filters + free-text ``filter_sql`` into one WHERE.
+
+    Every name in ``row_filters`` is resolved to its stored SQL fragment (by
+    NAME), then a present ``filter_sql`` is appended; each fragment is wrapped in
+    parentheses and the list is joined with ``" AND "``. An empty set returns
+    ``None`` (no extra WHERE). The SAME combined string is consumed by both the
+    per-metric path (a bounded ``WHERE`` subquery) and the batched path (a
+    conditional aggregate), preserving value-identity between them.
+    """
+    fragments = [_resolve_named_filter_fragment(fact_table, name) for name in row_filters]
+    if filter_sql is not None:
+        fragments.append(validate_sql_fragment(filter_sql))
+    if not fragments:
+        return None
+    return " AND ".join(f"({fragment})" for fragment in fragments)
+
+
+def _resolve_fact_operand_query(fact_table: FactTable, operand: _FactOperand) -> str:
+    """Resolve a fact operand's base query, applying its combined row filter.
+
+    The base query is the fact table's stored ``sql``. The operand's effective
+    named filters and ``filter_sql`` are assembled into one ANDed boolean
+    expression (see ``_resolve_combined_filter``); when present it wraps the
+    source in a bounded ``WHERE`` subquery, else the source is returned as-is.
+    """
+    source = fact_table.sql
+    combined = _resolve_combined_filter(
+        fact_table, row_filters=operand.row_filters, filter_sql=operand.filter_sql
+    )
+    if combined is None:
+        return source
+    return f"SELECT * FROM ({source}) AS _filtered WHERE {combined}"
 
 
 def _load_fact_table(
@@ -312,7 +443,7 @@ def _aggregate_fact_window(
     Returns ``(values_by_bucket, base_query, validated_measure)`` so a SINGLE
     caller can reuse the base query / measure for its breakdown pass.
     """
-    base_query = _resolve_fact_operand_query(fact_table, operand.row_filter)
+    base_query = _resolve_fact_operand_query(fact_table, operand)
     measure = _fact_operand_measure(operand)
     if requires_measure(operand.aggregation):
         if measure is None:
@@ -424,21 +555,27 @@ def _resolve_fact_composition(definition: MetricDefinition) -> MetricComposition
     return MetricComposition(definition.composition)
 
 
-def _collect_fact(session: Session, *, definition: MetricDefinition) -> dict[str, object]:
+def _collect_fact(
+    session: Session,
+    *,
+    definition: MetricDefinition,
+    window: tuple[datetime, datetime] | None = None,
+) -> dict[str, object]:
     """Collect a ``fact`` metric: an aggregation over a FactTable per bucket.
 
     SINGLE collects one operand series (+ optional per-dimension breakdowns).
     RATIO divides a numerator series by a denominator series (each over a —
     possibly different — FactTable); a zero/absent denominator maps to ``None``
-    (divide-by-zero), which the NOT-NULL row builder drops.
+    (divide-by-zero), which the NOT-NULL row builder drops. ``window`` overrides
+    the resume window for a manual backfill.
     """
     if definition.interval is None:
         msg = "fact metric requires an interval"
         raise ScanError(msg)
     interval_spec = get_interval(definition.interval)
     delta = interval_spec.delta
-    time_from, time_to = _resolve_value_window(
-        session, metric_definition_id=definition.id, delta=delta
+    time_from, time_to = _effective_value_window(
+        session, metric_definition_id=definition.id, delta=delta, window_override=window
     )
     composition = _resolve_fact_composition(definition)
     if composition is MetricComposition.ratio:
@@ -482,7 +619,8 @@ def _collect_fact_single(
         aggregation=coerce_aggregation(definition.aggregation),
         measure_column=_config_str(config, "measure_column"),
         distinct_column=_config_str(config, "distinct_column"),
-        row_filter=_config_str(config, "row_filter"),
+        row_filters=_effective_filter_names(config),
+        filter_sql=_config_str(config, "filter_sql"),
     )
     ds = session.get(DataSource, fact_table.data_source_id)
     if ds is None:
@@ -652,28 +790,27 @@ def _collect_fact_ratio(
 # aggregate equals the same aggregate over the row-filtered subquery.
 
 
-def _resolve_fact_operand_filter(fact_table: FactTable, row_filter_name: str | None) -> str | None:
-    """Resolve a named row filter to its validated boolean WHERE fragment.
+def _resolve_fact_operand_filter(operand: _FactOperand, *, fact_table: FactTable) -> str | None:
+    """Resolve an operand's combined WHERE fragment for the batched path.
 
     Unlike ``_resolve_fact_operand_query`` (which wraps the source in a bounded
     ``WHERE`` subquery for the single-aggregate path), this returns just the
-    validated fragment so it can be injected as a per-aggregate conditional in a
-    shared multi-aggregate scan. ``None`` means no filter (a plain aggregate).
+    combined boolean fragment so it can be injected as a per-aggregate
+    conditional in a shared multi-aggregate scan. The fragment is built by the
+    SAME ``_resolve_combined_filter`` the per-metric path uses, so the conditional
+    aggregate computes the identical value. ``None`` means no filter.
     """
-    if row_filter_name is None:
-        return None
-    for row_filter in fact_table.row_filters or []:
-        if isinstance(row_filter, Mapping) and row_filter.get("name") == row_filter_name:
-            fragment = row_filter.get("sql")
-            if isinstance(fragment, str) and fragment:
-                return validate_sql_fragment(fragment)
-    msg = f"row filter {row_filter_name!r} is not defined on fact table {fact_table.id}"
-    raise ScanError(msg)
+    return _resolve_combined_filter(
+        fact_table, row_filters=operand.row_filters, filter_sql=operand.filter_sql
+    )
 
 
 # A spec's dedup identity: same aggregation, same measure/distinct column and
-# same named row filter aggregate to the SAME warehouse column, so two metrics
-# needing the same aggregate share one column in the scan.
+# the same combined filter expression aggregate to the SAME warehouse column, so
+# two metrics needing the same aggregate share one column in the scan. The
+# combined filter string (built deterministically by ``_resolve_combined_filter``)
+# is the true identity, so equal effective filters — whatever named/free-text mix
+# produced them — dedup to one column.
 _SpecDedupKey = tuple[MetricAggregation, str | None, str | None]
 
 
@@ -694,9 +831,8 @@ class _SpecRegistry:
         aggregation: MetricAggregation,
         measure: str | None,
         filter_sql: str | None,
-        filter_name: str | None,
     ) -> str:
-        dedup: _SpecDedupKey = (aggregation, measure, filter_name)
+        dedup: _SpecDedupKey = (aggregation, measure, filter_sql)
         key = self._keys.get(dedup)
         if key is None:
             key = f"k{len(self.specs)}"
@@ -771,7 +907,7 @@ def _resolve_batch_operand(
             msg = "fact table query returned no columns; cannot validate measure column"
             raise ScanError(msg)
         measure = validate_measure_column(measure, allowed_columns)
-    filter_sql = _resolve_fact_operand_filter(fact_table, operand.row_filter)
+    filter_sql = _resolve_fact_operand_filter(operand, fact_table=fact_table)
     return measure, filter_sql
 
 
@@ -928,7 +1064,8 @@ def _plan_single_metric(
         aggregation=coerce_aggregation(definition.aggregation),
         measure_column=_config_str(config, "measure_column"),
         distinct_column=_config_str(config, "distinct_column"),
-        row_filter=_config_str(config, "row_filter"),
+        row_filters=_effective_filter_names(config),
+        filter_sql=_config_str(config, "filter_sql"),
     )
     measure, filter_sql = _resolve_batch_operand(
         operand,
@@ -940,7 +1077,6 @@ def _plan_single_metric(
         aggregation=operand.aggregation,
         measure=measure,
         filter_sql=filter_sql,
-        filter_name=operand.row_filter,
     )
 
     breakdown_columns: list[str] = list(definition.breakdown_columns or [])
@@ -959,7 +1095,6 @@ def _plan_single_metric(
             aggregation=operand.aggregation,
             measure=measure,
             filter_sql=filter_sql,
-            filter_name=operand.row_filter,
         )
         breakdowns.append(
             _BreakdownPlan(
@@ -1008,7 +1143,6 @@ def _plan_ratio_metric(
             aggregation=operand.aggregation,
             measure=measure,
             filter_sql=filter_sql,
-            filter_name=operand.row_filter,
         )
         keys.append((fact_table.id, spec_key))
     (numerator_ft_id, numerator_key), (denominator_ft_id, denominator_key) = keys
@@ -1134,13 +1268,15 @@ def _run_fact_interval_group(
     *,
     definitions: list[MetricDefinition],
     interval_spec: IntervalSpec,
+    window_override: tuple[datetime, datetime] | None = None,
 ) -> dict[str, int]:
     """Collect every fact metric of one interval group in shared warehouse scans.
 
     Builds dedup'd ``AggregateSpec`` lists per fact table (and per breakdown
     dimension), runs ONE multi-aggregate scan per fact table plus one per
     breakdown scan over a covering window, then assembles each metric over its
-    OWN window with isolated per-metric error capture.
+    OWN window with isolated per-metric error capture. ``window_override`` (a
+    manual backfill window) replaces each metric's resume window when set.
     """
     delta = interval_spec.delta
     ch_interval = interval_spec.ch_interval
@@ -1156,8 +1292,11 @@ def _run_fact_interval_group(
         for definition in definitions:
             totals["metrics"] += 1
             try:
-                window = _resolve_value_window(
-                    session, metric_definition_id=definition.id, delta=delta
+                window = _effective_value_window(
+                    session,
+                    metric_definition_id=definition.id,
+                    delta=delta,
+                    window_override=window_override,
                 )
                 if _resolve_fact_composition(definition) is MetricComposition.ratio:
                     ratio_plans.append(
@@ -1318,12 +1457,19 @@ def _run_fact_interval_group(
         context.close()
 
 
-def _collect_sql(session: Session, *, definition: MetricDefinition) -> dict[str, object]:
+def _collect_sql(
+    session: Session,
+    *,
+    definition: MetricDefinition,
+    window: tuple[datetime, datetime] | None = None,
+) -> dict[str, object]:
     """Collect a sql metric: execute the user SELECT and bucket its rows.
 
-    The SELECT must project a ``value`` column and the configured time column
-    (re-checked here with ``validate_select_sql``). Each returned row is floored
-    to the interval; later rows for the same bucket overwrite earlier ones.
+    The SELECT must project the configured value column (default ``value``)
+    and the configured time column (re-checked here with
+    ``validate_select_sql``). Each returned row is floored to the interval;
+    later rows for the same bucket overwrite earlier ones. ``window``
+    overrides the resume window for a manual backfill.
     """
     if definition.data_source_id is None or definition.interval is None:
         msg = "sql metric requires a data source and interval"
@@ -1335,9 +1481,10 @@ def _collect_sql(session: Session, *, definition: MetricDefinition) -> dict[str,
     if metric_sql is None or time_column is None:
         msg = "sql metric requires metric_sql and time_column in config"
         raise ScanError(msg)
+    value_column = _config_str(config, "value_column") or SQL_VALUE_COLUMN
 
     safe_sql = validate_select_sql(
-        metric_sql, value_column=SQL_VALUE_COLUMN, time_column=time_column
+        metric_sql, value_column=value_column, time_column=time_column
     )
 
     ds = session.get(DataSource, definition.data_source_id)
@@ -1351,8 +1498,8 @@ def _collect_sql(session: Session, *, definition: MetricDefinition) -> dict[str,
         adapter.test_connection()
         interval_spec = get_interval(definition.interval)
         delta = interval_spec.delta
-        time_from, time_to = _resolve_value_window(
-            session, metric_definition_id=definition.id, delta=delta
+        time_from, time_to = _effective_value_window(
+            session, metric_definition_id=definition.id, delta=delta, window_override=window
         )
         chunks = _iter_window_chunks(
             time_from,
@@ -1369,10 +1516,10 @@ def _collect_sql(session: Session, *, definition: MetricDefinition) -> dict[str,
                 time_to=chunk_to,
             )
             index_by_name = {name: i for i, name in enumerate(column_names)}
-            if SQL_VALUE_COLUMN not in index_by_name or time_column not in index_by_name:
-                msg = f"sql metric must project {SQL_VALUE_COLUMN!r} and {time_column!r} columns"
+            if value_column not in index_by_name or time_column not in index_by_name:
+                msg = f"sql metric must project {value_column!r} and {time_column!r} columns"
                 raise ScanError(msg)
-            value_idx = index_by_name[SQL_VALUE_COLUMN]
+            value_idx = index_by_name[value_column]
             time_idx = index_by_name[time_column]
             values: dict[datetime, float] = {}
             for row in rows:
@@ -1455,7 +1602,10 @@ def _collect_distinct_user_series(
 
 
 def _collect_event_composition(
-    session: Session, *, definition: MetricDefinition
+    session: Session,
+    *,
+    definition: MetricDefinition,
+    window: tuple[datetime, datetime] | None = None,
 ) -> dict[str, object]:
     """Collect an event_composition metric from already-stored event_metrics.
 
@@ -1463,6 +1613,11 @@ def _collect_event_composition(
     each source scan grid, evaluates the composition per grid, and writes
     ``MetricValue`` rows keyed by that ``scan_config_id``. ``per_distinct_user``
     additionally fetches a warehouse distinct-user denominator per grid.
+
+    ``window`` is accepted for a uniform collector signature but ignored: an
+    event_composition metric has no interval of its own — it re-derives from the
+    full already-collected event-metric series, so a manual collect simply
+    recomputes everything available.
     """
     if definition.composition is None:
         msg = "event_composition metric requires a composition"
@@ -1568,23 +1723,37 @@ _COLLECTORS = {
     soft_time_limit=COLLECT_METRIC_DEFINITIONS_SOFT_TIME_LIMIT_SECONDS,
     time_limit=COLLECT_METRIC_DEFINITIONS_TIME_LIMIT_SECONDS,
 )
-def collect_metric_definitions(self: object, metric_definition_id: str) -> dict[str, object]:
+def collect_metric_definitions(
+    self: object,
+    metric_definition_id: str,
+    window_from: str | None = None,
+    window_to: str | None = None,
+    force: bool = False,
+) -> dict[str, object]:
     """Collect one catalog metric's per-bucket values into ``metric_values``.
 
     Dispatches by ``kind`` and stamps ``last_collected_at`` /
     ``last_collection_status`` / ``last_collection_error`` inline (success or a
     sanitized error). The full exception is logged; only a safe summary is
-    persisted.
+    persisted. An optional ``window_from`` / ``window_to`` pair (ISO strings)
+    backfills an explicit recent window for a manual "collect now"; omitted, the
+    scheduler's resume window is used. event_composition ignores the window.
+
+    ``force`` is set only by the manual "collect now" trigger: it bypasses the
+    active-status skip so a freshly-created (draft) metric still produces data.
+    The scheduler always dispatches with ``force=False``, so scheduled collection
+    stays active-only.
     """
     session = _get_sync_session()
     definition: MetricDefinition | None = None
     try:
+        window = _parse_window_override(window_from, window_to)
         definition = session.get(MetricDefinition, uuid.UUID(metric_definition_id))
         if definition is None:
             msg = f"MetricDefinition {metric_definition_id} not found"
             raise ValueError(msg)
 
-        if definition.status != MetricStatus.active:
+        if not force and definition.status != MetricStatus.active:
             logger.info(
                 "MetricDefinition %s is %s, not active; skipping",
                 metric_definition_id,
@@ -1604,7 +1773,7 @@ def collect_metric_definitions(self: object, metric_definition_id: str) -> dict[
             # message rather than a cryptic KeyError.
             msg = f"Metric collection is not implemented for kind {kind.value!r}"
             raise NotImplementedError(msg)
-        summary = collector(session, definition=definition)
+        summary = collector(session, definition=definition, window=window)
 
         definition.last_collected_at = datetime.now(UTC)
         definition.last_collection_status = COLLECTION_STATUS_SUCCESS
@@ -1637,14 +1806,18 @@ def _metric_kind(definition: MetricDefinition) -> MetricKind:
 
 
 def _run_fact_metrics_batch(
-    session: Session, *, definitions: list[MetricDefinition]
+    session: Session,
+    *,
+    definitions: list[MetricDefinition],
+    window_override: tuple[datetime, datetime] | None = None,
 ) -> dict[str, int]:
     """Group fact metrics by interval and collect each group in shared scans.
 
     Metrics dispatched together usually share one interval (the scheduler groups
     by interval before dispatch), but grouping here as well keeps the collector
     correct if a caller mixes intervals: each interval has its own bucket grid /
-    ``ch_interval``, so it gets its own set of shared scans.
+    ``ch_interval``, so it gets its own set of shared scans. ``window_override``
+    (a manual backfill window) is forwarded to every group.
     """
     totals = {"metrics": 0, "collected": 0, "errors": 0, "values": 0, "breakdown_values": 0}
     by_interval: dict[str, list[MetricDefinition]] = {}
@@ -1660,7 +1833,10 @@ def _run_fact_metrics_batch(
 
     for interval_code, group in by_interval.items():
         group_totals = _run_fact_interval_group(
-            session, definitions=group, interval_spec=get_interval(interval_code)
+            session,
+            definitions=group,
+            interval_spec=get_interval(interval_code),
+            window_override=window_override,
         )
         for key, value in group_totals.items():
             totals[key] += value
@@ -1674,16 +1850,30 @@ def _run_fact_metrics_batch(
     soft_time_limit=COLLECT_METRIC_DEFINITIONS_SOFT_TIME_LIMIT_SECONDS,
     time_limit=COLLECT_METRIC_DEFINITIONS_TIME_LIMIT_SECONDS,
 )
-def collect_fact_metrics_batch(self: object, metric_ids: list[str]) -> dict[str, int]:
+def collect_fact_metrics_batch(
+    self: object,
+    metric_ids: list[str],
+    window_from: str | None = None,
+    window_to: str | None = None,
+    force: bool = False,
+) -> dict[str, int]:
     """Collect a batch of fact metrics, sharing one warehouse scan per fact table.
 
     Loads the requested metrics, keeps only the active ``fact`` ones, and runs the
     batched collector. Per-metric ``last_collected_at`` / ``last_collection_status``
     stamping and error capture happen inside the collector, so one metric failing
-    never aborts the others; this wrapper only owns the session lifecycle.
+    never aborts the others; this wrapper only owns the session lifecycle. An
+    optional ``window_from`` / ``window_to`` pair (ISO strings) backfills an
+    explicit recent window for a manual "collect now" of a single fact metric.
+
+    ``force`` is set only by the manual "collect now" trigger: it keeps non-active
+    (draft/archived) fact metrics in the batch so a freshly-created metric still
+    produces data. The scheduler always dispatches with ``force=False``, so
+    scheduled collection stays active-only.
     """
     session = _get_sync_session()
     try:
+        window = _parse_window_override(window_from, window_to)
         requested = [uuid.UUID(metric_id) for metric_id in metric_ids]
         loaded = (
             session.execute(select(MetricDefinition).where(MetricDefinition.id.in_(requested)))
@@ -1693,12 +1883,14 @@ def collect_fact_metrics_batch(self: object, metric_ids: list[str]) -> dict[str,
         definitions = [
             definition
             for definition in loaded
-            if definition.status == MetricStatus.active
+            if (force or definition.status == MetricStatus.active)
             and _metric_kind(definition) is MetricKind.fact
         ]
         if not definitions:
             return {"metrics": 0, "collected": 0, "errors": 0, "values": 0, "breakdown_values": 0}
-        return _run_fact_metrics_batch(session, definitions=definitions)
+        return _run_fact_metrics_batch(
+            session, definitions=definitions, window_override=window
+        )
     except Exception:
         logger.exception("Batch fact metric collection failed for %s", metric_ids)
         session.rollback()

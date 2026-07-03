@@ -4,7 +4,7 @@ import uuid
 from datetime import datetime
 from typing import TYPE_CHECKING
 
-from sqlalchemy import DateTime, ForeignKey, Index, Integer, String, Uuid
+from sqlalchemy import DateTime, Float, ForeignKey, Index, String, Uuid
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from tripl.models.base import Base, UUIDMixin
@@ -35,9 +35,11 @@ class AlertDeliveryItem(UUIDMixin, Base):
     )
     bucket: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     direction: Mapped[str] = mapped_column(db_enum(AnomalyDirection, "anomaly_direction"))
-    actual_count: Mapped[int] = mapped_column()
-    expected_count: Mapped[int] = mapped_column(Integer)
-    absolute_delta: Mapped[int] = mapped_column(Integer)
+    # Floats: fractional catalog metrics deliver sub-unit actuals/deltas;
+    # count scopes keep writing whole numbers (tripl-68bc).
+    actual_count: Mapped[float] = mapped_column(Float)
+    expected_count: Mapped[float] = mapped_column(Float)
+    absolute_delta: Mapped[float] = mapped_column(Float)
     percent_delta: Mapped[float] = mapped_column()
     details_path: Mapped[str | None] = mapped_column(String(500), nullable=True)
     monitoring_path: Mapped[str | None] = mapped_column(String(500), nullable=True)

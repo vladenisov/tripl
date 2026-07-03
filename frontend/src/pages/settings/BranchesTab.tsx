@@ -1,7 +1,9 @@
 import { useId, useState, type ReactNode } from 'react'
 import { useMutation, useQueries, useQuery, useQueryClient } from '@tanstack/react-query'
-import { GitBranch, GitCompare, GitMerge, Plus, Trash2 } from 'lucide-react'
+import { GitBranch, GitCompare, GitMerge, Plus, Settings2, Trash2 } from 'lucide-react'
 
+import { branchSettingsApi } from '@/api/branchSettings'
+import { ApiError } from '@/api/client'
 import { planBranchesApi } from '@/api/planBranches'
 import { useConfirm } from '@/hooks/useConfirm'
 import { Chip, type ChipTone } from '@/components/primitives/chip'
@@ -15,6 +17,7 @@ import {
 } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
+import { Switch } from '@/components/ui/switch'
 import { Textarea } from '@/components/ui/textarea'
 import { formatRelativeTime } from '@/lib/datetime'
 import { getErrorMessage } from '@/lib/utils'
@@ -27,6 +30,7 @@ import type {
   PlanBranchTransitionAction,
   PlanDiffEntry,
   PlanDiffKind,
+  ProjectBranchSettings,
   ResolutionChoice,
 } from '@/types'
 
@@ -52,7 +56,9 @@ const ALLOWED_TRANSITIONS: Record<PlanBranchStatus, PlanBranchTransitionAction[]
   draft: ['submit', 'close'],
   ready_for_review: ['approve', 'request_changes', 'close'],
   changes_requested: ['submit', 'close'],
-  approved: ['request_changes', 'reopen', 'close'],
+  // approve stays available so extra reviewers can stack approvals toward the
+  // project's min_approvals quota.
+  approved: ['approve', 'request_changes', 'reopen', 'close'],
   closed: ['reopen'],
   merged: [],
 }
@@ -88,10 +94,40 @@ function diffEntryDetail(entry: PlanDiffEntry): string {
   return entry.parent ? `${entry.entity_type} · ${entry.parent}` : entry.entity_type
 }
 
+/** Human-readable message for a failed transition/merge, decoding the merge
+ * gate's structured 409 payloads where the generic message would only say
+ * "409 Conflict". */
+function describeBranchActionError(error: unknown): string {
+  if (error instanceof ApiError && error.detail && typeof error.detail === 'object') {
+    const detail = error.detail as Record<string, unknown>
+    const quota = detail.insufficient_approvals as
+      | { required?: number; current?: number; stale?: number }
+      | undefined
+    if (quota) {
+      const stale =
+        (quota.stale ?? 0) > 0
+          ? ` ${quota.stale} approval(s) went stale after later edits — re-approve.`
+          : ''
+      return `Not enough approvals to merge: ${quota.current ?? 0} of ${quota.required ?? 0} required.${stale}`
+    }
+    if (detail.missing_owner_approvals) {
+      return 'Merge blocked: owners of the touched event types have not approved.'
+    }
+    if (detail.unresolved_field_conflicts) {
+      return 'Merge blocked: resolve the field conflicts below first.'
+    }
+    if (detail.conflicts) {
+      return 'Merge blocked by conflicts with main.'
+    }
+  }
+  return getErrorMessage(error)
+}
+
 export function BranchesTab({ slug }: { slug: string }) {
   const qc = useQueryClient()
   const { confirm, dialog } = useConfirm()
   const [createOpen, setCreateOpen] = useState(false)
+  const [policyOpen, setPolicyOpen] = useState(false)
   const [createName, setCreateName] = useState('')
   const [createDescription, setCreateDescription] = useState('')
   const [activeBranchId, setActiveBranchId] = useState<string | null>(null)
@@ -158,10 +194,16 @@ export function BranchesTab({ slug }: { slug: string }) {
               main — version control for your schema.
             </p>
           </div>
-          <Button size="sm" onClick={() => setCreateOpen(true)}>
-            <Plus className="size-3.5" />
-            New branch
-          </Button>
+          <div className="flex items-center gap-2">
+            <Button size="sm" variant="outline" onClick={() => setPolicyOpen(true)}>
+              <Settings2 className="size-3.5" />
+              Merge policy
+            </Button>
+            <Button size="sm" onClick={() => setCreateOpen(true)}>
+              <Plus className="size-3.5" />
+              New branch
+            </Button>
+          </div>
         </div>
 
         {isLoading ? (
@@ -184,6 +226,8 @@ export function BranchesTab({ slug }: { slug: string }) {
           </div>
         )}
       </div>
+
+      <MergePolicyDialog slug={slug} open={policyOpen} onOpenChange={setPolicyOpen} />
 
       <CreateBranchDialog
         open={createOpen}
@@ -290,7 +334,16 @@ function BranchDetail({ slug, branch, diff, confirm }: BranchDetailProps) {
     )
   }
 
-  return <FeatureBranchDetail slug={slug} branch={branch} diff={diff} confirm={confirm} />
+  // Keyed by branch so mutation error state doesn't leak across selections.
+  return (
+    <FeatureBranchDetail
+      key={branch.id}
+      slug={slug}
+      branch={branch}
+      diff={diff}
+      confirm={confirm}
+    />
+  )
 }
 
 interface FeatureBranchDetailProps {
@@ -303,19 +356,31 @@ interface FeatureBranchDetailProps {
 function FeatureBranchDetail({ slug, branch, diff, confirm }: FeatureBranchDetailProps) {
   const qc = useQueryClient()
 
+  // Approvals live on the detail response; the required quota on the project's
+  // merge policy. Together they drive the "Approvals n/N" chip.
+  const { data: detail } = useQuery({
+    queryKey: ['planBranchDetail', slug, branch.id],
+    queryFn: () => planBranchesApi.get(slug, branch.id),
+  })
+  const { data: policy } = useQuery({
+    queryKey: ['branchSettings', slug],
+    queryFn: () => branchSettingsApi.get(slug),
+  })
+
   const invalidate = () => {
     qc.invalidateQueries({ queryKey: ['planBranches', slug] })
     qc.invalidateQueries({ queryKey: ['planBranchDiff', slug, branch.id] })
+    qc.invalidateQueries({ queryKey: ['planBranchDetail', slug, branch.id] })
   }
 
-  const transitionMut = useMutation({
-    mutationFn: (action: PlanBranchTransitionAction) =>
-      planBranchesApi.transition(slug, branch.id, action),
-    onSuccess: invalidate,
-  })
-
-  const mergeMut = useMutation({
-    mutationFn: () => planBranchesApi.merge(slug, branch.id),
+  // One mutation for transitions AND merge: each new action replaces the
+  // previous error state, so a stale merge failure can't outlive a later
+  // successful transition (or mask its error).
+  const actionMut = useMutation({
+    mutationFn: (action: PlanBranchTransitionAction | 'merge') =>
+      action === 'merge'
+        ? planBranchesApi.merge(slug, branch.id)
+        : planBranchesApi.transition(slug, branch.id, action),
     onSuccess: invalidate,
   })
 
@@ -337,6 +402,19 @@ function FeatureBranchDetail({ slug, branch, diff, confirm }: FeatureBranchDetai
   const entries = diff?.entries ?? []
   const behind = diff?.behind_base ? 1 : 0
   const summary = diff?.summary ?? { added: 0, removed: 0, changed: 0 }
+  // Mirror the backend gate: distinct non-null approvers, minus the author
+  // when self-approval is blocked — a raw row count can show a green quota
+  // that the merge endpoint would still reject.
+  const approvalsCount = new Set(
+    (detail?.approvals ?? [])
+      .map((a) => a.user_id)
+      .filter(
+        (id): id is string =>
+          id !== null && !(policy?.block_self_approval && id === branch.created_by),
+      ),
+  ).size
+  const requiredApprovals = policy?.min_approvals ?? 0
+  const actionError = actionMut.isError ? describeBranchActionError(actionMut.error) : null
 
   return (
     <div className="flex flex-col gap-3">
@@ -345,14 +423,22 @@ function FeatureBranchDetail({ slug, branch, diff, confirm }: FeatureBranchDetai
         subtitle={`Opened by ${branch.created_by ?? 'unknown'} · updated ${formatRelativeTime(branch.updated_at)}`}
         right={
           <div className="flex items-center gap-1.5">
+            {requiredApprovals > 0 && branch.status !== 'merged' ? (
+              <Chip
+                tone={approvalsCount >= requiredApprovals ? 'success' : 'neutral'}
+                size="xs"
+              >
+                Approvals {approvalsCount}/{requiredApprovals}
+              </Chip>
+            ) : null}
             <Chip tone={STATUS_TONE[branch.status]} size="xs">
               {STATUS_LABEL[branch.status]}
             </Chip>
             {branch.status === 'approved' ? (
               <Button
                 size="sm"
-                disabled={mergeMut.isPending}
-                onClick={() => mergeMut.mutate()}
+                disabled={actionMut.isPending}
+                onClick={() => actionMut.mutate('merge')}
               >
                 <GitMerge className="size-3" />
                 Merge to main
@@ -390,14 +476,22 @@ function FeatureBranchDetail({ slug, branch, diff, confirm }: FeatureBranchDetai
                 key={action}
                 size="sm"
                 variant={action === 'approve' ? 'default' : 'outline'}
-                disabled={transitionMut.isPending}
-                onClick={() => transitionMut.mutate(action)}
+                disabled={actionMut.isPending}
+                onClick={() => actionMut.mutate(action)}
               >
                 {ACTION_LABEL[action]}
               </Button>
             ))}
           </div>
         )}
+        {actionError ? (
+          <p
+            className="border-t px-4 py-2.5 text-[11.5px]"
+            style={{ borderColor: 'var(--border-subtle)', color: 'var(--danger)' }}
+          >
+            {actionError}
+          </p>
+        ) : null}
       </Panel>
 
       <Panel title="Changes" subtitle={`${entries.length} events affected`}>
@@ -678,6 +772,116 @@ function Panel({ title, subtitle, subtitleTone, right, children }: PanelProps) {
       </header>
       {children}
     </section>
+  )
+}
+
+interface MergePolicyDialogProps {
+  slug: string
+  open: boolean
+  onOpenChange: (open: boolean) => void
+}
+
+function MergePolicyDialog({ slug, open, onOpenChange }: MergePolicyDialogProps) {
+  const { data: settings } = useQuery({
+    queryKey: ['branchSettings', slug],
+    queryFn: () => branchSettingsApi.get(slug),
+    enabled: open,
+  })
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="max-w-md">
+        <DialogHeader>
+          <DialogTitle>Merge policy</DialogTitle>
+        </DialogHeader>
+        {settings ? (
+          // Keyed by updated_at so a re-open after an external change re-seeds
+          // the form from the fresh server state.
+          <MergePolicyForm
+            key={settings.updated_at ?? 'defaults'}
+            slug={slug}
+            settings={settings}
+            onClose={() => onOpenChange(false)}
+          />
+        ) : (
+          <p className="py-4 text-sm text-muted-foreground">Loading policy…</p>
+        )}
+      </DialogContent>
+    </Dialog>
+  )
+}
+
+interface MergePolicyFormProps {
+  slug: string
+  settings: ProjectBranchSettings
+  onClose: () => void
+}
+
+function MergePolicyForm({ slug, settings, onClose }: MergePolicyFormProps) {
+  const qc = useQueryClient()
+  const minApprovalsId = useId()
+  const blockSelfId = useId()
+  const [minApprovals, setMinApprovals] = useState(String(settings.min_approvals))
+  const [blockSelf, setBlockSelf] = useState(settings.block_self_approval)
+
+  const saveMut = useMutation({
+    mutationFn: () =>
+      branchSettingsApi.update(slug, {
+        min_approvals: Math.max(0, Number.parseInt(minApprovals, 10) || 0),
+        block_self_approval: blockSelf,
+      }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['branchSettings', slug] })
+      onClose()
+    },
+  })
+
+  return (
+    <form
+      onSubmit={(event) => {
+        event.preventDefault()
+        saveMut.mutate()
+      }}
+    >
+      <div className="grid gap-4 py-4">
+        <div className="grid gap-2">
+          <Label htmlFor={minApprovalsId}>Required approvals</Label>
+          <Input
+            id={minApprovalsId}
+            type="number"
+            min={0}
+            max={100}
+            value={minApprovals}
+            onChange={(event) => setMinApprovals(event.target.value)}
+          />
+          <p className="text-xs text-muted-foreground">
+            Distinct approvals a branch needs before it can merge. 0 disables the quota.
+          </p>
+        </div>
+        <div className="flex items-center justify-between gap-3">
+          <div>
+            <Label htmlFor={blockSelfId}>Block self-approval</Label>
+            <p className="mt-1 text-xs text-muted-foreground">
+              Branch authors cannot approve their own branch.
+            </p>
+          </div>
+          <Switch id={blockSelfId} checked={blockSelf} onCheckedChange={setBlockSelf} />
+        </div>
+        {saveMut.isError && (
+          <p className="text-sm" style={{ color: 'var(--danger)' }}>
+            {getErrorMessage(saveMut.error)}
+          </p>
+        )}
+      </div>
+      <DialogFooter>
+        <Button type="button" variant="outline" onClick={onClose}>
+          Cancel
+        </Button>
+        <Button type="submit" disabled={saveMut.isPending}>
+          Save
+        </Button>
+      </DialogFooter>
+    </form>
   )
 }
 

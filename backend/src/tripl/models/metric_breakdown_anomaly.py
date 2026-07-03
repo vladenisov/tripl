@@ -4,7 +4,6 @@ import uuid
 from datetime import datetime
 
 from sqlalchemy import (
-    BigInteger,
     Boolean,
     DateTime,
     Float,
@@ -75,7 +74,8 @@ class MetricBreakdownAnomaly(UUIDMixin, Base):
     breakdown_column: Mapped[str] = mapped_column(String(255))
     breakdown_value: Mapped[str] = mapped_column(String(500))
     is_other: Mapped[bool] = mapped_column(Boolean, default=False)
-    actual_count: Mapped[int] = mapped_column(BigInteger)
+    # Float for the same reason as MetricAnomaly.actual_count (tripl-68bc).
+    actual_count: Mapped[float] = mapped_column(Float)
     expected_count: Mapped[float] = mapped_column(Float)
     stddev: Mapped[float] = mapped_column(Float)
     z_score: Mapped[float] = mapped_column(Float)

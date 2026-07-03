@@ -3,12 +3,18 @@ from datetime import UTC, datetime
 
 import pytest
 from httpx import AsyncClient
+from sqlalchemy import select
 
 from tripl.models.alert_rule import AlertRule
 from tripl.models.alert_rule_state import AlertRuleState
+from tripl.models.distribution_drift import DistributionDrift
 from tripl.models.event_metric import EventMetric
 from tripl.models.metric_anomaly import MetricAnomaly
+from tripl.models.metric_breakdown_anomaly import MetricBreakdownAnomaly
+from tripl.models.metric_definition import MetricDefinition
+from tripl.models.release_regression import ReleaseRegression
 from tripl.models.scan_job import ScanJob
+from tripl.models.schema_drift import SchemaDrift
 from tripl.tests.conftest import TestSessionLocal
 
 
@@ -320,3 +326,311 @@ async def test_project_summary_counts(client: AsyncClient):
         "z_score": 7.0,
         "direction": "spike",
     }
+
+
+# --- Danger zone: project-wide detection reset ------------------------------
+
+# Half-open reset window: rows strictly before ``_RESET_BEFORE`` are cleared.
+_IN_PERIOD = datetime(2026, 1, 15, 12, tzinfo=UTC)
+_OUT_OF_PERIOD = datetime(2026, 6, 15, 12, tzinfo=UTC)
+_RESET_BEFORE = "2026-03-01T00:00:00Z"
+
+
+async def _setup_reset_project(client: AsyncClient, slug: str) -> dict[str, str]:
+    """Create project + data source + scan config + event type + metric def."""
+    project_resp = await client.post(
+        "/api/v1/projects", json={"name": f"Reset {slug}", "slug": slug}
+    )
+    assert project_resp.status_code == 201, project_resp.text
+    project_id = project_resp.json()["id"]
+
+    ds_resp = await client.post(
+        "/api/v1/data-sources",
+        json={
+            "name": f"Warehouse {slug}",
+            "db_type": "clickhouse",
+            "host": "localhost",
+            "port": 8123,
+            "database_name": "analytics",
+            "username": "default",
+            "password": "",
+        },
+    )
+    assert ds_resp.status_code == 201, ds_resp.text
+    data_source_id = ds_resp.json()["id"]
+
+    scan_resp = await client.post(
+        f"/api/v1/projects/{slug}/scans",
+        json={
+            "data_source_id": data_source_id,
+            "name": "Production scan",
+            "base_query": "SELECT 1",
+        },
+    )
+    assert scan_resp.status_code == 201, scan_resp.text
+    scan_config_id = scan_resp.json()["id"]
+
+    et_resp = await client.post(
+        f"/api/v1/projects/{slug}/event-types",
+        json={"name": "page_view", "display_name": "Page View"},
+    )
+    assert et_resp.status_code == 201, et_resp.text
+    event_type_id = et_resp.json()["id"]
+
+    metric_definition_id = str(uuid.uuid4())
+    async with TestSessionLocal() as session:
+        session.add(
+            MetricDefinition(
+                id=uuid.UUID(metric_definition_id),
+                project_id=uuid.UUID(project_id),
+                name="conversion_rate",
+                display_name="Conversion Rate",
+                kind="sql",
+                config={},
+                data_source_id=uuid.UUID(data_source_id),
+                interval="1h",
+                status="active",
+                unit="%",
+            )
+        )
+        await session.commit()
+
+    return {
+        "project_id": project_id,
+        "slug": slug,
+        "scan_config_id": scan_config_id,
+        "event_type_id": event_type_id,
+        "metric_definition_id": metric_definition_id,
+    }
+
+
+def _anomaly(scan_config_id: str | None, scope_type: str, scope_ref: str, bucket: datetime,
+             *, event_type_id: str | None = None) -> MetricAnomaly:
+    return MetricAnomaly(
+        id=uuid.uuid4(),
+        scan_config_id=uuid.UUID(scan_config_id) if scan_config_id else None,
+        scope_type=scope_type,
+        scope_ref=scope_ref,
+        event_id=None,
+        event_type_id=uuid.UUID(event_type_id) if event_type_id else None,
+        bucket=bucket,
+        actual_count=42,
+        expected_count=21,
+        stddev=3,
+        z_score=7,
+        direction="spike",
+    )
+
+
+def _breakdown(scan_config_id: str, event_type_id: str, bucket: datetime,
+               breakdown_value: str) -> MetricBreakdownAnomaly:
+    return MetricBreakdownAnomaly(
+        id=uuid.uuid4(),
+        scan_config_id=uuid.UUID(scan_config_id),
+        scope_type="event_type",
+        scope_ref=event_type_id,
+        event_id=None,
+        event_type_id=uuid.UUID(event_type_id),
+        bucket=bucket,
+        breakdown_column="platform",
+        breakdown_value=breakdown_value,
+        is_other=False,
+        actual_count=42,
+        expected_count=21,
+        stddev=3,
+        z_score=7,
+        direction="spike",
+    )
+
+
+@pytest.mark.asyncio
+async def test_reset_anomalies_clears_period_and_covers_metric_scope(client: AsyncClient) -> None:
+    ids = await _setup_reset_project(client, "reset-anom")
+    scan_config_id = ids["scan_config_id"]
+    event_type_id = ids["event_type_id"]
+    metric_definition_id = ids["metric_definition_id"]
+
+    event_metric_id = uuid.uuid4()
+    regression_id = uuid.uuid4()
+    async with TestSessionLocal() as session:
+        # In-period event-scope anomaly (deleted) + out-of-period one (kept).
+        anomaly_in = _anomaly(scan_config_id, "event_type", event_type_id, _IN_PERIOD,
+                              event_type_id=event_type_id)
+        anomaly_out = _anomaly(scan_config_id, "event_type", event_type_id, _OUT_OF_PERIOD,
+                              event_type_id=event_type_id)
+        # Project-global metric-scope anomaly: NULL scan_config_id, keyed by the
+        # metric definition id. Must be covered by the dual scoping branch.
+        anomaly_metric = _anomaly(None, "metric", metric_definition_id, _IN_PERIOD)
+        breakdown_in = _breakdown(scan_config_id, event_type_id, _IN_PERIOD, "ios")
+        breakdown_out = _breakdown(scan_config_id, event_type_id, _OUT_OF_PERIOD, "android")
+        session.add_all([anomaly_in, anomaly_out, anomaly_metric, breakdown_in, breakdown_out])
+        # EventMetric + ReleaseRegression must survive the reset (regression guard).
+        session.add(
+            EventMetric(
+                id=event_metric_id,
+                scan_config_id=uuid.UUID(scan_config_id),
+                event_id=None,
+                event_type_id=uuid.UUID(event_type_id),
+                bucket=_IN_PERIOD,
+                count=5,
+            )
+        )
+        session.add(
+            ReleaseRegression(
+                id=regression_id,
+                scan_config_id=uuid.UUID(scan_config_id),
+                scope_type="event_type",
+                scope_ref=event_type_id,
+                event_id=None,
+                event_type_id=uuid.UUID(event_type_id),
+                app_version_column="app_version",
+                version="2.0.0",
+                previous_version="1.0.0",
+                kind="volume_drop",
+                observed_count=1,
+                expected_count=2.0,
+                ratio=0.5,
+                share_prev=0.5,
+                share_new=0.25,
+                release_share=0.5,
+                window_from=_IN_PERIOD,
+                window_to=_OUT_OF_PERIOD,
+            )
+        )
+        await session.commit()
+        kept_anomaly_id = anomaly_out.id
+        kept_breakdown_id = breakdown_out.id
+
+    resp = await client.post(
+        "/api/v1/projects/reset-anom/danger/reset-anomalies",
+        json={"before": _RESET_BEFORE},
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json() == {"metric_anomalies": 2, "metric_breakdown_anomalies": 1}
+
+    async with TestSessionLocal() as session:
+        remaining_anomalies = (await session.execute(select(MetricAnomaly))).scalars().all()
+        assert {a.id for a in remaining_anomalies} == {kept_anomaly_id}
+        remaining_breakdowns = (
+            await session.execute(select(MetricBreakdownAnomaly))
+        ).scalars().all()
+        assert {b.id for b in remaining_breakdowns} == {kept_breakdown_id}
+        # Regression guard: values + release regressions are untouched.
+        event_metrics = (await session.execute(select(EventMetric))).scalars().all()
+        assert {m.id for m in event_metrics} == {event_metric_id}
+        regressions = (await session.execute(select(ReleaseRegression))).scalars().all()
+        assert {r.id for r in regressions} == {regression_id}
+
+    # Idempotent: a second reset over the same window deletes nothing.
+    again = await client.post(
+        "/api/v1/projects/reset-anom/danger/reset-anomalies",
+        json={"before": _RESET_BEFORE},
+    )
+    assert again.status_code == 200
+    assert again.json() == {"metric_anomalies": 0, "metric_breakdown_anomalies": 0}
+
+
+@pytest.mark.asyncio
+async def test_reset_drifts_clears_schema_and_distribution_in_period(client: AsyncClient) -> None:
+    ids = await _setup_reset_project(client, "reset-drift")
+    scan_config_id = ids["scan_config_id"]
+    event_type_id = ids["event_type_id"]
+
+    async with TestSessionLocal() as session:
+        schema_in = SchemaDrift(
+            id=uuid.uuid4(),
+            event_type_id=uuid.UUID(event_type_id),
+            scan_config_id=uuid.UUID(scan_config_id),
+            field_name="payload.old",
+            drift_type="new_field",
+            detected_at=_IN_PERIOD,
+        )
+        schema_out = SchemaDrift(
+            id=uuid.uuid4(),
+            event_type_id=uuid.UUID(event_type_id),
+            scan_config_id=uuid.UUID(scan_config_id),
+            field_name="payload.new",
+            drift_type="new_field",
+            detected_at=_OUT_OF_PERIOD,
+        )
+        dist_in = DistributionDrift(
+            id=uuid.uuid4(),
+            scan_config_id=uuid.UUID(scan_config_id),
+            event_type_id=uuid.UUID(event_type_id),
+            field_name="platform",
+            bucket=_IN_PERIOD,
+            psi=0.42,
+            band="significant",
+            baseline_total=1000,
+            current_total=1000,
+            top_movers=[],
+        )
+        dist_out = DistributionDrift(
+            id=uuid.uuid4(),
+            scan_config_id=uuid.UUID(scan_config_id),
+            event_type_id=uuid.UUID(event_type_id),
+            field_name="country",
+            bucket=_OUT_OF_PERIOD,
+            psi=0.30,
+            band="significant",
+            baseline_total=10,
+            current_total=10,
+            top_movers=[],
+        )
+        session.add_all([schema_in, schema_out, dist_in, dist_out])
+        await session.commit()
+        kept_schema_id = schema_out.id
+        kept_dist_id = dist_out.id
+
+    resp = await client.post(
+        "/api/v1/projects/reset-drift/danger/reset-drifts",
+        json={"before": _RESET_BEFORE},
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json() == {"schema_drifts": 1, "distribution_drifts": 1}
+
+    async with TestSessionLocal() as session:
+        remaining_schema = (await session.execute(select(SchemaDrift))).scalars().all()
+        assert {d.id for d in remaining_schema} == {kept_schema_id}
+        remaining_dist = (await session.execute(select(DistributionDrift))).scalars().all()
+        assert {d.id for d in remaining_dist} == {kept_dist_id}
+
+
+@pytest.mark.asyncio
+async def test_reset_endpoints_are_owner_only(anon_client: AsyncClient) -> None:
+    # First registered user is the owner; create the project as owner.
+    owner_reg = await anon_client.post(
+        "/api/v1/auth/register",
+        json={"email": "reset-owner@example.com", "password": "Password123!", "name": "Owner"},
+    )
+    assert owner_reg.status_code == 201, owner_reg.text
+    await anon_client.post("/api/v1/projects", json={"name": "Guarded", "slug": "reset-rbac"})
+
+    # An owner-scope key is still rejected: owner actions need an interactive session.
+    key_resp = await anon_client.post(
+        "/api/v1/me/api-keys", json={"name": "agent", "scope": "write"}
+    )
+    assert key_resp.status_code == 201, key_resp.text
+    owner_key = key_resp.json()["token"]
+
+    # Second user defaults to editor (non-owner).
+    await anon_client.post("/api/v1/auth/logout")
+    editor_reg = await anon_client.post(
+        "/api/v1/auth/register",
+        json={"email": "reset-editor@example.com", "password": "Password123!", "name": "Editor"},
+    )
+    assert editor_reg.status_code == 201, editor_reg.text
+
+    for path in ("reset-anomalies", "reset-drifts"):
+        editor_denied = await anon_client.post(
+            f"/api/v1/projects/reset-rbac/danger/{path}", json={"before": None}
+        )
+        assert editor_denied.status_code == 403, editor_denied.text
+
+        key_denied = await anon_client.post(
+            f"/api/v1/projects/reset-rbac/danger/{path}",
+            json={"before": None},
+            headers={"Authorization": f"Bearer {owner_key}"},
+        )
+        assert key_denied.status_code == 403, key_denied.text
+        assert "owner session" in key_denied.json()["detail"].lower()

@@ -126,16 +126,26 @@ export function buildNavGroups(slug: string, summary: ProjectSummary | undefined
           label: 'Metrics',
           icon: LineChart,
           href: `${base}/metrics`,
-          match: (p) => p.startsWith(`${base}/metrics`),
+          // The catalog-metric drilldown lives under /monitoring/metric/:id
+          // (getMetricMonitoringPath) but is a Metrics surface — breadcrumbs
+          // read "Metrics › Detail" — so it activates Metrics here and is
+          // excluded from Monitors below.
+          match: (p) =>
+            p.startsWith(`${base}/metrics`)
+            || p.startsWith(`${base}/monitoring/metric/`),
         },
         {
           id: 'monitoring',
           label: 'Monitors',
           icon: Gauge,
           href: `${base}/monitors`,
+          // /monitoring/* drilldowns (event / event-type / project-total)
+          // belong to Monitors — except the catalog-metric drilldown, which
+          // the Metrics item above claims.
           match: (p) =>
             p.startsWith(`${base}/monitors`)
-            || p.startsWith(`${base}/monitoring`)
+            || (p.startsWith(`${base}/monitoring`)
+              && !p.startsWith(`${base}/monitoring/metric/`))
             || p.startsWith(`${base}/settings/monitoring`),
           // The badge counts MONITORS in a FIRING state (firing_monitor_count),
           // never the open-signal population (monitoring_signal_count) — that

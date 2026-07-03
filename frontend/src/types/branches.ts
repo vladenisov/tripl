@@ -105,6 +105,16 @@ export interface PlanBranchList {
   total: number
 }
 
+export interface ProjectBranchSettings {
+  /** Null while the project rides the defaults (row materializes on first PATCH). */
+  id: string | null
+  project_id: string
+  min_approvals: number
+  block_self_approval: boolean
+  created_at: string | null
+  updated_at: string | null
+}
+
 export interface PlanBranchComment {
   id: string
   branch_id: string

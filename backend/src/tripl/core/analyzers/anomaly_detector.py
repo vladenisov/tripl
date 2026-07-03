@@ -52,6 +52,18 @@ _PHASE_STDDEV_FLOOR_RATIO = 0.05
 # cycle, so it tolerates a much tighter floor — we want it to catch sustained
 # level changes that a per-bucket band would absorb.
 _TREND_STDDEV_FLOOR_RATIO = 0.01
+# Fractional series derive their absolute stddev floor from the series' own
+# robust magnitude instead of the count-shaped 1.0: a ratio living around 0.5
+# gets a ~0.005 floor, so a 0.5 -> 0.8 movement scores as the multi-sigma event
+# it is, while micro-wobble below 1% of the level stays suppressed.
+_FRACTIONAL_STDDEV_FLOOR_RATIO = 0.01
+_FRACTIONAL_STDDEV_FLOOR_EPSILON = 1e-9
+
+
+def _fractional_stddev_floor(counts: Sequence[float]) -> float:
+    """Magnitude-derived absolute stddev floor for fractional series."""
+    magnitude = median(abs(value) for value in counts)
+    return max(magnitude * _FRACTIONAL_STDDEV_FLOOR_RATIO, _FRACTIONAL_STDDEV_FLOOR_EPSILON)
 
 
 @dataclass(frozen=True)
@@ -64,14 +76,18 @@ class AnomalyDetectionSettings:
 
 @dataclass(frozen=True)
 class SeriesPoint:
+    """One bucket of the analyzed series. ``count`` carries whole counts for
+    volume series and fractional values (ratios/averages/sql levels) for
+    catalog metrics — the detector is scale-aware either way (tripl-68bc)."""
+
     bucket: datetime
-    count: int
+    count: float
 
 
 @dataclass(frozen=True)
 class DetectedAnomaly:
     bucket: datetime
-    actual_count: int
+    actual_count: float
     expected_count: float
     stddev: float
     z_score: float
@@ -136,21 +152,24 @@ def _effective_stddev(
     expected_count: float,
     *,
     ratio: float = _RELATIVE_STDDEV_FLOOR_RATIO,
+    absolute_floor: float = 1.0,
 ) -> float:
     """Stddev clamped from below so flat baselines don't produce huge z-scores.
 
-    The floor is the larger of (1.0, ``ratio`` * expected_count). Series with
-    very small expected stay at the 1.0 floor (small absolute deviations
-    matter); high-volume series scale by expected so a tiny wobble doesn't trip
-    the threshold. ``ratio`` lets each detector pick its own tightness (wider
-    for the noisy per-bucket phase baseline, tighter for the averaged trend).
+    The floor is the larger of (``absolute_floor``, ``ratio`` * expected_count).
+    Count-shaped series keep the historical 1.0 absolute floor (sub-unit
+    deviations on volumes are noise); fractional series pass a floor derived
+    from their own magnitude, otherwise a 1.0 floor would flatten every
+    sub-unit ratio movement to z~0 (tripl-68bc). ``ratio`` lets each detector
+    pick its own tightness (wider for the noisy per-bucket phase baseline,
+    tighter for the averaged trend).
     """
-    relative_floor = max(expected_count * ratio, 1.0)
+    relative_floor = max(expected_count * ratio, absolute_floor)
     return max(stddev, relative_floor)
 
 
 def _fit_components(
-    counts: list[int],
+    counts: list[float],
     *,
     interval: timedelta,
 ) -> tuple[list[float], list[float], list[float]] | None:
@@ -196,10 +215,12 @@ def _select_phase_period(interval: timedelta, idx: int) -> int | None:
 
 
 def _rolling_anomaly_at(
-    counts: list[int],
+    counts: list[float],
     idx: int,
     point: SeriesPoint,
     settings: AnomalyDetectionSettings,
+    *,
+    stddev_absolute_floor: float = 1.0,
 ) -> DetectedAnomaly | None:
     """Seasonality-blind rolling-mean z-score. Fallback for series too short to
     have a usable phase period (brand-new scans, very sparse data)."""
@@ -212,7 +233,9 @@ def _rolling_anomaly_at(
     if expected_count < settings.min_expected_count:
         return None
 
-    effective_stddev = _effective_stddev(stddev, expected_count)
+    effective_stddev = _effective_stddev(
+        stddev, expected_count, absolute_floor=stddev_absolute_floor
+    )
     z_score = (point.count - expected_count) / effective_stddev
     if abs(z_score) < settings.sigma_threshold:
         return None
@@ -228,11 +251,13 @@ def _rolling_anomaly_at(
 
 
 def _phase_anomaly_at(
-    counts: list[int],
+    counts: list[float],
     idx: int,
     point: SeriesPoint,
     period: int,
     settings: AnomalyDetectionSettings,
+    *,
+    stddev_absolute_floor: float = 1.0,
 ) -> DetectedAnomaly | None:
     """Compare a bucket to the robust distribution of the same phase (e.g. same
     hour-of-week) over prior cycles. median + MAD are robust to past anomalies
@@ -245,7 +270,12 @@ def _phase_anomaly_at(
         return None
 
     scale = _robust_scale(same_phase)
-    effective_stddev = _effective_stddev(scale, expected_count, ratio=_PHASE_STDDEV_FLOOR_RATIO)
+    effective_stddev = _effective_stddev(
+        scale,
+        expected_count,
+        ratio=_PHASE_STDDEV_FLOOR_RATIO,
+        absolute_floor=stddev_absolute_floor,
+    )
     z_score = (point.count - expected_count) / effective_stddev
     if abs(z_score) < settings.sigma_threshold:
         return None
@@ -267,6 +297,7 @@ def _detect_trend_shift(
     evaluation_start: datetime,
     settings: AnomalyDetectionSettings,
     interval: timedelta,
+    stddev_absolute_floor: float = 1.0,
 ) -> list[DetectedAnomaly]:
     """Catch slow/sustained level drifts the per-bucket phase baseline absorbs.
 
@@ -290,7 +321,12 @@ def _detect_trend_shift(
 
         window_start = max(0, idx - period)
         scale = _robust_scale(residuals[window_start:idx])
-        effective_stddev = _effective_stddev(scale, trend[idx], ratio=_TREND_STDDEV_FLOOR_RATIO)
+        effective_stddev = _effective_stddev(
+            scale,
+            trend[idx],
+            ratio=_TREND_STDDEV_FLOOR_RATIO,
+            absolute_floor=stddev_absolute_floor,
+        )
         z_score = (trend[idx] - pre_shift_level) / effective_stddev
         if abs(z_score) < settings.sigma_threshold:
             continue
@@ -377,7 +413,9 @@ def detect_anomalies(
     ``fill_gaps`` (default ``True``) zero-fills missing buckets onto the interval
     grid — correct for count-shaped series. Set it ``False`` for fractional
     series (ratios/averages), where a missing bucket means "no data" and must
-    not read as a drop to zero.
+    not read as a drop to zero. Fractional series also swap the 1.0 absolute
+    stddev floor for one derived from their own magnitude, so sub-unit
+    movements stay detectable (tripl-68bc).
     """
     if fill_gaps:
         expanded = expand_series(points, interval=interval, end_exclusive=evaluation_end)
@@ -387,6 +425,9 @@ def detect_anomalies(
         return []
 
     counts = [point.count for point in expanded]
+    stddev_absolute_floor = (
+        1.0 if fill_gaps else _fractional_stddev_floor(counts)
+    )
     primary: list[DetectedAnomaly] = []
     has_phase_period = False
 
@@ -397,9 +438,18 @@ def detect_anomalies(
         period = _select_phase_period(interval, idx)
         if period is not None:
             has_phase_period = True
-            anomaly = _phase_anomaly_at(counts, idx, point, period, settings)
+            anomaly = _phase_anomaly_at(
+                counts,
+                idx,
+                point,
+                period,
+                settings,
+                stddev_absolute_floor=stddev_absolute_floor,
+            )
         else:
-            anomaly = _rolling_anomaly_at(counts, idx, point, settings)
+            anomaly = _rolling_anomaly_at(
+                counts, idx, point, settings, stddev_absolute_floor=stddev_absolute_floor
+            )
 
         if anomaly is not None:
             primary.append(anomaly)
@@ -417,6 +467,7 @@ def detect_anomalies(
         evaluation_start=evaluation_start,
         settings=settings,
         interval=interval,
+        stddev_absolute_floor=stddev_absolute_floor,
     )
     return _merge_anomalies(primary, trend_anomalies)
 

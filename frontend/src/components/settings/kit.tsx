@@ -1,10 +1,10 @@
 import {
-  type CSSProperties,
   type ReactNode,
   type TextareaHTMLAttributes,
   useId,
 } from 'react'
 import { ChevronDown } from 'lucide-react'
+import { INPUT_BASE } from '@/components/settings/input-style'
 
 /**
  * Settings control kit — the shared form primitives for the full-takeover
@@ -277,16 +277,6 @@ export function Toggle({
 }
 
 // ───────── Text input ─────────
-const INPUT_BASE: CSSProperties = {
-  height: 34,
-  width: '100%',
-  borderRadius: 7,
-  border: '1px solid var(--border)',
-  background: 'var(--bg)',
-  color: 'var(--fg)',
-  fontSize: 12.5,
-  padding: '0 10px',
-}
 
 export function TextInput({
   value,
@@ -424,6 +414,7 @@ export function Select({
   disabled,
   id,
   'aria-required': ariaRequired,
+  'aria-label': ariaLabel,
 }: {
   value: string
   onChange?: (value: string) => void
@@ -431,6 +422,7 @@ export function Select({
   disabled?: boolean
   id?: string
   'aria-required'?: boolean
+  'aria-label'?: string
 }) {
   return (
     <div className="relative" style={{ maxWidth: 280 }}>
@@ -439,6 +431,7 @@ export function Select({
         value={value}
         disabled={disabled}
         aria-required={ariaRequired}
+        aria-label={ariaLabel}
         onChange={(e) => onChange?.(e.target.value)}
         className="w-full appearance-none"
         style={{
