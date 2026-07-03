@@ -457,6 +457,105 @@ describe('MetricsPage', () => {
     })
   })
 
+  describe('operational stat bar and column context (tripl-nxk2.10 / tripl-nxk2.11)', () => {
+    function firingAndQuiet(): MetricDefinitionListResponse {
+      return {
+        items: [
+          makeItem({
+            id: 'm-firing',
+            name: 'firing',
+            display_name: 'Firing metric',
+            latest_signal: makeSignal('latest_scan', 'spike'),
+          }),
+          makeItem({ id: 'm-quiet', name: 'quiet', display_name: 'Quiet metric', latest_signal: null }),
+        ],
+        total: 2,
+      }
+    }
+
+    it('counts active anomalies and filters the table to them on click', async () => {
+      mockList(firingAndQuiet())
+
+      renderMetrics()
+
+      // Wait for the data to load: both rows visible before filtering.
+      expect(await screen.findByText('Firing metric')).toBeInTheDocument()
+      expect(screen.getByText('Quiet metric')).toBeInTheDocument()
+      const anomaliesFilter = screen.getByRole('button', { name: 'Filter by active anomalies' })
+      // One of the two loaded metrics is firing on the latest scan.
+      expect(within(anomaliesFilter).getByText('1')).toBeInTheDocument()
+
+      fireEvent.click(anomaliesFilter)
+
+      // Filtered down to just the firing metric.
+      expect(screen.getByText('Firing metric')).toBeInTheDocument()
+      expect(screen.queryByText('Quiet metric')).not.toBeInTheDocument()
+      expect(anomaliesFilter).toHaveAttribute('aria-pressed', 'true')
+    })
+
+    it('restores the full list when the anomalies filter is toggled off', async () => {
+      mockList(firingAndQuiet())
+
+      renderMetrics()
+
+      expect(await screen.findByText('Quiet metric')).toBeInTheDocument()
+      const anomaliesFilter = screen.getByRole('button', { name: 'Filter by active anomalies' })
+      fireEvent.click(anomaliesFilter)
+      expect(screen.queryByText('Quiet metric')).not.toBeInTheDocument()
+
+      // Clicking the active stat again clears the client-side filter.
+      fireEvent.click(anomaliesFilter)
+      expect(await screen.findByText('Quiet metric')).toBeInTheDocument()
+      expect(anomaliesFilter).toHaveAttribute('aria-pressed', 'false')
+    })
+
+    it('clears the anomalies filter when a server-side filter changes', async () => {
+      mockList(firingAndQuiet())
+
+      renderMetrics()
+
+      expect(await screen.findByText('Quiet metric')).toBeInTheDocument()
+      const anomaliesFilter = screen.getByRole('button', { name: 'Filter by active anomalies' })
+      fireEvent.click(anomaliesFilter)
+      expect(screen.queryByText('Quiet metric')).not.toBeInTheDocument()
+
+      // Changing the status filter swaps the loaded set, so the signal filter is
+      // dropped and both rows return (the mock ignores server-side filter args).
+      fireEvent.change(screen.getByLabelText('Filter by status'), { target: { value: 'active' } })
+      expect(await screen.findByText('Quiet metric')).toBeInTheDocument()
+      expect(anomaliesFilter).toHaveAttribute('aria-pressed', 'false')
+    })
+
+    it('labels the Trend column header with the real sparkline point count', async () => {
+      mockList({ items: [makeItem({ id: 'm-1', spark: [1, 2, 3, 4, 5, 6, 7, 8] })], total: 1 })
+
+      renderMetrics()
+
+      expect(await screen.findByText('Trend · 8 pts')).toBeInTheDocument()
+    })
+
+    it('titles the Latest cell with the latest bucket time when available', async () => {
+      mockList({ items: [makeItem({ id: 'm-1', latest_bucket: '2026-06-20T00:00:00Z' })], total: 1 })
+
+      renderMetrics()
+
+      const cell = await screen.findByText('42 %')
+      expect(cell.getAttribute('title')).toMatch(/^Latest point:/)
+    })
+
+    it('falls back to the collection interval as the Latest-cell title', async () => {
+      mockList({
+        items: [makeItem({ id: 'm-1', latest_bucket: null, latest_signal: null, interval: '1h' })],
+        total: 1,
+      })
+
+      renderMetrics()
+
+      const cell = await screen.findByText('42 %')
+      expect(cell).toHaveAttribute('title', 'Collected hourly')
+    })
+  })
+
   describe('Fact tables tab', () => {
     it('keeps the Metrics heading and lists fact tables on the Fact tables tab', async () => {
       mockFactTables({

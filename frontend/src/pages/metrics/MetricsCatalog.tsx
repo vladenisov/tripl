@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useMemo, useState, type ReactNode } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { DndContext, closestCenter, type DragEndEvent } from '@dnd-kit/core'
@@ -41,7 +41,7 @@ import { MiniStat, MiniStatDivider } from '@/components/primitives/mini-stat'
 import { Sparkline } from '@/components/primitives/sparkline'
 import { useDebouncedValue } from '@/hooks/useDebouncedValue'
 import { useEventsDndSensors } from '@/pages/events/useEventsDndSensors'
-import { formatRelativeTime } from '@/lib/datetime'
+import { formatDateTime, formatRelativeTime } from '@/lib/datetime'
 import { formatMetricValue } from '@/lib/metricFormat'
 import { getMetricMonitoringPath } from '@/lib/monitoring'
 import { getErrorMessage } from '@/lib/utils'
@@ -57,6 +57,7 @@ import {
   type MetricDefinitionListResponse,
   type MetricDefinitionResponse,
   type MetricKind,
+  type MetricScanInterval,
   type MetricStatus,
   type SqlMetricCreate,
 } from '@/types'
@@ -79,6 +80,95 @@ const KIND_FILTER_OPTIONS: { value: '' | MetricKind; label: string }[] = [
 
 const FILTER_SELECT_CLASS =
   'h-8 rounded-md border bg-[var(--bg)] px-2 text-[12px] text-[var(--fg)] outline-none'
+
+// Human-readable collection cadence, used as the Latest-cell tooltip context
+// when a metric has no known bucket timestamp for its latest value
+// (tripl-nxk2.11). Mirrors the backend ScanInterval enum.
+const INTERVAL_LABEL: Record<MetricScanInterval, string> = {
+  '15m': 'every 15 min',
+  '1h': 'hourly',
+  '6h': 'every 6 h',
+  '1d': 'daily',
+  '1w': 'weekly',
+}
+
+// Interval → milliseconds, for the staleness threshold (tripl-nxk2.10).
+const INTERVAL_MS: Record<MetricScanInterval, number> = {
+  '15m': 15 * 60_000,
+  '1h': 60 * 60_000,
+  '6h': 6 * 60 * 60_000,
+  '1d': 24 * 60 * 60_000,
+  '1w': 7 * 24 * 60 * 60_000,
+}
+
+// A metric is "stale" once its freshest bucket is older than this many
+// intervals — long enough that a scheduled collection was almost certainly
+// missed, not merely running a little late.
+const STALE_INTERVAL_MULTIPLIER = 3
+
+type SignalFilter = 'anomalies' | 'stale'
+
+// A latest-scan signal (state !== 'recent') is an active anomaly on the most
+// recent scan; a 'recent' signal means the newest scan was already clean.
+// Mirrors the per-row `isActiveSignal` check in MetricRow.
+function hasActiveSignal(metric: MetricDefinitionListItem): boolean {
+  return !!metric.latest_signal && metric.latest_signal.state !== 'recent'
+}
+
+// Staleness path (tripl-nxk2.10): MetricDefinitionListItem DOES carry a
+// last-bucket timestamp (`latest_bucket`) alongside the collection `interval`,
+// so we compute real staleness rather than fabricating a signal or falling back
+// to a Draft count. Only ACTIVE metrics can be stale — drafts never started
+// collecting and archived metrics were stopped on purpose — and only when the
+// freshest bucket is older than STALE_INTERVAL_MULTIPLIER × the interval. A
+// metric with no bucket or no interval is treated as not-yet-collecting.
+function isStaleMetric(metric: MetricDefinitionListItem, now: number): boolean {
+  if (metric.status !== 'active') return false
+  if (!metric.latest_bucket || !metric.interval) return false
+  const intervalMs = INTERVAL_MS[metric.interval]
+  if (!intervalMs) return false
+  const bucketTs = Date.parse(metric.latest_bucket)
+  if (Number.isNaN(bucketTs)) return false
+  return now - bucketTs > STALE_INTERVAL_MULTIPLIER * intervalMs
+}
+
+// A clickable stat cell: wraps a MiniStat (a <dl>, not a button) in an
+// accessible role="button" so an operational count doubles as a one-click table
+// filter (tripl-nxk2.10). Keyboard (Enter/Space) + aria-pressed included; the
+// negative vertical margin keeps the hover/focus padding from shifting the
+// stat-bar baseline.
+function StatFilter({
+  active,
+  onToggle,
+  label,
+  children,
+}: {
+  active: boolean
+  onToggle: () => void
+  label: string
+  children: ReactNode
+}) {
+  return (
+    <div
+      role="button"
+      tabIndex={0}
+      aria-pressed={active}
+      aria-label={label}
+      onClick={onToggle}
+      onKeyDown={event => {
+        if (event.key === 'Enter' || event.key === ' ') {
+          event.preventDefault()
+          onToggle()
+        }
+      }}
+      className={`-my-1 cursor-pointer rounded-md px-2 py-1 outline-none transition-colors hover:bg-[var(--surface-hover)] focus-visible:ring-2 focus-visible:ring-[var(--accent)] ${
+        active ? 'bg-[var(--surface-hover)]' : ''
+      }`}
+    >
+      {children}
+    </div>
+  )
+}
 
 // The single fact operand shape (numerator / denominator) sent to the backend —
 // derived from the generated create schema so it stays in lock-step.
@@ -213,6 +303,12 @@ export function MetricsCatalog({ slug }: { slug?: string }) {
   const [searchInput, setSearchInput] = useState('')
   const [statusFilter, setStatusFilter] = useState<'' | MetricStatus>('')
   const [kindFilter, setKindFilter] = useState<'' | MetricKind>('')
+  // Client-side derived filter driven by the operational stat cells; layered on
+  // top of the server-side status/kind/search filters (tripl-nxk2.10).
+  const [signalFilter, setSignalFilter] = useState<SignalFilter | null>(null)
+  // "Now" snapshotted once at mount for staleness comparisons — a stable render
+  // input (Date.now() during render is impure); mirrors ScansTab's mountedAtMs.
+  const [nowMs] = useState(() => Date.now())
   const [selectedIds, setSelectedIds] = useState<ReadonlySet<string>>(new Set())
   const search = useDebouncedValue(searchInput, 250)
 
@@ -235,9 +331,31 @@ export function MetricsCatalog({ slug }: { slug?: string }) {
   // as draft" copy-name suffixing.
   const existingNames = useMemo(() => new Set(metrics.map(m => m.name)), [metrics])
   const active = metrics.filter(m => m.status === 'active').length
-  const draft = metrics.filter(m => m.status === 'draft').length
-  const archived = metrics.filter(m => m.status === 'archived').length
-  const hasFilters = !!statusFilter || !!kindFilter || !!search
+  // Operational rollups derived from the loaded list (tripl-nxk2.10). Counts
+  // reflect every loaded metric regardless of the client-side signal filter, so
+  // clicking a stat to filter never changes its own number.
+  const anomalyCount = useMemo(() => metrics.filter(hasActiveSignal).length, [metrics])
+  const staleCount = useMemo(
+    () => metrics.filter(m => isStaleMetric(m, nowMs)).length,
+    [metrics, nowMs],
+  )
+  // Widest sparkline in the loaded set → the real "last N points" the Trend
+  // column represents (tripl-nxk2.11). Each spark is a trailing, bounded window
+  // of metric-value buckets, so the point count is the honest, data-derived
+  // label; the wall-clock window differs per metric interval and isn't knowable
+  // at the column level.
+  const trendPoints = useMemo(
+    () => metrics.reduce((max, m) => Math.max(max, m.spark.length), 0),
+    [metrics],
+  )
+  // Client-side view over the loaded list, applied on top of the server-side
+  // status/kind/search filters (tripl-nxk2.10).
+  const visibleMetrics = useMemo(() => {
+    if (signalFilter === 'anomalies') return metrics.filter(hasActiveSignal)
+    if (signalFilter === 'stale') return metrics.filter(m => isStaleMetric(m, nowMs))
+    return metrics
+  }, [metrics, signalFilter, nowMs])
+  const hasFilters = !!statusFilter || !!kindFilter || !!search || !!signalFilter
   // Loaded with no metrics AND no active filters — the true "nothing here yet"
   // state, distinct from loading, error, and "filters matched nothing".
   const isEmpty = !metricsQuery.isError && !!data && metrics.length === 0 && !hasFilters
@@ -247,10 +365,10 @@ export function MetricsCatalog({ slug }: { slug?: string }) {
   const canReorder = !hasFilters && metrics.length > 1
 
   const selected = useMemo(
-    () => metrics.filter(m => selectedIds.has(m.id)),
-    [metrics, selectedIds],
+    () => visibleMetrics.filter(m => selectedIds.has(m.id)),
+    [visibleMetrics, selectedIds],
   )
-  const allSelected = metrics.length > 0 && selected.length === metrics.length
+  const allSelected = visibleMetrics.length > 0 && selected.length === visibleMetrics.length
 
   const toggleSelected = (id: string) => {
     setSelectedIds(prev => {
@@ -261,14 +379,24 @@ export function MetricsCatalog({ slug }: { slug?: string }) {
     })
   }
   const toggleAll = () => {
-    setSelectedIds(allSelected ? new Set() : new Set(metrics.map(m => m.id)))
+    setSelectedIds(allSelected ? new Set() : new Set(visibleMetrics.map(m => m.id)))
   }
   // Filter/search changes swap the visible set; carrying hidden selections
   // across views would let a later bulk action silently hit rows the user
   // no longer sees — so every view change starts with a clean slate.
   const clearSelectionAnd = <T,>(setter: (value: T) => void) => (value: T) => {
     setSelectedIds(new Set())
+    // A server-side filter change swaps the loaded set out from under the
+    // client-side signal filter, so drop it too (tripl-nxk2.10).
+    setSignalFilter(null)
     setter(value)
+  }
+  // Toggling a stat cell filters the table to that operational slice; clicking
+  // the active one clears it. Mirrors clearSelectionAnd — every view change
+  // starts with a clean selection so a later bulk action can't hit hidden rows.
+  const toggleSignalFilter = (filter: SignalFilter) => {
+    setSelectedIds(new Set())
+    setSignalFilter(prev => (prev === filter ? null : filter))
   }
 
   const bulkStatusMut = useMutation({
@@ -344,13 +472,37 @@ export function MetricsCatalog({ slug }: { slug?: string }) {
           <MiniStatDivider />
           <MiniStat label="Active" value={data ? active.toLocaleString() : '—'} tone="success" />
           <MiniStatDivider />
-          <MiniStat label="Draft" value={data ? draft.toLocaleString() : '—'} />
+          <StatFilter
+            active={signalFilter === 'anomalies'}
+            onToggle={() => toggleSignalFilter('anomalies')}
+            label="Filter by active anomalies"
+          >
+            <MiniStat
+              label="Anomalies"
+              value={
+                <span style={{ color: anomalyCount > 0 ? 'var(--danger)' : undefined }}>
+                  {data ? anomalyCount.toLocaleString() : '—'}
+                </span>
+              }
+              tone={anomalyCount > 0 ? 'danger' : 'neutral'}
+            />
+          </StatFilter>
           <MiniStatDivider />
-          <MiniStat
-            label="Archived"
-            value={data ? archived.toLocaleString() : '—'}
-            tone={archived > 0 ? 'warning' : 'neutral'}
-          />
+          <StatFilter
+            active={signalFilter === 'stale'}
+            onToggle={() => toggleSignalFilter('stale')}
+            label="Filter by stale metrics"
+          >
+            <MiniStat
+              label="Stale"
+              value={
+                <span style={{ color: staleCount > 0 ? 'var(--warning)' : undefined }}>
+                  {data ? staleCount.toLocaleString() : '—'}
+                </span>
+              }
+              tone={staleCount > 0 ? 'warning' : 'neutral'}
+            />
+          </StatFilter>
         </div>
       )}
 
@@ -463,7 +615,7 @@ export function MetricsCatalog({ slug }: { slug?: string }) {
               <div className="px-4 py-6 text-[12px]" style={{ color: 'var(--fg-subtle)' }}>
                 Loading…
               </div>
-            ) : metrics.length === 0 ? (
+            ) : visibleMetrics.length === 0 ? (
               <div className="px-4 py-6 text-[12px]" style={{ color: 'var(--fg-subtle)' }}>
                 No metrics match the current filters.
               </div>
@@ -486,7 +638,9 @@ export function MetricsCatalog({ slug }: { slug?: string }) {
                       </span>
                       <span role="columnheader">Metric</span>
                       <span role="columnheader">Latest</span>
-                      <span role="columnheader">Trend</span>
+                      <span role="columnheader">
+                        {trendPoints > 0 ? `Trend · ${trendPoints} pts` : 'Trend'}
+                      </span>
                       <span role="columnheader">Status</span>
                       <span role="columnheader" className="text-right">Updated</span>
                       <span role="columnheader" aria-label="Actions" />
@@ -498,11 +652,11 @@ export function MetricsCatalog({ slug }: { slug?: string }) {
                     onDragEnd={handleDragEnd}
                   >
                     <SortableContext
-                      items={metrics.map(m => m.id)}
+                      items={visibleMetrics.map(m => m.id)}
                       strategy={verticalListSortingStrategy}
                     >
                       <div role="rowgroup">
-                        {metrics.map(metric => (
+                        {visibleMetrics.map(metric => (
                           <MetricRow
                             key={metric.id}
                             metric={metric}
@@ -560,6 +714,16 @@ function MetricRow({
       : 'danger'
     : undefined
   const anomalyIdx = isActiveSignal && metric.spark.length > 0 ? metric.spark.length - 1 : null
+
+  // Latest-cell tooltip (tripl-nxk2.11): prefer the actual bucket time of the
+  // latest value, then a signal's bucket, else fall back to the collection
+  // cadence so the cell always carries some temporal context.
+  const bucketIso = metric.latest_bucket ?? metric.latest_signal?.bucket ?? null
+  const latestTitle = bucketIso
+    ? `Latest point: ${formatDateTime(bucketIso)}`
+    : metric.interval
+      ? `Collected ${INTERVAL_LABEL[metric.interval]}`
+      : undefined
 
   return (
     <div
@@ -642,6 +806,7 @@ function MetricRow({
       </span>
       <span
         role="cell"
+        title={latestTitle}
         className="mono truncate text-[12px]"
         style={{ color: signalTone ? `var(--${signalTone})` : 'var(--fg-subtle)' }}
       >
