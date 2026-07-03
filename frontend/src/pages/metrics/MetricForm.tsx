@@ -48,6 +48,7 @@ import {
 import type { FactTable, FactTableColumn } from '@/types/factTables'
 import { FactFilterEditor } from './FactFilterEditor'
 import { filtersFromConfig, filtersToPayload, type FactFilter } from './factFilters'
+import { METRIC_TEMPLATES, type MetricTemplate } from './metricTemplates'
 
 // The single fact operand shape sent to the backend (numerator / denominator /
 // the implicit single operand) — derived from the generated create schema so it
@@ -453,6 +454,82 @@ function SqlPreviewPanel({ result, color }: SqlPreviewPanelProps) {
   )
 }
 
+interface TemplateGalleryProps {
+  onPick: (template: MetricTemplate) => void
+  onSkip: () => void
+}
+
+/**
+ * Create-only starter gallery: a compact grid of metric templates that prefill
+ * the form, plus a "Start from scratch" escape hatch. Cards are plain buttons
+ * (keyboard-focusable) styled to match the RadioCards / SCard idiom; picking one
+ * seeds the form and dismisses the gallery, leaving every field editable.
+ */
+function TemplateGallery({ onPick, onSkip }: TemplateGalleryProps) {
+  return (
+    <SCard
+      title="Start from a template"
+      description="Prefill the form for a common metric, then point it at your data — or start from scratch."
+    >
+      <div className="px-[18px] py-4">
+        <div
+          role="group"
+          aria-label="Metric templates"
+          className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-3"
+        >
+          {METRIC_TEMPLATES.map(template => {
+            const Icon = template.icon
+            return (
+              <button
+                key={template.id}
+                type="button"
+                onClick={() => onPick(template)}
+                className="flex items-start gap-2.5 rounded-[9px] px-[13px] py-[11px] text-left transition-colors hover:bg-[var(--surface-hover)]"
+                style={{ border: '1px solid var(--border)', background: 'var(--bg)' }}
+              >
+                <span
+                  className="mt-px flex h-[28px] w-[28px] shrink-0 items-center justify-center rounded-lg"
+                  style={{
+                    background: 'var(--bg-sunken)',
+                    border: '1px solid var(--border-subtle)',
+                    color: 'var(--fg-muted)',
+                  }}
+                >
+                  <Icon size={15} />
+                </span>
+                <span className="min-w-0">
+                  <span
+                    className="block text-[12.5px] font-semibold"
+                    style={{ color: 'var(--fg)' }}
+                  >
+                    {template.label}
+                  </span>
+                  <span
+                    className="mt-0.5 block text-[11.5px] leading-[1.4]"
+                    style={{ color: 'var(--fg-subtle)' }}
+                  >
+                    {template.description}
+                  </span>
+                </span>
+              </button>
+            )
+          })}
+        </div>
+        <div className="mt-[14px]">
+          <button
+            type="button"
+            onClick={onSkip}
+            className="inline-flex h-8 items-center rounded-[7px] px-3 text-[12px] font-medium transition-colors hover:bg-[var(--surface-hover)]"
+            style={{ border: '1px solid var(--border)', color: 'var(--fg-muted)' }}
+          >
+            Start from scratch
+          </button>
+        </div>
+      </div>
+    </SCard>
+  )
+}
+
 interface MetricFormProps {
   slug: string
   metric: MetricDefinitionResponse | null
@@ -553,6 +630,10 @@ export function MetricForm({ slug, metric, dataSources, events, onClose }: Metri
   // record drives both the per-field errors and the bottom summary list.
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({})
   const { confirm: confirmKind, dialog: kindDialog } = useConfirm()
+
+  // Create-only starter gallery: shown pristine above the form; picking a
+  // template or "Start from scratch" dismisses it. Never shown when editing.
+  const [showTemplates, setShowTemplates] = useState(isNew)
 
   const factEnabled = kind === 'fact'
   const factTablesQuery = useQuery({
@@ -926,6 +1007,28 @@ export function MetricForm({ slug, metric, dataSources, events, onClose }: Metri
     if (value) setDenominatorEventTypeId('')
   }
 
+  // Seed the create form from a starter template, then reveal the (now
+  // prefilled) form. Only editable presentation + kind-shape fields are set;
+  // project-specific refs (data source, fact table, events, columns) stay empty
+  // so the user still points the metric at their own data.
+  const applyTemplate = (template: MetricTemplate) => {
+    const { seed } = template
+    applyKind(seed.kind)
+    onDisplayNameChange(seed.displayName)
+    setUnit(seed.unit)
+    setAnomalyDetection(seed.anomalyDetection)
+    if (seed.interval) setIntervalValue(seed.interval)
+    if (seed.composition) setComposition(seed.composition)
+    if (seed.factComposition) setFactComposition(seed.factComposition)
+    if (seed.aggregation) {
+      const aggregation = seed.aggregation
+      setNumeratorOp(prev => ({ ...prev, aggregation }))
+    }
+    if (seed.metricSql !== undefined) setMetricSql(seed.metricSql)
+    if (seed.sqlTimeColumn !== undefined) setSqlTimeColumn(seed.sqlTimeColumn)
+    setShowTemplates(false)
+  }
+
   return (
     <div className="h-full overflow-y-auto">
       <form
@@ -946,6 +1049,10 @@ export function MetricForm({ slug, metric, dataSources, events, onClose }: Metri
         <h1 className="mb-[18px] text-[22px] font-semibold tracking-[-0.01em]">
           {isNew ? 'New metric' : 'Edit metric'}
         </h1>
+
+        {isNew && showTemplates && (
+          <TemplateGallery onPick={applyTemplate} onSkip={() => setShowTemplates(false)} />
+        )}
 
         {/* Top row: Details on the left, Kind + its primary config on the right
             (roughly matched heights, full page width). */}

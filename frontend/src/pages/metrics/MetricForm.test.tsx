@@ -823,3 +823,84 @@ describe('MetricForm validation', () => {
     expect(timeInput.value).toBe('buck')
   })
 })
+
+describe('MetricForm templates', () => {
+  const TEMPLATE_EDIT_METRIC = {
+    id: 'metric-1',
+    project_id: 'p-1',
+    kind: 'sql',
+    name: 'order_count',
+    display_name: 'Order count',
+    description: '',
+    status: 'active',
+    unit: null,
+    color: '#6366f1',
+    anomaly_detection_enabled: true,
+    breakdown_columns: [],
+    app_version_column: null,
+    platform_column: null,
+    data_source_id: 'ds-1',
+    interval: '1h',
+    replay_chunk_interval: '1h',
+    aggregation: 'count',
+    composition: null,
+    numerator_event_id: null,
+    denominator_event_id: null,
+    reviewed: false,
+    order: 0,
+    config: {
+      metric_sql: 'SELECT bucket, count(*) AS value FROM events GROUP BY 1',
+      time_column: 'bucket',
+    },
+    created_at: '2026-06-01T00:00:00Z',
+    updated_at: '2026-06-20T00:00:00Z',
+  } as unknown as MetricDefinitionResponse
+
+  it('shows the starter template gallery in create mode', () => {
+    renderForm()
+
+    expect(screen.getByText('Start from a template')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /Daily active users/ })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /Conversion A→B/ })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Start from scratch' })).toBeInTheDocument()
+  })
+
+  it('seeds kind=event_composition and unit=% from the "Conversion A→B" template', () => {
+    renderForm()
+
+    fireEvent.click(screen.getByRole('button', { name: /Conversion A→B/ }))
+
+    // The event-composition kind radio is now checked...
+    expect(screen.getByRole('radio', { name: /Event composition/ })).toHaveAttribute(
+      'aria-checked',
+      'true',
+    )
+    // ...and the unit input carries the seeded '%'.
+    expect((document.getElementById('metric-unit') as HTMLInputElement).value).toBe('%')
+    // Picking a template dismisses the gallery, leaving the prefilled form.
+    expect(screen.queryByText('Start from a template')).toBeNull()
+  })
+
+  it('dismisses the gallery and leaves an empty form on "Start from scratch"', () => {
+    renderForm()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Start from scratch' }))
+
+    expect(screen.queryByText('Start from a template')).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Start from scratch' })).toBeNull()
+    // The form is present and pristine: default SQL kind, empty display name.
+    expect(
+      (screen.getByLabelText('Display name', { exact: false }) as HTMLInputElement).value,
+    ).toBe('')
+    expect(screen.getByRole('radio', { name: /SQL/ })).toHaveAttribute('aria-checked', 'true')
+  })
+
+  it('never shows the gallery in edit mode', () => {
+    renderForm(TEMPLATE_EDIT_METRIC)
+
+    expect(screen.queryByText('Start from a template')).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Start from scratch' })).toBeNull()
+    // The form renders directly.
+    expect(screen.getByRole('heading', { name: 'Edit metric' })).toBeInTheDocument()
+  })
+})
