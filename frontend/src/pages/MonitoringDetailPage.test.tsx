@@ -627,4 +627,40 @@ describe('MonitoringDetailPage catalog-metric drilldown', () => {
     const chart = await screen.findByTestId('metrics-chart')
     await waitFor(() => expect(chart).toHaveAttribute('data-points', '2'))
   })
+
+  it('labels the primary tab and card "Value" for the metric scope, not "Volume"', async () => {
+    installMetricDetailFetch('1d')
+    renderMetricDetail()
+
+    await screen.findByTestId('metrics-chart')
+    // Catalog metrics (ratios/averages) are values, not volumes.
+    expect(screen.getByRole('tab', { name: 'Value' })).toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: 'Value' })).toBeInTheDocument()
+    expect(screen.queryByRole('tab', { name: 'Volume' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('heading', { name: 'Volume' })).not.toBeInTheDocument()
+  })
+
+  it('coaches the metric-scope Breakdowns empty state with an Edit metric link', async () => {
+    installMetricDetailFetch('1d')
+    renderMetricDetail()
+
+    await screen.findByTestId('metrics-chart')
+
+    const breakdownsTab = screen.getByRole('tab', { name: /Breakdowns/i })
+    fireEvent.pointerDown(breakdownsTab, { button: 0, ctrlKey: false })
+    fireEvent.mouseDown(breakdownsTab, { button: 0, ctrlKey: false })
+    fireEvent.pointerUp(breakdownsTab, { button: 0, ctrlKey: false })
+    fireEvent.mouseUp(breakdownsTab, { button: 0, ctrlKey: false })
+    fireEvent.click(breakdownsTab)
+
+    // Metric-scope copy — no "event"/"scan" language, points at the metric settings.
+    expect(
+      await screen.findByText(/Add breakdown columns in the metric settings/i),
+    ).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /Edit metric/i })).toBeInTheDocument()
+    // Event-scope copy must not leak into the metric scope.
+    expect(
+      screen.queryByText(/Edit this event and add a column/i),
+    ).not.toBeInTheDocument()
+  })
 })

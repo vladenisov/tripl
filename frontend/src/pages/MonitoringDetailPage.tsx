@@ -219,6 +219,11 @@ export default function MonitoringDetailPage() {
   // undefined scope (it now redirects to the canonical URL, but stay defensive).
   const scope = resolveDetailScope(scopeParam, eventId)
   const scopeId = id ?? eventId ?? ''
+  // Reused by the header Edit button and the metric-scope Breakdowns empty state.
+  const metricEditPath = `/p/${slug}/metrics/${scopeId}/edit`
+  // Catalog metrics measure values (ratios, averages), not event volumes, so the
+  // primary chart/tab reads "Value" for the metric scope and "Volume" elsewhere.
+  const volumeLabel = scope === 'metric' ? 'Value' : 'Volume'
 
   const timeRange = useMemo(() => {
     const to = new Date()
@@ -674,7 +679,7 @@ export default function MonitoringDetailPage() {
                 <Button
                   variant="outline"
                   size="sm"
-                  onClick={() => navigate(`/p/${slug}/metrics/${scopeId}/edit`)}
+                  onClick={() => navigate(metricEditPath)}
                 >
                   <Pencil className="mr-2 h-4 w-4" />
                   Edit
@@ -739,8 +744,8 @@ export default function MonitoringDetailPage() {
 
       {isEventDetail && <span ref={metricsRef} aria-hidden className="-mt-5 block scroll-mt-4" />}
       <Tabs value={selectedTab} onValueChange={value => setActiveTab(value as MonitoringDetailTab)}>
-        <TabsList>
-          <TabsTrigger value="volume">Volume</TabsTrigger>
+        <TabsList className="text-fg-muted">
+          <TabsTrigger value="volume">{volumeLabel}</TabsTrigger>
           {hasVersionColumn && (
             <TabsTrigger value="versions">
               <GitBranch className="h-3.5 w-3.5" />
@@ -801,7 +806,7 @@ export default function MonitoringDetailPage() {
           <Card>
             <CardContent className="p-6">
               <div className="flex items-center justify-between mb-4">
-                <h2 className="text-lg font-semibold">Volume</h2>
+                <h2 className="text-lg font-semibold">{volumeLabel}</h2>
                 <MetricsRangeControls
                   rangeDays={rangeDays}
                   granularity={granularity}
@@ -1113,10 +1118,29 @@ export default function MonitoringDetailPage() {
               ) : !breakdowns?.columns.length ? (
                 <div className="flex h-[280px] flex-col items-center justify-center gap-1 text-center text-sm text-muted-foreground">
                   <p>No breakdown groups yet.</p>
-                  <p className="text-xs">
-                    Edit this event and add a column under “Metric breakdowns”, then run a
-                    scan — its volume will split into a series per value of that column.
-                  </p>
+                  {scope === 'metric' ? (
+                    <>
+                      <p className="text-xs">
+                        Add breakdown columns in the metric settings — each configured
+                        column splits this metric into a series per value after the next
+                        collection.
+                      </p>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        className="mt-2"
+                        onClick={() => navigate(metricEditPath)}
+                      >
+                        <Pencil className="mr-2 h-4 w-4" />
+                        Edit metric
+                      </Button>
+                    </>
+                  ) : (
+                    <p className="text-xs">
+                      Edit this event and add a column under “Metric breakdowns”, then run a
+                      scan — its volume will split into a series per value of that column.
+                    </p>
+                  )}
                 </div>
               ) : (
                 <>
