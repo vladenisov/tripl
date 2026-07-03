@@ -123,6 +123,9 @@ ALERT_ITEM_TEMPLATE_VARIABLES: dict[str, str] = {
 _ALERT_TEMPLATE_VAR_RE = re.compile(r"\$\{([a-zA-Z_][a-zA-Z0-9_]*)\}")
 _TELEGRAM_MARKDOWNV2_SPECIAL_CHARS = set("_*[]()~`>#+-=|{}.!\\")
 
+# Catalog metric unit that marks stored-fraction values (0.08 == 8%).
+METRIC_UNIT_PERCENT = "%"
+
 
 @dataclass(frozen=True)
 class AlertTemplateContext:
@@ -232,3 +235,18 @@ def _stringify_alert_value(value: object) -> str:
     if isinstance(value, float):
         return f"{value:.1f}" if not value.is_integer() else str(int(value))
     return str(value)
+
+
+def format_metric_alert_value(value: float, unit: str | None) -> str | float:
+    """Percent-aware rendering for metric-scope alert values.
+
+    Catalog metrics with unit ``%`` store fractions (0.08 == 8%), so scale by
+    100 and suffix ``%`` using the same integral/fractional rules as the shared
+    stringifier ("8%" integral, "8.3%" fractional). Any other unit returns the
+    value unchanged so downstream stringifying/escaping behaves exactly as
+    before. Rounding absorbs binary float noise (0.08 * 100 == 8.000...002).
+    """
+    if unit != METRIC_UNIT_PERCENT:
+        return value
+    scaled = round(float(value) * 100, 10)
+    return f"{_stringify_alert_value(scaled)}%"

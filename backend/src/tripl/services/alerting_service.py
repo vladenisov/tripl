@@ -15,6 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from tripl.alerting_matching import (
     SCOPE_DISTRIBUTION_DRIFT,
+    SCOPE_METRIC,
     AlertMatchCandidate,
     DistributionDriftAlertCandidate,
     SchemaDriftAlertCandidate,
@@ -159,6 +160,38 @@ async def _build_scope_name_map(
         drift_field = getattr(anomaly, "drift_field", None) or anomaly.scope_ref
         names[(SCOPE_DISTRIBUTION_DRIFT, anomaly.scope_ref)] = f"All events.{drift_field}"
     return names
+
+
+async def _build_metric_unit_map(
+    session: AsyncSession,
+    anomalies: list[AlertMatchCandidate],
+) -> dict[str, str | None]:
+    """Display unit per metric-definition id for metric-scope candidates.
+
+    One batched query; the map feeds render_firings_message so simulator
+    previews of percent metrics match the live worker's ×100 rendering
+    (shared-predicates parity).
+    """
+    from sqlalchemy import select
+
+    from tripl.models.metric_definition import MetricDefinition
+
+    metric_ids: list[uuid.UUID] = []
+    for anomaly in anomalies:
+        if anomaly.scope_type != SCOPE_METRIC:
+            continue
+        try:
+            metric_ids.append(uuid.UUID(anomaly.scope_ref))
+        except ValueError:
+            continue
+    if not metric_ids:
+        return {}
+    rows = await session.execute(
+        select(MetricDefinition.id, MetricDefinition.unit).where(
+            MetricDefinition.id.in_(set(metric_ids))
+        )
+    )
+    return {str(metric_id): unit for metric_id, unit in rows.all()}
 
 
 async def _load_schema_drift_candidates(
@@ -341,6 +374,7 @@ async def simulate_rule(
     )
 
     scope_names = await _build_scope_name_map(session, fired)
+    metric_units = await _build_metric_unit_map(session, fired)
 
     firings: list[SimulatedRuleFiring] = []
     for anomaly in fired:
@@ -377,6 +411,7 @@ async def simulate_rule(
         firings,
         destination=destination,
         project=project,
+        metric_units=metric_units,
     )
     for firing, rendered_item in zip(firings, rendered_items, strict=True):
         firing.rendered_item = rendered_item or None
