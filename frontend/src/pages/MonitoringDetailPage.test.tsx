@@ -521,7 +521,17 @@ describe('MonitoringDetailPage catalog-metric drilldown', () => {
     }
   }
 
-  function metricDefinitionResponse(interval: string | null) {
+  function metricDefinitionResponse(
+    interval: string | null,
+    overrides: Record<string, unknown> = {},
+  ) {
+    return {
+      ...metricDefinitionBase(interval),
+      ...overrides,
+    }
+  }
+
+  function metricDefinitionBase(interval: string | null) {
     return {
       id: 'metric-1',
       project_id: 'p-1',
@@ -558,11 +568,24 @@ describe('MonitoringDetailPage catalog-metric drilldown', () => {
     }
   }
 
-  function installMetricDetailFetch(interval: string) {
+  function installMetricDetailFetch(
+    interval: string,
+    definitionOverrides: Record<string, unknown> = {},
+  ) {
     vi.spyOn(globalThis, 'fetch').mockImplementation(async input => {
       const url = String(input)
 
       if (url.endsWith('/api/v1/projects/demo/event-types')) return mockJsonResponse([])
+      // Events list backing the Definition card's event-name resolution.
+      if (url.endsWith('/api/v1/projects/demo/events')) {
+        return mockJsonResponse({
+          items: [
+            { id: 'event-a', name: 'checkout_completed' },
+            { id: 'event-b', name: 'session_started' },
+          ],
+          total: 2,
+        })
+      }
       if (url.includes('/api/v1/projects/demo/metrics/metric-1/series')) {
         return mockJsonResponse({
           metric_id: 'metric-1',
@@ -588,7 +611,7 @@ describe('MonitoringDetailPage catalog-metric drilldown', () => {
         })
       }
       if (url.endsWith('/api/v1/projects/demo/metrics/metric-1')) {
-        return mockJsonResponse(metricDefinitionResponse(interval))
+        return mockJsonResponse(metricDefinitionResponse(interval, definitionOverrides))
       }
       if (url.includes('/api/v1/projects/demo/annotations')) return mockJsonResponse([])
 
@@ -662,5 +685,57 @@ describe('MonitoringDetailPage catalog-metric drilldown', () => {
     expect(
       screen.queryByText(/Edit this event and add a column/i),
     ).not.toBeInTheDocument()
+  })
+
+  it('renders the Definition card for a SQL metric with collapsed SQL that expands', async () => {
+    installMetricDetailFetch('1d', {
+      config: {
+        metric_sql: 'SELECT day, dau FROM daily_users',
+        time_column: 'day',
+        value_column: 'dau',
+      },
+    })
+    renderMetricDetail()
+
+    expect(await screen.findByRole('heading', { name: 'Definition' })).toBeInTheDocument()
+    // Kind chip + collection-interval meta chip.
+    expect(screen.getByText('SQL')).toBeInTheDocument()
+    expect(screen.getByText('every 1d')).toBeInTheDocument()
+    // Time/value column chips from the SQL config.
+    expect(screen.getByText('day')).toBeInTheDocument()
+    expect(screen.getByText('dau')).toBeInTheDocument()
+
+    // The SQL itself is collapsed behind a "Show SQL" disclosure by default…
+    const sql = screen.getByText('SELECT day, dau FROM daily_users')
+    expect(sql).not.toBeVisible()
+    // …and expands on click.
+    fireEvent.click(screen.getByText('Show SQL'))
+    expect(sql).toBeVisible()
+  })
+
+  it('renders an event-composition ratio as "A ÷ B" with resolved event names', async () => {
+    installMetricDetailFetch('1d', {
+      kind: 'event_composition',
+      composition: 'ratio',
+      numerator_event_id: 'event-a',
+      denominator_event_id: 'event-b',
+    })
+    renderMetricDetail()
+
+    expect(await screen.findByRole('heading', { name: 'Definition' })).toBeInTheDocument()
+    expect(screen.getByText('Event composition')).toBeInTheDocument()
+    // Event ids resolve to names via the events list; joined by ÷.
+    expect(await screen.findByText('checkout_completed')).toBeInTheDocument()
+    expect(screen.getByText('session_started')).toBeInTheDocument()
+    expect(screen.getByText('÷')).toBeInTheDocument()
+  })
+
+  it('does not render the Definition card outside the metric scope', async () => {
+    installEventDetailFetch()
+    renderEventDetail()
+    await screen.findByRole('heading', { name: 'checkout_completed' })
+
+    expect(screen.queryByRole('heading', { name: 'Definition' })).not.toBeInTheDocument()
+    expect(screen.queryByText('Show SQL')).not.toBeInTheDocument()
   })
 })

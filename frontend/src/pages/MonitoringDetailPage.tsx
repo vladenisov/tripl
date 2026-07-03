@@ -22,6 +22,7 @@ import { SensitivityChip } from '@/components/primitives/sensitivity-chip'
 import { EmptyState } from '@/components/empty-state'
 import { ErrorState } from '@/components/error-state'
 import EventPhotosSection from '@/components/event-photos-section'
+import { MetricDefinitionCard } from '@/components/monitoring/metric-definition-card'
 import { ReleaseRegressionPanel } from '@/components/monitoring/release-regression-panel'
 import { SeasonalityHeatmap } from '@/components/monitoring/seasonality-heatmap'
 import { TopMoversPanel } from '@/components/monitoring/top-movers-panel'
@@ -740,6 +741,11 @@ export default function MonitoringDetailPage() {
 
           <Separator />
         </>
+      )}
+
+      {/* What this catalog metric computes, visible without opening Edit. */}
+      {scope === 'metric' && slug && metricDefinition && (
+        <MetricDefinitionCard slug={slug} definition={metricDefinition} />
       )}
 
       {isEventDetail && <span ref={metricsRef} aria-hidden className="-mt-5 block scroll-mt-4" />}
