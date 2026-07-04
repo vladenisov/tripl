@@ -152,6 +152,51 @@ export function EventsTable({
       ? firstVisible.toLocaleString()
       : `${firstVisible.toLocaleString()}–${lastVisible.toLocaleString()}`
 
+  const renderEventRow = (ev: EventListItem) => {
+    const expandedFieldId =
+      expandedCell && expandedCell.startsWith(ev.id + '-')
+        ? expandedCell.slice(ev.id.length + 1)
+        : null
+    const windowMetric = eventWindowMetricsByEvent.get(ev.id)
+    const windowData = windowMetric?.data ?? EMPTY_WINDOW_POINTS
+    // Distinguish a genuine zero from "not wired": page-view types return a
+    // real series, so a sum of 0 is a true zero (flat sparkline + "0").
+    // Structured/user types with no collected series have an empty `data`
+    // array — passing `undefined` makes the cell read as no-data ("—") instead
+    // of a misleading bare "0".
+    const windowTotal =
+      windowData.length > 0 ? windowMetric?.total_count : undefined
+    return (
+      <EventRow
+        key={ev.id}
+        ev={ev}
+        selected={selectedSet.has(ev.id)}
+        hideType={!!activeEt}
+        hideStatus={hideStatus}
+        hideReviewed={hideReviewed}
+        hideMonitor={hideMonitor}
+        hideOwner={hideOwner}
+        hideDelta={hideDelta}
+        usersById={usersById}
+        hideTags={hideTags}
+        hideLastSeen={hideLastSeen}
+        fieldColumns={visibleFieldColumns}
+        metaFields={visibleMetaFields}
+        slug={slug}
+        expandedFieldId={expandedFieldId}
+        rowSignal={eventRowSignals.get(ev.id)}
+        windowTotal={windowTotal}
+        windowData={windowData}
+        metaValueMap={metaValuesByEvent.get(ev.id)}
+        eventType={eventTypesById.get(ev.event_type_id)}
+        getFieldValue={getFieldValue}
+        onToggleSelected={toggleEventSelected}
+        onToggleExpanded={onToggleExpandedCell}
+        onRowAction={onRowAction}
+      />
+    )
+  }
+
   return (
     <TooltipProvider delayDuration={0}>
       <DndContext sensors={dndSensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
@@ -294,53 +339,24 @@ export function EventsTable({
                     <td colSpan={colCount} />
                   </tr>
                 )}
-                {(virtualize ? virtualItems.map((vi) => events[vi.index]) : events).map(
-                  (ev: EventListItem) => {
-                    const expandedFieldId =
-                      expandedCell && expandedCell.startsWith(ev.id + '-')
-                        ? expandedCell.slice(ev.id.length + 1)
-                        : null
-                    const windowMetric = eventWindowMetricsByEvent.get(ev.id)
-                    const windowData = windowMetric?.data ?? EMPTY_WINDOW_POINTS
-                    // Distinguish a genuine zero from "not wired": page-view
-                    // types return a real series, so a sum of 0 is a true zero
-                    // (flat sparkline + "0"). Structured/user types with no
-                    // collected series have an empty `data` array — passing
-                    // `undefined` makes the cell read as no-data ("—") instead
-                    // of a misleading bare "0".
-                    const windowTotal =
-                      windowData.length > 0 ? windowMetric?.total_count : undefined
-                    return (
-                      <EventRow
-                        key={ev.id}
-                        ev={ev}
-                        selected={selectedSet.has(ev.id)}
-                        hideType={!!activeEt}
-                        hideStatus={hideStatus}
-                        hideReviewed={hideReviewed}
-                        hideMonitor={hideMonitor}
-                        hideOwner={hideOwner}
-                        hideDelta={hideDelta}
-                        usersById={usersById}
-                        hideTags={hideTags}
-                        hideLastSeen={hideLastSeen}
-                        fieldColumns={visibleFieldColumns}
-                        metaFields={visibleMetaFields}
-                        slug={slug}
-                        expandedFieldId={expandedFieldId}
-                        rowSignal={eventRowSignals.get(ev.id)}
-                        windowTotal={windowTotal}
-                        windowData={windowData}
-                        metaValueMap={metaValuesByEvent.get(ev.id)}
-                        eventType={eventTypesById.get(ev.event_type_id)}
-                        getFieldValue={getFieldValue}
-                        onToggleSelected={toggleEventSelected}
-                        onToggleExpanded={onToggleExpandedCell}
-                        onRowAction={onRowAction}
-                      />
-                    )
-                  },
-                )}
+                {virtualize
+                  ? virtualItems.map((vi) => {
+                      const ev = events[vi.index]
+                      // The spacer is sized to the full plan total so the
+                      // scrollbar maps linearly, but rows are paginated — an
+                      // index whose page has not streamed in yet renders as a
+                      // height-preserving placeholder so the scroll height
+                      // stays exact until the row's data arrives.
+                      if (!ev) {
+                        return (
+                          <tr key={vi.key} aria-hidden style={{ height: vi.size }}>
+                            <td colSpan={colCount} />
+                          </tr>
+                        )
+                      }
+                      return renderEventRow(ev)
+                    })
+                  : events.map((ev) => renderEventRow(ev))}
                 {virtualize &&
                   virtualItems.length > 0 &&
                   totalVirtualSize > virtualItems[virtualItems.length - 1].end && (

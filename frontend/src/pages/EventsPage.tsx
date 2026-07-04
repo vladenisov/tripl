@@ -185,7 +185,16 @@ export default function EventsPage({ lockType, embedded = false }: EventsPagePro
     virtualize,
     virtualItems,
     totalVirtualSize,
-  } = useEventsTableVirtualization({ events, total, eventsQuery })
+  } = useEventsTableVirtualization({
+    events,
+    total,
+    eventsQuery,
+    // `useEventsFiltering` returns the exact `rawEvents` reference when no
+    // client-side field/meta filter is active and a fresh filtered array
+    // otherwise, so identity tells the virtualizer whether the server `total`
+    // is still authoritative for spacer sizing.
+    isClientFiltered: events !== rawEvents,
+  })
 
   const onToggleExpandedCell = useCallback((cellKey: string | null) => {
     setExpandedCell(prev => (prev === cellKey ? null : cellKey))
