@@ -246,6 +246,37 @@ export function useEventsQuery({
   )
   const total = eventsData?.total ?? 0
 
+  // Fetch the ids of EVERY event matching the current server filters (not just
+  // the loaded pages), so bulk triage can sweep a whole prefix/tab at once —
+  // e.g. accept or archive all 499 pending-review events in one action. Returns
+  // an empty list when there is nothing to match; caps the request at `total`.
+  const fetchAllMatchingIds = useCallback(async (): Promise<string[]> => {
+    if (!slug || total === 0) return []
+    const page = await eventsApi.list(
+      slug,
+      {
+        event_type_id: filterEtId,
+        search: debouncedSearch || undefined,
+        status: queryStatuses,
+        tag: filterTag || undefined,
+        silent_since_days: filterSilentDays,
+        offset: 0,
+        limit: total,
+      },
+      branchId,
+    )
+    return page.items.map((event) => event.id)
+  }, [
+    slug,
+    branchId,
+    filterEtId,
+    debouncedSearch,
+    queryStatuses,
+    filterTag,
+    filterSilentDays,
+    total,
+  ])
+
   return {
     // filters
     search,
@@ -270,5 +301,6 @@ export function useEventsQuery({
     eventsQuery,
     rawEvents,
     total,
+    fetchAllMatchingIds,
   }
 }

@@ -99,6 +99,7 @@ export default function EventsPage({ lockType, embedded = false }: EventsPagePro
     eventsQuery,
     rawEvents,
     total,
+    fetchAllMatchingIds,
   } = useEventsQuery({ slug, activeTab, eventTypes, branchId })
 
   const { projectTotalSignal, eventTypeSignals, eventSignals } = useEventsSignals({
@@ -160,13 +161,15 @@ export default function EventsPage({ lockType, embedded = false }: EventsPagePro
   })
 
   const {
-    selectedVisibleEventIds,
+    selectedEventIds,
+    selectedCount,
     allVisibleSelected,
     someVisibleSelected,
     selectedSet,
     visibleEventIds,
     toggleEventSelected,
     toggleAllVisibleSelected,
+    selectAll,
     clearSelection,
   } = useEventsSelection({ events })
 
@@ -211,25 +214,41 @@ export default function EventsPage({ lockType, embedded = false }: EventsPagePro
   })
 
   const handleBulkDelete = useEventsBulkDelete({
-    selectedVisibleEventIds,
+    selectedVisibleEventIds: selectedEventIds,
     bulkDeleteMut,
     confirm,
   })
 
+  // Bulk actions operate on the FULL selection (`selectedEventIds`), not just
+  // the loaded rows, so "select all N matching" can sweep events that have not
+  // scrolled into view yet.
   const handleBulkSetStatus = useCallback((status: EventStatus) => {
-    if (!selectedVisibleEventIds.length) return
-    bulkUpdateMut.mutate({ eventIds: selectedVisibleEventIds, status })
-  }, [bulkUpdateMut, selectedVisibleEventIds])
+    if (!selectedEventIds.length) return
+    bulkUpdateMut.mutate({ eventIds: selectedEventIds, status })
+  }, [bulkUpdateMut, selectedEventIds])
 
   const handleBulkMarkReviewed = useCallback(() => {
-    if (!selectedVisibleEventIds.length) return
-    bulkUpdateMut.mutate({ eventIds: selectedVisibleEventIds, reviewed: true })
-  }, [bulkUpdateMut, selectedVisibleEventIds])
+    if (!selectedEventIds.length) return
+    bulkUpdateMut.mutate({ eventIds: selectedEventIds, reviewed: true })
+  }, [bulkUpdateMut, selectedEventIds])
+
+  // Pull every id matching the current filters/tab and select them, so triage
+  // can accept or archive an entire prefix/queue in one bulk action.
+  const [isSelectingAll, setIsSelectingAll] = useState(false)
+  const handleSelectAllMatching = useCallback(async () => {
+    setIsSelectingAll(true)
+    try {
+      const ids = await fetchAllMatchingIds()
+      if (ids.length) selectAll(ids)
+    } finally {
+      setIsSelectingAll(false)
+    }
+  }, [fetchAllMatchingIds, selectAll])
 
   const handleBulkAssignOwner = useCallback((userId: string) => {
-    if (!selectedVisibleEventIds.length) return
-    bulkUpdateMut.mutate({ eventIds: selectedVisibleEventIds, owner_id: userId })
-  }, [bulkUpdateMut, selectedVisibleEventIds])
+    if (!selectedEventIds.length) return
+    bulkUpdateMut.mutate({ eventIds: selectedEventIds, owner_id: userId })
+  }, [bulkUpdateMut, selectedEventIds])
 
   const { eventWindowMetricsByEvent, eventRowSignals } = useEventRowMetrics({
     slug,
@@ -313,7 +332,10 @@ export default function EventsPage({ lockType, embedded = false }: EventsPagePro
           />
 
           <BulkActionBar
-            selectedCount={selectedVisibleEventIds.length}
+            selectedCount={selectedCount}
+            matchingTotal={total}
+            onSelectAllMatching={handleSelectAllMatching}
+            isSelectingAll={isSelectingAll}
             isDeleting={bulkDeleteMut.isPending}
             isUpdating={bulkUpdateMut.isPending}
             onSetStatus={handleBulkSetStatus}
