@@ -300,6 +300,9 @@ export default function MonitoringDetailPage() {
     },
     enabled: !!slug && !!scopeId,
     refetchInterval: 60000,
+    // Keep the previous range's series on screen while the new range loads so the
+    // chart doesn't remount into a loading flash on range change (tripl-7l83.10).
+    placeholderData: (prev) => prev,
   })
   const metrics = metricsQuery.data
   // Interval-based catalog metrics chart one point per interval, so 'Hours'

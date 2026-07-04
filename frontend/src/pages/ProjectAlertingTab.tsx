@@ -262,7 +262,18 @@ export default function ProjectAlertingTab({ slug }: { slug: string }) {
       />
 
       {showGuidedSetup ? (
-        <AlertingGuidedSetup channels={CHANNEL_META} onPickChannel={openCreate} />
+        <>
+          <AlertingGuidedSetup channels={CHANNEL_META} onPickChannel={openCreate} />
+          {/* Keep the Audit log reachable before anything is configured so the
+              surface stays discoverable. Guided state requires zero deliveries,
+              so it is always empty here — render just the panel + empty state,
+              without the (equally empty) filter bar (tripl-7l83.14). */}
+          <Panel title="Audit" subtitle="0 deliveries">
+            <div className="rounded-lg border border-dashed p-4 text-sm text-muted-foreground">
+              No deliveries yet.
+            </div>
+          </Panel>
+        </>
       ) : (
       <>
       <RoutingRulesPanel slug={slug} />

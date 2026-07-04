@@ -123,6 +123,11 @@ describe('ProjectAlertingTab — guided setup (tripl-7l83.14)', () => {
     expect(screen.queryByText('Inbox')).toBeNull()
     expect(screen.queryByText('Signals route to destinations via rules.')).toBeNull()
 
+    // ...but the Audit log stays reachable even before anything is configured
+    // (tripl-7l83.14): it renders below the guided card with an empty state.
+    expect(screen.getByText('Audit')).toBeInTheDocument()
+    expect(screen.getByText('No deliveries yet.')).toBeInTheDocument()
+
     // ...but every channel type is still addable from the guided flow.
     for (const label of ['Slack', 'Telegram', 'Webhook', 'Email', 'Jira', 'Linear']) {
       expect(screen.getByRole('button', { name: label })).toBeInTheDocument()

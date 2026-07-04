@@ -184,6 +184,9 @@ export function ScanDetail({
 }) {
   const qc = useQueryClient()
   const [expandedJobId, setExpandedJobId] = useState<string | null>(null)
+  // Leading identical failed runs collapse behind one expander; the streak
+  // banner already summarizes them (tripl-7l83.4).
+  const [streakExpanded, setStreakExpanded] = useState(false)
   const [applyGroupsMessage, setApplyGroupsMessage] = useState('')
 
   const etName = eventTypes.find((et: EventType) => et.id === scanConfig.event_type_id)?.display_name
@@ -236,6 +239,24 @@ export function ScanDetail({
   // "Run again" action, so the failure reads as one ongoing problem (tripl-7l83.4).
   const failingStreak = consecutiveFailedRuns(jobs)
   const streakError = failingStreak > 0 ? friendlyScanError(lastJob?.error_message) : null
+  // When 2+ consecutive runs failed, hide that leading streak behind an expander
+  // so the table isn't a wall of identical failed rows; older (non-streak) jobs
+  // stay visible. Below the threshold, every job renders normally.
+  const collapseStreak = failingStreak >= 2
+  const streakJobs = collapseStreak ? jobs.slice(0, failingStreak) : []
+  const restJobs = collapseStreak ? jobs.slice(failingStreak) : jobs
+  const renderJobRow = (job: ScanJob) => (
+    <JobRow
+      key={job.id}
+      job={job}
+      expanded={expandedJobId === job.id}
+      onToggle={() => setExpandedJobId(expandedJobId === job.id ? null : job.id)}
+      onCancel={() => cancelMut.mutate(job.id)}
+      cancelPending={cancelMut.isPending && cancelMut.variables === job.id}
+      onRetry={() => retryMut.mutate()}
+      retryPending={retryMut.isPending}
+    />
+  )
 
   return (
     <div className="flex flex-col gap-4">
@@ -397,18 +418,25 @@ export function ScanDetail({
               </tr>
             </thead>
             <tbody>
-              {jobs.map((job: ScanJob) => (
-                <JobRow
-                  key={job.id}
-                  job={job}
-                  expanded={expandedJobId === job.id}
-                  onToggle={() => setExpandedJobId(expandedJobId === job.id ? null : job.id)}
-                  onCancel={() => cancelMut.mutate(job.id)}
-                  cancelPending={cancelMut.isPending && cancelMut.variables === job.id}
-                  onRetry={() => retryMut.mutate()}
-                  retryPending={retryMut.isPending}
-                />
-              ))}
+              {collapseStreak && (
+                <>
+                  <tr>
+                    <td colSpan={6} className="px-4 py-2">
+                      <button
+                        type="button"
+                        onClick={() => setStreakExpanded((v) => !v)}
+                        aria-expanded={streakExpanded}
+                        className="text-[12px] font-medium hover:underline"
+                        style={{ color: 'var(--fg-subtle)' }}
+                      >
+                        {streakExpanded ? 'Hide' : 'Show'} {failingStreak} repeated failed runs
+                      </button>
+                    </td>
+                  </tr>
+                  {streakExpanded && streakJobs.map(renderJobRow)}
+                </>
+              )}
+              {restJobs.map(renderJobRow)}
             </tbody>
           </table>
         )}
