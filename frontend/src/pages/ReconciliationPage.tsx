@@ -659,6 +659,7 @@ function DeadRow({
         to={slug ? getMonitoringPath(slug, { scope_type: 'event', scope_ref: item.event_id }) : '#'}
         className="mono min-w-0 flex-1 truncate text-[12px] hover:underline"
         style={{ color: 'var(--fg-muted)' }}
+        title={item.name}
       >
         <EventName name={item.name} />
       </Link>
