@@ -80,6 +80,7 @@ describe('ProjectsPage', () => {
               scan_count: 2,
               alert_destination_count: 1,
               monitoring_signal_count: 2,
+              failing_scan_config_count: 0,
               latest_scan_job: {
                 id: 'job-1',
                 scan_config_id: 'scan-1',
@@ -247,6 +248,7 @@ describe('ProjectsPage', () => {
               scan_count: 1,
               alert_destination_count: 1,
               monitoring_signal_count: 1,
+              failing_scan_config_count: 1,
               latest_scan_job: {
                 id: 'job-2',
                 scan_config_id: 'scan-2',
@@ -282,8 +284,9 @@ describe('ProjectsPage', () => {
     expect(screen.getByText('99.1% implemented')).toBeInTheDocument()
     expect(screen.getAllByText('99.1%').length).toBeGreaterThan(0)
     expect(screen.queryByText('99% implemented')).not.toBeInTheDocument()
-    // L1 + M10: singular, unit-aware copy.
-    expect(screen.getByText('1 project has a failed latest scan job')).toBeInTheDocument()
+    // L1 + M10: singular, unit-aware copy. The rollup counts failing scan
+    // CONFIGS (per-config latest run), not just the single newest job (tripl-7l83.3).
+    expect(screen.getByText('1 scan config failing across 1 project')).toBeInTheDocument()
     expect(screen.getByText('across 1 project')).toBeInTheDocument()
     expect(screen.getByText('1 scan configured')).toBeInTheDocument()
     expect(screen.getByText('1 recent signal')).toBeInTheDocument()
@@ -409,6 +412,75 @@ describe('ProjectsPage', () => {
     const rowsLine = screen.getByText(/rows scanned/)
     expect(rowsLine).toBeInTheDocument()
     expect(rowsLine.textContent?.replace(/[^0-9]/g, '')).toBe('12345')
+  })
+
+  it('surfaces a failing scan config even when the newest job overall succeeded (tripl-7l83.3)', async () => {
+    // The project's single newest job (latest_scan_job) COMPLETED, but two other
+    // scan configs fail every run. The old rollup keyed off latest_scan_job would
+    // report "healthy" and hide them; failing_scan_config_count must not.
+    vi.spyOn(globalThis, 'fetch').mockImplementation((input: RequestInfo | URL) => {
+      const url =
+        typeof input === 'string'
+          ? input
+          : input instanceof URL
+            ? input.toString()
+            : input.url
+
+      if (url.endsWith('/api/v1/projects')) {
+        return Promise.resolve(jsonResponse([
+          {
+            id: 'proj-4',
+            name: 'Delta',
+            slug: 'delta',
+            description: 'One config succeeds; two others fail every run.',
+            created_at: '2026-06-01T09:00:00Z',
+            updated_at: '2026-06-10T09:00:00Z',
+            summary: {
+              event_type_count: 2,
+              event_count: 10,
+              active_event_count: 10,
+              implemented_event_count: 10,
+              review_pending_event_count: 0,
+              archived_event_count: 0,
+              variable_count: 2,
+              scan_count: 3,
+              alert_destination_count: 0,
+              monitoring_signal_count: 0,
+              failing_scan_config_count: 2,
+              latest_scan_job: {
+                id: 'job-4',
+                scan_config_id: 'scan-4',
+                scan_name: 'Hourly success',
+                status: 'completed',
+                started_at: '2026-06-10T08:00:00Z',
+                completed_at: '2026-06-10T08:02:00Z',
+                result_summary: { events_created: 3 },
+                error_message: null,
+                created_at: '2026-06-10T08:02:00Z',
+              },
+              latest_signal: null,
+            },
+          },
+        ]))
+      }
+
+      if (url.endsWith('/api/v1/data-sources')) {
+        return Promise.resolve(jsonResponse([]))
+      }
+
+      return Promise.reject(new Error(`Unexpected request: ${url}`))
+    })
+
+    renderProjectsPage('owner')
+
+    expect(await screen.findByText('Delta')).toBeInTheDocument()
+    // Workspace rollup counts the failing configs, not "healthy".
+    expect(screen.getByText('2 scan configs failing across 1 project')).toBeInTheDocument()
+    expect(screen.queryByText('Latest scan jobs are healthy')).not.toBeInTheDocument()
+    // The project card surfaces the failing configs even though the latest job
+    // shown in its Latest scan panel succeeded.
+    expect(screen.getByText('2 scan configs failing')).toBeInTheDocument()
+    expect(screen.getByText('Hourly success')).toBeInTheDocument()
   })
 
   it('shows an error instead of the empty state when the backend is unavailable', async () => {

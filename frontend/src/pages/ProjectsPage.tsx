@@ -122,9 +122,17 @@ export default function MainPage() {
   const projectsWithRunningScan = projects.filter(
     (project) => project.summary.latest_scan_job?.status === 'running',
   ).length
+  // Count projects with ANY scan config whose LATEST run failed — NOT just the
+  // single newest job across the project. A config that fails every hourly run is
+  // invisible in latest_scan_job once a different config logs a newer success, so
+  // the rollup follows the per-config failing_scan_config_count instead (tripl-7l83.3).
   const projectsWithFailedScan = projects.filter(
-    (project) => project.summary.latest_scan_job?.status === 'failed',
+    (project) => project.summary.failing_scan_config_count > 0,
   ).length
+  const failingScanConfigCount = projects.reduce(
+    (total, project) => total + project.summary.failing_scan_config_count,
+    0,
+  )
 
   const createMut = useMutation({
     mutationFn: () => projectsApi.create({ name, slug, description }),
@@ -345,11 +353,15 @@ export default function MainPage() {
                 unit={pluralize(projectsWithFailedScan, 'project', 'projects')}
                 hint={
                   projectsWithFailedScan > 0
-                    ? pluralize(
+                    ? `${pluralize(
+                        failingScanConfigCount,
+                        '1 scan config failing',
+                        `${failingScanConfigCount} scan configs failing`,
+                      )} across ${pluralize(
                         projectsWithFailedScan,
-                        '1 project has a failed latest scan job',
-                        `${projectsWithFailedScan} projects have a failed latest scan job`,
-                      )
+                        '1 project',
+                        `${projectsWithFailedScan} projects`,
+                      )}`
                     : projectsWithRunningScan > 0
                       ? pluralize(
                           projectsWithRunningScan,
@@ -639,6 +651,18 @@ function ProjectCard({
                 )
               : 'No scan coverage'}
           </Chip>
+          {/* A config that fails every run is hidden by the single newest
+              latest_scan_job once a sibling config succeeds — surface the
+              per-config failing count so it never goes unnoticed (tripl-7l83.3). */}
+          {project.summary.failing_scan_config_count > 0 && (
+            <Chip tone="danger" size="xs">
+              {pluralize(
+                project.summary.failing_scan_config_count,
+                '1 scan config failing',
+                `${project.summary.failing_scan_config_count} scan configs failing`,
+              )}
+            </Chip>
+          )}
           <Chip tone={attention === 'signals' ? 'danger' : 'neutral'} size="xs">
             {hasSignals
               ? pluralize(

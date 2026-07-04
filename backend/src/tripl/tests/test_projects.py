@@ -8,13 +8,16 @@ from sqlalchemy import select
 from tripl.models.alert_rule import AlertRule
 from tripl.models.alert_rule_state import AlertRuleState
 from tripl.models.distribution_drift import DistributionDrift
+from tripl.models.domain_enums import FieldDefinitionType
 from tripl.models.event_metric import EventMetric
+from tripl.models.field_definition import FieldDefinition
 from tripl.models.metric_anomaly import MetricAnomaly
 from tripl.models.metric_breakdown_anomaly import MetricBreakdownAnomaly
 from tripl.models.metric_definition import MetricDefinition
 from tripl.models.release_regression import ReleaseRegression
 from tripl.models.scan_job import ScanJob
 from tripl.models.schema_drift import SchemaDrift
+from tripl.models.variable_value import VariableValue, VariableValueKind
 from tripl.tests.conftest import TestSessionLocal
 
 
@@ -298,6 +301,8 @@ async def test_project_summary_counts(client: AsyncClient):
     assert summary["alert_destination_count"] == 1
     assert summary["monitoring_signal_count"] == 1
     assert summary["firing_monitor_count"] == 1
+    # The single scan config's latest (only) job completed, so nothing is failing.
+    assert summary["failing_scan_config_count"] == 0
     assert summary["latest_scan_job"] == {
         "id": summary["latest_scan_job"]["id"],
         "scan_config_id": scan_config_id,
@@ -326,6 +331,285 @@ async def test_project_summary_counts(client: AsyncClient):
         "z_score": 7.0,
         "direction": "spike",
     }
+
+
+async def test_project_summary_counts_configs_whose_latest_run_failed(client: AsyncClient):
+    """A config that fails every run must surface even when a newer config succeeds.
+
+    ``latest_scan_job`` only reports the single newest job across the whole
+    project, so a scan config that fails every hourly run becomes invisible the
+    moment a *different* config logs a newer success. ``failing_scan_config_count``
+    ranks jobs per config instead and counts the configs whose latest run failed,
+    so the workspace "failed jobs" rollup stays honest (tripl-7l83.3).
+    """
+    slug = "failing-configs-proj"
+
+    project_resp = await client.post(
+        "/api/v1/projects",
+        json={"name": "Failing Configs Project", "slug": slug},
+    )
+    assert project_resp.status_code == 201
+
+    data_source_resp = await client.post(
+        "/api/v1/data-sources",
+        json={
+            "name": "Warehouse",
+            "db_type": "clickhouse",
+            "host": "localhost",
+            "port": 8123,
+            "database_name": "analytics",
+            "username": "default",
+            "password": "",
+        },
+    )
+    assert data_source_resp.status_code == 201
+    data_source_id = data_source_resp.json()["id"]
+
+    healthy_scan_resp = await client.post(
+        f"/api/v1/projects/{slug}/scans",
+        json={"data_source_id": data_source_id, "name": "Healthy scan", "base_query": "SELECT 1"},
+    )
+    assert healthy_scan_resp.status_code == 201
+    healthy_config_id = healthy_scan_resp.json()["id"]
+
+    failing_scan_resp = await client.post(
+        f"/api/v1/projects/{slug}/scans",
+        json={"data_source_id": data_source_id, "name": "Failing scan", "base_query": "SELECT 2"},
+    )
+    assert failing_scan_resp.status_code == 201
+    failing_config_id = failing_scan_resp.json()["id"]
+
+    async with TestSessionLocal() as session:
+        # The failing config runs hourly and fails every time; its newest run is
+        # OLDER than the healthy config's latest success, so the project's single
+        # newest job overall is a completed one.
+        session.add(
+            ScanJob(
+                id=uuid.uuid4(),
+                scan_config_id=uuid.UUID(failing_config_id),
+                status="failed",
+                started_at=datetime(2026, 4, 18, 9, tzinfo=UTC),
+                completed_at=datetime(2026, 4, 18, 9, 1, tzinfo=UTC),
+                error_message="Scan failed: could not connect to the data source.",
+                created_at=datetime(2026, 4, 18, 9, 1, tzinfo=UTC),
+                updated_at=datetime(2026, 4, 18, 9, 1, tzinfo=UTC),
+            )
+        )
+        # The healthy config's most recent job succeeded — and is the newest in
+        # the whole project, which is exactly what hides the failing config.
+        session.add(
+            ScanJob(
+                id=uuid.uuid4(),
+                scan_config_id=uuid.UUID(healthy_config_id),
+                status="failed",
+                started_at=datetime(2026, 4, 18, 8, tzinfo=UTC),
+                completed_at=datetime(2026, 4, 18, 8, 1, tzinfo=UTC),
+                error_message="Scan failed due to an internal error.",
+                created_at=datetime(2026, 4, 18, 8, 1, tzinfo=UTC),
+                updated_at=datetime(2026, 4, 18, 8, 1, tzinfo=UTC),
+            )
+        )
+        session.add(
+            ScanJob(
+                id=uuid.uuid4(),
+                scan_config_id=uuid.UUID(healthy_config_id),
+                status="completed",
+                started_at=datetime(2026, 4, 18, 10, tzinfo=UTC),
+                completed_at=datetime(2026, 4, 18, 10, 5, tzinfo=UTC),
+                error_message=None,
+                created_at=datetime(2026, 4, 18, 10, 5, tzinfo=UTC),
+                updated_at=datetime(2026, 4, 18, 10, 5, tzinfo=UTC),
+            )
+        )
+        await session.commit()
+
+    resp = await client.get(f"/api/v1/projects/{slug}")
+    assert resp.status_code == 200
+    summary = resp.json()["summary"]
+
+    # Only the "Failing scan" config's latest run failed → exactly one failing config.
+    # The "Healthy scan" config's OLDER failed run does not count (its latest succeeded).
+    assert summary["failing_scan_config_count"] == 1
+    # The single newest job across the project is the healthy config's success, so
+    # the legacy latest_scan_job surface alone would have reported "healthy".
+    assert summary["latest_scan_job"]["scan_name"] == "Healthy scan"
+    assert summary["latest_scan_job"]["status"] == "completed"
+
+
+async def test_project_summary_failing_config_count_isolates_one_failing_among_healthy(
+    client: AsyncClient,
+) -> None:
+    """One failing config among several succeeding configs counts as exactly 1,
+    and an all-healthy project stays at 0 (tripl-7l83.3).
+
+    Complements ``test_project_summary_counts_configs_whose_latest_run_failed`` by
+    proving the per-config rollup isolates a single failing config from a majority
+    of healthy ones, and that a project whose configs all last succeeded — even one
+    with an OLDER failed run — is never flagged.
+    """
+    data_source_resp = await client.post(
+        "/api/v1/data-sources",
+        json={
+            "name": "Warehouse",
+            "db_type": "clickhouse",
+            "host": "localhost",
+            "port": 8123,
+            "database_name": "analytics",
+            "username": "default",
+            "password": "",
+        },
+    )
+    assert data_source_resp.status_code == 201
+    data_source_id = data_source_resp.json()["id"]
+
+    async def _make_scan(slug: str, name: str) -> str:
+        resp = await client.post(
+            f"/api/v1/projects/{slug}/scans",
+            json={"data_source_id": data_source_id, "name": name, "base_query": "SELECT 1"},
+        )
+        assert resp.status_code == 201
+        scan_id: str = resp.json()["id"]
+        return scan_id
+
+    def _job(scan_config_id: str, status: str, hour: int) -> ScanJob:
+        ts = datetime(2026, 4, 18, hour, tzinfo=UTC)
+        error = None if status == "completed" else "Scan failed due to an internal error."
+        return ScanJob(
+            id=uuid.uuid4(),
+            scan_config_id=uuid.UUID(scan_config_id),
+            status=status,
+            started_at=ts,
+            completed_at=ts,
+            error_message=error,
+            created_at=ts,
+            updated_at=ts,
+        )
+
+    # Project A: three configs — two whose latest run completed and one whose
+    # latest run failed → exactly one failing config among succeeding ones.
+    mixed_slug = "mixed-scan-proj"
+    project_a = await client.post(
+        "/api/v1/projects", json={"name": "Mixed Scan Project", "slug": mixed_slug}
+    )
+    assert project_a.status_code == 201
+    healthy_a1 = await _make_scan(mixed_slug, "Healthy A1")
+    healthy_a2 = await _make_scan(mixed_slug, "Healthy A2")
+    failing_a = await _make_scan(mixed_slug, "Failing A")
+
+    # Project B: two configs whose latest run completed — one of them has an OLDER
+    # failed run that must NOT flip the count → the all-healthy case stays 0.
+    healthy_slug = "all-healthy-scan-proj"
+    project_b = await client.post(
+        "/api/v1/projects", json={"name": "All Healthy Project", "slug": healthy_slug}
+    )
+    assert project_b.status_code == 201
+    healthy_b1 = await _make_scan(healthy_slug, "Healthy B1")
+    healthy_b2 = await _make_scan(healthy_slug, "Healthy B2")
+
+    async with TestSessionLocal() as session:
+        session.add_all(
+            [
+                _job(healthy_a1, "completed", 10),
+                _job(healthy_a2, "completed", 11),
+                _job(failing_a, "failed", 12),
+                _job(healthy_b1, "completed", 10),
+                # healthy_b2 failed earlier but its latest (newer) run succeeded.
+                _job(healthy_b2, "failed", 8),
+                _job(healthy_b2, "completed", 12),
+            ]
+        )
+        await session.commit()
+
+    resp_a = await client.get(f"/api/v1/projects/{mixed_slug}")
+    assert resp_a.status_code == 200
+    summary_a = resp_a.json()["summary"]
+    assert summary_a["scan_count"] == 3
+    # Only "Failing A" has a failing latest run — the two healthy configs do not count.
+    assert summary_a["failing_scan_config_count"] == 1
+
+    resp_b = await client.get(f"/api/v1/projects/{healthy_slug}")
+    assert resp_b.status_code == 200
+    summary_b = resp_b.json()["summary"]
+    assert summary_b["scan_count"] == 2
+    # Every config's LATEST run succeeded (an older failure does not count) → 0.
+    assert summary_b["failing_scan_config_count"] == 0
+
+
+async def test_project_summary_variable_count_counts_distinct_variables(client: AsyncClient):
+    """The summary variable_count is the number of DISTINCT variables.
+
+    A single variable can be referenced across many events, producing one
+    ``VariableValue`` context row per (variable, event) pair. The sidebar badge
+    must count the variable once, not once per context row — otherwise it drifts
+    from the number of variables a user actually defined.
+    """
+    slug = "var-count-proj"
+
+    project_resp = await client.post(
+        "/api/v1/projects",
+        json={"name": "Var Count Project", "slug": slug},
+    )
+    assert project_resp.status_code == 201
+    project_id = uuid.UUID(project_resp.json()["id"])
+
+    event_type_resp = await client.post(
+        f"/api/v1/projects/{slug}/event-types",
+        json={"name": "page_view", "display_name": "Page View"},
+    )
+    assert event_type_resp.status_code == 201
+    event_type_id = uuid.UUID(event_type_resp.json()["id"])
+
+    event_ids: list[uuid.UUID] = []
+    for name in ("Landing Viewed", "Checkout Started", "Order Placed"):
+        event_resp = await client.post(
+            f"/api/v1/projects/{slug}/events",
+            json={
+                "event_type_id": str(event_type_id),
+                "name": name,
+                "status": "implemented",
+            },
+        )
+        assert event_resp.status_code == 201
+        event_ids.append(uuid.UUID(event_resp.json()["id"]))
+
+    variable_resp = await client.post(
+        f"/api/v1/projects/{slug}/variables",
+        json={"name": "spot_id", "variable_type": "string"},
+    )
+    assert variable_resp.status_code == 201
+    variable_id = uuid.UUID(variable_resp.json()["id"])
+
+    # One variable referenced by every event => one context row per event. The
+    # summary count must stay 1 (distinct variables), not 3 (context rows).
+    async with TestSessionLocal() as session:
+        field_def = FieldDefinition(
+            id=uuid.uuid4(),
+            event_type_id=event_type_id,
+            name="spot",
+            display_name="Spot",
+            field_type=FieldDefinitionType.string.value,
+        )
+        session.add(field_def)
+        await session.flush()
+        for event_id in event_ids:
+            session.add(
+                VariableValue(
+                    id=uuid.uuid4(),
+                    project_id=project_id,
+                    variable_id=variable_id,
+                    event_id=event_id,
+                    field_definition_id=field_def.id,
+                    source_column="spot",
+                    value_kind=VariableValueKind.low.value,
+                    observed_count=1,
+                    values=["a"],
+                )
+            )
+        await session.commit()
+
+    resp = await client.get(f"/api/v1/projects/{slug}")
+    assert resp.status_code == 200
+    assert resp.json()["summary"]["variable_count"] == 1
 
 
 # --- Danger zone: project-wide detection reset ------------------------------
