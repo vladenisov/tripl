@@ -14,6 +14,10 @@ const EVENTS_PAGE_SIZE = 200
 // the existing UX where archived events are hidden unless explicitly selected.
 const DEFAULT_ACTIVE_STATUSES: EventStatus[] = EVENT_STATUSES.filter(s => s !== 'archived')
 
+// Review-queue sort order: 'catalog' keeps the manual/creation order; 'volume'
+// asks the server for busiest-first (24h EventMetric volume).
+export type EventsSortOrder = 'catalog' | 'volume'
+
 export type EventsQueryFilters = {
   search: string
   setSearch: (value: string) => void
@@ -23,6 +27,8 @@ export type EventsQueryFilters = {
   setFilterTag: (value: string) => void
   filterSilentDays: number | undefined
   setFilterSilentDays: (value: number | undefined) => void
+  sort: EventsSortOrder
+  setSort: (value: EventsSortOrder) => void
   fieldFilters: Record<string, string>
   updateFieldFilter: (name: string, value: string) => void
   metaFilters: Record<string, string>
@@ -128,6 +134,24 @@ export function useEventsQuery({
     [setSearchParams],
   )
 
+  // Sort order lives in the URL under `sort`; only 'volume' is persisted so the
+  // default (catalog) request stays byte-identical to today.
+  const sort: EventsSortOrder = searchParams.get('sort') === 'volume' ? 'volume' : 'catalog'
+  const setSort = useCallback(
+    (v: EventsSortOrder) => {
+      setSearchParams(
+        (prev) => {
+          const next = new URLSearchParams(prev)
+          if (v === 'volume') next.set('sort', v)
+          else next.delete('sort')
+          return next
+        },
+        { replace: true },
+      )
+    },
+    [setSearchParams],
+  )
+
   // Field/meta filters live in URL under `f.` / `m.` prefixes, keyed by name.
   const fieldFilters = useMemo(() => {
     const out: Record<string, string> = {}
@@ -211,6 +235,7 @@ export function useEventsQuery({
       queryStatuses,
       filterTag,
       filterSilentDays,
+      sort,
     ],
     queryFn: ({ pageParam }) =>
       eventsApi.list(slug!, {
@@ -219,6 +244,7 @@ export function useEventsQuery({
         status: queryStatuses,
         tag: filterTag || undefined,
         silent_since_days: filterSilentDays,
+        order_by: sort === 'volume' ? 'volume' : undefined,
         offset: pageParam,
         limit: EVENTS_PAGE_SIZE,
       }, branchId),
@@ -260,6 +286,7 @@ export function useEventsQuery({
         status: queryStatuses,
         tag: filterTag || undefined,
         silent_since_days: filterSilentDays,
+        order_by: sort === 'volume' ? 'volume' : undefined,
         offset: 0,
         limit: total,
       },
@@ -274,6 +301,7 @@ export function useEventsQuery({
     queryStatuses,
     filterTag,
     filterSilentDays,
+    sort,
     total,
   ])
 
@@ -287,6 +315,8 @@ export function useEventsQuery({
     setFilterTag,
     filterSilentDays,
     setFilterSilentDays,
+    sort,
+    setSort,
     fieldFilters,
     updateFieldFilter,
     metaFilters,

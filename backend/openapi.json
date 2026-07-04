@@ -20158,6 +20158,20 @@
               "title": "Limit",
               "type": "integer"
             }
+          },
+          {
+            "in": "query",
+            "name": "order_by",
+            "required": false,
+            "schema": {
+              "default": "catalog",
+              "enum": [
+                "catalog",
+                "volume"
+              ],
+              "title": "Order By",
+              "type": "string"
+            }
           }
         ],
         "responses": {

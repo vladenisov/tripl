@@ -86,6 +86,8 @@ export default function EventsPage({ lockType, embedded = false }: EventsPagePro
     setFilterTag,
     filterSilentDays,
     setFilterSilentDays,
+    sort,
+    setSort,
     fieldFilters,
     updateFieldFilter,
     metaFilters,
@@ -312,6 +314,8 @@ export default function EventsPage({ lockType, embedded = false }: EventsPagePro
             onFilterStatusesChange={setFilterStatuses}
             filterSilentDays={filterSilentDays}
             onFilterSilentDaysChange={setFilterSilentDays}
+            sortOrder={sort}
+            onSortOrderChange={setSort}
             hasActiveFilters={hasActiveFilters}
             onClearFilters={clearAllFilters}
             savedViews={savedViews}

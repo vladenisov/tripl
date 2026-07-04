@@ -19,6 +19,7 @@ import {
 import { ColumnsMenu } from './ColumnsMenu'
 import { SavedViewsMenu } from './SavedViewsMenu'
 import type { EventsSavedView } from './savedViews'
+import type { EventsSortOrder } from './useEventsQuery'
 
 const FILTER_TRIGGER_CLASS =
   'h-8 w-auto gap-1.5 border-dashed bg-transparent text-[11.5px] text-[var(--fg-muted)]'
@@ -31,6 +32,8 @@ export function EventsToolbar({
   onFilterStatusesChange,
   filterSilentDays,
   onFilterSilentDaysChange,
+  sortOrder,
+  onSortOrderChange,
   hasActiveFilters,
   onClearFilters,
   savedViews,
@@ -56,6 +59,8 @@ export function EventsToolbar({
   onFilterStatusesChange: (value: EventStatus[]) => void
   filterSilentDays: number | undefined
   onFilterSilentDaysChange: (value: number | undefined) => void
+  sortOrder: EventsSortOrder
+  onSortOrderChange: (value: EventsSortOrder) => void
   hasActiveFilters: boolean
   onClearFilters: () => void
   savedViews: EventsSavedView[]
@@ -131,6 +136,19 @@ export function EventsToolbar({
             <SelectItem value="1">Silent &gt; 1d</SelectItem>
             <SelectItem value="7">Silent &gt; 7d</SelectItem>
             <SelectItem value="30">Silent &gt; 30d</SelectItem>
+          </SelectContent>
+        </Select>
+        <Select
+          value={sortOrder}
+          onValueChange={value => onSortOrderChange(value as EventsSortOrder)}
+        >
+          <SelectTrigger className={FILTER_TRIGGER_CLASS} aria-label="Sort order">
+            <span style={{ color: 'var(--fg-subtle)' }}>Sort</span>
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="catalog">Catalog order</SelectItem>
+            <SelectItem value="volume">Busiest first</SelectItem>
           </SelectContent>
         </Select>
         {hasActiveFilters && (

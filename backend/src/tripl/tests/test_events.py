@@ -6,8 +6,12 @@ from httpx import ASGITransport, AsyncClient
 from sqlalchemy import func, select
 
 from tripl.main import app
+from tripl.models.data_source import DataSource
 from tripl.models.event import Event
 from tripl.models.event_change import create_event_change
+from tripl.models.event_metric import EventMetric
+from tripl.models.project import Project
+from tripl.models.scan_config import ScanConfig
 from tripl.models.search_document import SearchDocument
 from tripl.models.variable import Variable
 from tripl.models.variable_value import VariableValue
@@ -262,6 +266,100 @@ async def test_list_events(client: AsyncClient):
     assert [item["order"] for item in data["items"]] == [0, 1]
     # With no alert rules configured, no event is monitored.
     assert all(item["monitored"] is False for item in data["items"])
+
+
+@pytest.mark.asyncio
+async def test_list_events_volume_sort_orders_by_24h_metrics(client: AsyncClient):
+    """`order_by=volume` ranks events by their summed EventMetric.count over the
+    last 24h (busiest first). Metrics outside the 24h window are ignored, and the
+    default (catalog) ordering is unchanged."""
+    et_id, field_id, _ = await _setup_events(client, "ev-volume")
+
+    async def _make_event(name: str, value: str) -> str:
+        resp = await client.post(
+            "/api/v1/projects/ev-volume/events",
+            json={
+                "event_type_id": et_id,
+                "name": name,
+                "field_values": [{"field_definition_id": field_id, "value": value}],
+            },
+        )
+        assert resp.status_code == 201
+        return resp.json()["id"]
+
+    quiet_id = await _make_event("Quiet", "s1")  # catalog order 0
+    busiest_id = await _make_event("Busiest", "s2")  # catalog order 1
+    middle_id = await _make_event("Middle", "s3")  # catalog order 2
+
+    now = datetime.now(UTC)
+    async with TestSessionLocal() as session, session.begin():
+        project = (
+            await session.execute(select(Project).where(Project.slug == "ev-volume"))
+        ).scalar_one()
+        data_source = DataSource(
+            id=uuid.uuid4(),
+            name=f"Vol DS {uuid.uuid4().hex[:8]}",
+            db_type="clickhouse",
+            host="localhost",
+            port=8123,
+            database_name="default",
+        )
+        session.add(data_source)
+        await session.flush()
+        scan_config = ScanConfig(
+            id=uuid.uuid4(),
+            data_source_id=data_source.id,
+            project_id=project.id,
+            name="Vol Scan",
+            base_query="SELECT ts FROM events",
+            time_column="ts",
+            cardinality_threshold=100,
+            interval="1h",
+        )
+        session.add(scan_config)
+        await session.flush()
+
+        def _metric(event_id: str, count: int, hours_ago: float) -> EventMetric:
+            return EventMetric(
+                id=uuid.uuid4(),
+                scan_config_id=scan_config.id,
+                event_id=uuid.UUID(event_id),
+                bucket=now - timedelta(hours=hours_ago),
+                count=count,
+            )
+
+        session.add_all(
+            [
+                _metric(busiest_id, 500, 1),
+                _metric(busiest_id, 300, 5),  # busiest window total = 800
+                _metric(middle_id, 100, 2),
+                _metric(middle_id, 50, 10),  # middle window total = 150
+                _metric(quiet_id, 5, 3),  # quiet window total = 5
+                # Outside the 24h window — must NOT count toward the ranking.
+                _metric(quiet_id, 100_000, 30),
+            ]
+        )
+
+    volume_resp = await client.get("/api/v1/projects/ev-volume/events?order_by=volume")
+    assert volume_resp.status_code == 200
+    assert [item["id"] for item in volume_resp.json()["items"]] == [
+        busiest_id,
+        middle_id,
+        quiet_id,
+    ]
+
+    # Default (catalog) ordering is unchanged: creation order 0, 1, 2.
+    default_resp = await client.get("/api/v1/projects/ev-volume/events")
+    assert default_resp.status_code == 200
+    assert [item["id"] for item in default_resp.json()["items"]] == [
+        quiet_id,
+        busiest_id,
+        middle_id,
+    ]
+
+    # An unknown order_by value is rejected by the endpoint.
+    bad_resp = await client.get("/api/v1/projects/ev-volume/events?order_by=nope")
+    assert bad_resp.status_code == 422
 
 
 @pytest.mark.asyncio

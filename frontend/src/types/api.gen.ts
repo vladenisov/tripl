@@ -4516,6 +4516,11 @@ export interface components {
              * @default []
              */
             metric_breakdown_columns: string[];
+            /**
+             * Monitored
+             * @default false
+             */
+            monitored: boolean;
             /** Name */
             name: string;
             /** Order */
@@ -6765,6 +6770,11 @@ export interface components {
              * @default 0
              */
             event_type_count: number;
+            /**
+             * Failing Scan Config Count
+             * @default 0
+             */
+            failing_scan_config_count: number;
             /**
              * Firing Monitor Count
              * @default 0
@@ -10877,6 +10887,7 @@ export interface operations {
                 meta_value?: string | null;
                 offset?: number;
                 limit?: number;
+                order_by?: "catalog" | "volume";
             };
             header?: never;
             path: {
