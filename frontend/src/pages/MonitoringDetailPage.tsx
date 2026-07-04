@@ -1378,8 +1378,14 @@ function DistributionDriftPanel({
   if (!data.length || !fields.length) {
     return (
       <Card>
-        <CardContent className="flex h-56 items-center justify-center text-sm text-muted-foreground">
-          No distribution drift data available
+        <CardContent className="flex h-56 flex-col items-center justify-center gap-1 text-center text-sm text-muted-foreground">
+          <p>No distribution drift data available</p>
+          <p className="max-w-md text-xs">
+            Add fields to{' '}
+            <span className="font-mono">distribution_drift_fields</span> on the scan
+            configuration, then run a scan to start collecting distribution samples
+            for this scope.
+          </p>
         </CardContent>
       </Card>
     )
@@ -1834,7 +1840,8 @@ function EventStatStrip({ event, stats }: { event: TEvent; stats: EventDetailSta
         label="Schema drifts"
         value={formatNum(event.drift_count)}
         tone={event.drift_count > 0 ? 'warning' : undefined}
-        empty={event.drift_count === 0}
+        // Zero drifts is a real, reassuring count — render "0", not the
+        // no-data glyph the empty state would otherwise show.
         hint={event.drift_count === 0 ? 'No schema drifts detected' : undefined}
       />
       <StatCard
