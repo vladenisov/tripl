@@ -101,24 +101,17 @@ export function VariablesTab({ slug }: { slug: string }) {
     ]),
   )
 
-  const rows = variables.flatMap((variable) => {
+  // One row PER VARIABLE. The variable's events are collected into a sub-list so
+  // a variable referenced by N events reads as a single entry, not N duplicate
+  // rows. Possible values are unioned across every (variable, event) context.
+  const rows = variables.map((variable) => {
     const contexts = contextsByVariableId.get(variable.id) ?? []
-    if (contexts.length === 0) {
-      return [
-        {
-          id: `${variable.id}-empty`,
-          variable,
-          eventName: '—',
-          values: [] as string[],
-        },
-      ]
-    }
-    return contexts.map((context) => ({
+    const events = contexts.map((context) => ({
       id: context.id,
-      variable,
-      eventName: context.event_name,
-      values: context.values,
+      name: context.event_name,
     }))
+    const values = Array.from(new Set(contexts.flatMap((context) => context.values)))
+    return { id: variable.id, variable, events, values }
   })
 
   const editingVarContexts = editingVar ? (contextsByVariableId.get(editingVar.id) ?? []) : []
@@ -250,19 +243,19 @@ export function VariablesTab({ slug }: { slug: string }) {
 
       <Panel
         title="Variables"
-        subtitle={`${rows.length} variable${rows.length === 1 ? '' : 's'}`}
+        subtitle={`${variables.length} variable${variables.length === 1 ? '' : 's'}`}
         right={
           <Button size="sm" onClick={() => setShowForm(true)}>
             <Plus className="mr-2 h-4 w-4" />Add variable
           </Button>
         }
       >
-        {rows.length > 0 ? (
+        {variables.length > 0 ? (
           <Table>
             <TableHeader>
               <TableRow>
                 <TableHead>Variable</TableHead>
-                <TableHead>Event</TableHead>
+                <TableHead>Events</TableHead>
                 <TableHead>Description</TableHead>
                 <TableHead>Possible values</TableHead>
                 <TableHead className="w-24"></TableHead>
@@ -273,7 +266,7 @@ export function VariablesTab({ slug }: { slug: string }) {
                 const v = row.variable
                 return (
                 <TableRow key={row.id}>
-                  <TableCell className="font-mono text-xs">
+                  <TableCell className="font-mono text-xs align-top">
                     <div className="flex items-center gap-2">
                       <code className="rounded bg-primary/10 px-1.5 py-0.5 text-primary">
                         {`\${${v.name}}`}
@@ -283,8 +276,29 @@ export function VariablesTab({ slug }: { slug: string }) {
                       </span>
                     </div>
                   </TableCell>
-                  <TableCell className="text-xs">{row.eventName}</TableCell>
-                  <TableCell className="text-xs text-muted-foreground">{v.description}</TableCell>
+                  <TableCell className="text-xs align-top">
+                    {row.events.length === 0 ? (
+                      <span className="text-muted-foreground">—</span>
+                    ) : row.events.length <= 3 ? (
+                      <ul className="space-y-0.5">
+                        {row.events.map((event) => (
+                          <li key={event.id}>{event.name}</li>
+                        ))}
+                      </ul>
+                    ) : (
+                      <details>
+                        <summary className="cursor-pointer text-muted-foreground">
+                          {row.events.length} events
+                        </summary>
+                        <ul className="mt-1 space-y-0.5">
+                          {row.events.map((event) => (
+                            <li key={event.id}>{event.name}</li>
+                          ))}
+                        </ul>
+                      </details>
+                    )}
+                  </TableCell>
+                  <TableCell className="text-xs text-muted-foreground align-top">{v.description}</TableCell>
                   <TableCell>
                     {row.values.length > 0 ? (
                       <div className="flex max-w-sm flex-wrap gap-1">
