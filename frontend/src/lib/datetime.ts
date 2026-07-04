@@ -3,6 +3,20 @@ export function formatDate(value: string) {
   return date.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })
 }
 
+// Explicit, unambiguous calendar date as `YYYY-MM-DD`. The bare
+// `toLocaleDateString()` default renders US `mm/dd/yyyy` on many hosts, which is
+// ambiguous on a mixed-locale (e.g. Europe/Berlin + Russian) instance. Built
+// from the Date's local parts so the result is locale-proof. Returns '' for an
+// empty or unparseable input.
+export function formatIsoDate(value: string): string {
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return ''
+  const year = date.getFullYear()
+  const month = String(date.getMonth() + 1).padStart(2, '0')
+  const day = String(date.getDate()).padStart(2, '0')
+  return `${year}-${month}-${day}`
+}
+
 export function formatDateTime(value: string) {
   const date = new Date(value)
   return date.toLocaleString(undefined, {

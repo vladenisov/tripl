@@ -16,6 +16,7 @@ import {
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { useConfirm } from '@/hooks/useConfirm'
+import { formatIsoDate } from '@/lib/datetime'
 import { getErrorMessage } from '@/lib/utils'
 import { SCard, SHeader } from '@/components/settings/kit'
 import type { ApiKey, ApiKeyScope, ApiKeyWithToken } from '@/types'
@@ -175,7 +176,7 @@ export default function ApiKeysSection() {
                     : expired
                       ? 'expired'
                       : k.last_used_at
-                        ? `used ${new Date(k.last_used_at).toLocaleDateString()}`
+                        ? `used ${formatIsoDate(k.last_used_at)}`
                         : 'never used'}
                 </span>
                 {!revoked && (

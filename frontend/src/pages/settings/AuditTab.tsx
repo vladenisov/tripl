@@ -208,7 +208,9 @@ export function AuditTab({ slug }: { slug: string }) {
               </div>
             </div>
             <div className="col-span-6 sm:col-span-2 grid gap-1">
-              <Label htmlFor="audit-since" className="text-[11px] text-muted-foreground">From</Label>
+              <Label htmlFor="audit-since" className="text-[11px] text-muted-foreground">
+                From <span className="opacity-70">(YYYY-MM-DD)</span>
+              </Label>
               <Input
                 id="audit-since"
                 type="date"
@@ -218,7 +220,9 @@ export function AuditTab({ slug }: { slug: string }) {
               />
             </div>
             <div className="col-span-6 sm:col-span-2 grid gap-1">
-              <Label htmlFor="audit-until" className="text-[11px] text-muted-foreground">To</Label>
+              <Label htmlFor="audit-until" className="text-[11px] text-muted-foreground">
+                To <span className="opacity-70">(YYYY-MM-DD)</span>
+              </Label>
               <Input
                 id="audit-until"
                 type="date"

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { formatDate, formatDateTime, formatRelativeTime, formatTimestamp } from './datetime'
+import { formatDate, formatDateTime, formatIsoDate, formatRelativeTime, formatTimestamp } from './datetime'
 
 // The formatters delegate to Intl/toLocale* with the host's default locale, so
 // we assert on the structured parts (year/month/day, presence of time) that are
@@ -31,6 +31,33 @@ describe('formatDate', () => {
   it('accepts a date-only ISO string', () => {
     const out = formatDate('2026-06-21')
     expect(out).toContain('2026')
+  })
+})
+
+describe('formatIsoDate', () => {
+  it('renders an unambiguous YYYY-MM-DD date (never US mm/dd/yyyy)', () => {
+    // 10:00 UTC keeps the calendar day stable across the dev/CI host timezones,
+    // so the exact string is deterministic here.
+    const out = formatIsoDate('2026-07-04T10:00:00Z')
+    expect(out).toBe('2026-07-04')
+    expect(out).toMatch(/^\d{4}-\d{2}-\d{2}$/)
+  })
+
+  it('zero-pads single-digit months and days', () => {
+    const out = formatIsoDate('2026-01-05T10:00:00Z')
+    expect(out).toBe('2026-01-05')
+  })
+
+  it('accepts a date-only ISO string', () => {
+    expect(formatIsoDate('2026-07-04')).toMatch(/^\d{4}-\d{2}-\d{2}$/)
+  })
+
+  it('returns an empty string for an unparseable input', () => {
+    expect(formatIsoDate('not-a-date')).toBe('')
+  })
+
+  it('returns an empty string for an empty input', () => {
+    expect(formatIsoDate('')).toBe('')
   })
 })
 

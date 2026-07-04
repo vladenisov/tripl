@@ -897,14 +897,19 @@ export default function MonitoringDetailPage() {
                   createAnnotationMut.mutate()
                 }}
               >
-                <Label htmlFor="annotation-bucket" className="sr-only">Date and time</Label>
-                <Input
-                  id="annotation-bucket"
-                  type="datetime-local"
-                  value={annotationBucket}
-                  onChange={event => setAnnotationBucket(event.target.value)}
-                  className="h-8 w-[200px]"
-                />
+                <div className="flex flex-col gap-0.5">
+                  <Label htmlFor="annotation-bucket" className="sr-only">Date and time</Label>
+                  <Input
+                    id="annotation-bucket"
+                    type="datetime-local"
+                    value={annotationBucket}
+                    onChange={event => setAnnotationBucket(event.target.value)}
+                    className="h-8 w-[200px]"
+                  />
+                  <span className="text-[10px] text-muted-foreground">
+                    YYYY-MM-DD HH:mm
+                  </span>
+                </div>
                 <Label htmlFor="annotation-label" className="sr-only">Label</Label>
                 <Input
                   id="annotation-label"
