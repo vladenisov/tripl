@@ -1,8 +1,9 @@
-import { useMemo, useState } from "react"
+import { useCallback, useMemo, useState } from "react"
 import { useNavigate } from "react-router-dom"
 import { useMutation, useQueries, useQuery, useQueryClient } from "@tanstack/react-query"
 import { Plus, RotateCw } from "lucide-react"
 import { dataSourcesApi } from "@/api/dataSources"
+import { eventTypesApi } from "@/api/eventTypes"
 import { scansApi } from "@/api/scans"
 import type { DataSource, ScanConfig, ScanJob } from "@/types"
 import { Button } from "@/components/ui/button"
@@ -47,6 +48,27 @@ export function ScansTab({ slug }: { slug: string }) {
     queryKey: ['scans', slug],
     queryFn: () => scansApi.list(slug),
   })
+
+  // Resolve a scan's single event type to its name so "Review events" can open
+  // that type's pending-review queue; scans with no fixed type (or a per-row
+  // event_type_column) fall back to the whole review tab.
+  const { data: eventTypes = [] } = useQuery({
+    queryKey: ['eventTypes', slug],
+    queryFn: () => eventTypesApi.list(slug),
+  })
+  const eventTypeNameById = useMemo(
+    () => new Map(eventTypes.map(et => [et.id, et.name])),
+    [eventTypes],
+  )
+  const reviewEventsHref = useCallback(
+    (sc: ScanConfig) => {
+      const typeName = sc.event_type_id ? eventTypeNameById.get(sc.event_type_id) : undefined
+      return typeName
+        ? `/p/${slug}/events/${typeName}?status=in_review`
+        : `/p/${slug}/events/review`
+    },
+    [slug, eventTypeNameById],
+  )
 
   // Per-scan jobs power the "Last run" status and the "Recent runs" feed. The
   // backend exposes jobs per scan, so we fan out one query per config.
@@ -197,6 +219,7 @@ export function ScansTab({ slug }: { slug: string }) {
                   runInfo={runInfoById.get(sc.id) ?? deriveScanRunInfo([])}
                   intervalLabel={INTERVAL_LABEL}
                   onNavigate={() => navigate(`/p/${slug}/settings/scans/${sc.id}`)}
+                  onReviewEvents={() => navigate(reviewEventsHref(sc))}
                 />
               ))}
             </tbody>
