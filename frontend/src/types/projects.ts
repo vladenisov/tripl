@@ -22,6 +22,9 @@ export interface ProjectSummary {
   alert_destination_count: number
   monitoring_signal_count: number
   firing_monitor_count: number
+  // Number of scan configs whose latest run failed. Counts hidden per-config
+  // failures the single newest `latest_scan_job` misses.
+  failing_scan_config_count: number
   latest_scan_job: ProjectLatestScanJob | null
   latest_signal: ProjectLatestSignal | null
 }

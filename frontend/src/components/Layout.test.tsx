@@ -58,6 +58,7 @@ function renderLayout(path: string) {
         firing_monitor_count: 0,
         alert_destination_count: 0,
         monitoring_signal_count: 0,
+        failing_scan_config_count: 0,
         latest_scan_job: null,
         latest_signal: null,
       },

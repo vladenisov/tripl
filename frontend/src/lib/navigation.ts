@@ -69,7 +69,16 @@ export function buildNavGroups(slug: string, summary: ProjectSummary | undefined
           label: 'Events',
           icon: Table2,
           href: `${base}/events`,
-          match: (p) => p === base || p.startsWith(`${base}/events`),
+          // The catalog-event drilldown lives under /monitoring/event/:id
+          // (getMonitoringPath, scope_type 'event') but is an Events surface —
+          // reached from the Events catalog, breadcrumbs read "Events › Detail" —
+          // so it activates Events here and is excluded from Monitors below,
+          // mirroring how the catalog-metric case is handled. The trailing slash
+          // keeps /monitoring/event-type/ (a Monitors drilldown) from matching.
+          match: (p) =>
+            p === base
+            || p.startsWith(`${base}/events`)
+            || p.startsWith(`${base}/monitoring/event/`),
           count: summary ? formatCount(summary.active_event_count) : undefined,
         },
         {
@@ -139,13 +148,17 @@ export function buildNavGroups(slug: string, summary: ProjectSummary | undefined
           label: 'Monitors',
           icon: Gauge,
           href: `${base}/monitors`,
-          // /monitoring/* drilldowns (event / event-type / project-total)
-          // belong to Monitors — except the catalog-metric drilldown, which
-          // the Metrics item above claims.
+          // /monitoring/* drilldowns belong to Monitors — except the
+          // catalog-metric (/monitoring/metric/) and catalog-event
+          // (/monitoring/event/) drilldowns, which the Metrics and Events items
+          // above claim respectively. The event-type / project-total drilldowns
+          // stay here (and /monitoring/event-type/ is safe: it does not start
+          // with /monitoring/event/, so the exclusion below does not catch it).
           match: (p) =>
             p.startsWith(`${base}/monitors`)
             || (p.startsWith(`${base}/monitoring`)
-              && !p.startsWith(`${base}/monitoring/metric/`))
+              && !p.startsWith(`${base}/monitoring/metric/`)
+              && !p.startsWith(`${base}/monitoring/event/`))
             || p.startsWith(`${base}/settings/monitoring`),
           // The badge counts MONITORS in a FIRING state (firing_monitor_count),
           // never the open-signal population (monitoring_signal_count) — that
