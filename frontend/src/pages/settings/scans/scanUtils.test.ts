@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import type { ScanJob } from '@/types'
 import {
+  consecutiveFailedRuns,
   deriveScanRunInfo,
   eligibleChunkIntervals,
   jobDurationSeconds,
@@ -59,6 +60,48 @@ describe('jobDurationSeconds', () => {
 
   it('returns null when not finished', () => {
     expect(jobDurationSeconds(job({ completed_at: null }))).toBeNull()
+  })
+})
+
+describe('consecutiveFailedRuns', () => {
+  it('returns 0 when there are no jobs', () => {
+    expect(consecutiveFailedRuns([])).toBe(0)
+  })
+
+  it('counts leading failed runs (newest-first) and stops at the first success', () => {
+    expect(
+      consecutiveFailedRuns([
+        job({ status: 'failed' }),
+        job({ status: 'failed' }),
+        job({ status: 'failed' }),
+        job({ status: 'completed' }),
+        job({ status: 'failed' }),
+      ]),
+    ).toBe(3)
+  })
+
+  it('skips an in-flight retry at the head so the streak is not reset', () => {
+    expect(
+      consecutiveFailedRuns([
+        job({ status: 'running' }),
+        job({ status: 'failed' }),
+        job({ status: 'failed' }),
+      ]),
+    ).toBe(2)
+  })
+
+  it('returns 0 when the latest settled run succeeded', () => {
+    expect(consecutiveFailedRuns([job({ status: 'completed' }), job({ status: 'failed' })])).toBe(0)
+  })
+
+  it('stops the streak at a cancelled run', () => {
+    expect(
+      consecutiveFailedRuns([
+        job({ status: 'failed' }),
+        job({ status: 'cancelled' }),
+        job({ status: 'failed' }),
+      ]),
+    ).toBe(1)
   })
 })
 

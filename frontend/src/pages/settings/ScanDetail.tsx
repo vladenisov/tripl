@@ -1,6 +1,6 @@
 import { Fragment, useState } from "react"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
-import { Ban, ChevronDown, GitMerge, RotateCcw } from "lucide-react"
+import { Ban, ChevronDown, GitMerge, RotateCcw, XCircle } from "lucide-react"
 import { scansApi } from "@/api/scans"
 import type { DataSource, EventType, ScanConfig, ScanJob, ScanJobResultSummary } from "@/types"
 import { Button } from "@/components/ui/button"
@@ -18,7 +18,7 @@ import {
 } from './scans/scanLayout'
 import { RunStatusPill } from './scans/ScanConfigRow'
 import { runPillStatus } from './scans/scanRunStatus'
-import { jobDurationSeconds, jobRowsScanned } from './scans/scanUtils'
+import { consecutiveFailedRuns, jobDurationSeconds, jobRowsScanned } from './scans/scanUtils'
 
 function clamp(value: number, min: number, max: number) {
   return Math.min(Math.max(value, min), max)
@@ -231,6 +231,12 @@ export function ScanDetail({
     ? `Last succeeded ${formatRelativeTime(lastGoodAt)}`
     : 'Latest scan runs'
 
+  // A scan that fails every run produces a wall of identical failed rows. Collapse
+  // that into one "failed last N runs" streak banner with the reason and a single
+  // "Run again" action, so the failure reads as one ongoing problem (tripl-7l83.4).
+  const failingStreak = consecutiveFailedRuns(jobs)
+  const streakError = failingStreak > 0 ? friendlyScanError(lastJob?.error_message) : null
+
   return (
     <div className="flex flex-col gap-4">
       {/* Stat cards */}
@@ -349,6 +355,31 @@ export function ScanDetail({
         >
           {applyGroupsMessage}
         </p>
+        {failingStreak >= 2 && (
+          <div
+            className="mx-4 mt-3 flex flex-col gap-2 rounded-lg border p-3"
+            style={{ borderColor: 'var(--danger)', background: 'var(--danger-soft)' }}
+          >
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <span className="inline-flex items-center gap-1.5 text-[13px] font-semibold" style={{ color: 'var(--danger)' }}>
+                <XCircle className="size-3.5" aria-hidden="true" />
+                Failed last {failingStreak} runs
+              </span>
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => retryMut.mutate()}
+                disabled={retryMut.isPending}
+              >
+                <RotateCcw className="size-3" aria-hidden="true" />
+                {retryMut.isPending ? 'Starting…' : 'Run again'}
+              </Button>
+            </div>
+            {streakError && (
+              <p className="text-[12px]" style={{ color: 'var(--danger)' }}>{streakError.message}</p>
+            )}
+          </div>
+        )}
         {isLoading && <p className="px-4 py-3 text-sm text-muted-foreground">Loading jobs…</p>}
         {jobs.length === 0 && !isLoading && (
           <p className="px-4 py-3 text-sm text-muted-foreground">No jobs yet. Use “Run now” to start.</p>
