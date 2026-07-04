@@ -147,7 +147,11 @@ export function SettingsLayout({
                       onClick={() => onNavigate(item.path)}
                       className="flex items-center gap-2 rounded-md px-[9px] py-[7px] text-left text-[12.5px] font-medium transition-colors"
                       style={{
-                        background: active ? 'var(--surface-active)' : 'transparent',
+                        // Match the app shell: the main sidebar marks the active
+                        // nav item with --surface-hover, so this takeover shell
+                        // uses the same token instead of the heavier
+                        // --surface-active, which read as a foreign grey block.
+                        background: active ? 'var(--surface-hover)' : 'transparent',
                         color: active ? 'var(--fg)' : 'var(--fg-muted)',
                       }}
                       onMouseEnter={(e) => {
