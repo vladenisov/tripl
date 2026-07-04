@@ -8,6 +8,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import noload
 
 from tripl import cache
+from tripl.alerting_matching import rule_covers_event
+from tripl.models.alert_destination import AlertDestination
+from tripl.models.alert_rule import AlertRule
 from tripl.models.event import Event
 from tripl.models.event_change import EventChange, create_event_change
 from tripl.models.event_field_value import EventFieldValue
@@ -170,8 +173,46 @@ async def list_events(
     for event in events:
         event.drift_count = drift_counts.get(event.event_type_id, 0)  # type: ignore[attr-defined]
 
+    # Project alert-rule coverage onto each row so the catalog's Monitor column
+    # reflects whether an event is watched (has a rule) — the same identity-based
+    # coverage the live pipeline uses — not merely whether it is firing.
+    coverage_rules = await _load_event_coverage_rules(session, project_id)
+    for event in events:
+        event.monitored = any(  # type: ignore[attr-defined]
+            rule_covers_event(
+                rule,
+                event_id=event.id,
+                event_type_id=event.event_type_id,
+            )
+            for rule in coverage_rules
+        )
+
     await attach_event_field_variable_values(session, events)
     return events, total
+
+
+async def _load_event_coverage_rules(
+    session: AsyncSession, project_id: uuid.UUID
+) -> list[AlertRule]:
+    """Enabled, event-scoped alert rules under enabled destinations.
+
+    Only these rules can *cover* an event, so the catalog computes the
+    ``monitored`` flag by testing each event against just this set (their
+    identity filters) rather than the full rule roster. Filters load eagerly via
+    ``AlertRule.filters`` (``lazy="selectin"``), so this is a bounded, two-query
+    load regardless of page size.
+    """
+    result = await session.execute(
+        select(AlertRule)
+        .join(AlertDestination, AlertDestination.id == AlertRule.destination_id)
+        .where(
+            AlertDestination.project_id == project_id,
+            AlertDestination.enabled.is_(True),
+            AlertRule.enabled.is_(True),
+            AlertRule.include_events.is_(True),
+        )
+    )
+    return list(result.scalars().unique().all())
 
 
 async def _get_next_event_order(

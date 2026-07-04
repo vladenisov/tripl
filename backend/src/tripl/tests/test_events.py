@@ -260,6 +260,88 @@ async def test_list_events(client: AsyncClient):
     assert data["total"] == 2
     assert len(data["items"]) == 2
     assert [item["order"] for item in data["items"]] == [0, 1]
+    # With no alert rules configured, no event is monitored.
+    assert all(item["monitored"] is False for item in data["items"])
+
+
+@pytest.mark.asyncio
+async def test_list_events_monitored_reflects_alert_rule_coverage(client: AsyncClient):
+    """The catalog's Monitor column is fed by alert-rule coverage: an event is
+    ``monitored`` when an enabled, event-scoped rule watches it. A rule with an
+    ``event`` filter narrows coverage to just the referenced events."""
+    et_id, field_id, _ = await _setup_events(client, "ev-monitored")
+    covered_resp = await client.post(
+        "/api/v1/projects/ev-monitored/events",
+        json={
+            "event_type_id": et_id,
+            "name": "Covered",
+            "field_values": [{"field_definition_id": field_id, "value": "s"}],
+        },
+    )
+    covered_id = covered_resp.json()["id"]
+    other_resp = await client.post(
+        "/api/v1/projects/ev-monitored/events",
+        json={
+            "event_type_id": et_id,
+            "name": "Uncovered",
+            "field_values": [{"field_definition_id": field_id, "value": "s"}],
+        },
+    )
+    other_id = other_resp.json()["id"]
+
+    destination_resp = await client.post(
+        "/api/v1/projects/ev-monitored/alert-destinations",
+        json={
+            "type": "slack",
+            "name": "Main Slack",
+            "enabled": True,
+            "webhook_url": "https://hooks.slack.com/services/T000/B000/XXX",
+        },
+    )
+    destination_id = destination_resp.json()["id"]
+
+    def monitored_by_id(items: list[dict]) -> dict[str, bool]:
+        return {item["id"]: item["monitored"] for item in items}
+
+    # An event-scoped rule with no filters covers every event.
+    broad_rule = await client.post(
+        f"/api/v1/projects/ev-monitored/alert-destinations/{destination_id}/rules",
+        json={"name": "All events", "enabled": True, "include_events": True},
+    )
+    assert broad_rule.status_code == 201
+    listed = monitored_by_id(
+        (await client.get("/api/v1/projects/ev-monitored/events")).json()["items"]
+    )
+    assert listed[covered_id] is True
+    assert listed[other_id] is True
+
+    # Narrow that rule to a single event via an `event` filter → only it stays
+    # covered.
+    rule_id = broad_rule.json()["id"]
+    narrow = await client.patch(
+        f"/api/v1/projects/ev-monitored/alert-destinations/{destination_id}/rules/{rule_id}",
+        json={
+            "filters": [
+                {"field": "event", "operator": "eq", "values": [covered_id]},
+            ],
+        },
+    )
+    assert narrow.status_code == 200
+    listed = monitored_by_id(
+        (await client.get("/api/v1/projects/ev-monitored/events")).json()["items"]
+    )
+    assert listed[covered_id] is True
+    assert listed[other_id] is False
+
+    # Disabling event scope drops coverage for all events.
+    await client.patch(
+        f"/api/v1/projects/ev-monitored/alert-destinations/{destination_id}/rules/{rule_id}",
+        json={"include_events": False},
+    )
+    listed = monitored_by_id(
+        (await client.get("/api/v1/projects/ev-monitored/events")).json()["items"]
+    )
+    assert all(value is False for value in listed.values())
 
 
 @pytest.mark.asyncio

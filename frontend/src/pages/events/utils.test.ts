@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import type { EventMetricPoint, MonitoringSignal } from '@/types'
 import {
+  computeWindowDelta,
   deriveRowSignalFromMetrics,
   formatRelativeTime,
   mapLatestSignals,
@@ -270,5 +271,54 @@ describe('splitTemplateValue', () => {
       { text: '/', token: false },
       { text: '${b}', token: true },
     ])
+  })
+})
+
+describe('computeWindowDelta', () => {
+  const HOUR_MS = 60 * 60 * 1000
+
+  // Builds a 48h hourly series where the prior 24h buckets carry `priorPerHour`
+  // and the most recent 24h carry `recentPerHour`, latest bucket at `latest`.
+  function windowSeries(
+    priorPerHour: number,
+    recentPerHour: number,
+    latest = Date.parse('2026-06-10T23:00:00Z'),
+  ): EventMetricPoint[] {
+    const points: EventMetricPoint[] = []
+    for (let hoursAgo = 47; hoursAgo >= 0; hoursAgo -= 1) {
+      points.push(
+        metricPoint({
+          bucket: new Date(latest - hoursAgo * HOUR_MS).toISOString(),
+          count: hoursAgo < 24 ? recentPerHour : priorPerHour,
+        }),
+      )
+    }
+    return points
+  }
+
+  it('returns the percent change of the recent 24h versus the prior 24h', () => {
+    // prior window = 24 * 10 = 240, recent window = 24 * 20 = 480 → +100%.
+    expect(computeWindowDelta(windowSeries(10, 20))).toBeCloseTo(100)
+  })
+
+  it('reports a negative delta when recent volume drops', () => {
+    // prior = 240, recent = 120 → -50%.
+    expect(computeWindowDelta(windowSeries(10, 5))).toBeCloseTo(-50)
+  })
+
+  it('returns null when there is no prior-window volume to divide by', () => {
+    expect(computeWindowDelta(windowSeries(0, 20))).toBeNull()
+  })
+
+  it('returns null for an empty series', () => {
+    expect(computeWindowDelta([])).toBeNull()
+  })
+
+  it('does not rely on per-bucket expected_count (the old broken source)', () => {
+    // Every point has expected_count null (non-anomaly) — the delta must still
+    // resolve from raw volume, which was the actual bug.
+    const points = windowSeries(4, 8)
+    expect(points.every((p) => p.expected_count === null)).toBe(true)
+    expect(computeWindowDelta(points)).toBeCloseTo(100)
   })
 })

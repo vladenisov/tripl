@@ -5491,6 +5491,11 @@
             "title": "Metric Breakdown Columns",
             "type": "array"
           },
+          "monitored": {
+            "default": false,
+            "title": "Monitored",
+            "type": "boolean"
+          },
           "name": {
             "title": "Name",
             "type": "string"

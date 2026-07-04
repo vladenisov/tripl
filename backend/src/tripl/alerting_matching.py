@@ -140,6 +140,40 @@ def rule_matches_anomaly(rule: AlertRule, anomaly: AlertMatchCandidate) -> bool:
     return all(filter_matches_anomaly(filter_row, anomaly) for filter_row in rule.filters)
 
 
+def rule_covers_event(
+    rule: AlertRule,
+    *,
+    event_id: uuid.UUID,
+    event_type_id: uuid.UUID,
+) -> bool:
+    """Whether an enabled rule *monitors* this event — coverage, not firing.
+
+    Coverage answers "is this event watched by an alert rule at all", a static
+    property of the event's identity, as opposed to :func:`rule_matches_anomaly`
+    which answers whether a *live anomaly* would deliver. It therefore gates only
+    on the event scope toggle (``include_events``) and the identity filters
+    (``event`` / ``event_type``); the direction and numeric-threshold gates
+    depend on an anomaly's counts, which are not a property of the event, so they
+    are deliberately ignored here. Non-identity filters (e.g. ``direction``) are
+    firing-time gates and never narrow coverage.
+    """
+    if not rule.enabled or not rule.include_events:
+        return False
+    for filter_row in rule.filters:
+        if filter_row.field == "event":
+            actual = str(event_id)
+        elif filter_row.field == "event_type":
+            actual = str(event_type_id)
+        else:
+            continue
+        values = set(filter_row.values or [])
+        if filter_row.operator in ("eq", "in") and actual not in values:
+            return False
+        if filter_row.operator in ("ne", "not_in") and actual in values:
+            return False
+    return True
+
+
 def simulate_rule_firings(
     rule: AlertRule,
     anomalies: list[AlertMatchCandidate],

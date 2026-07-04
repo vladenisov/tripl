@@ -95,8 +95,10 @@ export interface SchemaDriftList {
 }
 
 // Slim shape returned by GET /events: drops nested event_type since the
-// frontend already has EventTypes cached and looks them up by id.
-export type EventListItem = Omit<Event, 'event_type'>
+// frontend already has EventTypes cached and looks them up by id, and adds
+// `monitored` — alert-rule coverage the list endpoint computes per row (the
+// detail response does not carry it).
+export type EventListItem = Omit<Event, 'event_type'> & { monitored: boolean }
 
 export interface EventListResponse {
   items: EventListItem[]
