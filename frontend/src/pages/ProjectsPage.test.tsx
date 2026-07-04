@@ -1,4 +1,4 @@
-import { render, screen } from '@testing-library/react'
+import { fireEvent, render, screen, within } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { MemoryRouter } from 'react-router-dom'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -481,6 +481,50 @@ describe('ProjectsPage', () => {
     // shown in its Latest scan panel succeeded.
     expect(screen.getByText('2 scan configs failing')).toBeInTheDocument()
     expect(screen.getByText('Hourly success')).toBeInTheDocument()
+  })
+
+  it('tucks project deletion behind an overflow menu, not a bare trash button (tripl-7l83.17)', async () => {
+    mockSingleProject()
+
+    renderProjectsPage('owner')
+
+    expect(await screen.findByText('Beta')).toBeInTheDocument()
+    // The one-click destructive trash button is gone from the card header.
+    expect(screen.queryByRole('button', { name: /^Delete Beta$/i })).not.toBeInTheDocument()
+
+    // Delete now lives behind an accessible overflow ("...") menu trigger.
+    const trigger = screen.getByRole('button', { name: /project actions for beta/i })
+    expect(trigger).toHaveAttribute('aria-haspopup', 'menu')
+
+    // The menu is keyboard-openable and the trash is reachable inside it.
+    fireEvent.keyDown(trigger, { key: 'Enter' })
+    expect(await screen.findByRole('menuitem', { name: /delete/i })).toBeInTheDocument()
+  })
+
+  it('renders the workspace coverage fraction in a neutral tone, not danger (tripl-7l83.17)', async () => {
+    mockSingleProject()
+
+    renderProjectsPage('owner')
+
+    expect(await screen.findByText('Beta')).toBeInTheDocument()
+    const coverageStat = screen.getByText('Coverage').closest('dl')
+    expect(coverageStat).not.toBeNull()
+    // The Coverage MiniStat delta ("implemented/active") must read as neutral —
+    // not danger/red — so a healthy 99% coverage never implies a problem.
+    const fraction = within(coverageStat as HTMLElement).getByText('320/323')
+    expect(fraction).toHaveStyle({ color: 'var(--fg-subtle)' })
+    expect(fraction).not.toHaveStyle({ color: 'var(--danger)' })
+  })
+
+  it('links the review-queue number into the first pending project (tripl-7l83.17)', async () => {
+    mockSingleProject()
+
+    renderProjectsPage('owner')
+
+    expect(await screen.findByText('Beta')).toBeInTheDocument()
+    // The Review-queue count deep-links into the project's review triage view.
+    const reviewLink = screen.getByRole('link', { name: /review queue: 1 event/i })
+    expect(reviewLink).toHaveAttribute('href', '/p/beta/events/review')
   })
 
   it('shows an error instead of the empty state when the backend is unavailable', async () => {

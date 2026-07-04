@@ -22,6 +22,12 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog'
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Skeleton } from '@/components/ui/skeleton'
@@ -43,6 +49,7 @@ import {
   ArrowRight,
   BellRing,
   FolderKanban,
+  MoreHorizontal,
   PlayCircle,
   Plus,
   Settings2,
@@ -105,10 +112,6 @@ export default function MainPage() {
     portfolio.implementedEventCount,
     portfolio.activeEventCount,
   )
-  const coverageRatio = planCoverageRatio(
-    portfolio.implementedEventCount,
-    portfolio.activeEventCount,
-  )
   const projectsWithScans = projects.filter((project) => project.summary.scan_count > 0).length
   const projectsWithSignals = projects.filter(
     (project) => project.summary.monitoring_signal_count > 0,
@@ -116,6 +119,11 @@ export default function MainPage() {
   const projectsNeedingReview = projects.filter(
     (project) => project.summary.review_pending_event_count > 0,
   ).length
+  // Deep-link the workspace Review-queue number to the first project that
+  // actually has a pending queue, so the stat is a shortcut into triage.
+  const firstReviewProject = projects.find(
+    (project) => project.summary.review_pending_event_count > 0,
+  )
   const projectsWithLatestScanJob = projects.filter(
     (project) => project.summary.latest_scan_job != null,
   ).length
@@ -311,7 +319,9 @@ export default function MainPage() {
                     ? `${portfolio.implementedEventCount}/${portfolio.activeEventCount}`
                     : undefined
                 }
-                tone={coverageRatio >= 0.8 ? 'success' : coverageRatio >= 0.5 ? 'warning' : 'neutral'}
+                // The fraction is a plain "implemented of active" readout, not a
+                // health signal — keep it neutral so 77% never reads as an error.
+                tone="neutral"
               />
               <MiniStatDivider />
               <MiniStat
@@ -345,6 +355,11 @@ export default function MainPage() {
                     : 'No pending event reviews'
                 }
                 tone={portfolio.reviewPendingEventCount > 0 ? 'warning' : 'success'}
+                to={
+                  firstReviewProject
+                    ? `/p/${firstReviewProject.slug}/events/review`
+                    : undefined
+                }
               />
               <AttentionStat
                 icon={AlertTriangle}
@@ -473,6 +488,7 @@ function AttentionStat({
   hint,
   tone = 'neutral',
   pulse = false,
+  to,
 }: {
   icon: ElementType
   label: string
@@ -481,6 +497,7 @@ function AttentionStat({
   hint: string
   tone?: StatTone
   pulse?: boolean
+  to?: string
 }) {
   const toneColor =
     tone === 'success'
@@ -522,9 +539,20 @@ function AttentionStat({
           {pulse && needsAttention && (
             <Dot tone={tone === 'warning' ? 'warning' : 'danger'} size={6} pulse />
           )}
-          <span className="mono tnum text-[20px] font-medium leading-[1.1] tracking-[-0.01em]">
-            {value}
-          </span>
+          {to ? (
+            <Link
+              to={to}
+              aria-label={`${label}: ${value}${unit ? ` ${unit}` : ''}`}
+              className="mono tnum rounded-sm text-[20px] font-medium leading-[1.1] tracking-[-0.01em] hover:underline"
+              style={{ color: 'inherit' }}
+            >
+              {value}
+            </Link>
+          ) : (
+            <span className="mono tnum text-[20px] font-medium leading-[1.1] tracking-[-0.01em]">
+              {value}
+            </span>
+          )}
           {unit ? (
             <span className="text-[11px]" style={{ color: 'var(--fg-faint)' }}>
               {unit}
@@ -533,11 +561,11 @@ function AttentionStat({
         </dd>
         <dt
           className="text-[10px] font-semibold uppercase tracking-[0.07em]"
-          style={{ color: 'var(--fg-faint)' }}
+          style={{ color: 'var(--fg-subtle)' }}
         >
           {label}
         </dt>
-        <dd className="m-0 text-[11px] leading-[1.35]" style={{ color: 'var(--fg-subtle)' }}>
+        <dd className="m-0 text-[11px] leading-[1.35]" style={{ color: 'var(--fg-muted)' }}>
           {hint}
         </dd>
       </dl>
@@ -620,15 +648,28 @@ function ProjectCard({
           </p>
         </div>
         {canDelete && (
-          <Button
-            variant="ghost"
-            size="icon"
-            className="shrink-0 text-muted-foreground hover:text-destructive"
-            onClick={onDelete}
-            aria-label={`Delete ${project.name}`}
-          >
-            <Trash2 className="h-3.5 w-3.5" />
-          </Button>
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button
+                variant="ghost"
+                size="icon"
+                className="shrink-0 text-muted-foreground"
+                aria-label={`Project actions for ${project.name}`}
+              >
+                <MoreHorizontal className="h-3.5 w-3.5" />
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end" sideOffset={6} className="w-[176px]">
+              <DropdownMenuItem
+                variant="destructive"
+                className="text-[12.5px]"
+                onSelect={onDelete}
+              >
+                <Trash2 className="h-3.5 w-3.5 shrink-0" />
+                Delete project
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
         )}
       </div>
 
