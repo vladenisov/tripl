@@ -1,4 +1,5 @@
-import { Calendar } from 'lucide-react'
+import { useMemo, useState } from 'react'
+import { Calendar, ChevronDown, ChevronRight, Layers } from 'lucide-react'
 import {
   DndContext,
   closestCenter,
@@ -11,6 +12,7 @@ import {
   verticalListSortingStrategy,
 } from '@dnd-kit/sortable'
 import type { VirtualItem } from '@tanstack/react-virtual'
+import { Button } from '@/components/ui/button'
 import { Checkbox } from '@/components/ui/checkbox'
 import {
   Table,
@@ -35,7 +37,11 @@ import type {
 
 import { ColumnFilter, FilterableHead, type ColumnFilterType } from './ColumnFilter'
 import { EventRow, type RowAction } from './EventRow'
+import { groupEventNames, type EventNameGroup } from './eventNameGroups'
 import { EMPTY_WINDOW_POINTS, ROW_METRICS_LABEL } from './utils'
+
+/** Cap the cluster list so the summary header stays compact; the rest fold into a count. */
+const MAX_VISIBLE_CLUSTERS = 6
 
 export type EventsTableProps = {
   // Layout
@@ -134,6 +140,22 @@ export function EventsTable({
   onToggleExpandedCell,
   onRowAction,
 }: EventsTableProps) {
+  // Cluster near-identical, scan-generated names so a block of look-alike rows
+  // can be triaged as one. This is a read-only summary computed from the loaded
+  // rows — it never reorders or replaces the flat/virtualized list below.
+  const [clustersExpanded, setClustersExpanded] = useState(false)
+  const nameClusters = useMemo(
+    () =>
+      groupEventNames(
+        // `events` can be sparse while paginated rows stream in; drop the holes.
+        events.filter((ev): ev is EventListItem => Boolean(ev)),
+      ).groups,
+    [events],
+  )
+  const selectCluster = (group: EventNameGroup) => {
+    for (const id of group.eventIds) toggleEventSelected(id, true)
+  }
+
   // Visible window for the "Showing X–Y of N" footer. When virtualized this
   // tracks the rendered window as the user scrolls; otherwise all loaded rows
   // are on screen.
@@ -201,6 +223,69 @@ export function EventsTable({
     <TooltipProvider delayDuration={0}>
       <DndContext sensors={dndSensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
         <SortableContext items={visibleEventIds} strategy={verticalListSortingStrategy}>
+          {nameClusters.length > 0 && (
+            <div
+              className="border-b text-[11px]"
+              style={{
+                borderColor: 'var(--border)',
+                background: 'var(--bg-sunken)',
+                color: 'var(--fg-subtle)',
+              }}
+            >
+              <button
+                type="button"
+                onClick={() => setClustersExpanded((open) => !open)}
+                aria-expanded={clustersExpanded}
+                className="flex w-full items-center gap-1.5 px-5 py-2 text-left hover:text-foreground"
+              >
+                {clustersExpanded ? (
+                  <ChevronDown className="size-3.5" aria-hidden />
+                ) : (
+                  <ChevronRight className="size-3.5" aria-hidden />
+                )}
+                <Layers className="size-3.5" aria-hidden />
+                <span>
+                  <span className="mono tnum" style={{ color: 'var(--fg-muted)' }}>
+                    {nameClusters.length.toLocaleString()}
+                  </span>{' '}
+                  similar-name {nameClusters.length === 1 ? 'cluster' : 'clusters'} detected
+                </span>
+              </button>
+              {clustersExpanded && (
+                <ul className="pb-1.5">
+                  {nameClusters.slice(0, MAX_VISIBLE_CLUSTERS).map((group) => (
+                    <li key={group.prefix} className="flex items-center gap-2 px-5 py-1">
+                      <span
+                        className="mono truncate"
+                        style={{ color: 'var(--fg-muted)' }}
+                        title={group.prefix}
+                      >
+                        {group.prefix}
+                        <span style={{ color: 'var(--fg-faint)' }}>…</span>
+                      </span>
+                      <span className="mono tnum whitespace-nowrap">
+                        · {group.count.toLocaleString()} events
+                      </span>
+                      <div className="flex-1" />
+                      <Button
+                        variant="ghost"
+                        size="xs"
+                        onClick={() => selectCluster(group)}
+                        aria-label={`Select all ${group.count} events in cluster ${group.prefix}`}
+                      >
+                        Select
+                      </Button>
+                    </li>
+                  ))}
+                  {nameClusters.length > MAX_VISIBLE_CLUSTERS && (
+                    <li className="px-5 py-1" style={{ color: 'var(--fg-faint)' }}>
+                      and {(nameClusters.length - MAX_VISIBLE_CLUSTERS).toLocaleString()} more…
+                    </li>
+                  )}
+                </ul>
+              )}
+            </div>
+          )}
           <div
             ref={tableScrollRef}
             className="tripl-table-wrap"
