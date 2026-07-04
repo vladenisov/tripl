@@ -18,6 +18,7 @@ import { useConfirm } from '@/hooks/useConfirm'
 import type { AlertDestination, AlertInboxGroup } from '@/types'
 
 import { AlertDeliveryRow } from './alerting/AlertDeliveryRow'
+import { AlertingGuidedSetup } from './alerting/AlertingGuidedSetup'
 import { DestinationCard } from './alerting/DestinationCard'
 import { RoutingRulesPanel } from './alerting/RoutingRulesPanel'
 import { PageHead, Panel } from '@/components/settings/kit'
@@ -232,6 +233,16 @@ export default function ProjectAlertingTab({ slug }: { slug: string }) {
   const activeDestinationType = editingDestination?.type ?? createType ?? destinationForm.type
 
   const hasDestinations = destinations.length > 0
+  const hasRules = allRules.length > 0
+  // Delivery history means alerts have fired before, so the project is NOT a
+  // blank slate even if its destinations/rules were later removed — keep the
+  // normal view (with the Audit log) rather than collapsing to guided setup.
+  const hasDeliveries = (deliveries?.total ?? 0) > 0
+  // Before anything is configured, collapse the three empty boxes (routing
+  // rules, destinations, inbox) into one guided flow. The Inbox card also stays
+  // hidden until a rule exists, so it never shows an empty group before the
+  // first rule can produce one.
+  const showGuidedSetup = !hasDestinations && !hasRules && !hasDeliveries
   // One source of truth for the channel buttons so the zero-state CTA and the
   // populated-state "add another" row stay in sync.
   const channelButtons = CHANNEL_META.map(({ channel, label, Icon }) => (
@@ -250,6 +261,10 @@ export default function ProjectAlertingTab({ slug }: { slug: string }) {
         description="Route active anomaly signals to Slack, Telegram, or a generic webhook. Rules are project-level and apply to every scan in the project."
       />
 
+      {showGuidedSetup ? (
+        <AlertingGuidedSetup channels={CHANNEL_META} onPickChannel={openCreate} />
+      ) : (
+      <>
       <RoutingRulesPanel slug={slug} />
 
       <div className="grid gap-6">
@@ -330,6 +345,7 @@ export default function ProjectAlertingTab({ slug }: { slug: string }) {
         </div>
 
         <div className="min-w-0 space-y-4">
+          {hasRules && (
           <Panel title="Inbox" subtitle={`${inbox?.total ?? 0} groups`}>
             <div className="space-y-3 p-4">
               {!inbox || inbox.items.length === 0 ? (
@@ -402,6 +418,7 @@ export default function ProjectAlertingTab({ slug }: { slug: string }) {
               )}
             </div>
           </Panel>
+          )}
 
           <Panel title="Audit" subtitle={`${deliveries?.total ?? 0} deliveries`}>
             <div className="min-w-0 space-y-4 p-4">
@@ -511,6 +528,8 @@ export default function ProjectAlertingTab({ slug }: { slug: string }) {
           </Panel>
         </div>
       </div>
+      </>
+      )}
 
       <Dialog open={!!createType || !!editingDestination} onOpenChange={open => { if (!open) closeDestinationDialog() }}>
         <DialogContent className="max-w-lg">

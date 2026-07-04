@@ -81,7 +81,9 @@ export default function MonitorsPage() {
         </div>
       )}
 
-      {/* Rollup */}
+      {/* Rollup — hidden entirely when the project has no monitors, so an
+          all-zero FIRING/WARNING/HEALTHY/MONITORS row never sits above the
+          empty state. */}
       {monitorsQuery.isError ? (
         <ErrorState
           title="Monitors unavailable"
@@ -92,11 +94,9 @@ export default function MonitorsPage() {
           retryLabel="Retry"
           compact
         />
-      ) : (
+      ) : isEmpty ? null : (
         <div
-          className={`flex flex-wrap items-center gap-x-6 gap-y-4 rounded-lg border px-4 py-3 ${
-            isEmpty ? 'opacity-60' : ''
-          }`}
+          className="flex flex-wrap items-center gap-x-6 gap-y-4 rounded-lg border px-4 py-3"
           style={{ background: 'var(--bg-sunken)', borderColor: 'var(--border-subtle)' }}
         >
           <MiniStat

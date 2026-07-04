@@ -205,5 +205,11 @@ describe('MonitorsPage', () => {
       'href',
       '/p/demo/settings/alerting',
     )
+
+    // The all-zero FIRING / WARNING / HEALTHY / MONITORS stat row must not
+    // render above the empty state (tripl-7l83.14).
+    expect(screen.queryByText('Firing')).toBeNull()
+    expect(screen.queryByText('Warning')).toBeNull()
+    expect(screen.queryByText('Healthy')).toBeNull()
   })
 })
