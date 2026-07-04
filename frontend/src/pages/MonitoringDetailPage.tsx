@@ -39,7 +39,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { useActiveBranchId } from '@/hooks/useBranch'
 import { formatRelativeTime, formatTimestamp } from '@/lib/datetime'
 import { formatMetricValue, isPercentUnit, metricAxisFormatter } from '@/lib/metricFormat'
-import { GRANULARITY_OPTIONS, RANGE_OPTIONS, aggregateMetricPoints, type MetricsGranularity } from '@/lib/metrics'
+import { GRANULARITY_OPTIONS, RANGE_OPTIONS, aggregateMetricPoints, defaultGranularityForRange, type MetricsGranularity } from '@/lib/metrics'
 import { resolveMetaFieldHref } from '@/lib/metaFields'
 import { resolveDetailScope } from '@/lib/monitoring'
 import type {
@@ -304,13 +304,18 @@ export default function MonitoringDetailPage() {
   const metrics = metricsQuery.data
   // Interval-based catalog metrics chart one point per interval, so 'Hours'
   // is a misleading default (tripl-4m86): follow the collection cadence
-  // instead. Event(-type) drilldowns keep their hourly default.
+  // instead. Event / event-type / project-total volume drilldowns instead size
+  // the default to the selected range (tripl-7l83.10) — a 30d/90d window on the
+  // hourly default renders ~720+ points as an unreadable comb. A manual pick
+  // (granularityOverride) still wins and stays sticky across range changes.
   const defaultGranularity: MetricsGranularity =
-    scope === 'metric' && metrics?.interval === '1d'
-      ? 'day'
-      : scope === 'metric' && metrics?.interval === '1w'
-        ? 'week'
-        : 'hour'
+    scope === 'metric'
+      ? metrics?.interval === '1d'
+        ? 'day'
+        : metrics?.interval === '1w'
+          ? 'week'
+          : 'hour'
+      : defaultGranularityForRange(rangeDays)
   const granularity = granularityOverride ?? defaultGranularity
   const scanConfigId = metrics?.scan_config_id ?? (scope === 'project_total' ? scopeId : null)
 
@@ -1220,7 +1225,7 @@ function MetricsRangeControls({
         value={granularity}
         onValueChange={(value: MetricsGranularity) => onGranularityChange(value)}
       >
-        <SelectTrigger className="h-8 w-[130px]">
+        <SelectTrigger className="h-8 w-[130px]" aria-label="Time granularity">
           <SelectValue />
         </SelectTrigger>
         <SelectContent>

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { EventMetricPoint } from '@/types'
-import { aggregateMetricPoints, getBucketStart } from './metrics'
+import { aggregateMetricPoints, defaultGranularityForRange, getBucketStart } from './metrics'
 
 function point(overrides: Partial<EventMetricPoint> & { bucket: string }): EventMetricPoint {
   return {
@@ -13,6 +13,24 @@ function point(overrides: Partial<EventMetricPoint> & { bucket: string }): Event
     ...overrides,
   }
 }
+
+describe('defaultGranularityForRange', () => {
+  it('keeps hourly buckets for a week or less', () => {
+    expect(defaultGranularityForRange(1)).toBe('hour')
+    expect(defaultGranularityForRange(7)).toBe('hour')
+  })
+
+  it('steps up to daily buckets past a week through a month', () => {
+    // 30d hourly would be ~720 points — an unreadable comb (tripl-7l83.10).
+    expect(defaultGranularityForRange(8)).toBe('day')
+    expect(defaultGranularityForRange(30)).toBe('day')
+  })
+
+  it('steps up to weekly buckets beyond a month', () => {
+    expect(defaultGranularityForRange(31)).toBe('week')
+    expect(defaultGranularityForRange(90)).toBe('week')
+  })
+})
 
 describe('getBucketStart', () => {
   it('floors to the start of the UTC hour', () => {
