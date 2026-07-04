@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState, useSyncExternalStore } from 'react'
 import { Outlet, useLocation, useParams } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 import { projectsApi } from '@/api/projects'
@@ -32,6 +32,39 @@ function useActivityOpen() {
     }
   }, [open])
   return [open, setOpen] as const
+}
+
+// At/above this width the activity rail sits inline in the flex flow (it is
+// also the rail's default-open threshold above). Below it the 304px rail would
+// squeeze the main content to an unusable width, so the rail collapses to an
+// off-canvas drawer toggled from the top bar — mirroring how the sidebar drops
+// to a mobile drawer below `md`.
+const ACTIVITY_INLINE_QUERY = '(min-width: 1280px)'
+
+/**
+ * Subscribe to a CSS media query. Uses `useSyncExternalStore` so the value is
+ * read consistently and updates on viewport changes without tripping the
+ * `set-state-in-effect` lint. Falls back to `false` when `matchMedia` is
+ * unavailable (jsdom/SSR) — i.e. treat as narrow so the rail never blocks the
+ * content column when we cannot measure the viewport.
+ */
+function useMediaQuery(query: string): boolean {
+  const subscribe = useCallback(
+    (onChange: () => void) => {
+      if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') {
+        return () => {}
+      }
+      const mql = window.matchMedia(query)
+      mql.addEventListener('change', onChange)
+      return () => mql.removeEventListener('change', onChange)
+    },
+    [query],
+  )
+  const getSnapshot = () =>
+    typeof window !== 'undefined' && typeof window.matchMedia === 'function'
+      ? window.matchMedia(query).matches
+      : false
+  return useSyncExternalStore(subscribe, getSnapshot, () => false)
 }
 
 type Crumbs = { crumbs: string[]; title: string }
@@ -82,6 +115,19 @@ export default function Layout() {
   const { slug } = useParams()
   const [activityOpen, setActivityOpen] = useActivityOpen()
 
+  // Below `xl`, the inline rail would squeeze the content column, so the rail
+  // collapses to an off-canvas drawer with its own open state (mirroring the
+  // sidebar's mobile drawer). Above `xl`, `activityOpen` drives the inline rail
+  // as before. A single top-bar toggle drives whichever mode is active.
+  const isWideActivity = useMediaQuery(ACTIVITY_INLINE_QUERY)
+  const [activityDrawerOpen, setActivityDrawerOpen] = useState(false)
+  const closeActivityDrawer = useCallback(() => setActivityDrawerOpen(false), [])
+  const toggleActivity = useCallback(() => {
+    if (isWideActivity) setActivityOpen((o) => !o)
+    else setActivityDrawerOpen((o) => !o)
+  }, [isWideActivity, setActivityOpen])
+  const activityVisible = isWideActivity ? activityOpen : activityDrawerOpen
+
   // Below `md`, the sidebar slides off-canvas; the hamburger in TopBar toggles
   // it. Above `md`, this flag has no visual effect (the `md:*` utilities pin
   // the sidebar to static flow regardless).
@@ -96,6 +142,16 @@ export default function Layout() {
   if (lastPathname !== location.pathname) {
     setLastPathname(location.pathname)
     if (mobileNavOpen) setMobileNavOpen(false)
+    if (activityDrawerOpen) setActivityDrawerOpen(false)
+  }
+
+  // When the viewport grows into the inline range, drop any open drawer so the
+  // rail doesn't linger as an overlay on top of its own inline copy. Same
+  // render-time "adjust state when a value changes" pattern as above.
+  const [lastIsWideActivity, setLastIsWideActivity] = useState(isWideActivity)
+  if (lastIsWideActivity !== isWideActivity) {
+    setLastIsWideActivity(isWideActivity)
+    if (isWideActivity && activityDrawerOpen) setActivityDrawerOpen(false)
   }
 
   const projectsQuery = useQuery({
@@ -146,8 +202,8 @@ export default function Layout() {
               title={title}
               crumbs={crumbs}
               projectSlug={slug}
-              activityOpen={activityOpen}
-              onToggleActivity={() => setActivityOpen((o) => !o)}
+              activityOpen={activityVisible}
+              onToggleActivity={toggleActivity}
               onOpenMobileNav={() => setMobileNavOpen(true)}
             />
 
@@ -170,7 +226,25 @@ export default function Layout() {
                 </div>
               </div>
 
-              <ActivityPanel open={activityOpen} slug={slug} />
+              {/* Activity rail: inline on xl+, off-canvas drawer below xl so
+                  it never squeezes the content column on narrow viewports. */}
+              {isWideActivity ? (
+                <ActivityPanel open={activityOpen} slug={slug} />
+              ) : (
+                activityDrawerOpen && (
+                  <>
+                    <button
+                      type="button"
+                      aria-label="Close activity feed"
+                      onClick={closeActivityDrawer}
+                      className="fixed inset-0 z-30 bg-black/40 backdrop-blur-[2px]"
+                    />
+                    <div className="fixed inset-y-0 right-0 z-40 shadow-xl">
+                      <ActivityPanel open slug={slug} />
+                    </div>
+                  </>
+                )
+              )}
             </div>
           </main>
         </div>
