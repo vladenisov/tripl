@@ -11681,6 +11681,11 @@
             "title": "Event Type Count",
             "type": "integer"
           },
+          "failing_scan_config_count": {
+            "default": 0,
+            "title": "Failing Scan Config Count",
+            "type": "integer"
+          },
           "firing_monitor_count": {
             "default": 0,
             "title": "Firing Monitor Count",

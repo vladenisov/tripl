@@ -79,6 +79,12 @@ class ProjectSummary(BaseModel):
     alert_destination_count: int = 0
     monitoring_signal_count: int = 0
     firing_monitor_count: int = 0
+    # Number of scan configs whose *latest* run failed. Distinct from
+    # ``latest_scan_job`` (the single newest job across the whole project): a
+    # config that fails every run is invisible there once a *different* config
+    # logs a newer success, so this per-config rollup is what the workspace
+    # "failed jobs" surface must count.
+    failing_scan_config_count: int = 0
     latest_scan_job: ProjectLatestScanJob | None = None
     latest_signal: ProjectLatestSignal | None = None
 
