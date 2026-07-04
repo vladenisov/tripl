@@ -193,7 +193,7 @@ export default function ReconciliationPage() {
         title="Data match"
         subtitle={
           coverage
-            ? `${coverage.summary.matched_count} of ${coverage.summary.total_count} planned events seen in data · ${coverage.days}d`
+            ? `${coverage.summary.matched_count.toLocaleString()} of ${coverage.summary.total_count.toLocaleString()} planned events seen in data · ${coverage.days}d`
             : undefined
         }
       >

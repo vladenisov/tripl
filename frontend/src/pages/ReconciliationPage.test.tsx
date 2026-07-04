@@ -141,6 +141,31 @@ describe('ReconciliationPage', () => {
     expect(screen.getByText('124 of 132 planned events seen in data · 14d')).toBeInTheDocument()
   })
 
+  it('formats large data-match counts with thousand separators', async () => {
+    const bigCoverage: CoverageResponse = {
+      days: 14,
+      summary: { total_count: 89327935, matched_count: 89327935, coverage_pct: 100 },
+      items: [{ bucket: '2026-06-01', total_count: 89327935, matched_count: 89327935 }],
+    }
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = String(input)
+      if (url.includes('/reconciliation/coverage')) return jsonResponse(bigCoverage)
+      if (url.includes('/reconciliation/dead-events')) return jsonResponse(dead)
+      if (url.includes('/reconciliation/shadow-events')) return jsonResponse(emptyShadow)
+      if (url.includes('/event-types')) return jsonResponse([])
+      throw new Error(`Unhandled fetch: ${url}`)
+    })
+    renderPage()
+
+    expect(
+      await screen.findByText('89,327,935 of 89,327,935 planned events seen in data · 14d'),
+    ).toBeInTheDocument()
+    // The raw, separator-free rendering must not appear.
+    expect(
+      screen.queryByText('89327935 of 89327935 planned events seen in data · 14d'),
+    ).not.toBeInTheDocument()
+  })
+
   it('renders shadow inbox rows with accept/dismiss actions', async () => {
     mockFetch()
     renderPage()
