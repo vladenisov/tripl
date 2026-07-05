@@ -77,10 +77,18 @@ celery_app.conf.beat_schedule = {
         "task": "tripl.worker.tasks.alerts.send_weekly_plan_digest",
         "schedule": 7 * 24 * 60 * 60.0,
     },
+    "sync-implementation-tickets": {
+        "task": "tripl.worker.tasks.implementation_tickets.sync_implementation_tickets",
+        # Poll every 5 minutes — implementation tickets close on human timescales
+        # (a dev finishing a Jira issue), so tighter polling buys nothing and only
+        # adds load against the tracker's REST API.
+        "schedule": 300.0,
+    },
 }
 
 # Import tasks so they are registered with the celery app
 import tripl.worker.tasks.alerts  # noqa: F401, E402
+import tripl.worker.tasks.implementation_tickets  # noqa: F401, E402
 import tripl.worker.tasks.maintenance  # noqa: F401, E402
 import tripl.worker.tasks.metrics  # noqa: F401, E402
 import tripl.worker.tasks.scan  # noqa: F401, E402

@@ -11745,6 +11745,176 @@
         "title": "ProjectSummary",
         "type": "object"
       },
+      "ProjectTrackerConfigResponse": {
+        "description": "``id``/timestamps are None while the project rides the defaults \u2014 the row\nis only materialized on the first PATCH. The token is never returned; only\n``api_token_set`` signals whether one is stored.",
+        "properties": {
+          "api_token_set": {
+            "title": "Api Token Set",
+            "type": "boolean"
+          },
+          "auth_email": {
+            "title": "Auth Email",
+            "type": "string"
+          },
+          "base_url": {
+            "title": "Base Url",
+            "type": "string"
+          },
+          "created_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Created At"
+          },
+          "enabled": {
+            "title": "Enabled",
+            "type": "boolean"
+          },
+          "id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Id"
+          },
+          "issue_type": {
+            "title": "Issue Type",
+            "type": "string"
+          },
+          "project_id": {
+            "format": "uuid",
+            "title": "Project Id",
+            "type": "string"
+          },
+          "project_key": {
+            "title": "Project Key",
+            "type": "string"
+          },
+          "tracker_type": {
+            "title": "Tracker Type",
+            "type": "string"
+          },
+          "updated_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Updated At"
+          }
+        },
+        "required": [
+          "project_id",
+          "enabled",
+          "tracker_type",
+          "base_url",
+          "project_key",
+          "auth_email",
+          "issue_type",
+          "api_token_set"
+        ],
+        "title": "ProjectTrackerConfigResponse",
+        "type": "object"
+      },
+      "ProjectTrackerConfigUpdate": {
+        "description": "Partial update \u2014 every field optional. ``api_token`` is the RAW token on\ninput; it is encrypted at rest and never echoed back. Passing ``\"\"`` clears\nthe stored token; omitting / null leaves it unchanged.",
+        "properties": {
+          "api_token": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Api Token"
+          },
+          "auth_email": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Auth Email"
+          },
+          "base_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Base Url"
+          },
+          "enabled": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Enabled"
+          },
+          "issue_type": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Issue Type"
+          },
+          "project_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Project Key"
+          },
+          "tracker_type": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tracker Type"
+          }
+        },
+        "title": "ProjectTrackerConfigUpdate",
+        "type": "object"
+      },
       "ProjectUpdate": {
         "properties": {
           "description": {
@@ -25802,6 +25972,99 @@
         "summary": "Reindex Project Search",
         "tags": [
           "search"
+        ]
+      }
+    },
+    "/api/v1/projects/{slug}/tracker-config": {
+      "get": {
+        "operationId": "get_project_tracker_config_api_v1_projects__slug__tracker_config_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "slug",
+            "required": true,
+            "schema": {
+              "title": "Slug",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProjectTrackerConfigResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Project Tracker Config",
+        "tags": [
+          "tracker-config"
+        ]
+      },
+      "patch": {
+        "description": "Owner-only: the tracker config stores an API token and drives outbound\nticket creation, so editors must not be able to point it at their own Jira.",
+        "operationId": "update_project_tracker_config_api_v1_projects__slug__tracker_config_patch",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "slug",
+            "required": true,
+            "schema": {
+              "title": "Slug",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProjectTrackerConfigUpdate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProjectTrackerConfigResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Update Project Tracker Config",
+        "tags": [
+          "tracker-config"
         ]
       }
     },

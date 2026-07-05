@@ -23,6 +23,7 @@ from tripl.api.v1.plan_branches import router as plan_branches_router
 from tripl.api.v1.plan_revisions import router as plan_revisions_router
 from tripl.api.v1.project_anomaly_settings import router as project_anomaly_settings_router
 from tripl.api.v1.project_branch_settings import router as project_branch_settings_router
+from tripl.api.v1.project_tracker_config import router as project_tracker_config_router
 from tripl.api.v1.projects import router as projects_router
 from tripl.api.v1.reconciliation import router as reconciliation_router
 from tripl.api.v1.relations import router as relations_router
@@ -41,6 +42,7 @@ router.include_router(app_settings_router, dependencies=protected_dependencies)
 router.include_router(projects_router, dependencies=protected_dependencies)
 router.include_router(project_anomaly_settings_router, dependencies=protected_dependencies)
 router.include_router(project_branch_settings_router, dependencies=protected_dependencies)
+router.include_router(project_tracker_config_router, dependencies=protected_dependencies)
 router.include_router(alerting_router, dependencies=protected_dependencies)
 router.include_router(event_types_router, dependencies=protected_dependencies)
 router.include_router(event_type_owners_router, dependencies=protected_dependencies)

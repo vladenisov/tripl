@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import uuid
 from datetime import UTC, datetime
 from typing import Any
@@ -26,6 +27,7 @@ from tripl.models.plan_branch import BranchStatus, PlanBranch
 from tripl.models.plan_branch_approval import PlanBranchApproval
 from tripl.models.plan_branch_reviewer import PlanBranchReviewer
 from tripl.models.plan_revision import PlanRevision
+from tripl.models.project_tracker_config import ProjectTrackerConfig
 from tripl.models.variable import Variable
 from tripl.schemas.plan_branch import PlanBranchDetailResponse
 from tripl.services.event_type_owner_service import load_owner_user_ids
@@ -46,6 +48,8 @@ from tripl.services.plan_branch_service import (
 )
 from tripl.services.plan_revision_service import build_plan_snapshot, plan_snapshot_hash
 from tripl.services.project_branch_settings_service import read_branch_merge_policy
+
+logger = logging.getLogger(__name__)
 
 
 async def _load_fresh_approver_ids(
@@ -741,6 +745,69 @@ async def assign_owner_reviewers_for_branch(
     return added
 
 
+def _touched_event_names(base_payload: dict[str, Any], branch_payload: dict[str, Any]) -> set[str]:
+    """Event names added or changed on the branch relative to its merge base.
+
+    ADDED = a name present on the branch but not the base. CHANGED = a name on
+    both whose ``status``, ``description`` or ``event_type_name`` differs. These
+    are exactly the events an implementation ticket should cover — a pure
+    reorder (``order`` only) or unchanged carry-over is ignored."""
+    base_by_name = {e["name"]: e for e in base_payload.get("events", [])}
+    touched: set[str] = set()
+    for name, branch_event in {e["name"]: e for e in branch_payload.get("events", [])}.items():
+        base_event = base_by_name.get(name)
+        if base_event is None:
+            touched.add(name)
+            continue
+        if any(
+            base_event.get(key) != branch_event.get(key)
+            for key in ("status", "description", "event_type_name")
+        ):
+            touched.add(name)
+    return touched
+
+
+async def _enqueue_implementation_ticket(
+    session: AsyncSession,
+    *,
+    project_id: uuid.UUID,
+    branch_id: uuid.UUID,
+    branch_name: str,
+    base_payload: dict[str, Any],
+    branch_payload: dict[str, Any],
+    post_payload: dict[str, Any],
+) -> None:
+    """Best-effort: open one tracker ticket covering the branch's added/changed
+    events when the project has an enabled tracker config.
+
+    The merge is already committed by the time this runs, so any failure here —
+    config lookup, name→id resolution, or the Celery enqueue — must be swallowed
+    and logged rather than propagated. It must NEVER fail or roll back the merge.
+    """
+    try:
+        touched = _touched_event_names(base_payload, branch_payload)
+        if not touched:
+            return
+        # Resolve touched names to the post-merge MAIN event ids the ticket covers.
+        post_id_by_name = {e["name"]: e["id"] for e in post_payload.get("events", [])}
+        event_ids = [post_id_by_name[name] for name in sorted(touched) if name in post_id_by_name]
+        if not event_ids:
+            return
+        config = await session.scalar(
+            select(ProjectTrackerConfig).where(ProjectTrackerConfig.project_id == project_id)
+        )
+        if config is None or not config.enabled:
+            return
+        summary = f"Implement {len(event_ids)} event(s) from branch '{branch_name}'"
+        # Lazy import: the worker task module pulls in Celery/worker deps that the
+        # async request path shouldn't import at module load (cycle avoidance).
+        from tripl.worker.tasks.implementation_tickets import create_implementation_ticket
+
+        create_implementation_ticket.delay(str(project_id), str(branch_id), event_ids, summary)
+    except Exception:  # noqa: BLE001 — tracker automation must never break a merge
+        logger.exception("Failed to enqueue implementation ticket for branch %s", branch_id)
+
+
 async def merge_branch(
     session: AsyncSession,
     slug: str,
@@ -838,4 +905,15 @@ async def merge_branch(
 
     await session.commit()
     await session.refresh(branch)
+
+    # Post-merge tracker automation (best-effort; the merge is already committed).
+    await _enqueue_implementation_ticket(
+        session,
+        project_id=project.id,
+        branch_id=branch.id,
+        branch_name=branch.name,
+        base_payload=base_payload,
+        branch_payload=branch_payload,
+        post_payload=post_payload,
+    )
     return await _to_detail(session, branch)

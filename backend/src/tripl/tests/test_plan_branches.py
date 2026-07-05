@@ -13,10 +13,13 @@ from tripl.models.field_definition import FieldDefinition
 from tripl.models.plan_branch import PlanBranch
 from tripl.models.plan_branch_approval import PlanBranchApproval
 from tripl.models.plan_branch_reviewer import PlanBranchReviewer
+from tripl.models.project import Project
 from tripl.models.project_branch_settings import ProjectBranchSettings
+from tripl.models.project_tracker_config import ProjectTrackerConfig
 from tripl.models.user import User
 from tripl.services.plan_revision_service import build_plan_snapshot, plan_snapshot_hash
 from tripl.tests.conftest import TestSessionLocal
+from tripl.worker.tasks import implementation_tickets as impl_tasks
 
 
 async def _create_branch(client: AsyncClient, slug: str, name: str = "feature") -> str:
@@ -522,6 +525,109 @@ async def test_merge_no_op_marks_branch_merged_and_writes_revision(
 
     post = await client.get("/api/v1/projects/merge-noop/revisions")
     assert post.json()["total"] == pre_total + 1
+
+
+@pytest.mark.asyncio
+async def test_merge_enqueues_implementation_ticket_when_tracker_enabled(
+    client: AsyncClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A merge that touches an event enqueues a ticket task covering the main
+    event ids — but only when the project has an enabled tracker config."""
+    await _seed_plan(client, "merge-ticket")
+    async with TestSessionLocal() as session:
+        project = (
+            await session.execute(select(Project).where(Project.slug == "merge-ticket"))
+        ).scalar_one()
+        session.add(
+            ProjectTrackerConfig(
+                project_id=project.id,
+                enabled=True,
+                tracker_type="jira",
+                base_url="https://example.atlassian.net",
+                project_key="ENG",
+                auth_email="alice@example.com",
+                api_token_encrypted="tok",
+                issue_type="Task",
+            )
+        )
+        await session.commit()
+
+    branch_id = await _create_branch(client, "merge-ticket")
+    # Change the branch's copy of the event so the merge carries a real diff.
+    async with TestSessionLocal() as session:
+        branch_event = (
+            (await session.execute(select(Event).where(Event.branch_id == uuid.UUID(branch_id))))
+            .scalars()
+            .first()
+        )
+        branch_event.description = "implemented via branch"
+        await session.commit()
+
+    captured: dict[str, object] = {}
+
+    class _FakeTask:
+        def delay(self, *args: object) -> None:
+            captured["args"] = args
+
+    monkeypatch.setattr(impl_tasks, "create_implementation_ticket", _FakeTask())
+
+    resp = await _approve_and_merge(client, "merge-ticket", branch_id)
+    assert resp.status_code == 200, resp.text
+
+    assert "args" in captured, "expected the ticket task to be enqueued"
+    project_arg, branch_arg, event_ids_arg, summary_arg = captured["args"]
+    assert branch_arg == branch_id
+    assert isinstance(event_ids_arg, list) and len(event_ids_arg) == 1
+    assert "branch 'feature'" in summary_arg
+
+    # The covered id is a MAIN-branch event id (resolvable on the live plan).
+    async with TestSessionLocal() as session:
+        main_branch = (
+            await session.execute(
+                select(PlanBranch).where(
+                    PlanBranch.project_id == uuid.UUID(project_arg),
+                    PlanBranch.name == "main",
+                )
+            )
+        ).scalar_one()
+        main_event = (
+            await session.execute(
+                select(Event).where(
+                    Event.id == uuid.UUID(event_ids_arg[0]),
+                    Event.branch_id == main_branch.id,
+                )
+            )
+        ).scalar_one_or_none()
+        assert main_event is not None
+
+
+@pytest.mark.asyncio
+async def test_merge_skips_ticket_when_tracker_disabled(
+    client: AsyncClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """No tracker config → no enqueue, even when the merge touches events."""
+    await _seed_plan(client, "merge-noticket")
+    branch_id = await _create_branch(client, "merge-noticket")
+    async with TestSessionLocal() as session:
+        branch_event = (
+            (await session.execute(select(Event).where(Event.branch_id == uuid.UUID(branch_id))))
+            .scalars()
+            .first()
+        )
+        branch_event.description = "changed"
+        await session.commit()
+
+    called = {"delay": False}
+
+    class _FakeTask:
+        def delay(self, *args: object) -> None:
+            called["delay"] = True
+
+    monkeypatch.setattr(impl_tasks, "create_implementation_ticket", _FakeTask())
+
+    resp = await _approve_and_merge(client, "merge-noticket", branch_id)
+    assert resp.status_code == 200, resp.text
+    assert called["delay"] is False
 
 
 @pytest.mark.asyncio
@@ -1139,9 +1245,7 @@ async def test_merge_preserves_event_source_name(client: AsyncClient) -> None:
         merged = {
             e.name: e
             for e in (
-                await session.execute(
-                    select(Event).where(Event.branch_id == main_branch_id_str)
-                )
+                await session.execute(select(Event).where(Event.branch_id == main_branch_id_str))
             )
             .scalars()
             .all()
@@ -1461,7 +1565,5 @@ async def test_merge_discards_author_approval_when_self_approval_blocked(
     reviewer = await _seed_second_user("approver3@example.com")
     await _add_approval(branch_id, reviewer)
 
-    merged = await client.post(
-        f"/api/v1/projects/branch-selfappr-merge/branches/{branch_id}/merge"
-    )
+    merged = await client.post(f"/api/v1/projects/branch-selfappr-merge/branches/{branch_id}/merge")
     assert merged.status_code == 200
