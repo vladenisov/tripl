@@ -1,8 +1,8 @@
 """Document building helpers for the search index.
 
 Converts project entities (event types, events, fields, variables, relations,
-tags) into ``BuiltDocument`` instances ready to be stored as ``SearchDocument``
-rows.
+tags, metrics, fact tables) into ``BuiltDocument`` instances ready to be
+stored as ``SearchDocument`` rows.
 """
 
 from __future__ import annotations
@@ -22,8 +22,10 @@ from tripl.models.event_meta_value import EventMetaValue
 from tripl.models.event_tag import EventTag
 from tripl.models.event_type import EventType
 from tripl.models.event_type_relation import EventTypeRelation
+from tripl.models.fact_table import FactTable
 from tripl.models.field_definition import FieldDefinition
 from tripl.models.meta_field_definition import MetaFieldDefinition
+from tripl.models.metric_definition import MetricDefinition
 from tripl.models.variable import Variable
 from tripl.models.variable_value import VariableValue
 from tripl.schemas.search import SearchEntityType
@@ -184,6 +186,31 @@ async def build_documents(
         .all()
     )
 
+    # Metrics and fact tables are GLOBAL, project-scoped entities (not
+    # plan-branched), so they are queried by project_id only; the same
+    # documents are duplicated into each branch's index — consistent with the
+    # per-branch index design. Ordered by name for deterministic output.
+    metrics = list(
+        (
+            await session.execute(
+                select(MetricDefinition)
+                .where(MetricDefinition.project_id == project_id)
+                .order_by(MetricDefinition.name)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    fact_tables = list(
+        (
+            await session.execute(
+                select(FactTable).where(FactTable.project_id == project_id).order_by(FactTable.name)
+            )
+        )
+        .scalars()
+        .all()
+    )
+
     documents: list[BuiltDocument] = []
     for event_type in event_types:
         documents.append(_event_type_document(event_type, slug))
@@ -206,6 +233,12 @@ async def build_documents(
 
     for relation in relations:
         documents.append(_relation_document(relation, slug))
+
+    for metric in metrics:
+        documents.append(_metric_document(metric, slug))
+
+    for fact_table in fact_tables:
+        documents.append(_fact_table_document(fact_table, slug))
 
     return documents
 
@@ -467,4 +500,62 @@ def _relation_document(relation: EventTypeRelation, slug: str) -> BuiltDocument:
         ),
         keywords=_join([relation.relation_type, source_field.name, target_field.name]),
         route_path=f"/p/{slug}/settings/relations",
+    )
+
+
+def _metric_document(metric: MetricDefinition, slug: str) -> BuiltDocument:
+    return BuiltDocument(
+        entity_type="metric",
+        entity_id=metric.id,
+        parent_event_id=None,
+        title=metric.display_name,
+        subtitle=metric.name,
+        description=_clean(metric.description),
+        body=_join(
+            [
+                metric.description,
+                metric.kind,
+                metric.aggregation,
+                metric.composition,
+                metric.unit,
+                " ".join(metric.breakdown_columns or []),
+                metric.app_version_column,
+                metric.platform_column,
+            ]
+        ),
+        keywords=_join([metric.name, metric.display_name, metric.unit, metric.kind]),
+        route_path=f"/p/{slug}/monitoring/metric/{metric.id}",
+        archived=(metric.status == "archived"),
+    )
+
+
+def _fact_table_document(fact_table: FactTable, slug: str) -> BuiltDocument:
+    column_names = [
+        column["name"]
+        for column in (fact_table.columns or [])
+        if isinstance(column, dict) and "name" in column
+    ]
+    filter_names = [
+        row_filter["name"]
+        for row_filter in (fact_table.row_filters or [])
+        if isinstance(row_filter, dict) and "name" in row_filter
+    ]
+    return BuiltDocument(
+        entity_type="fact_table",
+        entity_id=fact_table.id,
+        parent_event_id=None,
+        title=fact_table.display_name,
+        subtitle=fact_table.name,
+        description=_clean(fact_table.description),
+        body=_join(
+            [
+                fact_table.description,
+                fact_table.timestamp_column,
+                " ".join(column_names),
+                " ".join(fact_table.identifier_columns or []),
+                " ".join(filter_names),
+            ]
+        ),
+        keywords=_join([fact_table.name, fact_table.display_name, " ".join(column_names)]),
+        route_path=f"/p/{slug}/metrics/fact-tables/{fact_table.id}/edit",
     )

@@ -13722,7 +13722,9 @@
               "meta_field",
               "variable",
               "relation",
-              "tag"
+              "tag",
+              "metric",
+              "fact_table"
             ],
             "title": "Entity Type",
             "type": "string"
@@ -25869,7 +25871,9 @@
                       "meta_field",
                       "variable",
                       "relation",
-                      "tag"
+                      "tag",
+                      "metric",
+                      "fact_table"
                     ],
                     "type": "string"
                   },

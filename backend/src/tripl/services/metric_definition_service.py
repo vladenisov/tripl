@@ -39,7 +39,9 @@ from tripl.schemas.metric_definition import (
 )
 from tripl.services.metrics_service import _signal_from_anomaly
 from tripl.services.monitoring_utils import classify_signal_state
+from tripl.services.plan_branch_service import resolve_branch_id
 from tripl.services.project_lookup import get_project_id_by_slug
+from tripl.services.search_service import reindex_project_branch
 
 # Defensive cap on the list query; realistic projects have well under this many
 # metric definitions.
@@ -47,6 +49,21 @@ _LIST_HARD_CAP = 1000
 
 # Number of trailing values returned per metric for the catalog sparkline.
 _SPARK_POINTS = 20
+
+
+async def _refresh_main_search_index(
+    session: AsyncSession, project_id: uuid.UUID, slug: str
+) -> None:
+    """Refresh the search index after a metric catalog mutation.
+
+    Metrics are global (project-scoped, not branched), so only the MAIN branch
+    index is refreshed eagerly; feature-branch indexes pick the change up on
+    their next rebuild.
+    """
+    main_branch_id = await resolve_branch_id(session, project_id, None)
+    await reindex_project_branch(
+        session, project_id=project_id, branch_id=main_branch_id, slug=slug
+    )
 
 
 async def _verify_data_source(session: AsyncSession, data_source_id: uuid.UUID) -> None:
@@ -443,12 +460,11 @@ async def create_metric_definition(
     await session.flush()
     await session.commit()
     await session.refresh(metric)
+    await _refresh_main_search_index(session, project_id, slug)
     return metric
 
 
-async def _clear_collected_metric_data(
-    session: AsyncSession, metric: MetricDefinition
-) -> None:
+async def _clear_collected_metric_data(session: AsyncSession, metric: MetricDefinition) -> None:
     """Delete the values/breakdowns/anomalies a metric owns, on a KIND change.
 
     A metric's previously collected series was produced under the OLD kind's
@@ -501,9 +517,7 @@ def _normalise_definition_value(value: object) -> object:
     return value
 
 
-def _definition_values_changed(
-    metric: MetricDefinition, new_values: dict[str, object]
-) -> bool:
+def _definition_values_changed(metric: MetricDefinition, new_values: dict[str, object]) -> bool:
     current_values: dict[str, object] = {
         "kind": metric.kind,
         "aggregation": metric.aggregation,
@@ -518,9 +532,7 @@ def _definition_values_changed(
         "denominator_event_id": metric.denominator_event_id,
         "denominator_event_type_id": metric.denominator_event_type_id,
     }
-    return _normalise_definition_value(current_values) != _normalise_definition_value(
-        new_values
-    )
+    return _normalise_definition_value(current_values) != _normalise_definition_value(new_values)
 
 
 async def _apply_definition_update(
@@ -569,13 +581,16 @@ async def update_metric_definition(
         await _apply_definition_update(session, metric, data.definition)
     await session.commit()
     await session.refresh(metric)
+    await _refresh_main_search_index(session, metric.project_id, slug)
     return metric
 
 
 async def delete_metric_definition(session: AsyncSession, slug: str, metric_id: uuid.UUID) -> None:
     metric = await get_metric_definition(session, slug, metric_id)
+    project_id = metric.project_id
     await session.delete(metric)
     await session.commit()
+    await _refresh_main_search_index(session, project_id, slug)
 
 
 def _dispatch_metric_collection(
@@ -700,6 +715,7 @@ async def bulk_update_metric_definitions(
         .values(**update_values)
     )
     await session.commit()
+    await _refresh_main_search_index(session, project_id, slug)
 
 
 async def reorder_metric_definitions(
