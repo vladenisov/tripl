@@ -14,15 +14,32 @@ import type { ProjectSummary } from '@/types'
  * Overview), so steps tick off automatically as the user makes progress —
  * nothing is stored as a manual "I did this" flag.
  *
- * It is deliberately compact and self-effacing: dismissal is persisted in
- * localStorage per project, and the whole card auto-hides once every step is
- * complete, so it never lingers for an established project. Once the user is
- * all-but-done (every step bar the last), it collapses to a slim one-line bar
- * that can be expanded on demand, so a nearly-onboarded project isn't dominated
- * by a tall card (fix #13).
+ * It is deliberately compact and self-effacing: the X is a *persistent*
+ * dismiss, remembered per user+project in localStorage (keyed by slug, mirroring
+ * the app's `tripl-branch:<slug>` / `tripl-activity-open` convention), so once
+ * dismissed it stays dismissed across remounts and later visits. The card also
+ * auto-hides on its own in two cases so it never becomes permanent chrome
+ * (tripl-7l83.12): once every step is complete, and — crucially for a mature
+ * project — once the core loop is set up and coverage is high but the only
+ * remaining step is an optional one the owner deliberately skipped (e.g.
+ * alerting). Genuinely new / low-coverage projects still see it. When the user
+ * is all-but-done (every step bar the last), it collapses to a slim one-line bar
+ * naming the single remaining step, which can be expanded on demand, so a
+ * nearly-onboarded project isn't dominated by a tall card (fix #13).
  */
 
-const STORAGE_PREFIX = 'tripl.onboarding.dismissed.'
+// Per-slug dismiss key. Hyphen/colon form matches the app's other per-project
+// keys (`tripl-branch:<slug>`) and the activity rail's `tripl-activity-open`.
+const STORAGE_PREFIX = 'tripl-onboarding-dismissed:'
+
+// Steps a mature owner can legitimately leave undone forever. Alerting is opt-in:
+// a high-coverage project that never wires up a destination should not be nagged
+// by a checklist that, by design, can never reach 5 of 5 (tripl-7l83.12).
+const OPTIONAL_STEP_IDS: ReadonlySet<string> = new Set(['alert'])
+
+// Reconciliation coverage (implemented ÷ active planned events) at/above this
+// ratio marks a project as genuinely established rather than mid-onboarding.
+const MATURE_COVERAGE_RATIO = 0.8
 
 type StepState = 'done' | 'active' | 'locked'
 
@@ -102,6 +119,12 @@ function buildSteps(slug: string, summary: ProjectSummary, sourceCount: number):
   ]
 }
 
+/** Reconciliation coverage: share of active planned events actually arriving. */
+function coverageRatio(summary: ProjectSummary): number {
+  if (summary.active_event_count <= 0) return 0
+  return summary.implemented_event_count / summary.active_event_count
+}
+
 export function OnboardingChecklist({ slug, summary, sourceCount }: OnboardingChecklistProps) {
   // A tick to force a re-render (and thus a re-read of localStorage) after
   // dismissal. Reading dismissal on render also means a slug change is picked up
@@ -117,11 +140,21 @@ export function OnboardingChecklist({ slug, summary, sourceCount }: OnboardingCh
   if (readDismissed(slug)) return null
 
   const steps = buildSteps(slug, summary, sourceCount)
-  const completed = steps.filter((s) => s.done).length
+  const remainingSteps = steps.filter((s) => !s.done)
+  const completed = steps.length - remainingSteps.length
   const total = steps.length
 
-  // Self-hiding: once the whole loop is set up there is nothing to guide.
-  if (completed >= total) return null
+  // Self-hiding, two ways (tripl-7l83.12):
+  //   1. Every step is complete — nothing left to guide.
+  //   2. Established project: the core loop is set up (every remaining step is
+  //      optional, i.e. one the owner can legitimately skip) AND coverage is
+  //      high. Without this, a mature project that deliberately skipped an
+  //      optional step (e.g. alerting) would show "4 of 5" as permanent chrome.
+  // Genuinely new / low-coverage projects fall through and still see the card.
+  const onlyOptionalRemains =
+    remainingSteps.length > 0 && remainingSteps.every((s) => OPTIONAL_STEP_IDS.has(s.id))
+  const isEstablished = onlyOptionalRemains && coverageRatio(summary) >= MATURE_COVERAGE_RATIO
+  if (completed >= total || isEstablished) return null
 
   function handleDismiss(): void {
     try {
@@ -139,7 +172,10 @@ export function OnboardingChecklist({ slug, summary, sourceCount }: OnboardingCh
   // persistence are unchanged (fix #13).
   const isMostlyDone = completed >= total - 1
   if (isMostlyDone && !expanded) {
-    const remaining = total - completed
+    // Here exactly one step is outstanding (mostly-done but not complete). Name
+    // it inline so the bar says *which* step is left, not just the count
+    // (tripl-7l83.12), while keeping the "1 step left" detail.
+    const nextStep = remainingSteps[0]
     return (
       <div
         className="flex items-center gap-3 rounded-lg border px-4 py-2.5"
@@ -147,7 +183,7 @@ export function OnboardingChecklist({ slug, summary, sourceCount }: OnboardingCh
       >
         <Chip tone="info" size="sm">{`${completed} of ${total}`}</Chip>
         <span className="min-w-0 flex-1 truncate text-[12.5px] font-medium">
-          {`Almost set up — ${remaining} step${remaining === 1 ? '' : 's'} left`}
+          {`Almost set up — 1 step left: ${nextStep.title}`}
         </span>
         <button
           type="button"

@@ -8,6 +8,8 @@ export type SearchEntityType =
   | 'variable'
   | 'relation'
   | 'tag'
+  | 'metric'
+  | 'fact_table'
 
 export interface SearchEventVariableValue extends EventFieldVariableValue {
   field_definition_id: string

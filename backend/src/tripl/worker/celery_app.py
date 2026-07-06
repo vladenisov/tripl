@@ -77,10 +77,25 @@ celery_app.conf.beat_schedule = {
         "task": "tripl.worker.tasks.alerts.send_weekly_plan_digest",
         "schedule": 7 * 24 * 60 * 60.0,
     },
+    "sync-implementation-tickets": {
+        "task": "tripl.worker.tasks.implementation_tickets.sync_implementation_tickets",
+        # Poll every 5 minutes — implementation tickets close on human timescales
+        # (a dev finishing a Jira issue), so tighter polling buys nothing and only
+        # adds load against the tracker's REST API.
+        "schedule": 300.0,
+    },
+    "requeue-stranded-search-embeddings": {
+        "task": "tripl.worker.tasks.search.requeue_stranded_search_embeddings",
+        # Every 15 minutes — embeddings refresh event-driven after each reindex;
+        # this chaser only bounds how long a lost queue message or an exhausted
+        # batch retry can leave documents pending (STRANDED_EMBEDDING_MINUTES).
+        "schedule": 900.0,
+    },
 }
 
 # Import tasks so they are registered with the celery app
 import tripl.worker.tasks.alerts  # noqa: F401, E402
+import tripl.worker.tasks.implementation_tickets  # noqa: F401, E402
 import tripl.worker.tasks.maintenance  # noqa: F401, E402
 import tripl.worker.tasks.metrics  # noqa: F401, E402
 import tripl.worker.tasks.scan  # noqa: F401, E402

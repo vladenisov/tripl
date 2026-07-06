@@ -13,7 +13,7 @@ import logging
 import math
 import uuid
 
-from sqlalchemy import delete
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from tripl.config import settings
@@ -136,6 +136,29 @@ async def reindex_branch(
     )
 
 
+# Stale rows are deleted by primary key in bounded chunks so the ``IN ()``
+# list stays a sane size for the driver/planner on large branches.
+_REINDEX_DELETE_CHUNK = 500
+
+
+def _embedding_state_reusable(
+    *,
+    status: str,
+    model: str | None,
+    enabled: bool,
+    current_model: str,
+) -> bool:
+    """Whether a content-unchanged row's embedding state fits the current config.
+
+    See :func:`_reindex_branch_documents` for the full reasoning; in short,
+    ``failed`` rows are never reused (so every reindex retries them) and
+    ``ready`` rows are reused only under the same model.
+    """
+    if not enabled:
+        return status == "disabled"
+    return status == "pending" or (status == "ready" and model == current_model)
+
+
 async def _reindex_branch_documents(
     session: AsyncSession,
     *,
@@ -143,12 +166,30 @@ async def _reindex_branch_documents(
     branch_id: uuid.UUID,
     slug: str | None = None,
 ) -> tuple[int, AiConfig]:
-    """Rebuild the branch's search index in-place WITHOUT committing.
+    """Incrementally rebuild the branch's search index WITHOUT committing.
 
-    Performs the DELETE + rebuild + flush (and the Postgres text-vector
-    refresh) so the new index participates in the caller's transaction. The
-    caller owns the commit; callers that mutate primary data first can thus
-    cover the data write and the index rebuild in a single atomic transaction.
+    Diffs the freshly built documents against the existing rows on the unique
+    ``(entity_type, entity_id)`` key instead of delete-all + insert-all, so an
+    unchanged row survives the reindex with its ``text_vector`` and embedding
+    intact. A row is KEPT only when its ``content_hash`` equals the rebuilt
+    document's hash — identical hash means identical searchable text, so the
+    stored row (including its text vector and any ready embedding) can stay
+    untouched — AND its embedding state is consistent with the current config:
+
+    * embeddings disabled: only ``disabled`` rows are kept;
+    * embeddings enabled: ``pending`` rows are kept (the queued refresh picks
+      them up) and ``ready`` rows are kept only under the SAME model — a
+      ``ready`` row under a different model is re-inserted as ``pending`` so
+      the index never mixes vectors from different models;
+    * ``failed`` rows are deliberately NOT kept, so any reindex retries them;
+    * ``disabled`` rows are not kept once embeddings are enabled (they would
+      otherwise never get embedded).
+
+    Everything else is deleted and re-inserted with the status derived from
+    the config (see ``_doc_to_model``). The work participates in the caller's
+    transaction and the caller owns the commit; callers that mutate primary
+    data first can thus cover the data write and the index rebuild in a single
+    atomic transaction.
 
     Returns the document count and the resolved ``AiConfig`` so the caller can
     schedule the fire-and-forget embedding refresh *after* its commit succeeds.
@@ -157,13 +198,46 @@ async def _reindex_branch_documents(
     documents = await _build_documents(session, project_id, branch_id, project_slug)
     ai_config = await app_settings_service.get_ai_config(session)
 
-    await session.execute(
-        delete(SearchDocument).where(
-            SearchDocument.project_id == project_id,
-            SearchDocument.branch_id == branch_id,
+    existing_rows = (
+        await session.execute(
+            select(
+                SearchDocument.id,
+                SearchDocument.entity_type,
+                SearchDocument.entity_id,
+                SearchDocument.content_hash,
+                SearchDocument.embedding_status,
+                SearchDocument.embedding_model,
+            ).where(
+                SearchDocument.project_id == project_id,
+                SearchDocument.branch_id == branch_id,
+            )
         )
-    )
-    if documents:
+    ).all()
+    existing = {(row.entity_type, row.entity_id): row for row in existing_rows}
+
+    keep_ids: set[uuid.UUID] = set()
+    to_insert: list[BuiltDocument] = []
+    for doc in documents:
+        row = existing.get((doc.entity_type, doc.entity_id))
+        if (
+            row is not None
+            and row.content_hash == doc.content_hash
+            and _embedding_state_reusable(
+                status=row.embedding_status,
+                model=row.embedding_model,
+                enabled=ai_config.search_embeddings_enabled,
+                current_model=ai_config.search_embedding_model,
+            )
+        ):
+            keep_ids.add(row.id)
+        else:
+            to_insert.append(doc)
+
+    delete_ids = [row.id for row in existing.values() if row.id not in keep_ids]
+    for start in range(0, len(delete_ids), _REINDEX_DELETE_CHUNK):
+        chunk = delete_ids[start : start + _REINDEX_DELETE_CHUNK]
+        await session.execute(delete(SearchDocument).where(SearchDocument.id.in_(chunk)))
+    if to_insert:
         session.add_all(
             [
                 _doc_to_model(
@@ -172,7 +246,7 @@ async def _reindex_branch_documents(
                     branch_id=branch_id,
                     ai_config=ai_config,
                 )
-                for doc in documents
+                for doc in to_insert
             ]
         )
     await session.flush()
@@ -304,8 +378,6 @@ async def _ensure_index_exists(
     project_id: uuid.UUID,
     branch_id: uuid.UUID,
 ) -> None:
-    from sqlalchemy import select
-
     exists = await session.scalar(
         select(SearchDocument.id)
         .where(SearchDocument.project_id == project_id, SearchDocument.branch_id == branch_id)
@@ -328,6 +400,9 @@ async def _refresh_text_vectors(
 ) -> None:
     from sqlalchemy import text
 
+    # Only freshly inserted rows need vectorizing: rows kept by the
+    # incremental reindex have an unchanged searchable text (identical
+    # content_hash) and therefore still carry a valid text_vector.
     await session.execute(
         text(
             """
@@ -337,6 +412,7 @@ async def _refresh_text_vectors(
                 concat_ws(' ', title, subtitle, body, keywords)
             )
             WHERE project_id = :project_id AND branch_id = :branch_id
+              AND text_vector IS NULL
             """
         ),
         {"project_id": project_id, "branch_id": branch_id},

@@ -17,6 +17,7 @@ function makeSummary(overrides: Partial<ProjectSummary> = {}): ProjectSummary {
     alert_destination_count: 0,
     monitoring_signal_count: 0,
     firing_monitor_count: 0,
+    failing_scan_config_count: 0,
     latest_scan_job: null,
     latest_signal: null,
     ...overrides,
@@ -118,7 +119,7 @@ describe('OnboardingChecklist', () => {
     fireEvent.click(screen.getByRole('button', { name: /dismiss/i }))
 
     expect(screen.queryByText('4 of 5')).not.toBeInTheDocument()
-    expect(localStorage.getItem('tripl.onboarding.dismissed.demo')).toBe('1')
+    expect(localStorage.getItem('tripl-onboarding-dismissed:demo')).toBe('1')
   })
 
   it('auto-hides once every step is complete', () => {
@@ -135,6 +136,52 @@ describe('OnboardingChecklist', () => {
     expect(screen.queryByText('Get started')).not.toBeInTheDocument()
   })
 
+  it('auto-hides for an established project when only an optional step remains (tripl-7l83.12)', () => {
+    // windy-android-shaped: high coverage, real scans and sources, but alerting
+    // was deliberately never wired up. The core loop is set up, so a "4 of 5"
+    // that can never reach 5 should disappear, not become permanent chrome.
+    const { container } = renderChecklist({
+      summary: makeSummary({
+        event_type_count: 12,
+        active_event_count: 724,
+        implemented_event_count: 673, // ~93% coverage
+        scan_count: 3,
+        // alert_destination_count stays 0 — the skipped optional step
+      }),
+      sourceCount: 1,
+    })
+
+    expect(screen.queryByText('Get started')).not.toBeInTheDocument()
+    expect(screen.queryByText(/Almost set up/)).not.toBeInTheDocument()
+    expect(container).toBeEmptyDOMElement()
+  })
+
+  it('keeps showing for a young low-coverage project even at 4 of 5', () => {
+    // Same optional step outstanding, but coverage is far below the mature
+    // threshold — a genuinely new project, so the guidance stays visible.
+    renderChecklist({
+      summary: makeSummary({
+        event_type_count: 12,
+        active_event_count: 724,
+        implemented_event_count: 5, // ~0.7% coverage
+        scan_count: 3,
+      }),
+      sourceCount: 1,
+    })
+
+    expect(screen.getByText('4 of 5')).toBeInTheDocument()
+    expect(screen.getByText(/Almost set up/)).toBeInTheDocument()
+  })
+
+  it('names the single remaining step inline in the compact bar (tripl-7l83.12)', () => {
+    renderChecklist({
+      summary: makeSummary({ event_type_count: 4, scan_count: 2, implemented_event_count: 3 }),
+      sourceCount: 1,
+    })
+
+    expect(screen.getByText(/1 step left: Set up alerting/)).toBeInTheDocument()
+  })
+
   it('renders nothing while the summary is still loading', () => {
     const { container } = renderChecklist({ summary: undefined })
 
@@ -148,13 +195,27 @@ describe('OnboardingChecklist', () => {
     fireEvent.click(screen.getByRole('button', { name: /dismiss/i }))
 
     expect(screen.queryByText('Get started')).not.toBeInTheDocument()
-    expect(localStorage.getItem('tripl.onboarding.dismissed.demo')).toBe('1')
+    expect(localStorage.getItem('tripl-onboarding-dismissed:demo')).toBe('1')
   })
 
   it('stays hidden on a later visit when already dismissed', () => {
-    localStorage.setItem('tripl.onboarding.dismissed.demo', '1')
+    localStorage.setItem('tripl-onboarding-dismissed:demo', '1')
     renderChecklist({ summary: makeSummary() })
 
     expect(screen.queryByText('Get started')).not.toBeInTheDocument()
+  })
+
+  it('keeps the dismissal across a full remount (localStorage persistence)', () => {
+    // Dismiss, unmount the whole tree, then mount a fresh instance (e.g. the user
+    // navigates away and back). The X must be remembered, not reset on remount.
+    const first = renderChecklist({ summary: makeSummary() })
+    fireEvent.click(screen.getByRole('button', { name: /dismiss/i }))
+    expect(screen.queryByText('Get started')).not.toBeInTheDocument()
+    first.unmount()
+
+    renderChecklist({ summary: makeSummary() })
+
+    expect(screen.queryByText('Get started')).not.toBeInTheDocument()
+    expect(localStorage.getItem('tripl-onboarding-dismissed:demo')).toBe('1')
   })
 })

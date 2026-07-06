@@ -1,5 +1,5 @@
 import uuid
-from typing import Annotated
+from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, Query
 
@@ -39,6 +39,10 @@ async def list_events(
     # ProjectAlertingTab.tsx fetches the full event roster with limit=10000;
     # lowering it would 422 that caller. See deferred note in Lane E.
     limit: int = Query(200, ge=1, le=10000),
+    # Review-queue ordering: "catalog" keeps the manual/creation order; "volume"
+    # sorts busiest-first by 24h EventMetric volume. Literal → FastAPI 422s any
+    # other value.
+    order_by: Literal["catalog", "volume"] = Query("catalog"),
 ) -> EventListResponse:
     items, total = await event_service.list_events(
         session,
@@ -53,6 +57,7 @@ async def list_events(
         field_value=field_value,
         meta_value=meta_value,
         branch_id=branch_id,
+        order_by=order_by,
     )
     return EventListResponse(items=items, total=total)
 

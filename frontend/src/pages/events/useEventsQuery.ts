@@ -9,10 +9,18 @@ import type { EventListItem, EventType } from '@/types'
 
 const SPECIAL_TABS = new Set(['all', 'review', 'archived'])
 const EVENTS_PAGE_SIZE = 200
+// Bulk "select all matching" pages through the whole result set in chunks. The
+// backend caps `limit` at 10 000 (events.py: Query(le=10000)), so this is the
+// largest page we can request without a 422 — bigger pages mean fewer requests.
+const EVENTS_ID_FETCH_PAGE_SIZE = 10000
 
 // Statuses shown by default (all tab) — excludes archived to preserve
 // the existing UX where archived events are hidden unless explicitly selected.
 const DEFAULT_ACTIVE_STATUSES: EventStatus[] = EVENT_STATUSES.filter(s => s !== 'archived')
+
+// Review-queue sort order: 'catalog' keeps the manual/creation order; 'volume'
+// asks the server for busiest-first (24h EventMetric volume).
+export type EventsSortOrder = 'catalog' | 'volume'
 
 export type EventsQueryFilters = {
   search: string
@@ -23,6 +31,8 @@ export type EventsQueryFilters = {
   setFilterTag: (value: string) => void
   filterSilentDays: number | undefined
   setFilterSilentDays: (value: number | undefined) => void
+  sort: EventsSortOrder
+  setSort: (value: EventsSortOrder) => void
   fieldFilters: Record<string, string>
   updateFieldFilter: (name: string, value: string) => void
   metaFilters: Record<string, string>
@@ -128,6 +138,24 @@ export function useEventsQuery({
     [setSearchParams],
   )
 
+  // Sort order lives in the URL under `sort`; only 'volume' is persisted so the
+  // default (catalog) request stays byte-identical to today.
+  const sort: EventsSortOrder = searchParams.get('sort') === 'volume' ? 'volume' : 'catalog'
+  const setSort = useCallback(
+    (v: EventsSortOrder) => {
+      setSearchParams(
+        (prev) => {
+          const next = new URLSearchParams(prev)
+          if (v === 'volume') next.set('sort', v)
+          else next.delete('sort')
+          return next
+        },
+        { replace: true },
+      )
+    },
+    [setSearchParams],
+  )
+
   // Field/meta filters live in URL under `f.` / `m.` prefixes, keyed by name.
   const fieldFilters = useMemo(() => {
     const out: Record<string, string> = {}
@@ -211,6 +239,7 @@ export function useEventsQuery({
       queryStatuses,
       filterTag,
       filterSilentDays,
+      sort,
     ],
     queryFn: ({ pageParam }) =>
       eventsApi.list(slug!, {
@@ -219,6 +248,7 @@ export function useEventsQuery({
         status: queryStatuses,
         tag: filterTag || undefined,
         silent_since_days: filterSilentDays,
+        order_by: sort === 'volume' ? 'volume' : undefined,
         offset: pageParam,
         limit: EVENTS_PAGE_SIZE,
       }, branchId),
@@ -246,6 +276,52 @@ export function useEventsQuery({
   )
   const total = eventsData?.total ?? 0
 
+  // Fetch the ids of EVERY event matching the current server filters (not just
+  // the loaded pages), so bulk triage can sweep a whole prefix/tab at once —
+  // e.g. accept or archive all 499 pending-review events in one action. Returns
+  // an empty list when there is nothing to match.
+  //
+  // The backend rejects `limit > 10000`, so we can't ask for `limit: total` in
+  // one shot on large projects. Page through the match set in cap-sized chunks,
+  // deduping by id in case rows shift between requests, and let each response's
+  // `total` steer the loop (a short/empty page also ends it).
+  const fetchAllMatchingIds = useCallback(async (): Promise<string[]> => {
+    if (!slug || total === 0) return []
+    const filters = {
+      event_type_id: filterEtId,
+      search: debouncedSearch || undefined,
+      status: queryStatuses,
+      tag: filterTag || undefined,
+      silent_since_days: filterSilentDays,
+      order_by: sort === 'volume' ? ('volume' as const) : undefined,
+    }
+    const ids = new Set<string>()
+    let offset = 0
+    let expected = total
+    while (offset < expected) {
+      const page = await eventsApi.list(
+        slug,
+        { ...filters, offset, limit: EVENTS_ID_FETCH_PAGE_SIZE },
+        branchId,
+      )
+      expected = page.total
+      if (page.items.length === 0) break
+      for (const event of page.items) ids.add(event.id)
+      offset += page.items.length
+    }
+    return [...ids]
+  }, [
+    slug,
+    branchId,
+    filterEtId,
+    debouncedSearch,
+    queryStatuses,
+    filterTag,
+    filterSilentDays,
+    sort,
+    total,
+  ])
+
   return {
     // filters
     search,
@@ -256,6 +332,8 @@ export function useEventsQuery({
     setFilterTag,
     filterSilentDays,
     setFilterSilentDays,
+    sort,
+    setSort,
     fieldFilters,
     updateFieldFilter,
     metaFilters,
@@ -270,5 +348,6 @@ export function useEventsQuery({
     eventsQuery,
     rawEvents,
     total,
+    fetchAllMatchingIds,
   }
 }

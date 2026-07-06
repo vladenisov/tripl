@@ -41,6 +41,7 @@ describe('buildNavGroups', () => {
       alert_destination_count: 2,
       monitoring_signal_count: 3,
       firing_monitor_count: 0,
+      failing_scan_config_count: 0,
       latest_scan_job: null,
       latest_signal: null,
     }
@@ -65,6 +66,7 @@ describe('buildNavGroups', () => {
       alert_destination_count: 2,
       monitoring_signal_count: 9,
       firing_monitor_count: 3,
+      failing_scan_config_count: 0,
       latest_scan_job: null,
       latest_signal: null,
     }
@@ -92,6 +94,7 @@ describe('buildNavGroups', () => {
       alert_destination_count: 2,
       monitoring_signal_count: 9,
       firing_monitor_count: 0,
+      failing_scan_config_count: 0,
       latest_scan_job: null,
       latest_signal: null,
     }
@@ -120,6 +123,7 @@ describe('buildNavGroups', () => {
       alert_destination_count: 2,
       monitoring_signal_count: 9,
       firing_monitor_count: 3,
+      failing_scan_config_count: 0,
       latest_scan_job: null,
       latest_signal: null,
     }
@@ -143,6 +147,7 @@ describe('buildNavGroups', () => {
       alert_destination_count: 2,
       monitoring_signal_count: 0,
       firing_monitor_count: 0,
+      failing_scan_config_count: 0,
       latest_scan_job: null,
       latest_signal: null,
     }
@@ -192,20 +197,39 @@ describe('buildNavGroups', () => {
     expect(monitors.match(path)).toBe(false)
   })
 
-  it('keeps the other monitoring drilldowns on the Monitors item', () => {
-    // Only the metric case moved to Metrics; event / event-type / project-total
-    // drilldowns still activate Monitors (and never Metrics).
+  it('keeps the event-type and project-total monitoring drilldowns on the Monitors item', () => {
+    // The catalog-metric (/monitoring/metric/) and catalog-event
+    // (/monitoring/event/) drilldowns moved to Metrics and Events respectively;
+    // the event-type / project-total monitoring drilldowns still activate
+    // Monitors (and never Metrics or Events).
     const items = buildNavGroups('demo', undefined).flatMap((g) => g.items)
     const metrics = items.find((i) => i.id === 'metrics')!
+    const events = items.find((i) => i.id === 'events')!
     const monitors = items.find((i) => i.id === 'monitoring')!
     for (const path of [
-      '/p/demo/monitoring/event/evt-1',
       '/p/demo/monitoring/event-type/et-1',
       '/p/demo/monitoring/project-total/pt-1',
     ]) {
       expect(monitors.match(path)).toBe(true)
       expect(metrics.match(path)).toBe(false)
+      expect(events.match(path)).toBe(false)
     }
+  })
+
+  it('activates Events — and not Monitors — on the catalog-event monitoring drilldown (tripl-7l83.8)', () => {
+    // /p/:slug/monitoring/event/:id is the catalog-event detail page
+    // (getMonitoringPath, scope_type 'event'), reached from the Events catalog.
+    // Breadcrumbs read "Events › Detail", so the sidebar must highlight Events;
+    // the blanket /monitoring prefix on the Monitors item used to win instead.
+    const items = buildNavGroups('demo', undefined).flatMap((g) => g.items)
+    const events = items.find((i) => i.id === 'events')!
+    const monitors = items.find((i) => i.id === 'monitoring')!
+    const path = '/p/demo/monitoring/event/evt-1'
+    expect(events.match(path)).toBe(true)
+    expect(monitors.match(path)).toBe(false)
+    // Precision guard: the trailing slash means the event-type drilldown is NOT
+    // swept into Events — it legitimately belongs to Monitors.
+    expect(events.match('/p/demo/monitoring/event-type/et-1')).toBe(false)
   })
 })
 
@@ -214,6 +238,7 @@ describe('resolveNavLocation', () => {
     ['/p/demo/events', 'Plan', 'Events'],
     ['/p/demo', 'Plan', 'Events'],
     ['/p/demo/events/checkout', 'Plan', 'Events'],
+    ['/p/demo/monitoring/event/evt-1', 'Plan', 'Events'],
     ['/p/demo/overview', 'Observe', 'Live activity'],
     ['/p/demo/settings/event-types', 'Plan', 'Event types'],
     ['/p/demo/settings/meta-fields', 'Plan', 'Schema & fields'],

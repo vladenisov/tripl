@@ -15,6 +15,8 @@ SearchEntityType = Literal[
     "variable",
     "relation",
     "tag",
+    "metric",
+    "fact_table",
 ]
 
 

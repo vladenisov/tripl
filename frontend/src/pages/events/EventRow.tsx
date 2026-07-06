@@ -25,7 +25,7 @@ import { EventName } from '@/components/event-name'
 import { EventDriftBadge } from './EventDriftBadge'
 import { EventWindowMetricsCell } from './EventWindowMetricsCell'
 import { SignalLink } from './SignalLink'
-import { formatRelativeTime, splitTemplateValue } from './utils'
+import { computeWindowDelta, formatRelativeTime, splitTemplateValue } from './utils'
 
 export type RowAction =
   | 'edit'
@@ -221,19 +221,22 @@ export const EventRow = memo(function EventRow({
             <Chip tone={signalLevel?.tone ?? 'danger'} size="xs">
               {signalLevel?.label ?? SIGNAL_LEVEL.firing.label}
             </Chip>
+          ) : ev.monitored ? (
+            <Chip tone="neutral" variant="outline" size="xs" title="Covered by an alert rule">
+              Monitored
+            </Chip>
           ) : (
-            <NoData title="No active alerts" />
+            <NoData title="Not covered by any alert rule" />
           )}
         </TableCell>
       )}
       {!hideDelta && (
         <TableCell className="tnum text-right text-[11px]">
           {(() => {
-            const last = windowData[windowData.length - 1]
-            if (!last || last.expected_count == null || last.expected_count === 0) {
-              return <NoData title="No data" />
+            const pct = computeWindowDelta(windowData)
+            if (pct == null) {
+              return <NoData title="No prior 24h window to compare against" />
             }
-            const pct = ((last.count - last.expected_count) / last.expected_count) * 100
             const color =
               Math.abs(pct) < 1
                 ? 'var(--fg-subtle)'

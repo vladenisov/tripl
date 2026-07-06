@@ -201,6 +201,9 @@ class EventListItemResponse(BaseModel):
     reviewed: bool = False
     metric_breakdown_columns: list[str] = []
     drift_count: int = 0
+    # Alert-rule coverage: True when at least one enabled rule watches this event.
+    # Populated by list_events; distinct from a live firing signal.
+    monitored: bool = False
     tags: list[EventTagResponse] = []
     field_values: list[EventFieldValueResponse] = []
     meta_values: list[EventMetaValueResponse] = []

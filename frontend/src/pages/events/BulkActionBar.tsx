@@ -12,6 +12,9 @@ import {
 
 export function BulkActionBar({
   selectedCount,
+  matchingTotal,
+  onSelectAllMatching,
+  isSelectingAll,
   isDeleting,
   isUpdating,
   onSetStatus,
@@ -22,6 +25,11 @@ export function BulkActionBar({
   onClear,
 }: {
   selectedCount: number
+  /** Total events matching the current filters/tab (may exceed loaded rows). */
+  matchingTotal?: number
+  /** Select every matching event so one bulk action sweeps the whole queue. */
+  onSelectAllMatching?: () => void
+  isSelectingAll?: boolean
   isDeleting: boolean
   isUpdating: boolean
   onSetStatus: (status: EventStatus) => void
@@ -32,7 +40,11 @@ export function BulkActionBar({
   onClear: () => void
 }) {
   if (selectedCount === 0) return null
-  const disabled = isDeleting || isUpdating
+  const disabled = isDeleting || isUpdating || isSelectingAll
+  // Offer to widen the selection to the whole matching set when more events
+  // match the filter than are currently selected (bulk triage by prefix/tab).
+  const canSelectAll =
+    !!onSelectAllMatching && matchingTotal != null && matchingTotal > selectedCount
   return (
     <div
       className="fixed bottom-[18px] left-1/2 z-30 flex -translate-x-1/2 items-center gap-2.5 rounded-[10px] border py-1.5 pl-3.5 pr-2"
@@ -45,6 +57,17 @@ export function BulkActionBar({
       <span className="text-[12px]" style={{ color: 'var(--fg-muted)' }}>
         <span className="mono font-semibold" style={{ color: 'var(--fg)' }}>{selectedCount}</span> selected
       </span>
+      {canSelectAll && (
+        <button
+          type="button"
+          onClick={onSelectAllMatching}
+          disabled={disabled}
+          className="text-[12px] font-medium underline-offset-2 hover:underline disabled:opacity-50"
+          style={{ color: 'var(--accent)' }}
+        >
+          {isSelectingAll ? 'Selecting…' : `Select all ${matchingTotal}`}
+        </button>
+      )}
       <div className="h-5 w-px" style={{ background: 'var(--border)' }} />
       <Select
         value=""

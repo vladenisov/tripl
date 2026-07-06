@@ -1,7 +1,7 @@
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 import type { EventMetricPoint } from '@/types'
 import MonitoringDetailPage from './MonitoringDetailPage'
 
@@ -223,6 +223,90 @@ describe('MonitoringDetailPage app-version view', () => {
     expect(screen.queryByRole('tab', { name: /By version/i })).not.toBeInTheDocument()
     expect(calls.some(url => url.includes('/app-versions'))).toBe(false)
     expect(calls.some(url => url.includes('/version-adoption'))).toBe(false)
+  })
+})
+
+describe('MonitoringDetailPage volume granularity follows range (tripl-7l83.10)', () => {
+  // Radix Select drives selection through pointer capture, which jsdom omits.
+  beforeAll(() => {
+    if (!Element.prototype.hasPointerCapture) {
+      Element.prototype.hasPointerCapture = () => false
+    }
+    if (!Element.prototype.releasePointerCapture) {
+      Element.prototype.releasePointerCapture = () => {}
+    }
+  })
+
+  // Three project-total points that bucket to distinct counts per granularity:
+  //   hour -> 3 buckets, day -> 2 (the two 2026-01-01 points merge),
+  //   week -> 1 (all three land in the epoch-anchored 2026-01-01 week).
+  function installProjectTotalFetch() {
+    return vi.spyOn(globalThis, 'fetch').mockImplementation(async input => {
+      const url = String(input)
+
+      if (url.endsWith('/api/v1/projects/demo/event-types')) return mockJsonResponse([])
+      if (url.includes('/api/v1/projects/demo/metrics/total')) {
+        return mockJsonResponse({
+          scope: 'project_total',
+          scan_config_id: 'scan-1',
+          event_id: null,
+          event_type_id: null,
+          interval: '1h',
+          latest_signal: null,
+          data: [
+            metricPoint('2026-01-01T05:00:00Z', 5),
+            metricPoint('2026-01-01T18:00:00Z', 7),
+            metricPoint('2026-01-02T10:00:00Z', 3),
+          ],
+          forecast: [],
+        })
+      }
+      if (url.endsWith('/api/v1/projects/demo/scans/scan-1')) {
+        return mockJsonResponse({ id: 'scan-1', app_version_column: null })
+      }
+      if (url.includes('/api/v1/projects/demo/annotations')) return mockJsonResponse([])
+
+      throw new Error(`Unhandled fetch: ${url}`)
+    })
+  }
+
+  // Each range change refetches (no placeholderData) and remounts the chart, so
+  // always re-query the testid rather than holding a stale node reference.
+  const chartPoints = () => screen.getByTestId('metrics-chart').getAttribute('data-points')
+
+  it('defaults granularity to the selected range (30d -> days, 90d -> weeks, 7d -> hours)', async () => {
+    installProjectTotalFetch()
+    renderMonitoringPage()
+
+    await screen.findByTestId('metrics-chart')
+    // 30d default: daily buckets, so the two 2026-01-01 points collapse.
+    await waitFor(() => expect(chartPoints()).toBe('2'))
+
+    // 90d: weekly buckets, all three points collapse into one.
+    fireEvent.click(screen.getByRole('button', { name: '90d' }))
+    await waitFor(() => expect(chartPoints()).toBe('1'))
+
+    // 7d: hourly buckets, every point is its own bucket.
+    fireEvent.click(screen.getByRole('button', { name: '7d' }))
+    await waitFor(() => expect(chartPoints()).toBe('3'))
+  })
+
+  it('keeps a manual granularity override sticky across range changes', async () => {
+    installProjectTotalFetch()
+    renderMonitoringPage()
+
+    await screen.findByTestId('metrics-chart')
+    await waitFor(() => expect(chartPoints()).toBe('2'))
+
+    // Manually override to Hours.
+    fireEvent.click(screen.getByRole('combobox', { name: /time granularity/i }))
+    fireEvent.click(await screen.findByRole('option', { name: 'Hours' }))
+    await waitFor(() => expect(chartPoints()).toBe('3'))
+
+    // Changing the range must NOT reset the override back to a range default:
+    // 90d would default to weekly (1 point), but the sticky override keeps 3.
+    fireEvent.click(screen.getByRole('button', { name: '90d' }))
+    await waitFor(() => expect(chartPoints()).toBe('3'))
   })
 })
 

@@ -58,6 +58,7 @@ function renderLayout(path: string) {
         firing_monitor_count: 0,
         alert_destination_count: 0,
         monitoring_signal_count: 0,
+        failing_scan_config_count: 0,
         latest_scan_job: null,
         latest_signal: null,
       },
@@ -82,7 +83,27 @@ function renderLayout(path: string) {
   )
 }
 
+// jsdom has no matchMedia; the rail's inline-vs-drawer choice reads it. Default
+// to the narrow branch (no match) so a test opts into wide mode explicitly.
+function mockMatchMedia(matches: boolean) {
+  Object.defineProperty(window, 'matchMedia', {
+    configurable: true,
+    writable: true,
+    value: (query: string) => ({
+      matches,
+      media: query,
+      addEventListener: () => {},
+      removeEventListener: () => {},
+      addListener: () => {},
+      removeListener: () => {},
+      dispatchEvent: () => false,
+      onchange: null,
+    }),
+  })
+}
+
 beforeEach(() => {
+  mockMatchMedia(false)
   if (!globalThis.localStorage) {
     Object.defineProperty(globalThis, 'localStorage', {
       value: {
@@ -102,6 +123,9 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.restoreAllMocks()
+  // defineProperty isn't undone by restoreAllMocks — drop the matchMedia stub so
+  // it can't leak into other suites under full-suite concurrency.
+  delete (window as { matchMedia?: unknown }).matchMedia
 })
 
 describe('Layout activity panel', () => {
@@ -114,5 +138,30 @@ describe('Layout activity panel', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Toggle activity panel' }))
 
     expect(await screen.findByTestId('activity-panel')).toHaveTextContent('Now demo')
+  })
+
+  it('opens the rail as a dismissible drawer on narrow viewports', async () => {
+    mockMatchMedia(false)
+    renderLayout('/p/demo/monitoring/event/event-1')
+    await screen.findByText('Monitoring detail')
+
+    fireEvent.click(screen.getByRole('button', { name: 'Toggle activity panel' }))
+    // Below the breakpoint the rail is an off-canvas drawer with a backdrop.
+    expect(await screen.findByTestId('activity-panel')).toBeInTheDocument()
+    const backdrop = screen.getByRole('button', { name: 'Close activity feed' })
+
+    fireEvent.click(backdrop)
+    expect(screen.queryByTestId('activity-panel')).toBeNull()
+  })
+
+  it('renders the rail inline without a backdrop on wide viewports', async () => {
+    mockMatchMedia(true)
+    renderLayout('/p/demo/monitoring/event/event-1')
+    await screen.findByText('Monitoring detail')
+
+    fireEvent.click(screen.getByRole('button', { name: 'Toggle activity panel' }))
+    expect(await screen.findByTestId('activity-panel')).toBeInTheDocument()
+    // Inline mode has no drawer backdrop.
+    expect(screen.queryByRole('button', { name: 'Close activity feed' })).toBeNull()
   })
 })

@@ -41,6 +41,32 @@ export function formatCompactCount(value: number) {
   return compactCountFormatter.format(value).toLowerCase()
 }
 
+const DAY_MS = 24 * 60 * 60 * 1000
+
+/**
+ * 24h volume delta for a catalog row: percent change of the most recent 24h of
+ * volume versus the prior 24h, read off the same window-metric series the event
+ * detail page uses. Mirrors MonitoringDetailPage.computeEventStats so the list's
+ * "Δ · 24h" column and the detail page agree (the previous implementation keyed
+ * off per-bucket anomaly `expected_count`, which is null on non-anomaly buckets,
+ * so nearly every row rendered "—"). Summing raw points equals summing an hourly
+ * aggregation, so no pre-bucketing is needed. Returns null when there is no prior
+ * 24h volume to compare against.
+ */
+export function computeWindowDelta(points: EventMetricPoint[]): number | null {
+  if (points.length === 0) return null
+  const latest = Date.parse(points[points.length - 1]?.bucket ?? '') || Date.now()
+  let recent = 0
+  let prior = 0
+  for (const point of points) {
+    const age = latest - Date.parse(point.bucket)
+    if (age < DAY_MS) recent += point.count
+    else if (age < 2 * DAY_MS) prior += point.count
+  }
+  if (prior <= 0) return null
+  return ((recent - prior) / prior) * 100
+}
+
 /**
  * Compute the new row order produced by a drag-reorder.
  *

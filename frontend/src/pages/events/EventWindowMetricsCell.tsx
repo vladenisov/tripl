@@ -71,7 +71,7 @@ export const EventWindowMetricsCell = memo(function EventWindowMetricsCell({
       >
         <div className="space-y-3 p-3">
           <div className="space-y-1">
-            <p className="truncate text-xs font-medium">{eventName}</p>
+            <p className="break-words text-xs font-medium">{eventName}</p>
             <div className="flex items-center justify-between gap-3 text-[11px] text-muted-foreground">
               <span>Last 48 hours</span>
               <span>{noData ? 'No data' : `${formatCompactCount(totalCount)} events`}</span>

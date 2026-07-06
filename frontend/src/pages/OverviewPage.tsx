@@ -425,6 +425,10 @@ function signalScopeLabel(signal: MonitoringSignal): string {
 }
 
 function SignalRow({ slug, signal }: { slug: string; signal: MonitoringSignal }) {
+  // Full text drives both the visible label and its hover tooltip so a long
+  // scope name (e.g. page_value_question_page_value_…) stays readable when the
+  // row ellipsizes.
+  const signalSummary = `${signal.direction === 'drop' ? 'Drop' : 'Spike'} on ${signalScopeLabel(signal)}`
   return (
     <Link
       to={getMonitoringPath(slug, signal)}
@@ -432,8 +436,8 @@ function SignalRow({ slug, signal }: { slug: string; signal: MonitoringSignal })
       style={{ color: 'inherit' }}
     >
       <Dot tone={signal.direction === 'drop' ? 'warning' : 'danger'} pulse size={7} />
-      <span className="flex-1 truncate text-[12px] font-medium">
-        {signal.direction === 'drop' ? 'Drop' : 'Spike'} on {signalScopeLabel(signal)}
+      <span className="flex-1 truncate text-[12px] font-medium" title={signalSummary}>
+        {signalSummary}
       </span>
       <span className="mono shrink-0 text-[11px]" style={{ color: 'var(--fg-subtle)' }}>
         {signal.actual_count.toLocaleString()} vs {Math.round(signal.expected_count).toLocaleString()}
@@ -483,7 +487,7 @@ function ActivityRow({ item }: { item: ActivityItem }) {
         <Icon className="h-3 w-3" />
       </div>
       <div className="min-w-0 flex-1">
-        <div className="truncate text-[12px] font-medium leading-[1.35]">{item.title}</div>
+        <div className="truncate text-[12px] font-medium leading-[1.35]" title={item.title}>{item.title}</div>
         <div className="mt-0.5 truncate text-[11px] leading-[1.3]" style={{ color: 'var(--fg-subtle)' }}>
           {detail}
         </div>
@@ -526,7 +530,7 @@ function SourceRow({ source }: { source: DataSource }) {
     <div className="flex items-center gap-2 py-2">
       <Dot tone={tone} size={7} />
       <Database className="h-3.5 w-3.5 shrink-0" style={{ color: 'var(--fg-subtle)' }} />
-      <span className="flex-1 truncate text-[12px] font-medium">{source.name}</span>
+      <span className="flex-1 truncate text-[12px] font-medium" title={source.name}>{source.name}</span>
       <span className="mono shrink-0 text-[10.5px] uppercase" style={{ color: 'var(--fg-faint)' }}>
         {source.db_type}
       </span>

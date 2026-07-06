@@ -44,11 +44,19 @@ export function useEventsSelection({ events }: { events: EventListItem[] }) {
     })
   }, [visibleEventIds, visibleEventIdsSet])
 
+  // Select an explicit id set that may include events not currently loaded
+  // (used by "select all N matching" to sweep the whole filtered result).
+  const selectAll = useCallback((ids: string[]) => {
+    setSelectedEventIds(ids)
+  }, [])
+
   const clearSelection = useCallback(() => {
     setSelectedEventIds([])
   }, [])
 
   return {
+    selectedEventIds,
+    selectedCount: selectedEventIds.length,
     selectedVisibleEventIds,
     allVisibleSelected,
     someVisibleSelected,
@@ -57,6 +65,7 @@ export function useEventsSelection({ events }: { events: EventListItem[] }) {
     visibleIndexById,
     toggleEventSelected,
     toggleAllVisibleSelected,
+    selectAll,
     clearSelection,
   }
 }

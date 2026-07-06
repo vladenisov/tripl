@@ -29,6 +29,7 @@ from tripl.services import app_settings_service
 from tripl.worker.tasks.alerts_messages import _build_jira_adf_body
 
 PostJson = Callable[..., dict[str, object] | None]
+GetJson = Callable[..., dict[str, object] | None]
 SendEmailMessage = Callable[..., None]
 
 
@@ -70,6 +71,54 @@ def _post_json(
         headers=request_headers,
         method="POST",
     )
+    try:
+        with urllib.request.urlopen(request, timeout=10) as response:  # noqa: S310
+            raw = response.read()
+        if raw:
+            try:
+                parsed = json.loads(raw.decode("utf-8", errors="replace"))
+            except json.JSONDecodeError:
+                return None
+            if isinstance(parsed, dict):
+                return parsed
+        return None
+    except urllib.error.HTTPError as exc:
+        response_body = ""
+        try:
+            response_body = exc.read().decode("utf-8", errors="replace")
+        except Exception:  # noqa: BLE001
+            response_body = ""
+
+        detail = response_body.strip()
+        if response_body:
+            try:
+                parsed = json.loads(response_body)
+            except json.JSONDecodeError:
+                parsed = None
+            if isinstance(parsed, dict):
+                description = parsed.get("description")
+                if isinstance(description, str) and description.strip():
+                    detail = description.strip()
+
+        safe_url = _TELEGRAM_BOT_URL_TOKEN_RE.sub(r"\1***\3", url)
+        message = f"HTTP {exc.code} from {safe_url}"
+        if detail:
+            message = f"{message}: {detail}"
+        raise ValueError(message) from exc
+
+
+def _get_json(
+    url: str,
+    headers: dict[str, str] | None = None,
+) -> dict[str, object] | None:
+    """GET a URL and return a JSON object response when one is available.
+
+    The read-side twin of :func:`_post_json` (same urllib transport, 10s timeout
+    and HTTPError handling). Used to poll a tracker for issue status."""
+    request_headers = {"Accept": "application/json"}
+    if headers:
+        request_headers.update(headers)
+    request = urllib.request.Request(url, headers=request_headers, method="GET")
     try:
         with urllib.request.urlopen(request, timeout=10) as response:  # noqa: S310
             raw = response.read()
@@ -256,6 +305,45 @@ def _send_jira_issue(
         issue_id if isinstance(issue_id, str) else None,
         issue_key if isinstance(issue_key, str) else None,
     )
+
+
+def _get_jira_issue_status(
+    get_json: GetJson,
+    *,
+    base_url: str,
+    auth_email: str,
+    api_token: str,
+    issue_key: str,
+) -> str | None:
+    """Return a Jira issue's status **category** key, lowercased.
+
+    Jira groups statuses into three categories — ``new`` (to-do),
+    ``indeterminate`` (in-progress) and ``done`` — via
+    ``fields.status.statusCategory.key``. Polling on the category (not the
+    workflow-specific status name) means any "done"-category status closes the
+    ticket regardless of a project's custom workflow. Returns ``None`` when the
+    field is missing or malformed."""
+    credentials = base64.b64encode(f"{auth_email}:{api_token}".encode()).decode()
+    url = f"{base_url}/rest/api/3/issue/{issue_key}?fields=status"
+    response = get_json(
+        url,
+        headers={"Authorization": f"Basic {credentials}", "Accept": "application/json"},
+    )
+    if not isinstance(response, dict):
+        return None
+    fields = response.get("fields")
+    if not isinstance(fields, dict):
+        return None
+    status = fields.get("status")
+    if not isinstance(status, dict):
+        return None
+    category = status.get("statusCategory")
+    if not isinstance(category, dict):
+        return None
+    key = category.get("key")
+    if not isinstance(key, str) or not key.strip():
+        return None
+    return key.strip().lower()
 
 
 def _send_linear_issue(

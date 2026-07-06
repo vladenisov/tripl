@@ -1,6 +1,6 @@
 import { Fragment, useState } from "react"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
-import { Ban, ChevronDown, GitMerge, RotateCcw } from "lucide-react"
+import { Ban, ChevronDown, GitMerge, RotateCcw, XCircle } from "lucide-react"
 import { scansApi } from "@/api/scans"
 import type { DataSource, EventType, ScanConfig, ScanJob, ScanJobResultSummary } from "@/types"
 import { Button } from "@/components/ui/button"
@@ -18,7 +18,7 @@ import {
 } from './scans/scanLayout'
 import { RunStatusPill } from './scans/ScanConfigRow'
 import { runPillStatus } from './scans/scanRunStatus'
-import { jobDurationSeconds, jobRowsScanned } from './scans/scanUtils'
+import { consecutiveFailedRuns, jobDurationSeconds, jobRowsScanned } from './scans/scanUtils'
 
 function clamp(value: number, min: number, max: number) {
   return Math.min(Math.max(value, min), max)
@@ -184,6 +184,9 @@ export function ScanDetail({
 }) {
   const qc = useQueryClient()
   const [expandedJobId, setExpandedJobId] = useState<string | null>(null)
+  // Leading identical failed runs collapse behind one expander; the streak
+  // banner already summarizes them (tripl-7l83.4).
+  const [streakExpanded, setStreakExpanded] = useState(false)
   const [applyGroupsMessage, setApplyGroupsMessage] = useState('')
 
   const etName = eventTypes.find((et: EventType) => et.id === scanConfig.event_type_id)?.display_name
@@ -230,6 +233,30 @@ export function ScanDetail({
   const recentJobsSubtitle = lastGoodAt
     ? `Last succeeded ${formatRelativeTime(lastGoodAt)}`
     : 'Latest scan runs'
+
+  // A scan that fails every run produces a wall of identical failed rows. Collapse
+  // that into one "failed last N runs" streak banner with the reason and a single
+  // "Run again" action, so the failure reads as one ongoing problem (tripl-7l83.4).
+  const failingStreak = consecutiveFailedRuns(jobs)
+  const streakError = failingStreak > 0 ? friendlyScanError(lastJob?.error_message) : null
+  // When 2+ consecutive runs failed, hide that leading streak behind an expander
+  // so the table isn't a wall of identical failed rows; older (non-streak) jobs
+  // stay visible. Below the threshold, every job renders normally.
+  const collapseStreak = failingStreak >= 2
+  const streakJobs = collapseStreak ? jobs.slice(0, failingStreak) : []
+  const restJobs = collapseStreak ? jobs.slice(failingStreak) : jobs
+  const renderJobRow = (job: ScanJob) => (
+    <JobRow
+      key={job.id}
+      job={job}
+      expanded={expandedJobId === job.id}
+      onToggle={() => setExpandedJobId(expandedJobId === job.id ? null : job.id)}
+      onCancel={() => cancelMut.mutate(job.id)}
+      cancelPending={cancelMut.isPending && cancelMut.variables === job.id}
+      onRetry={() => retryMut.mutate()}
+      retryPending={retryMut.isPending}
+    />
+  )
 
   return (
     <div className="flex flex-col gap-4">
@@ -349,6 +376,31 @@ export function ScanDetail({
         >
           {applyGroupsMessage}
         </p>
+        {failingStreak >= 2 && (
+          <div
+            className="mx-4 mt-3 flex flex-col gap-2 rounded-lg border p-3"
+            style={{ borderColor: 'var(--danger)', background: 'var(--danger-soft)' }}
+          >
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <span className="inline-flex items-center gap-1.5 text-[13px] font-semibold" style={{ color: 'var(--danger)' }}>
+                <XCircle className="size-3.5" aria-hidden="true" />
+                Failed last {failingStreak} runs
+              </span>
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => retryMut.mutate()}
+                disabled={retryMut.isPending}
+              >
+                <RotateCcw className="size-3" aria-hidden="true" />
+                {retryMut.isPending ? 'Starting…' : 'Run again'}
+              </Button>
+            </div>
+            {streakError && (
+              <p className="text-[12px]" style={{ color: 'var(--danger)' }}>{streakError.message}</p>
+            )}
+          </div>
+        )}
         {isLoading && <p className="px-4 py-3 text-sm text-muted-foreground">Loading jobs…</p>}
         {jobs.length === 0 && !isLoading && (
           <p className="px-4 py-3 text-sm text-muted-foreground">No jobs yet. Use “Run now” to start.</p>
@@ -366,18 +418,25 @@ export function ScanDetail({
               </tr>
             </thead>
             <tbody>
-              {jobs.map((job: ScanJob) => (
-                <JobRow
-                  key={job.id}
-                  job={job}
-                  expanded={expandedJobId === job.id}
-                  onToggle={() => setExpandedJobId(expandedJobId === job.id ? null : job.id)}
-                  onCancel={() => cancelMut.mutate(job.id)}
-                  cancelPending={cancelMut.isPending && cancelMut.variables === job.id}
-                  onRetry={() => retryMut.mutate()}
-                  retryPending={retryMut.isPending}
-                />
-              ))}
+              {collapseStreak && (
+                <>
+                  <tr>
+                    <td colSpan={6} className="px-4 py-2">
+                      <button
+                        type="button"
+                        onClick={() => setStreakExpanded((v) => !v)}
+                        aria-expanded={streakExpanded}
+                        className="text-[12px] font-medium hover:underline"
+                        style={{ color: 'var(--fg-subtle)' }}
+                      >
+                        {streakExpanded ? 'Hide' : 'Show'} {failingStreak} repeated failed runs
+                      </button>
+                    </td>
+                  </tr>
+                  {streakExpanded && streakJobs.map(renderJobRow)}
+                </>
+              )}
+              {restJobs.map(renderJobRow)}
             </tbody>
           </table>
         )}

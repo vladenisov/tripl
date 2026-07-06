@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { usersApi } from '@/api/users'
 import { useAuth } from '@/components/auth-context'
 import { ROLE_OPTIONS, type Role, type UserListItem } from '@/types'
+import { formatIsoDate } from '@/lib/datetime'
 import { getErrorMessage } from '@/lib/utils'
 
 function roleChip(role: Role) {
@@ -90,7 +91,7 @@ export default function UsersPage() {
                 className="mono hidden w-28 shrink-0 text-right text-[11px] sm:block"
                 style={{ color: 'var(--fg-faint)' }}
               >
-                {new Date(u.created_at).toLocaleDateString()}
+                {formatIsoDate(u.created_at)}
               </span>
               <div className="w-32 shrink-0 text-right">
                 {isOwner && u.id !== currentUser?.id ? (

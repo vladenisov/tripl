@@ -2403,6 +2403,28 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/projects/{slug}/tracker-config": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Project Tracker Config */
+        get: operations["get_project_tracker_config_api_v1_projects__slug__tracker_config_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /**
+         * Update Project Tracker Config
+         * @description Owner-only: the tracker config stores an API token and drives outbound
+         *     ticket creation, so editors must not be able to point it at their own Jira.
+         */
+        patch: operations["update_project_tracker_config_api_v1_projects__slug__tracker_config_patch"];
+        trace?: never;
+    };
     "/api/v1/projects/{slug}/variables": {
         parameters: {
             query?: never;
@@ -4516,6 +4538,11 @@ export interface components {
              * @default []
              */
             metric_breakdown_columns: string[];
+            /**
+             * Monitored
+             * @default false
+             */
+            monitored: boolean;
             /** Name */
             name: string;
             /** Order */
@@ -6766,6 +6793,11 @@ export interface components {
              */
             event_type_count: number;
             /**
+             * Failing Scan Config Count
+             * @default 0
+             */
+            failing_scan_config_count: number;
+            /**
              * Firing Monitor Count
              * @default 0
              */
@@ -6797,6 +6829,61 @@ export interface components {
              * @default 0
              */
             variable_count: number;
+        };
+        /**
+         * ProjectTrackerConfigResponse
+         * @description ``id``/timestamps are None while the project rides the defaults — the row
+         *     is only materialized on the first PATCH. The token is never returned; only
+         *     ``api_token_set`` signals whether one is stored.
+         */
+        ProjectTrackerConfigResponse: {
+            /** Api Token Set */
+            api_token_set: boolean;
+            /** Auth Email */
+            auth_email: string;
+            /** Base Url */
+            base_url: string;
+            /** Created At */
+            created_at?: string | null;
+            /** Enabled */
+            enabled: boolean;
+            /** Id */
+            id?: string | null;
+            /** Issue Type */
+            issue_type: string;
+            /**
+             * Project Id
+             * Format: uuid
+             */
+            project_id: string;
+            /** Project Key */
+            project_key: string;
+            /** Tracker Type */
+            tracker_type: string;
+            /** Updated At */
+            updated_at?: string | null;
+        };
+        /**
+         * ProjectTrackerConfigUpdate
+         * @description Partial update — every field optional. ``api_token`` is the RAW token on
+         *     input; it is encrypted at rest and never echoed back. Passing ``""`` clears
+         *     the stored token; omitting / null leaves it unchanged.
+         */
+        ProjectTrackerConfigUpdate: {
+            /** Api Token */
+            api_token?: string | null;
+            /** Auth Email */
+            auth_email?: string | null;
+            /** Base Url */
+            base_url?: string | null;
+            /** Enabled */
+            enabled?: boolean | null;
+            /** Issue Type */
+            issue_type?: string | null;
+            /** Project Key */
+            project_key?: string | null;
+            /** Tracker Type */
+            tracker_type?: string | null;
         };
         /** ProjectUpdate */
         ProjectUpdate: {
@@ -7418,7 +7505,7 @@ export interface components {
              * Entity Type
              * @enum {string}
              */
-            entity_type: "event" | "event_type" | "field" | "meta_field" | "variable" | "relation" | "tag";
+            entity_type: "event" | "event_type" | "field" | "meta_field" | "variable" | "relation" | "tag" | "metric" | "fact_table";
             /** Event Id */
             event_id?: string | null;
             /**
@@ -10877,6 +10964,7 @@ export interface operations {
                 meta_value?: string | null;
                 offset?: number;
                 limit?: number;
+                order_by?: "catalog" | "volume";
             };
             header?: never;
             path: {
@@ -13859,7 +13947,7 @@ export interface operations {
         parameters: {
             query: {
                 q: string;
-                types?: ("event" | "event_type" | "field" | "meta_field" | "variable" | "relation" | "tag")[] | null;
+                types?: ("event" | "event_type" | "field" | "meta_field" | "variable" | "relation" | "tag" | "metric" | "fact_table")[] | null;
                 include_archived?: boolean;
                 limit?: number;
             };
@@ -13909,6 +13997,72 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["SearchReindexResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_project_tracker_config_api_v1_projects__slug__tracker_config_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                slug: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProjectTrackerConfigResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    update_project_tracker_config_api_v1_projects__slug__tracker_config_patch: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                slug: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ProjectTrackerConfigUpdate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProjectTrackerConfigResponse"];
                 };
             };
             /** @description Validation Error */

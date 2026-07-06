@@ -206,7 +206,11 @@ describe('EventsPage', () => {
     // The row exposes no inline action buttons — Edit/Metrics/Archive/Delete and
     // move/status now live on the event detail page, not on the row.
     expect(screen.queryByRole('button', { name: 'Edit event' })).not.toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: 'More actions' })).not.toBeInTheDocument()
+    // The toolbar's own "More actions" overflow (tripl-7l83.9) lives above the
+    // grid; scope this row-cleanliness check to the events table so it verifies
+    // rows carry no per-row action menu, not the toolbar affordance.
+    const eventsGrid = container.querySelector('table')
+    expect(eventsGrid?.querySelector('button[aria-label="More actions"]')).toBeNull()
     expect(container.querySelector('a[href="/p/demo/monitoring/project-total/scan-1"]')).toBeInTheDocument()
     expect(container.querySelector('a[href="/p/demo/monitoring/event-type/type-1"]')).not.toBeInTheDocument()
     expect(container.querySelector('a[href="/p/demo/monitoring/event/event-1"]')).toBeInTheDocument()

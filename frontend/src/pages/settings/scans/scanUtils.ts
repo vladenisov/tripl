@@ -34,6 +34,24 @@ export function jobDurationSeconds(job: ScanJob): number | null {
   return (new Date(job.completed_at).getTime() - new Date(job.started_at).getTime()) / 1000
 }
 
+// Number of consecutive most-recent runs that FAILED. `jobs` is newest-first.
+// Active (pending/running) jobs at the head are skipped so an in-flight retry
+// does not reset the count; the streak stops at the first settled non-failed run.
+// Used to collapse a wall of identical failed rows into one "failed last N runs"
+// indicator (tripl-7l83.4).
+export function consecutiveFailedRuns(jobs: ScanJob[]): number {
+  let streak = 0
+  for (const job of jobs) {
+    if (job.status === 'pending' || job.status === 'running') continue
+    if (job.status === 'failed') {
+      streak += 1
+      continue
+    }
+    break
+  }
+  return streak
+}
+
 
 export function formatPreviewCell(value: unknown): string {
   if (value == null) return '—'

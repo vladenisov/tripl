@@ -1,4 +1,4 @@
-import { render, screen } from '@testing-library/react'
+import { fireEvent, render, screen, within } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { MemoryRouter } from 'react-router-dom'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -80,6 +80,7 @@ describe('ProjectsPage', () => {
               scan_count: 2,
               alert_destination_count: 1,
               monitoring_signal_count: 2,
+              failing_scan_config_count: 0,
               latest_scan_job: {
                 id: 'job-1',
                 scan_config_id: 'scan-1',
@@ -247,6 +248,7 @@ describe('ProjectsPage', () => {
               scan_count: 1,
               alert_destination_count: 1,
               monitoring_signal_count: 1,
+              failing_scan_config_count: 1,
               latest_scan_job: {
                 id: 'job-2',
                 scan_config_id: 'scan-2',
@@ -282,8 +284,9 @@ describe('ProjectsPage', () => {
     expect(screen.getByText('99.1% implemented')).toBeInTheDocument()
     expect(screen.getAllByText('99.1%').length).toBeGreaterThan(0)
     expect(screen.queryByText('99% implemented')).not.toBeInTheDocument()
-    // L1 + M10: singular, unit-aware copy.
-    expect(screen.getByText('1 project has a failed latest scan job')).toBeInTheDocument()
+    // L1 + M10: singular, unit-aware copy. The rollup counts failing scan
+    // CONFIGS (per-config latest run), not just the single newest job (tripl-7l83.3).
+    expect(screen.getByText('1 scan config failing across 1 project')).toBeInTheDocument()
     expect(screen.getByText('across 1 project')).toBeInTheDocument()
     expect(screen.getByText('1 scan configured')).toBeInTheDocument()
     expect(screen.getByText('1 recent signal')).toBeInTheDocument()
@@ -409,6 +412,119 @@ describe('ProjectsPage', () => {
     const rowsLine = screen.getByText(/rows scanned/)
     expect(rowsLine).toBeInTheDocument()
     expect(rowsLine.textContent?.replace(/[^0-9]/g, '')).toBe('12345')
+  })
+
+  it('surfaces a failing scan config even when the newest job overall succeeded (tripl-7l83.3)', async () => {
+    // The project's single newest job (latest_scan_job) COMPLETED, but two other
+    // scan configs fail every run. The old rollup keyed off latest_scan_job would
+    // report "healthy" and hide them; failing_scan_config_count must not.
+    vi.spyOn(globalThis, 'fetch').mockImplementation((input: RequestInfo | URL) => {
+      const url =
+        typeof input === 'string'
+          ? input
+          : input instanceof URL
+            ? input.toString()
+            : input.url
+
+      if (url.endsWith('/api/v1/projects')) {
+        return Promise.resolve(jsonResponse([
+          {
+            id: 'proj-4',
+            name: 'Delta',
+            slug: 'delta',
+            description: 'One config succeeds; two others fail every run.',
+            created_at: '2026-06-01T09:00:00Z',
+            updated_at: '2026-06-10T09:00:00Z',
+            summary: {
+              event_type_count: 2,
+              event_count: 10,
+              active_event_count: 10,
+              implemented_event_count: 10,
+              review_pending_event_count: 0,
+              archived_event_count: 0,
+              variable_count: 2,
+              scan_count: 3,
+              alert_destination_count: 0,
+              monitoring_signal_count: 0,
+              failing_scan_config_count: 2,
+              latest_scan_job: {
+                id: 'job-4',
+                scan_config_id: 'scan-4',
+                scan_name: 'Hourly success',
+                status: 'completed',
+                started_at: '2026-06-10T08:00:00Z',
+                completed_at: '2026-06-10T08:02:00Z',
+                result_summary: { events_created: 3 },
+                error_message: null,
+                created_at: '2026-06-10T08:02:00Z',
+              },
+              latest_signal: null,
+            },
+          },
+        ]))
+      }
+
+      if (url.endsWith('/api/v1/data-sources')) {
+        return Promise.resolve(jsonResponse([]))
+      }
+
+      return Promise.reject(new Error(`Unexpected request: ${url}`))
+    })
+
+    renderProjectsPage('owner')
+
+    expect(await screen.findByText('Delta')).toBeInTheDocument()
+    // Workspace rollup counts the failing configs, not "healthy".
+    expect(screen.getByText('2 scan configs failing across 1 project')).toBeInTheDocument()
+    expect(screen.queryByText('Latest scan jobs are healthy')).not.toBeInTheDocument()
+    // The project card surfaces the failing configs even though the latest job
+    // shown in its Latest scan panel succeeded.
+    expect(screen.getByText('2 scan configs failing')).toBeInTheDocument()
+    expect(screen.getByText('Hourly success')).toBeInTheDocument()
+  })
+
+  it('tucks project deletion behind an overflow menu, not a bare trash button (tripl-7l83.17)', async () => {
+    mockSingleProject()
+
+    renderProjectsPage('owner')
+
+    expect(await screen.findByText('Beta')).toBeInTheDocument()
+    // The one-click destructive trash button is gone from the card header.
+    expect(screen.queryByRole('button', { name: /^Delete Beta$/i })).not.toBeInTheDocument()
+
+    // Delete now lives behind an accessible overflow ("...") menu trigger.
+    const trigger = screen.getByRole('button', { name: /project actions for beta/i })
+    expect(trigger).toHaveAttribute('aria-haspopup', 'menu')
+
+    // The menu is keyboard-openable and the trash is reachable inside it.
+    fireEvent.keyDown(trigger, { key: 'Enter' })
+    expect(await screen.findByRole('menuitem', { name: /delete/i })).toBeInTheDocument()
+  })
+
+  it('renders the workspace coverage fraction in a neutral tone, not danger (tripl-7l83.17)', async () => {
+    mockSingleProject()
+
+    renderProjectsPage('owner')
+
+    expect(await screen.findByText('Beta')).toBeInTheDocument()
+    const coverageStat = screen.getByText('Coverage').closest('dl')
+    expect(coverageStat).not.toBeNull()
+    // The Coverage MiniStat delta ("implemented/active") must read as neutral —
+    // not danger/red — so a healthy 99% coverage never implies a problem.
+    const fraction = within(coverageStat as HTMLElement).getByText('320/323')
+    expect(fraction).toHaveStyle({ color: 'var(--fg-subtle)' })
+    expect(fraction).not.toHaveStyle({ color: 'var(--danger)' })
+  })
+
+  it('links the review-queue number into the first pending project (tripl-7l83.17)', async () => {
+    mockSingleProject()
+
+    renderProjectsPage('owner')
+
+    expect(await screen.findByText('Beta')).toBeInTheDocument()
+    // The Review-queue count deep-links into the project's review triage view.
+    const reviewLink = screen.getByRole('link', { name: /review queue: 1 event/i })
+    expect(reviewLink).toHaveAttribute('href', '/p/beta/events/review')
   })
 
   it('shows an error instead of the empty state when the backend is unavailable', async () => {

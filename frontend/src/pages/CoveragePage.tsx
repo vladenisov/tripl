@@ -252,7 +252,11 @@ function GapRow({ item }: { item: DeadEvent }) {
   return (
     <div className="flex items-center gap-3 px-4 py-2.5">
       <ShieldX className="h-3.5 w-3.5 shrink-0" style={{ color: 'var(--warning)' }} />
-      <span className="min-w-0 flex-1 truncate text-[12.5px] font-medium" style={{ color: 'var(--fg)' }}>
+      <span
+        className="min-w-0 flex-1 truncate text-[12.5px] font-medium"
+        style={{ color: 'var(--fg)' }}
+        title={item.name}
+      >
         {item.name}
       </span>
       <Chip tone="neutral" size="xs">
