@@ -24,19 +24,20 @@ from tripl.models.event_metric_breakdown import EventMetricBreakdown
 from tripl.models.project_anomaly_settings import ProjectAnomalySettings
 from tripl.models.release_regression import ReleaseRegression
 from tripl.models.scan_config import ScanConfig
+from tripl.services.version_activation import resolve_share_min
 
 
 def _build_regression_settings(session: Session, config: ScanConfig) -> RegressionSettings:
     """Reuse the project's ``sigma_threshold`` for the regression significance
-    test; everything else stays at the model defaults."""
+    test and honor the scan's ``app_version_active_share_min`` override for the
+    activation gate; everything else stays at the model defaults."""
+    share_min = resolve_share_min(config.app_version_active_share_min)
     project_settings = session.execute(
-        select(ProjectAnomalySettings).where(
-            ProjectAnomalySettings.project_id == config.project_id
-        )
+        select(ProjectAnomalySettings).where(ProjectAnomalySettings.project_id == config.project_id)
     ).scalar_one_or_none()
     if project_settings is None:
-        return RegressionSettings()
-    return RegressionSettings(sigma=project_settings.sigma_threshold)
+        return RegressionSettings(active_share_min=share_min)
+    return RegressionSettings(sigma=project_settings.sigma_threshold, active_share_min=share_min)
 
 
 def _recalculate_release_regressions(
@@ -48,9 +49,7 @@ def _recalculate_release_regressions(
 ) -> int:
     # Regressions describe the current latest release, so we always recompute
     # from scratch. Clearing first also makes the no-op paths self-healing.
-    session.execute(
-        delete(ReleaseRegression).where(ReleaseRegression.scan_config_id == config.id)
-    )
+    session.execute(delete(ReleaseRegression).where(ReleaseRegression.scan_config_id == config.id))
 
     if not config.app_version_column or not config.interval:
         session.flush()
@@ -121,14 +120,10 @@ def _recalculate_release_regressions(
                     scope_type=scope_type,
                     scope_ref=result.scope_ref,
                     event_id=(
-                        event_id_by_ref[result.scope_ref]
-                        if scope_type == SCOPE_EVENT
-                        else None
+                        event_id_by_ref[result.scope_ref] if scope_type == SCOPE_EVENT else None
                     ),
                     event_type_id=(
-                        type_id_by_ref[result.scope_ref]
-                        if scope_type == SCOPE_EVENT_TYPE
-                        else None
+                        type_id_by_ref[result.scope_ref] if scope_type == SCOPE_EVENT_TYPE else None
                     ),
                     app_version_column=config.app_version_column,
                     version=result.version,

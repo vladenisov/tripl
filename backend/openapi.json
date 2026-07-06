@@ -12436,6 +12436,19 @@
       },
       "ScanConfigCreate": {
         "properties": {
+          "app_version_active_share_min": {
+            "anyOf": [
+              {
+                "exclusiveMaximum": 1.0,
+                "exclusiveMinimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "App Version Active Share Min"
+          },
           "app_version_column": {
             "anyOf": [
               {
@@ -12460,6 +12473,19 @@
               }
             ],
             "title": "App Version Keep Releases"
+          },
+          "app_version_prerelease_pattern": {
+            "anyOf": [
+              {
+                "maxLength": 255,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "App Version Prerelease Pattern"
           },
           "base_query": {
             "minLength": 1,
@@ -12712,6 +12738,17 @@
       },
       "ScanConfigResponse": {
         "properties": {
+          "app_version_active_share_min": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "App Version Active Share Min"
+          },
           "app_version_column": {
             "anyOf": [
               {
@@ -12733,6 +12770,17 @@
               }
             ],
             "title": "App Version Keep Releases"
+          },
+          "app_version_prerelease_pattern": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "App Version Prerelease Pattern"
           },
           "base_query": {
             "title": "Base Query",
@@ -12943,6 +12991,8 @@
           "metrics_row_limit",
           "app_version_column",
           "app_version_keep_releases",
+          "app_version_prerelease_pattern",
+          "app_version_active_share_min",
           "platform_column",
           "created_at",
           "updated_at"
@@ -12952,6 +13002,19 @@
       },
       "ScanConfigUpdate": {
         "properties": {
+          "app_version_active_share_min": {
+            "anyOf": [
+              {
+                "exclusiveMaximum": 1.0,
+                "exclusiveMinimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "App Version Active Share Min"
+          },
           "app_version_column": {
             "anyOf": [
               {
@@ -12975,6 +13038,18 @@
               }
             ],
             "title": "App Version Keep Releases"
+          },
+          "app_version_prerelease_pattern": {
+            "anyOf": [
+              {
+                "maxLength": 255,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "App Version Prerelease Pattern"
           },
           "base_query": {
             "anyOf": [

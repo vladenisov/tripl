@@ -13,16 +13,70 @@ unit-testable. Buckets are ``datetime`` timestamps throughout.
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+import re
+from collections.abc import Iterable, Mapping
 from datetime import datetime
 
-from tripl.semver import order_versions
+from tripl.semver import is_prerelease, order_versions
 
 # Defaults from internal/decisions/app-version-regression-model.md. Kept here as
 # the single source of truth for the activation gate.
 DEFAULT_ACTIVE_SHARE_MIN = 0.05
 DEFAULT_ACTIVATION_MIN_BUCKETS = 2
 DEFAULT_MIN_RELEASE_VOLUME = 200
+
+
+def resolve_share_min(share_min: float | None) -> float:
+    """Per-scan activation share override, falling back to the system default.
+
+    ``None`` (column unset) keeps ``DEFAULT_ACTIVE_SHARE_MIN`` (0.05). An explicit
+    value — including small fractions — is honored as-is.
+    """
+    return share_min if share_min is not None else DEFAULT_ACTIVE_SHARE_MIN
+
+
+def compile_prerelease_pattern(pattern: str | None) -> re.Pattern[str] | None:
+    """Compile a per-scan prerelease regex, or ``None`` when unset or invalid.
+
+    An invalid regex is treated as "no pattern" so a bad config value can never
+    crash a scan — selection just falls back to the SemVer prerelease-tag default.
+    """
+    if not pattern:
+        return None
+    try:
+        return re.compile(pattern)
+    except re.error:
+        return None
+
+
+def is_prerelease_version(
+    version: str, *, prerelease_pattern: re.Pattern[str] | None = None
+) -> bool:
+    """Whether ``version`` is a prerelease/dev build ineligible to be latest/active.
+
+    True when the string carries a SemVer prerelease tag (the always-on default)
+    or, when a per-scan ``prerelease_pattern`` is supplied, when the raw string
+    matches that pattern.
+    """
+    if is_prerelease(version):
+        return True
+    return prerelease_pattern is not None and prerelease_pattern.search(version) is not None
+
+
+def released_versions(
+    versions: Iterable[str], *, prerelease_pattern: re.Pattern[str] | None = None
+) -> set[str]:
+    """Subset of ``versions`` eligible to be the latest/active release.
+
+    Excludes SemVer prereleases (default) and, when ``prerelease_pattern`` is set,
+    any string matching it. Prereleases stay visible as their own series
+    elsewhere; this gate only governs latest-selection and retention priority.
+    """
+    return {
+        version
+        for version in versions
+        if not is_prerelease_version(version, prerelease_pattern=prerelease_pattern)
+    }
 
 
 def activation_bucket(
@@ -94,9 +148,7 @@ def active_release_versions(
         if sum(by_bucket.values()) < min_volume:
             continue
         if (
-            activation_bucket(
-                by_bucket, denominator, share_min=share_min, min_buckets=min_buckets
-            )
+            activation_bucket(by_bucket, denominator, share_min=share_min, min_buckets=min_buckets)
             is not None
         ):
             active.add(version)

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import uuid
 from datetime import UTC, date, datetime, timedelta
 
@@ -57,8 +58,12 @@ from tripl.semver import (
 from tripl.services.monitoring_utils import classify_signal_state
 from tripl.services.project_lookup import get_project_by_slug
 from tripl.services.version_activation import (
+    DEFAULT_ACTIVE_SHARE_MIN,
     active_release_versions,
+    compile_prerelease_pattern,
     latest_active_version,
+    released_versions,
+    resolve_share_min,
 )
 
 
@@ -710,8 +715,12 @@ def _order_app_version_keys(keys: set[tuple[str, bool]]) -> list[tuple[str, bool
     return ordered + other_versions
 
 
-def _latest_app_version(keys: set[tuple[str, bool]]) -> str | None:
+def _latest_app_version(
+    keys: set[tuple[str, bool]], released: set[str] | None = None
+) -> str | None:
     explicit_versions = {version for version, is_other in keys if not is_other}
+    if released is not None:
+        explicit_versions &= released
     ordered = order_versions(explicit_versions, reverse=True)
     return ordered[0] if ordered else None
 
@@ -720,25 +729,27 @@ def _retained_versions(
     explicit_versions: set[str],
     active_versions: set[str],
     keep_releases: int,
+    *,
+    released: set[str] | None = None,
 ) -> set[str]:
-    """Latest ``keep_releases`` versions, giving activated releases the slots first.
+    """Latest ``keep_releases`` versions, prioritizing released, active versions.
 
-    Fill retention slots with the newest *active* (activation-gated) versions
-    first, then top up any remaining slots with the newest ungated versions. This
-    stops a higher-SemVer dev/tester build that never took real traffic from
-    occupying a retention slot ahead of an active shipped release (which would
-    otherwise fold that release into "Other"). When nothing has activated this
-    degrades to a pure SemVer top-N, matching the previous behavior.
+    Retention slots are filled in priority order: released activated releases
+    (newest first), then released-but-inactive, then prerelease/dev builds. This
+    stops a higher-SemVer dev/tester build that never took real traffic — or a
+    SemVer-prerelease build — from occupying a retention slot ahead of a shipped
+    release (which would otherwise fold that release into "Other"). ``released``
+    defaults to "everything is released", degrading to the prior active-first
+    SemVer top-N and matching the previous behavior.
     """
     if keep_releases <= 0:
         return set()
     ordered = order_versions(explicit_versions, reverse=True)
-    active_ordered = [version for version in ordered if version in active_versions]
-    inactive_ordered = [version for version in ordered if version not in active_versions]
-    kept = active_ordered[:keep_releases]
-    if len(kept) < keep_releases:
-        kept.extend(inactive_ordered[: keep_releases - len(kept)])
-    return set(kept)
+    released_set = released if released is not None else set(explicit_versions)
+    released_active = [v for v in ordered if v in released_set and v in active_versions]
+    released_inactive = [v for v in ordered if v in released_set and v not in active_versions]
+    prerelease = [v for v in ordered if v not in released_set]
+    return set((released_active + released_inactive + prerelease)[:keep_releases])
 
 
 async def _load_app_version_metric_rows(
@@ -800,12 +811,15 @@ async def _load_app_version_metric_rows(
 
 def _active_versions_from_metric_rows(
     metric_rows_by_series: dict[tuple[str, bool], list[tuple[datetime, int]]],
+    *,
+    share_min: float = DEFAULT_ACTIVE_SHARE_MIN,
 ) -> set[str]:
     """Activation-gated versions computed from the raw (pre-fold) breakdown rows.
 
     Mirrors the denominator build in ``_build_app_version_series`` so the two
     share one definition of "active": per-version per-bucket totals against the
-    total traffic per bucket, fed to ``active_release_versions``.
+    total traffic per bucket, fed to ``active_release_versions`` at the per-scan
+    ``share_min``.
     """
     release_totals_by_version: dict[str, dict[datetime, int]] = {}
     all_traffic_by_bucket: dict[datetime, int] = {}
@@ -815,7 +829,9 @@ def _active_versions_from_metric_rows(
             if not is_other:
                 per_bucket = release_totals_by_version.setdefault(version, {})
                 per_bucket[bucket] = per_bucket.get(bucket, 0) + count
-    return active_release_versions(release_totals_by_version, all_traffic_by_bucket)
+    return active_release_versions(
+        release_totals_by_version, all_traffic_by_bucket, share_min=share_min
+    )
 
 
 def _drop_immature_version_anomalies(
@@ -871,7 +887,9 @@ async def _load_app_version_anomaly_rows(
     # Filter out anomalies on immature (non-activation-gated) versions so a
     # dev/tester build that never took real traffic cannot surface anomaly
     # markers — or, when anomaly-only, sneak into the version key union.
-    active_versions = _active_versions_from_metric_rows(metric_rows_by_series)
+    active_versions = _active_versions_from_metric_rows(
+        metric_rows_by_series, share_min=resolve_share_min(config.app_version_active_share_min)
+    )
     return _drop_immature_version_anomalies(anomalies_by_series, active_versions)
 
 
@@ -881,6 +899,8 @@ def _build_app_version_series(
     metric_rows_by_series: dict[tuple[str, bool], list[tuple[datetime, int]]],
     anomalies_by_series: dict[tuple[str, bool], list[MetricBreakdownAnomaly]],
     keep_releases: int,
+    prerelease_pattern: re.Pattern[str] | None = None,
+    share_min: float = DEFAULT_ACTIVE_SHARE_MIN,
 ) -> tuple[str | None, list[AppVersionInfo], list[AppVersionMetricSeries]]:
     # Retention is applied here, at read time, over every version present in the
     # requested window: keep the latest ``keep_releases`` versions — activated
@@ -907,10 +927,25 @@ def _build_app_version_series(
                 per_bucket = release_totals_by_version.setdefault(version, {})
                 per_bucket[bucket] = per_bucket.get(bucket, 0) + count
 
-    active_versions = active_release_versions(release_totals_by_version, all_traffic_by_bucket)
-    # Retain the latest ``keep_releases`` versions, active releases first, so a
-    # higher-SemVer dev build cannot push an active shipped release into "Other".
-    kept_versions = _retained_versions(explicit_versions, active_versions, keep_releases)
+    # Prerelease/dev builds (SemVer -tag by default, plus any per-scan pattern
+    # match) are never eligible to be latest/active and never take a retention
+    # slot ahead of a released version — but their series stays visible. Computing
+    # ``active`` over only released versions keeps the denominator (all traffic)
+    # intact while guaranteeing a prerelease is never marked active.
+    released = released_versions(explicit_versions, prerelease_pattern=prerelease_pattern)
+    released_totals = {
+        version: by_bucket
+        for version, by_bucket in release_totals_by_version.items()
+        if version in released
+    }
+    active_versions = active_release_versions(
+        released_totals, all_traffic_by_bucket, share_min=share_min
+    )
+    # Retain the latest ``keep_releases`` versions, released+active first, so a
+    # higher-SemVer dev/prerelease build cannot push a shipped release into "Other".
+    kept_versions = _retained_versions(
+        explicit_versions, active_versions, keep_releases, released=released
+    )
 
     def _display_key(version: str, is_other: bool) -> tuple[str, bool]:
         if not is_other and version in kept_versions:
@@ -933,11 +968,12 @@ def _build_app_version_series(
     keys = set(metric_rows_by_display) | set(folded_anomalies)
     ordered_keys = _order_app_version_keys(keys)
 
-    # Prefer the SemVer-max ACTIVE release; fall back to the raw SemVer-max only
-    # when nothing has activated yet (e.g. a young project still ramping).
+    # Prefer the SemVer-max ACTIVE released version; fall back to the SemVer-max
+    # released version only when nothing has activated yet (a young project still
+    # ramping). Prereleases are excluded from both, so they are never latest.
     latest_version = latest_active_version(
-        release_totals_by_version, all_traffic_by_bucket
-    ) or _latest_app_version(keys)
+        released_totals, all_traffic_by_bucket, share_min=share_min
+    ) or _latest_app_version(keys, released)
 
     def _is_active(version: str, is_other: bool) -> bool:
         return not is_other and version in active_versions
@@ -1043,6 +1079,8 @@ async def get_app_version_series(
         metric_rows_by_series=metric_rows_by_series,
         anomalies_by_series=anomalies_by_series,
         keep_releases=config.app_version_keep_releases or DEFAULT_APP_VERSION_KEEP_RELEASES,
+        prerelease_pattern=compile_prerelease_pattern(config.app_version_prerelease_pattern),
+        share_min=resolve_share_min(config.app_version_active_share_min),
     )
     return AppVersionSeriesResponse(
         scan_config_id=config.id,
@@ -1105,6 +1143,8 @@ async def get_app_version_adoption(
         metric_rows_by_series=metric_rows_by_series,
         anomalies_by_series=anomalies_by_series,
         keep_releases=config.app_version_keep_releases or DEFAULT_APP_VERSION_KEEP_RELEASES,
+        prerelease_pattern=compile_prerelease_pattern(config.app_version_prerelease_pattern),
+        share_min=resolve_share_min(config.app_version_active_share_min),
     )
     return AppVersionAdoptionResponse(
         scan_config_id=config.id,
@@ -1329,13 +1369,17 @@ async def get_overview_kpi_series(
     start_day = (datetime.now(UTC) - timedelta(days=days - 1)).date()
     time_from = datetime(start_day.year, start_day.month, start_day.day, tzinfo=UTC)
     created_ats = (
-        await session.execute(
-            select(Event.created_at).where(
-                Event.project_id == project.id,
-                Event.created_at >= time_from,
+        (
+            await session.execute(
+                select(Event.created_at).where(
+                    Event.project_id == project.id,
+                    Event.created_at >= time_from,
+                )
             )
         )
-    ).scalars().all()
+        .scalars()
+        .all()
+    )
     counts: dict[date, int] = {}
     for created in created_ats:
         day = created.date()

@@ -199,9 +199,13 @@ export function AppVersionSection({ form, footerFor }: SectionProps) {
           columns={preview?.columns ?? null}
           appVersionColumn={state.appVersionColumn}
           keepReleases={state.appVersionKeepReleases}
+          prereleasePattern={state.appVersionPrereleasePattern}
+          activeShareMin={state.appVersionActiveShareMin}
           platformColumn={state.platformColumn}
           onAppVersionColumnChange={setAppVersionColumn}
           onKeepReleasesChange={value => set('appVersionKeepReleases', value)}
+          onPrereleasePatternChange={value => set('appVersionPrereleasePattern', value)}
+          onActiveShareMinChange={value => set('appVersionActiveShareMin', value)}
           onPlatformColumnChange={setPlatformColumn}
         />
       </div>

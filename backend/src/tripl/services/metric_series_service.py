@@ -21,6 +21,7 @@ definition UUID.
 
 from __future__ import annotations
 
+import re
 import uuid
 from datetime import datetime
 
@@ -61,7 +62,14 @@ from tripl.services.metrics_service import (
     _signal_from_anomaly,
 )
 from tripl.services.monitoring_utils import classify_signal_state
-from tripl.services.version_activation import active_release_versions, latest_active_version
+from tripl.services.version_activation import (
+    DEFAULT_ACTIVE_SHARE_MIN,
+    active_release_versions,
+    compile_prerelease_pattern,
+    latest_active_version,
+    released_versions,
+    resolve_share_min,
+)
 from tripl.worker.analyzers.metric_value_kind import is_count_shaped
 
 
@@ -394,12 +402,19 @@ async def get_metric_breakdowns(
     )
 
 
-def _order_version_keys(keys: set[tuple[str, bool]]) -> tuple[list[tuple[str, bool]], str | None]:
+def _order_version_keys(
+    keys: set[tuple[str, bool]], released: set[str] | None = None
+) -> tuple[list[tuple[str, bool]], str | None]:
     explicit = {version for version, is_other in keys if not is_other}
     ordered_versions = order_versions(explicit, reverse=True)
     ordered = [(version, False) for version in ordered_versions]
     other = sorted((version, is_other) for version, is_other in keys if is_other)
-    latest = ordered_versions[0] if ordered_versions else None
+    # The SemVer-max fallback for "latest" must skip prerelease/dev builds; when
+    # ``released`` is omitted every version is eligible (prior behavior).
+    latest_candidates = (
+        ordered_versions if released is None else [v for v in ordered_versions if v in released]
+    )
+    latest = latest_candidates[0] if latest_candidates else None
     return ordered + other, latest
 
 
@@ -429,6 +444,8 @@ def _build_metric_version_series(
     value_rows_by_series: dict[tuple[str, bool], list[tuple[datetime, float]]],
     keep_releases: int,
     count_shaped: bool = True,
+    prerelease_pattern: re.Pattern[str] | None = None,
+    share_min: float = DEFAULT_ACTIVE_SHARE_MIN,
 ) -> tuple[str | None, list[AppVersionInfo], list[MetricVersionSeries]]:
     """Read-time retention with an activation gate, mirroring the event
     app-version shaping for floats.
@@ -444,10 +461,22 @@ def _build_metric_version_series(
     explicit = {version for version, is_other in value_rows_by_series if not is_other}
     per_version_totals, all_by_bucket = _version_bucket_totals(value_rows_by_series)
 
+    # Prerelease/dev builds are ineligible to be latest/active and are subordinate
+    # to released versions for retention, regardless of metric shape. Activation
+    # (count-shaped only) is computed over released versions so a prerelease is
+    # never marked active.
+    released = released_versions(explicit, prerelease_pattern=prerelease_pattern)
+    released_totals = {
+        version: by_bucket
+        for version, by_bucket in per_version_totals.items()
+        if version in released
+    }
     active_versions = (
-        active_release_versions(per_version_totals, all_by_bucket) if count_shaped else set()
+        active_release_versions(released_totals, all_by_bucket, share_min=share_min)
+        if count_shaped
+        else set()
     )
-    kept = _retained_versions(explicit, active_versions, keep_releases)
+    kept = _retained_versions(explicit, active_versions, keep_releases, released=released)
 
     def _display_key(version: str, is_other: bool) -> tuple[str, bool]:
         if not is_other and version in kept:
@@ -461,11 +490,14 @@ def _build_metric_version_series(
             bucket_values[bucket] = bucket_values.get(bucket, 0.0) + value
     rows_by_display = {key: sorted(values.items()) for key, values in folded.items()}
 
-    ordered_keys, semver_latest = _order_version_keys(set(rows_by_display))
-    # Prefer the SemVer-max ACTIVE release; fall back to the raw SemVer-max when
-    # nothing has activated (or for fractional metrics with no active set).
+    ordered_keys, semver_latest = _order_version_keys(set(rows_by_display), released=released)
+    # Prefer the SemVer-max ACTIVE released version; fall back to the SemVer-max
+    # released version when nothing has activated (or for fractional metrics with
+    # no active set). Prereleases are excluded from both, so never latest.
     latest_version = (
-        latest_active_version(per_version_totals, all_by_bucket) if count_shaped else None
+        latest_active_version(released_totals, all_by_bucket, share_min=share_min)
+        if count_shaped
+        else None
     ) or semver_latest
 
     def _is_active(version: str, is_other: bool) -> bool:
@@ -500,21 +532,34 @@ def _build_metric_version_series(
     return latest_version, versions, series
 
 
-async def _resolve_keep_releases(
+async def _resolve_version_gate(
     session: AsyncSession,
     scan_config_id: uuid.UUID | None,
-) -> int:
-    """Honor the source scan config's ``app_version_keep_releases`` (as the event
-    app-version series does), falling back to the shared default when the metric
-    is not aligned to a scan config (e.g. a standalone ``sql`` / ``fact`` metric).
+) -> tuple[int, re.Pattern[str] | None, float]:
+    """Per-scan version-gate config for the metric's source scan (as the event
+    app-version series does): ``(keep_releases, prerelease_pattern, share_min)``.
+
+    Falls back to system defaults when the metric is not aligned to a scan config
+    (e.g. a standalone ``sql`` / ``fact`` metric).
     """
     if scan_config_id is not None:
-        keep = await session.scalar(
-            select(ScanConfig.app_version_keep_releases).where(ScanConfig.id == scan_config_id)
-        )
-        if keep:
-            return keep
-    return DEFAULT_APP_VERSION_KEEP_RELEASES
+        row = (
+            await session.execute(
+                select(
+                    ScanConfig.app_version_keep_releases,
+                    ScanConfig.app_version_prerelease_pattern,
+                    ScanConfig.app_version_active_share_min,
+                ).where(ScanConfig.id == scan_config_id)
+            )
+        ).first()
+        if row is not None:
+            keep, pattern, share = row
+            return (
+                keep or DEFAULT_APP_VERSION_KEEP_RELEASES,
+                compile_prerelease_pattern(pattern),
+                resolve_share_min(share),
+            )
+    return DEFAULT_APP_VERSION_KEEP_RELEASES, None, DEFAULT_ACTIVE_SHARE_MIN
 
 
 async def get_metric_version_series(
@@ -545,11 +590,16 @@ async def get_metric_version_series(
         time_from=time_from,
         time_to=time_to,
     )
+    keep_releases, prerelease_pattern, share_min = await _resolve_version_gate(
+        session, scan_config_id
+    )
     latest_version, versions, series = _build_metric_version_series(
         interval=interval,
         value_rows_by_series=value_rows_by_series,
-        keep_releases=await _resolve_keep_releases(session, scan_config_id),
+        keep_releases=keep_releases,
         count_shaped=is_count_shaped(metric),
+        prerelease_pattern=prerelease_pattern,
+        share_min=share_min,
     )
     return MetricVersionSeriesResponse(
         metric_id=metric.id,

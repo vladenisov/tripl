@@ -33,7 +33,11 @@ from tripl.models.metric_value import MetricValue
 from tripl.models.project_anomaly_settings import ProjectAnomalySettings
 from tripl.models.scan_config import ScanConfig
 from tripl.observability.metrics import anomalies_detected_total
-from tripl.services.version_activation import active_release_versions
+from tripl.services.version_activation import (
+    DEFAULT_ACTIVE_SHARE_MIN,
+    active_release_versions,
+    resolve_share_min,
+)
 from tripl.worker.analyzers.metric_value_kind import is_count_shaped
 
 # Fractional (ratio/average/sql) catalog metrics drop the count-shaped
@@ -475,6 +479,7 @@ def _active_app_version_values_by_group(
     app_version_column: str,
     history_from: datetime,
     evaluation_end: datetime,
+    share_min: float = DEFAULT_ACTIVE_SHARE_MIN,
 ) -> dict[tuple[uuid.UUID | None, uuid.UUID | None], set[str]]:
     """Activation-gated app_version breakdown values, keyed by scope grouping.
 
@@ -547,7 +552,7 @@ def _active_app_version_values_by_group(
             by_bucket[bucket] = by_bucket.get(bucket, 0.0) + float(total)
 
     return {
-        group: active_release_versions(versions, all_by_bucket.get(group))
+        group: active_release_versions(versions, all_by_bucket.get(group), share_min=share_min)
         for group, versions in per_version.items()
     }
 
@@ -561,6 +566,7 @@ def _collect_breakdown_scope_keys(
     evaluation_end: datetime,
     scope_type: str,
     app_version_column: str | None = None,
+    app_version_share_min: float = DEFAULT_ACTIVE_SHARE_MIN,
 ) -> set[tuple[uuid.UUID | None, uuid.UUID | None, str, str, bool]]:
     metric_id_column = (
         EventMetricBreakdown.event_type_id
@@ -646,6 +652,7 @@ def _collect_breakdown_scope_keys(
         app_version_column=app_version_column,
         history_from=history_from,
         evaluation_end=evaluation_end,
+        share_min=app_version_share_min,
     )
     gated: set[tuple[uuid.UUID | None, uuid.UUID | None, str, str, bool]] = set()
     for key in keys:
@@ -1056,6 +1063,7 @@ def _recalculate_metric_breakdown_anomalies(
             evaluation_end=evaluation_end,
             scope_type=SCOPE_PROJECT_TOTAL,
             app_version_column=app_version_column,
+            app_version_share_min=resolve_share_min(config.app_version_active_share_min),
         ):
             points = _load_breakdown_scope_points(
                 session,
@@ -1108,6 +1116,7 @@ def _recalculate_metric_breakdown_anomalies(
             evaluation_end=evaluation_end,
             scope_type=SCOPE_EVENT_TYPE,
             app_version_column=app_version_column,
+            app_version_share_min=resolve_share_min(config.app_version_active_share_min),
         ):
             if event_type_id is None:
                 continue
@@ -1163,6 +1172,7 @@ def _recalculate_metric_breakdown_anomalies(
             evaluation_end=evaluation_end,
             scope_type=SCOPE_EVENT,
             app_version_column=app_version_column,
+            app_version_share_min=resolve_share_min(config.app_version_active_share_min),
         ):
             if event_id is None:
                 continue

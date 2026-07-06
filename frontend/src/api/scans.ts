@@ -44,6 +44,8 @@ export const scansApi = {
     metrics_row_limit?: number | null
     app_version_column?: string | null
     app_version_keep_releases?: number | null
+    app_version_prerelease_pattern?: string | null
+    app_version_active_share_min?: number | null
     platform_column?: string | null
   }) => api.post<ScanConfig>(`/projects/${slug}/scans`, data),
 
@@ -109,6 +111,8 @@ export const scansApi = {
     metrics_row_limit?: number | null
     app_version_column?: string | null
     app_version_keep_releases?: number | null
+    app_version_prerelease_pattern?: string | null
+    app_version_active_share_min?: number | null
     platform_column?: string | null
   }) => api.patch<ScanConfig>(`/projects/${slug}/scans/${scanId}`, data),
 

@@ -88,6 +88,17 @@ class ScanConfig(UUIDMixin, TimestampMixin, Base):
     # releases collapse into an "other" bucket. NULL falls back to a system
     # default at collection time.
     app_version_keep_releases: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # Optional per-scan regex; version strings matching it are treated as
+    # pre-release/dev builds — excluded from "latest" and given a retention slot
+    # only after released versions, exactly like a SemVer pre-release tag (which
+    # is always excluded regardless of this column). NULL means only the SemVer
+    # default applies. An invalid regex is ignored at read time so it can never
+    # crash a scan.
+    app_version_prerelease_pattern: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    # Optional per-scan override for the activation traffic-share floor: the
+    # fraction of total traffic a release must hold (over consecutive buckets) to
+    # count as "active". NULL falls back to the system default (0.05).
+    app_version_active_share_min: Mapped[float | None] = mapped_column(Float, nullable=True)
     # Optional column holding the client platform (e.g. "ios"/"android"/"web").
     # When set, it is collected as a scan-level breakdown so platform values land
     # in EventMetricBreakdown — powering the per-event platform presence matrix
