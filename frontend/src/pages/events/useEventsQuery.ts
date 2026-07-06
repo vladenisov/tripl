@@ -9,6 +9,10 @@ import type { EventListItem, EventType } from '@/types'
 
 const SPECIAL_TABS = new Set(['all', 'review', 'archived'])
 const EVENTS_PAGE_SIZE = 200
+// Bulk "select all matching" pages through the whole result set in chunks. The
+// backend caps `limit` at 10 000 (events.py: Query(le=10000)), so this is the
+// largest page we can request without a 422 — bigger pages mean fewer requests.
+const EVENTS_ID_FETCH_PAGE_SIZE = 10000
 
 // Statuses shown by default (all tab) — excludes archived to preserve
 // the existing UX where archived events are hidden unless explicitly selected.
@@ -275,24 +279,37 @@ export function useEventsQuery({
   // Fetch the ids of EVERY event matching the current server filters (not just
   // the loaded pages), so bulk triage can sweep a whole prefix/tab at once —
   // e.g. accept or archive all 499 pending-review events in one action. Returns
-  // an empty list when there is nothing to match; caps the request at `total`.
+  // an empty list when there is nothing to match.
+  //
+  // The backend rejects `limit > 10000`, so we can't ask for `limit: total` in
+  // one shot on large projects. Page through the match set in cap-sized chunks,
+  // deduping by id in case rows shift between requests, and let each response's
+  // `total` steer the loop (a short/empty page also ends it).
   const fetchAllMatchingIds = useCallback(async (): Promise<string[]> => {
     if (!slug || total === 0) return []
-    const page = await eventsApi.list(
-      slug,
-      {
-        event_type_id: filterEtId,
-        search: debouncedSearch || undefined,
-        status: queryStatuses,
-        tag: filterTag || undefined,
-        silent_since_days: filterSilentDays,
-        order_by: sort === 'volume' ? 'volume' : undefined,
-        offset: 0,
-        limit: total,
-      },
-      branchId,
-    )
-    return page.items.map((event) => event.id)
+    const filters = {
+      event_type_id: filterEtId,
+      search: debouncedSearch || undefined,
+      status: queryStatuses,
+      tag: filterTag || undefined,
+      silent_since_days: filterSilentDays,
+      order_by: sort === 'volume' ? ('volume' as const) : undefined,
+    }
+    const ids = new Set<string>()
+    let offset = 0
+    let expected = total
+    while (offset < expected) {
+      const page = await eventsApi.list(
+        slug,
+        { ...filters, offset, limit: EVENTS_ID_FETCH_PAGE_SIZE },
+        branchId,
+      )
+      expected = page.total
+      if (page.items.length === 0) break
+      for (const event of page.items) ids.add(event.id)
+      offset += page.items.length
+    }
+    return [...ids]
   }, [
     slug,
     branchId,
