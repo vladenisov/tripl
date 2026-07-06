@@ -6106,6 +6106,11 @@ export interface components {
             /** Data */
             data: components["schemas"]["MetricSeriesPoint"][];
             /**
+             * Is Active
+             * @default false
+             */
+            is_active: boolean;
+            /**
              * Is Latest
              * @default false
              */

@@ -667,6 +667,31 @@ def _latest_app_version(keys: set[tuple[str, bool]]) -> str | None:
     return ordered[0] if ordered else None
 
 
+def _retained_versions(
+    explicit_versions: set[str],
+    active_versions: set[str],
+    keep_releases: int,
+) -> set[str]:
+    """Latest ``keep_releases`` versions, giving activated releases the slots first.
+
+    Fill retention slots with the newest *active* (activation-gated) versions
+    first, then top up any remaining slots with the newest ungated versions. This
+    stops a higher-SemVer dev/tester build that never took real traffic from
+    occupying a retention slot ahead of an active shipped release (which would
+    otherwise fold that release into "Other"). When nothing has activated this
+    degrades to a pure SemVer top-N, matching the previous behavior.
+    """
+    if keep_releases <= 0:
+        return set()
+    ordered = order_versions(explicit_versions, reverse=True)
+    active_ordered = [version for version in ordered if version in active_versions]
+    inactive_ordered = [version for version in ordered if version not in active_versions]
+    kept = active_ordered[:keep_releases]
+    if len(kept) < keep_releases:
+        kept.extend(inactive_ordered[: keep_releases - len(kept)])
+    return set(kept)
+
+
 async def _load_app_version_metric_rows(
     session: AsyncSession,
     *,
@@ -766,17 +791,34 @@ def _build_app_version_series(
     keep_releases: int,
 ) -> tuple[str | None, list[AppVersionInfo], list[AppVersionMetricSeries]]:
     # Retention is applied here, at read time, over every version present in the
-    # requested window: keep the latest ``keep_releases`` by SemVer as explicit
-    # series and roll the rest — plus any legacy stored ``is_other`` rows — into
-    # a single "Other" series. Deciding the kept set once over the whole window
-    # (rather than per collection chunk at write time) stops a version from
-    # flipping in and out of "Other" between chunks.
+    # requested window: keep the latest ``keep_releases`` versions — activated
+    # releases first (see below) — as explicit series and roll the rest, plus any
+    # legacy stored ``is_other`` rows, into a single "Other" series. Deciding the
+    # kept set once over the whole window (rather than per collection chunk at
+    # write time) stops a version from flipping in and out of "Other" between
+    # chunks.
     explicit_versions = {
         version
         for version, is_other in (set(metric_rows_by_series) | set(anomalies_by_series))
         if not is_other
     }
-    kept_versions = set(order_versions(explicit_versions, reverse=True)[:keep_releases])
+    # Activation gate: a release can only be the "latest" — and can only hold a
+    # retention slot ahead of an untried build — once it takes a real share of
+    # traffic. Volumes are computed from the raw rows (pre-fold) so releases
+    # rolled into "Other" still count toward the total traffic denominator.
+    release_totals_by_version: dict[str, dict[datetime, int]] = {}
+    all_traffic_by_bucket: dict[datetime, int] = {}
+    for (version, is_other), rows in metric_rows_by_series.items():
+        for bucket, count in rows:
+            all_traffic_by_bucket[bucket] = all_traffic_by_bucket.get(bucket, 0) + count
+            if not is_other:
+                per_bucket = release_totals_by_version.setdefault(version, {})
+                per_bucket[bucket] = per_bucket.get(bucket, 0) + count
+
+    active_versions = active_release_versions(release_totals_by_version, all_traffic_by_bucket)
+    # Retain the latest ``keep_releases`` versions, active releases first, so a
+    # higher-SemVer dev build cannot push an active shipped release into "Other".
+    kept_versions = _retained_versions(explicit_versions, active_versions, keep_releases)
 
     def _display_key(version: str, is_other: bool) -> tuple[str, bool]:
         if not is_other and version in kept_versions:
@@ -799,23 +841,6 @@ def _build_app_version_series(
     keys = set(metric_rows_by_display) | set(folded_anomalies)
     ordered_keys = _order_app_version_keys(keys)
 
-    # Activation gate: a release can only be the "latest" once it takes a real
-    # share of traffic — this excludes a higher-SemVer dev/tester build that
-    # shows up with negligible volume. Volumes are computed from the raw rows
-    # (pre-fold) so releases rolled into "Other" still count toward the total
-    # traffic denominator.
-    release_totals_by_version: dict[str, dict[datetime, int]] = {}
-    all_traffic_by_bucket: dict[datetime, int] = {}
-    for (version, is_other), rows in metric_rows_by_series.items():
-        for bucket, count in rows:
-            all_traffic_by_bucket[bucket] = all_traffic_by_bucket.get(bucket, 0) + count
-            if not is_other:
-                per_bucket = release_totals_by_version.setdefault(version, {})
-                per_bucket[bucket] = per_bucket.get(bucket, 0) + count
-
-    active_versions = active_release_versions(
-        release_totals_by_version, all_traffic_by_bucket
-    )
     # Prefer the SemVer-max ACTIVE release; fall back to the raw SemVer-max only
     # when nothing has activated yet (e.g. a young project still ramping).
     latest_version = latest_active_version(

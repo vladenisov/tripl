@@ -9,7 +9,8 @@ the raw SemVer-max only when nothing has activated.
 
 from datetime import datetime
 
-from tripl.services.metrics_service import _build_app_version_series
+from tripl.semver import APP_VERSION_OTHER_LABEL
+from tripl.services.metrics_service import _build_app_version_series, _retained_versions
 from tripl.services.version_activation import (
     activation_bucket,
     active_release_versions,
@@ -155,3 +156,52 @@ def test_build_series_empty_input_is_inert() -> None:
     assert latest_version is None
     assert versions == []
     assert series == []
+
+
+# --- active-first retention -------------------------------------------------
+
+
+def test_retained_versions_prefers_active_over_higher_semver() -> None:
+    # keep_releases=1: the active 1.0.0 takes the slot, not the higher-SemVer
+    # (but inactive) 2.0.0 dev build.
+    assert _retained_versions({"1.0.0", "2.0.0"}, {"1.0.0"}, 1) == {"1.0.0"}
+
+
+def test_retained_versions_fills_remaining_slots_with_newest_ungated() -> None:
+    # One active release + two ungated: keep 2 -> active 1.0.0 first, then the
+    # newest ungated (3.0.0), NOT 2.0.0.
+    assert _retained_versions({"1.0.0", "2.0.0", "3.0.0"}, {"1.0.0"}, 2) == {
+        "1.0.0",
+        "3.0.0",
+    }
+
+
+def test_retained_versions_pure_semver_when_nothing_active() -> None:
+    assert _retained_versions({"1.0.0", "2.0.0"}, set(), 1) == {"2.0.0"}
+
+
+def test_retained_versions_zero_keep_is_empty() -> None:
+    assert _retained_versions({"1.0.0"}, {"1.0.0"}, 0) == set()
+
+
+def test_build_series_dev_build_does_not_steal_retention_slot() -> None:
+    # keep_releases=1 with a higher-SemVer dev build: the active 1.0.0 keeps the
+    # only slot and the tiny 2.0.0 is folded into "Other" rather than displacing
+    # the shipped release.
+    metric_rows = {
+        ("1.0.0", False): _rows({d: 1000 for d in DAYS}),
+        ("2.0.0", False): _rows({d: 10 for d in DAYS}),
+    }
+    latest_version, _versions, series = _build_app_version_series(
+        interval=None,
+        metric_rows_by_series=metric_rows,
+        anomalies_by_series={},
+        keep_releases=1,
+    )
+    assert latest_version == "1.0.0"
+    series_by_version = {s.version: s for s in series}
+    assert "1.0.0" in series_by_version
+    assert series_by_version["1.0.0"].is_active is True
+    # The dev build was folded away, not kept as an explicit series.
+    assert "2.0.0" not in series_by_version
+    assert APP_VERSION_OTHER_LABEL in series_by_version

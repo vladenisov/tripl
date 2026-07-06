@@ -14,6 +14,7 @@ from tripl.models.field_definition import FieldDefinition
 from tripl.models.metric_anomaly import MetricAnomaly
 from tripl.models.metric_breakdown_anomaly import MetricBreakdownAnomaly
 from tripl.models.metric_definition import MetricDefinition
+from tripl.models.metric_value import MetricValue
 from tripl.models.release_regression import ReleaseRegression
 from tripl.models.scan_job import ScanJob
 from tripl.models.schema_drift import SchemaDrift
@@ -738,6 +739,87 @@ def _breakdown(scan_config_id: str, event_type_id: str, bucket: datetime,
         z_score=7,
         direction="spike",
     )
+
+
+@pytest.mark.asyncio
+async def test_project_summary_counts_catalog_metric_signal(client: AsyncClient) -> None:
+    """A fresh catalog-metric anomaly (scan_config_id NULL) is counted (tripl-dmch.15).
+
+    Catalog metric anomalies carry a NULL scan_config_id and are keyed by
+    ``str(metric_definition_id)``, so the project-summary query that inner-joins
+    ScanConfig on ``scan_config_id`` silently drops them. ``_populate_monitoring_signals``
+    must fold them into ``monitoring_signal_count`` by reusing the same open-signal
+    logic the AnomaliesPage uses (``metrics_insights_service._get_active_metric_signals``),
+    so the sidebar / ProjectsPage badge agrees with the AnomaliesPage list. There is
+    no event/scan-scope anomaly here, so the metric signal is the only one counted —
+    proving the count is not gated by the ScanConfig-joined query's early return.
+    """
+    slug = "catalog-metric-signal-proj"
+    project_resp = await client.post(
+        "/api/v1/projects", json={"name": "Catalog Metric Signal", "slug": slug}
+    )
+    assert project_resp.status_code == 201
+    project_id = project_resp.json()["id"]
+
+    ds_resp = await client.post(
+        "/api/v1/data-sources",
+        json={
+            "name": "Warehouse",
+            "db_type": "clickhouse",
+            "host": "localhost",
+            "port": 8123,
+            "database_name": "analytics",
+            "username": "default",
+            "password": "",
+        },
+    )
+    assert ds_resp.status_code == 201
+    data_source_id = ds_resp.json()["id"]
+
+    metric_definition_id = uuid.uuid4()
+    # Anchor the anomaly and its latest stored value to the same fresh bucket so
+    # classify_signal_state keeps the signal open. The metric path passes no scan
+    # interval, so the freshness horizon is the default 24h window and a bucket one
+    # hour old stays open.
+    fresh_bucket = _METRIC_BUCKET
+    async with TestSessionLocal() as session:
+        session.add(
+            MetricDefinition(
+                id=metric_definition_id,
+                project_id=uuid.UUID(project_id),
+                name="conversion_rate",
+                display_name="Conversion Rate",
+                kind="sql",
+                config={},
+                data_source_id=uuid.UUID(data_source_id),
+                interval="1h",
+                status="active",
+                unit="%",
+            )
+        )
+        # A stored value bucket is what classify_signal_state anchors recency on;
+        # without it the metric signal is treated as closed.
+        session.add(
+            MetricValue(
+                id=uuid.uuid4(),
+                metric_definition_id=metric_definition_id,
+                scan_config_id=None,
+                bucket=fresh_bucket,
+                value=1.0,
+            )
+        )
+        # NULL scan_config_id, keyed by the hyphenated metric_definition_id — the
+        # metric path matches scope_ref via a Python string, so no cast-hex quirk.
+        session.add(_anomaly(None, "metric", str(metric_definition_id), fresh_bucket))
+        await session.commit()
+
+    resp = await client.get(f"/api/v1/projects/{slug}")
+    assert resp.status_code == 200
+    summary = resp.json()["summary"]
+    assert summary["monitoring_signal_count"] == 1
+    # Metric-scope signals have no scan_config_id and so cannot populate
+    # latest_signal (a ProjectLatestSignal requires one); it stays None here.
+    assert summary["latest_signal"] is None
 
 
 @pytest.mark.asyncio

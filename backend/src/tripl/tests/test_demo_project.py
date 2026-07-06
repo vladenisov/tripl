@@ -1,7 +1,33 @@
 """Tests for the demo project generator endpoint."""
 
+import uuid
+
 import pytest
 from httpx import AsyncClient
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from tripl.core.analyzers.anomaly_detector import SCOPE_EVENT
+from tripl.core.analyzers.distribution_drift import PSI_BAND_MINOR, PSI_BAND_SIGNIFICANT
+from tripl.models.distribution_drift import DistributionDrift
+from tripl.models.event_metric import EventMetric
+from tripl.models.metric_anomaly import MetricAnomaly
+from tripl.models.project import Project
+from tripl.models.project_anomaly_settings import ProjectAnomalySettings
+from tripl.models.scan_config import ScanConfig
+from tripl.tests.conftest import TestSessionLocal
+
+
+async def _project_id_for_slug(session: AsyncSession, slug: str) -> uuid.UUID:
+    return (await session.execute(select(Project.id).where(Project.slug == slug))).scalar_one()
+
+
+async def _scan_config_id_for_project(
+    session: AsyncSession, project_id: uuid.UUID
+) -> uuid.UUID | None:
+    return (
+        await session.execute(select(ScanConfig.id).where(ScanConfig.project_id == project_id))
+    ).scalars().first()
 
 
 @pytest.mark.asyncio
@@ -116,3 +142,127 @@ async def test_delete_demo_project_cascades(client: AsyncClient) -> None:
     del_resp = await client.delete(f"/api/v1/projects/{slug}")
     assert del_resp.status_code == 204
     assert (await client.get(f"/api/v1/projects/{slug}")).status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_demo_project_seeds_enabled_anomaly_settings(client: AsyncClient) -> None:
+    # The scan advertises anomaly_detection_enabled=True; detect.py only runs when
+    # a matching project-level ProjectAnomalySettings row is ALSO enabled, so the
+    # seeder must persist one or detection would silently never run.
+    resp = await client.post("/api/v1/projects/demo")
+    assert resp.status_code == 201
+    slug = resp.json()["slug"]
+
+    async with TestSessionLocal() as session:
+        project_id = await _project_id_for_slug(session, slug)
+        settings = (
+            await session.execute(
+                select(ProjectAnomalySettings).where(
+                    ProjectAnomalySettings.project_id == project_id
+                )
+            )
+        ).scalar_one()
+
+    assert settings.anomaly_detection_enabled is True
+    # Gate scopes are on so the seeded event/type/project anomalies are what the
+    # worker would produce.
+    assert settings.detect_events is True
+    assert settings.detect_project_total is True
+
+
+@pytest.mark.asyncio
+async def test_demo_project_anomalies_match_seeded_series(client: AsyncClient) -> None:
+    # Every seeded MetricAnomaly must be reproducible from the visible EventMetric
+    # series: the detector ran over exactly the stored counts, so an anomaly's
+    # bucket must exist in the series and its actual/expected must be drawn from it.
+    resp = await client.post("/api/v1/projects/demo")
+    assert resp.status_code == 201
+    slug = resp.json()["slug"]
+
+    async with TestSessionLocal() as session:
+        project_id = await _project_id_for_slug(session, slug)
+        scan_config_id = await _scan_config_id_for_project(session, project_id)
+        assert scan_config_id is not None
+
+        all_anomalies = (
+            await session.execute(
+                select(MetricAnomaly).where(MetricAnomaly.scan_config_id == scan_config_id)
+            )
+        ).scalars().all()
+
+        # Post-Wave-1 tuning, the seeded series is shaped to yield a SMALL number of
+        # genuine anomalies (one visible spike per scope), not hundreds.
+        assert 0 < len(all_anomalies) <= 12, len(all_anomalies)
+
+        event_anomalies = [a for a in all_anomalies if a.scope_type == SCOPE_EVENT]
+        assert event_anomalies, "expected at least one event-scope anomaly"
+
+        for anomaly in event_anomalies:
+            assert anomaly.event_id is not None
+            # The anomaly bucket exists in the event's stored series.
+            metric = (
+                await session.execute(
+                    select(EventMetric).where(
+                        EventMetric.scan_config_id == scan_config_id,
+                        EventMetric.event_id == anomaly.event_id,
+                        EventMetric.bucket == anomaly.bucket,
+                    )
+                )
+            ).scalar_one()
+            # actual_count is drawn straight from the stored count.
+            assert anomaly.actual_count == float(metric.count)
+
+            # expected_count is drawn from the same series (a phase median), so it
+            # sits within the series' observed range, and a spike overshoots it.
+            series_counts = (
+                await session.execute(
+                    select(EventMetric.count).where(
+                        EventMetric.scan_config_id == scan_config_id,
+                        EventMetric.event_id == anomaly.event_id,
+                    )
+                )
+            ).scalars().all()
+            assert min(series_counts) <= anomaly.expected_count <= max(series_counts)
+            assert anomaly.direction == "spike"
+            assert anomaly.actual_count > anomaly.expected_count
+
+
+@pytest.mark.asyncio
+async def test_demo_project_distribution_drift_is_real_psi(client: AsyncClient) -> None:
+    # Drift rows are computed by the real compute_psi over a genuinely shifting
+    # platform mix, so PSI varies across buckets and each band matches the score.
+    resp = await client.post("/api/v1/projects/demo")
+    assert resp.status_code == 201
+    slug = resp.json()["slug"]
+
+    async with TestSessionLocal() as session:
+        project_id = await _project_id_for_slug(session, slug)
+        scan_config_id = await _scan_config_id_for_project(session, project_id)
+        drifts = (
+            await session.execute(
+                select(DistributionDrift)
+                .where(DistributionDrift.scan_config_id == scan_config_id)
+                .order_by(DistributionDrift.bucket)
+            )
+        ).scalars().all()
+
+    assert len(drifts) >= 3, "expected a distribution-drift ladder"
+
+    # A genuinely drifting mix produces varied PSI, not a hand-written constant.
+    psi_values = [round(drift.psi, 4) for drift in drifts]
+    assert len(set(psi_values)) > 1, psi_values
+    # PSI climbs toward the most recent (newest) bucket as the mix drifts further.
+    assert drifts[-1].psi > drifts[0].psi
+
+    for drift in drifts:
+        # Band is exactly what compute_psi's thresholds imply from the score.
+        if drift.psi < PSI_BAND_MINOR:
+            assert drift.band == "stable", (drift.psi, drift.band)
+        elif drift.psi < PSI_BAND_SIGNIFICANT:
+            assert drift.band == "minor", (drift.psi, drift.band)
+        else:
+            assert drift.band == "significant", (drift.psi, drift.band)
+        # Top movers are real contributions from the seeded values.
+        assert drift.top_movers
+        mover_values = {mover["value"] for mover in drift.top_movers}
+        assert {"web", "ios"} <= mover_values

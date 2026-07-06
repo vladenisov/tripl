@@ -170,12 +170,14 @@ export interface AppVersionInfo {
   version: string
   is_other: boolean
   is_latest: boolean
+  is_active: boolean
 }
 
 export interface AppVersionMetricSeries {
   version: string
   is_other: boolean
   is_latest: boolean
+  is_active: boolean
   total_count: number
   data: EventMetricPoint[]
 }
