@@ -128,3 +128,54 @@ def test_task_retries_on_batch_failure_and_keeps_docs_pending(
     assert docs[0].embedding_status == "pending"
     session.commit.assert_not_called()
     session.close.assert_called_once()
+
+
+def test_stranded_chaser_requeues_one_embed_task_per_pending_branch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The beat chaser re-queues the embed task for every (project, branch)
+    that still has stale pending documents — the safety net behind the
+    event-driven queue-after-reindex flow."""
+    project_id, branch_id = uuid.uuid4(), uuid.uuid4()
+    session = MagicMock()
+    session.execute.return_value.all.return_value = [(project_id, branch_id)]
+    monkeypatch.setattr(search_tasks, "_get_sync_session", lambda: session)
+    enabled_config = replace(
+        env_ai_config(),
+        search_embeddings_enabled=True,
+        search_embedding_api_key="sk-test",
+    )
+    monkeypatch.setattr(
+        search_tasks.app_settings_service,
+        "get_ai_config_sync",
+        lambda session=None: enabled_config,
+    )
+    fake_task = MagicMock()
+    monkeypatch.setattr(search_tasks, "embed_search_documents", fake_task)
+
+    result = search_tasks.requeue_stranded_search_embeddings()
+
+    assert result == {"branches_requeued": 1}
+    fake_task.delay.assert_called_once_with(str(project_id), str(branch_id))
+    session.close.assert_called_once()
+
+
+def test_stranded_chaser_noop_when_embeddings_disabled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session = MagicMock()
+    monkeypatch.setattr(search_tasks, "_get_sync_session", lambda: session)
+    disabled_config = replace(env_ai_config(), search_embeddings_enabled=False)
+    monkeypatch.setattr(
+        search_tasks.app_settings_service,
+        "get_ai_config_sync",
+        lambda session=None: disabled_config,
+    )
+    fake_task = MagicMock()
+    monkeypatch.setattr(search_tasks, "embed_search_documents", fake_task)
+
+    result = search_tasks.requeue_stranded_search_embeddings()
+
+    assert result == {"branches_requeued": 0}
+    session.execute.assert_not_called()
+    fake_task.delay.assert_not_called()

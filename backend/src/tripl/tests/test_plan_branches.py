@@ -631,6 +631,41 @@ async def test_merge_skips_ticket_when_tracker_disabled(
 
 
 @pytest.mark.asyncio
+async def test_merge_refreshes_main_search_index(client: AsyncClient) -> None:
+    """Merging refreshes main's search index immediately — merged content is
+    searchable without waiting for the next scan cycle or CRUD edit."""
+    await _seed_plan(client, "merge-search")
+    # Seed main's index BEFORE the merge: the search endpoint lazily rebuilds
+    # an EMPTY index, so only a pre-seeded one proves the post-merge refresh.
+    seeded = await client.get("/api/v1/projects/merge-search/search", params={"q": "purchase"})
+    assert seeded.status_code == 200
+
+    branch_id = await _create_branch(client, "merge-search")
+    # Direct DB edit (bypasses CRUD reindex) so the token can ONLY enter main's
+    # index through the merge's own refresh.
+    async with TestSessionLocal() as session:
+        branch_event = (
+            (await session.execute(select(Event).where(Event.branch_id == uuid.UUID(branch_id))))
+            .scalars()
+            .first()
+        )
+        branch_event.description = "zebrasearchtoken description"
+        await session.commit()
+
+    resp = await _approve_and_merge(client, "merge-search", branch_id)
+    assert resp.status_code == 200, resp.text
+
+    found = await client.get(
+        "/api/v1/projects/merge-search/search", params={"q": "zebrasearchtoken"}
+    )
+    assert found.status_code == 200
+    hits = found.json()["items"]
+    assert any(
+        item["entity_type"] == "event" and item["title"] == "purchase:success" for item in hits
+    ), hits
+
+
+@pytest.mark.asyncio
 async def test_merge_preserves_main_event_type_id(client: AsyncClient) -> None:
     """Branch modifies an existing event type; the live main row keeps its id
     (so runtime rows linked to it survive)."""

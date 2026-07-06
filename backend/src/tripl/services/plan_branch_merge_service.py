@@ -916,4 +916,18 @@ async def merge_branch(
         branch_payload=branch_payload,
         post_payload=post_payload,
     )
+
+    # Refresh main's search index right away — the merge just rewrote main's
+    # entities, and the next worker-side refresh (post-scan) or CRUD edit may be
+    # far off. Best-effort: the merge is committed, so a search-index failure
+    # must never fail the merge response. Lazy import mirrors the ticket task
+    # above (avoids service-module import cycles).
+    try:
+        from tripl.services.search_service import reindex_project_branch
+
+        await reindex_project_branch(
+            session, project_id=project.id, branch_id=main_branch_id, slug=slug
+        )
+    except Exception:  # noqa: BLE001 — search staleness must never break a merge
+        logger.exception("Failed to reindex search after merging branch %s", branch.id)
     return await _to_detail(session, branch)

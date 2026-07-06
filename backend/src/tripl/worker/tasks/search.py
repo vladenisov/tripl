@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import uuid
+from datetime import UTC, datetime, timedelta
 
 from celery import Task
 from celery.exceptions import MaxRetriesExceededError, Retry
@@ -174,5 +175,46 @@ def embed_search_documents(
         session.rollback()
         logger.exception("Failed to embed search documents")
         raise
+    finally:
+        session.close()
+
+
+# Docs stuck in `pending` longer than this are stranded: the follow-up queue
+# message was lost (broker/worker down at enqueue time) or the batch retries
+# were exhausted. The beat chaser below re-queues one embed task per branch.
+STRANDED_EMBEDDING_MINUTES = 15
+
+
+@celery_app.task(  # type: ignore[untyped-decorator]
+    name="tripl.worker.tasks.search.requeue_stranded_search_embeddings",
+)
+def requeue_stranded_search_embeddings() -> dict[str, int]:
+    """Periodic safety net for the event-driven embedding pipeline.
+
+    Embeddings normally refresh via the task queued after every reindex (API
+    CRUD, worker post-scan/metrics, post-merge). That message can be lost —
+    broker down at enqueue time, worker killed mid-batch, batch retries
+    exhausted — leaving documents ``pending`` with nothing chasing them. This
+    beat task re-queues one embed task per (project, branch) that still has
+    pending documents older than the stranded horizon; fresh pending docs are
+    skipped so in-flight batches are not double-processed.
+    """
+    session = _get_sync_session()
+    try:
+        ai_config = app_settings_service.get_ai_config_sync(session)
+        if not ai_config.search_embeddings_enabled:
+            return {"branches_requeued": 0}
+        cutoff = datetime.now(UTC) - timedelta(minutes=STRANDED_EMBEDDING_MINUTES)
+        pairs = session.execute(
+            select(SearchDocument.project_id, SearchDocument.branch_id)
+            .where(
+                SearchDocument.embedding_status == "pending",
+                SearchDocument.updated_at < cutoff,
+            )
+            .distinct()
+        ).all()
+        for project_id, branch_id in pairs:
+            embed_search_documents.delay(str(project_id), str(branch_id))
+        return {"branches_requeued": len(pairs)}
     finally:
         session.close()

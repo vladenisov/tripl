@@ -84,6 +84,13 @@ celery_app.conf.beat_schedule = {
         # adds load against the tracker's REST API.
         "schedule": 300.0,
     },
+    "requeue-stranded-search-embeddings": {
+        "task": "tripl.worker.tasks.search.requeue_stranded_search_embeddings",
+        # Every 15 minutes — embeddings refresh event-driven after each reindex;
+        # this chaser only bounds how long a lost queue message or an exhausted
+        # batch retry can leave documents pending (STRANDED_EMBEDDING_MINUTES).
+        "schedule": 900.0,
+    },
 }
 
 # Import tasks so they are registered with the celery app
