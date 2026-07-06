@@ -126,12 +126,16 @@ class AppVersionInfo(BaseModel):
     version: str
     is_other: bool = False
     is_latest: bool = False
+    # True once the release takes a real share of traffic (activation gate),
+    # distinguishing an active release from a merely "newest seen" dev build.
+    is_active: bool = False
 
 
 class AppVersionMetricSeries(BaseModel):
     version: str
     is_other: bool = False
     is_latest: bool = False
+    is_active: bool = False
     total_count: int
     data: list[EventMetricPoint]
 

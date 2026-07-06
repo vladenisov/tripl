@@ -1,5 +1,5 @@
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import pytest
 from httpx import AsyncClient
@@ -68,7 +68,10 @@ async def test_project_activity_feed_uses_real_backend_records(client: AsyncClie
     rule_id = rule_resp.json()["id"]
     project_id = destination_resp.json()["project_id"]
 
-    created_at = datetime(2026, 4, 18, 9, tzinfo=UTC)
+    # The anomaly must be recent: the activity rail only surfaces anomalies
+    # inside ANOMALY_RECENCY_WINDOW, so a fixed historical timestamp would be
+    # filtered out and this assertion would flake as wall-clock time advances.
+    anomaly_created_at = datetime.now(UTC)
     async with TestSessionLocal() as session:
         session.add(
             MetricAnomaly(
@@ -78,13 +81,13 @@ async def test_project_activity_feed_uses_real_backend_records(client: AsyncClie
                 scope_ref=event_type_id,
                 event_id=None,
                 event_type_id=uuid.UUID(event_type_id),
-                bucket=created_at,
+                bucket=anomaly_created_at,
                 actual_count=42,
                 expected_count=21,
                 stddev=3,
                 z_score=7,
                 direction="spike",
-                created_at=created_at,
+                created_at=anomaly_created_at,
             )
         )
         session.add(
@@ -145,6 +148,98 @@ async def test_project_activity_feed_uses_real_backend_records(client: AsyncClie
         item["target_path"].startswith(f"/p/{slug}/monitoring/event/") for item in event_items
     )
     assert not any("/events/detail/" in (item["target_path"] or "") for item in items)
+
+
+@pytest.mark.asyncio
+async def test_activity_feed_excludes_stale_anomalies(client: AsyncClient):
+    """A week-old anomaly must drop off the rail while a fresh one stays.
+
+    Regression for the 'Now' rail pinning weeks-old high-z anomalies at the top
+    of the feed on every page (tripl-dmch.13).
+    """
+    slug = "activity-recency"
+    await client.post("/api/v1/projects", json={"name": "Recency Project", "slug": slug})
+
+    event_type_resp = await client.post(
+        f"/api/v1/projects/{slug}/event-types",
+        json={"name": "page_view", "display_name": "Page View"},
+    )
+    event_type_id = event_type_resp.json()["id"]
+
+    data_source_resp = await client.post(
+        "/api/v1/data-sources",
+        json={
+            "name": "Warehouse",
+            "db_type": "clickhouse",
+            "host": "localhost",
+            "port": 8123,
+            "database_name": "analytics",
+            "username": "default",
+            "password": "",
+        },
+    )
+    scan_resp = await client.post(
+        f"/api/v1/projects/{slug}/scans",
+        json={
+            "data_source_id": data_source_resp.json()["id"],
+            "name": "Production scan",
+            "base_query": "SELECT 1",
+        },
+    )
+    scan_config_id = scan_resp.json()["id"]
+
+    now = datetime.now(UTC)
+    fresh_at = now - timedelta(hours=1)
+    # Comfortably outside the 7-day window, mirroring the reported z=16.7 rows.
+    stale_at = now - timedelta(days=30)
+    async with TestSessionLocal() as session:
+        session.add(
+            MetricAnomaly(
+                id=uuid.uuid4(),
+                scan_config_id=uuid.UUID(scan_config_id),
+                scope_type="event_type",
+                scope_ref=event_type_id,
+                event_id=None,
+                event_type_id=uuid.UUID(event_type_id),
+                bucket=fresh_at,
+                actual_count=42,
+                expected_count=21,
+                stddev=3,
+                z_score=7,
+                direction="spike",
+                created_at=fresh_at,
+            )
+        )
+        session.add(
+            MetricAnomaly(
+                id=uuid.uuid4(),
+                scan_config_id=uuid.UUID(scan_config_id),
+                scope_type="event_type",
+                scope_ref=event_type_id,
+                event_id=None,
+                event_type_id=uuid.UUID(event_type_id),
+                bucket=stale_at,
+                actual_count=900,
+                expected_count=10,
+                stddev=2,
+                z_score=16,
+                direction="spike",
+                created_at=stale_at,
+            )
+        )
+        await session.commit()
+
+    resp = await client.get(f"/api/v1/activity/projects/{slug}?limit=20")
+    assert resp.status_code == 200
+    anomaly_items = [item for item in resp.json() if item["type"] == "anomaly"]
+
+    assert len(anomaly_items) == 1, "only the fresh anomaly should surface"
+    detail = anomaly_items[0]["detail"]
+    assert "42 actual" in detail
+    assert "z=7" in detail
+    # The 30-day-old anomaly (z=16) must not leak into the rail.
+    assert "900 actual" not in detail
+    assert not any("z=16" in item["detail"] for item in anomaly_items)
 
 
 @pytest.mark.asyncio

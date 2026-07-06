@@ -101,7 +101,19 @@ def _create_scan_config(session: Session, *, with_event_type: bool = False) -> S
     return config
 
 
-def _seed_anomaly_scan_state(session: Session) -> tuple[ScanConfig, EventType, Event]:
+# Fresh, hour-aligned base for the anomaly-history fixture so the detected drop's
+# bucket stays inside the wall-clock signal freshness horizon. Callers that assert
+# an OPEN signal / queued alert pass base=_ANOMALY_BASE; the other callers keep the
+# historical 2026-01-01 anchor (behaviourally identical for them — they do not
+# assert on signal freshness). Kept tz-naive to match the fixture's naive columns.
+_ANOMALY_BASE = datetime.now(UTC).replace(
+    minute=0, second=0, microsecond=0, tzinfo=None
+) - timedelta(hours=11)
+
+
+def _seed_anomaly_scan_state(
+    session: Session, *, base: datetime = datetime(2026, 1, 1, 0, 0)
+) -> tuple[ScanConfig, EventType, Event]:
     config = _create_scan_config(session, with_event_type=True)
     assert config.event_type_id is not None
 
@@ -124,7 +136,7 @@ def _seed_anomaly_scan_state(session: Session) -> tuple[ScanConfig, EventType, E
     session.add(event)
 
     for hour in range(10):
-        bucket = datetime(2026, 1, 1, hour)
+        bucket = base + timedelta(hours=hour)
         session.add(
             EventMetric(
                 id=uuid.uuid4(),
@@ -1714,7 +1726,7 @@ def test_collect_metrics_recalculates_and_clears_metric_anomalies(
     monkeypatch: MonkeyPatch,
 ) -> None:
     with sync_session_factory() as session:
-        config, event_type, event = _seed_anomaly_scan_state(session)
+        config, event_type, event = _seed_anomaly_scan_state(session, base=_ANOMALY_BASE)
         config_id = str(config.id)
 
     class FakeAdapter:
@@ -1748,7 +1760,9 @@ def test_collect_metrics_recalculates_and_clears_metric_anomalies(
 
     monkeypatch.setattr(metrics, "_get_sync_session", sync_session_factory)
     monkeypatch.setattr(metrics, "_build_adapter", lambda ds: FakeAdapter())
-    monkeypatch.setattr(metrics, "_floor_to_interval", lambda dt, delta: datetime(2026, 1, 1, 11))
+    monkeypatch.setattr(
+        metrics, "_floor_to_interval", lambda dt, delta: _ANOMALY_BASE + timedelta(hours=11)
+    )
     monkeypatch.setattr(metrics, "analyze_cardinality", lambda *args, **kwargs: object())
 
     def fake_generate_events(*args: object, **kwargs: object) -> GenerationResult:
@@ -1764,8 +1778,8 @@ def test_collect_metrics_recalculates_and_clears_metric_anomalies(
     monkeypatch.setattr(metrics, "generate_events", fake_generate_events)
 
     FakeAdapter.rows = [
-        (datetime(2026, 1, 1, 8), "Login", 10),
-        (datetime(2026, 1, 1, 9), "Login", 10),
+        (_ANOMALY_BASE + timedelta(hours=8), "Login", 10),
+        (_ANOMALY_BASE + timedelta(hours=9), "Login", 10),
     ]
     first_result = metrics.collect_metrics.run(config_id)
     assert first_result["anomalies_detected"] == 3
@@ -1778,11 +1792,11 @@ def test_collect_metrics_recalculates_and_clears_metric_anomalies(
             ("event_type", "drop"),
             ("event", "drop"),
         }
-        assert {anomaly.bucket for anomaly in anomalies} == {datetime(2026, 1, 1, 10)}
+        assert {anomaly.bucket for anomaly in anomalies} == {_ANOMALY_BASE + timedelta(hours=10)}
 
     FakeAdapter.rows = [
-        (datetime(2026, 1, 1, 8), "Login", 10),
-        (datetime(2026, 1, 1, 9), "Login", 10),
+        (_ANOMALY_BASE + timedelta(hours=8), "Login", 10),
+        (_ANOMALY_BASE + timedelta(hours=9), "Login", 10),
     ]
     repeated_result = metrics.collect_metrics.run(config_id)
     assert repeated_result["anomalies_detected"] == 3
@@ -1790,9 +1804,9 @@ def test_collect_metrics_recalculates_and_clears_metric_anomalies(
     assert repeated_result["signals_removed"] == 0
 
     FakeAdapter.rows = [
-        (datetime(2026, 1, 1, 8), "Login", 10),
-        (datetime(2026, 1, 1, 9), "Login", 10),
-        (datetime(2026, 1, 1, 10), "Login", 10),
+        (_ANOMALY_BASE + timedelta(hours=8), "Login", 10),
+        (_ANOMALY_BASE + timedelta(hours=9), "Login", 10),
+        (_ANOMALY_BASE + timedelta(hours=10), "Login", 10),
     ]
     second_result = metrics.collect_metrics.run(config_id)
     assert second_result["anomalies_detected"] == 0
@@ -1809,7 +1823,7 @@ def test_collect_metrics_queues_alert_deliveries(
     monkeypatch: MonkeyPatch,
 ) -> None:
     with sync_session_factory() as session:
-        config, _event_type, _event = _seed_anomaly_scan_state(session)
+        config, _event_type, _event = _seed_anomaly_scan_state(session, base=_ANOMALY_BASE)
         destination = AlertDestination(
             id=uuid.uuid4(),
             project_id=config.project_id,
@@ -1870,7 +1884,9 @@ def test_collect_metrics_queues_alert_deliveries(
 
     monkeypatch.setattr(metrics, "_get_sync_session", sync_session_factory)
     monkeypatch.setattr(metrics, "_build_adapter", lambda ds: FakeAdapter())
-    monkeypatch.setattr(metrics, "_floor_to_interval", lambda dt, delta: datetime(2026, 1, 1, 11))
+    monkeypatch.setattr(
+        metrics, "_floor_to_interval", lambda dt, delta: _ANOMALY_BASE + timedelta(hours=11)
+    )
     monkeypatch.setattr(metrics, "analyze_cardinality", lambda *args, **kwargs: object())
     monkeypatch.setattr(
         metrics.send_alert_delivery,
@@ -1890,8 +1906,8 @@ def test_collect_metrics_queues_alert_deliveries(
     monkeypatch.setattr(metrics, "generate_events", fake_generate_events)
 
     FakeAdapter.rows = [
-        (datetime(2026, 1, 1, 8), "Login", 10),
-        (datetime(2026, 1, 1, 9), "Login", 10),
+        (_ANOMALY_BASE + timedelta(hours=8), "Login", 10),
+        (_ANOMALY_BASE + timedelta(hours=9), "Login", 10),
     ]
     result = metrics.collect_metrics.run(config_id)
 

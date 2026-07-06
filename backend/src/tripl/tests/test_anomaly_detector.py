@@ -1,9 +1,13 @@
 from datetime import UTC, datetime, timedelta
+from math import pi, sin
 
 from tripl.core.analyzers.anomaly_detector import (
     AnomalyDetectionSettings,
     SeriesPoint,
+    _detect_trend_shift,
+    _fit_components,
     detect_anomalies,
+    expand_series,
     forecast_next_buckets,
     required_history_buckets,
 )
@@ -437,3 +441,85 @@ def test_hybrid_detects_sustained_level_shift_on_seasonal_series() -> None:
     )
 
     assert any(anomaly.direction == "spike" for anomaly in anomalies)
+
+
+def _smooth_sinusoid_count(hour: int) -> float:
+    """A visually-flat daily sinusoid: level ~1000 with a +/-3% swing. The kind
+    of series the old trend-shift detector over-flagged (tripl-dmch.8) — the
+    trend never actually drifts, only the seasonal component wobbles."""
+    return 1000.0 + 30.0 * sin(2 * pi * (hour % 24) / 24)
+
+
+def test_trend_shift_ignores_smooth_few_percent_daily_sinusoid() -> None:
+    """A smooth few-percent daily sinusoid must raise ~zero trend anomalies: the
+    deseasonalized trend is flat, so no bucket clears the relative effect-size
+    gate. This is the primary over-flagging case from complaint 2."""
+    hours = 24 * 28
+    points = [
+        SeriesPoint(bucket=_bucket(hour), count=_smooth_sinusoid_count(hour))
+        for hour in range(hours)
+    ]
+
+    anomalies = detect_anomalies(
+        points,
+        interval=timedelta(hours=1),
+        evaluation_start=_bucket(hours - 24),  # evaluate the whole last day
+        evaluation_end=_bucket(hours),
+        settings=SETTINGS,
+    )
+
+    assert anomalies == []
+
+
+def test_trend_shift_collapses_sustained_shift_to_single_anomaly() -> None:
+    """A genuine sustained 30% level shift must surface as exactly ONE trend
+    anomaly, not one row per shifted bucket. Exercises the trend-shift detector
+    in isolation so the per-bucket phase baseline can't add extra rows."""
+    days = 28
+    hours = 24 * days
+    shift_start = 24 * 23  # last 5 days run 30% hot
+    counts = [
+        _daily_pattern_count(hour) * (1.30 if hour >= shift_start else 1.0)
+        for hour in range(hours)
+    ]
+    points = [SeriesPoint(bucket=_bucket(hour), count=counts[hour]) for hour in range(hours)]
+    expanded = expand_series(
+        points, interval=timedelta(hours=1), end_exclusive=_bucket(hours)
+    )
+    components = _fit_components([point.count for point in expanded], interval=timedelta(hours=1))
+    assert components is not None
+
+    trend_anomalies = _detect_trend_shift(
+        expanded,
+        components,
+        evaluation_start=_bucket(shift_start),  # window spans the whole shift run
+        settings=SETTINGS,
+        interval=timedelta(hours=1),
+    )
+
+    assert len(trend_anomalies) == 1
+    assert trend_anomalies[0].direction == "spike"
+
+
+def test_trend_shift_still_flags_sharp_spike_via_phase_detector() -> None:
+    """The trend-path changes must not weaken the sharp-spike path: a single
+    isolated spike is still caught (by the phase/rolling detector)."""
+    points = [
+        SeriesPoint(bucket=_bucket(hour), count=_weekly_pattern_count(hour))
+        for hour in range(24 * 28)
+    ]
+    peak_hour = 24 * 28 - 14  # 10:00 on the last day, normally the daily peak
+    points[peak_hour] = SeriesPoint(
+        bucket=_bucket(peak_hour), count=_weekly_pattern_count(peak_hour) * 4
+    )
+
+    anomalies = detect_anomalies(
+        points,
+        interval=timedelta(hours=1),
+        evaluation_start=_bucket(peak_hour),
+        evaluation_end=_bucket(24 * 28),
+        settings=SETTINGS,
+    )
+
+    spike = next(anomaly for anomaly in anomalies if anomaly.bucket == _bucket(peak_hour))
+    assert spike.direction == "spike"

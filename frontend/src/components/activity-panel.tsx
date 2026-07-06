@@ -59,9 +59,9 @@ export function ActivityPanel({ open, slug }: { open: boolean; slug?: string }) 
         style={{ borderColor: 'var(--border)' }}
       >
         <Dot tone={activityQuery.isError ? 'warning' : 'accent'} pulse={activityQuery.isFetching} size={7} />
-        <span className="text-[12.5px] font-semibold">Now</span>
+        <span className="text-[12.5px] font-semibold">Recent activity</span>
         <span className="text-[11px]" style={{ color: 'var(--fg-subtle)' }}>
-          {activityQuery.isError ? 'offline' : 'live'}
+          {activityQuery.isError ? 'offline' : 'auto-refresh'}
         </span>
         <div className="flex-1" />
         {activityQuery.isFetching && (
@@ -126,7 +126,7 @@ export function ActivityPanel({ open, slug }: { open: boolean; slug?: string }) 
       >
         <Zap className="h-3 w-3" />
         <span className="mono">
-          streaming · {items.length} {items.length === 1 ? 'item' : 'items'}
+          last 7 days · {items.length} {items.length === 1 ? 'item' : 'items'}
         </span>
       </div>
     </aside>
@@ -162,11 +162,15 @@ function ActivityRow({
           {item.detail}
         </div>
         <div
-          className="mono mt-[3px] text-[10.5px]"
-          style={{ color: 'var(--fg-faint)' }}
+          className="mono mt-[3px] text-[11px] font-medium"
+          style={{ color: 'var(--fg-muted)' }}
         >
           {formatRelativeTime(item.occurred_at)}
-          {showProject ? ` · ${item.project_slug}` : ''}
+          {showProject ? (
+            <span style={{ color: 'var(--fg-faint)' }}>{` · ${item.project_slug}`}</span>
+          ) : (
+            ''
+          )}
         </div>
       </div>
     </>

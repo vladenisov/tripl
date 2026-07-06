@@ -22,12 +22,17 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 
 from tripl.semver import order_versions
+from tripl.services.version_activation import (
+    DEFAULT_ACTIVATION_MIN_BUCKETS,
+    DEFAULT_ACTIVE_SHARE_MIN,
+    DEFAULT_MIN_RELEASE_VOLUME,
+    activation_bucket,
+)
 
-# Defaults from the decision note. Kept as module constants for now; promote to
-# ScanConfig columns only if tuning demand appears.
-DEFAULT_ACTIVE_SHARE_MIN = 0.05
-DEFAULT_ACTIVATION_MIN_BUCKETS = 2
-DEFAULT_MIN_RELEASE_VOLUME = 200
+# Defaults from the decision note. The activation-gate constants live in
+# ``tripl.services.version_activation`` (the single source of truth shared with
+# the app-version series selection) and are re-exported here for backward
+# compatibility. Promote to ScanConfig columns only if tuning demand appears.
 DEFAULT_WINDOW_DAYS = 14
 DEFAULT_MIN_EXPECTED = 30.0
 DEFAULT_MIN_PREV_SHARE = 0.001
@@ -73,31 +78,6 @@ def _window_sum(by_bucket: Mapping[datetime, int], start: datetime, end: datetim
     return sum(count for bucket, count in by_bucket.items() if start <= bucket <= end)
 
 
-def _activation_bucket(
-    release_by_bucket: Mapping[datetime, int],
-    all_by_bucket: Mapping[datetime, int],
-    *,
-    settings: RegressionSettings,
-) -> datetime | None:
-    """First bucket starting a run of ``activation_min_buckets`` consecutive
-    buckets whose share of total traffic is at least ``active_share_min``."""
-    run_start: datetime | None = None
-    run_len = 0
-    for bucket in sorted(all_by_bucket):
-        total = all_by_bucket.get(bucket, 0)
-        share = (release_by_bucket.get(bucket, 0) / total) if total > 0 else 0.0
-        if share >= settings.active_share_min:
-            if run_len == 0:
-                run_start = bucket
-            run_len += 1
-            if run_len >= settings.activation_min_buckets:
-                return run_start
-        else:
-            run_len = 0
-            run_start = None
-    return None
-
-
 def _active_releases(
     release_total_by_bucket: Mapping[str, Mapping[datetime, int]],
     all_traffic_by_bucket: Mapping[datetime, int],
@@ -106,7 +86,12 @@ def _active_releases(
 ) -> dict[str, datetime]:
     activations: dict[str, datetime] = {}
     for version, by_bucket in release_total_by_bucket.items():
-        activation = _activation_bucket(by_bucket, all_traffic_by_bucket, settings=settings)
+        activation = activation_bucket(
+            by_bucket,
+            all_traffic_by_bucket,
+            share_min=settings.active_share_min,
+            min_buckets=settings.activation_min_buckets,
+        )
         if activation is not None:
             activations[version] = activation
     return activations

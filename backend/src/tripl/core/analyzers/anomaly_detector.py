@@ -49,9 +49,19 @@ _RELATIVE_STDDEV_FLOOR_RATIO = 0.03
 # uses a wider relative floor than the rolling baseline.
 _PHASE_STDDEV_FLOOR_RATIO = 0.05
 # The trend-shift detector compares deseasonalized levels averaged over a full
-# cycle, so it tolerates a much tighter floor — we want it to catch sustained
-# level changes that a per-bucket band would absorb.
-_TREND_STDDEV_FLOOR_RATIO = 0.01
+# cycle. Its stddev floor is aligned with the per-bucket phase floor (0.05) so a
+# tight residual scale can't inflate small level wobble into a multi-sigma shift.
+# The separate _TREND_MIN_RELATIVE_SHIFT gate below enforces a visible effect
+# size; the old 0.01 floor (with no effect-size gate) flagged 8-49% of buckets on
+# smooth seasonal series that never visibly drifted (tripl-dmch.8).
+_TREND_STDDEV_FLOOR_RATIO = 0.05
+# Minimum fractional trend-level change (relative to the larger of the pre-shift
+# and current trend levels) required before the trend-shift detector flags a
+# bucket. This is ANDed with the sigma threshold: a shift must be BOTH
+# statistically significant AND a visible fraction of the level. Without it, a
+# few-percent daily sinusoid tripped a flood of "trend shift" rows that deviated
+# <10% from expected (tripl-dmch.8).
+_TREND_MIN_RELATIVE_SHIFT = 0.15
 # Fractional series derive their absolute stddev floor from the series' own
 # robust magnitude instead of the count-shaped 1.0: a ratio living around 0.5
 # gets a ~0.005 floor, so a 0.5 -> 0.8 movement scores as the multi-sigma event
@@ -311,12 +321,19 @@ def _detect_trend_shift(
         return []
 
     anomalies: list[DetectedAnomaly] = []
+    # A sustained shift spans many buckets; we collapse each contiguous shifted
+    # run into a SINGLE row instead of emitting one per bucket. The flag resets
+    # whenever a bucket is not shifted (run break) and is set only on an actual
+    # emission, so a run that began before ``evaluation_start`` still surfaces
+    # exactly once — at its first bucket inside the evaluation window.
+    emitted_current_run = False
     for idx, point in enumerate(expanded):
-        if point.bucket < evaluation_start or idx < period:
+        if idx < period:
             continue
 
         pre_shift_level = trend[idx - period]
         if trend[idx] < settings.min_expected_count:
+            emitted_current_run = False
             continue
 
         window_start = max(0, idx - period)
@@ -327,9 +344,26 @@ def _detect_trend_shift(
             ratio=_TREND_STDDEV_FLOOR_RATIO,
             absolute_floor=stddev_absolute_floor,
         )
-        z_score = (trend[idx] - pre_shift_level) / effective_stddev
-        if abs(z_score) < settings.sigma_threshold:
+        level_change = trend[idx] - pre_shift_level
+        z_score = level_change / effective_stddev
+        # Relative effect-size gate: the level must move by a visible fraction of
+        # the level, not just clear the sigma bar. Referenced against the larger
+        # of the two levels so it stays well-defined near zero.
+        reference_level = max(abs(pre_shift_level), abs(trend[idx]))
+        relative_change = abs(level_change) / reference_level if reference_level > 0 else 0.0
+        is_shifted = (
+            abs(z_score) >= settings.sigma_threshold
+            and relative_change >= _TREND_MIN_RELATIVE_SHIFT
+        )
+        if not is_shifted:
+            emitted_current_run = False
             continue
+
+        # Shifted bucket. Skip if outside the evaluation window or if this run has
+        # already been surfaced, so a multi-bucket drift yields a single anomaly.
+        if point.bucket < evaluation_start or emitted_current_run:
+            continue
+        emitted_current_run = True
 
         # Reconstruct what this bucket would have been without the level shift so
         # the surfaced expected_count stays interpretable per bucket.

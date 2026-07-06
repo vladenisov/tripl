@@ -1,5 +1,5 @@
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import pytest
 from httpx import AsyncClient
@@ -20,6 +20,12 @@ from tripl.models.schema_drift import SchemaDrift
 from tripl.models.variable_value import VariableValue, VariableValueKind
 from tripl.tests.conftest import TestSessionLocal
 
+# Anchor the seeded event-type anomaly to a recent, hour-aligned bucket so its
+# signal stays inside the freshness horizon (classify keeps a latest_scan signal
+# only while its bucket is newer than now - 24h); the summary assertion below
+# derives its expected ``bucket`` string from this same constant.
+_METRIC_BUCKET = datetime.now(UTC).replace(minute=0, second=0, microsecond=0) - timedelta(hours=1)
+
 
 async def _seed_project_operations(
     *,
@@ -27,7 +33,7 @@ async def _seed_project_operations(
     event_type_id: str,
     destination_id: str,
 ) -> None:
-    metric_bucket = datetime(2026, 4, 18, 9, tzinfo=UTC)
+    metric_bucket = _METRIC_BUCKET
     job_started_at = datetime(2026, 4, 18, 10, tzinfo=UTC)
     job_completed_at = datetime(2026, 4, 18, 10, 5, tzinfo=UTC)
     # A firing monitor needs an active scope whose last anomaly is inside the
@@ -50,7 +56,13 @@ async def _seed_project_operations(
                 id=uuid.uuid4(),
                 scan_config_id=uuid.UUID(scan_config_id),
                 scope_type="event_type",
-                scope_ref=event_type_id,
+                # The project-summary union derives the latest-metric key from
+                # ``cast(EventMetric.event_type_id, String)``, which on the test's
+                # in-memory SQLite renders a UUID as bare hex (no dashes). Store the
+                # anomaly's scope_ref in that same form so ``classify_signal_state``
+                # finds a live metric bucket to anchor recency on (otherwise the
+                # signal is treated as closed and the counts drop to 0).
+                scope_ref=uuid.UUID(event_type_id).hex,
                 event_id=None,
                 event_type_id=uuid.UUID(event_type_id),
                 bucket=metric_bucket,
@@ -322,10 +334,11 @@ async def test_project_summary_counts(client: AsyncClient):
         "scan_config_id": scan_config_id,
         "scan_name": "Production scan",
         "scope_type": "event_type",
-        "scope_ref": event_type_id,
+        # Stored (and echoed back) as bare hex on SQLite; see the fixture note.
+        "scope_ref": uuid.UUID(event_type_id).hex,
         "scope_name": "Page View",
         "state": "latest_scan",
-        "bucket": "2026-04-18T09:00:00",
+        "bucket": _METRIC_BUCKET.replace(tzinfo=None).isoformat(),
         "actual_count": 42,
         "expected_count": 21.0,
         "z_score": 7.0,

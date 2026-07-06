@@ -64,19 +64,57 @@ def _mover_float(value: object) -> float:
     return 0.0
 
 
+# Mirror of tripl.services.monitoring_utils; kept local so the worker's signal
+# helpers do not import the async request-path services layer (see module docstring).
+# See that module for the rationale behind the wall-clock freshness cap.
+LATEST_SCAN_STALE_INTERVALS = 3
+
+_SCAN_INTERVAL_DELTAS: dict[str, timedelta] = {
+    "15m": timedelta(minutes=15),
+    "1h": timedelta(hours=1),
+    "6h": timedelta(hours=6),
+    "1d": timedelta(days=1),
+    "1w": timedelta(weeks=1),
+}
+
+
+def _scan_interval_delta(interval: str | None) -> timedelta | None:
+    if interval is None:
+        return None
+    return _SCAN_INTERVAL_DELTAS.get(str(interval))
+
+
+def _bucket_is_recent(bucket: datetime, cutoff: datetime) -> bool:
+    if bucket.tzinfo is None:
+        cutoff = cutoff.replace(tzinfo=None)
+    return bucket >= cutoff
+
+
 def _classify_signal_state(
     *,
     anomaly_bucket: datetime,
     latest_metric_bucket: datetime | None,
+    now: datetime | None = None,
+    interval: timedelta | None = None,
 ) -> str | None:
-    if latest_metric_bucket is None or anomaly_bucket >= latest_metric_bucket:
-        return "latest_scan"
+    # No stored metric values -> no live scan to anchor recency on; treat as closed.
+    if latest_metric_bucket is None:
+        return None
 
-    recent_cutoff = datetime.now(UTC)
-    if anomaly_bucket.tzinfo is None:
-        recent_cutoff = recent_cutoff.replace(tzinfo=None)
-    recent_cutoff -= RECENT_SIGNAL_WINDOW
-    if anomaly_bucket >= recent_cutoff:
+    reference = now if now is not None else datetime.now(UTC)
+
+    if anomaly_bucket >= latest_metric_bucket:
+        horizon = (
+            RECENT_SIGNAL_WINDOW
+            if interval is None
+            else max(RECENT_SIGNAL_WINDOW, LATEST_SCAN_STALE_INTERVALS * interval)
+        )
+        # A stopped scan's final anomaly stays at max(bucket) forever; only keep it
+        # "latest_scan" while it is still fresh in wall-clock terms.
+        if _bucket_is_recent(anomaly_bucket, reference - horizon):
+            return "latest_scan"
+
+    if _bucket_is_recent(anomaly_bucket, reference - RECENT_SIGNAL_WINDOW):
         return "recent"
 
     return None
@@ -172,12 +210,14 @@ def _get_latest_active_anomalies(
         key = (anomaly.scope_type, anomaly.scope_ref)
         latest_anomalies.setdefault(key, anomaly)
 
+    interval = _scan_interval_delta(config.interval)
     return {
         key: anomaly
         for key, anomaly in latest_anomalies.items()
         if _classify_signal_state(
             anomaly_bucket=anomaly.bucket,
             latest_metric_bucket=latest_metrics.get(key),
+            interval=interval,
         )
         == "latest_scan"
     }
@@ -228,12 +268,14 @@ def _get_active_metric_anomaly_candidates(
     ).scalars():
         latest_anomalies.setdefault(anomaly.scope_ref, anomaly)
 
+    interval = _scan_interval_delta(config.interval)
     return {
         (SCOPE_METRIC, scope_ref): anomaly
         for scope_ref, anomaly in latest_anomalies.items()
         if _classify_signal_state(
             anomaly_bucket=anomaly.bucket,
             latest_metric_bucket=latest_value_buckets.get(scope_ref),
+            interval=interval,
         )
         == "latest_scan"
     }

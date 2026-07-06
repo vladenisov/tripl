@@ -32,7 +32,11 @@ from tripl.schemas.project import (
     ProjectUpdate,
 )
 from tripl.services import plan_branch_service
-from tripl.services.monitoring_utils import classify_signal_state, summarize_monitor_states
+from tripl.services.monitoring_utils import (
+    classify_signal_state,
+    scan_interval_to_timedelta,
+    summarize_monitor_states,
+)
 from tripl.services.project_lookup import (
     get_project_by_slug as _lookup_project_by_slug,
 )
@@ -343,7 +347,7 @@ async def _populate_monitoring_signals(
 
     anomaly_rows = (
         await session.execute(
-            select(ScanConfig.project_id, ScanConfig.name, MetricAnomaly)
+            select(ScanConfig.project_id, ScanConfig.name, ScanConfig.interval, MetricAnomaly)
             .join(ScanConfig, ScanConfig.id == MetricAnomaly.scan_config_id)
             .join(
                 latest_anomaly_keys,
@@ -359,7 +363,7 @@ async def _populate_monitoring_signals(
     if not anomaly_rows:
         return
 
-    anomalies = [anomaly for _project_id, _scan_name, anomaly in anomaly_rows]
+    anomalies = [anomaly for _project_id, _scan_name, _interval, anomaly in anomaly_rows]
     event_names, event_type_names = await _load_scope_names(session, anomalies)
 
     project_total_metrics = (
@@ -434,13 +438,16 @@ async def _populate_monitoring_signals(
         ) in latest_metric_rows.all()
     }
 
-    for project_id, scan_name, anomaly in anomaly_rows:
+    now = datetime.now(UTC)
+    for project_id, scan_name, scan_interval, anomaly in anomaly_rows:
         latest_metric_bucket = latest_metric_buckets.get(
             (project_id, anomaly.scan_config_id, anomaly.scope_type, anomaly.scope_ref)
         )
         state = classify_signal_state(
             anomaly_bucket=anomaly.bucket,
             latest_metric_bucket=latest_metric_bucket,
+            now=now,
+            interval=scan_interval_to_timedelta(scan_interval),
         )
         if state is None:
             continue

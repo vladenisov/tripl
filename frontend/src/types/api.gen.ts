@@ -3547,6 +3547,11 @@ export interface components {
         /** AppVersionInfo */
         AppVersionInfo: {
             /**
+             * Is Active
+             * @default false
+             */
+            is_active: boolean;
+            /**
              * Is Latest
              * @default false
              */
@@ -3563,6 +3568,11 @@ export interface components {
         AppVersionMetricSeries: {
             /** Data */
             data: components["schemas"]["EventMetricPoint"][];
+            /**
+             * Is Active
+             * @default false
+             */
+            is_active: boolean;
             /**
              * Is Latest
              * @default false

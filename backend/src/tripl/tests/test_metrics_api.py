@@ -118,14 +118,26 @@ async def _seed_group_metrics(project_id: str, event_rows: list[EventMetricSeedR
         await session.commit()
 
 
+# The "latest_scan" monitoring fixture below seeds an anomaly on the newest
+# bucket, so its bucket must stay inside the wall-clock freshness horizon
+# (classify keeps a signal "latest_scan" only while newer than now - 24h).
+# Anchored to recent hour-aligned buckets; the 1h stable->anomaly spacing is
+# preserved and the enriched-series assertions derive their bucket strings from
+# these same constants.
+_MONITORING_STABLE_BUCKET = datetime.now(UTC).replace(
+    minute=0, second=0, microsecond=0
+) - timedelta(hours=2)
+_MONITORING_ANOMALY_BUCKET = _MONITORING_STABLE_BUCKET + timedelta(hours=1)
+
+
 async def _seed_monitoring_metrics(
     *,
     project_id: str,
     page_type_id: str,
     event_id: str,
 ) -> str:
-    stable_bucket = datetime(2026, 1, 1, 10, tzinfo=UTC)
-    anomaly_bucket = datetime(2026, 1, 1, 11, tzinfo=UTC)
+    stable_bucket = _MONITORING_STABLE_BUCKET
+    anomaly_bucket = _MONITORING_ANOMALY_BUCKET
 
     async with TestSessionLocal() as session:
         data_source = DataSource(
@@ -572,7 +584,7 @@ async def test_get_event_metrics_returns_enriched_monitoring_series(client: Asyn
     assert body["latest_signal"]["state"] == "latest_scan"
     assert body["data"] == [
         {
-            "bucket": "2026-01-01T10:00:00",
+            "bucket": _MONITORING_STABLE_BUCKET.replace(tzinfo=None).isoformat(),
             "count": 10,
             "expected_count": None,
             "stddev": None,
@@ -581,7 +593,7 @@ async def test_get_event_metrics_returns_enriched_monitoring_series(client: Asyn
             "z_score": None,
         },
         {
-            "bucket": "2026-01-01T11:00:00",
+            "bucket": _MONITORING_ANOMALY_BUCKET.replace(tzinfo=None).isoformat(),
             "count": 0,
             "expected_count": 10.0,
             "stddev": 0.0,

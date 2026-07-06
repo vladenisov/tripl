@@ -56,6 +56,10 @@ from tripl.semver import (
 )
 from tripl.services.monitoring_utils import classify_signal_state
 from tripl.services.project_lookup import get_project_by_slug
+from tripl.services.version_activation import (
+    active_release_versions,
+    latest_active_version,
+)
 
 
 async def _resolve_project(session: AsyncSession, slug: str) -> Project:
@@ -794,13 +798,39 @@ def _build_app_version_series(
 
     keys = set(metric_rows_by_display) | set(folded_anomalies)
     ordered_keys = _order_app_version_keys(keys)
-    latest_version = _latest_app_version(keys)
+
+    # Activation gate: a release can only be the "latest" once it takes a real
+    # share of traffic — this excludes a higher-SemVer dev/tester build that
+    # shows up with negligible volume. Volumes are computed from the raw rows
+    # (pre-fold) so releases rolled into "Other" still count toward the total
+    # traffic denominator.
+    release_totals_by_version: dict[str, dict[datetime, int]] = {}
+    all_traffic_by_bucket: dict[datetime, int] = {}
+    for (version, is_other), rows in metric_rows_by_series.items():
+        for bucket, count in rows:
+            all_traffic_by_bucket[bucket] = all_traffic_by_bucket.get(bucket, 0) + count
+            if not is_other:
+                per_bucket = release_totals_by_version.setdefault(version, {})
+                per_bucket[bucket] = per_bucket.get(bucket, 0) + count
+
+    active_versions = active_release_versions(
+        release_totals_by_version, all_traffic_by_bucket
+    )
+    # Prefer the SemVer-max ACTIVE release; fall back to the raw SemVer-max only
+    # when nothing has activated yet (e.g. a young project still ramping).
+    latest_version = latest_active_version(
+        release_totals_by_version, all_traffic_by_bucket
+    ) or _latest_app_version(keys)
+
+    def _is_active(version: str, is_other: bool) -> bool:
+        return not is_other and version in active_versions
 
     versions = [
         AppVersionInfo(
             version=version,
             is_other=is_other,
             is_latest=not is_other and version == latest_version,
+            is_active=_is_active(version, is_other),
         )
         for version, is_other in ordered_keys
     ]
@@ -818,6 +848,7 @@ def _build_app_version_series(
                 version=version,
                 is_other=is_other,
                 is_latest=not is_other and version == latest_version,
+                is_active=_is_active(version, is_other),
                 total_count=sum(point.count for point in data),
                 data=data,
             )

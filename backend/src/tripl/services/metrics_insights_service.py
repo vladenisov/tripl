@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import uuid
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any
 
 from fastapi import HTTPException
@@ -274,6 +274,7 @@ async def get_active_signals(
         session, project_id=project.id, scope_types=scope_types, event_ids=event_ids
     )
 
+    now = datetime.now(UTC)
     signals: list[MetricSignalResponse] = []
     for anomaly in latest_anomalies:
         # Event-scope rows always carry a scan_config_id (the multi-query joins
@@ -285,6 +286,7 @@ async def get_active_signals(
         state = classify_signal_state(
             anomaly_bucket=anomaly.bucket,
             latest_metric_bucket=latest_metric_bucket,
+            now=now,
         )
         if state is not None:
             signals.append(_signal_from_anomaly(anomaly, state=state))

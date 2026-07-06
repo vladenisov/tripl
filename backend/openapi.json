@@ -2902,6 +2902,11 @@
       },
       "AppVersionInfo": {
         "properties": {
+          "is_active": {
+            "default": false,
+            "title": "Is Active",
+            "type": "boolean"
+          },
           "is_latest": {
             "default": false,
             "title": "Is Latest",
@@ -2931,6 +2936,11 @@
             },
             "title": "Data",
             "type": "array"
+          },
+          "is_active": {
+            "default": false,
+            "title": "Is Active",
+            "type": "boolean"
           },
           "is_latest": {
             "default": false,

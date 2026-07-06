@@ -52,8 +52,14 @@ from tripl.tests.conftest import TestSessionLocal
 from tripl.worker.tasks.metrics import detect as metrics_detect
 from tripl.worker.tasks.metrics import dispatch as metrics_dispatch
 
-# 1h-aligned buckets used by the sync detect/dispatch tests.
-_BASE = datetime(2026, 1, 1, 0, 0)
+# 1h-aligned buckets used by the sync detect/dispatch tests. Anchored to a recent
+# wall-clock hour so the seeded spike's bucket stays inside the signal freshness
+# horizon (classify keeps a latest_scan signal only while its bucket is newer than
+# now - max(24h, 3*interval)). Kept tz-naive to match the sync fixtures' naive
+# bucket columns; only the anchor moved, so all relative-to-_BASE assertions hold.
+_BASE = datetime.now(UTC).replace(minute=0, second=0, microsecond=0, tzinfo=None) - timedelta(
+    hours=12
+)
 _SPIKE_HOUR = 9
 _EVAL_FROM = _BASE + timedelta(hours=8)
 _EVAL_TO = _BASE + timedelta(hours=10)
@@ -425,7 +431,9 @@ async def test_get_active_signals_surfaces_metric_scope(client: AsyncClient) -> 
     project_id = uuid.UUID(project_resp.json()["id"])
 
     metric_id = uuid.uuid4()
-    bucket = datetime(2026, 1, 1, 12, tzinfo=UTC)
+    # Recent, hour-aligned bucket so the seeded anomaly on the latest value bucket
+    # classifies as an open "latest_scan" signal (inside the freshness horizon).
+    bucket = datetime.now(UTC).replace(minute=0, second=0, microsecond=0) - timedelta(hours=2)
     async with TestSessionLocal() as session:
         session.add(
             MetricDefinition(

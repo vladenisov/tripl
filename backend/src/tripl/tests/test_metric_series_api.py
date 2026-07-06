@@ -23,10 +23,13 @@ from tripl.services.metric_definition_service import _SPARK_POINTS
 from tripl.tests.conftest import TestSessionLocal
 
 # Three 1h-aligned buckets; b1 is intentionally left without a stored value so
-# the densify-to-grid step has to fill it with 0.0.
-B0 = datetime(2026, 1, 1, 10, tzinfo=UTC)
-B1 = datetime(2026, 1, 1, 11, tzinfo=UTC)
-B2 = datetime(2026, 1, 1, 12, tzinfo=UTC)
+# the densify-to-grid step has to fill it with 0.0. Anchored to recent wall-clock
+# hours so the latest anomaly (on B2) stays inside the signal freshness horizon and
+# surfaces as an open "latest_scan" signal; the 1h spacing is preserved.
+_SERIES_BASE = datetime.now(UTC).replace(minute=0, second=0, microsecond=0) - timedelta(hours=4)
+B0 = _SERIES_BASE
+B1 = _SERIES_BASE + timedelta(hours=1)
+B2 = _SERIES_BASE + timedelta(hours=2)
 
 
 @pytest.fixture
