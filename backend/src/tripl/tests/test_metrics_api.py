@@ -28,6 +28,7 @@ def _plain_point(bucket: str, count: int) -> dict[str, object]:
         "count": count,
         "expected_count": None,
         "stddev": None,
+        "detector_kind": None,
         "is_anomaly": False,
         "anomaly_direction": None,
         "z_score": None,
@@ -588,6 +589,7 @@ async def test_get_event_metrics_returns_enriched_monitoring_series(client: Asyn
             "count": 10,
             "expected_count": None,
             "stddev": None,
+            "detector_kind": None,
             "is_anomaly": False,
             "anomaly_direction": None,
             "z_score": None,
@@ -597,6 +599,7 @@ async def test_get_event_metrics_returns_enriched_monitoring_series(client: Asyn
             "count": 0,
             "expected_count": 10.0,
             "stddev": 0.0,
+            "detector_kind": "phase",
             "is_anomaly": True,
             "anomaly_direction": "drop",
             "z_score": -10.0,
@@ -1204,10 +1207,11 @@ async def test_get_project_total_metrics_and_active_signals(client: AsyncClient)
     )
     assert signals_resp.status_code == 200
     signals = signals_resp.json()
+    # Incident de-duplication: the event/event_type signals share the same
+    # (scan_config_id, bucket, direction) as the project_total signal and are
+    # suppressed in favor of the kept project_total signal.
     assert {(signal["scope_type"], signal["scope_ref"]) for signal in signals} == {
         ("project_total", scan_config_id),
-        ("event_type", setup["page_type_id"]),
-        ("event", event_id),
     }
     assert {signal["state"] for signal in signals} == {"latest_scan"}
 
@@ -1248,10 +1252,11 @@ async def test_get_recent_signals_when_anomaly_is_within_last_24_hours(client: A
     )
     assert signals_resp.status_code == 200
     signals = signals_resp.json()
+    # Incident de-duplication: the event/event_type signals share the same
+    # (scan_config_id, bucket, direction) as the project_total signal and are
+    # suppressed in favor of the kept project_total signal.
     assert {(signal["scope_type"], signal["state"]) for signal in signals} == {
         ("project_total", "recent"),
-        ("event_type", "recent"),
-        ("event", "recent"),
     }
 
 

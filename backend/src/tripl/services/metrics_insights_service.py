@@ -247,6 +247,35 @@ async def _get_active_metric_signals(
     return signals
 
 
+def _deduplicate_into_incidents(
+    signals: list[MetricSignalResponse],
+) -> list[MetricSignalResponse]:
+    """Collapse one incident's cross-scope fan-out into a single active signal.
+
+    A real spike/drop on the project total trips the child ``event_type`` and
+    ``event`` scopes on the SAME scan, bucket and direction — one incident, but
+    3+ stacked signals. Keep the parent ``project_total`` row and suppress the
+    child rows that share its ``(scan_config_id, bucket, direction)``. The
+    per-scope anomaly rows stay in the DB for drill-down; they are just not
+    surfaced here as separate active signals. ``metric``-scope signals carry a
+    NULL ``scan_config_id`` and are never children of a project total, so they
+    always pass through.
+    """
+    parent_incidents = {
+        (signal.scan_config_id, signal.bucket, signal.direction)
+        for signal in signals
+        if signal.scope_type == SCOPE_PROJECT_TOTAL
+    }
+    if not parent_incidents:
+        return signals
+    return [
+        signal
+        for signal in signals
+        if signal.scope_type == SCOPE_PROJECT_TOTAL
+        or (signal.scan_config_id, signal.bucket, signal.direction) not in parent_incidents
+    ]
+
+
 async def get_active_signals(
     session: AsyncSession,
     slug: str,
@@ -294,6 +323,10 @@ async def get_active_signals(
     # Catalog metric signals are project-global (NULL scan_config_id) and so are
     # loaded separately from the event-scope multi-query above.
     signals.extend(await _get_active_metric_signals(session, project_id=project.id))
+
+    # One incident is one active signal: drop the child event_type/event rows
+    # that a project-total spike/drop simultaneously trips on the same bucket.
+    signals = _deduplicate_into_incidents(signals)
 
     signals.sort(key=lambda signal: signal.bucket, reverse=True)
     if cacheable:

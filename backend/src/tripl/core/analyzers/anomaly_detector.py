@@ -64,10 +64,19 @@ _TREND_STDDEV_FLOOR_RATIO = 0.05
 _TREND_MIN_RELATIVE_SHIFT = 0.15
 # Fractional series derive their absolute stddev floor from the series' own
 # robust magnitude instead of the count-shaped 1.0: a ratio living around 0.5
-# gets a ~0.005 floor, so a 0.5 -> 0.8 movement scores as the multi-sigma event
-# it is, while micro-wobble below 1% of the level stays suppressed.
-_FRACTIONAL_STDDEV_FLOOR_RATIO = 0.01
+# gets a ~0.02 floor, so a 0.5 -> 0.8 movement scores as the multi-sigma event
+# it is, while micro-wobble below a few percent of the level stays suppressed.
+# Widened from 0.01 -> 0.04 (tripl-dmch.17): a 1% floor still let Poisson-like
+# jitter on ratios trip the sigma bar; ~4% of the level is a better "noticeable
+# fractional change" anchor for averages/ratios/sql levels.
+_FRACTIONAL_STDDEV_FLOOR_RATIO = 0.04
 _FRACTIONAL_STDDEV_FLOOR_EPSILON = 1e-9
+# Minimum length of a strictly monotonic run (ending at the evaluated bucket)
+# that marks a bucket as part of a *sustained fractional trend*. Such buckets are
+# exempted from per-bucket fractional flagging and deferred to the trend-shift
+# detector (tripl-dmch.17), so a smooth ratio ramp surfaces as one trend row
+# instead of a flag on every rung.
+_MONOTONIC_TREND_MIN_RUN = 4
 
 
 def _fractional_stddev_floor(counts: Sequence[float]) -> float:
@@ -81,7 +90,7 @@ class AnomalyDetectionSettings:
     baseline_window_buckets: int
     min_history_buckets: int
     sigma_threshold: float
-    min_expected_count: int
+    min_expected_count: float
 
 
 @dataclass(frozen=True)
@@ -102,6 +111,13 @@ class DetectedAnomaly:
     stddev: float
     z_score: float
     direction: str
+    # The FLOORED stddev actually used in the z denominator (not the raw
+    # ``stddev`` scale). The chart band = expected +- sigma_threshold *
+    # effective_stddev, so "outside the band" equals "flagged" (contract C1/C4).
+    effective_stddev: float = 0.0
+    # Which detection path produced this row: one of
+    # "phase" | "rolling" | "trend" | "fractional" (contract C1).
+    kind: str = "phase"
 
 
 @dataclass(frozen=True)
@@ -116,7 +132,18 @@ def expand_series(
     *,
     interval: timedelta,
     end_exclusive: datetime,
+    covered_buckets: set[datetime] | None = None,
 ) -> list[SeriesPoint]:
+    """Zero-fill missing buckets onto the interval grid.
+
+    ``covered_buckets`` (contract C2, tripl-dmch.16) marks the buckets a scan
+    actually observed. When provided, a bucket NOT in the set is EXCLUDED from
+    the expanded series entirely rather than zero-filled, so a collection gap no
+    longer reads as a real drop to zero (fake ``z << -3`` "drop" anomalies). A
+    covered bucket with no data point is still zero-filled — that is a genuine
+    "scan ran, zero events" observation. When ``None`` the behavior is
+    byte-identical to the historical unconditional zero-fill.
+    """
     if not points:
         return []
 
@@ -124,6 +151,9 @@ def expand_series(
     bucket = min(counts_by_bucket)
     expanded: list[SeriesPoint] = []
     while bucket < end_exclusive:
+        if covered_buckets is not None and bucket not in covered_buckets:
+            bucket += interval
+            continue
         expanded.append(SeriesPoint(bucket=bucket, count=counts_by_bucket.get(bucket, 0)))
         bucket += interval
     return expanded
@@ -163,6 +193,7 @@ def _effective_stddev(
     *,
     ratio: float = _RELATIVE_STDDEV_FLOOR_RATIO,
     absolute_floor: float = 1.0,
+    poisson: bool = False,
 ) -> float:
     """Stddev clamped from below so flat baselines don't produce huge z-scores.
 
@@ -173,9 +204,37 @@ def _effective_stddev(
     sub-unit ratio movement to z~0 (tripl-68bc). ``ratio`` lets each detector
     pick its own tightness (wider for the noisy per-bucket phase baseline,
     tighter for the averaged trend).
+
+    ``poisson`` (COUNT-shaped per-bucket detection only, tripl-dmch.17) adds a
+    ``sqrt(expected_count)`` term to the floor: a count process of rate N has
+    natural spread ~sqrt(N), so a flat baseline of N needs ~sigma*sqrt(N)
+    deviation to flag regardless of ``min_expected_count``. This kills
+    Poisson-noise flags on low-volume events (e.g. 10 -> 14) that a fixed 1.0
+    floor turned into a 4-sigma "spike". It is NOT applied to the averaged
+    trend path, which has its own relative effect-size gate.
     """
     relative_floor = max(expected_count * ratio, absolute_floor)
+    if poisson and expected_count > 0:
+        relative_floor = max(relative_floor, sqrt(expected_count))
     return max(stddev, relative_floor)
+
+
+def _continues_monotonic_trend(counts: Sequence[float], idx: int) -> bool:
+    """True when ``counts[idx]`` extends a strictly monotonic run of at least
+    ``_MONOTONIC_TREND_MIN_RUN`` buckets ending at ``idx``.
+
+    Used only by the fractional per-bucket path: a bucket riding a smooth,
+    sustained ramp is part of a *trend*, not a point anomaly, so it is deferred
+    to the trend-shift detector (tripl-dmch.17) instead of being flagged on
+    every rung. A flat baseline with a single jump is NOT monotonic here (equal
+    neighbours break the strict run), so genuine step spikes still flag.
+    """
+    if idx < _MONOTONIC_TREND_MIN_RUN:
+        return False
+    window = counts[idx - _MONOTONIC_TREND_MIN_RUN : idx + 1]
+    increasing = all(earlier < later for earlier, later in zip(window, window[1:], strict=False))
+    decreasing = all(earlier > later for earlier, later in zip(window, window[1:], strict=False))
+    return increasing or decreasing
 
 
 def _fit_components(
@@ -231,6 +290,8 @@ def _rolling_anomaly_at(
     settings: AnomalyDetectionSettings,
     *,
     stddev_absolute_floor: float = 1.0,
+    poisson: bool = False,
+    kind: str = "rolling",
 ) -> DetectedAnomaly | None:
     """Seasonality-blind rolling-mean z-score. Fallback for series too short to
     have a usable phase period (brand-new scans, very sparse data)."""
@@ -244,7 +305,7 @@ def _rolling_anomaly_at(
         return None
 
     effective_stddev = _effective_stddev(
-        stddev, expected_count, absolute_floor=stddev_absolute_floor
+        stddev, expected_count, absolute_floor=stddev_absolute_floor, poisson=poisson
     )
     z_score = (point.count - expected_count) / effective_stddev
     if abs(z_score) < settings.sigma_threshold:
@@ -256,7 +317,9 @@ def _rolling_anomaly_at(
         expected_count=expected_count,
         stddev=stddev,
         z_score=z_score,
-        direction="spike" if z_score > 0 else "drop",
+        direction="spike" if point.count >= expected_count else "drop",
+        effective_stddev=effective_stddev,
+        kind=kind,
     )
 
 
@@ -268,6 +331,8 @@ def _phase_anomaly_at(
     settings: AnomalyDetectionSettings,
     *,
     stddev_absolute_floor: float = 1.0,
+    poisson: bool = False,
+    kind: str = "phase",
 ) -> DetectedAnomaly | None:
     """Compare a bucket to the robust distribution of the same phase (e.g. same
     hour-of-week) over prior cycles. median + MAD are robust to past anomalies
@@ -285,6 +350,7 @@ def _phase_anomaly_at(
         expected_count,
         ratio=_PHASE_STDDEV_FLOOR_RATIO,
         absolute_floor=stddev_absolute_floor,
+        poisson=poisson,
     )
     z_score = (point.count - expected_count) / effective_stddev
     if abs(z_score) < settings.sigma_threshold:
@@ -296,7 +362,9 @@ def _phase_anomaly_at(
         expected_count=expected_count,
         stddev=scale,
         z_score=z_score,
-        direction="spike" if z_score > 0 else "drop",
+        direction="spike" if point.count >= expected_count else "drop",
+        effective_stddev=effective_stddev,
+        kind=kind,
     )
 
 
@@ -368,6 +436,12 @@ def _detect_trend_shift(
         # Reconstruct what this bucket would have been without the level shift so
         # the surfaced expected_count stays interpretable per bucket.
         expected_count = max(pre_shift_level + seasonal[idx], 0.0)
+        # Direction is derived from the ACTUAL point vs the reconstructed
+        # expected level, not from the sign of the trend z-score (tripl-dmch.11).
+        # The z-score is computed on the deseasonalized trend delta, which can
+        # disagree with where the raw point sits relative to its expected band
+        # once the seasonal component is added back — so a point above expected
+        # must read "spike" and below "drop" no matter the trend-delta sign.
         anomalies.append(
             DetectedAnomaly(
                 bucket=point.bucket,
@@ -375,7 +449,9 @@ def _detect_trend_shift(
                 expected_count=expected_count,
                 stddev=scale,
                 z_score=z_score,
-                direction="spike" if z_score > 0 else "drop",
+                direction="spike" if point.count >= expected_count else "drop",
+                effective_stddev=effective_stddev,
+                kind="trend",
             )
         )
 
@@ -433,6 +509,7 @@ def detect_anomalies(
     evaluation_end: datetime,
     settings: AnomalyDetectionSettings,
     fill_gaps: bool = True,
+    covered_buckets: set[datetime] | None = None,
 ) -> list[DetectedAnomaly]:
     """Hybrid detector.
 
@@ -450,23 +527,53 @@ def detect_anomalies(
     not read as a drop to zero. Fractional series also swap the 1.0 absolute
     stddev floor for one derived from their own magnitude, so sub-unit
     movements stay detectable (tripl-68bc).
+
+    ``covered_buckets`` (contract C2) is threaded into the zero-fill grid: when
+    provided, buckets a scan never observed are excluded from evaluation instead
+    of zero-filled, so a collection gap does not manufacture a "drop" (only
+    meaningful for the ``fill_gaps`` count path). When ``None`` the behavior is
+    unchanged.
     """
     if fill_gaps:
-        expanded = expand_series(points, interval=interval, end_exclusive=evaluation_end)
+        expanded = expand_series(
+            points,
+            interval=interval,
+            end_exclusive=evaluation_end,
+            covered_buckets=covered_buckets,
+        )
     else:
         expanded = _present_series(points, end_exclusive=evaluation_end)
     if not expanded:
         return []
 
+    is_count_shaped = fill_gaps
     counts = [point.count for point in expanded]
     stddev_absolute_floor = (
-        1.0 if fill_gaps else _fractional_stddev_floor(counts)
+        1.0 if is_count_shaped else _fractional_stddev_floor(counts)
     )
+    # Poisson-aware floor (~sqrt(N)) applies to the count-shaped ROLLING path
+    # only (tripl-dmch.17): that path fits a flat/degenerate baseline whose
+    # stddev collapses to ~0, so a fixed 1.0 floor turns Poisson jitter (e.g.
+    # 10 -> 14) into a 4-sigma flag. The phase path already gets Poisson-scale
+    # spread empirically from its same-phase MAD, so forcing sqrt(N) there would
+    # only suppress genuine seasonal spikes. The averaged trend path keeps its
+    # own relative effect-size gate and is likewise not Poisson-floored.
+    # The fractional path keeps its magnitude floor and instead exempts
+    # sustained monotonic ramps below (tripl-dmch.17).
+    per_bucket_kind = "phase" if is_count_shaped else "fractional"
+    rolling_kind = "rolling" if is_count_shaped else "fractional"
     primary: list[DetectedAnomaly] = []
     has_phase_period = False
 
     for idx, point in enumerate(expanded):
         if point.bucket < evaluation_start:
+            continue
+
+        # Fractional series: a bucket riding a smooth sustained ramp is a trend,
+        # not a point anomaly — defer it to the trend-shift path instead of
+        # flagging every rung (tripl-dmch.17).
+        if not is_count_shaped and _continues_monotonic_trend(counts, idx):
+            has_phase_period = has_phase_period or _select_phase_period(interval, idx) is not None
             continue
 
         period = _select_phase_period(interval, idx)
@@ -479,10 +586,17 @@ def detect_anomalies(
                 period,
                 settings,
                 stddev_absolute_floor=stddev_absolute_floor,
+                kind=per_bucket_kind,
             )
         else:
             anomaly = _rolling_anomaly_at(
-                counts, idx, point, settings, stddev_absolute_floor=stddev_absolute_floor
+                counts,
+                idx,
+                point,
+                settings,
+                stddev_absolute_floor=stddev_absolute_floor,
+                poisson=is_count_shaped,
+                kind=rolling_kind,
             )
 
         if anomaly is not None:

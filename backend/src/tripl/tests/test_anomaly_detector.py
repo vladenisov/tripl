@@ -1,5 +1,5 @@
 from datetime import UTC, datetime, timedelta
-from math import pi, sin
+from math import isclose, pi, sin, sqrt
 
 from tripl.core.analyzers.anomaly_detector import (
     AnomalyDetectionSettings,
@@ -76,8 +76,11 @@ def test_detect_anomalies_detects_spike_and_drop() -> None:
 
 
 def test_detect_anomalies_uses_effective_stddev_for_flat_baseline() -> None:
+    """A real spike on a flat count baseline is scored against the Poisson-aware
+    effective_stddev (sqrt(expected)), not the raw stddev of 0. The floored
+    denominator is surfaced on the anomaly (contract C1)."""
     points = [SeriesPoint(bucket=_bucket(hour), count=10) for hour in range(8)]
-    points.append(SeriesPoint(bucket=_bucket(8), count=14))
+    points.append(SeriesPoint(bucket=_bucket(8), count=30))
 
     anomalies = detect_anomalies(
         points,
@@ -88,8 +91,30 @@ def test_detect_anomalies_uses_effective_stddev_for_flat_baseline() -> None:
     )
 
     assert len(anomalies) == 1
-    assert anomalies[0].stddev == 0
-    assert anomalies[0].z_score == 4
+    assert anomalies[0].stddev == 0  # raw scale of a perfectly flat baseline
+    # Poisson floor: sqrt(10) dominates the 1.0 absolute and 0.3 relative floors.
+    assert isclose(anomalies[0].effective_stddev, sqrt(10), rel_tol=1e-9)
+    assert isclose(anomalies[0].z_score, 20 / sqrt(10), rel_tol=1e-9)
+    assert anomalies[0].kind == "rolling"
+    assert anomalies[0].direction == "spike"
+
+
+def test_detect_anomalies_poisson_floor_ignores_low_volume_noise() -> None:
+    """tripl-dmch.17: a flat 10 +/- 0 count baseline must NOT flag a 10 -> 14
+    move. sqrt(10) ~= 3.16, so a 3-sigma bar needs ~9-10 of deviation; +4 is
+    Poisson noise, not an anomaly. The old fixed 1.0 floor scored it z=4."""
+    points = [SeriesPoint(bucket=_bucket(hour), count=10) for hour in range(10)]
+    points.append(SeriesPoint(bucket=_bucket(10), count=14))
+
+    anomalies = detect_anomalies(
+        points,
+        interval=timedelta(hours=1),
+        evaluation_start=_bucket(10),
+        evaluation_end=_bucket(11),
+        settings=SETTINGS,
+    )
+
+    assert anomalies == []
 
 
 def test_detect_anomalies_detects_fractional_spike_without_zero_fill() -> None:
@@ -443,6 +468,118 @@ def test_hybrid_detects_sustained_level_shift_on_seasonal_series() -> None:
     assert any(anomaly.direction == "spike" for anomaly in anomalies)
 
 
+def test_covered_buckets_gap_is_not_flagged_as_drop() -> None:
+    """tripl-dmch.16 / contract C2: a collection gap (a bucket the scan never
+    observed) must be EXCLUDED from evaluation, not zero-filled into a fake
+    'drop'. Without covered_buckets the same missing bucket zero-fills and flags
+    (see test_detect_anomalies_zero_fills_gaps_after_first_seen_bucket)."""
+    points = [SeriesPoint(bucket=_bucket(hour), count=10) for hour in range(8)]
+    covered = {_bucket(hour) for hour in range(8)}  # bucket 8 was never scanned
+
+    anomalies = detect_anomalies(
+        points,
+        interval=timedelta(hours=1),
+        evaluation_start=_bucket(8),
+        evaluation_end=_bucket(9),
+        settings=SETTINGS,
+        covered_buckets=covered,
+    )
+
+    assert anomalies == []
+
+
+def test_covered_buckets_none_is_byte_identical_zero_fill() -> None:
+    """Sanity: passing covered_buckets=None leaves the historical zero-fill drop
+    behavior unchanged, so the collection-gap fix is strictly opt-in."""
+    points = [SeriesPoint(bucket=_bucket(hour), count=10) for hour in range(8)]
+
+    anomalies = detect_anomalies(
+        points,
+        interval=timedelta(hours=1),
+        evaluation_start=_bucket(8),
+        evaluation_end=_bucket(9),
+        settings=SETTINGS,
+        covered_buckets=None,
+    )
+
+    assert len(anomalies) == 1
+    assert anomalies[0].direction == "drop"
+    assert anomalies[0].actual_count == 0
+
+
+def test_covered_buckets_still_flags_real_change_in_covered_bucket() -> None:
+    """A bucket that WAS covered still evaluates normally: a real spike inside
+    the covered set is flagged even when the fix is active."""
+    points = [SeriesPoint(bucket=_bucket(hour), count=10) for hour in range(10)]
+    points.append(SeriesPoint(bucket=_bucket(10), count=40))
+    covered = {_bucket(hour) for hour in range(11)}  # every bucket scanned
+
+    anomalies = detect_anomalies(
+        points,
+        interval=timedelta(hours=1),
+        evaluation_start=_bucket(10),
+        evaluation_end=_bucket(11),
+        settings=SETTINGS,
+        covered_buckets=covered,
+    )
+
+    assert [anomaly.direction for anomaly in anomalies] == ["spike"]
+
+
+def test_expand_series_excludes_uncovered_buckets() -> None:
+    """expand_series drops uncovered buckets entirely and zero-fills covered
+    ones with no data point (a genuine 'scan ran, zero events')."""
+    points = [SeriesPoint(bucket=_bucket(0), count=5), SeriesPoint(bucket=_bucket(2), count=7)]
+    covered = {_bucket(0), _bucket(1), _bucket(2)}  # bucket 3 uncovered
+
+    expanded = expand_series(
+        points,
+        interval=timedelta(hours=1),
+        end_exclusive=_bucket(4),
+        covered_buckets=covered,
+    )
+
+    assert [point.bucket for point in expanded] == [_bucket(0), _bucket(1), _bucket(2)]
+    assert [point.count for point in expanded] == [5, 0, 7]  # bucket 1 zero-filled
+
+
+def test_effective_stddev_and_kind_populated_on_every_path() -> None:
+    """Contract C1: effective_stddev is the positive floored denominator and
+    kind is one of the four labels, on both the rolling and phase paths."""
+    allowed_kinds = {"phase", "rolling", "trend", "fractional"}
+
+    rolling_points = [SeriesPoint(bucket=_bucket(hour), count=10) for hour in range(10)]
+    rolling_points.append(SeriesPoint(bucket=_bucket(10), count=40))
+    rolling = detect_anomalies(
+        rolling_points,
+        interval=timedelta(hours=1),
+        evaluation_start=_bucket(10),
+        evaluation_end=_bucket(11),
+        settings=SETTINGS,
+    )
+    assert rolling[0].kind == "rolling"
+    assert rolling[0].effective_stddev > 0
+    # z-score is recomputable from the surfaced effective_stddev.
+    expected_z = (rolling[0].actual_count - rolling[0].expected_count) / rolling[0].effective_stddev
+    assert isclose(rolling[0].z_score, expected_z, rel_tol=1e-9)
+
+    phase_points = _four_weeks()
+    peak_hour = 24 * 28 - 14
+    phase_points[peak_hour] = SeriesPoint(
+        bucket=_bucket(peak_hour), count=_weekly_pattern_count(peak_hour) * 3
+    )
+    phase = detect_anomalies(
+        phase_points,
+        interval=timedelta(hours=1),
+        evaluation_start=_bucket(peak_hour),
+        evaluation_end=_bucket(24 * 28),
+        settings=SETTINGS,
+    )
+    spike = next(anomaly for anomaly in phase if anomaly.bucket == _bucket(peak_hour))
+    assert spike.kind in allowed_kinds
+    assert spike.effective_stddev > 0
+
+
 def _smooth_sinusoid_count(hour: int) -> float:
     """A visually-flat daily sinusoid: level ~1000 with a +/-3% swing. The kind
     of series the old trend-shift detector over-flagged (tripl-dmch.8) — the
@@ -523,3 +660,40 @@ def test_trend_shift_still_flags_sharp_spike_via_phase_detector() -> None:
 
     spike = next(anomaly for anomaly in anomalies if anomaly.bucket == _bucket(peak_hour))
     assert spike.direction == "spike"
+
+
+def test_trend_shift_direction_matches_actual_vs_expected() -> None:
+    """tripl-dmch.11: a trend-shift row's stored direction is derived from the
+    ACTUAL point vs its reconstructed expected level, so it can never contradict
+    the point. A sustained DOWNWARD shift reads 'drop' and every emitted row
+    satisfies direction == 'spike' iff actual >= expected."""
+    days = 28
+    hours = 24 * days
+    # A full week cold: shorter shifts are attenuated by the week-over-week STL
+    # trend comparison + the anti-over-flagging gates (0.05 floor, 15% min shift) —
+    # intended; this test only needs one real trend row to check direction.
+    shift_start = 24 * 21  # last 7 days run 30% cold
+    counts = [
+        _daily_pattern_count(hour) * (0.70 if hour >= shift_start else 1.0)
+        for hour in range(hours)
+    ]
+    points = [SeriesPoint(bucket=_bucket(hour), count=counts[hour]) for hour in range(hours)]
+    expanded = expand_series(points, interval=timedelta(hours=1), end_exclusive=_bucket(hours))
+    components = _fit_components([point.count for point in expanded], interval=timedelta(hours=1))
+    assert components is not None
+
+    trend_anomalies = _detect_trend_shift(
+        expanded,
+        components,
+        evaluation_start=_bucket(shift_start),
+        settings=SETTINGS,
+        interval=timedelta(hours=1),
+    )
+
+    assert len(trend_anomalies) >= 1
+    for anomaly in trend_anomalies:
+        assert anomaly.kind == "trend"
+        assert anomaly.effective_stddev > 0
+        expected_direction = "spike" if anomaly.actual_count >= anomaly.expected_count else "drop"
+        assert anomaly.direction == expected_direction
+    assert trend_anomalies[0].direction == "drop"

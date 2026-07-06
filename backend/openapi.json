@@ -2874,6 +2874,11 @@
             "title": "Series",
             "type": "array"
           },
+          "sigma_threshold": {
+            "default": 3.0,
+            "title": "Sigma Threshold",
+            "type": "number"
+          },
           "totals": {
             "items": {
               "$ref": "#/components/schemas/BreakdownTimelinePoint"
@@ -3045,6 +3050,11 @@
             },
             "title": "Series",
             "type": "array"
+          },
+          "sigma_threshold": {
+            "default": 3.0,
+            "title": "Sigma Threshold",
+            "type": "number"
           },
           "versions": {
             "items": {
@@ -5759,6 +5769,17 @@
             "title": "Count",
             "type": "integer"
           },
+          "detector_kind": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Detector Kind"
+          },
           "expected_count": {
             "anyOf": [
               {
@@ -5881,6 +5902,11 @@
           "scope": {
             "title": "Scope",
             "type": "string"
+          },
+          "sigma_threshold": {
+            "default": 3.0,
+            "title": "Sigma Threshold",
+            "type": "number"
           }
         },
         "required": [

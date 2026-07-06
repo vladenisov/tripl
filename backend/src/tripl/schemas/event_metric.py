@@ -16,10 +16,16 @@ class EventMetricPoint(BaseModel):
     bucket: datetime
     count: int
     expected_count: float | None = None
-    # Stddev of the rolling baseline at this bucket — used by the UI to draw
-    # a confidence band around `expected_count`. Only populated for buckets
-    # that have an anomaly row; for the rest the band is undrawn.
+    # The FLOORED "effective" stddev actually used in the z denominator when the
+    # bucket was flagged (tripl-dmch C3/C4) — served in place of the raw rolling
+    # stddev so the UI band (expected ± sigma_threshold * stddev) lines up exactly
+    # with the detector's decision: a flagged point sits outside the band. Only
+    # populated for buckets with an anomaly row; for the rest the band is undrawn.
+    # Falls back to the raw stored stddev when the effective column is absent.
     stddev: float | None = None
+    # Which detector path flagged this bucket ("phase" | "rolling" | "trend" |
+    # "fractional"); null on non-anomaly buckets. Advisory metadata for the UI.
+    detector_kind: str | None = None
     is_anomaly: bool = False
     anomaly_direction: AnomalyDirection | None = None
     z_score: float | None = None
@@ -102,6 +108,10 @@ class EventMetricsResponse(BaseModel):
     event_type_id: uuid.UUID | None = None
     interval: ScanInterval | None = None
     latest_signal: MetricSignalResponse | None = None
+    # The scan's anomaly sigma threshold — the ``k`` the UI multiplies the
+    # per-point (effective) stddev by to draw the confidence band, so "outside
+    # the band" equals "flagged". Defaults to 3.0 (the scan-config default).
+    sigma_threshold: float = 3.0
     data: list[EventMetricPoint]
     forecast: list[ForecastPoint] = []
 
@@ -149,6 +159,8 @@ class AppVersionSeriesResponse(BaseModel):
     app_version_column: str | None = None
     interval: ScanInterval | None = None
     latest_version: str | None = None
+    # See EventMetricsResponse.sigma_threshold — the confidence-band multiplier.
+    sigma_threshold: float = 3.0
     versions: list[AppVersionInfo]
     series: list[AppVersionMetricSeries]
 

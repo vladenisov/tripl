@@ -3539,6 +3539,11 @@ export interface components {
             scope_type: components["schemas"]["MetricScopeType"];
             /** Series */
             series: components["schemas"]["AppVersionMetricSeries"][];
+            /**
+             * Sigma Threshold
+             * @default 3
+             */
+            sigma_threshold: number;
             /** Totals */
             totals: components["schemas"]["BreakdownTimelinePoint"][];
             /** Versions */
@@ -3609,6 +3614,11 @@ export interface components {
             scope_type: components["schemas"]["MetricScopeType"];
             /** Series */
             series: components["schemas"]["AppVersionMetricSeries"][];
+            /**
+             * Sigma Threshold
+             * @default 3
+             */
+            sigma_threshold: number;
             /** Versions */
             versions: components["schemas"]["AppVersionInfo"][];
         };
@@ -4656,6 +4666,8 @@ export interface components {
             bucket: string;
             /** Count */
             count: number;
+            /** Detector Kind */
+            detector_kind?: string | null;
             /** Expected Count */
             expected_count?: number | null;
             /**
@@ -4687,6 +4699,11 @@ export interface components {
             scan_config_id?: string | null;
             /** Scope */
             scope: string;
+            /**
+             * Sigma Threshold
+             * @default 3
+             */
+            sigma_threshold: number;
         };
         /** EventMove */
         EventMove: {

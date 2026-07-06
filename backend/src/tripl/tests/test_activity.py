@@ -243,6 +243,94 @@ async def test_activity_feed_excludes_stale_anomalies(client: AsyncClient):
 
 
 @pytest.mark.asyncio
+async def test_activity_feed_collapses_one_incident_into_one_rail_item(client: AsyncClient):
+    """A project-total spike and its child event_type spike are one incident.
+
+    They share a scan, bucket and direction, so the Now rail must surface the
+    single parent project_total item and suppress the co-firing child instead of
+    stacking both. Layered on top of Wave 1's recency filter (tripl-dmch.12).
+    """
+    slug = "activity-incident"
+    await client.post("/api/v1/projects", json={"name": "Incident Rail", "slug": slug})
+
+    event_type_resp = await client.post(
+        f"/api/v1/projects/{slug}/event-types",
+        json={"name": "page_view", "display_name": "Page View"},
+    )
+    event_type_id = event_type_resp.json()["id"]
+
+    data_source_resp = await client.post(
+        "/api/v1/data-sources",
+        json={
+            "name": "Warehouse",
+            "db_type": "clickhouse",
+            "host": "localhost",
+            "port": 8123,
+            "database_name": "analytics",
+            "username": "default",
+            "password": "",
+        },
+    )
+    scan_resp = await client.post(
+        f"/api/v1/projects/{slug}/scans",
+        json={
+            "data_source_id": data_source_resp.json()["id"],
+            "name": "Production scan",
+            "base_query": "SELECT 1",
+        },
+    )
+    scan_config_id = scan_resp.json()["id"]
+
+    at = datetime.now(UTC) - timedelta(hours=1)
+    async with TestSessionLocal() as session:
+        session.add(
+            MetricAnomaly(
+                id=uuid.uuid4(),
+                scan_config_id=uuid.UUID(scan_config_id),
+                scope_type="project_total",
+                scope_ref=scan_config_id,
+                event_id=None,
+                event_type_id=None,
+                bucket=at,
+                actual_count=480,
+                expected_count=120,
+                stddev=40,
+                z_score=9,
+                direction="spike",
+                created_at=at,
+            )
+        )
+        # Child of the SAME incident: same scan, same bucket, same direction.
+        session.add(
+            MetricAnomaly(
+                id=uuid.uuid4(),
+                scan_config_id=uuid.UUID(scan_config_id),
+                scope_type="event_type",
+                scope_ref=event_type_id,
+                event_id=None,
+                event_type_id=uuid.UUID(event_type_id),
+                bucket=at,
+                actual_count=300,
+                expected_count=90,
+                stddev=30,
+                z_score=7,
+                direction="spike",
+                created_at=at,
+            )
+        )
+        await session.commit()
+
+    resp = await client.get(f"/api/v1/activity/projects/{slug}?limit=20")
+    assert resp.status_code == 200
+    anomaly_items = [item for item in resp.json() if item["type"] == "anomaly"]
+
+    assert len(anomaly_items) == 1, anomaly_items
+    # The surviving rail item is the parent project_total, not the child scope.
+    assert anomaly_items[0]["title"] == "Spike on Incident Rail total"
+    assert "/monitoring/project-total/" in anomaly_items[0]["target_path"]
+
+
+@pytest.mark.asyncio
 async def test_project_activity_feed_returns_404_for_unknown_project(client: AsyncClient):
     resp = await client.get("/api/v1/activity/projects/missing-project")
     assert resp.status_code == 404

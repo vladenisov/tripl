@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import uuid
 from dataclasses import replace
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import delete, select
 from sqlalchemy import func as sa_func
@@ -33,7 +33,23 @@ from tripl.models.metric_value import MetricValue
 from tripl.models.project_anomaly_settings import ProjectAnomalySettings
 from tripl.models.scan_config import ScanConfig
 from tripl.observability.metrics import anomalies_detected_total
+from tripl.services.version_activation import active_release_versions
 from tripl.worker.analyzers.metric_value_kind import is_count_shaped
+
+# Fractional (ratio/average/sql) catalog metrics drop the count-shaped
+# ``min_expected_count`` gate so sub-unit ratio movements survive (tripl-68bc).
+# We keep a tiny POSITIVE floor rather than a blanket 0 so a genuinely
+# empty/flatlined-at-zero fractional series can't manufacture multi-sigma
+# anomalies from pure noise — the detector lane widens the stddev floor, this
+# preserves the volume guard (tripl-dmch.17).
+_FRACTIONAL_MIN_EXPECTED_COUNT = 1e-6
+# Age-out horizon for config-scoped anomaly markers. Rows older than this are
+# deleted during each recompute so stale historical dots stop being served as
+# active markers. Kept generous: the serving/classify layer (Wave 1 wall-clock
+# freshness horizon in ``monitoring_utils.classify_signal_state``) already
+# ages markers out for rendering, so this only trims long-dead rows and never
+# touches ``metric``-scope rows (NULL scan_config_id, shared across configs).
+ANOMALY_RETENTION_DAYS = 180
 
 
 def _build_anomaly_settings(
@@ -166,6 +182,12 @@ def _replace_scope_anomalies(
                 "stddev": anomaly.stddev,
                 "z_score": anomaly.z_score,
                 "direction": anomaly.direction,
+                # C3 columns: the floored stddev actually used in the z
+                # denominator and which detector path produced the row, sourced
+                # from the DetectedAnomaly (C1) so the chart band and marker
+                # provenance stay consistent with what was flagged.
+                "effective_stddev": anomaly.effective_stddev,
+                "detector_kind": anomaly.kind,
             }
         )
         anomalies_detected_total.labels(scope=scope_type, direction=anomaly.direction).inc()
@@ -191,6 +213,8 @@ def _replace_scope_anomalies(
         "stddev",
         "z_score",
         "direction",
+        "effective_stddev",
+        "detector_kind",
     ]
     null_scope = scan_config_id is None
     if rows:
@@ -319,6 +343,10 @@ def _replace_scope_breakdown_anomalies(
                 "stddev": anomaly.stddev,
                 "z_score": anomaly.z_score,
                 "direction": anomaly.direction,
+                # C3 columns sourced from the DetectedAnomaly (C1); see
+                # _replace_scope_anomalies.
+                "effective_stddev": anomaly.effective_stddev,
+                "detector_kind": anomaly.kind,
             }
         )
 
@@ -332,6 +360,8 @@ def _replace_scope_breakdown_anomalies(
         "stddev",
         "z_score",
         "direction",
+        "effective_stddev",
+        "detector_kind",
     ]
     if rows:
         if session.bind is not None and session.bind.dialect.name == "sqlite":
@@ -437,6 +467,91 @@ def _collect_scope_ids(
     return ids
 
 
+def _active_app_version_values_by_group(
+    session: Session,
+    *,
+    scan_config_id: uuid.UUID,
+    scope_type: str,
+    app_version_column: str,
+    history_from: datetime,
+    evaluation_end: datetime,
+) -> dict[tuple[uuid.UUID | None, uuid.UUID | None], set[str]]:
+    """Activation-gated app_version breakdown values, keyed by scope grouping.
+
+    Immature dev/tester builds surface with a high SemVer but negligible
+    traffic; giving each its own per-version anomaly series floods monitoring
+    with noise. We reuse the shared activation gate
+    (``tripl.services.version_activation.active_release_versions``) over the
+    per-version per-bucket breakdown totals so only releases that took a real
+    share of traffic keep an anomaly series. The rolled-up ``is_other`` bucket
+    is never a single build, so it is excluded from the candidate set here and
+    always retained by the caller.
+    """
+    query = (
+        select(
+            EventMetricBreakdown.event_id,
+            EventMetricBreakdown.event_type_id,
+            EventMetricBreakdown.breakdown_value,
+            EventMetricBreakdown.is_other,
+            EventMetricBreakdown.bucket,
+            sa_func.sum(EventMetricBreakdown.count),
+        )
+        .where(
+            EventMetricBreakdown.scan_config_id == scan_config_id,
+            EventMetricBreakdown.breakdown_column == app_version_column,
+            EventMetricBreakdown.bucket >= history_from,
+            EventMetricBreakdown.bucket < evaluation_end,
+        )
+        .group_by(
+            EventMetricBreakdown.event_id,
+            EventMetricBreakdown.event_type_id,
+            EventMetricBreakdown.breakdown_value,
+            EventMetricBreakdown.is_other,
+            EventMetricBreakdown.bucket,
+        )
+    )
+
+    if scope_type == SCOPE_PROJECT_TOTAL:
+        query = query.where(
+            EventMetricBreakdown.event_id.is_(None),
+            EventMetricBreakdown.event_type_id.is_not(None),
+        )
+    elif scope_type == SCOPE_EVENT:
+        query = query.join(Event, EventMetricBreakdown.event_id == Event.id).where(
+            EventMetricBreakdown.event_id.is_not(None),
+            Event.status != "archived",
+        )
+    else:  # SCOPE_EVENT_TYPE
+        query = query.where(EventMetricBreakdown.event_type_id.is_not(None))
+
+    Group = tuple[uuid.UUID | None, uuid.UUID | None]
+    # group -> version -> {bucket: total} for real versions (is_other False)
+    per_version: dict[Group, dict[str, dict[datetime, float]]] = {}
+    # group -> {bucket: total} over EVERY value incl. the "Other" rollup, so the
+    # activation share denominator is not inflated (version_activation expects
+    # the caller to pass an all_by_bucket that includes Other).
+    all_by_bucket: dict[Group, dict[datetime, float]] = {}
+    for event_id, event_type_id, value, is_other, bucket, total in session.execute(query).all():
+        group: Group = (
+            (None, None)
+            if scope_type == SCOPE_PROJECT_TOTAL
+            else (
+                event_id,
+                event_type_id,
+            )
+        )
+        totals = all_by_bucket.setdefault(group, {})
+        totals[bucket] = totals.get(bucket, 0.0) + float(total)
+        if not is_other:
+            by_bucket = per_version.setdefault(group, {}).setdefault(value, {})
+            by_bucket[bucket] = by_bucket.get(bucket, 0.0) + float(total)
+
+    return {
+        group: active_release_versions(versions, all_by_bucket.get(group))
+        for group, versions in per_version.items()
+    }
+
+
 def _collect_breakdown_scope_keys(
     session: Session,
     *,
@@ -445,6 +560,7 @@ def _collect_breakdown_scope_keys(
     evaluation_start: datetime,
     evaluation_end: datetime,
     scope_type: str,
+    app_version_column: str | None = None,
 ) -> set[tuple[uuid.UUID | None, uuid.UUID | None, str, str, bool]]:
     metric_id_column = (
         EventMetricBreakdown.event_type_id
@@ -513,7 +629,34 @@ def _collect_breakdown_scope_keys(
             keys.add((None, None, column, value, bool(is_other)))
         else:
             keys.add((event_id, event_type_id, column, value, bool(is_other)))
-    return keys
+
+    if not app_version_column or not any(
+        column == app_version_column for _, _, column, _, _ in keys
+    ):
+        return keys
+
+    # Restrict app_version breakdown series to activation-gated releases so
+    # immature dev/tester builds do not each spawn their own anomaly series
+    # (tripl-dmch.4). Other breakdown columns (platform, country, ...) are
+    # untouched. The "Other" rollup is always kept.
+    active_by_group = _active_app_version_values_by_group(
+        session,
+        scan_config_id=scan_config_id,
+        scope_type=scope_type,
+        app_version_column=app_version_column,
+        history_from=history_from,
+        evaluation_end=evaluation_end,
+    )
+    gated: set[tuple[uuid.UUID | None, uuid.UUID | None, str, str, bool]] = set()
+    for key in keys:
+        event_id, event_type_id, column, value, is_other = key
+        if column != app_version_column or is_other:
+            gated.add(key)
+            continue
+        group = (None, None) if scope_type == SCOPE_PROJECT_TOTAL else (event_id, event_type_id)
+        if value in active_by_group.get(group, set()):
+            gated.add(key)
+    return gated
 
 
 def _load_metric_value_points(
@@ -612,6 +755,7 @@ def _recalculate_project_metric_anomalies(
     settings: AnomalyDetectionSettings,
     evaluation_start: datetime,
     evaluation_end: datetime,
+    covered_buckets: set[datetime] | None = None,
 ) -> int:
     """Detect anomalies over the project's active catalog metric series.
 
@@ -637,7 +781,11 @@ def _recalculate_project_metric_anomalies(
             continue
         interval_spec = get_interval(interval)
         count_shaped = is_count_shaped(metric)
-        metric_settings = settings if count_shaped else replace(settings, min_expected_count=0)
+        metric_settings = (
+            settings
+            if count_shaped
+            else replace(settings, min_expected_count=_FRACTIONAL_MIN_EXPECTED_COUNT)
+        )
         history_from = evaluation_start - interval_spec.delta * required_history_buckets(
             interval_spec.delta, settings
         )
@@ -663,9 +811,27 @@ def _recalculate_project_metric_anomalies(
                 evaluation_end=evaluation_end,
                 settings=metric_settings,
                 fill_gaps=count_shaped,
+                covered_buckets=covered_buckets,
             ),
         )
     return detected
+
+
+def _age_out_config_anomalies(
+    session: Session,
+    model: type[MetricAnomaly] | type[MetricBreakdownAnomaly],
+    scan_config_id: uuid.UUID,
+) -> None:
+    """Trim config-scoped anomaly markers older than the retention horizon.
+
+    Conservative: only touches rows keyed to THIS scan_config (never the shared
+    ``metric``-scope NULL-config rows) and only those far past the horizon, so a
+    trailing re-eval never resurrects long-dead dots as active markers.
+    """
+    horizon = datetime.now(UTC) - timedelta(days=ANOMALY_RETENTION_DAYS)
+    session.execute(
+        delete(model).where(model.scan_config_id == scan_config_id, model.bucket < horizon)
+    )
 
 
 def _recalculate_metric_anomalies(
@@ -674,6 +840,7 @@ def _recalculate_metric_anomalies(
     *,
     evaluation_start: datetime,
     evaluation_end: datetime,
+    covered_buckets: set[datetime] | None = None,
 ) -> int:
     project_settings = _get_project_anomaly_settings(session, config.project_id)
     if project_settings is None or not project_settings.anomaly_detection_enabled:
@@ -684,6 +851,8 @@ def _recalculate_metric_anomalies(
 
     if not config.interval:
         return 0
+
+    _age_out_config_anomalies(session, MetricAnomaly, config.id)
 
     interval_spec = get_interval(config.interval)
     settings = _build_anomaly_settings(project_settings)
@@ -716,6 +885,7 @@ def _recalculate_metric_anomalies(
                 evaluation_start=evaluation_start,
                 evaluation_end=evaluation_end,
                 settings=settings,
+                covered_buckets=covered_buckets,
             ),
         )
     else:
@@ -761,6 +931,7 @@ def _recalculate_metric_anomalies(
                     evaluation_start=evaluation_start,
                     evaluation_end=evaluation_end,
                     settings=settings,
+                    covered_buckets=covered_buckets,
                 ),
             )
     else:
@@ -806,6 +977,7 @@ def _recalculate_metric_anomalies(
                     evaluation_start=evaluation_start,
                     evaluation_end=evaluation_end,
                     settings=settings,
+                    covered_buckets=covered_buckets,
                 ),
             )
     else:
@@ -825,6 +997,7 @@ def _recalculate_metric_anomalies(
             settings=settings,
             evaluation_start=evaluation_start,
             evaluation_end=evaluation_end,
+            covered_buckets=covered_buckets,
         )
     else:
         _purge_project_metric_anomalies(
@@ -844,6 +1017,7 @@ def _recalculate_metric_breakdown_anomalies(
     *,
     evaluation_start: datetime,
     evaluation_end: datetime,
+    covered_buckets: set[datetime] | None = None,
 ) -> int:
     project_settings = _get_project_anomaly_settings(session, config.project_id)
     if project_settings is None or not project_settings.anomaly_detection_enabled:
@@ -863,8 +1037,11 @@ def _recalculate_metric_breakdown_anomalies(
         session.flush()
         return 0
 
+    _age_out_config_anomalies(session, MetricBreakdownAnomaly, config.id)
+
     interval_spec = get_interval(config.interval)
     settings = _build_anomaly_settings(project_settings)
+    app_version_column = config.app_version_column
     history_from = evaluation_start - interval_spec.delta * required_history_buckets(
         interval_spec.delta, settings
     )
@@ -878,6 +1055,7 @@ def _recalculate_metric_breakdown_anomalies(
             evaluation_start=evaluation_start,
             evaluation_end=evaluation_end,
             scope_type=SCOPE_PROJECT_TOTAL,
+            app_version_column=app_version_column,
         ):
             points = _load_breakdown_scope_points(
                 session,
@@ -908,6 +1086,7 @@ def _recalculate_metric_breakdown_anomalies(
                     evaluation_start=evaluation_start,
                     evaluation_end=evaluation_end,
                     settings=settings,
+                    covered_buckets=covered_buckets,
                 ),
             )
     else:
@@ -928,6 +1107,7 @@ def _recalculate_metric_breakdown_anomalies(
             evaluation_start=evaluation_start,
             evaluation_end=evaluation_end,
             scope_type=SCOPE_EVENT_TYPE,
+            app_version_column=app_version_column,
         ):
             if event_type_id is None:
                 continue
@@ -961,6 +1141,7 @@ def _recalculate_metric_breakdown_anomalies(
                     evaluation_start=evaluation_start,
                     evaluation_end=evaluation_end,
                     settings=settings,
+                    covered_buckets=covered_buckets,
                 ),
             )
     else:
@@ -981,6 +1162,7 @@ def _recalculate_metric_breakdown_anomalies(
             evaluation_start=evaluation_start,
             evaluation_end=evaluation_end,
             scope_type=SCOPE_EVENT,
+            app_version_column=app_version_column,
         ):
             if event_id is None:
                 continue
@@ -1014,6 +1196,7 @@ def _recalculate_metric_breakdown_anomalies(
                     evaluation_start=evaluation_start,
                     evaluation_end=evaluation_end,
                     settings=settings,
+                    covered_buckets=covered_buckets,
                 ),
             )
     else:

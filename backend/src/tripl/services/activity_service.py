@@ -56,8 +56,10 @@ async def _anomaly_items(
     stmt = (
         select(
             MetricAnomaly.id,
+            MetricAnomaly.scan_config_id,
             MetricAnomaly.scope_type,
             MetricAnomaly.scope_ref,
+            MetricAnomaly.bucket,
             MetricAnomaly.actual_count,
             MetricAnomaly.expected_count,
             MetricAnomaly.z_score,
@@ -82,8 +84,25 @@ async def _anomaly_items(
         stmt = stmt.where(Project.slug == slug)
 
     rows = (await session.execute(stmt)).all()
+
+    # One incident is one rail item: a project-total spike/drop trips its child
+    # event_type/event scopes on the same scan, bucket and direction. Surface
+    # only the parent project_total row and suppress the co-firing children so a
+    # single incident does not stack into many rail entries. This is layered on
+    # top of Wave 1's wall-clock recency filter (kept above), not a replacement.
+    parent_incidents = {
+        (row.scan_config_id, row.bucket, str(row.direction))
+        for row in rows
+        if row.scope_type == SCOPE_PROJECT_TOTAL
+    }
+
     items: list[ActivityItemResponse] = []
     for row in rows:
+        if (
+            row.scope_type in (SCOPE_EVENT_TYPE, SCOPE_EVENT)
+            and (row.scan_config_id, row.bucket, str(row.direction)) in parent_incidents
+        ):
+            continue
         scope_name = _scope_name(
             row.scope_type,
             event_name=row.event_name,

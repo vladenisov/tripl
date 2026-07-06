@@ -123,6 +123,20 @@ async def _get_scan_config_interval(
     return result.scalar_one_or_none()
 
 
+async def _get_scan_config_sigma_threshold(
+    session: AsyncSession,
+    scan_config_id: uuid.UUID | None,
+) -> float:
+    """The scan's anomaly sigma threshold (the confidence-band multiplier the UI
+    serves), defaulting to 3.0 when the scan is unknown or unset."""
+    if scan_config_id is None:
+        return 3.0
+    result = await session.execute(
+        select(ScanConfig.sigma_threshold).where(ScanConfig.id == scan_config_id)
+    )
+    return result.scalar_one_or_none() or 3.0
+
+
 async def _get_default_scan_config_id(
     session: AsyncSession,
     project_id: uuid.UUID,
@@ -286,6 +300,25 @@ def _signal_from_anomaly(
     )
 
 
+def _served_stddev(anomaly: MetricAnomaly | MetricBreakdownAnomaly) -> float:
+    """Stddev the UI band is drawn from: the FLOORED *effective* stddev actually
+    used in the z denominator (tripl-dmch C3/C4), so ``expected ± k*stddev``
+    matches the detector's flag decision. Falls back to the raw stored stddev
+    when the ``effective_stddev`` column is absent (pre-migration rows / hand-
+    built test objects), keeping existing behavior unchanged in that case.
+    """
+    effective = getattr(anomaly, "effective_stddev", None)
+    if effective is None or effective == 0.0:
+        return anomaly.stddev
+    return float(effective)
+
+
+def _served_detector_kind(anomaly: MetricAnomaly | MetricBreakdownAnomaly) -> str | None:
+    """Which detector path flagged the bucket, or ``None`` when the column is
+    absent (pre-migration rows / hand-built test objects)."""
+    return getattr(anomaly, "detector_kind", None)
+
+
 def _build_metric_points(
     *,
     interval: str | None,
@@ -321,7 +354,12 @@ def _build_metric_points(
                     else None
                 ),
                 stddev=(
-                    anomalies_by_bucket[point.bucket].stddev
+                    _served_stddev(anomalies_by_bucket[point.bucket])
+                    if point.bucket in anomalies_by_bucket
+                    else None
+                ),
+                detector_kind=(
+                    _served_detector_kind(anomalies_by_bucket[point.bucket])
                     if point.bucket in anomalies_by_bucket
                     else None
                 ),
@@ -350,7 +388,14 @@ def _build_metric_points(
                     else None
                 ),
                 stddev=(
-                    anomalies_by_bucket[bucket].stddev if bucket in anomalies_by_bucket else None
+                    _served_stddev(anomalies_by_bucket[bucket])
+                    if bucket in anomalies_by_bucket
+                    else None
+                ),
+                detector_kind=(
+                    _served_detector_kind(anomalies_by_bucket[bucket])
+                    if bucket in anomalies_by_bucket
+                    else None
                 ),
                 is_anomaly=bucket in anomalies_by_bucket,
                 anomaly_direction=(
@@ -401,6 +446,7 @@ def _build_metrics_response(
     anomalies: list[MetricAnomaly],
     event_id: uuid.UUID | None = None,
     event_type_id: uuid.UUID | None = None,
+    sigma_threshold: float = 3.0,
 ) -> EventMetricsResponse:
     data = _build_metric_points(
         interval=interval,
@@ -425,6 +471,7 @@ def _build_metrics_response(
         event_type_id=event_type_id,
         interval=interval,
         latest_signal=latest_signal,
+        sigma_threshold=sigma_threshold,
         data=data,
         forecast=_forecast_from_points(data=data, interval=interval),
     )
@@ -469,6 +516,7 @@ async def get_event_metrics(
         time_from=time_from,
         time_to=time_to,
     )
+    sigma_threshold = await _get_scan_config_sigma_threshold(session, scan_config_id)
     return _build_metrics_response(
         scope=SCOPE_EVENT,
         scan_config_id=scan_config_id,
@@ -477,6 +525,7 @@ async def get_event_metrics(
         metric_rows=metric_rows,
         anomalies=anomalies,
         event_id=event.id,
+        sigma_threshold=sigma_threshold,
     )
 
 
@@ -749,6 +798,43 @@ async def _load_app_version_metric_rows(
     return metric_rows_by_series
 
 
+def _active_versions_from_metric_rows(
+    metric_rows_by_series: dict[tuple[str, bool], list[tuple[datetime, int]]],
+) -> set[str]:
+    """Activation-gated versions computed from the raw (pre-fold) breakdown rows.
+
+    Mirrors the denominator build in ``_build_app_version_series`` so the two
+    share one definition of "active": per-version per-bucket totals against the
+    total traffic per bucket, fed to ``active_release_versions``.
+    """
+    release_totals_by_version: dict[str, dict[datetime, int]] = {}
+    all_traffic_by_bucket: dict[datetime, int] = {}
+    for (version, is_other), rows in metric_rows_by_series.items():
+        for bucket, count in rows:
+            all_traffic_by_bucket[bucket] = all_traffic_by_bucket.get(bucket, 0) + count
+            if not is_other:
+                per_bucket = release_totals_by_version.setdefault(version, {})
+                per_bucket[bucket] = per_bucket.get(bucket, 0) + count
+    return active_release_versions(release_totals_by_version, all_traffic_by_bucket)
+
+
+def _drop_immature_version_anomalies(
+    anomalies_by_series: dict[tuple[str, bool], list[MetricBreakdownAnomaly]],
+    active_versions: set[str],
+) -> dict[tuple[str, bool], list[MetricBreakdownAnomaly]]:
+    """Keep only anomalies on activation-gated version values (and the rolled-up
+    "Other" bucket). An immature (non-active) dev/tester build never took real
+    traffic, so its stored anomalies are noise — dropping them here also stops an
+    anomaly-only immature version from entering the app-version key union and
+    being picked as "latest" downstream.
+    """
+    return {
+        key: rows
+        for key, rows in anomalies_by_series.items()
+        if key[1] or key[0] in active_versions
+    }
+
+
 async def _load_app_version_anomaly_rows(
     session: AsyncSession,
     *,
@@ -757,6 +843,7 @@ async def _load_app_version_anomaly_rows(
     scope_ref: str,
     time_from: datetime | None,
     time_to: datetime | None,
+    metric_rows_by_series: dict[tuple[str, bool], list[tuple[datetime, int]]],
 ) -> dict[tuple[str, bool], list[MetricBreakdownAnomaly]]:
     if config.app_version_column is None:
         return {}
@@ -780,7 +867,12 @@ async def _load_app_version_anomaly_rows(
     for anomaly in (await session.execute(anomaly_query)).scalars():
         key = (anomaly.breakdown_value, anomaly.is_other)
         anomalies_by_series.setdefault(key, []).append(anomaly)
-    return anomalies_by_series
+
+    # Filter out anomalies on immature (non-activation-gated) versions so a
+    # dev/tester build that never took real traffic cannot surface anomaly
+    # markers — or, when anomaly-only, sneak into the version key union.
+    active_versions = _active_versions_from_metric_rows(metric_rows_by_series)
+    return _drop_immature_version_anomalies(anomalies_by_series, active_versions)
 
 
 def _build_app_version_series(
@@ -944,6 +1036,7 @@ async def get_app_version_series(
         scope_ref=resolved_scope_ref,
         time_from=time_from,
         time_to=time_to,
+        metric_rows_by_series=metric_rows_by_series,
     )
     latest_version, versions, series = _build_app_version_series(
         interval=config.interval,
@@ -960,6 +1053,7 @@ async def get_app_version_series(
         app_version_column=config.app_version_column,
         interval=config.interval,
         latest_version=latest_version,
+        sigma_threshold=config.sigma_threshold,
         versions=versions,
         series=series,
     )
@@ -1004,6 +1098,7 @@ async def get_app_version_adoption(
         scope_ref=scope_ref,
         time_from=time_from,
         time_to=time_to,
+        metric_rows_by_series=metric_rows_by_series,
     )
     latest_version, versions, series = _build_app_version_series(
         interval=config.interval,
@@ -1018,6 +1113,7 @@ async def get_app_version_adoption(
         app_version_column=config.app_version_column,
         interval=config.interval,
         latest_version=latest_version,
+        sigma_threshold=config.sigma_threshold,
         versions=versions,
         series=series,
         totals=_build_app_version_totals(metric_rows_by_series),
@@ -1510,6 +1606,7 @@ async def get_event_type_metrics(
         time_from=time_from,
         time_to=time_to,
     )
+    sigma_threshold = await _get_scan_config_sigma_threshold(session, scan_config_id)
     return _build_metrics_response(
         scope=SCOPE_EVENT_TYPE,
         scan_config_id=scan_config_id,
@@ -1518,6 +1615,7 @@ async def get_event_type_metrics(
         metric_rows=metric_rows,
         anomalies=anomalies,
         event_type_id=event_type.id,
+        sigma_threshold=sigma_threshold,
     )
 
 
@@ -1562,4 +1660,5 @@ async def get_project_total_metrics(
         interval=config.interval,
         metric_rows=metric_rows,
         anomalies=anomalies,
+        sigma_threshold=config.sigma_threshold,
     )
