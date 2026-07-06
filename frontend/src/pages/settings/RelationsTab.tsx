@@ -157,7 +157,7 @@ export function RelationsTab({ slug }: { slug: string }) {
           </Table>
         ) : (
           <div className="px-4 py-8">
-            <EmptyState icon={Link2} title="No relations" description="Create relations to link event types by their fields." />
+            <EmptyState icon={Link2} title="No relations" description="Link event types by a shared field so drift and coverage can follow the join — e.g. connect Purchase.user_id to Signup.user_id." />
           </div>
         )}
       </Panel>

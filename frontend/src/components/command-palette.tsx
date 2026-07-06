@@ -14,6 +14,7 @@ import {
   Database,
   FileText,
   Folder,
+  Gauge,
   Layers,
   LayoutDashboard,
   Link2,
@@ -24,6 +25,7 @@ import {
   Settings,
   SlidersHorizontal,
   Sparkles,
+  Table2,
   Tag,
   Variable,
 } from 'lucide-react'
@@ -91,6 +93,8 @@ const SEARCH_TYPE_META: Record<
   variable: { heading: 'Variables', icon: Variable },
   relation: { heading: 'Relations', icon: Link2 },
   tag: { heading: 'Tags', icon: Tag },
+  metric: { heading: 'Metrics', icon: Gauge },
+  fact_table: { heading: 'Fact tables', icon: Table2 },
 }
 
 function groupSearchResults(results: SearchResult[]) {

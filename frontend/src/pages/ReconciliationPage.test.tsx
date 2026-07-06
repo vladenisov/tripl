@@ -141,6 +141,31 @@ describe('ReconciliationPage', () => {
     expect(screen.getByText('124 of 132 planned events seen in data · 14d')).toBeInTheDocument()
   })
 
+  it('formats large data-match counts with thousand separators', async () => {
+    const bigCoverage: CoverageResponse = {
+      days: 14,
+      summary: { total_count: 89327935, matched_count: 89327935, coverage_pct: 100 },
+      items: [{ bucket: '2026-06-01', total_count: 89327935, matched_count: 89327935 }],
+    }
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = String(input)
+      if (url.includes('/reconciliation/coverage')) return jsonResponse(bigCoverage)
+      if (url.includes('/reconciliation/dead-events')) return jsonResponse(dead)
+      if (url.includes('/reconciliation/shadow-events')) return jsonResponse(emptyShadow)
+      if (url.includes('/event-types')) return jsonResponse([])
+      throw new Error(`Unhandled fetch: ${url}`)
+    })
+    renderPage()
+
+    expect(
+      await screen.findByText('89,327,935 of 89,327,935 planned events seen in data · 14d'),
+    ).toBeInTheDocument()
+    // The raw, separator-free rendering must not appear.
+    expect(
+      screen.queryByText('89327935 of 89327935 planned events seen in data · 14d'),
+    ).not.toBeInTheDocument()
+  })
+
   it('renders shadow inbox rows with accept/dismiss actions', async () => {
     mockFetch()
     renderPage()
@@ -239,6 +264,48 @@ describe('ReconciliationPage', () => {
     expect(screen.getByText('buoy:copy:coordinates(main)')).toBeInTheDocument()
     // The leading empty segment renders an intentional placeholder, not a blank.
     expect(screen.getByTitle('empty segment')).toBeInTheDocument()
+  })
+
+  it('gives each dead-event row a full-name tooltip so ellipsized long names stay distinguishable', async () => {
+    // Real names share a long common prefix and only differ near the end, so the
+    // truncated rows look identical — the title exposes the full name on hover.
+    const longNo = 'page_value_question_page_value_page_value_sail_navigation_interface_no_selected'
+    const longYes = 'page_value_question_page_value_page_value_sail_navigation_interface_yes_selected'
+    const deadLong: DeadEventsResponse = {
+      days: 30,
+      total: 2,
+      items: [
+        {
+          event_id: 'l1',
+          name: longNo,
+          event_type_id: 'et-1',
+          event_type_name: 'nav',
+          last_seen_at: '2026-05-10T00:00:00Z',
+          created_at: '2026-01-01T00:00:00Z',
+        },
+        {
+          event_id: 'l2',
+          name: longYes,
+          event_type_id: 'et-1',
+          event_type_name: 'nav',
+          last_seen_at: '2026-05-11T00:00:00Z',
+          created_at: '2026-01-01T00:00:00Z',
+        },
+      ],
+    }
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = String(input)
+      if (url.includes('/reconciliation/coverage')) return jsonResponse(coverage)
+      if (url.includes('/reconciliation/dead-events')) return jsonResponse(deadLong)
+      if (url.includes('/reconciliation/shadow-events')) return jsonResponse(emptyShadow)
+      if (url.includes('/event-types')) return jsonResponse([])
+      throw new Error(`Unhandled fetch: ${url}`)
+    })
+    renderPage()
+
+    // Each row carries its own full name as a native tooltip on the link.
+    expect(await screen.findByTitle(longNo)).toHaveAttribute('title', longNo)
+    expect(screen.getByTitle(longYes)).toHaveAttribute('title', longYes)
   })
 
   it('shows a reassuring compact empty state when the new shadow inbox is empty', async () => {

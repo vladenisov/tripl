@@ -1,8 +1,9 @@
-import { useMemo, useState } from "react"
+import { useCallback, useMemo, useState } from "react"
 import { useNavigate } from "react-router-dom"
-import { useQueries, useQuery } from "@tanstack/react-query"
-import { Plus } from "lucide-react"
+import { useMutation, useQueries, useQuery, useQueryClient } from "@tanstack/react-query"
+import { Plus, RotateCw } from "lucide-react"
 import { dataSourcesApi } from "@/api/dataSources"
+import { eventTypesApi } from "@/api/eventTypes"
 import { scansApi } from "@/api/scans"
 import type { DataSource, ScanConfig, ScanJob } from "@/types"
 import { Button } from "@/components/ui/button"
@@ -19,12 +20,16 @@ import { formatRelativeTime } from "@/lib/datetime"
 
 interface RecentRun {
   jobId: string
+  scanId: string
   scanName: string
   startedAt: string | null
   rows: number | null
   durationSec: number | null
   status: ScanJob['status']
   errorMessage: string | null
+  // Current failing streak (leading consecutive failed runs for this scan).
+  // Only meaningful on the collapsed streak row; 0 on every other row.
+  failingStreak: number
 }
 
 export function ScansTab({ slug }: { slug: string }) {
@@ -43,6 +48,27 @@ export function ScansTab({ slug }: { slug: string }) {
     queryKey: ['scans', slug],
     queryFn: () => scansApi.list(slug),
   })
+
+  // Resolve a scan's single event type to its name so "Review events" can open
+  // that type's pending-review queue; scans with no fixed type (or a per-row
+  // event_type_column) fall back to the whole review tab.
+  const { data: eventTypes = [] } = useQuery({
+    queryKey: ['eventTypes', slug],
+    queryFn: () => eventTypesApi.list(slug),
+  })
+  const eventTypeNameById = useMemo(
+    () => new Map(eventTypes.map(et => [et.id, et.name])),
+    [eventTypes],
+  )
+  const reviewEventsHref = useCallback(
+    (sc: ScanConfig) => {
+      const typeName = sc.event_type_id ? eventTypeNameById.get(sc.event_type_id) : undefined
+      return typeName
+        ? `/p/${slug}/events/${typeName}?status=in_review`
+        : `/p/${slug}/events/review`
+    },
+    [slug, eventTypeNameById],
+  )
 
   // Per-scan jobs power the "Last run" status and the "Recent runs" feed. The
   // backend exposes jobs per scan, so we fan out one query per config.
@@ -72,15 +98,25 @@ export function ScansTab({ slug }: { slug: string }) {
     const runs: RecentRun[] = []
     scanConfigs.forEach((sc: ScanConfig, index: number) => {
       const jobs = (jobQueries[index]?.data ?? []) as ScanJob[]
-      jobs.slice(0, 2).forEach(job => {
+      if (jobs.length === 0) return
+      // Jobs arrive newest-first. Count the current failing streak — the run of
+      // leading consecutive failures — so we can collapse it into one row tagged
+      // "failed last N runs" instead of N identical failed rows. When the latest
+      // run didn't fail we keep the two most recent jobs as before.
+      let streak = 0
+      while (streak < jobs.length && jobs[streak].status === 'failed') streak += 1
+      const collapsed = streak > 0 ? [jobs[0], ...jobs.slice(streak, streak + 1)] : jobs.slice(0, 2)
+      collapsed.forEach((job, position) => {
         runs.push({
           jobId: job.id,
+          scanId: sc.id,
           scanName: sc.name,
           startedAt: job.started_at ?? job.created_at,
           rows: jobRowsScanned(job),
           durationSec: jobDurationSeconds(job),
           status: job.status,
           errorMessage: job.error_message,
+          failingStreak: position === 0 ? streak : 0,
         })
       })
     })
@@ -101,6 +137,16 @@ export function ScansTab({ slug }: { slug: string }) {
     })
     return total
   }, [scanConfigs, jobQueries, mountedAtMs])
+
+  // "Run again" reuses the manual-scan trigger (POST /scans/{id}/run). On success
+  // we refetch that scan's jobs so the new pending run appears in the feed.
+  const queryClient = useQueryClient()
+  const runAgain = useMutation({
+    mutationFn: (scanId: string) => scansApi.run(slug, scanId),
+    onSuccess: (_job, scanId) => {
+      void queryClient.invalidateQueries({ queryKey: ['scanJobs', slug, scanId] })
+    },
+  })
 
   if (view === 'new') {
     return <ScanCreatePage slug={slug} onBack={() => setView('list')} />
@@ -173,6 +219,7 @@ export function ScansTab({ slug }: { slug: string }) {
                   runInfo={runInfoById.get(sc.id) ?? deriveScanRunInfo([])}
                   intervalLabel={INTERVAL_LABEL}
                   onNavigate={() => navigate(`/p/${slug}/settings/scans/${sc.id}`)}
+                  onReviewEvents={() => navigate(reviewEventsHref(sc))}
                 />
               ))}
             </tbody>
@@ -184,7 +231,8 @@ export function ScansTab({ slug }: { slug: string }) {
         <SurfPanel title="Recent runs" subtitle="Latest jobs across all scans">
           <div>
             {recentRuns.map(run => {
-              const friendly = run.status === 'failed' ? friendlyScanError(run.errorMessage).message : null
+              const isFailed = run.status === 'failed'
+              const friendly = isFailed ? friendlyScanError(run.errorMessage).message : null
               return (
                 <div
                   key={run.jobId}
@@ -201,12 +249,36 @@ export function ScansTab({ slug }: { slug: string }) {
                       <span className="truncate text-[11px]" style={{ color: 'var(--danger)' }}>{friendly}</span>
                     )}
                   </div>
-                  <span className="mono text-[11px]" style={{ color: 'var(--fg-subtle)' }}>
-                    {run.rows == null ? '—' : `${formatCount(run.rows)} rows`}
-                  </span>
-                  <span className="mono w-[52px] text-right text-[11px]" style={{ color: 'var(--fg-faint)' }}>
-                    {run.durationSec == null ? '—' : `${run.durationSec.toFixed(1)}s`}
-                  </span>
+                  {isFailed ? (
+                    <div className="flex shrink-0 items-center gap-2">
+                      {run.failingStreak > 1 && (
+                        <span
+                          className="whitespace-nowrap rounded border px-1.5 py-0.5 text-[10.5px] font-semibold"
+                          style={{ color: 'var(--danger)', borderColor: 'var(--danger)' }}
+                        >
+                          failed last {run.failingStreak} runs
+                        </span>
+                      )}
+                      <Button
+                        size="xs"
+                        variant="outline"
+                        disabled={runAgain.isPending}
+                        onClick={() => runAgain.mutate(run.scanId)}
+                      >
+                        <RotateCw className="size-3" aria-hidden="true" />
+                        Run again
+                      </Button>
+                    </div>
+                  ) : (
+                    <>
+                      <span className="mono text-[11px]" style={{ color: 'var(--fg-subtle)' }}>
+                        {run.rows == null ? '—' : `${formatCount(run.rows)} rows`}
+                      </span>
+                      <span className="mono w-[52px] text-right text-[11px]" style={{ color: 'var(--fg-faint)' }}>
+                        {run.durationSec == null ? '—' : `${run.durationSec.toFixed(1)}s`}
+                      </span>
+                    </>
+                  )}
                 </div>
               )
             })}

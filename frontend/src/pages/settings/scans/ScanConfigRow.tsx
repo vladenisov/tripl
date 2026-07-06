@@ -73,12 +73,15 @@ export function ScanListRow({
   runInfo,
   intervalLabel,
   onNavigate,
+  onReviewEvents,
 }: {
   sc: ScanConfig
   dataSource: DataSource | null
   runInfo: ScanRunInfo
   intervalLabel: Record<string, string>
   onNavigate: () => void
+  /** Jump into the review queue for the events this scan produces. */
+  onReviewEvents?: () => void
 }) {
   const firstQueryLine = sc.base_query.split('\n')[0]
   const cadenceLabel = sc.interval ? (intervalLabel[sc.interval] ?? sc.interval) : 'Manual'
@@ -140,7 +143,22 @@ export function ScanListRow({
           )}
         </div>
       </td>
-      <td className="w-10 px-3.5 py-2.5 align-middle text-[var(--fg-faint)]" aria-hidden="true">›</td>
+      <td className="px-3.5 py-2.5 align-middle text-right">
+        <div className="flex items-center justify-end gap-2">
+          {onReviewEvents && (
+            <button
+              type="button"
+              aria-label={`Review events from ${sc.name}`}
+              className="whitespace-nowrap rounded border px-2 py-1 text-[11px] font-medium transition-colors hover:bg-[var(--surface-hover)]"
+              style={{ borderColor: 'var(--border-strong)', color: 'var(--fg-muted)' }}
+              onClick={e => { e.stopPropagation(); onReviewEvents() }}
+            >
+              Review events
+            </button>
+          )}
+          <span className="text-[var(--fg-faint)]" aria-hidden="true">›</span>
+        </div>
+      </td>
     </tr>
   )
 }

@@ -1,4 +1,5 @@
-import { Calendar } from 'lucide-react'
+import { useMemo, useState } from 'react'
+import { Calendar, ChevronDown, ChevronRight, Layers } from 'lucide-react'
 import {
   DndContext,
   closestCenter,
@@ -11,6 +12,7 @@ import {
   verticalListSortingStrategy,
 } from '@dnd-kit/sortable'
 import type { VirtualItem } from '@tanstack/react-virtual'
+import { Button } from '@/components/ui/button'
 import { Checkbox } from '@/components/ui/checkbox'
 import {
   Table,
@@ -35,7 +37,11 @@ import type {
 
 import { ColumnFilter, FilterableHead, type ColumnFilterType } from './ColumnFilter'
 import { EventRow, type RowAction } from './EventRow'
+import { groupEventNames, type EventNameGroup } from './eventNameGroups'
 import { EMPTY_WINDOW_POINTS, ROW_METRICS_LABEL } from './utils'
+
+/** Cap the cluster list so the summary header stays compact; the rest fold into a count. */
+const MAX_VISIBLE_CLUSTERS = 6
 
 export type EventsTableProps = {
   // Layout
@@ -134,6 +140,22 @@ export function EventsTable({
   onToggleExpandedCell,
   onRowAction,
 }: EventsTableProps) {
+  // Cluster near-identical, scan-generated names so a block of look-alike rows
+  // can be triaged as one. This is a read-only summary computed from the loaded
+  // rows — it never reorders or replaces the flat/virtualized list below.
+  const [clustersExpanded, setClustersExpanded] = useState(false)
+  const nameClusters = useMemo(
+    () =>
+      groupEventNames(
+        // `events` can be sparse while paginated rows stream in; drop the holes.
+        events.filter((ev): ev is EventListItem => Boolean(ev)),
+      ).groups,
+    [events],
+  )
+  const selectCluster = (group: EventNameGroup) => {
+    for (const id of group.eventIds) toggleEventSelected(id, true)
+  }
+
   // Visible window for the "Showing X–Y of N" footer. When virtualized this
   // tracks the rendered window as the user scrolls; otherwise all loaded rows
   // are on screen.
@@ -152,10 +174,118 @@ export function EventsTable({
       ? firstVisible.toLocaleString()
       : `${firstVisible.toLocaleString()}–${lastVisible.toLocaleString()}`
 
+  const renderEventRow = (ev: EventListItem) => {
+    const expandedFieldId =
+      expandedCell && expandedCell.startsWith(ev.id + '-')
+        ? expandedCell.slice(ev.id.length + 1)
+        : null
+    const windowMetric = eventWindowMetricsByEvent.get(ev.id)
+    const windowData = windowMetric?.data ?? EMPTY_WINDOW_POINTS
+    // Distinguish a genuine zero from "not wired": page-view types return a
+    // real series, so a sum of 0 is a true zero (flat sparkline + "0").
+    // Structured/user types with no collected series have an empty `data`
+    // array — passing `undefined` makes the cell read as no-data ("—") instead
+    // of a misleading bare "0".
+    const windowTotal =
+      windowData.length > 0 ? windowMetric?.total_count : undefined
+    return (
+      <EventRow
+        key={ev.id}
+        ev={ev}
+        selected={selectedSet.has(ev.id)}
+        hideType={!!activeEt}
+        hideStatus={hideStatus}
+        hideReviewed={hideReviewed}
+        hideMonitor={hideMonitor}
+        hideOwner={hideOwner}
+        hideDelta={hideDelta}
+        usersById={usersById}
+        hideTags={hideTags}
+        hideLastSeen={hideLastSeen}
+        fieldColumns={visibleFieldColumns}
+        metaFields={visibleMetaFields}
+        slug={slug}
+        expandedFieldId={expandedFieldId}
+        rowSignal={eventRowSignals.get(ev.id)}
+        windowTotal={windowTotal}
+        windowData={windowData}
+        metaValueMap={metaValuesByEvent.get(ev.id)}
+        eventType={eventTypesById.get(ev.event_type_id)}
+        getFieldValue={getFieldValue}
+        onToggleSelected={toggleEventSelected}
+        onToggleExpanded={onToggleExpandedCell}
+        onRowAction={onRowAction}
+      />
+    )
+  }
+
   return (
     <TooltipProvider delayDuration={0}>
       <DndContext sensors={dndSensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
         <SortableContext items={visibleEventIds} strategy={verticalListSortingStrategy}>
+          {nameClusters.length > 0 && (
+            <div
+              className="border-b text-[11px]"
+              style={{
+                borderColor: 'var(--border)',
+                background: 'var(--bg-sunken)',
+                color: 'var(--fg-subtle)',
+              }}
+            >
+              <button
+                type="button"
+                onClick={() => setClustersExpanded((open) => !open)}
+                aria-expanded={clustersExpanded}
+                className="flex w-full items-center gap-1.5 px-5 py-2 text-left hover:text-foreground"
+              >
+                {clustersExpanded ? (
+                  <ChevronDown className="size-3.5" aria-hidden />
+                ) : (
+                  <ChevronRight className="size-3.5" aria-hidden />
+                )}
+                <Layers className="size-3.5" aria-hidden />
+                <span>
+                  <span className="mono tnum" style={{ color: 'var(--fg-muted)' }}>
+                    {nameClusters.length.toLocaleString()}
+                  </span>{' '}
+                  similar-name {nameClusters.length === 1 ? 'cluster' : 'clusters'} detected
+                </span>
+              </button>
+              {clustersExpanded && (
+                <ul className="pb-1.5">
+                  {nameClusters.slice(0, MAX_VISIBLE_CLUSTERS).map((group) => (
+                    <li key={group.prefix} className="flex items-center gap-2 px-5 py-1">
+                      <span
+                        className="mono truncate"
+                        style={{ color: 'var(--fg-muted)' }}
+                        title={group.prefix}
+                      >
+                        {group.prefix}
+                        <span style={{ color: 'var(--fg-faint)' }}>…</span>
+                      </span>
+                      <span className="mono tnum whitespace-nowrap">
+                        · {group.count.toLocaleString()} events
+                      </span>
+                      <div className="flex-1" />
+                      <Button
+                        variant="ghost"
+                        size="xs"
+                        onClick={() => selectCluster(group)}
+                        aria-label={`Select all ${group.count} events in cluster ${group.prefix}`}
+                      >
+                        Select
+                      </Button>
+                    </li>
+                  ))}
+                  {nameClusters.length > MAX_VISIBLE_CLUSTERS && (
+                    <li className="px-5 py-1" style={{ color: 'var(--fg-faint)' }}>
+                      and {(nameClusters.length - MAX_VISIBLE_CLUSTERS).toLocaleString()} more…
+                    </li>
+                  )}
+                </ul>
+              )}
+            </div>
+          )}
           <div
             ref={tableScrollRef}
             className="tripl-table-wrap"
@@ -294,53 +424,24 @@ export function EventsTable({
                     <td colSpan={colCount} />
                   </tr>
                 )}
-                {(virtualize ? virtualItems.map((vi) => events[vi.index]) : events).map(
-                  (ev: EventListItem) => {
-                    const expandedFieldId =
-                      expandedCell && expandedCell.startsWith(ev.id + '-')
-                        ? expandedCell.slice(ev.id.length + 1)
-                        : null
-                    const windowMetric = eventWindowMetricsByEvent.get(ev.id)
-                    const windowData = windowMetric?.data ?? EMPTY_WINDOW_POINTS
-                    // Distinguish a genuine zero from "not wired": page-view
-                    // types return a real series, so a sum of 0 is a true zero
-                    // (flat sparkline + "0"). Structured/user types with no
-                    // collected series have an empty `data` array — passing
-                    // `undefined` makes the cell read as no-data ("—") instead
-                    // of a misleading bare "0".
-                    const windowTotal =
-                      windowData.length > 0 ? windowMetric?.total_count : undefined
-                    return (
-                      <EventRow
-                        key={ev.id}
-                        ev={ev}
-                        selected={selectedSet.has(ev.id)}
-                        hideType={!!activeEt}
-                        hideStatus={hideStatus}
-                        hideReviewed={hideReviewed}
-                        hideMonitor={hideMonitor}
-                        hideOwner={hideOwner}
-                        hideDelta={hideDelta}
-                        usersById={usersById}
-                        hideTags={hideTags}
-                        hideLastSeen={hideLastSeen}
-                        fieldColumns={visibleFieldColumns}
-                        metaFields={visibleMetaFields}
-                        slug={slug}
-                        expandedFieldId={expandedFieldId}
-                        rowSignal={eventRowSignals.get(ev.id)}
-                        windowTotal={windowTotal}
-                        windowData={windowData}
-                        metaValueMap={metaValuesByEvent.get(ev.id)}
-                        eventType={eventTypesById.get(ev.event_type_id)}
-                        getFieldValue={getFieldValue}
-                        onToggleSelected={toggleEventSelected}
-                        onToggleExpanded={onToggleExpandedCell}
-                        onRowAction={onRowAction}
-                      />
-                    )
-                  },
-                )}
+                {virtualize
+                  ? virtualItems.map((vi) => {
+                      const ev = events[vi.index]
+                      // The spacer is sized to the full plan total so the
+                      // scrollbar maps linearly, but rows are paginated — an
+                      // index whose page has not streamed in yet renders as a
+                      // height-preserving placeholder so the scroll height
+                      // stays exact until the row's data arrives.
+                      if (!ev) {
+                        return (
+                          <tr key={vi.key} aria-hidden style={{ height: vi.size }}>
+                            <td colSpan={colCount} />
+                          </tr>
+                        )
+                      }
+                      return renderEventRow(ev)
+                    })
+                  : events.map((ev) => renderEventRow(ev))}
                 {virtualize &&
                   virtualItems.length > 0 &&
                   totalVirtualSize > virtualItems[virtualItems.length - 1].end && (

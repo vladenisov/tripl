@@ -29,9 +29,23 @@ class ScanError(Exception):
     """
 
 
+# A curated ``ScanError`` message is surfaced verbatim; cap its length so an
+# accidental novel-length message can't blow up a UI row (mirrors how a data
+# source's ``last_test_message`` stays short and displayable).
+_MAX_CURATED_LEN = 500
+
 # Substrings that identify the failure category from an exception's text without
-# echoing the (host/port/library-laden) text itself back to the user.
-_TIMEOUT_HINTS = ("timeout", "timed out", "time out")
+# echoing the (host/port/library-laden) text itself back to the user. Celery's
+# soft/hard time-limit exceptions carry no "timeout" word, so match them here too
+# — a scan that runs into the task time limit is a data-source timeout in effect.
+_TIMEOUT_HINTS = (
+    "timeout",
+    "timed out",
+    "time out",
+    "soft time limit",
+    "time limit exceeded",
+    "timelimitexceeded",
+)
 _CONNECTION_HINTS = (
     "connection refused",
     "could not connect",
@@ -55,10 +69,12 @@ def user_facing_error(exc: Exception) -> str:
     replaced with a generic, categorized summary.
     """
     if isinstance(exc, ScanError):
-        return str(exc)
+        return str(exc)[:_MAX_CURATED_LEN]
     text = str(exc).lower()
     if any(hint in text for hint in _TIMEOUT_HINTS):
         return "Scan failed: the data source did not respond in time."
     if any(hint in text for hint in _CONNECTION_HINTS):
         return "Scan failed: could not connect to the data source."
-    return "Scan failed due to an internal error. Please try again or contact support."
+    # Self-hosted: the operator *is* support, so a "contact support" line is noise
+    # — keep the message to the actionable fact and let them read the logs.
+    return "Scan failed due to an internal error."

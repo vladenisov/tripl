@@ -39,7 +39,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { useActiveBranchId } from '@/hooks/useBranch'
 import { formatRelativeTime, formatTimestamp } from '@/lib/datetime'
 import { formatMetricValue, isPercentUnit, metricAxisFormatter } from '@/lib/metricFormat'
-import { GRANULARITY_OPTIONS, RANGE_OPTIONS, aggregateMetricPoints, type MetricsGranularity } from '@/lib/metrics'
+import { GRANULARITY_OPTIONS, RANGE_OPTIONS, aggregateMetricPoints, defaultGranularityForRange, type MetricsGranularity } from '@/lib/metrics'
 import { resolveMetaFieldHref } from '@/lib/metaFields'
 import { resolveDetailScope } from '@/lib/monitoring'
 import type {
@@ -300,17 +300,25 @@ export default function MonitoringDetailPage() {
     },
     enabled: !!slug && !!scopeId,
     refetchInterval: 60000,
+    // Keep the previous range's series on screen while the new range loads so the
+    // chart doesn't remount into a loading flash on range change (tripl-7l83.10).
+    placeholderData: (prev) => prev,
   })
   const metrics = metricsQuery.data
   // Interval-based catalog metrics chart one point per interval, so 'Hours'
   // is a misleading default (tripl-4m86): follow the collection cadence
-  // instead. Event(-type) drilldowns keep their hourly default.
+  // instead. Event / event-type / project-total volume drilldowns instead size
+  // the default to the selected range (tripl-7l83.10) — a 30d/90d window on the
+  // hourly default renders ~720+ points as an unreadable comb. A manual pick
+  // (granularityOverride) still wins and stays sticky across range changes.
   const defaultGranularity: MetricsGranularity =
-    scope === 'metric' && metrics?.interval === '1d'
-      ? 'day'
-      : scope === 'metric' && metrics?.interval === '1w'
-        ? 'week'
-        : 'hour'
+    scope === 'metric'
+      ? metrics?.interval === '1d'
+        ? 'day'
+        : metrics?.interval === '1w'
+          ? 'week'
+          : 'hour'
+      : defaultGranularityForRange(rangeDays)
   const granularity = granularityOverride ?? defaultGranularity
   const scanConfigId = metrics?.scan_config_id ?? (scope === 'project_total' ? scopeId : null)
 
@@ -892,14 +900,19 @@ export default function MonitoringDetailPage() {
                   createAnnotationMut.mutate()
                 }}
               >
-                <Label htmlFor="annotation-bucket" className="sr-only">Date and time</Label>
-                <Input
-                  id="annotation-bucket"
-                  type="datetime-local"
-                  value={annotationBucket}
-                  onChange={event => setAnnotationBucket(event.target.value)}
-                  className="h-8 w-[200px]"
-                />
+                <div className="flex flex-col gap-0.5">
+                  <Label htmlFor="annotation-bucket" className="sr-only">Date and time</Label>
+                  <Input
+                    id="annotation-bucket"
+                    type="datetime-local"
+                    value={annotationBucket}
+                    onChange={event => setAnnotationBucket(event.target.value)}
+                    className="h-8 w-[200px]"
+                  />
+                  <span className="text-[10px] text-muted-foreground">
+                    YYYY-MM-DD HH:mm
+                  </span>
+                </div>
                 <Label htmlFor="annotation-label" className="sr-only">Label</Label>
                 <Input
                   id="annotation-label"
@@ -1220,7 +1233,7 @@ function MetricsRangeControls({
         value={granularity}
         onValueChange={(value: MetricsGranularity) => onGranularityChange(value)}
       >
-        <SelectTrigger className="h-8 w-[130px]">
+        <SelectTrigger className="h-8 w-[130px]" aria-label="Time granularity">
           <SelectValue />
         </SelectTrigger>
         <SelectContent>
@@ -1373,8 +1386,14 @@ function DistributionDriftPanel({
   if (!data.length || !fields.length) {
     return (
       <Card>
-        <CardContent className="flex h-56 items-center justify-center text-sm text-muted-foreground">
-          No distribution drift data available
+        <CardContent className="flex h-56 flex-col items-center justify-center gap-1 text-center text-sm text-muted-foreground">
+          <p>No distribution drift data available</p>
+          <p className="max-w-md text-xs">
+            Add fields to{' '}
+            <span className="font-mono">distribution_drift_fields</span> on the scan
+            configuration, then run a scan to start collecting distribution samples
+            for this scope.
+          </p>
         </CardContent>
       </Card>
     )
@@ -1829,7 +1848,8 @@ function EventStatStrip({ event, stats }: { event: TEvent; stats: EventDetailSta
         label="Schema drifts"
         value={formatNum(event.drift_count)}
         tone={event.drift_count > 0 ? 'warning' : undefined}
-        empty={event.drift_count === 0}
+        // Zero drifts is a real, reassuring count — render "0", not the
+        // no-data glyph the empty state would otherwise show.
         hint={event.drift_count === 0 ? 'No schema drifts detected' : undefined}
       />
       <StatCard

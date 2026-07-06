@@ -144,5 +144,11 @@ describe('OverviewPage', () => {
     ).toBeInTheDocument()
     expect(screen.queryByText(/HTTPSConnectionPool/)).not.toBeInTheDocument()
     expect(screen.queryByText(/clickhouse\.internal/)).not.toBeInTheDocument()
+    // The activity title carries its full text as a native tooltip so a long
+    // event reference stays readable when the row ellipsizes (tripl-7l83.15).
+    expect(screen.getByText('Scan failed: Nightly metrics')).toHaveAttribute(
+      'title',
+      'Scan failed: Nightly metrics',
+    )
   })
 })

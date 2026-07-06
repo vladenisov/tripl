@@ -22,31 +22,6 @@ import {
   TextInput,
 } from '@/components/settings/kit'
 
-const ACCENT_COLORS: { value: string; label: string }[] = [
-  { value: 'oklch(0.72 0.14 192)', label: 'Cyan' },
-  { value: 'oklch(0.72 0.16 290)', label: 'Purple' },
-  { value: 'oklch(0.74 0.16 152)', label: 'Green' },
-  { value: 'oklch(0.78 0.15 75)', label: 'Yellow' },
-  { value: 'oklch(0.74 0.17 15)', label: 'Red' },
-  { value: 'oklch(0.72 0.14 240)', label: 'Blue' },
-]
-
-/** Inline badge marking a control that is intentionally inert (not wired yet). */
-function ComingSoon() {
-  return (
-    <span
-      className="rounded-full px-[7px] py-px text-[10px] font-semibold uppercase tracking-[0.05em]"
-      style={{
-        background: 'var(--bg-sunken)',
-        color: 'var(--fg-subtle)',
-        border: '1px solid var(--border)',
-      }}
-    >
-      Coming soon
-    </span>
-  )
-}
-
 function DangerRow({
   title,
   hint,
@@ -177,11 +152,10 @@ function DangerResetRow({
 
 /**
  * Project · General. Identity (name / slug / description) and the search-index
- * rebuild reuse the real projectsApi + searchApi wiring lifted from GeneralTab;
- * the accent colour and defaults are not configurable yet, so they render as
- * disabled "Coming soon" controls (no backing fields) rather than interactive
- * inputs that silently no-op, and the danger zone keeps the wired Delete plus
- * not-yet-wired Archive / Transfer actions.
+ * rebuild reuse the real projectsApi + searchApi wiring lifted from GeneralTab.
+ * A header cross-link jumps to Project operations (the in-app /p/:slug/settings
+ * surfaces) so the two project-config halves stay reachable, and the danger zone
+ * keeps the wired Delete plus not-yet-wired Archive / Transfer actions.
  */
 export default function ProjectGeneralSection({ slug }: { slug: string | undefined }) {
   if (!slug) {
@@ -303,11 +277,20 @@ function ProjectGeneralBody({ slug }: { slug: string }) {
       {dialog}
       <SHeader
         title="General"
-        description="Identity and defaults for this tracking plan. These apply to everyone working in the project."
+        description="Identity and configuration for this tracking plan. These apply to everyone working in the project."
         actions={
-          <Button variant="outline" size="sm" onClick={() => navigate(`/p/${slug}/events`)}>
-            View project
-          </Button>
+          <>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => navigate(`/p/${slug}/settings/event-types`)}
+            >
+              Project operations
+            </Button>
+            <Button variant="outline" size="sm" onClick={() => navigate(`/p/${slug}/events`)}>
+              View project
+            </Button>
+          </>
         }
       />
 
@@ -366,64 +349,8 @@ function ProjectGeneralBody({ slug }: { slug: string }) {
                 disabled={!canEdit}
               />
             </Field>
-            <Field label="Description" htmlFor="proj-desc">
+            <Field label="Description" htmlFor="proj-desc" last>
               <TextArea id="proj-desc" value={description} onChange={setDescription} rows={2} disabled={!canEdit} />
-            </Field>
-            <Field
-              label="Accent color"
-              labelRight={<ComingSoon />}
-              hint="Will tint charts and the project mark. Theming is not configurable yet."
-              last
-            >
-              <div className="flex gap-2">
-                {ACCENT_COLORS.map((c) => (
-                  <button
-                    key={c.value}
-                    type="button"
-                    disabled
-                    aria-label={`Accent color: ${c.label} (coming soon)`}
-                    className="h-7 w-7 rounded-[7px]"
-                    style={{
-                      background: c.value,
-                      border: '2px solid transparent',
-                      outline: '1px solid var(--border)',
-                      opacity: 0.5,
-                      cursor: 'not-allowed',
-                    }}
-                  />
-                ))}
-              </div>
-            </Field>
-          </SCard>
-
-          <SCard
-            title="Defaults"
-            description="Where the project opens and how new work is scoped. Not configurable yet — these defaults are fixed for now."
-          >
-            <Field
-              label="Default branch"
-              labelRight={<ComingSoon />}
-              hint="The branch new sessions land on."
-              htmlFor="proj-default-branch"
-            >
-              <Select id="proj-default-branch" value="main" options={['main']} disabled />
-            </Field>
-            <Field label="Default environment" labelRight={<ComingSoon />} htmlFor="proj-default-env">
-              <Select
-                id="proj-default-env"
-                value="production"
-                options={['production', 'staging', 'development']}
-                disabled
-              />
-            </Field>
-            <Field
-              label="Timezone"
-              labelRight={<ComingSoon />}
-              hint="Used for charts, schedules and digests."
-              last
-              htmlFor="proj-timezone"
-            >
-              <Select id="proj-timezone" value="Europe/Berlin" options={['Europe/Berlin', 'UTC']} disabled />
             </Field>
           </SCard>
 

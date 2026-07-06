@@ -95,7 +95,7 @@ describe('ProjectGeneralSection', () => {
     expect(calls).toContain('POST /api/v1/projects/demo/search/reindex')
   })
 
-  it('renders preview-only accent + defaults as disabled "Coming soon" controls', async () => {
+  it('hides the unfinished "Coming soon" project-config fields for release', async () => {
     vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
       const url = String(input)
       if (url.endsWith('/api/v1/projects/demo')) return jsonResponse(PROJECT)
@@ -104,22 +104,39 @@ describe('ProjectGeneralSection', () => {
 
     renderSection()
 
-    // Accent swatches must be inert (disabled), not interactive-looking no-ops.
-    const swatches = await screen.findAllByRole('button', { name: /Accent color:/ })
-    expect(swatches.length).toBeGreaterThan(0)
-    swatches.forEach((swatch) => expect(swatch).toBeDisabled())
+    // Wait for the project to load (the Save button renders once it resolves).
+    await screen.findByRole('button', { name: /Save/i })
 
-    // Defaults selects (branch / environment / timezone) must be disabled. The
-    // owner-only danger-zone period selects are separate, enabled comboboxes, so
-    // assert on the disabled subset.
-    const disabledSelects = screen
+    // The four preview-only fields (accent color + the Defaults trio) are gone.
+    // "Timezone" here is scoped to this section — ProfileSection's real Timezone
+    // is a different component and is not rendered in this tree.
+    expect(screen.queryByText('Accent color')).toBeNull()
+    expect(screen.queryByText('Default branch')).toBeNull()
+    expect(screen.queryByText('Default environment')).toBeNull()
+    expect(screen.queryByText('Timezone')).toBeNull()
+
+    // No inert "Coming soon" badges survive in the release view.
+    expect(screen.queryByText(/Coming soon/i)).toBeNull()
+
+    // Every remaining <select> in the section is an enabled danger-zone period
+    // control — there are no disabled preview selects left.
+    screen
       .getAllByRole('combobox')
-      .filter((select) => (select as HTMLSelectElement).disabled)
-    expect(disabledSelects).toHaveLength(3)
-    disabledSelects.forEach((select) => expect(select).toBeDisabled())
+      .forEach((select) => expect(select).not.toBeDisabled())
+  })
 
-    // Every inert section carries an explicit "Coming soon" note.
-    expect(screen.getAllByText(/Coming soon/i).length).toBeGreaterThan(0)
+  it('cross-links to the in-app Project operations surface', async () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = String(input)
+      if (url.endsWith('/api/v1/projects/demo')) return jsonResponse(PROJECT)
+      throw new Error(`Unhandled fetch: ${url}`)
+    })
+
+    renderSection()
+
+    expect(
+      await screen.findByRole('button', { name: /Project operations/i }),
+    ).toBeInTheDocument()
   })
 
   it('exposes a Delete project danger action for owners', async () => {

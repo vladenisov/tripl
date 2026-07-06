@@ -1,4 +1,4 @@
-import { useId, useMemo } from 'react'
+import { useId, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import {
   Area,
   Bar,
@@ -12,6 +12,7 @@ import {
   YAxis,
 } from 'recharts'
 import { cn } from '@/lib/utils'
+import { axisWidthForValues, formatCount } from '@/components/ui/chart-format'
 import type { MetricsGranularity } from '@/lib/metrics'
 import { useTheme, type ChartStyle } from '@/components/theme-provider'
 import type { ChartAnnotation, EventMetricPoint, ForecastPoint } from '@/types'
@@ -103,10 +104,57 @@ function formatTooltipLabel(dateStr: string, granularity: MetricsGranularity) {
   }
 }
 
-function formatCount(value: number) {
-  if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(1)}M`
-  if (value >= 1_000) return `${(value / 1_000).toFixed(1)}k`
-  return String(value)
+function collectChartYValues(data: ChartDataPoint[]): number[] {
+  const values: number[] = []
+  for (const point of data) {
+    if (point.count != null) values.push(point.count)
+    if (point.expected_count != null) values.push(point.expected_count)
+    if (point.band) values.push(point.band[0], point.band[1])
+    if (point.forecast_expected != null) values.push(point.forecast_expected)
+    if (point.forecast_band) values.push(point.forecast_band[0], point.forecast_band[1])
+  }
+  return values
+}
+
+function collectMultiSeriesYValues(
+  rows: Array<Record<string, string | number | boolean>>,
+): number[] {
+  const values: number[] = []
+  for (const row of rows) {
+    for (const value of Object.values(row)) {
+      if (typeof value === 'number') values.push(value)
+    }
+  }
+  return values
+}
+
+/**
+ * Track whether the chart's container has a positive on-screen size. Recharts'
+ * ResponsiveContainer logs "The width(-1) and height(-1) of chart should be
+ * greater than 0" when it mounts inside a zero-size parent (a collapsed tab, or
+ * a collapsible mid-open animation). Gate the ResponsiveContainer on a real
+ * measured size so recharts never receives -1. The wrapper keeps its fixed
+ * height and `w-full` regardless, so nothing shifts while we wait for a size.
+ */
+function useChartContainerReady() {
+  const ref = useRef<HTMLDivElement | null>(null)
+  const [ready, setReady] = useState(false)
+
+  useLayoutEffect(() => {
+    const element = ref.current
+    if (!element) return
+    const measure = () => {
+      const { width, height } = element.getBoundingClientRect()
+      setReady(width > 0 && height > 0)
+    }
+    measure()
+    if (typeof ResizeObserver === 'undefined') return
+    const observer = new ResizeObserver(measure)
+    observer.observe(element)
+    return () => observer.disconnect()
+  }, [])
+
+  return { ref, ready }
 }
 
 // Width of the confidence band drawn around expected_count: ±2σ ≈ 95%
@@ -332,6 +380,11 @@ export function MetricsChart({
     () => snapAnnotationsToBuckets(annotations, chartData),
     [annotations, chartData],
   )
+  const { ref: containerRef, ready: containerReady } = useChartContainerReady()
+  const yAxisWidth = useMemo(
+    () => axisWidthForValues(collectChartYValues(chartData), valueFormatter ?? formatCount),
+    [chartData, valueFormatter],
+  )
 
   if (!data.length) {
     return (
@@ -345,6 +398,7 @@ export function MetricsChart({
 
   return (
     <div
+      ref={containerRef}
       role="img"
       aria-label={`${seriesLabel} over time`}
       aria-describedby={descId}
@@ -369,7 +423,8 @@ export function MetricsChart({
           </span>
         ))}
       </div>
-      <ResponsiveContainer width="100%" height="100%">
+      {containerReady ? (
+        <ResponsiveContainer width="100%" height="100%">
         <ComposedChart data={chartData} margin={{ top: 8, right: 8, bottom: 0, left: 0 }}>
           <defs>
             <linearGradient id={gradientId} x1="0" y1="0" x2="0" y2="1">
@@ -392,7 +447,7 @@ export function MetricsChart({
             tickLine={false}
             axisLine={false}
             tickMargin={8}
-            width={48}
+            width={yAxisWidth}
           />
           <Tooltip
             content={
@@ -471,7 +526,8 @@ export function MetricsChart({
             />
           ))}
         </ComposedChart>
-      </ResponsiveContainer>
+        </ResponsiveContainer>
+      ) : null}
     </div>
   )
 }
@@ -519,6 +575,11 @@ export function MetricsMultiSeriesChart({
       String(left.bucket).localeCompare(String(right.bucket)),
     )
   }, [chartSeries])
+  const { ref: containerRef, ready: containerReady } = useChartContainerReady()
+  const yAxisWidth = useMemo(
+    () => axisWidthForValues(collectMultiSeriesYValues(chartData), formatCount),
+    [chartData],
+  )
 
   if (!chartSeries.length || !chartData.length) {
     return (
@@ -532,6 +593,7 @@ export function MetricsMultiSeriesChart({
 
   return (
     <div
+      ref={containerRef}
       role="img"
       aria-label={`${multiSeriesLabel} breakdown over time`}
       className={cn('w-full', className)}
@@ -546,7 +608,8 @@ export function MetricsMultiSeriesChart({
           ) : null
         })}
       </div>
-      <ResponsiveContainer width="100%" height="100%">
+      {containerReady ? (
+        <ResponsiveContainer width="100%" height="100%">
         <ComposedChart data={chartData} margin={{ top: 8, right: 8, bottom: 0, left: 0 }}>
           <CartesianGrid strokeDasharray="3 3" className="stroke-border" vertical={false} />
           <XAxis
@@ -563,7 +626,7 @@ export function MetricsMultiSeriesChart({
             tickLine={false}
             axisLine={false}
             tickMargin={8}
-            width={48}
+            width={yAxisWidth}
           />
           <Tooltip content={<MultiSeriesTooltip granularity={granularity} seriesLabel={seriesLabel} />} />
           {chartSeries.map(item => (
@@ -594,7 +657,8 @@ export function MetricsMultiSeriesChart({
             />
           ))}
         </ComposedChart>
-      </ResponsiveContainer>
+        </ResponsiveContainer>
+      ) : null}
     </div>
   )
 }

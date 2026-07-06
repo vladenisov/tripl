@@ -1,4 +1,4 @@
-import { Code2, Plus, Search, Sparkles, X } from 'lucide-react'
+import { Code2, MoreHorizontal, Plus, Search, Sparkles, X } from 'lucide-react'
 import type { FieldDefinition, MetaFieldDefinition } from '@/types'
 import { EVENT_STATUS_LABELS, EVENT_STATUSES, type EventStatus } from '@/lib/eventStatus'
 import { Button } from '@/components/ui/button'
@@ -10,9 +10,16 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select'
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu'
 import { ColumnsMenu } from './ColumnsMenu'
 import { SavedViewsMenu } from './SavedViewsMenu'
 import type { EventsSavedView } from './savedViews'
+import type { EventsSortOrder } from './useEventsQuery'
 
 const FILTER_TRIGGER_CLASS =
   'h-8 w-auto gap-1.5 border-dashed bg-transparent text-[11.5px] text-[var(--fg-muted)]'
@@ -25,6 +32,8 @@ export function EventsToolbar({
   onFilterStatusesChange,
   filterSilentDays,
   onFilterSilentDaysChange,
+  sortOrder,
+  onSortOrderChange,
   hasActiveFilters,
   onClearFilters,
   savedViews,
@@ -50,6 +59,8 @@ export function EventsToolbar({
   onFilterStatusesChange: (value: EventStatus[]) => void
   filterSilentDays: number | undefined
   onFilterSilentDaysChange: (value: number | undefined) => void
+  sortOrder: EventsSortOrder
+  onSortOrderChange: (value: EventsSortOrder) => void
   hasActiveFilters: boolean
   onClearFilters: () => void
   savedViews: EventsSavedView[]
@@ -70,9 +81,9 @@ export function EventsToolbar({
 }) {
   const singleStatus = filterStatuses.length === 1 ? filterStatuses[0] : undefined
   return (
-    <div className="mb-3 flex items-center gap-2 overflow-x-auto">
+    <div className="mb-3 flex flex-wrap items-center gap-2">
       {/* Primary — find: full-text filter */}
-      <div className="relative max-w-[320px] flex-1 shrink-0">
+      <div className="relative min-w-[200px] max-w-[320px] flex-1">
         <Search className="absolute left-2.5 top-2 h-3.5 w-3.5 text-muted-foreground" aria-hidden="true" />
         <Input
           aria-label="Filter events by name, tag, or field"
@@ -127,6 +138,19 @@ export function EventsToolbar({
             <SelectItem value="30">Silent &gt; 30d</SelectItem>
           </SelectContent>
         </Select>
+        <Select
+          value={sortOrder}
+          onValueChange={value => onSortOrderChange(value as EventsSortOrder)}
+        >
+          <SelectTrigger className={FILTER_TRIGGER_CLASS} aria-label="Sort order">
+            <span style={{ color: 'var(--fg-subtle)' }}>Sort</span>
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="catalog">Catalog order</SelectItem>
+            <SelectItem value="volume">Busiest first</SelectItem>
+          </SelectContent>
+        </Select>
         {hasActiveFilters && (
           <Button
             variant="ghost"
@@ -166,24 +190,36 @@ export function EventsToolbar({
 
         <ToolbarDivider />
 
-        {/* Utility — Ask AI (differentiator) + export */}
-        <div className="flex items-center gap-2">
-          <Button
-            variant="outline"
-            size="sm"
-            className="h-8 text-xs"
-            style={{ borderColor: 'var(--accent)', color: 'var(--accent)' }}
-            disabled
-            title="Ask AI about these events — coming soon"
-          >
-            <Sparkles className="h-3 w-3" />
-            Ask AI
-          </Button>
-          <Button variant="secondary" size="sm" className="h-8 text-xs" disabled>
-            <Code2 className="h-3 w-3" />
-            Export
-          </Button>
-        </div>
+        {/* Utility — Ask AI (differentiator) + export, collapsed into an
+            overflow menu so the toolbar never needs a horizontal scrollbar */}
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <Button variant="outline" size="sm" className="h-8 text-xs" aria-label="More actions">
+              <MoreHorizontal className="h-3.5 w-3.5" />
+              More
+            </Button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="end" sideOffset={6} className="w-[188px]">
+            <DropdownMenuItem
+              className="text-[12.5px]"
+              disabled
+              title="Ask AI about these events — coming soon"
+            >
+              <Sparkles className="h-3.5 w-3.5 shrink-0" style={{ color: 'var(--accent)' }} />
+              Ask AI
+              <span className="ml-auto text-[10px]" style={{ color: 'var(--fg-faint)' }}>
+                soon
+              </span>
+            </DropdownMenuItem>
+            <DropdownMenuItem className="text-[12.5px]" disabled title="Export events — coming soon">
+              <Code2 className="h-3.5 w-3.5 shrink-0" style={{ color: 'var(--fg-subtle)' }} />
+              Export
+              <span className="ml-auto text-[10px]" style={{ color: 'var(--fg-faint)' }}>
+                soon
+              </span>
+            </DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
 
         <ToolbarDivider />
 

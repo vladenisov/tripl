@@ -73,6 +73,16 @@ function actionTone(action: string) {
   return ACTION_TONE[verb] ?? 'bg-muted text-muted-foreground'
 }
 
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+
+// Some audit targets (e.g. scan_job.cancel) record a raw UUID as the name.
+// A full UUID is unreadable in a dense row, so show a short prefix instead.
+function displayTarget(entry: { target_name?: string | null; target_type: string }): string {
+  const name = entry.target_name
+  if (!name) return entry.target_type
+  return UUID_RE.test(name) ? name.slice(0, 8) : name
+}
+
 function formatTimestamp(iso: string) {
   const date = new Date(iso)
   if (Number.isNaN(date.getTime())) return iso
@@ -198,7 +208,9 @@ export function AuditTab({ slug }: { slug: string }) {
               </div>
             </div>
             <div className="col-span-6 sm:col-span-2 grid gap-1">
-              <Label htmlFor="audit-since" className="text-[11px] text-muted-foreground">From</Label>
+              <Label htmlFor="audit-since" className="text-[11px] text-muted-foreground">
+                From <span className="opacity-70">(YYYY-MM-DD)</span>
+              </Label>
               <Input
                 id="audit-since"
                 type="date"
@@ -208,7 +220,9 @@ export function AuditTab({ slug }: { slug: string }) {
               />
             </div>
             <div className="col-span-6 sm:col-span-2 grid gap-1">
-              <Label htmlFor="audit-until" className="text-[11px] text-muted-foreground">To</Label>
+              <Label htmlFor="audit-until" className="text-[11px] text-muted-foreground">
+                To <span className="opacity-70">(YYYY-MM-DD)</span>
+              </Label>
               <Input
                 id="audit-until"
                 type="date"
@@ -264,8 +278,11 @@ export function AuditTab({ slug }: { slug: string }) {
                       <Badge className={`${actionTone(entry.action)} text-[10px] shrink-0`}>
                         {entry.action}
                       </Badge>
-                      <span className="font-mono text-[11px] truncate">
-                        {entry.target_name || entry.target_type}
+                      <span
+                        className="font-mono text-[11px] truncate"
+                        title={entry.target_name ?? undefined}
+                      >
+                        {displayTarget(entry)}
                       </span>
                       <span className="ml-auto text-muted-foreground text-[11px] truncate">
                         {entry.user_email}

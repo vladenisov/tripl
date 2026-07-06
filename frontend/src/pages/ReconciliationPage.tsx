@@ -193,7 +193,7 @@ export default function ReconciliationPage() {
         title="Data match"
         subtitle={
           coverage
-            ? `${coverage.summary.matched_count} of ${coverage.summary.total_count} planned events seen in data · ${coverage.days}d`
+            ? `${coverage.summary.matched_count.toLocaleString()} of ${coverage.summary.total_count.toLocaleString()} planned events seen in data · ${coverage.days}d`
             : undefined
         }
       >
@@ -659,6 +659,7 @@ function DeadRow({
         to={slug ? getMonitoringPath(slug, { scope_type: 'event', scope_ref: item.event_id }) : '#'}
         className="mono min-w-0 flex-1 truncate text-[12px] hover:underline"
         style={{ color: 'var(--fg-muted)' }}
+        title={item.name}
       >
         <EventName name={item.name} />
       </Link>

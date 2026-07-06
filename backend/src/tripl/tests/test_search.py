@@ -354,6 +354,150 @@ async def test_search_filters_archived_and_excludes_sensitive_values(client: Asy
     assert secret_resp.json()["items"] == []
 
 
+async def _create_fact_table(
+    client: AsyncClient,
+    slug: str,
+    *,
+    name: str = "orders_ft",
+    display_name: str = "Orders Fact",
+) -> dict:
+    resp = await client.post(
+        f"/api/v1/projects/{slug}/fact-tables",
+        json={
+            "name": name,
+            "display_name": display_name,
+            "description": "Orders rowset",
+            "sql": "SELECT created_at, amount, user_id FROM orders",
+            "timestamp_column": "created_at",
+            "columns": [
+                {"name": "created_at", "type": "timestamp"},
+                {"name": "amount", "type": "number"},
+                {"name": "user_id", "type": "string"},
+            ],
+            "identifier_columns": ["user_id"],
+            "row_filters": [{"name": "exclude_test", "sql": "is_test = 0"}],
+        },
+    )
+    assert resp.status_code == 201, resp.text
+    return resp.json()
+
+
+async def _create_fact_metric(
+    client: AsyncClient,
+    slug: str,
+    fact_table_id: str,
+    *,
+    name: str = "revenue_total",
+    display_name: str = "Revenue Total",
+    **extra: object,
+) -> dict:
+    resp = await client.post(
+        f"/api/v1/projects/{slug}/metrics",
+        json={
+            "kind": "fact",
+            "name": name,
+            "display_name": display_name,
+            "composition": "single",
+            "fact_table_id": fact_table_id,
+            "aggregation": "sum",
+            "interval": "1h",
+            "measure_column": "amount",
+            **extra,
+        },
+    )
+    assert resp.status_code == 201, resp.text
+    return resp.json()
+
+
+@pytest.mark.asyncio
+async def test_metric_and_fact_table_creation_indexes_them_for_search(
+    client: AsyncClient,
+) -> None:
+    await client.post("/api/v1/projects", json={"name": "Catalog", "slug": "search-catalog"})
+    await _create_event_type(client, "search-catalog", name="pv", display_name="Page View")
+    # Seed the index BEFORE the catalog entities exist, so the hits below can
+    # only come from the CRUD-triggered reindex (not from the lazy index build
+    # a first search performs on an empty index).
+    seeded = await client.get("/api/v1/projects/search-catalog/search?q=Page")
+    assert seeded.status_code == 200
+    assert seeded.json()["items"]
+
+    fact_table = await _create_fact_table(client, "search-catalog")
+    metric = await _create_fact_metric(
+        client, "search-catalog", fact_table["id"], description="Sum of order amounts"
+    )
+
+    metric_resp = await client.get(
+        "/api/v1/projects/search-catalog/search?q=Revenue Total&types=metric"
+    )
+    assert metric_resp.status_code == 200
+    metric_items = metric_resp.json()["items"]
+    assert [item["entity_type"] for item in metric_items] == ["metric"]
+    assert metric_items[0]["title"] == "Revenue Total"
+    assert metric_items[0]["subtitle"] == "revenue_total"
+    assert metric_items[0]["description"] == "Sum of order amounts"
+    assert metric_items[0]["route_path"] == f"/p/search-catalog/monitoring/metric/{metric['id']}"
+
+    # The metric is also reachable through its internal name (keywords).
+    by_name = await client.get("/api/v1/projects/search-catalog/search?q=revenue_total")
+    assert any(item["entity_type"] == "metric" for item in by_name.json()["items"])
+
+    ft_resp = await client.get(
+        "/api/v1/projects/search-catalog/search?q=orders_ft&types=fact_table"
+    )
+    assert ft_resp.status_code == 200
+    ft_items = ft_resp.json()["items"]
+    assert [item["entity_type"] for item in ft_items] == ["fact_table"]
+    assert ft_items[0]["title"] == "Orders Fact"
+    assert (
+        ft_items[0]["route_path"]
+        == f"/p/search-catalog/metrics/fact-tables/{fact_table['id']}/edit"
+    )
+
+
+@pytest.mark.asyncio
+async def test_metric_update_archive_and_delete_are_reflected_in_search(
+    client: AsyncClient,
+) -> None:
+    await client.post("/api/v1/projects", json={"name": "Catalog2", "slug": "search-catalog2"})
+    await _create_event_type(client, "search-catalog2", name="pv", display_name="Page View")
+    fact_table = await _create_fact_table(client, "search-catalog2")
+    metric = await _create_fact_metric(client, "search-catalog2", fact_table["id"])
+
+    renamed = await client.patch(
+        f"/api/v1/projects/search-catalog2/metrics/{metric['id']}",
+        json={"display_name": "Net Revenue"},
+    )
+    assert renamed.status_code == 200
+
+    new_title = await client.get(
+        "/api/v1/projects/search-catalog2/search?q=Net Revenue&types=metric"
+    )
+    assert [item["title"] for item in new_title.json()["items"]] == ["Net Revenue"]
+
+    archived = await client.patch(
+        f"/api/v1/projects/search-catalog2/metrics/{metric['id']}",
+        json={"status": "archived"},
+    )
+    assert archived.status_code == 200
+
+    hidden = await client.get("/api/v1/projects/search-catalog2/search?q=Net Revenue&types=metric")
+    assert hidden.json()["items"] == []
+
+    included = await client.get(
+        "/api/v1/projects/search-catalog2/search?q=Net Revenue&types=metric&include_archived=true"
+    )
+    assert [item["title"] for item in included.json()["items"]] == ["Net Revenue"]
+
+    deleted = await client.delete(f"/api/v1/projects/search-catalog2/metrics/{metric['id']}")
+    assert deleted.status_code == 204
+
+    gone = await client.get(
+        "/api/v1/projects/search-catalog2/search?q=Net Revenue&types=metric&include_archived=true"
+    )
+    assert gone.json()["items"] == []
+
+
 def test_finalize_confidence_prefers_exact_token_value_matches() -> None:
     # Emulates the "ecmwf exists in property values" case:
     # the event that contains an exact token value should rank above

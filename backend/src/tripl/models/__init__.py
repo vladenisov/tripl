@@ -27,6 +27,7 @@ from tripl.models.event_type_owner import EventTypeOwner
 from tripl.models.event_type_relation import EventTypeRelation
 from tripl.models.fact_table import FactTable
 from tripl.models.field_definition import FieldDefinition
+from tripl.models.implementation_ticket import ImplementationTicket
 from tripl.models.meta_field_definition import MetaFieldDefinition
 from tripl.models.metric_anomaly import MetricAnomaly
 from tripl.models.metric_breakdown_anomaly import MetricBreakdownAnomaly
@@ -42,6 +43,7 @@ from tripl.models.plan_revision import PlanRevision
 from tripl.models.project import Project
 from tripl.models.project_anomaly_settings import ProjectAnomalySettings
 from tripl.models.project_branch_settings import ProjectBranchSettings
+from tripl.models.project_tracker_config import ProjectTrackerConfig
 from tripl.models.release_regression import ReleaseRegression
 from tripl.models.scan_config import ScanConfig
 from tripl.models.scan_job import ScanJob
@@ -84,6 +86,7 @@ __all__ = [
     "EventMetricBreakdown",
     "EventPhoto",
     "EventPhotoComment",
+    "ImplementationTicket",
     "MetricAnomaly",
     "MetricBreakdownAnomaly",
     "MetricDefinition",
@@ -97,6 +100,7 @@ __all__ = [
     "PlanRevision",
     "ProjectAnomalySettings",
     "ProjectBranchSettings",
+    "ProjectTrackerConfig",
     "ReleaseRegression",
     "Variable",
     "DataSource",

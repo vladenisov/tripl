@@ -15,6 +15,21 @@ export const GRANULARITY_OPTIONS: { value: MetricsGranularity; label: string }[]
   { value: 'month', label: 'Months' },
 ]
 
+/**
+ * Default chart granularity for a selected day-range, sized so the series stays
+ * readable instead of collapsing into an unreadable comb. Hourly buckets over a
+ * month are ~720 points; following the range keeps the point count in the tens.
+ *
+ * Used as the *default* only — a manual granularity pick overrides it and stays
+ * sticky across range changes. Catalog-metric drilldowns bypass this and follow
+ * their collection interval instead (see MonitoringDetailPage).
+ */
+export function defaultGranularityForRange(rangeDays: number): MetricsGranularity {
+  if (rangeDays <= 7) return 'hour'
+  if (rangeDays <= 30) return 'day'
+  return 'week'
+}
+
 export function getBucketStart(dateStr: string, granularity: MetricsGranularity): string {
   const date = new Date(dateStr)
   let normalized: Date

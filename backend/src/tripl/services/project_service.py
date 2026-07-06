@@ -21,7 +21,7 @@ from tripl.models.event_type import EventType
 from tripl.models.metric_anomaly import MetricAnomaly
 from tripl.models.project import Project
 from tripl.models.scan_config import ScanConfig
-from tripl.models.scan_job import ScanJob
+from tripl.models.scan_job import ScanJob, ScanJobStatus
 from tripl.models.variable import Variable
 from tripl.schemas.project import (
     ProjectCreate,
@@ -113,10 +113,57 @@ async def _get_project_summaries(
         summaries[project_id].alert_destination_count = int(alert_destination_count or 0)
 
     await _populate_latest_scan_jobs(session, summaries)
+    await _populate_failing_scan_configs(session, summaries)
     await _populate_monitoring_signals(session, summaries)
     await _populate_firing_monitor_counts(session, summaries)
 
     return summaries
+
+
+async def _populate_failing_scan_configs(
+    session: AsyncSession,
+    summaries: dict[uuid.UUID, ProjectSummary],
+) -> None:
+    """Count, per project, the scan configs whose *latest* run failed.
+
+    ``_populate_latest_scan_jobs`` ranks jobs ``partition_by`` project, so it only
+    ever sees the single newest job across the whole project. A config that fails
+    every run then disappears from the "failed jobs" surface the moment a
+    *different* config records a newer success. This rollup ranks jobs
+    ``partition_by`` scan_config instead, keeping each config's most recent job,
+    and counts the configs whose top job is ``failed``. A project with any such
+    config is surfaced as having failed jobs even when its newest job overall
+    succeeded.
+    """
+    if not summaries:
+        return
+
+    ranked_jobs = (
+        select(
+            ScanConfig.project_id.label("project_id"),
+            ScanJob.status.label("status"),
+            func.row_number()
+            .over(
+                partition_by=ScanJob.scan_config_id,
+                order_by=(ScanJob.created_at.desc(), ScanJob.id.desc()),
+            )
+            .label("row_number"),
+        )
+        .join(ScanConfig, ScanConfig.id == ScanJob.scan_config_id)
+        .where(ScanConfig.project_id.in_(list(summaries)))
+        .subquery()
+    )
+
+    rows = await session.execute(
+        select(ranked_jobs.c.project_id, func.count())
+        .where(
+            ranked_jobs.c.row_number == 1,
+            ranked_jobs.c.status == ScanJobStatus.failed.value,
+        )
+        .group_by(ranked_jobs.c.project_id)
+    )
+    for project_id, failing_count in rows.all():
+        summaries[project_id].failing_scan_config_count = int(failing_count or 0)
 
 
 async def _populate_firing_monitor_counts(

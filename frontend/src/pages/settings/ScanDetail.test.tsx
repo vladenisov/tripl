@@ -255,4 +255,52 @@ describe('ScanDetail', () => {
 
     expect(await screen.findByText('No platform column configured')).toBeInTheDocument()
   })
+
+  it('collapses a wall of consecutive failed runs behind an expander (tripl-7l83.4)', async () => {
+    const failedJob = (id: string, startedAt: string) => ({
+      id,
+      scan_config_id: 'scan-1',
+      status: 'failed',
+      started_at: startedAt,
+      completed_at: startedAt,
+      result_summary: null,
+      error_message: 'Read timed out.',
+      created_at: startedAt,
+      updated_at: startedAt,
+    })
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async input => {
+      const url = String(input)
+      if (url.endsWith('/platform-presence')) {
+        return mockJsonResponse({ scan_config_id: 'scan-1', platform_column: null, platforms: [], items: [] })
+      }
+      if (url.endsWith('/api/v1/projects/demo/scans/scan-1/jobs')) {
+        return mockJsonResponse([
+          failedJob('j1', '2026-01-04T00:00:00Z'),
+          failedJob('j2', '2026-01-03T00:00:00Z'),
+          failedJob('j3', '2026-01-02T00:00:00Z'),
+          failedJob('j4', '2026-01-01T00:00:00Z'),
+        ])
+      }
+      throw new Error(`Unhandled fetch: ${url}`)
+    })
+
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    render(
+      <QueryClientProvider client={queryClient}>
+        <ScanDetail slug="demo" scanConfig={scanConfig} eventTypes={[]} branchId={null} />
+      </QueryClientProvider>,
+    )
+
+    // The streak banner summarizes the four failures...
+    expect(await screen.findByText(/Failed last 4 runs/)).toBeInTheDocument()
+    // ...and the four identical failed rows collapse behind one expander, so no
+    // per-row Retry actions are shown until the streak is expanded.
+    const expander = screen.getByRole('button', { name: /Show 4 repeated failed runs/ })
+    expect(screen.queryAllByRole('button', { name: 'Retry scan' })).toHaveLength(0)
+
+    // Expanding reveals the individual failed job rows.
+    fireEvent.click(expander)
+    expect(screen.getByRole('button', { name: /Hide 4 repeated failed runs/ })).toBeInTheDocument()
+    expect(screen.getAllByRole('button', { name: 'Retry scan' })).toHaveLength(4)
+  })
 })

@@ -1,5 +1,5 @@
 import uuid
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
 
 import pytest
 from httpx import AsyncClient
@@ -9,6 +9,8 @@ from sqlalchemy.orm import sessionmaker
 from tripl.core.adapters.base import ColumnInfo
 from tripl.core.analyzers.preview import build_json_paths_payload, build_preview_payload
 from tripl.models import Base, DataSource, Project, ScanConfig, ScanJob, ScanPreviewJob
+from tripl.models.scan_job import ScanJobStatus
+from tripl.tests.conftest import TestSessionLocal
 from tripl.worker.tasks import _errors as task_errors
 from tripl.worker.tasks import metrics
 from tripl.worker.tasks import scan as scan_tasks
@@ -1086,6 +1088,19 @@ class TestScanConfigsCRUD:
         assert "warehouse.internal" not in timeout_msg
         assert "8123" not in timeout_msg
 
+        # Celery's soft/hard time-limit exceptions carry no "timeout" word, but a
+        # scan that hits the task time limit is a data-source timeout in effect —
+        # it must categorize as one, not fall through to the generic message.
+        for limit_text in (
+            "SoftTimeLimitExceeded()",
+            "Task handler raised error: TimeLimitExceeded(3600.0,)",
+            "soft time limit (300s) exceeded",
+        ):
+            assert (
+                scan_tasks._user_facing_error(Exception(limit_text))
+                == "Scan failed: the data source did not respond in time."
+            )
+
         # A connection failure (ClickHouse driver text) -> friendly summary.
         refused = ConnectionError("clickhouse-connect: Connection refused to 10.0.0.4:9000")
         refused_msg = scan_tasks._user_facing_error(refused)
@@ -1100,9 +1115,10 @@ class TestScanConfigsCRUD:
             "https://sqlalche.me/e/20/7s2a)"
         )
         orm_msg = scan_tasks._user_facing_error(orm)
-        assert orm_msg == (
-            "Scan failed due to an internal error. Please try again or contact support."
-        )
+        # Self-hosted: the operator is support, so the message drops the
+        # "contact support" line and keeps only the actionable fact.
+        assert orm_msg == "Scan failed due to an internal error."
+        assert "contact support" not in orm_msg.lower()
         assert "sqlalche" not in orm_msg.lower()
         assert "flush" not in orm_msg.lower()
 
@@ -1320,3 +1336,167 @@ class TestScanConfigsCRUD:
         # so the metrics task sanitises with identical logic.
         assert scan_tasks.ScanError is task_errors.ScanError
         assert scan_tasks._user_facing_error is task_errors.user_facing_error
+
+
+async def _create_scan(client: AsyncClient, project: dict, data_source: dict, name: str) -> str:
+    resp = await client.post(
+        f"/api/v1/projects/{project['slug']}/scans",
+        json={
+            "data_source_id": data_source["id"],
+            "name": name,
+            "base_query": "SELECT * FROM events",
+        },
+    )
+    assert resp.status_code == 201, resp.text
+    return resp.json()["id"]
+
+
+class TestFailedScanRuns:
+    """Failed-run affordances backing the scans settings page (tripl-7l83.4):
+
+    the underlying error is surfaced on the run, the jobs feed carries enough
+    history to show a failing streak, and "Run again" reuses the manual trigger.
+    """
+
+    async def test_run_marks_job_failed_and_exposes_error_when_broker_down(
+        self,
+        client: AsyncClient,
+        project: dict,
+        data_source: dict,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        scan_id = await _create_scan(client, project, data_source, "Broker-down scan")
+
+        # Dispatch raises → trigger_scan flips the job to failed and records a
+        # short, safe reason on the user-facing error_message field.
+        def boom(*_a: object, **_k: object) -> None:
+            raise RuntimeError("celery broker gone")
+
+        monkeypatch.setattr(scan_tasks.run_scan, "delay", boom)
+
+        run_resp = await client.post(
+            f"/api/v1/projects/{project['slug']}/scans/{scan_id}/run"
+        )
+        assert run_resp.status_code == 201
+        body = run_resp.json()
+        assert body["status"] == "failed"
+        assert body["error_message"]  # non-null: the reason is surfaced
+        assert "broker" in body["error_message"].lower()
+
+    async def test_failed_job_error_message_surfaced_via_jobs_list(
+        self,
+        client: AsyncClient,
+        project: dict,
+        data_source: dict,
+    ) -> None:
+        scan_id = await _create_scan(client, project, data_source, "Errored scan")
+        curated = "Scan failed: the data source did not respond in time."
+
+        async with TestSessionLocal() as session:
+            session.add(
+                ScanJob(
+                    scan_config_id=uuid.UUID(scan_id),
+                    status=ScanJobStatus.failed.value,
+                    error_message=curated,
+                )
+            )
+            await session.commit()
+
+        jobs_resp = await client.get(
+            f"/api/v1/projects/{project['slug']}/scans/{scan_id}/jobs"
+        )
+        assert jobs_resp.status_code == 200
+        jobs = jobs_resp.json()
+        assert len(jobs) == 1
+        assert jobs[0]["status"] == "failed"
+        msg = jobs[0]["error_message"]
+        # The stored reason round-trips verbatim and stays short enough to render
+        # in a row (curated messages are capped at ~500 chars at write time).
+        assert msg == curated
+        assert len(msg) <= 500
+
+    async def test_jobs_history_supports_failing_streak_count(
+        self,
+        client: AsyncClient,
+        project: dict,
+        data_source: dict,
+    ) -> None:
+        scan_id = await _create_scan(client, project, data_source, "Streaking scan")
+        config_id = uuid.UUID(scan_id)
+        base = datetime(2026, 1, 1, tzinfo=UTC)
+        failed_msg = "Scan failed: could not connect to the data source."
+
+        # One old success followed by three consecutive recent failures.
+        async with TestSessionLocal() as session:
+            session.add_all(
+                [
+                    ScanJob(
+                        scan_config_id=config_id,
+                        status=ScanJobStatus.completed.value,
+                        created_at=base,
+                    ),
+                    ScanJob(
+                        scan_config_id=config_id,
+                        status=ScanJobStatus.failed.value,
+                        error_message=failed_msg,
+                        created_at=base + timedelta(hours=1),
+                    ),
+                    ScanJob(
+                        scan_config_id=config_id,
+                        status=ScanJobStatus.failed.value,
+                        error_message=failed_msg,
+                        created_at=base + timedelta(hours=2),
+                    ),
+                    ScanJob(
+                        scan_config_id=config_id,
+                        status=ScanJobStatus.failed.value,
+                        error_message=failed_msg,
+                        created_at=base + timedelta(hours=3),
+                    ),
+                ]
+            )
+            await session.commit()
+
+        jobs_resp = await client.get(
+            f"/api/v1/projects/{project['slug']}/scans/{scan_id}/jobs"
+        )
+        assert jobs_resp.status_code == 200
+        jobs = jobs_resp.json()
+        # Newest-first ordering is the contract the settings page relies on to
+        # compute "failed last N runs" from leading consecutive failures.
+        assert [j["status"] for j in jobs] == [
+            "failed",
+            "failed",
+            "failed",
+            "completed",
+        ]
+        streak = 0
+        for job in jobs:
+            if job["status"] != ScanJobStatus.failed.value:
+                break
+            streak += 1
+        assert streak == 3
+
+    async def test_run_again_dispatches_manual_scan(
+        self,
+        client: AsyncClient,
+        project: dict,
+        data_source: dict,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        scan_id = await _create_scan(client, project, data_source, "Rerun scan")
+        dispatched: list[tuple[str, str]] = []
+
+        def fake_delay(scan_config_id: str, scan_job_id: str) -> None:
+            dispatched.append((scan_config_id, scan_job_id))
+
+        monkeypatch.setattr(scan_tasks.run_scan, "delay", fake_delay)
+
+        # "Run again" on the settings page reuses this manual-scan trigger.
+        run_resp = await client.post(
+            f"/api/v1/projects/{project['slug']}/scans/{scan_id}/run"
+        )
+        assert run_resp.status_code == 201
+        body = run_resp.json()
+        assert body["status"] == "pending"
+        assert dispatched == [(scan_id, body["id"])]

@@ -104,6 +104,48 @@ function setupFetch() {
   })
 }
 
+const failedJob = (id: string, ts: string) => ({
+  id,
+  scan_config_id: 'scan-1',
+  status: 'failed',
+  started_at: ts,
+  completed_at: ts,
+  result_summary: null,
+  error_message: 'Scan failed: could not connect to the data source.',
+  created_at: ts,
+  updated_at: ts,
+})
+
+// Fetch stub whose /jobs feed returns the given jobs and whose manual-trigger
+// (POST /scans/scan-1/run) records each call so a test can assert "Run again"
+// hits the existing endpoint.
+function setupFetchWithJobs(jobs: unknown[], runCalls?: { method: string; url: string }[]) {
+  vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+    const url = String(input)
+    const method = (init?.method ?? 'GET').toUpperCase()
+    if (url.includes('/data-sources/') && url.includes('/schema')) return mockJsonResponse({ tables: [] })
+    if (url.endsWith('/api/v1/data-sources')) return mockJsonResponse([dataSource])
+    if (url.endsWith('/api/v1/projects/demo/scans')) return mockJsonResponse([scanConfig])
+    if (url.includes('/scans/scan-1/run')) {
+      runCalls?.push({ method, url })
+      return mockJsonResponse({
+        id: 'job-new',
+        scan_config_id: 'scan-1',
+        status: 'pending',
+        started_at: null,
+        completed_at: null,
+        result_summary: null,
+        error_message: null,
+        created_at: '2026-02-01T00:00:00Z',
+        updated_at: '2026-02-01T00:00:00Z',
+      })
+    }
+    if (url.includes('/scans/scan-1/jobs')) return mockJsonResponse(jobs)
+    if (url.includes('/eventTypes') || url.includes('/event-types')) return mockJsonResponse([])
+    throw new Error(`Unhandled fetch: ${url}`)
+  })
+}
+
 function renderTab() {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   return render(
@@ -170,6 +212,34 @@ describe('ScansTab', () => {
     ).toBeGreaterThanOrEqual(1)
     expect(screen.getAllByText('Failed').length).toBeGreaterThanOrEqual(1)
     expect(screen.queryByText(/clickhouse\.internal/)).not.toBeInTheDocument()
+  })
+
+  it('collapses a failing streak into one "failed last N runs" row with a single Run again', async () => {
+    setupFetchWithJobs([
+      failedJob('job-f3', '2026-01-03T00:00:00Z'),
+      failedJob('job-f2', '2026-01-02T00:00:00Z'),
+      failedJob('job-f1', '2026-01-01T00:00:00Z'),
+    ])
+    renderTab()
+
+    // The three identical failures collapse into one Recent-runs row tagged with
+    // the streak, instead of N repeated failed rows.
+    expect(await screen.findByText(/failed last 3 runs/)).toBeInTheDocument()
+    expect(screen.getAllByRole('button', { name: /Run again/i })).toHaveLength(1)
+  })
+
+  it('re-runs a failed scan from the run row via the manual trigger endpoint', async () => {
+    const runCalls: { method: string; url: string }[] = []
+    setupFetchWithJobs([failedJob('job-f1', '2026-01-01T00:00:00Z')], runCalls)
+    renderTab()
+
+    // A single failure shows no streak badge but still offers Run again.
+    expect(screen.queryByText(/failed last/)).not.toBeInTheDocument()
+    fireEvent.click(await screen.findByRole('button', { name: /Run again/i }))
+
+    await waitFor(() => expect(runCalls.length).toBeGreaterThanOrEqual(1))
+    expect(runCalls[0].method).toBe('POST')
+    expect(runCalls[0].url).toContain('/projects/demo/scans/scan-1/run')
   })
 
   it('navigates to detail by URL (not the in-place create view)', async () => {

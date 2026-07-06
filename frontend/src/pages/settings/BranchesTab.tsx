@@ -1,10 +1,11 @@
 import { useId, useState, type ReactNode } from 'react'
 import { useMutation, useQueries, useQuery, useQueryClient } from '@tanstack/react-query'
-import { GitBranch, GitCompare, GitMerge, Plus, Settings2, Trash2 } from 'lucide-react'
+import { GitBranch, GitCompare, GitMerge, Plus, Settings2, Ticket, Trash2 } from 'lucide-react'
 
 import { branchSettingsApi } from '@/api/branchSettings'
 import { ApiError } from '@/api/client'
 import { planBranchesApi } from '@/api/planBranches'
+import { TrackerConfigDialog } from './TrackerConfigDialog'
 import { useConfirm } from '@/hooks/useConfirm'
 import { Chip, type ChipTone } from '@/components/primitives/chip'
 import { Button } from '@/components/ui/button'
@@ -128,6 +129,7 @@ export function BranchesTab({ slug }: { slug: string }) {
   const { confirm, dialog } = useConfirm()
   const [createOpen, setCreateOpen] = useState(false)
   const [policyOpen, setPolicyOpen] = useState(false)
+  const [trackerOpen, setTrackerOpen] = useState(false)
   const [createName, setCreateName] = useState('')
   const [createDescription, setCreateDescription] = useState('')
   const [activeBranchId, setActiveBranchId] = useState<string | null>(null)
@@ -199,6 +201,10 @@ export function BranchesTab({ slug }: { slug: string }) {
               <Settings2 className="size-3.5" />
               Merge policy
             </Button>
+            <Button size="sm" variant="outline" onClick={() => setTrackerOpen(true)}>
+              <Ticket className="size-3.5" />
+              Implementation tracker
+            </Button>
             <Button size="sm" onClick={() => setCreateOpen(true)}>
               <Plus className="size-3.5" />
               New branch
@@ -228,6 +234,8 @@ export function BranchesTab({ slug }: { slug: string }) {
       </div>
 
       <MergePolicyDialog slug={slug} open={policyOpen} onOpenChange={setPolicyOpen} />
+
+      <TrackerConfigDialog slug={slug} open={trackerOpen} onOpenChange={setTrackerOpen} />
 
       <CreateBranchDialog
         open={createOpen}
