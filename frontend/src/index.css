@@ -172,7 +172,7 @@
   top: 0;
   z-index: 3;
   height: auto;
-  padding: 8px 12px;
+  padding: 8px 10px;
   font-size: 10.5px;
   font-weight: 600;
   color: var(--fg-subtle);
@@ -207,7 +207,7 @@
 }
 
 .tripl-table tbody td {
-  padding: 0 12px;
+  padding: 0 10px;
   border-bottom: 1px solid var(--border-subtle);
   vertical-align: middle;
   white-space: nowrap;
@@ -237,6 +237,22 @@
 }
 .tripl-table tbody tr[data-state="selected"] td.tripl-pin-l {
   background: var(--accent-soft);
+}
+
+/* Leading utility columns — the drag handle (first cell) and the checkbox
+   (.tripl-pin-l) carry no text, so the full 10px gutter just wastes horizontal
+   room the wide catalog needs. These unlayered rules also override the dead
+   Tailwind px-* utilities on the header/row cells. Keep the left cluster tight
+   so more real columns fit before the table has to scroll. */
+.tripl-table thead th:first-child,
+.tripl-table tbody td:first-child {
+  padding-left: 8px;
+  padding-right: 2px;
+}
+.tripl-table thead th.tripl-pin-l,
+.tripl-table tbody td.tripl-pin-l {
+  padding-left: 2px;
+  padding-right: 8px;
 }
 
 /* ── Base Theme ────────────────────────────────────────────────────────── */
