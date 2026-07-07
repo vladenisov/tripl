@@ -792,7 +792,14 @@ export default function MonitoringDetailPage() {
       )}
 
       {isEventDetail && <span ref={metricsRef} aria-hidden className="-mt-5 block scroll-mt-4" />}
-      <Tabs value={selectedTab} onValueChange={value => setActiveTab(value as MonitoringDetailTab)}>
+      {/* On the event-detail layout the tabs follow the stat strip directly, so
+          give them a deliberate gap — the scroll-anchor span above otherwise
+          leaves them flush against the stat cards. */}
+      <Tabs
+        value={selectedTab}
+        onValueChange={value => setActiveTab(value as MonitoringDetailTab)}
+        className={isEventDetail ? 'mt-4' : undefined}
+      >
         <TabsList className="text-fg-muted">
           <TabsTrigger value="volume">{volumeLabel}</TabsTrigger>
           {hasVersionColumn && (
