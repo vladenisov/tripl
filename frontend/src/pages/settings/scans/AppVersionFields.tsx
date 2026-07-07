@@ -84,12 +84,12 @@ export function AppVersionFields({
           />
         </div>
         <div className="grid gap-2">
-          <Label htmlFor="app-version-active-share">Activation traffic share (0–1, optional)</Label>
+          <Label htmlFor="app-version-active-share">Activation traffic share (0–1 exclusive, optional)</Label>
           <Input
             id="app-version-active-share"
             type="number"
-            min={0}
-            max={1}
+            min={0.01}
+            max={0.99}
             step={0.01}
             value={activeShareMin}
             onChange={e => onActiveShareMinChange(e.target.value)}

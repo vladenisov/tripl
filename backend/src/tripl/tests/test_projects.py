@@ -823,6 +823,77 @@ async def test_project_summary_counts_catalog_metric_signal(client: AsyncClient)
 
 
 @pytest.mark.asyncio
+async def test_project_list_counts_catalog_metric_signals_per_project(client: AsyncClient) -> None:
+    """The batched metric-scope counter attributes counts to the right project.
+
+    ``_populate_monitoring_signals`` now counts open metric-scope signals for all
+    listed projects in one batched query instead of a per-project N+1 loop. This
+    guards the batching: two projects each own one fresh catalog-metric anomaly,
+    so the LIST endpoint must report ``monitoring_signal_count == 1`` for EACH —
+    a per-project grouping bug (double-counting or cross-attribution) would skew
+    one of them.
+    """
+    ds_resp = await client.post(
+        "/api/v1/data-sources",
+        json={
+            "name": "Warehouse",
+            "db_type": "clickhouse",
+            "host": "localhost",
+            "port": 8123,
+            "database_name": "analytics",
+            "username": "default",
+            "password": "",
+        },
+    )
+    assert ds_resp.status_code == 201
+    data_source_id = ds_resp.json()["id"]
+
+    slugs = ["batch-metric-a", "batch-metric-b"]
+    async with TestSessionLocal() as session:
+        for slug in slugs:
+            project_resp = await client.post(
+                "/api/v1/projects", json={"name": slug, "slug": slug}
+            )
+            assert project_resp.status_code == 201
+            project_id = uuid.UUID(project_resp.json()["id"])
+            metric_definition_id = uuid.uuid4()
+            session.add(
+                MetricDefinition(
+                    id=metric_definition_id,
+                    project_id=project_id,
+                    name="conversion_rate",
+                    display_name="Conversion Rate",
+                    kind="sql",
+                    config={},
+                    data_source_id=uuid.UUID(data_source_id),
+                    interval="1h",
+                    status="active",
+                    unit="%",
+                )
+            )
+            session.add(
+                MetricValue(
+                    id=uuid.uuid4(),
+                    metric_definition_id=metric_definition_id,
+                    scan_config_id=None,
+                    bucket=_METRIC_BUCKET,
+                    value=1.0,
+                )
+            )
+            session.add(_anomaly(None, "metric", str(metric_definition_id), _METRIC_BUCKET))
+        await session.commit()
+
+    resp = await client.get("/api/v1/projects")
+    assert resp.status_code == 200
+    counts = {
+        item["slug"]: item["summary"]["monitoring_signal_count"]
+        for item in resp.json()
+        if item["slug"] in slugs
+    }
+    assert counts == {"batch-metric-a": 1, "batch-metric-b": 1}, counts
+
+
+@pytest.mark.asyncio
 async def test_reset_anomalies_clears_period_and_covers_metric_scope(client: AsyncClient) -> None:
     ids = await _setup_reset_project(client, "reset-anom")
     scan_config_id = ids["scan_config_id"]

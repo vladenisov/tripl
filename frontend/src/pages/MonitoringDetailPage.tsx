@@ -87,11 +87,6 @@ const VERSION_CHART_COLORS = [
   '#be123c',
 ]
 
-// A release is treated as "low adoption" below this share of total traffic —
-// mirrors the backend activation gate's share_min so the frontend warns on the
-// same threshold the gate uses to decide whether a release counts as rolled out.
-const LOW_ADOPTION_SHARE = 0.05
-
 interface VersionChartSeries {
   label: string
   version: string
@@ -526,10 +521,12 @@ export default function MonitoringDetailPage() {
     return info?.is_active ?? false
   }, [appVersionSeriesQuery.data])
   const latestIsPreRelease = latestVersion !== null && !latestVersionIsActive
-  // Warn on the Latest filter when the newest release is a pre-release or has
-  // only taken a sliver of traffic (mirrors the backend activation share_min).
-  const latestIsLowShare = latestAdoptionShare !== null && latestAdoptionShare < LOW_ADOPTION_SHARE
-  const latestFilterNeedsWarning = latestIsPreRelease || latestIsLowShare
+  // Warn on the Latest filter whenever the newest release is not yet a rolled-out
+  // active release. The backend `is_active` already honors each scan's own
+  // app_version_active_share_min (which drives latestVersionIsActive), so this is
+  // the authoritative signal — a separate hardcoded low-share check could
+  // contradict a scan whose override differs from the default threshold.
+  const latestFilterNeedsWarning = latestIsPreRelease
 
   const queryClient = useQueryClient()
   const annotationsKey = useMemo(
@@ -1061,9 +1058,7 @@ export default function MonitoringDetailPage() {
                         onClick={() => setVersionFilter('latest')}
                         disabled={!latestVersion}
                         title={latestFilterNeedsWarning
-                          ? (latestIsPreRelease
-                            ? 'The newest release is a pre-release with little traffic — not yet rolled out.'
-                            : 'The newest release has low adoption so far.')
+                          ? 'The newest release is a pre-release with little traffic — not yet rolled out.'
                           : undefined}
                       >
                         Latest

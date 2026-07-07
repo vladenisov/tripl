@@ -18,7 +18,9 @@ from tripl.models.metric_anomaly import MetricAnomaly
 from tripl.tests.conftest import TestSessionLocal
 
 
-async def _make_project_with_scan(client: AsyncClient, slug: str) -> tuple[str, str, str]:
+async def _make_project_with_scan(
+    client: AsyncClient, slug: str, *, interval: str | None = None
+) -> tuple[str, str, str]:
     """Create a project + event_type + event + scan config; return their ids."""
     await client.post("/api/v1/projects", json={"name": slug, "slug": slug})
     event_type_resp = await client.post(
@@ -43,14 +45,14 @@ async def _make_project_with_scan(client: AsyncClient, slug: str) -> tuple[str, 
             "password": "",
         },
     )
-    scan_resp = await client.post(
-        f"/api/v1/projects/{slug}/scans",
-        json={
-            "data_source_id": data_source_resp.json()["id"],
-            "name": "Production scan",
-            "base_query": "SELECT 1",
-        },
-    )
+    scan_body: dict[str, object] = {
+        "data_source_id": data_source_resp.json()["id"],
+        "name": "Production scan",
+        "base_query": "SELECT 1",
+    }
+    if interval is not None:
+        scan_body["interval"] = interval
+    scan_resp = await client.post(f"/api/v1/projects/{slug}/scans", json=scan_body)
     scan_config_id = scan_resp.json()["id"]
     return event_type_id, event_id, scan_config_id
 
@@ -179,3 +181,36 @@ async def test_children_surface_when_no_parent_project_total(client: AsyncClient
 
     scope_types = sorted(signal["scope_type"] for signal in signals)
     assert scope_types == ["event", "event_type"], signals
+
+
+@pytest.mark.asyncio
+async def test_daily_scan_stale_anomaly_stays_open_within_interval_horizon(client: AsyncClient):
+    """A daily-scan anomaly older than 24h but within 3*interval still classifies open.
+
+    ``get_active_signals`` must pass each scan's interval into
+    ``classify_signal_state`` so a long-interval (daily/weekly) scan uses the
+    widened ``max(24h, 3*interval)`` freshness horizon. This project_total anomaly
+    sits 48h back — stale under the default 24h window but fresh under a 1d scan's
+    72h horizon. Without the interval it would be dropped (default 24h → closed).
+    """
+    slug = "daily-scan-horizon"
+    event_type_id, event_id, scan_config_id = await _make_project_with_scan(
+        client, slug, interval="1d"
+    )
+
+    # 48h old: > 24h (default window) but < 3*1d = 72h (daily-scan horizon).
+    bucket = datetime.now(UTC).replace(microsecond=0) - timedelta(hours=48)
+    async with TestSessionLocal() as session:
+        for row in _metric_rows(scan_config_id, event_type_id, event_id, bucket):
+            session.add(row)
+        session.add(_anomaly(scan_config_id, "project_total", scan_config_id, bucket))
+        await session.commit()
+
+    resp = await client.get(f"/api/v1/projects/{slug}/anomalies/signals")
+    assert resp.status_code == 200, resp.text
+    signals = resp.json()
+
+    assert len(signals) == 1, signals
+    assert signals[0]["scope_type"] == "project_total"
+    # Inside the widened horizon the anomaly is an open "latest_scan" signal.
+    assert signals[0]["state"] == "latest_scan", signals
