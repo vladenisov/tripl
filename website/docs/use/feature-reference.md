@@ -188,12 +188,13 @@ catalog reads the same on every branch.
 
 The create/edit form picks a **kind** and then reveals kind-specific config:
 
-- **SQL** — a data source, a `SELECT` returning one value per bucket, a time
-  column, and a collection interval.
-- **Fact aggregation** — a data source and table/base query, an **aggregation**
-  (`count`, `sum`, `avg`, `min`, `max`, `count_distinct`), the **measure column**
-  it runs over (a **distinct column** for `count_distinct`), an optional
-  **filter**, optional **breakdowns**, a time column, and an interval.
+- **SQL** — a data source, a read-only `SELECT` or top-level `WITH ... SELECT`
+  returning one value per bucket, a time column, and a collection interval.
+- **Fact aggregation** — a reusable fact table built from a read-only `SELECT` or
+  top-level `WITH ... SELECT`, an **aggregation** (`count`, `sum`, `avg`, `min`,
+  `max`, `count_distinct`), the **measure column** it runs over (a **distinct
+  column** for `count_distinct`), optional named/free-text filters, optional
+  **breakdowns**, and an interval.
 - **Event composition** — derived from already-collected event series with no
   warehouse query of its own: a **single** event's count, a **ratio** of one event
   to another (A / B), or an event **per distinct user**.

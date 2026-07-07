@@ -7340,7 +7340,7 @@
       },
       "FactTableCreate": {
         "additionalProperties": false,
-        "description": "Create a fact table from a full read-only SELECT plus its column metadata.\n\n``sql`` must be a single read-only SELECT (validated via the shared\nSELECT-safety path that rejects stacked statements, comments, DDL/DML and\n``UNION``). ``timestamp_column`` and ``identifier_columns`` are validated as\nbare identifiers since they reach warehouse SQL unparameterised.",
+        "description": "Create a fact table from a full read-only query plus its column metadata.\n\n``sql`` must be a single read-only ``SELECT`` or top-level ``WITH ... SELECT``\n(validated via the shared SELECT-safety path that rejects stacked statements,\ncomments, DDL/DML and ``UNION``). ``timestamp_column`` and\n``identifier_columns`` are validated as bare identifiers since they reach\nwarehouse SQL unparameterised.",
         "properties": {
           "color": {
             "default": "#6366f1",
@@ -7518,7 +7518,7 @@
       },
       "FactTablePreviewRequest": {
         "additionalProperties": false,
-        "description": "Introspect a candidate SELECT before persisting it as a fact table.",
+        "description": "Introspect a candidate read-only SELECT/CTE before saving a fact table.",
         "properties": {
           "data_source_id": {
             "anyOf": [
@@ -14711,7 +14711,7 @@
       },
       "SqlConfig": {
         "additionalProperties": false,
-        "description": "Config JSON for a ``sql`` metric: a user-authored per-bucket SELECT.",
+        "description": "Config JSON for a ``sql`` metric: a user-authored per-bucket SELECT/CTE.",
         "properties": {
           "metric_sql": {
             "minLength": 1,

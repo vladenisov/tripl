@@ -79,8 +79,70 @@ _FORBIDDEN_FRAGMENT_RE = re.compile(
 # Comment markers that can hide trailing injection from a naive scan.
 _COMMENT_MARKERS: tuple[str, ...] = ("--", "/*", "*/", "#")
 
-_LEADING_SELECT_RE = re.compile(r"^\s*select\b", re.IGNORECASE)
 _FROM_RE = re.compile(r"\bfrom\b", re.IGNORECASE)
+
+
+def _is_word_char(char: str) -> bool:
+    return char.isalnum() or char == "_"
+
+
+def _keyword_at(sql: str, index: int, keyword: str) -> bool:
+    """Whether ``keyword`` starts at ``index`` with SQL-ish word boundaries."""
+    end = index + len(keyword)
+    if sql[index:end].lower() != keyword:
+        return False
+    if index > 0 and _is_word_char(sql[index - 1]):
+        return False
+    return end >= len(sql) or not _is_word_char(sql[end])
+
+
+def _find_top_level_keyword(sql: str, keyword: str, *, start: int = 0) -> int | None:
+    """Find a keyword at parenthesis depth 0, ignoring quoted spans."""
+    depth = 0
+    quote: str | None = None
+    keyword = keyword.lower()
+    i = start
+    while i < len(sql):
+        char = sql[i]
+
+        if quote is not None:
+            if char == quote:
+                # SQL string/identifier escaping commonly doubles the quote
+                # character. Skip the escaped pair so the span stays quoted.
+                if i + 1 < len(sql) and sql[i + 1] == quote:
+                    i += 2
+                    continue
+                quote = None
+            i += 1
+            continue
+
+        if char in ("'", '"', "`"):
+            quote = char
+            i += 1
+            continue
+        if char == "(":
+            depth += 1
+            i += 1
+            continue
+        if char == ")":
+            depth = max(0, depth - 1)
+            i += 1
+            continue
+        if depth == 0 and _keyword_at(sql, i, keyword):
+            return i
+        i += 1
+    return None
+
+
+def _read_only_select_start(sql: str) -> int | None:
+    """Return the top-level SELECT start for a read-only SELECT/CTE statement."""
+    leading = sql.lstrip()
+    leading_offset = len(sql) - len(leading)
+    if _keyword_at(leading, 0, "select"):
+        return leading_offset
+    if not _keyword_at(leading, 0, "with"):
+        return None
+    return _find_top_level_keyword(sql, "select", start=leading_offset + len("with"))
 
 
 def _clause_from_index(sql: str) -> int | None:
@@ -216,8 +278,7 @@ def validate_select_sql_safety(sql: str) -> str:
     Used at schema-creation time, before the value/time column names are bound,
     so it asserts only that the statement is a single, read-only ``SELECT``:
 
-    * a single leading ``SELECT`` (CTEs — a leading ``WITH`` — are rejected for
-      v1; this is an accepted limitation),
+    * a single leading ``SELECT`` or top-level ``WITH ... SELECT`` CTE,
     * at most one optional trailing ``;`` and no other ``;`` (no stacked /
       injected second statements),
     * no comment markers (``--``/``#``/``/* */``),
@@ -245,7 +306,7 @@ def validate_select_sql_safety(sql: str) -> str:
         msg = "Metric SQL must be a single statement (no ';' separators)"
         raise ValueError(msg)
 
-    if not _LEADING_SELECT_RE.match(without_trailing):
+    if _read_only_select_start(without_trailing) is None:
         msg = "Metric SQL must be a single read-only SELECT statement"
         raise ValueError(msg)
 
@@ -261,10 +322,10 @@ def validate_select_sql(metric_sql: str, *, value_column: str, time_column: str)
     """Validate a user-authored ``sql``-kind SELECT and return it trimmed.
 
     A valid statement passes ``validate_select_sql_safety`` (single read-only
-    ``SELECT``, no stacked statements, no comments, no DDL/DML/UNION; CTEs are an
-    accepted v1 limitation) **and** projects both the value column and the time
-    column. The projection is the slice before the FROM *clause*: FROM detection
-    is parenthesis-depth-aware, so a ``from`` nested in function arguments
+    ``SELECT`` or ``WITH ... SELECT``, no stacked statements, no comments, no
+    DDL/DML/UNION) **and** projects both the value column and the time column.
+    The projection is the slice before the FROM *clause*: FROM detection is
+    parenthesis-depth-aware, so a ``from`` nested in function arguments
     (``EXTRACT(EPOCH FROM ts)``, ``SUBSTRING(col FROM n)``) is not mistaken for
     the clause boundary.
 
@@ -274,8 +335,13 @@ def validate_select_sql(metric_sql: str, *, value_column: str, time_column: str)
     """
     without_trailing = validate_select_sql_safety(metric_sql)
 
-    from_index = _clause_from_index(without_trailing)
-    projection = without_trailing if from_index is None else without_trailing[:from_index]
+    select_index = _read_only_select_start(without_trailing)
+    if select_index is None:  # Defensive: already checked by validate_select_sql_safety.
+        msg = "Metric SQL must be a single read-only SELECT statement"
+        raise ValueError(msg)
+    select_sql = without_trailing[select_index:]
+    from_index = _clause_from_index(select_sql)
+    projection = select_sql if from_index is None else select_sql[:from_index]
 
     for column, label in ((value_column, "value"), (time_column, "time")):
         if not re.search(rf"\b{re.escape(column)}\b", projection, re.IGNORECASE):

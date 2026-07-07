@@ -197,7 +197,7 @@ class FactOperand(BaseModel):
 
 
 class SqlConfig(BaseModel):
-    """Config JSON for a ``sql`` metric: a user-authored per-bucket SELECT."""
+    """Config JSON for a ``sql`` metric: a user-authored per-bucket SELECT/CTE."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -508,9 +508,7 @@ class EventCompositionMetricDefinition(BaseModel):
             "aggregation": None,
             "composition": self.composition,
             "config": (
-                {"user_id_column": self.user_id_column}
-                if self.user_id_column is not None
-                else {}
+                {"user_id_column": self.user_id_column} if self.user_id_column is not None else {}
             ),
             "fact_table_id": None,
             "data_source_id": None,
