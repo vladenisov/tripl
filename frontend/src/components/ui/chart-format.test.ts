@@ -26,6 +26,15 @@ describe('formatCount', () => {
       expect(formatCount(v).length).toBeLessThanOrEqual(5)
     }
   })
+
+  it('rounds sub-1000 fractions instead of leaking float noise', () => {
+    // A confidence-band bound times the 1.1 overshoot: raw String() would emit
+    // "-0.9900000000000001" (19 chars) and blow out the Y-axis width.
+    expect(formatCount(-0.9 * 1.1)).toBe('-1')
+    expect(formatCount(0.11000000000000001)).toBe('0')
+    expect(formatCount(842.6)).toBe('843')
+    expect(formatCount(-0.9 * 1.1).length).toBeLessThanOrEqual(3)
+  })
 })
 
 describe('axisWidthForValues', () => {
@@ -45,5 +54,18 @@ describe('axisWidthForValues', () => {
 
   it('falls back to the minimum width for an empty series', () => {
     expect(axisWidthForValues([], formatCount)).toBe(40)
+  })
+
+  it('does not blow out when the min is a small negative fraction', () => {
+    // Regression: the Structured Event tab fed a band lower bound of ~-0.9, and
+    // min*1.1 float noise reserved a ~140px axis that shoved the plot right.
+    const width = axisWidthForValues([-0.9, 550_000, 2_300_000], formatCount)
+    expect(width).toBeLessThanOrEqual(64)
+  })
+
+  it('clamps pathological (non-finite / oversized) labels to the max width', () => {
+    expect(axisWidthForValues([0, Infinity, NaN, 2_300_000], formatCount)).toBeLessThanOrEqual(80)
+    const huge = (v: number) => `${v}`.padStart(40, '0')
+    expect(axisWidthForValues([0, 1, 2], huge)).toBe(80)
   })
 })

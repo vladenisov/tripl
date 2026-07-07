@@ -2,17 +2,13 @@ import { type ReactNode } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { ChevronLeft, LogOut } from 'lucide-react'
 import { useAuth } from '@/components/auth-context'
-import {
-  type SettingsContext,
-  contextForPath,
-  firstSectionPath,
-  visibleGroups,
-} from './nav'
+import { visibleGroupsAll } from './nav'
 
 /**
  * Full-viewport takeover shell for the Settings area (Linear/Vercel pattern).
- * A 264px sunken left rail holds the back-to-app link, a Project/Workspace
- * segmented switch and grouped nav; the content column is centered at 768px.
+ * A 264px sunken left rail holds the back-to-app link and one grouped nav that
+ * lists every settings group (project + workspace) together — no project/
+ * workspace context toggle. The content column is centered at 768px.
  * Recreated from design/tripl/project/settings-kit.jsx (SettingsLayout).
  */
 export function SettingsLayout({
@@ -35,7 +31,6 @@ export function SettingsLayout({
   const auth = useAuth()
   const navigate = useNavigate()
   const isOwner = auth.user?.role === 'owner'
-  const ctx = contextForPath(activePath)
 
   // Personalize group sub-labels with live identity, matching the mockup
   // (Project → project name, Account → "You · <name>"). Workspace stays
@@ -48,11 +43,6 @@ export function SettingsLayout({
     // is available in auth context.
     if (group.label === 'Workspace' && group.sub === group.label) return ''
     return group.sub
-  }
-
-  const setCtx = (next: SettingsContext) => {
-    if (next === ctx) return
-    onNavigate(firstSectionPath(next))
   }
 
   const initials = initialsFrom(auth.user?.name ?? auth.user?.email ?? '')
@@ -81,42 +71,9 @@ export function SettingsLayout({
           </p>
         </div>
 
-        {/* Context switch */}
-        <div className="px-4 pb-3 pt-1">
-          <div
-            className="flex rounded-lg p-0.5"
-            style={{ background: 'var(--bg)', border: '1px solid var(--border-subtle)' }}
-          >
-            {(
-              [
-                { v: 'project', l: 'Project' },
-                { v: 'workspace', l: 'Workspace' },
-              ] as const
-            ).map((o) => {
-              const selected = ctx === o.v
-              return (
-                <button
-                  key={o.v}
-                  type="button"
-                  aria-pressed={selected}
-                  onClick={() => setCtx(o.v)}
-                  className="flex-1 rounded-md px-2 py-[5px] text-[12px] font-semibold transition-colors"
-                  style={{
-                    background: selected ? 'var(--surface-active)' : 'transparent',
-                    color: selected ? 'var(--fg)' : 'var(--fg-subtle)',
-                    boxShadow: selected ? 'var(--shadow-sm)' : 'none',
-                  }}
-                >
-                  {o.l}
-                </button>
-              )
-            })}
-          </div>
-        </div>
-
-        {/* Grouped nav */}
-        <nav className="flex-1 overflow-y-auto px-3 pb-4">
-          {visibleGroups(ctx, isOwner).map((group) => (
+        {/* Grouped nav — every settings group in one rail, no context toggle */}
+        <nav className="flex-1 overflow-y-auto px-3 pb-4 pt-1">
+          {visibleGroupsAll(isOwner).map((group) => (
             <div key={group.label} className="mb-4">
               <div className="px-[9px] pb-1.5">
                 <div className="flex items-baseline gap-1.5">

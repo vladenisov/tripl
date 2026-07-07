@@ -128,3 +128,12 @@ export function visibleGroups(ctx: SettingsContext, isOwner: boolean): SettingsN
     }))
     .filter((group) => group.items.length > 0)
 }
+
+/**
+ * Every settings group (project + workspace) in one flat, owner-filtered list.
+ * The settings nav no longer splits project vs workspace behind a segmented
+ * toggle — all config lives under a single scrollable rail.
+ */
+export function visibleGroupsAll(isOwner: boolean): SettingsNavGroup[] {
+  return [...visibleGroups('project', isOwner), ...visibleGroups('workspace', isOwner)]
+}
