@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import uuid
-from datetime import datetime
+from collections import defaultdict
+from datetime import UTC, datetime
 from typing import Any
 
 from fastapi import HTTPException
@@ -43,7 +44,7 @@ from tripl.services.metrics_service import (
     _resolve_scope_scan_config_id,
     _signal_from_anomaly,
 )
-from tripl.services.monitoring_utils import classify_signal_state
+from tripl.services.monitoring_utils import classify_signal_state, scan_interval_to_timedelta
 
 
 async def _get_latest_anomaly_rows_multi(
@@ -247,6 +248,109 @@ async def _get_active_metric_signals(
     return signals
 
 
+async def _count_active_metric_signals_by_project(
+    session: AsyncSession,
+    project_ids: list[uuid.UUID],
+) -> dict[uuid.UUID, int]:
+    """Batched per-project count of open ``metric``-scope signals.
+
+    A single-project :func:`_get_active_metric_signals` call issues three queries;
+    the ProjectsPage / sidebar badge needs these counts for N projects at once, so
+    this loads the same three datasets once for all projects and classifies in
+    Python (O(1) queries in N). Catalog-metric anomalies carry a NULL
+    ``scan_config_id`` and are keyed by ``scope_ref = str(metric_definition_id)``,
+    so project ownership and the latest stored value bucket are resolved on the
+    hyphenated ``str(uuid)`` keys the anomalies store — a SQL-level cast would
+    diverge SQLite vs Postgres (see ``_get_latest_metric_buckets_multi``).
+    Classification reuses ``classify_signal_state`` exactly as
+    :func:`_get_active_metric_signals` does (no scan interval on the metric path).
+    """
+    if not project_ids:
+        return {}
+    metric_rows = (
+        await session.execute(
+            select(MetricDefinition.id, MetricDefinition.project_id).where(
+                MetricDefinition.project_id.in_(project_ids),
+                MetricDefinition.anomaly_detection_enabled.is_(True),
+            )
+        )
+    ).all()
+    if not metric_rows:
+        return {}
+    project_by_scope_ref: dict[str, uuid.UUID] = {
+        str(metric_id): project_id for metric_id, project_id in metric_rows
+    }
+    metric_ids = [metric_id for metric_id, _project_id in metric_rows]
+    scope_refs = list(project_by_scope_ref)
+
+    latest_value_buckets: dict[str, datetime] = {
+        str(metric_definition_id): bucket
+        for metric_definition_id, bucket in (
+            await session.execute(
+                select(MetricValue.metric_definition_id, func.max(MetricValue.bucket))
+                .where(MetricValue.metric_definition_id.in_(metric_ids))
+                .group_by(MetricValue.metric_definition_id)
+            )
+        ).all()
+    }
+
+    latest_anomalies: dict[str, MetricAnomaly] = {}
+    for anomaly in (
+        await session.execute(
+            select(MetricAnomaly)
+            .where(
+                MetricAnomaly.scope_type == SCOPE_METRIC,
+                MetricAnomaly.scope_ref.in_(scope_refs),
+            )
+            .order_by(MetricAnomaly.bucket.desc())
+        )
+    ).scalars():
+        latest_anomalies.setdefault(anomaly.scope_ref, anomaly)
+
+    now = datetime.now(UTC)
+    counts: dict[uuid.UUID, int] = defaultdict(int)
+    for scope_ref, anomaly in latest_anomalies.items():
+        state = classify_signal_state(
+            anomaly_bucket=anomaly.bucket,
+            latest_metric_bucket=latest_value_buckets.get(scope_ref),
+            now=now,
+        )
+        if state is not None:
+            project_id = project_by_scope_ref.get(scope_ref)
+            if project_id is not None:
+                counts[project_id] += 1
+    return dict(counts)
+
+
+def _deduplicate_into_incidents(
+    signals: list[MetricSignalResponse],
+) -> list[MetricSignalResponse]:
+    """Collapse one incident's cross-scope fan-out into a single active signal.
+
+    A real spike/drop on the project total trips the child ``event_type`` and
+    ``event`` scopes on the SAME scan, bucket and direction — one incident, but
+    3+ stacked signals. Keep the parent ``project_total`` row and suppress the
+    child rows that share its ``(scan_config_id, bucket, direction)``. The
+    per-scope anomaly rows stay in the DB for drill-down; they are just not
+    surfaced here as separate active signals. ``metric``-scope signals carry a
+    NULL ``scan_config_id`` and are never children of a project total, so they
+    always pass through.
+    """
+    parent_incidents = {
+        (signal.scan_config_id, signal.bucket, signal.direction)
+        for signal in signals
+        if signal.scope_type == SCOPE_PROJECT_TOTAL
+    }
+    if not parent_incidents:
+        return signals
+    return [
+        signal
+        for signal in signals
+        if signal.scope_type == SCOPE_PROJECT_TOTAL
+        or (signal.scan_config_id, signal.bucket, signal.direction) not in parent_incidents
+    ]
+
+
 async def get_active_signals(
     session: AsyncSession,
     slug: str,
@@ -274,6 +378,29 @@ async def get_active_signals(
         session, project_id=project.id, scope_types=scope_types, event_ids=event_ids
     )
 
+    # A long-interval (daily/weekly) scan needs its freshness horizon widened to
+    # max(24h, 3*interval); without the interval, classify_signal_state falls back
+    # to the default 24h window and prematurely closes a still-open daily signal.
+    # Load the intervals for this batch's scan_configs in one query.
+    scan_config_ids = {
+        anomaly.scan_config_id
+        for anomaly in latest_anomalies
+        if anomaly.scan_config_id is not None
+    }
+    interval_map: dict[uuid.UUID, str | None] = {}
+    if scan_config_ids:
+        interval_map = {
+            scan_config_id: interval
+            for scan_config_id, interval in (
+                await session.execute(
+                    select(ScanConfig.id, ScanConfig.interval).where(
+                        ScanConfig.id.in_(scan_config_ids)
+                    )
+                )
+            ).all()
+        }
+
+    now = datetime.now(UTC)
     signals: list[MetricSignalResponse] = []
     for anomaly in latest_anomalies:
         # Event-scope rows always carry a scan_config_id (the multi-query joins
@@ -285,6 +412,8 @@ async def get_active_signals(
         state = classify_signal_state(
             anomaly_bucket=anomaly.bucket,
             latest_metric_bucket=latest_metric_bucket,
+            now=now,
+            interval=scan_interval_to_timedelta(interval_map.get(anomaly.scan_config_id)),
         )
         if state is not None:
             signals.append(_signal_from_anomaly(anomaly, state=state))
@@ -292,6 +421,10 @@ async def get_active_signals(
     # Catalog metric signals are project-global (NULL scan_config_id) and so are
     # loaded separately from the event-scope multi-query above.
     signals.extend(await _get_active_metric_signals(session, project_id=project.id))
+
+    # One incident is one active signal: drop the child event_type/event rows
+    # that a project-total spike/drop simultaneously trips on the same bucket.
+    signals = _deduplicate_into_incidents(signals)
 
     signals.sort(key=lambda signal: signal.bucket, reverse=True)
     if cacheable:

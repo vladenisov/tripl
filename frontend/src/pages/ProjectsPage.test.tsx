@@ -289,13 +289,13 @@ describe('ProjectsPage', () => {
     expect(screen.getByText('1 scan config failing across 1 project')).toBeInTheDocument()
     expect(screen.getByText('across 1 project')).toBeInTheDocument()
     expect(screen.getByText('1 scan configured')).toBeInTheDocument()
-    expect(screen.getByText('1 recent signal')).toBeInTheDocument()
+    expect(screen.getByText('1 open signal')).toBeInTheDocument()
     // UX-10: the monitoring-signal metric lives once now, as an action-needed
     // stat — no separate Automation banner repeating the count.
     expect(screen.getByText('Signals')).toBeInTheDocument()
-    // H1: recent-signal copy drops "active" — the dashboard counts recent signals.
+    // H1: open-signal copy drops "active" — the dashboard counts open signals.
     expect(
-      screen.getByText('1 project currently has recent signals'),
+      screen.getByText('1 project currently has open signals'),
     ).toBeInTheDocument()
     expect(screen.queryByText(/active or recent signals/)).not.toBeInTheDocument()
   })
@@ -335,7 +335,7 @@ describe('ProjectsPage', () => {
 
     expect(await screen.findByText('Beta')).toBeInTheDocument()
     // Live monitoring signals are the needs-attention lead → saturated danger.
-    expect(screen.getByText('1 recent signal')).toHaveStyle({ background: 'var(--danger-soft)' })
+    expect(screen.getByText('1 open signal')).toHaveStyle({ background: 'var(--danger-soft)' })
     // Every other supporting status chip renders calm/muted so it does not compete.
     expect(screen.getByText('99.1% implemented')).toHaveStyle({
       background: 'var(--surface-hover)',

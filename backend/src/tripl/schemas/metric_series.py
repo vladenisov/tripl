@@ -63,6 +63,10 @@ class MetricVersionSeries(BaseModel):
     version: str
     is_other: bool = False
     is_latest: bool = False
+    # True once the release takes a real share of traffic (activation gate),
+    # mirroring ``AppVersionMetricSeries.is_active``. Always False for fractional
+    # metrics, where a value-share gate is meaningless.
+    is_active: bool = False
     total_value: float
     data: list[MetricSeriesPoint]
 

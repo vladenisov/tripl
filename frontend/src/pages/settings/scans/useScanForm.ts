@@ -3,7 +3,7 @@ import { useMutation } from '@tanstack/react-query'
 import { scansApi } from '@/api/scans'
 import type { EventGroupRule, IntervalCode, ScanConfig, ScanConfigPreview } from '@/types'
 import { type UiEventGroupRule, stripUiIds, withUiIds } from './scanFormTypes'
-import { eligibleChunkIntervals, parseOptionalPositiveInt } from './scanUtils'
+import { eligibleChunkIntervals, parseOptionalPositiveInt, parseOptionalShare } from './scanUtils'
 
 // Shape of the create/update payload shared by both API calls. Built once from
 // form state so the create page and the Configuration tab stay in sync.
@@ -21,6 +21,8 @@ export interface ScanFormPayload {
   distribution_drift_fields: string[]
   app_version_column: string | null
   app_version_keep_releases: number | null
+  app_version_prerelease_pattern: string | null
+  app_version_active_share_min: number | null
   platform_column: string | null
   cardinality_threshold: number
   interval: string | null
@@ -39,6 +41,8 @@ export interface ScanFormState {
   timeColumn: string
   appVersionColumn: string
   appVersionKeepReleases: string
+  appVersionPrereleasePattern: string
+  appVersionActiveShareMin: string
   platformColumn: string
   eventNameFormat: string
   jsonValuePaths: string[]
@@ -65,6 +69,10 @@ function initialState(scanConfig: ScanConfig | null): ScanFormState {
     appVersionColumn: scanConfig?.app_version_column ?? '',
     appVersionKeepReleases: scanConfig?.app_version_keep_releases
       ? String(scanConfig.app_version_keep_releases)
+      : '',
+    appVersionPrereleasePattern: scanConfig?.app_version_prerelease_pattern ?? '',
+    appVersionActiveShareMin: scanConfig?.app_version_active_share_min != null
+      ? String(scanConfig.app_version_active_share_min)
       : '',
     platformColumn: scanConfig?.platform_column ?? '',
     eventNameFormat: scanConfig?.event_name_format ?? '',
@@ -153,6 +161,8 @@ export function useScanForm(
           appVersionColumn,
           platformColumn,
           appVersionKeepReleases: appVersionColumn ? current.appVersionKeepReleases : '',
+          appVersionPrereleasePattern: appVersionColumn ? current.appVersionPrereleasePattern : '',
+          appVersionActiveShareMin: appVersionColumn ? current.appVersionActiveShareMin : '',
           metricBreakdownColumns: current.metricBreakdownColumns.filter(
             column => has(column) && !reserved.has(column),
           ),
@@ -217,6 +227,8 @@ export function useScanForm(
       ...current,
       appVersionColumn: value,
       appVersionKeepReleases: value ? current.appVersionKeepReleases : '',
+      appVersionPrereleasePattern: value ? current.appVersionPrereleasePattern : '',
+      appVersionActiveShareMin: value ? current.appVersionActiveShareMin : '',
       metricBreakdownColumns: current.metricBreakdownColumns.filter(column => column !== value),
       distributionDriftFields: current.distributionDriftFields.filter(field => field !== value),
     }))
@@ -282,6 +294,12 @@ export function useScanForm(
       app_version_column: state.appVersionColumn || null,
       app_version_keep_releases: state.appVersionColumn
         ? parseOptionalPositiveInt(state.appVersionKeepReleases)
+        : null,
+      app_version_prerelease_pattern: state.appVersionColumn
+        ? state.appVersionPrereleasePattern.trim() || null
+        : null,
+      app_version_active_share_min: state.appVersionColumn
+        ? parseOptionalShare(state.appVersionActiveShareMin)
         : null,
       platform_column: state.platformColumn || null,
       cardinality_threshold: state.cardinalityThreshold,

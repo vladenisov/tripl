@@ -71,5 +71,37 @@ describe('ActivityPanel', () => {
 
     expect(await screen.findByText('No recent activity')).toBeInTheDocument()
   })
+
+  it('labels the rail as recent activity rather than a live stream', async () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async input => {
+      const url = String(input)
+      if (url.endsWith('/api/v1/activity/projects/demo?limit=20')) {
+        return mockJsonResponse([
+          {
+            id: 'anomaly:1',
+            project_id: 'project-1',
+            project_slug: 'demo',
+            project_name: 'Demo',
+            type: 'anomaly',
+            severity: 'high',
+            title: 'Spike on Page View',
+            detail: '42 actual vs 21 expected · z=7.0',
+            occurred_at: new Date().toISOString(),
+            target_path: '/p/demo/monitoring/event-type/type-1',
+          },
+        ])
+      }
+      throw new Error(`Unhandled fetch: ${url}`)
+    })
+
+    renderActivityPanel('demo')
+
+    expect(await screen.findByText('Recent activity')).toBeInTheDocument()
+    // The old copy sold the rail as a live/streaming feed; make sure it is gone.
+    expect(screen.queryByText('live')).not.toBeInTheDocument()
+    expect(screen.queryByText(/streaming/i)).not.toBeInTheDocument()
+    // Item age is surfaced prominently on each row.
+    expect(await screen.findByText('just now')).toBeInTheDocument()
+  })
 })
 

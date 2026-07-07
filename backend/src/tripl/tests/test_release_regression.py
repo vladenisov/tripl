@@ -98,6 +98,60 @@ def test_event_absent_in_previous_release_is_not_flagged() -> None:
     assert {r.scope_ref for r in results} == {"login"}
 
 
+def test_below_floor_previous_release_is_not_used_as_baseline() -> None:
+    # Three active-by-share releases; the middle SemVer one (2.1.0) clears the
+    # share gate but its windowed volume (320) is under the raised floor (400),
+    # so it must be skipped as baseline. v_prev falls back to the older 2.0.0.
+    old, mid, new = "2.0.0", "2.1.0", "2.2.0"
+    release_total = {
+        old: {d: 500 for d in NEW_DAYS},
+        mid: {d: 80 for d in NEW_DAYS},  # 320 windowed -> below the 400 floor
+        new: {d: 500 for d in NEW_DAYS},
+    }
+    all_traffic = {d: (1080 if d in NEW_DAYS else 0) for d in DAYS}
+    scope_counts = {
+        "login": {
+            old: {d: 50 for d in NEW_DAYS},  # 10% share in the baseline
+            mid: {d: 8 for d in NEW_DAYS},
+            new: {d: 0 for d in NEW_DAYS},  # gone in the newest release
+        }
+    }
+    settings = RegressionSettings(min_release_volume=400)
+    results = _run(release_total, all_traffic, scope_counts, settings)
+    assert len(results) == 1
+    r = results[0]
+    assert r.version == new
+    assert r.previous_version == old  # NOT the below-floor 2.1.0
+    assert r.kind == KIND_MISSING
+
+
+def test_below_floor_newest_release_falls_through_to_next_pair() -> None:
+    # The newest active-by-share release (2.2.0) is under the raised floor, so
+    # instead of returning nothing the analyzer drops it and evaluates the next
+    # active pair: subject 2.1.0 vs baseline 2.0.0.
+    old, mid, new = "2.0.0", "2.1.0", "2.2.0"
+    release_total = {
+        old: {d: 500 for d in NEW_DAYS},
+        mid: {d: 500 for d in NEW_DAYS},
+        new: {d: 80 for d in NEW_DAYS},  # 320 windowed -> below the 400 floor
+    }
+    all_traffic = {d: (1080 if d in NEW_DAYS else 0) for d in DAYS}
+    scope_counts = {
+        "login": {
+            old: {d: 50 for d in NEW_DAYS},  # 10% share in the baseline
+            mid: {d: 0 for d in NEW_DAYS},  # gone in the subject release
+            new: {d: 8 for d in NEW_DAYS},
+        }
+    }
+    settings = RegressionSettings(min_release_volume=400)
+    results = _run(release_total, all_traffic, scope_counts, settings)
+    assert len(results) == 1
+    r = results[0]
+    assert r.version == mid  # 2.2.0 was skipped for failing the floor
+    assert r.previous_version == old
+    assert r.kind == KIND_MISSING
+
+
 def test_latest_two_releases_chosen_by_semver_not_lexical() -> None:
     # 2.10.0 > 2.9.0 > 2.2.0 by SemVer (lexical order would disagree).
     versions = ["2.2.0", "2.9.0", "2.10.0"]

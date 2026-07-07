@@ -127,6 +127,8 @@ class ScanConfigCreate(BaseModel):
     metrics_row_limit: int | None = Field(default=None, ge=1)
     app_version_column: str | None = Field(default=None, min_length=1, max_length=255)
     app_version_keep_releases: int | None = Field(default=None, ge=1)
+    app_version_prerelease_pattern: str | None = Field(default=None, min_length=1, max_length=255)
+    app_version_active_share_min: float | None = Field(default=None, gt=0.0, lt=1.0)
     platform_column: str | None = Field(default=None, min_length=1, max_length=255)
 
     @field_validator("json_value_paths")
@@ -206,6 +208,8 @@ class ScanConfigUpdate(BaseModel):
     metrics_row_limit: int | None = Field(default=None, ge=1)
     app_version_column: str | None = Field(default=None, max_length=255)
     app_version_keep_releases: int | None = Field(default=None, ge=1)
+    app_version_prerelease_pattern: str | None = Field(default=None, max_length=255)
+    app_version_active_share_min: float | None = Field(default=None, gt=0.0, lt=1.0)
     platform_column: str | None = Field(default=None, max_length=255)
 
     @field_validator("json_value_paths")
@@ -257,6 +261,8 @@ class ScanConfigResponse(BaseModel):
     metrics_row_limit: int | None
     app_version_column: str | None
     app_version_keep_releases: int | None
+    app_version_prerelease_pattern: str | None
+    app_version_active_share_min: float | None
     platform_column: str | None
     created_at: datetime
     updated_at: datetime

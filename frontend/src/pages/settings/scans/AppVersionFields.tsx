@@ -7,17 +7,25 @@ export function AppVersionFields({
   columns,
   appVersionColumn,
   keepReleases,
+  prereleasePattern,
+  activeShareMin,
   platformColumn,
   onAppVersionColumnChange,
   onKeepReleasesChange,
+  onPrereleasePatternChange,
+  onActiveShareMinChange,
   onPlatformColumnChange,
 }: {
   columns: ScanConfigPreview['columns'] | null
   appVersionColumn: string
   keepReleases: string
+  prereleasePattern: string
+  activeShareMin: string
   platformColumn: string
   onAppVersionColumnChange: (column: string) => void
   onKeepReleasesChange: (value: string) => void
+  onPrereleasePatternChange: (value: string) => void
+  onActiveShareMinChange: (value: string) => void
   onPlatformColumnChange: (column: string) => void
 }) {
   const availableColumns = columns?.filter(column => !isJsonPreviewType(column.type_name)) ?? []
@@ -60,6 +68,33 @@ export function AppVersionFields({
             onChange={e => onKeepReleasesChange(e.target.value)}
             disabled={!appVersionColumn}
             placeholder={appVersionColumn ? 'Default' : 'Select version column'}
+          />
+        </div>
+      </div>
+      <div className="grid grid-cols-2 gap-3">
+        <div className="grid gap-2">
+          <Label htmlFor="app-version-prerelease-pattern">Pre-release version pattern (regex, optional)</Label>
+          <Input
+            id="app-version-prerelease-pattern"
+            type="text"
+            value={prereleasePattern}
+            onChange={e => onPrereleasePatternChange(e.target.value)}
+            disabled={!appVersionColumn}
+            placeholder={appVersionColumn ? 'e.g. -(beta|rc)' : 'Select version column'}
+          />
+        </div>
+        <div className="grid gap-2">
+          <Label htmlFor="app-version-active-share">Activation traffic share (0–1 exclusive, optional)</Label>
+          <Input
+            id="app-version-active-share"
+            type="number"
+            min={0.01}
+            max={0.99}
+            step={0.01}
+            value={activeShareMin}
+            onChange={e => onActiveShareMinChange(e.target.value)}
+            disabled={!appVersionColumn}
+            placeholder={appVersionColumn ? 'Default 0.05' : 'Select version column'}
           />
         </div>
       </div>

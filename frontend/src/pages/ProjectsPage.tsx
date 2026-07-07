@@ -396,7 +396,7 @@ export default function MainPage() {
                 unit={pluralize(portfolio.monitoringSignalCount, 'signal', 'signals')}
                 hint={
                   portfolio.monitoringSignalCount > 0
-                    ? `${pluralize(projectsWithSignals, '1 project currently has', `${projectsWithSignals} projects currently have`)} recent signals`
+                    ? `${pluralize(projectsWithSignals, '1 project currently has', `${projectsWithSignals} projects currently have`)} open signals`
                     : 'Monitoring is quiet across the workspace'
                 }
                 tone={portfolio.monitoringSignalCount > 0 ? 'danger' : 'success'}
@@ -708,10 +708,10 @@ function ProjectCard({
             {hasSignals
               ? pluralize(
                   project.summary.monitoring_signal_count,
-                  '1 recent signal',
-                  `${project.summary.monitoring_signal_count} recent signals`,
+                  '1 open signal',
+                  `${project.summary.monitoring_signal_count} open signals`,
                 )
-              : 'No recent signals'}
+              : 'No open signals'}
           </Chip>
         </div>
 

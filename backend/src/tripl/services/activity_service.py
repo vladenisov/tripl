@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import desc, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -21,6 +21,12 @@ from tripl.models.scan_config import ScanConfig
 from tripl.models.scan_job import ScanJob
 from tripl.schemas.activity import ActivityItemResponse
 from tripl.services.project_lookup import get_project_id_by_slug
+
+# The activity rail surfaces "recent" signals, not the full anomaly history.
+# Without a window, weeks-old high-z anomalies stay ordered at the top of the
+# feed on every page and read as live/streaming events. Bound the query to a
+# recent window measured against wall-clock now so only fresh anomalies show.
+ANOMALY_RECENCY_WINDOW = timedelta(days=7)
 
 
 async def list_activity(
@@ -50,8 +56,10 @@ async def _anomaly_items(
     stmt = (
         select(
             MetricAnomaly.id,
+            MetricAnomaly.scan_config_id,
             MetricAnomaly.scope_type,
             MetricAnomaly.scope_ref,
+            MetricAnomaly.bucket,
             MetricAnomaly.actual_count,
             MetricAnomaly.expected_count,
             MetricAnomaly.z_score,
@@ -68,6 +76,7 @@ async def _anomaly_items(
         .join(Project, Project.id == ScanConfig.project_id)
         .outerjoin(Event, Event.id == MetricAnomaly.event_id)
         .outerjoin(EventType, EventType.id == MetricAnomaly.event_type_id)
+        .where(MetricAnomaly.created_at >= datetime.now(UTC) - ANOMALY_RECENCY_WINDOW)
         .order_by(desc(MetricAnomaly.created_at), desc(MetricAnomaly.id))
         .limit(limit)
     )
@@ -75,8 +84,25 @@ async def _anomaly_items(
         stmt = stmt.where(Project.slug == slug)
 
     rows = (await session.execute(stmt)).all()
+
+    # One incident is one rail item: a project-total spike/drop trips its child
+    # event_type/event scopes on the same scan, bucket and direction. Surface
+    # only the parent project_total row and suppress the co-firing children so a
+    # single incident does not stack into many rail entries. This is layered on
+    # top of Wave 1's wall-clock recency filter (kept above), not a replacement.
+    parent_incidents = {
+        (row.scan_config_id, row.bucket, str(row.direction))
+        for row in rows
+        if row.scope_type == SCOPE_PROJECT_TOTAL
+    }
+
     items: list[ActivityItemResponse] = []
     for row in rows:
+        if (
+            row.scope_type in (SCOPE_EVENT_TYPE, SCOPE_EVENT)
+            and (row.scan_config_id, row.bucket, str(row.direction)) in parent_incidents
+        ):
+            continue
         scope_name = _scope_name(
             row.scope_type,
             event_name=row.event_name,

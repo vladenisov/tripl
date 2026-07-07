@@ -1,5 +1,5 @@
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import pytest
 from httpx import AsyncClient
@@ -14,11 +14,18 @@ from tripl.models.field_definition import FieldDefinition
 from tripl.models.metric_anomaly import MetricAnomaly
 from tripl.models.metric_breakdown_anomaly import MetricBreakdownAnomaly
 from tripl.models.metric_definition import MetricDefinition
+from tripl.models.metric_value import MetricValue
 from tripl.models.release_regression import ReleaseRegression
 from tripl.models.scan_job import ScanJob
 from tripl.models.schema_drift import SchemaDrift
 from tripl.models.variable_value import VariableValue, VariableValueKind
 from tripl.tests.conftest import TestSessionLocal
+
+# Anchor the seeded event-type anomaly to a recent, hour-aligned bucket so its
+# signal stays inside the freshness horizon (classify keeps a latest_scan signal
+# only while its bucket is newer than now - 24h); the summary assertion below
+# derives its expected ``bucket`` string from this same constant.
+_METRIC_BUCKET = datetime.now(UTC).replace(minute=0, second=0, microsecond=0) - timedelta(hours=1)
 
 
 async def _seed_project_operations(
@@ -27,7 +34,7 @@ async def _seed_project_operations(
     event_type_id: str,
     destination_id: str,
 ) -> None:
-    metric_bucket = datetime(2026, 4, 18, 9, tzinfo=UTC)
+    metric_bucket = _METRIC_BUCKET
     job_started_at = datetime(2026, 4, 18, 10, tzinfo=UTC)
     job_completed_at = datetime(2026, 4, 18, 10, 5, tzinfo=UTC)
     # A firing monitor needs an active scope whose last anomaly is inside the
@@ -50,7 +57,13 @@ async def _seed_project_operations(
                 id=uuid.uuid4(),
                 scan_config_id=uuid.UUID(scan_config_id),
                 scope_type="event_type",
-                scope_ref=event_type_id,
+                # The project-summary union derives the latest-metric key from
+                # ``cast(EventMetric.event_type_id, String)``, which on the test's
+                # in-memory SQLite renders a UUID as bare hex (no dashes). Store the
+                # anomaly's scope_ref in that same form so ``classify_signal_state``
+                # finds a live metric bucket to anchor recency on (otherwise the
+                # signal is treated as closed and the counts drop to 0).
+                scope_ref=uuid.UUID(event_type_id).hex,
                 event_id=None,
                 event_type_id=uuid.UUID(event_type_id),
                 bucket=metric_bucket,
@@ -322,10 +335,11 @@ async def test_project_summary_counts(client: AsyncClient):
         "scan_config_id": scan_config_id,
         "scan_name": "Production scan",
         "scope_type": "event_type",
-        "scope_ref": event_type_id,
+        # Stored (and echoed back) as bare hex on SQLite; see the fixture note.
+        "scope_ref": uuid.UUID(event_type_id).hex,
         "scope_name": "Page View",
         "state": "latest_scan",
-        "bucket": "2026-04-18T09:00:00",
+        "bucket": _METRIC_BUCKET.replace(tzinfo=None).isoformat(),
         "actual_count": 42,
         "expected_count": 21.0,
         "z_score": 7.0,
@@ -725,6 +739,158 @@ def _breakdown(scan_config_id: str, event_type_id: str, bucket: datetime,
         z_score=7,
         direction="spike",
     )
+
+
+@pytest.mark.asyncio
+async def test_project_summary_counts_catalog_metric_signal(client: AsyncClient) -> None:
+    """A fresh catalog-metric anomaly (scan_config_id NULL) is counted (tripl-dmch.15).
+
+    Catalog metric anomalies carry a NULL scan_config_id and are keyed by
+    ``str(metric_definition_id)``, so the project-summary query that inner-joins
+    ScanConfig on ``scan_config_id`` silently drops them. ``_populate_monitoring_signals``
+    must fold them into ``monitoring_signal_count`` by reusing the same open-signal
+    logic the AnomaliesPage uses (``metrics_insights_service._get_active_metric_signals``),
+    so the sidebar / ProjectsPage badge agrees with the AnomaliesPage list. There is
+    no event/scan-scope anomaly here, so the metric signal is the only one counted —
+    proving the count is not gated by the ScanConfig-joined query's early return.
+    """
+    slug = "catalog-metric-signal-proj"
+    project_resp = await client.post(
+        "/api/v1/projects", json={"name": "Catalog Metric Signal", "slug": slug}
+    )
+    assert project_resp.status_code == 201
+    project_id = project_resp.json()["id"]
+
+    ds_resp = await client.post(
+        "/api/v1/data-sources",
+        json={
+            "name": "Warehouse",
+            "db_type": "clickhouse",
+            "host": "localhost",
+            "port": 8123,
+            "database_name": "analytics",
+            "username": "default",
+            "password": "",
+        },
+    )
+    assert ds_resp.status_code == 201
+    data_source_id = ds_resp.json()["id"]
+
+    metric_definition_id = uuid.uuid4()
+    # Anchor the anomaly and its latest stored value to the same fresh bucket so
+    # classify_signal_state keeps the signal open. The metric path passes no scan
+    # interval, so the freshness horizon is the default 24h window and a bucket one
+    # hour old stays open.
+    fresh_bucket = _METRIC_BUCKET
+    async with TestSessionLocal() as session:
+        session.add(
+            MetricDefinition(
+                id=metric_definition_id,
+                project_id=uuid.UUID(project_id),
+                name="conversion_rate",
+                display_name="Conversion Rate",
+                kind="sql",
+                config={},
+                data_source_id=uuid.UUID(data_source_id),
+                interval="1h",
+                status="active",
+                unit="%",
+            )
+        )
+        # A stored value bucket is what classify_signal_state anchors recency on;
+        # without it the metric signal is treated as closed.
+        session.add(
+            MetricValue(
+                id=uuid.uuid4(),
+                metric_definition_id=metric_definition_id,
+                scan_config_id=None,
+                bucket=fresh_bucket,
+                value=1.0,
+            )
+        )
+        # NULL scan_config_id, keyed by the hyphenated metric_definition_id — the
+        # metric path matches scope_ref via a Python string, so no cast-hex quirk.
+        session.add(_anomaly(None, "metric", str(metric_definition_id), fresh_bucket))
+        await session.commit()
+
+    resp = await client.get(f"/api/v1/projects/{slug}")
+    assert resp.status_code == 200
+    summary = resp.json()["summary"]
+    assert summary["monitoring_signal_count"] == 1
+    # Metric-scope signals have no scan_config_id and so cannot populate
+    # latest_signal (a ProjectLatestSignal requires one); it stays None here.
+    assert summary["latest_signal"] is None
+
+
+@pytest.mark.asyncio
+async def test_project_list_counts_catalog_metric_signals_per_project(client: AsyncClient) -> None:
+    """The batched metric-scope counter attributes counts to the right project.
+
+    ``_populate_monitoring_signals`` now counts open metric-scope signals for all
+    listed projects in one batched query instead of a per-project N+1 loop. This
+    guards the batching: two projects each own one fresh catalog-metric anomaly,
+    so the LIST endpoint must report ``monitoring_signal_count == 1`` for EACH —
+    a per-project grouping bug (double-counting or cross-attribution) would skew
+    one of them.
+    """
+    ds_resp = await client.post(
+        "/api/v1/data-sources",
+        json={
+            "name": "Warehouse",
+            "db_type": "clickhouse",
+            "host": "localhost",
+            "port": 8123,
+            "database_name": "analytics",
+            "username": "default",
+            "password": "",
+        },
+    )
+    assert ds_resp.status_code == 201
+    data_source_id = ds_resp.json()["id"]
+
+    slugs = ["batch-metric-a", "batch-metric-b"]
+    async with TestSessionLocal() as session:
+        for slug in slugs:
+            project_resp = await client.post(
+                "/api/v1/projects", json={"name": slug, "slug": slug}
+            )
+            assert project_resp.status_code == 201
+            project_id = uuid.UUID(project_resp.json()["id"])
+            metric_definition_id = uuid.uuid4()
+            session.add(
+                MetricDefinition(
+                    id=metric_definition_id,
+                    project_id=project_id,
+                    name="conversion_rate",
+                    display_name="Conversion Rate",
+                    kind="sql",
+                    config={},
+                    data_source_id=uuid.UUID(data_source_id),
+                    interval="1h",
+                    status="active",
+                    unit="%",
+                )
+            )
+            session.add(
+                MetricValue(
+                    id=uuid.uuid4(),
+                    metric_definition_id=metric_definition_id,
+                    scan_config_id=None,
+                    bucket=_METRIC_BUCKET,
+                    value=1.0,
+                )
+            )
+            session.add(_anomaly(None, "metric", str(metric_definition_id), _METRIC_BUCKET))
+        await session.commit()
+
+    resp = await client.get("/api/v1/projects")
+    assert resp.status_code == 200
+    counts = {
+        item["slug"]: item["summary"]["monitoring_signal_count"]
+        for item in resp.json()
+        if item["slug"] in slugs
+    }
+    assert counts == {"batch-metric-a": 1, "batch-metric-b": 1}, counts
 
 
 @pytest.mark.asyncio

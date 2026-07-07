@@ -34,6 +34,13 @@ interface MetricsChartProps {
    * compact-count ticks and `value seriesLabel` tooltip lines.
    */
   valueFormatter?: (value: number) => string
+  /**
+   * The scan's anomaly sigma threshold (served on the metrics response as
+   * `sigma_threshold`). The confidence band is drawn as
+   * `expected ± sigmaThreshold * stddev` using the STORED effective stddev, so
+   * a flagged point sits outside the band. Defaults to 3.0 when omitted.
+   */
+  sigmaThreshold?: number
 }
 
 interface MiniMetricsChartProps {
@@ -157,11 +164,12 @@ function useChartContainerReady() {
   return { ref, ready }
 }
 
-// Width of the confidence band drawn around expected_count: ±2σ ≈ 95%
-// coverage on a normal-ish baseline. Matches what the anomaly detector
-// effectively flags (default sigma_threshold ~2.5–3) without making the
-// band so wide it always swallows the actual series.
-const CONFIDENCE_BAND_K = 2
+// Fallback confidence-band multiplier when the series response does not carry a
+// `sigma_threshold` (e.g. older payloads). The band is drawn as
+// `expected ± sigma_threshold * effective_stddev` using the STORED effective
+// stddev the backend serves in `stddev`, so "outside the band" == "flagged".
+// 3.0 matches the scan-config default sigma threshold.
+const DEFAULT_SIGMA_THRESHOLD = 3
 
 interface ChartDataPoint {
   bucket: string
@@ -177,15 +185,23 @@ interface ChartDataPoint {
   is_forecast?: boolean
 }
 
-function buildChartData(
+// Exported for unit tests only — recharts never paints in jsdom, so the band
+// geometry is verified on the pure builder.
+// eslint-disable-next-line react-refresh/only-export-components
+export function buildChartData(
   data: EventMetricPoint[],
   forecast: ForecastPoint[] = [],
+  sigmaThreshold: number = DEFAULT_SIGMA_THRESHOLD,
 ): ChartDataPoint[] {
+  // Robust to a missing/invalid served threshold: fall back to the default.
+  const k = Number.isFinite(sigmaThreshold) && sigmaThreshold > 0
+    ? sigmaThreshold
+    : DEFAULT_SIGMA_THRESHOLD
   const points: ChartDataPoint[] = data.map(point => {
     if (point.expected_count == null || point.stddev == null) {
       return { ...point }
     }
-    const offset = CONFIDENCE_BAND_K * point.stddev
+    const offset = k * point.stddev
     return {
       ...point,
       band: [point.expected_count - offset, point.expected_count + offset],
@@ -198,11 +214,11 @@ function buildChartData(
     const anchor = points[points.length - 1]
     anchor.forecast_expected = anchor.count ?? undefined
     if (anchor.stddev != null && anchor.count != null) {
-      const anchorOffset = CONFIDENCE_BAND_K * anchor.stddev
+      const anchorOffset = k * anchor.stddev
       anchor.forecast_band = [anchor.count - anchorOffset, anchor.count + anchorOffset]
     }
     for (const point of forecast) {
-      const offset = CONFIDENCE_BAND_K * point.stddev
+      const offset = k * point.stddev
       points.push({
         bucket: point.bucket,
         count: null,
@@ -226,6 +242,7 @@ export function CustomTooltip({
   granularity,
   seriesLabel,
   valueFormatter,
+  sigmaThreshold = DEFAULT_SIGMA_THRESHOLD,
 }: {
   active?: boolean
   payload?: Array<{ value: number; dataKey?: string; payload: ChartDataPoint }>
@@ -233,9 +250,13 @@ export function CustomTooltip({
   granularity: MetricsGranularity
   seriesLabel: string
   valueFormatter?: (value: number) => string
+  sigmaThreshold?: number
 }) {
   if (!active || !payload?.length) return null
   const point = payload[0].payload
+  const sigmaLabel = Number.isFinite(sigmaThreshold) && sigmaThreshold > 0
+    ? sigmaThreshold
+    : DEFAULT_SIGMA_THRESHOLD
   // A caller-provided formatter carries its own unit (e.g. '8%'), so the
   // secondary lines route through it instead of the default whole-number
   // rounding (which would collapse fractional metric values to 0).
@@ -254,7 +275,7 @@ export function CustomTooltip({
         <p className="text-xs text-muted-foreground">Forecast (next bucket)</p>
         {point.forecast_band && (
           <p className="text-xs text-muted-foreground">
-            ±{CONFIDENCE_BAND_K}σ band: {formatSecondary(point.forecast_band[0])}–{formatSecondary(point.forecast_band[1])}
+            ±{sigmaLabel}σ band: {formatSecondary(point.forecast_band[0])}–{formatSecondary(point.forecast_band[1])}
           </p>
         )}
       </div>
@@ -278,7 +299,7 @@ export function CustomTooltip({
       )}
       {point.band && (
         <p className="text-xs text-muted-foreground">
-          ±{CONFIDENCE_BAND_K}σ band: {formatSecondary(point.band[0])}–{formatSecondary(point.band[1])}
+          ±{sigmaLabel}σ band: {formatSecondary(point.band[0])}–{formatSecondary(point.band[1])}
         </p>
       )}
       {deviation !== null && (
@@ -370,12 +391,16 @@ export function MetricsChart({
   granularity = 'hour',
   seriesLabel = 'events',
   valueFormatter,
+  sigmaThreshold = DEFAULT_SIGMA_THRESHOLD,
 }: MetricsChartProps) {
   const { chartStyle } = useTheme()
   const chartColor = color || 'var(--chart-1)'
   const gradientId = useId().replace(/:/g, '')
   const descId = useId()
-  const chartData = useMemo(() => buildChartData(data, forecast), [data, forecast])
+  const chartData = useMemo(
+    () => buildChartData(data, forecast, sigmaThreshold),
+    [data, forecast, sigmaThreshold],
+  )
   const snappedAnnotations = useMemo(
     () => snapAnnotationsToBuckets(annotations, chartData),
     [annotations, chartData],
@@ -455,6 +480,7 @@ export function MetricsChart({
                 granularity={granularity}
                 seriesLabel={seriesLabel}
                 valueFormatter={valueFormatter}
+                sigmaThreshold={sigmaThreshold}
               />
             }
           />

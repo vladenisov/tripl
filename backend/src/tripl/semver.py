@@ -100,6 +100,16 @@ def latest_version(versions: Iterable[str]) -> str | None:
     return latest
 
 
+def is_prerelease(version: str) -> bool:
+    """True when ``version`` parses as SemVer with a non-empty prerelease tag.
+
+    A prerelease build (e.g. ``"3.0.0-beta.1"`` / ``"2.1.0-rc.2"``) is a
+    dev/tester artifact that must never be treated as the latest/active release.
+    Non-SemVer strings have no prerelease component and so are never prereleases.
+    """
+    return bool(parse_version(version).prerelease)
+
+
 def latest_previous_versions(versions: Iterable[str]) -> tuple[str | None, str | None]:
     """Return the latest and previous distinct precedence versions.
 

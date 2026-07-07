@@ -2,7 +2,12 @@ import { render, screen } from '@testing-library/react'
 import { describe, expect, it } from 'vitest'
 import { DndContext } from '@dnd-kit/core'
 import { SortableContext } from '@dnd-kit/sortable'
-import type { EventListItem, EventMetricPoint, EventTypeBrief } from '@/types'
+import type {
+  EventListItem,
+  EventMetricPoint,
+  EventTypeBrief,
+  MonitoringSignal,
+} from '@/types'
 import { TooltipProvider } from '@/components/ui/tooltip'
 import { EventRow } from './EventRow'
 
@@ -59,7 +64,29 @@ function makeEvent(overrides: Partial<EventListItem> = {}): EventListItem {
   }
 }
 
-function renderRow(ev: EventListItem, windowData: EventMetricPoint[]) {
+function makeSignal(overrides: Partial<MonitoringSignal> = {}): MonitoringSignal {
+  return {
+    scan_config_id: 'scan-1',
+    scope_type: 'event',
+    scope_ref: 'evt-1',
+    state: 'latest_scan',
+    event_id: 'evt-1',
+    event_type_id: 'et-1',
+    bucket: new Date(LATEST).toISOString(),
+    actual_count: 480,
+    expected_count: 120,
+    stddev: 40,
+    z_score: 9,
+    direction: 'spike',
+    ...overrides,
+  }
+}
+
+function renderRow(
+  ev: EventListItem,
+  windowData: EventMetricPoint[],
+  rowSignal?: MonitoringSignal,
+) {
   return render(
     <TooltipProvider>
       <DndContext>
@@ -83,7 +110,7 @@ function renderRow(ev: EventListItem, windowData: EventMetricPoint[]) {
                 metaFields={[]}
                 slug="proj-1"
                 expandedFieldId={null}
-                rowSignal={undefined}
+                rowSignal={rowSignal}
                 windowTotal={windowData.length}
                 windowData={windowData}
                 metaValueMap={undefined}
@@ -116,5 +143,36 @@ describe('EventRow Δ · 24h and Monitor cells', () => {
     renderRow(makeEvent({ monitored: false }), windowSeries(10, 20))
     expect(screen.queryByText('Monitored')).not.toBeInTheDocument()
     expect(screen.getByTitle('Not covered by any alert rule')).toBeInTheDocument()
+  })
+})
+
+describe('EventRow single saturated signal indicator', () => {
+  // A live signal used to fan out into four saturated marks on one row (a
+  // pulsing name dot, the Firing chip, the SignalLink arrow, and a red
+  // sparkline dot). The row now surfaces ONE act-on-me affordance — the Firing
+  // chip — so a single incident does not read as many. (tripl-dmch.12)
+  it('renders the Firing chip as the single indicator and drops the SignalLink arrow', () => {
+    renderRow(makeEvent({ monitored: true }), windowSeries(10, 20), makeSignal())
+
+    // The one kept, saturated affordance: the labelled Monitor-cell chip.
+    expect(screen.getByText('Firing')).toBeInTheDocument()
+    // The redundant SignalLink arrow (previously aria-labelled from the signal
+    // tone title) is removed, so it no longer double-signals the same incident.
+    expect(screen.queryByLabelText('Open latest scan anomaly')).not.toBeInTheDocument()
+    expect(screen.queryByLabelText('Open recent anomaly')).not.toBeInTheDocument()
+  })
+
+  it('still marks a past-window anomaly on rows with no live signal', () => {
+    // No rowSignal ⇒ no Firing chip; the sparkline keeps its historical anomaly
+    // marker as the row's only cue (nothing to deduplicate against).
+    const series = windowSeries(10, 20)
+    const withAnomaly = series.map((p, i) =>
+      i === series.length - 1 ? { ...p, is_anomaly: true } : p,
+    )
+    renderRow(makeEvent({ monitored: true }), withAnomaly)
+
+    expect(screen.queryByText('Firing')).not.toBeInTheDocument()
+    // Covered-but-not-firing still reads as "Monitored", not a signal.
+    expect(screen.getByText('Monitored')).toBeInTheDocument()
   })
 })

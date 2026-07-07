@@ -101,7 +101,19 @@ def _create_scan_config(session: Session, *, with_event_type: bool = False) -> S
     return config
 
 
-def _seed_anomaly_scan_state(session: Session) -> tuple[ScanConfig, EventType, Event]:
+# Fresh, hour-aligned base for the anomaly-history fixture so the detected drop's
+# bucket stays inside the wall-clock signal freshness horizon. Callers that assert
+# an OPEN signal / queued alert pass base=_ANOMALY_BASE; the other callers keep the
+# historical 2026-01-01 anchor (behaviourally identical for them — they do not
+# assert on signal freshness). Kept tz-naive to match the fixture's naive columns.
+_ANOMALY_BASE = datetime.now(UTC).replace(
+    minute=0, second=0, microsecond=0, tzinfo=None
+) - timedelta(hours=11)
+
+
+def _seed_anomaly_scan_state(
+    session: Session, *, base: datetime = datetime(2026, 1, 1, 0, 0)
+) -> tuple[ScanConfig, EventType, Event]:
     config = _create_scan_config(session, with_event_type=True)
     assert config.event_type_id is not None
 
@@ -124,7 +136,7 @@ def _seed_anomaly_scan_state(session: Session) -> tuple[ScanConfig, EventType, E
     session.add(event)
 
     for hour in range(10):
-        bucket = datetime(2026, 1, 1, hour)
+        bucket = base + timedelta(hours=hour)
         session.add(
             EventMetric(
                 id=uuid.uuid4(),
@@ -1714,7 +1726,7 @@ def test_collect_metrics_recalculates_and_clears_metric_anomalies(
     monkeypatch: MonkeyPatch,
 ) -> None:
     with sync_session_factory() as session:
-        config, event_type, event = _seed_anomaly_scan_state(session)
+        config, event_type, event = _seed_anomaly_scan_state(session, base=_ANOMALY_BASE)
         config_id = str(config.id)
 
     class FakeAdapter:
@@ -1748,7 +1760,9 @@ def test_collect_metrics_recalculates_and_clears_metric_anomalies(
 
     monkeypatch.setattr(metrics, "_get_sync_session", sync_session_factory)
     monkeypatch.setattr(metrics, "_build_adapter", lambda ds: FakeAdapter())
-    monkeypatch.setattr(metrics, "_floor_to_interval", lambda dt, delta: datetime(2026, 1, 1, 11))
+    monkeypatch.setattr(
+        metrics, "_floor_to_interval", lambda dt, delta: _ANOMALY_BASE + timedelta(hours=11)
+    )
     monkeypatch.setattr(metrics, "analyze_cardinality", lambda *args, **kwargs: object())
 
     def fake_generate_events(*args: object, **kwargs: object) -> GenerationResult:
@@ -1764,8 +1778,8 @@ def test_collect_metrics_recalculates_and_clears_metric_anomalies(
     monkeypatch.setattr(metrics, "generate_events", fake_generate_events)
 
     FakeAdapter.rows = [
-        (datetime(2026, 1, 1, 8), "Login", 10),
-        (datetime(2026, 1, 1, 9), "Login", 10),
+        (_ANOMALY_BASE + timedelta(hours=8), "Login", 10),
+        (_ANOMALY_BASE + timedelta(hours=9), "Login", 10),
     ]
     first_result = metrics.collect_metrics.run(config_id)
     assert first_result["anomalies_detected"] == 3
@@ -1778,11 +1792,11 @@ def test_collect_metrics_recalculates_and_clears_metric_anomalies(
             ("event_type", "drop"),
             ("event", "drop"),
         }
-        assert {anomaly.bucket for anomaly in anomalies} == {datetime(2026, 1, 1, 10)}
+        assert {anomaly.bucket for anomaly in anomalies} == {_ANOMALY_BASE + timedelta(hours=10)}
 
     FakeAdapter.rows = [
-        (datetime(2026, 1, 1, 8), "Login", 10),
-        (datetime(2026, 1, 1, 9), "Login", 10),
+        (_ANOMALY_BASE + timedelta(hours=8), "Login", 10),
+        (_ANOMALY_BASE + timedelta(hours=9), "Login", 10),
     ]
     repeated_result = metrics.collect_metrics.run(config_id)
     assert repeated_result["anomalies_detected"] == 3
@@ -1790,9 +1804,9 @@ def test_collect_metrics_recalculates_and_clears_metric_anomalies(
     assert repeated_result["signals_removed"] == 0
 
     FakeAdapter.rows = [
-        (datetime(2026, 1, 1, 8), "Login", 10),
-        (datetime(2026, 1, 1, 9), "Login", 10),
-        (datetime(2026, 1, 1, 10), "Login", 10),
+        (_ANOMALY_BASE + timedelta(hours=8), "Login", 10),
+        (_ANOMALY_BASE + timedelta(hours=9), "Login", 10),
+        (_ANOMALY_BASE + timedelta(hours=10), "Login", 10),
     ]
     second_result = metrics.collect_metrics.run(config_id)
     assert second_result["anomalies_detected"] == 0
@@ -1809,7 +1823,7 @@ def test_collect_metrics_queues_alert_deliveries(
     monkeypatch: MonkeyPatch,
 ) -> None:
     with sync_session_factory() as session:
-        config, _event_type, _event = _seed_anomaly_scan_state(session)
+        config, _event_type, _event = _seed_anomaly_scan_state(session, base=_ANOMALY_BASE)
         destination = AlertDestination(
             id=uuid.uuid4(),
             project_id=config.project_id,
@@ -1870,7 +1884,9 @@ def test_collect_metrics_queues_alert_deliveries(
 
     monkeypatch.setattr(metrics, "_get_sync_session", sync_session_factory)
     monkeypatch.setattr(metrics, "_build_adapter", lambda ds: FakeAdapter())
-    monkeypatch.setattr(metrics, "_floor_to_interval", lambda dt, delta: datetime(2026, 1, 1, 11))
+    monkeypatch.setattr(
+        metrics, "_floor_to_interval", lambda dt, delta: _ANOMALY_BASE + timedelta(hours=11)
+    )
     monkeypatch.setattr(metrics, "analyze_cardinality", lambda *args, **kwargs: object())
     monkeypatch.setattr(
         metrics.send_alert_delivery,
@@ -1890,8 +1906,8 @@ def test_collect_metrics_queues_alert_deliveries(
     monkeypatch.setattr(metrics, "generate_events", fake_generate_events)
 
     FakeAdapter.rows = [
-        (datetime(2026, 1, 1, 8), "Login", 10),
-        (datetime(2026, 1, 1, 9), "Login", 10),
+        (_ANOMALY_BASE + timedelta(hours=8), "Login", 10),
+        (_ANOMALY_BASE + timedelta(hours=9), "Login", 10),
     ]
     result = metrics.collect_metrics.run(config_id)
 
@@ -3986,3 +4002,294 @@ def test_collect_metrics_fails_when_query_exceeds_row_limit(
 
     with pytest.raises(ValueError, match="Metrics query reached configured row limit"):
         metrics.collect_metrics.run(config_id)
+
+
+def test_replace_scope_anomalies_persists_effective_stddev_and_detector_kind(
+    sync_session_factory: sessionmaker[Session],
+) -> None:
+    """MetricAnomaly rows carry the C3 columns sourced from the DetectedAnomaly."""
+    from tripl.core.analyzers.anomaly_detector import SCOPE_EVENT, DetectedAnomaly
+    from tripl.worker.tasks.metrics.detect import _replace_scope_anomalies
+
+    bucket = datetime(2026, 6, 15, 9, 0, tzinfo=UTC)
+    with sync_session_factory() as session:
+        config = _create_scan_config(session)
+        event_id = uuid.uuid4()
+        _replace_scope_anomalies(
+            session,
+            scan_config_id=config.id,
+            scope_type=SCOPE_EVENT,
+            scope_ref=str(event_id),
+            evaluation_start=bucket,
+            evaluation_end=bucket + timedelta(hours=1),
+            event_id=event_id,
+            event_type_id=None,
+            anomalies=[
+                DetectedAnomaly(
+                    bucket=bucket,
+                    actual_count=0,
+                    expected_count=10.0,
+                    stddev=0.5,
+                    z_score=-8.0,
+                    direction="drop",
+                    effective_stddev=2.5,
+                    kind="rolling",
+                )
+            ],
+        )
+        session.commit()
+
+        row = session.execute(select(MetricAnomaly)).scalar_one()
+        assert row.effective_stddev == 2.5
+        assert row.detector_kind == "rolling"
+
+
+def test_replace_scope_breakdown_anomalies_persists_detector_fields(
+    sync_session_factory: sessionmaker[Session],
+) -> None:
+    """MetricBreakdownAnomaly rows carry the C3 columns from the DetectedAnomaly."""
+    from tripl.core.analyzers.anomaly_detector import SCOPE_EVENT, DetectedAnomaly
+    from tripl.worker.tasks.metrics.detect import _replace_scope_breakdown_anomalies
+
+    bucket = datetime(2026, 6, 15, 9, 0, tzinfo=UTC)
+    with sync_session_factory() as session:
+        config = _create_scan_config(session)
+        event_id = uuid.uuid4()
+        _replace_scope_breakdown_anomalies(
+            session,
+            scan_config_id=config.id,
+            scope_type=SCOPE_EVENT,
+            scope_ref=str(event_id),
+            breakdown_column="platform",
+            breakdown_value="ios",
+            is_other=False,
+            evaluation_start=bucket,
+            evaluation_end=bucket + timedelta(hours=1),
+            event_id=event_id,
+            event_type_id=None,
+            anomalies=[
+                DetectedAnomaly(
+                    bucket=bucket,
+                    actual_count=99,
+                    expected_count=10.0,
+                    stddev=1.0,
+                    z_score=9.0,
+                    direction="spike",
+                    effective_stddev=3.3,
+                    kind="phase",
+                )
+            ],
+        )
+        session.commit()
+
+        row = session.execute(select(MetricBreakdownAnomaly)).scalar_one()
+        assert row.effective_stddev == 3.3
+        assert row.detector_kind == "phase"
+
+
+def test_collect_breakdown_scope_keys_gates_immature_app_versions(
+    sync_session_factory: sessionmaker[Session],
+) -> None:
+    """An app_version value below the activation gate gets no anomaly series;
+    an activated release and every non-version column are untouched."""
+    from tripl.core.analyzers.anomaly_detector import SCOPE_EVENT
+    from tripl.worker.tasks.metrics.detect import _collect_breakdown_scope_keys
+
+    base = datetime(2026, 1, 1, 0, 0)
+    with sync_session_factory() as session:
+        config, _event_type, event = _seed_anomaly_scan_state(session, base=base)
+        config.app_version_column = "app_version"
+        for hour in range(10):
+            bucket = base + timedelta(hours=hour)
+            session.add_all(
+                [
+                    # Activated release: dominant share, well over the volume floor.
+                    EventMetricBreakdown(
+                        id=uuid.uuid4(),
+                        scan_config_id=config.id,
+                        event_id=event.id,
+                        event_type_id=None,
+                        bucket=bucket,
+                        breakdown_column="app_version",
+                        breakdown_value="2.0.0",
+                        is_other=False,
+                        count=100,
+                    ),
+                    # Immature dev build: high SemVer, negligible traffic.
+                    EventMetricBreakdown(
+                        id=uuid.uuid4(),
+                        scan_config_id=config.id,
+                        event_id=event.id,
+                        event_type_id=None,
+                        bucket=bucket,
+                        breakdown_column="app_version",
+                        breakdown_value="9.9.9",
+                        is_other=False,
+                        count=1,
+                    ),
+                    # A different breakdown column must NOT be gated.
+                    EventMetricBreakdown(
+                        id=uuid.uuid4(),
+                        scan_config_id=config.id,
+                        event_id=event.id,
+                        event_type_id=None,
+                        bucket=bucket,
+                        breakdown_column="platform",
+                        breakdown_value="ios",
+                        is_other=False,
+                        count=1,
+                    ),
+                ]
+            )
+        session.commit()
+
+        keys = _collect_breakdown_scope_keys(
+            session,
+            scan_config_id=config.id,
+            history_from=base,
+            evaluation_start=base,
+            evaluation_end=base + timedelta(hours=10),
+            scope_type=SCOPE_EVENT,
+            app_version_column="app_version",
+        )
+
+    pairs = {(column, value) for _e, _t, column, value, _o in keys}
+    assert ("app_version", "2.0.0") in pairs  # activated release keeps its series
+    assert ("app_version", "9.9.9") not in pairs  # immature build gated out
+    assert ("platform", "ios") in pairs  # other columns untouched
+
+
+def test_recalculate_metric_anomalies_excludes_uncovered_gap(
+    sync_session_factory: sessionmaker[Session],
+) -> None:
+    """A missing bucket inside real coverage flags as a drop, but the same
+    missing bucket left OUT of ``covered_buckets`` (a collection gap) is excluded
+    instead of zero-filled into a fake drop (C2 / tripl-dmch.16)."""
+    from tripl.worker.tasks.metrics.detect import _recalculate_metric_anomalies
+
+    base = _ANOMALY_BASE  # recent so the age-out horizon never fires
+    eval_start = base
+    eval_end = base + timedelta(hours=11)  # includes the missing hour-10 bucket
+    with sync_session_factory() as session:
+        config, _event_type, _event = _seed_anomaly_scan_state(session, base=base)
+
+        covered_full = {base + timedelta(hours=h) for h in range(11)}
+        flagged = _recalculate_metric_anomalies(
+            session,
+            config,
+            evaluation_start=eval_start,
+            evaluation_end=eval_end,
+            covered_buckets=covered_full,
+        )
+        session.commit()
+        assert flagged > 0  # the covered gap zero-fills and reads as a drop
+
+        covered_gap = {base + timedelta(hours=h) for h in range(10)}  # hour 10 uncovered
+        excluded = _recalculate_metric_anomalies(
+            session,
+            config,
+            evaluation_start=eval_start,
+            evaluation_end=eval_end,
+            covered_buckets=covered_gap,
+        )
+        session.commit()
+        assert excluded == 0  # collection gap excluded, no fake drop
+
+
+def test_recalculate_metric_anomalies_trailing_reeval_clears_backfilled_bucket(
+    sync_session_factory: sessionmaker[Session],
+) -> None:
+    """A stale flag on a bucket that has since been re-collected with healthy
+    data is cleared when the trailing re-eval window covers it (tripl-dmch.14)."""
+    from tripl.core.analyzers.anomaly_detector import SCOPE_EVENT
+    from tripl.worker.tasks.metrics.detect import _recalculate_metric_anomalies
+
+    base = _ANOMALY_BASE  # recent so the age-out horizon never fires
+    stale_bucket = base + timedelta(hours=9)  # has healthy data (count=10) now
+    with sync_session_factory() as session:
+        config, _event_type, event = _seed_anomaly_scan_state(session, base=base)
+        session.add(
+            MetricAnomaly(
+                id=uuid.uuid4(),
+                scan_config_id=config.id,
+                scope_type=SCOPE_EVENT,
+                scope_ref=str(event.id),
+                event_id=event.id,
+                event_type_id=None,
+                bucket=stale_bucket,
+                actual_count=0,
+                expected_count=10.0,
+                stddev=1.0,
+                z_score=-10.0,
+                direction="drop",
+            )
+        )
+        session.commit()
+
+        _recalculate_metric_anomalies(
+            session,
+            config,
+            evaluation_start=base,
+            evaluation_end=base + timedelta(hours=10),
+            covered_buckets={base + timedelta(hours=h) for h in range(10)},
+        )
+        session.commit()
+
+        remaining = (
+            session.execute(
+                select(MetricAnomaly).where(
+                    MetricAnomaly.event_id == event.id,
+                    MetricAnomaly.bucket == stale_bucket,
+                )
+            )
+            .scalars()
+            .all()
+        )
+        assert remaining == []  # backfilled bucket re-evaluated → stale flag gone
+
+
+def test_covered_buckets_from_scan_jobs_unions_completed_windows(
+    sync_session_factory: sessionmaker[Session],
+) -> None:
+    """Coverage is the union of every COMPLETED job window and the current run;
+    failed/incomplete jobs never mark a bucket as covered."""
+    base = datetime(2026, 1, 1, 0, 0, tzinfo=UTC)
+    delta = timedelta(hours=1)
+    with sync_session_factory() as session:
+        config = _create_scan_config(session)
+        session.add(
+            ScanJob(
+                id=uuid.uuid4(),
+                scan_config_id=config.id,
+                status=ScanJobStatus.completed.value,
+                result_summary={
+                    "time_from": base.isoformat(),
+                    "time_to": (base + delta * 3).isoformat(),
+                },
+            )
+        )
+        session.add(
+            ScanJob(
+                id=uuid.uuid4(),
+                scan_config_id=config.id,
+                status=ScanJobStatus.failed.value,
+                result_summary={
+                    "time_from": (base + delta * 5).isoformat(),
+                    "time_to": (base + delta * 7).isoformat(),
+                },
+            )
+        )
+        session.commit()
+
+        covered = metrics._covered_buckets_from_scan_jobs(
+            session,
+            scan_config_id=config.id,
+            delta=delta,
+            current_window=(base + delta * 10, base + delta * 11),
+        )
+
+    assert base in covered
+    assert base + delta in covered
+    assert base + delta * 2 in covered
+    assert base + delta * 5 not in covered  # failed job window is not coverage
+    assert base + delta * 10 in covered  # the current run's window is always covered

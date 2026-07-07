@@ -130,7 +130,10 @@ describe('aggregateMetricPoints', () => {
     expect(result[0].stddev).toBe(0)
   })
 
-  it('returns null expected_count only when every source is null', () => {
+  it('rolls up expected_count only when every source carries a baseline', () => {
+    // A partial baseline (only one source hour scored) must NOT be summed
+    // against a full-count aggregate — that yields expected ~1/N of the count
+    // and a nonsensical tooltip (tripl-dmch.10). Drop it to null instead.
     const mixed = aggregateMetricPoints(
       [
         point({ bucket: '2026-06-10T10:00:00Z', expected_count: null }),
@@ -138,7 +141,16 @@ describe('aggregateMetricPoints', () => {
       ],
       'hour',
     )
-    expect(mixed[0].expected_count).toBe(7)
+    expect(mixed[0].expected_count).toBeNull()
+
+    const allPresent = aggregateMetricPoints(
+      [
+        point({ bucket: '2026-06-10T10:00:00Z', expected_count: 5 }),
+        point({ bucket: '2026-06-10T10:30:00Z', expected_count: 7 }),
+      ],
+      'hour',
+    )
+    expect(allPresent[0].expected_count).toBe(12)
 
     const allNull = aggregateMetricPoints(
       [
@@ -148,6 +160,71 @@ describe('aggregateMetricPoints', () => {
       'hour',
     )
     expect(allNull[0].expected_count).toBeNull()
+  })
+
+  it('does not flag an aggregated day when one anomalous hour leaves the day total unremarkable', () => {
+    // Six normal hours (count 100, expected 100, stddev 10) plus one hour that
+    // was flagged upstream with a mild spike (count 130). The rolled-up day is
+    // count 730 vs expected 700, stddev sqrt(7*100) ~= 26.5, z ~= 1.13 — well
+    // under the ~3 sigma bar, so the day must stay un-reddened (tripl-dmch.10).
+    const hourly: EventMetricPoint[] = []
+    for (let hour = 0; hour < 6; hour += 1) {
+      const stamp = String(hour).padStart(2, '0')
+      hourly.push(
+        point({ bucket: `2026-06-10T${stamp}:00:00Z`, count: 100, expected_count: 100, stddev: 10 }),
+      )
+    }
+    hourly.push(
+      point({
+        bucket: '2026-06-10T06:00:00Z',
+        count: 130,
+        expected_count: 100,
+        stddev: 10,
+        is_anomaly: true,
+        anomaly_direction: 'spike',
+        z_score: 3,
+      }),
+    )
+
+    const [day] = aggregateMetricPoints(hourly, 'day')
+
+    expect(day.is_anomaly).toBe(false)
+    expect(day.z_score).toBeNull()
+    expect(day.anomaly_direction).toBeNull()
+    // Expected is the coherent sum of the seven baselines, not ~1/7 of count.
+    expect(day.count).toBe(730)
+    expect(day.expected_count).toBe(700)
+    expect(day.expected_count).toBeGreaterThan(day.count / 2)
+  })
+
+  it('flags an aggregated day when the rolled-up total is itself significant', () => {
+    // Every hour is elevated (count 160 vs expected 100, stddev 10): the day
+    // total is 960 vs expected 600, stddev sqrt(600) ~= 24.5, z ~= 14.7.
+    const hourly: EventMetricPoint[] = []
+    for (let hour = 0; hour < 6; hour += 1) {
+      const stamp = String(hour).padStart(2, '0')
+      hourly.push(
+        point({
+          bucket: `2026-06-11T${stamp}:00:00Z`,
+          count: 160,
+          expected_count: 100,
+          stddev: 10,
+          is_anomaly: true,
+          anomaly_direction: 'spike',
+          z_score: 6,
+        }),
+      )
+    }
+
+    const [day] = aggregateMetricPoints(hourly, 'day')
+
+    expect(day.is_anomaly).toBe(true)
+    expect(day.anomaly_direction).toBe('spike')
+    expect(day.z_score).not.toBeNull()
+    // Comfortably past the ~3 sigma bar the aggregate re-test applies.
+    expect(day.z_score as number).toBeGreaterThan(3)
+    expect(day.count).toBe(960)
+    expect(day.expected_count).toBe(600)
   })
 
   it('selects the strongest anomaly by absolute z-score within a bucket', () => {

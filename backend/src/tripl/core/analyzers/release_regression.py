@@ -22,12 +22,17 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 
 from tripl.semver import order_versions
+from tripl.services.version_activation import (
+    DEFAULT_ACTIVATION_MIN_BUCKETS,
+    DEFAULT_ACTIVE_SHARE_MIN,
+    DEFAULT_MIN_RELEASE_VOLUME,
+    activation_bucket,
+)
 
-# Defaults from the decision note. Kept as module constants for now; promote to
-# ScanConfig columns only if tuning demand appears.
-DEFAULT_ACTIVE_SHARE_MIN = 0.05
-DEFAULT_ACTIVATION_MIN_BUCKETS = 2
-DEFAULT_MIN_RELEASE_VOLUME = 200
+# Defaults from the decision note. The activation-gate constants live in
+# ``tripl.services.version_activation`` (the single source of truth shared with
+# the app-version series selection) and are re-exported here for backward
+# compatibility. Promote to ScanConfig columns only if tuning demand appears.
 DEFAULT_WINDOW_DAYS = 14
 DEFAULT_MIN_EXPECTED = 30.0
 DEFAULT_MIN_PREV_SHARE = 0.001
@@ -73,42 +78,46 @@ def _window_sum(by_bucket: Mapping[datetime, int], start: datetime, end: datetim
     return sum(count for bucket, count in by_bucket.items() if start <= bucket <= end)
 
 
-def _activation_bucket(
-    release_by_bucket: Mapping[datetime, int],
-    all_by_bucket: Mapping[datetime, int],
-    *,
-    settings: RegressionSettings,
-) -> datetime | None:
-    """First bucket starting a run of ``activation_min_buckets`` consecutive
-    buckets whose share of total traffic is at least ``active_share_min``."""
-    run_start: datetime | None = None
-    run_len = 0
-    for bucket in sorted(all_by_bucket):
-        total = all_by_bucket.get(bucket, 0)
-        share = (release_by_bucket.get(bucket, 0) / total) if total > 0 else 0.0
-        if share >= settings.active_share_min:
-            if run_len == 0:
-                run_start = bucket
-            run_len += 1
-            if run_len >= settings.activation_min_buckets:
-                return run_start
-        else:
-            run_len = 0
-            run_start = None
-    return None
+def _activation_window_from(
+    activation: datetime, latest_bucket: datetime, *, window_days: int
+) -> datetime:
+    return max(activation, latest_bucket - timedelta(days=window_days))
 
 
 def _active_releases(
     release_total_by_bucket: Mapping[str, Mapping[datetime, int]],
     all_traffic_by_bucket: Mapping[datetime, int],
     *,
+    latest_bucket: datetime,
     settings: RegressionSettings,
 ) -> dict[str, datetime]:
+    """Versions that pass the full activation gate, mapped to their activation
+    bucket.
+
+    A release is active only when it (a) holds at least ``active_share_min`` of
+    total traffic for ``activation_min_buckets`` consecutive buckets and (b)
+    clears the absolute ``min_release_volume`` floor over its own
+    activation-anchored comparison window. Per the decision note (§1, §6) a
+    release failing either gate is skipped as BOTH subject and baseline, so the
+    floor is enforced here rather than only on the selected subject.
+    """
     activations: dict[str, datetime] = {}
     for version, by_bucket in release_total_by_bucket.items():
-        activation = _activation_bucket(by_bucket, all_traffic_by_bucket, settings=settings)
-        if activation is not None:
-            activations[version] = activation
+        activation = activation_bucket(
+            by_bucket,
+            all_traffic_by_bucket,
+            share_min=settings.active_share_min,
+            min_buckets=settings.activation_min_buckets,
+        )
+        if activation is None:
+            continue
+        window_from = _activation_window_from(
+            activation, latest_bucket, window_days=settings.window_days
+        )
+        windowed_total = _window_sum(by_bucket, window_from, latest_bucket)
+        if windowed_total < settings.min_release_volume:
+            continue
+        activations[version] = activation
     return activations
 
 
@@ -132,7 +141,10 @@ def detect_release_regressions(
     settings = settings or RegressionSettings()
 
     activations = _active_releases(
-        release_total_by_bucket, all_traffic_by_bucket, settings=settings
+        release_total_by_bucket,
+        all_traffic_by_bucket,
+        latest_bucket=latest_bucket,
+        settings=settings,
     )
     if len(activations) < 2:
         return []
@@ -141,16 +153,18 @@ def detect_release_regressions(
     v_new = ordered[-1]
     v_prev = ordered[-2]
 
-    window_from = max(
-        activations[v_new],
-        latest_bucket - timedelta(days=settings.window_days),
+    window_from = _activation_window_from(
+        activations[v_new], latest_bucket, window_days=settings.window_days
     )
     window_to = latest_bucket
 
+    # ``v_new``/``v_prev`` both cleared the ``min_release_volume`` floor in
+    # ``_active_releases`` (over their own activation windows), so the subject's
+    # windowed total is already above the floor here. A usable baseline still
+    # requires non-zero volume over the shared comparison window to normalize by.
     total_new = _window_sum(release_total_by_bucket.get(v_new, {}), window_from, window_to)
     total_prev = _window_sum(release_total_by_bucket.get(v_prev, {}), window_from, window_to)
-    # Adoption floor and a usable baseline are both required.
-    if total_new < settings.min_release_volume or total_prev <= 0:
+    if total_prev <= 0:
         return []
 
     all_window = _window_sum(all_traffic_by_bucket, window_from, window_to)

@@ -34,6 +34,8 @@ const scanConfig: ScanConfig = {
   metrics_row_limit: null,
   app_version_column: null,
   app_version_keep_releases: null,
+  app_version_prerelease_pattern: null,
+  app_version_active_share_min: null,
   platform_column: null,
   created_at: '2026-01-01T00:00:00Z',
   updated_at: '2026-01-01T00:00:00Z',

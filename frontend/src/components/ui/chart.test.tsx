@@ -11,7 +11,8 @@ vi.mock('recharts', async () => {
 })
 
 import { metricAxisFormatter } from '@/lib/metricFormat'
-import { CustomTooltip, MetricsChart } from './chart'
+import type { EventMetricPoint } from '@/types'
+import { buildChartData, CustomTooltip, MetricsChart } from './chart'
 
 describe('MetricsChart', () => {
   it('renders anomaly dots for anomalous points', () => {
@@ -162,7 +163,76 @@ describe('CustomTooltip', () => {
 
     expect(screen.getByText('8%')).toBeInTheDocument()
     expect(screen.getByText('Expected: 5%')).toBeInTheDocument()
-    expect(screen.getByText('±2σ band: 3%–7%')).toBeInTheDocument()
+    // Default sigma threshold is 3 when none is served.
+    expect(screen.getByText('±3σ band: 3%–7%')).toBeInTheDocument()
     expect(screen.getByText('Deviation: +3%')).toBeInTheDocument()
+  })
+
+  it('labels the band with the served sigma threshold', () => {
+    render(
+      <CustomTooltip
+        active
+        payload={[{ value: 0.08, payload: point }]}
+        label="2026-01-01T10:00:00Z"
+        granularity="hour"
+        seriesLabel="%"
+        valueFormatter={metricAxisFormatter('%')}
+        sigmaThreshold={2.5}
+      />,
+    )
+
+    expect(screen.getByText('±2.5σ band: 3%–7%')).toBeInTheDocument()
+  })
+})
+
+describe('buildChartData confidence band', () => {
+  // A flagged bucket: actual 0 vs expected 10 with effective stddev 2. The
+  // detector served `stddev` as the FLOORED effective stddev, so the band is
+  // expected ± sigmaThreshold * stddev.
+  const flagged: EventMetricPoint = {
+    bucket: '2026-01-02T10:00:00Z',
+    count: 0,
+    expected_count: 10,
+    stddev: 2,
+    is_anomaly: true,
+    anomaly_direction: 'drop',
+    z_score: -5,
+  }
+  const normal: EventMetricPoint = {
+    bucket: '2026-01-01T10:00:00Z',
+    count: 10,
+    expected_count: null,
+    stddev: null,
+    is_anomaly: false,
+    anomaly_direction: null,
+    z_score: null,
+  }
+
+  it('draws the band as expected ± sigmaThreshold * effective_stddev', () => {
+    const [built] = buildChartData([flagged], [], 3)
+    expect(built.band).toEqual([10 - 3 * 2, 10 + 3 * 2])
+  })
+
+  it('scales the band width with the served sigma threshold', () => {
+    const [narrow] = buildChartData([flagged], [], 2)
+    const [wide] = buildChartData([flagged], [], 4)
+    expect(narrow.band).toEqual([6, 14])
+    expect(wide.band).toEqual([2, 18])
+  })
+
+  it('keeps a flagged point outside the band and leaves normal buckets bandless', () => {
+    const [built] = buildChartData([flagged], [], 3)
+    const [lower, upper] = built.band as [number, number]
+    // actual 0 sits below the lower band edge -> visually "flagged".
+    expect(flagged.count).toBeLessThan(lower)
+    expect(upper).toBeGreaterThan(lower)
+
+    const [normalPoint] = buildChartData([normal], [], 3)
+    expect(normalPoint.band).toBeUndefined()
+  })
+
+  it('falls back to the default multiplier for a missing/invalid threshold', () => {
+    const [built] = buildChartData([flagged], [], Number.NaN)
+    expect(built.band).toEqual([10 - 3 * 2, 10 + 3 * 2])
   })
 })
