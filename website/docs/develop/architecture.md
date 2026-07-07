@@ -133,13 +133,13 @@ Locally, all of the above (except the warehouses) run under Docker Compose:
 ### Catalog metrics
 
 - **`MetricDefinition`** is a user-defined, **project-scoped** metric (the
-  catalog) — global rather than branched. Three kinds: **`sql`** (a user `SELECT`
-  returning a per-bucket value against a data source on its own interval),
-  **`fact_aggregation`** (`count` / `sum` / `avg` / `min` / `max` /
-  `count_distinct` over a measure column of a table or base query, with an optional
-  filter and breakdowns), and **`event_composition`** (a `single` event count, a
-  `ratio` A/B, or an event `per_distinct_user`, derived from already-collected
-  `event_metrics`).
+  catalog) — global rather than branched. Three kinds: **`sql`** (a user
+  read-only `SELECT` or top-level `WITH ... SELECT` returning a per-bucket value
+  against a data source on its own interval), **`fact_aggregation`** (`count` /
+  `sum` / `avg` / `min` / `max` / `count_distinct` over a measure column of a
+  reusable fact table, with optional filters and breakdowns), and
+  **`event_composition`** (a `single` event count, a `ratio` A/B, or an event
+  `per_distinct_user`, derived from already-collected `event_metrics`).
 - **Scheduling.** The `check_metric_definitions_due` beat task runs about every
   **300 s** and dispatches `collect_metric_definitions` for each **active** metric
   whose interval is due. `sql` / `fact_aggregation` metrics query their own data

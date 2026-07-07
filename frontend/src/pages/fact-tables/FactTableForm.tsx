@@ -71,7 +71,7 @@ interface FactTableFormProps {
 /**
  * Create / edit a fact table. `name` is the per-project identity and is
  * immutable after creation (the backend rejects a change), so it is read-only
- * when editing. The SQL is a full read-only SELECT; "Preview columns"
+ * when editing. The SQL is a full read-only SELECT/CTE; "Preview columns"
  * introspects it server-side and populates the persisted `columns` +
  * `identifier_columns`. Server-side 4xx errors surface inline.
  */
@@ -284,7 +284,7 @@ export function FactTableForm({ slug, factTable, dataSources, onClose }: FactTab
           </FField>
         </SCard>
 
-        <SCard title="Source" description="A full read-only SELECT plus the warehouse it runs against.">
+        <SCard title="Source" description="A full read-only SELECT or WITH ... SELECT plus the warehouse it runs against.">
           <FField label="Data source" htmlFor="fact-data-source" required>
             <Select
               id="fact-data-source"
@@ -294,7 +294,7 @@ export function FactTableForm({ slug, factTable, dataSources, onClose }: FactTab
               aria-required
             />
           </FField>
-          <FField label="SQL" htmlFor="fact-sql" required stacked hint="A single read-only SELECT.">
+          <FField label="SQL" htmlFor="fact-sql" required stacked hint="A single read-only SELECT or WITH ... SELECT.">
             <SqlEditor
               id="fact-sql"
               ariaLabel="Fact table SQL"

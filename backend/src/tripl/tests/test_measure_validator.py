@@ -150,6 +150,24 @@ def test_validate_select_sql_accepts_value_and_time_without_from() -> None:
     assert validate_select_sql(sql, value_column="value", time_column="time") == sql
 
 
+def test_validate_select_sql_accepts_top_level_with_cte() -> None:
+    sql = (
+        "WITH x AS (SELECT 1 AS amount, current_timestamp() AS ts) "
+        "SELECT amount AS value, ts AS time FROM x"
+    )
+    assert validate_select_sql(sql, value_column="value", time_column="time") == sql
+
+
+def test_validate_select_sql_accepts_clickhouse_with_aliases_and_ctes() -> None:
+    sql = (
+        "WITH today() - 30 AS start_time, "
+        "fv AS (SELECT device_id, min(time) AS first_visit_time FROM events GROUP BY device_id) "
+        "SELECT count(*) AS value, first_visit_time AS time FROM fv "
+        "WHERE first_visit_time >= start_time"
+    )
+    assert validate_select_sql(sql, value_column="value", time_column="time") == sql
+
+
 @pytest.mark.parametrize(
     "sql",
     [
@@ -197,10 +215,10 @@ def test_validate_select_sql_rejects_comments(sql: str) -> None:
         validate_select_sql(sql, value_column="value", time_column="time")
 
 
-def test_validate_select_sql_requires_select_leading() -> None:
+def test_validate_select_sql_rejects_non_select_leading() -> None:
     with pytest.raises(ValueError, match="read-only SELECT"):
         validate_select_sql(
-            "WITH x AS (SELECT 1) SELECT value, time FROM x",
+            "EXPLAIN SELECT value, time FROM events",
             value_column="value",
             time_column="time",
         )
@@ -216,6 +234,15 @@ def test_validate_select_sql_requires_value_and_time_projection() -> None:
     with pytest.raises(ValueError, match="must project the time column"):
         validate_select_sql(
             "SELECT count(*) AS value FROM events",
+            value_column="value",
+            time_column="time",
+        )
+
+
+def test_validate_select_sql_checks_final_select_projection_after_cte() -> None:
+    with pytest.raises(ValueError, match="must project the time column"):
+        validate_select_sql(
+            "WITH x AS (SELECT value, time FROM events) SELECT count(*) AS value FROM x",
             value_column="value",
             time_column="time",
         )
@@ -294,6 +321,16 @@ def test_validate_select_sql_safety_accepts_clean_select() -> None:
     assert validate_select_sql_safety(sql) == sql
 
 
+def test_validate_select_sql_safety_accepts_top_level_with() -> None:
+    sql = (
+        "WITH today() - 30 AS start_time, "
+        "fv AS (SELECT device_id, min(time) AS first_visit_time FROM events GROUP BY device_id) "
+        "SELECT device_id, first_visit_time AS timestamp FROM fv "
+        "WHERE first_visit_time >= start_time"
+    )
+    assert validate_select_sql_safety(sql) == sql
+
+
 def test_validate_select_sql_safety_strips_trailing_semicolon() -> None:
     sql = "SELECT 1 AS value, ts AS time FROM events ;"
     cleaned = validate_select_sql_safety(sql)
@@ -317,6 +354,9 @@ def test_validate_select_sql_safety_strips_trailing_semicolon() -> None:
         "SELECT value FROM events /* x */",
         "SELECT value FROM a UNION SELECT b FROM c",
         "SELECT value FROM a UNION ALL SELECT b FROM c",
+        "WITH x AS (SELECT 1)",
+        "WITH x AS (SELECT 1) INSERT INTO events SELECT * FROM x",
+        "WITH x AS (SELECT value FROM a) SELECT value FROM x UNION SELECT b FROM c",
     ],
 )
 def test_validate_select_sql_safety_rejects_unsafe(sql: str) -> None:

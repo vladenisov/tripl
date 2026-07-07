@@ -86,7 +86,7 @@ export function FactTablesList({ slug }: { slug?: string }) {
             <EmptyState
               icon={Sheet}
               title="No fact tables yet"
-              description="A fact table wraps a read-only SELECT into a reusable, column-introspected source. Define one, then build fact metrics that aggregate its columns."
+              description="A fact table wraps a read-only SELECT or WITH ... SELECT into a reusable, column-introspected source. Define one, then build fact metrics that aggregate its columns."
               action={
                 slug ? (
                   <Button asChild size="sm">

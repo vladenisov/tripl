@@ -82,8 +82,8 @@ that succeed", or "sign-ups per active user" are metrics. Like an event, you def
 it yourself — but instead of a stream of occurrences it produces **one number per
 time bucket**. A metric is one of three kinds:
 
-- **SQL** — a `SELECT` you write that returns one value per bucket, run against a
-  data source on its own interval.
+- **SQL** — a read-only `SELECT` or top-level `WITH ... SELECT` you write that
+  returns one value per bucket, run against a data source on its own interval.
 - **Fact aggregation** — a count, sum, average, min, max, or distinct count over a
   column of a table, with an optional filter and breakdowns — no SQL to write.
 - **Event composition** — built from events you already collect: a single event's

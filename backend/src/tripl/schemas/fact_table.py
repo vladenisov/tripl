@@ -58,12 +58,13 @@ class FactTableRowFilter(BaseModel):
 
 
 class FactTableCreate(BaseModel):
-    """Create a fact table from a full read-only SELECT plus its column metadata.
+    """Create a fact table from a full read-only query plus its column metadata.
 
-    ``sql`` must be a single read-only SELECT (validated via the shared
-    SELECT-safety path that rejects stacked statements, comments, DDL/DML and
-    ``UNION``). ``timestamp_column`` and ``identifier_columns`` are validated as
-    bare identifiers since they reach warehouse SQL unparameterised.
+    ``sql`` must be a single read-only ``SELECT`` or top-level ``WITH ... SELECT``
+    (validated via the shared SELECT-safety path that rejects stacked statements,
+    comments, DDL/DML and ``UNION``). ``timestamp_column`` and
+    ``identifier_columns`` are validated as bare identifiers since they reach
+    warehouse SQL unparameterised.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -211,7 +212,7 @@ class FactTableListResponse(BaseModel):
 
 
 class FactTablePreviewRequest(BaseModel):
-    """Introspect a candidate SELECT before persisting it as a fact table."""
+    """Introspect a candidate read-only SELECT/CTE before saving a fact table."""
 
     model_config = ConfigDict(extra="forbid")
 
