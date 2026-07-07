@@ -122,6 +122,16 @@ export function parseOptionalPositiveInt(value: string): number | null {
   return Number.isFinite(parsed) ? Math.trunc(parsed) : null
 }
 
+// Activation traffic share is a fraction in (0, 1). Blank / out-of-range values
+// map to null so the backend keeps its default (0.05).
+export function parseOptionalShare(value: string): number | null {
+  const trimmed = value.trim()
+  if (!trimmed) return null
+  const parsed = Number(trimmed)
+  if (!Number.isFinite(parsed) || parsed <= 0 || parsed >= 1) return null
+  return parsed
+}
+
 export function isJsonPreviewType(typeName: string) {
   return typeName.toLowerCase().includes('json')
 }

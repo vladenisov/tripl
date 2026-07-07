@@ -85,6 +85,13 @@ class MetricAnomaly(UUIDMixin, Base):
     expected_count: Mapped[float] = mapped_column(Float)
     stddev: Mapped[float] = mapped_column(Float)
     z_score: Mapped[float] = mapped_column(Float)
+    # The floored stddev actually used in the z-score denominator. Serves the
+    # chart band (expected ± sigma_threshold * effective_stddev) so "outside the
+    # band" visually equals "flagged". Defaults to 0 for pre-migration rows.
+    effective_stddev: Mapped[float] = mapped_column(Float, nullable=False, server_default="0")
+    # Which detector path produced the row: "phase" | "rolling" | "trend" |
+    # "fractional". Backfills to "phase" for existing rows.
+    detector_kind: Mapped[str] = mapped_column(String(16), nullable=False, server_default="phase")
     direction: Mapped[str] = mapped_column(db_enum(AnomalyDirection, "anomaly_direction"))
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),

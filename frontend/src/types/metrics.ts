@@ -18,6 +18,7 @@ export interface EventMetricPoint {
   is_anomaly: boolean
   anomaly_direction: 'spike' | 'drop' | null
   z_score: number | null
+  detector_kind?: string | null
 }
 
 export interface TopEvent {
@@ -146,6 +147,7 @@ export interface EventMetricsResponse {
   event_type_id: string | null
   interval: string | null
   latest_signal: MonitoringSignal | null
+  sigma_threshold?: number
   data: EventMetricPoint[]
   forecast: ForecastPoint[]
 }
@@ -170,12 +172,14 @@ export interface AppVersionInfo {
   version: string
   is_other: boolean
   is_latest: boolean
+  is_active: boolean
 }
 
 export interface AppVersionMetricSeries {
   version: string
   is_other: boolean
   is_latest: boolean
+  is_active: boolean
   total_count: number
   data: EventMetricPoint[]
 }
@@ -189,6 +193,7 @@ export interface AppVersionSeriesResponse {
   app_version_column: string | null
   interval: string | null
   latest_version: string | null
+  sigma_threshold?: number
   versions: AppVersionInfo[]
   series: AppVersionMetricSeries[]
 }

@@ -72,9 +72,12 @@ export function ReleaseRegressionPanel({
           <div className="flex items-center gap-2">
             <h2 className="text-lg font-semibold">Release regressions</h2>
             {query.data?.latest_version && (
-              <Badge variant="outline" className="font-mono">
-                {query.data.latest_version}
-              </Badge>
+              <div className="flex items-center gap-1.5">
+                <span className="text-xs text-muted-foreground">latest active release</span>
+                <Badge variant="outline" className="font-mono">
+                  {query.data.latest_version}
+                </Badge>
+              </div>
             )}
           </div>
           {items.length > 0 && <Badge variant="destructive">{items.length}</Badge>}

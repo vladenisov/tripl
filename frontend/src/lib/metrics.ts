@@ -77,6 +77,15 @@ export function getBucketStart(dateStr: string, granularity: MetricsGranularity)
   return normalized.toISOString()
 }
 
+/**
+ * Re-flag an aggregated bucket only when the *rolled-up* count is itself
+ * significant against the rolled-up baseline. Kept in line with the detector's
+ * sigma_threshold (~3, see website/docs/use/anomaly-detection.md) so a single
+ * anomalous hour cannot redden a day/week bucket that is otherwise
+ * unremarkable — often the lowest point of the week (tripl-dmch.10).
+ */
+const AGGREGATE_ANOMALY_Z_THRESHOLD = 3
+
 export function aggregateMetricPoints(
   points: EventMetricPoint[],
   granularity: MetricsGranularity,
@@ -96,29 +105,59 @@ export function aggregateMetricPoints(
       const strongestAnomaly = bucketPoints
         .filter(point => point.is_anomaly)
         .sort((left, right) => Math.abs(right.z_score ?? 0) - Math.abs(left.z_score ?? 0))[0]
-      const expectedCount = bucketPoints.every(point => point.expected_count === null)
-        ? null
-        : bucketPoints.reduce((sum, point) => sum + (point.expected_count ?? 0), 0)
+
+      const count = bucketPoints.reduce((sum, point) => sum + point.count, 0)
+
+      // Only roll up a baseline when *every* source bucket carries one.
+      // Summing a partial set (e.g. only the single scored/anomalous hour)
+      // against a full-count aggregate produces an expected ~1/N of the count
+      // and a nonsensical tooltip, so drop expected/stddev instead of
+      // reporting a corrupt one (tripl-dmch.10).
+      const hasFullExpected = bucketPoints.every(point => point.expected_count !== null)
+      const expectedCount = hasFullExpected
+        ? bucketPoints.reduce((sum, point) => sum + (point.expected_count ?? 0), 0)
+        : null
       // Buckets are treated as independent samples, so variance adds —
-      // stddev for the aggregate is sqrt(Σ σᵢ²). Null when no source
+      // stddev for the aggregate is sqrt(Σ σᵢ²). Null unless every source
       // bucket carried a stddev.
-      const stddev = bucketPoints.every(point => point.stddev === null)
-        ? null
-        : Math.sqrt(
+      const hasFullStddev = bucketPoints.every(point => point.stddev !== null)
+      const stddev = hasFullStddev
+        ? Math.sqrt(
             bucketPoints.reduce((sum, point) => {
               const s = point.stddev ?? 0
               return sum + s * s
             }, 0),
           )
+        : null
+
+      // Re-test significance at the aggregate level. Single buckets (and
+      // groups with no coherent aggregate baseline) fall through to the
+      // un-aggregated pass-through so hourly behavior is unchanged; multi-hour
+      // rollups are re-flagged only when the total itself is significant. The
+      // inline null checks also narrow expectedCount/stddev to numbers.
+      let isAnomaly: boolean
+      let zScore: number | null
+      let anomalyDirection: EventMetricPoint['anomaly_direction']
+
+      if (bucketPoints.length > 1 && expectedCount !== null && stddev !== null && stddev > 0) {
+        const aggregateZ = (count - expectedCount) / stddev
+        isAnomaly = Math.abs(aggregateZ) >= AGGREGATE_ANOMALY_Z_THRESHOLD
+        zScore = isAnomaly ? aggregateZ : null
+        anomalyDirection = isAnomaly ? (aggregateZ >= 0 ? 'spike' : 'drop') : null
+      } else {
+        isAnomaly = strongestAnomaly !== undefined
+        zScore = strongestAnomaly?.z_score ?? null
+        anomalyDirection = strongestAnomaly?.anomaly_direction ?? null
+      }
 
       return {
         bucket,
-        count: bucketPoints.reduce((sum, point) => sum + point.count, 0),
+        count,
         expected_count: expectedCount,
         stddev,
-        is_anomaly: strongestAnomaly !== undefined,
-        anomaly_direction: strongestAnomaly?.anomaly_direction ?? null,
-        z_score: strongestAnomaly?.z_score ?? null,
+        is_anomaly: isAnomaly,
+        anomaly_direction: anomalyDirection,
+        z_score: zScore,
       }
     })
 }

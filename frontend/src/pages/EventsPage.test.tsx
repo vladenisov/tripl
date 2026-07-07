@@ -211,10 +211,15 @@ describe('EventsPage', () => {
     // rows carry no per-row action menu, not the toolbar affordance.
     const eventsGrid = container.querySelector('table')
     expect(eventsGrid?.querySelector('button[aria-label="More actions"]')).toBeNull()
+    // tripl-dmch.12 dropped the per-row SignalLink arrow anchors (one incident =
+    // one saturated indicator, the Monitor-cell chip). The only surviving
+    // monitoring anchor here is the open Tab Dynamics card's "View signal" link
+    // for the active tab (project_total); the row-level event/event-type anchors
+    // and the "Open recent anomaly" affordance are gone.
     expect(container.querySelector('a[href="/p/demo/monitoring/project-total/scan-1"]')).toBeInTheDocument()
     expect(container.querySelector('a[href="/p/demo/monitoring/event-type/type-1"]')).not.toBeInTheDocument()
-    expect(container.querySelector('a[href="/p/demo/monitoring/event/event-1"]')).toBeInTheDocument()
-    expect(screen.getAllByLabelText('Open recent anomaly')).toHaveLength(1)
+    expect(container.querySelector('a[href="/p/demo/monitoring/event/event-1"]')).not.toBeInTheDocument()
+    expect(screen.queryByLabelText('Open recent anomaly')).not.toBeInTheDocument()
 
     fireEvent.mouseOver(metricsButton)
     fireEvent.focus(metricsButton)

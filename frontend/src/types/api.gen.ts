@@ -3539,6 +3539,11 @@ export interface components {
             scope_type: components["schemas"]["MetricScopeType"];
             /** Series */
             series: components["schemas"]["AppVersionMetricSeries"][];
+            /**
+             * Sigma Threshold
+             * @default 3
+             */
+            sigma_threshold: number;
             /** Totals */
             totals: components["schemas"]["BreakdownTimelinePoint"][];
             /** Versions */
@@ -3546,6 +3551,11 @@ export interface components {
         };
         /** AppVersionInfo */
         AppVersionInfo: {
+            /**
+             * Is Active
+             * @default false
+             */
+            is_active: boolean;
             /**
              * Is Latest
              * @default false
@@ -3563,6 +3573,11 @@ export interface components {
         AppVersionMetricSeries: {
             /** Data */
             data: components["schemas"]["EventMetricPoint"][];
+            /**
+             * Is Active
+             * @default false
+             */
+            is_active: boolean;
             /**
              * Is Latest
              * @default false
@@ -3599,6 +3614,11 @@ export interface components {
             scope_type: components["schemas"]["MetricScopeType"];
             /** Series */
             series: components["schemas"]["AppVersionMetricSeries"][];
+            /**
+             * Sigma Threshold
+             * @default 3
+             */
+            sigma_threshold: number;
             /** Versions */
             versions: components["schemas"]["AppVersionInfo"][];
         };
@@ -4646,6 +4666,8 @@ export interface components {
             bucket: string;
             /** Count */
             count: number;
+            /** Detector Kind */
+            detector_kind?: string | null;
             /** Expected Count */
             expected_count?: number | null;
             /**
@@ -4677,6 +4699,11 @@ export interface components {
             scan_config_id?: string | null;
             /** Scope */
             scope: string;
+            /**
+             * Sigma Threshold
+             * @default 3
+             */
+            sigma_threshold: number;
         };
         /** EventMove */
         EventMove: {
@@ -6096,6 +6123,11 @@ export interface components {
             /** Data */
             data: components["schemas"]["MetricSeriesPoint"][];
             /**
+             * Is Active
+             * @default false
+             */
+            is_active: boolean;
+            /**
              * Is Latest
              * @default false
              */
@@ -7094,10 +7126,14 @@ export interface components {
         };
         /** ScanConfigCreate */
         ScanConfigCreate: {
+            /** App Version Active Share Min */
+            app_version_active_share_min?: number | null;
             /** App Version Column */
             app_version_column?: string | null;
             /** App Version Keep Releases */
             app_version_keep_releases?: number | null;
+            /** App Version Prerelease Pattern */
+            app_version_prerelease_pattern?: string | null;
             /** Base Query */
             base_query: string;
             /**
@@ -7169,10 +7205,14 @@ export interface components {
         };
         /** ScanConfigResponse */
         ScanConfigResponse: {
+            /** App Version Active Share Min */
+            app_version_active_share_min: number | null;
             /** App Version Column */
             app_version_column: string | null;
             /** App Version Keep Releases */
             app_version_keep_releases: number | null;
+            /** App Version Prerelease Pattern */
+            app_version_prerelease_pattern: string | null;
             /** Base Query */
             base_query: string;
             /** Cardinality Threshold */
@@ -7235,10 +7275,14 @@ export interface components {
         };
         /** ScanConfigUpdate */
         ScanConfigUpdate: {
+            /** App Version Active Share Min */
+            app_version_active_share_min?: number | null;
             /** App Version Column */
             app_version_column?: string | null;
             /** App Version Keep Releases */
             app_version_keep_releases?: number | null;
+            /** App Version Prerelease Pattern */
+            app_version_prerelease_pattern?: string | null;
             /** Base Query */
             base_query?: string | null;
             /** Cardinality Threshold */

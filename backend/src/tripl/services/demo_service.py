@@ -16,8 +16,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from tripl.core.analyzers.anomaly_detector import (
     SCOPE_EVENT,
+    SCOPE_EVENT_TYPE,
     SCOPE_PROJECT_TOTAL,
+    AnomalyDetectionSettings,
+    SeriesPoint,
+    detect_anomalies,
 )
+from tripl.core.analyzers.distribution_drift import compute_psi
 from tripl.models.data_source import DataSource
 from tripl.models.distribution_drift import DistributionDrift
 from tripl.models.domain_enums import (
@@ -38,6 +43,7 @@ from tripl.models.meta_field_definition import MetaFieldDefinition
 from tripl.models.metric_anomaly import MetricAnomaly
 from tripl.models.metric_definition import MetricDefinition
 from tripl.models.metric_value import MetricValue
+from tripl.models.project_anomaly_settings import ProjectAnomalySettings
 from tripl.models.scan_config import ScanConfig
 from tripl.models.schema_drift import SchemaDrift
 from tripl.models.variable import Variable
@@ -98,6 +104,78 @@ def _sinusoidal_count(base: int, bucket: datetime, noise_seed: int) -> int:
     noise = ((noise_seed * 31 + bucket.day * 7 + hour_of_day * 13) % 21 - 10) / 100.0
     raw = base * (1 + 0.4 * sinusoid + noise)
     return max(1, round(raw))
+
+
+# Wall-clock length of the seeded hourly history. The seasonal (hour-of-week)
+# phase baseline in the anomaly detector needs 3 full weekly cycles = 504 hourly
+# buckets BEFORE the evaluation window, or ``detect_anomalies`` silently degrades
+# to the seasonality-blind rolling fallback. 23 days = 552 buckets gives 504 of
+# history plus a 48h evaluation window, and the newest bucket sits one hour before
+# ``now`` so the signal stays inside the Wave-1 freshness horizon
+# (``LATEST_SCAN_STALE_INTERVALS`` = 3 intervals).
+_DEMO_HISTORY_DAYS = 23
+_DEMO_EVAL_WINDOW_HOURS = 48
+_DEMO_SPIKE_MULTIPLIER = 3
+
+# Anomaly-detector settings mirrored from the ProjectAnomalySettings row seeded
+# below (Wave-1 defaults). Running the real detector with these guarantees every
+# seeded MetricAnomaly is exactly what the worker would produce over the visible
+# EventMetric series.
+_DEMO_ANOMALY_SETTINGS = AnomalyDetectionSettings(
+    baseline_window_buckets=14,
+    min_history_buckets=7,
+    sigma_threshold=3.0,
+    min_expected_count=10,
+)
+
+# Distribution-drift showcase: the platform mix drifts only over the final
+# ``_DEMO_DRIFT_SPAN_DAYS`` days so the real PSI climbs a stable -> minor ->
+# significant ladder against the window-start baseline.
+_DEMO_DRIFT_SPAN_DAYS = 8
+_DEMO_DRIFT_DAILY_TOTAL = 48000
+
+
+def _hourly_volume(
+    base: int, bucket: datetime, idx: int, noise_seed: int, total_buckets: int
+) -> int:
+    """Deterministic hourly volume: daily + gentle weekly shape, a phase-consistent
+    texture, and a slow upward drift.
+
+    The texture depends only on ``(noise_seed, weekday, hour)`` — never on the week
+    — so the same hour-of-week repeats identically across cycles. That keeps the
+    detector's seasonal phase baseline tight (near-zero robust scale), so the
+    injected spike is the only deviation that clears the sigma gate and the demo
+    yields a small, reproducible set of anomalies instead of noise-driven false
+    positives. The drift stays well under the detector's 15% trend-shift gate.
+    """
+    hour = bucket.hour
+    weekday = bucket.weekday()
+    daily = math.sin((hour - 2) * math.pi / 12)
+    weekly = 0.08 * math.sin(weekday * math.pi / 3.5)
+    texture = ((noise_seed * 31 + weekday * 7 + hour * 13) % 15 - 7) / 100.0
+    drift = 0.04 * (idx / max(total_buckets - 1, 1))
+    raw = base * (1 + 0.35 * daily + weekly + texture + drift)
+    return max(1, round(raw))
+
+
+def _platform_shares(progress: float) -> dict[str, float]:
+    """Platform mix at ``progress`` (0 = drift start, 1 = now). Web share rises
+    while iOS falls, so the distribution genuinely drifts over the window."""
+    clamped = min(max(progress, 0.0), 1.0)
+    web = 0.12 + 0.24 * clamped
+    ios = 0.55 - 0.18 * clamped
+    android = max(0.01, 1.0 - web - ios)
+    return {"ios": ios, "android": android, "web": web}
+
+
+def _shares_to_counts(shares: dict[str, float], total: int) -> dict[str, int]:
+    return {value: max(0, round(share * total)) for value, share in shares.items()}
+
+
+def _drift_span_progress(days_before_now: float) -> float:
+    """Fraction into the drift ramp for a bucket ``days_before_now`` old. The mix
+    only starts drifting ``_DEMO_DRIFT_SPAN_DAYS`` before now."""
+    return min(max((_DEMO_DRIFT_SPAN_DAYS - days_before_now) / _DEMO_DRIFT_SPAN_DAYS, 0.0), 1.0)
 
 
 # ---------------------------------------------------------------------------
@@ -307,6 +385,28 @@ async def create_demo_project(session: AsyncSession) -> ProjectResponse:
         metric_breakdown_columns=["platform"],
     )
     session.add(scan_config)
+    await session.flush()
+
+    # 6b. Project-level anomaly gate. ``detect.py`` bails out (and purges any
+    # anomalies) when this row is absent or disabled — so the advertised
+    # ``anomaly_detection_enabled`` scan flag must be backed by an enabled
+    # settings row, or detection never actually runs. Values mirror the Wave-1
+    # defaults used by ``_DEMO_ANOMALY_SETTINGS`` so the seeded anomalies are
+    # exactly what the worker would produce.
+    session.add(
+        ProjectAnomalySettings(
+            project_id=project_id,
+            anomaly_detection_enabled=True,
+            detect_project_total=True,
+            detect_event_types=True,
+            detect_events=True,
+            detect_metrics=True,
+            baseline_window_buckets=_DEMO_ANOMALY_SETTINGS.baseline_window_buckets,
+            min_history_buckets=_DEMO_ANOMALY_SETTINGS.min_history_buckets,
+            sigma_threshold=_DEMO_ANOMALY_SETTINGS.sigma_threshold,
+            min_expected_count=_DEMO_ANOMALY_SETTINGS.min_expected_count,
+        )
+    )
     await session.flush()
 
     # 7. Events
@@ -668,27 +768,33 @@ async def create_demo_project(session: AsyncSession) -> ProjectResponse:
     #     metrics_service._get_metric_rows for SCOPE_PROJECT_TOTAL which sums
     #     all rows WHERE event_id IS NULL AND event_type_id IS NOT NULL)
     #
-    # The "spike" event for the anomaly will be Home Screen View (events[0]).
-    # We inject a ×3 spike in the last 24 h for that event.
-
-    buckets = _hour_buckets(now, days=7)
+    # ``_DEMO_HISTORY_DAYS`` of hourly buckets gives the seasonal detector enough
+    # weekly cycles to engage. The "spike" event is Home Screen View (events[0]):
+    # its newest bucket is inflated ×``_DEMO_SPIKE_MULTIPLIER`` — a single, sharply
+    # visible deviation that the real detector (run in section 10) turns into one
+    # reproducible anomaly per scope.
+    buckets = _hour_buckets(now, days=_DEMO_HISTORY_DAYS)
+    total_buckets = len(buckets)
+    evaluation_start = now - timedelta(hours=_DEMO_EVAL_WINDOW_HOURS)
+    evaluation_end = now
     spike_event = events[0]  # Home Screen View, base=1800
+    screen_view_type_id = et_screen_view.id
+    spike_bucket = buckets[-1]  # newest full hour, ~1h before now (fresh signal)
 
-    # Determine spike window: last 3 hours
-    spike_start = now - timedelta(hours=3)
-
-    # Collect type-level counts per bucket for the aggregate rows
+    # Collect type-level counts per bucket for the aggregate rows, plus the raw
+    # Home Screen View series so section 10 detects over exactly what is stored.
     type_bucket_counts: dict[tuple[uuid.UUID, datetime], int] = {}
+    home_series: dict[datetime, int] = {}
 
     for spec, ev in zip(event_specs, events, strict=True):
         base = spec["base"]
         noise_seed = hash(ev.id) % 997
         for idx, bucket in enumerate(buckets):
-            count = _sinusoidal_count(base, bucket, noise_seed + idx)
+            count = _hourly_volume(base, bucket, idx, noise_seed, total_buckets)
 
-            # Spike: inflate last-3h for Home Screen View
-            if ev is spike_event and bucket >= spike_start:
-                count = count * 3
+            # Single-bucket spike on Home Screen View's newest bucket.
+            if ev is spike_event and bucket == spike_bucket:
+                count *= _DEMO_SPIKE_MULTIPLIER
 
             session.add(
                 EventMetric(
@@ -702,6 +808,8 @@ async def create_demo_project(session: AsyncSession) -> ProjectResponse:
 
             et_id = spec["et"].id
             type_bucket_counts[(et_id, bucket)] = type_bucket_counts.get((et_id, bucket), 0) + count
+            if ev is spike_event:
+                home_series[bucket] = count
 
     await session.flush()
 
@@ -719,77 +827,95 @@ async def create_demo_project(session: AsyncSession) -> ProjectResponse:
 
     await session.flush()
 
-    # 10. MetricAnomaly: spike for Home Screen View in the last 3 h
-    #
-    # Pick the most recent spike bucket as the representative anomaly bucket.
-    if buckets:
-        anomaly_bucket = buckets[-1]  # last full hour bucket
-        spike_actual = _sinusoidal_count(1800, anomaly_bucket, 0) * 3
-        # baseline expected: normal count at that hour
-        expected = float(_sinusoidal_count(1800, anomaly_bucket, 0))
-        stddev = expected * 0.12  # 12 % stddev is realistic
-        z_score = round((spike_actual - expected) / max(stddev, 1), 2)
-
-        # Event-scope anomaly
-        session.add(
-            MetricAnomaly(
-                scan_config_id=scan_config.id,
-                scope_type=SCOPE_EVENT,
-                scope_ref=str(spike_event.id),
-                event_id=spike_event.id,
-                event_type_id=None,
-                bucket=anomaly_bucket,
-                actual_count=spike_actual,
-                expected_count=expected,
-                stddev=stddev,
-                z_score=z_score,
-                direction="spike",
+    # 10. MetricAnomaly rows produced by RUNNING the real detector over the seeded
+    #     series — not hand-written z-scores. The ×N spike injected into Home
+    #     Screen View's newest bucket is the only deviation that clears the sigma
+    #     gate, so each scope yields a single, reproducible anomaly whose
+    #     actual/expected are drawn straight from the visible chart data.
+    def _seed_scope_anomalies(
+        series: dict[datetime, int],
+        *,
+        scope_type: str,
+        scope_ref: str,
+        event_id: uuid.UUID | None,
+        event_type_id: uuid.UUID | None,
+    ) -> None:
+        points = [
+            SeriesPoint(bucket=bucket, count=count) for bucket, count in sorted(series.items())
+        ]
+        for anomaly in detect_anomalies(
+            points,
+            interval=timedelta(hours=1),
+            evaluation_start=evaluation_start,
+            evaluation_end=evaluation_end,
+            settings=_DEMO_ANOMALY_SETTINGS,
+        ):
+            session.add(
+                MetricAnomaly(
+                    scan_config_id=scan_config.id,
+                    scope_type=scope_type,
+                    scope_ref=scope_ref,
+                    event_id=event_id,
+                    event_type_id=event_type_id,
+                    bucket=anomaly.bucket,
+                    actual_count=anomaly.actual_count,
+                    expected_count=anomaly.expected_count,
+                    stddev=anomaly.stddev,
+                    z_score=anomaly.z_score,
+                    direction=anomaly.direction,
+                )
             )
-        )
 
-        # Project-total scope anomaly (scope_ref is the scan_config_id, per metrics_service)
-        session.add(
-            MetricAnomaly(
-                scan_config_id=scan_config.id,
-                scope_type=SCOPE_PROJECT_TOTAL,
-                scope_ref=str(scan_config.id),
-                event_id=None,
-                event_type_id=None,
-                bucket=anomaly_bucket,
-                actual_count=spike_actual,
-                expected_count=expected,
-                stddev=stddev,
-                z_score=z_score,
-                direction="spike",
-            )
-        )
+    # Event scope: Home Screen View's own series.
+    _seed_scope_anomalies(
+        home_series,
+        scope_type=SCOPE_EVENT,
+        scope_ref=str(spike_event.id),
+        event_id=spike_event.id,
+        event_type_id=None,
+    )
+
+    # Event-type scope: the screen_view aggregate (Home rolls up into it).
+    screen_view_series = {
+        bucket: count
+        for (et_id, bucket), count in type_bucket_counts.items()
+        if et_id == screen_view_type_id
+    }
+    _seed_scope_anomalies(
+        screen_view_series,
+        scope_type=SCOPE_EVENT_TYPE,
+        scope_ref=str(screen_view_type_id),
+        event_id=None,
+        event_type_id=screen_view_type_id,
+    )
+
+    # Project-total scope: sum of every type aggregate per bucket (scope_ref is the
+    # scan_config_id, per metrics_service).
+    project_total_series: dict[datetime, int] = {}
+    for (_et_id, bucket), count in type_bucket_counts.items():
+        project_total_series[bucket] = project_total_series.get(bucket, 0) + count
+    _seed_scope_anomalies(
+        project_total_series,
+        scope_type=SCOPE_PROJECT_TOTAL,
+        scope_ref=str(scan_config.id),
+        event_id=None,
+        event_type_id=None,
+    )
 
     await session.flush()
 
-    # 11. EventMetricBreakdown: platform breakdown for Home Screen View,
-    #     last 48 h, hourly.
-    breakdown_buckets = _hour_buckets(now, days=2)
-    platforms = [
-        ("ios", 0.50, 1),
-        ("android", 0.35, 2),
-        ("web", 0.15, 3),
-    ]
-    base_sv = 1800
-    noise_seed_sv = hash(spike_event.id) % 997
-
+    # 11. EventMetricBreakdown: platform split for Home Screen View over the drift
+    #     span, hourly. The mix drifts (web up, iOS down) so the visible breakdown
+    #     matches the distribution-drift badges seeded below. Bucket totals reuse
+    #     the stored Home Screen View series so the split sums to the volume chart.
+    breakdown_buckets = _hour_buckets(now, days=_DEMO_DRIFT_SPAN_DAYS)
     for idx, bucket in enumerate(breakdown_buckets):
-        total_count = _sinusoidal_count(base_sv, bucket, noise_seed_sv + idx)
-        remaining = total_count
-        for platform_idx, (platform, share, p_seed) in enumerate(platforms):
-            if platform_idx < len(platforms) - 1:
-                raw_count = round(total_count * share)
-                # small noise on share
-                noise = (p_seed * 17 + idx * 7) % 11 - 5
-                count = max(1, raw_count + noise)
-                remaining -= count
-            else:
-                count = max(1, remaining)
-
+        total_count = home_series.get(
+            bucket, _hourly_volume(1800, bucket, idx, hash(spike_event.id) % 997, total_buckets)
+        )
+        days_before = (now - bucket).total_seconds() / 86400.0
+        shares = _platform_shares(_drift_span_progress(days_before))
+        for platform, count in _shares_to_counts(shares, total_count).items():
             session.add(
                 EventMetricBreakdown(
                     scan_config_id=scan_config.id,
@@ -798,48 +924,43 @@ async def create_demo_project(session: AsyncSession) -> ProjectResponse:
                     breakdown_column="platform",
                     breakdown_value=platform,
                     is_other=False,
-                    count=count,
+                    count=max(1, count),
                 )
             )
 
     await session.flush()
 
-    # 12. DistributionDrift: rising PSI for 'platform' on screen_view, 6 daily buckets
-    drift_psi_values = [
-        (6, 0.04, "stable"),
-        (5, 0.08, "stable"),
-        (4, 0.12, "minor"),
-        (3, 0.18, "minor"),
-        (2, 0.26, "significant"),
-        (1, 0.35, "significant"),
-    ]
-    for days_back, psi, band in drift_psi_values:
+    # 12. DistributionDrift for 'platform' on screen_view, one daily row across the
+    #     drift span. PSI / band / top_movers come from the REAL ``compute_psi``
+    #     over the window-start baseline mix vs each day's drifted mix, so every
+    #     badge is reproducible from the seeded distribution and climbs a natural
+    #     stable -> minor -> significant ladder.
+    baseline_counts = _shares_to_counts(_platform_shares(0.0), _DEMO_DRIFT_DAILY_TOTAL)
+    for days_back in range(_DEMO_DRIFT_SPAN_DAYS, 0, -1):
         drift_bucket = (now - timedelta(days=days_back)).replace(
             hour=0, minute=0, second=0, microsecond=0
         )
+        current_shares = _platform_shares(_drift_span_progress(float(days_back)))
+        current_counts = _shares_to_counts(current_shares, _DEMO_DRIFT_DAILY_TOTAL)
+        result = compute_psi(baseline_counts, current_counts)
         session.add(
             DistributionDrift(
                 scan_config_id=scan_config.id,
                 event_type_id=et_screen_view.id,
                 field_name="platform",
                 bucket=drift_bucket,
-                psi=psi,
-                band=band,
-                baseline_total=50000,
-                current_total=48500,
+                psi=result.psi,
+                band=result.band,
+                baseline_total=result.baseline_total,
+                current_total=result.current_total,
                 top_movers=[
                     {
-                        "value": "web",
-                        "baseline_share": 0.12,
-                        "current_share": 0.12 + psi * 0.5,
-                        "contribution": round(psi * 0.6, 4),
-                    },
-                    {
-                        "value": "ios",
-                        "baseline_share": 0.53,
-                        "current_share": max(0.01, 0.53 - psi * 0.3),
-                        "contribution": round(psi * 0.3, 4),
-                    },
+                        "value": mover.value,
+                        "baseline_share": mover.baseline_share,
+                        "current_share": mover.current_share,
+                        "contribution": mover.contribution,
+                    }
+                    for mover in result.top_movers
                 ],
             )
         )

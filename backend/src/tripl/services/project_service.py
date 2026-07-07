@@ -32,7 +32,12 @@ from tripl.schemas.project import (
     ProjectUpdate,
 )
 from tripl.services import plan_branch_service
-from tripl.services.monitoring_utils import classify_signal_state, summarize_monitor_states
+from tripl.services.metrics_insights_service import _count_active_metric_signals_by_project
+from tripl.services.monitoring_utils import (
+    classify_signal_state,
+    scan_interval_to_timedelta,
+    summarize_monitor_states,
+)
 from tripl.services.project_lookup import (
     get_project_by_slug as _lookup_project_by_slug,
 )
@@ -322,6 +327,23 @@ async def _populate_monitoring_signals(
         return
 
     project_ids = list(summaries)
+
+    # Catalog-metric anomalies carry a NULL scan_config_id and are keyed by
+    # metric_definition_id, so the ScanConfig-joined query below silently drops
+    # them. Fold them into the count here by reusing the exact open-signal logic
+    # the AnomaliesPage uses (metrics_insights_service._count_active_metric_signals_by_project,
+    # the batched sibling of _get_active_metric_signals, which classifies each
+    # metric's newest anomaly against its latest stored value bucket), so the
+    # sidebar / ProjectsPage badge agrees with the AnomaliesPage list. Batched to
+    # O(1) queries so listing N projects does not fan out to N per-project scans.
+    # These signals have no scan_config_id and so cannot populate ``latest_signal``
+    # (a ProjectLatestSignal requires one); they contribute to
+    # ``monitoring_signal_count`` only. This runs before the ``anomaly_rows``
+    # early-return so a project with only metric-scope anomalies is still counted.
+    metric_signal_counts = await _count_active_metric_signals_by_project(session, project_ids)
+    for project_id, count in metric_signal_counts.items():
+        summaries[project_id].monitoring_signal_count += count
+
     latest_anomaly_keys = (
         select(
             ScanConfig.project_id.label("project_id"),
@@ -343,7 +365,7 @@ async def _populate_monitoring_signals(
 
     anomaly_rows = (
         await session.execute(
-            select(ScanConfig.project_id, ScanConfig.name, MetricAnomaly)
+            select(ScanConfig.project_id, ScanConfig.name, ScanConfig.interval, MetricAnomaly)
             .join(ScanConfig, ScanConfig.id == MetricAnomaly.scan_config_id)
             .join(
                 latest_anomaly_keys,
@@ -359,7 +381,7 @@ async def _populate_monitoring_signals(
     if not anomaly_rows:
         return
 
-    anomalies = [anomaly for _project_id, _scan_name, anomaly in anomaly_rows]
+    anomalies = [anomaly for _project_id, _scan_name, _interval, anomaly in anomaly_rows]
     event_names, event_type_names = await _load_scope_names(session, anomalies)
 
     project_total_metrics = (
@@ -434,13 +456,16 @@ async def _populate_monitoring_signals(
         ) in latest_metric_rows.all()
     }
 
-    for project_id, scan_name, anomaly in anomaly_rows:
+    now = datetime.now(UTC)
+    for project_id, scan_name, scan_interval, anomaly in anomaly_rows:
         latest_metric_bucket = latest_metric_buckets.get(
             (project_id, anomaly.scan_config_id, anomaly.scope_type, anomaly.scope_ref)
         )
         state = classify_signal_state(
             anomaly_bucket=anomaly.bucket,
             latest_metric_bucket=latest_metric_bucket,
+            now=now,
+            interval=scan_interval_to_timedelta(scan_interval),
         )
         if state is None:
             continue

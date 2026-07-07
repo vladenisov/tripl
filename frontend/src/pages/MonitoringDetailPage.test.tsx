@@ -67,15 +67,16 @@ function appVersionResponse(scanConfigId: string) {
     interval: '1h',
     latest_version: '2.10.0',
     versions: [
-      { version: '2.10.0', is_other: false, is_latest: true },
-      { version: '2.9.0', is_other: false, is_latest: false },
-      { version: 'Other', is_other: true, is_latest: false },
+      { version: '2.10.0', is_other: false, is_latest: true, is_active: true },
+      { version: '2.9.0', is_other: false, is_latest: false, is_active: true },
+      { version: 'Other', is_other: true, is_latest: false, is_active: false },
     ],
     series: [
       {
         version: '2.10.0',
         is_other: false,
         is_latest: true,
+        is_active: true,
         total_count: 120,
         data: [metricPoint('2026-01-02T00:00:00Z', 120)],
       },
@@ -83,6 +84,7 @@ function appVersionResponse(scanConfigId: string) {
         version: '2.9.0',
         is_other: false,
         is_latest: false,
+        is_active: true,
         total_count: 80,
         data: [metricPoint('2026-01-02T00:00:00Z', 80)],
       },
@@ -90,10 +92,59 @@ function appVersionResponse(scanConfigId: string) {
         version: 'Other',
         is_other: true,
         is_latest: false,
+        is_active: false,
         total_count: 10,
         data: [metricPoint('2026-01-02T00:00:00Z', 10)],
       },
     ],
+  }
+}
+
+// Same shape, but the SemVer-newest release (2.10.0) has NOT taken a real share
+// of traffic yet (is_active=false): the backend still reports it as is_latest via
+// the raw-SemVer-max fallback, so the page must treat it as a pre-release rather
+// than the primary rolled-out "latest".
+function appVersionPreReleaseResponse(scanConfigId: string) {
+  return {
+    ...appVersionResponse(scanConfigId),
+    versions: [
+      { version: '2.10.0', is_other: false, is_latest: true, is_active: false },
+      { version: '2.9.0', is_other: false, is_latest: false, is_active: true },
+      { version: 'Other', is_other: true, is_latest: false, is_active: false },
+    ],
+    series: [
+      {
+        version: '2.10.0',
+        is_other: false,
+        is_latest: true,
+        is_active: false,
+        total_count: 4,
+        data: [metricPoint('2026-01-02T00:00:00Z', 4)],
+      },
+      {
+        version: '2.9.0',
+        is_other: false,
+        is_latest: false,
+        is_active: true,
+        total_count: 180,
+        data: [metricPoint('2026-01-02T00:00:00Z', 180)],
+      },
+      {
+        version: 'Other',
+        is_other: true,
+        is_latest: false,
+        is_active: false,
+        total_count: 10,
+        data: [metricPoint('2026-01-02T00:00:00Z', 10)],
+      },
+    ],
+  }
+}
+
+function appVersionPreReleaseAdoptionResponse(scanConfigId: string) {
+  return {
+    ...appVersionPreReleaseResponse(scanConfigId),
+    totals: [{ bucket: '2026-01-02T00:00:00Z', count: 194 }],
   }
 }
 
@@ -186,6 +237,71 @@ describe('MonitoringDetailPage app-version view', () => {
       expect(charts[0]).toHaveAttribute('data-labels', '2.10.0 · latest')
       expect(charts[1]).toHaveAttribute('data-labels', '2.10.0 · latest')
     })
+  })
+
+  it('treats a non-active SemVer-newest version as a pre-release, not the primary latest', async () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async input => {
+      const url = String(input)
+
+      if (url.endsWith('/api/v1/projects/demo/event-types')) return mockJsonResponse([])
+      if (url.includes('/api/v1/projects/demo/metrics/total')) {
+        return mockJsonResponse({
+          scope: 'project_total',
+          scan_config_id: 'scan-1',
+          event_id: null,
+          event_type_id: null,
+          interval: '1h',
+          latest_signal: null,
+          data: [metricPoint('2026-01-02T00:00:00Z', 194)],
+          forecast: [],
+        })
+      }
+      if (url.endsWith('/api/v1/projects/demo/scans/scan-1')) {
+        return mockJsonResponse({ id: 'scan-1', app_version_column: 'app_version' })
+      }
+      if (url.includes('/api/v1/projects/demo/annotations')) return mockJsonResponse([])
+      if (url.includes('/api/v1/projects/demo/scans/scan-1/app-versions')) {
+        return mockJsonResponse(appVersionPreReleaseResponse('scan-1'))
+      }
+      if (url.includes('/api/v1/projects/demo/scans/scan-1/version-adoption')) {
+        return mockJsonResponse(appVersionPreReleaseAdoptionResponse('scan-1'))
+      }
+      if (url.includes('/api/v1/projects/demo/scans/scan-1/release-regressions')) {
+        return mockJsonResponse({
+          scan_config_id: 'scan-1',
+          app_version_column: 'app_version',
+          latest_version: '2.9.0',
+          items: [],
+        })
+      }
+
+      throw new Error(`Unhandled fetch: ${url}`)
+    })
+
+    renderMonitoringPage()
+
+    const byVersionTab = await screen.findByRole('tab', { name: /By version/i })
+    fireEvent.pointerDown(byVersionTab, { button: 0, ctrlKey: false })
+    fireEvent.mouseDown(byVersionTab, { button: 0, ctrlKey: false })
+    fireEvent.pointerUp(byVersionTab, { button: 0, ctrlKey: false })
+    fireEvent.mouseUp(byVersionTab, { button: 0, ctrlKey: false })
+    fireEvent.click(byVersionTab)
+
+    // Header badge reads "pre-release 2.10.0", NOT the primary "latest 2.10.0".
+    expect(await screen.findByText('pre-release 2.10.0')).toBeInTheDocument()
+    expect(screen.queryByText('latest 2.10.0')).not.toBeInTheDocument()
+
+    // The chart series labels the newest release "· pre-release" rather than "· latest".
+    await waitFor(() => {
+      const charts = screen.getAllByTestId('multi-chart')
+      expect(charts[0]).toHaveAttribute('data-labels', '2.10.0 · pre-release|2.9.0|Other')
+    })
+
+    // The Latest filter carries a warning affordance (pre-release / low traffic).
+    expect(screen.getByRole('button', { name: 'Latest' })).toHaveAttribute(
+      'title',
+      'The newest release is a pre-release with little traffic — not yet rolled out.',
+    )
   })
 
   it('hides the tab when the scan has no app version column', async () => {

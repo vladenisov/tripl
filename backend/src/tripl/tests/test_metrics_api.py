@@ -28,6 +28,7 @@ def _plain_point(bucket: str, count: int) -> dict[str, object]:
         "count": count,
         "expected_count": None,
         "stddev": None,
+        "detector_kind": None,
         "is_anomaly": False,
         "anomaly_direction": None,
         "z_score": None,
@@ -118,14 +119,26 @@ async def _seed_group_metrics(project_id: str, event_rows: list[EventMetricSeedR
         await session.commit()
 
 
+# The "latest_scan" monitoring fixture below seeds an anomaly on the newest
+# bucket, so its bucket must stay inside the wall-clock freshness horizon
+# (classify keeps a signal "latest_scan" only while newer than now - 24h).
+# Anchored to recent hour-aligned buckets; the 1h stable->anomaly spacing is
+# preserved and the enriched-series assertions derive their bucket strings from
+# these same constants.
+_MONITORING_STABLE_BUCKET = datetime.now(UTC).replace(
+    minute=0, second=0, microsecond=0
+) - timedelta(hours=2)
+_MONITORING_ANOMALY_BUCKET = _MONITORING_STABLE_BUCKET + timedelta(hours=1)
+
+
 async def _seed_monitoring_metrics(
     *,
     project_id: str,
     page_type_id: str,
     event_id: str,
 ) -> str:
-    stable_bucket = datetime(2026, 1, 1, 10, tzinfo=UTC)
-    anomaly_bucket = datetime(2026, 1, 1, 11, tzinfo=UTC)
+    stable_bucket = _MONITORING_STABLE_BUCKET
+    anomaly_bucket = _MONITORING_ANOMALY_BUCKET
 
     async with TestSessionLocal() as session:
         data_source = DataSource(
@@ -572,19 +585,21 @@ async def test_get_event_metrics_returns_enriched_monitoring_series(client: Asyn
     assert body["latest_signal"]["state"] == "latest_scan"
     assert body["data"] == [
         {
-            "bucket": "2026-01-01T10:00:00",
+            "bucket": _MONITORING_STABLE_BUCKET.replace(tzinfo=None).isoformat(),
             "count": 10,
             "expected_count": None,
             "stddev": None,
+            "detector_kind": None,
             "is_anomaly": False,
             "anomaly_direction": None,
             "z_score": None,
         },
         {
-            "bucket": "2026-01-01T11:00:00",
+            "bucket": _MONITORING_ANOMALY_BUCKET.replace(tzinfo=None).isoformat(),
             "count": 0,
             "expected_count": 10.0,
             "stddev": 0.0,
+            "detector_kind": "phase",
             "is_anomaly": True,
             "anomaly_direction": "drop",
             "z_score": -10.0,
@@ -1192,10 +1207,11 @@ async def test_get_project_total_metrics_and_active_signals(client: AsyncClient)
     )
     assert signals_resp.status_code == 200
     signals = signals_resp.json()
+    # Incident de-duplication: the event/event_type signals share the same
+    # (scan_config_id, bucket, direction) as the project_total signal and are
+    # suppressed in favor of the kept project_total signal.
     assert {(signal["scope_type"], signal["scope_ref"]) for signal in signals} == {
         ("project_total", scan_config_id),
-        ("event_type", setup["page_type_id"]),
-        ("event", event_id),
     }
     assert {signal["state"] for signal in signals} == {"latest_scan"}
 
@@ -1236,10 +1252,11 @@ async def test_get_recent_signals_when_anomaly_is_within_last_24_hours(client: A
     )
     assert signals_resp.status_code == 200
     signals = signals_resp.json()
+    # Incident de-duplication: the event/event_type signals share the same
+    # (scan_config_id, bucket, direction) as the project_total signal and are
+    # suppressed in favor of the kept project_total signal.
     assert {(signal["scope_type"], signal["state"]) for signal in signals} == {
         ("project_total", "recent"),
-        ("event_type", "recent"),
-        ("event", "recent"),
     }
 
 

@@ -24,7 +24,6 @@ import { VariableValueContextTrigger } from '@/components/variable-value-context
 import { EventName } from '@/components/event-name'
 import { EventDriftBadge } from './EventDriftBadge'
 import { EventWindowMetricsCell } from './EventWindowMetricsCell'
-import { SignalLink } from './SignalLink'
 import { computeWindowDelta, formatRelativeTime, splitTemplateValue } from './utils'
 
 export type RowAction =
@@ -128,9 +127,20 @@ export const EventRow = memo(function EventRow({
     position: 'relative',
     zIndex: isDragging ? 1 : undefined,
   }
-  const anomalyIdx = windowData.findIndex((p) => p.is_anomaly)
+  // One incident, one saturated indicator: the Monitor-cell signal chip is the
+  // single act-on-me affordance. The name-cell dot stays on the (orthogonal)
+  // lifecycle status, the SignalLink arrow is dropped, and the volume sparkline
+  // is neutralised when a signal is live — so a single anomaly no longer reads
+  // as four stacked red marks across the row.
   const signalLevel = rowSignal ? rowSignalLevel(rowSignal.state) : null
-  const signalTone: 'danger' | 'warning' | null = signalLevel?.tone ?? null
+  const historicalAnomalyIdx = windowData.findIndex((p) => p.is_anomaly)
+  // Suppress the red sparkline dot while a signal is live (the chip already
+  // carries it); keep it for rows whose only cue is a past-window anomaly.
+  const sparklineAnomalyIdx = rowSignal
+    ? null
+    : historicalAnomalyIdx >= 0
+      ? historicalAnomalyIdx
+      : null
   const statusTone = EVENT_STATUS_DOT_TONE[(ev.status as EventStatus) ?? 'draft'] ?? 'neutral'
 
   return (
@@ -163,7 +173,7 @@ export const EventRow = memo(function EventRow({
         style={{ borderColor: 'var(--border-subtle)' }}
       >
         <div className="inline-flex max-w-full items-center gap-2 align-middle">
-          <Dot tone={signalTone ?? statusTone} pulse={!!signalTone} size={6} />
+          <Dot tone={statusTone} pulse={false} size={6} />
           <button
             type="button"
             className="mono truncate text-left text-[12.5px] hover:underline underline-offset-4"
@@ -253,17 +263,14 @@ export const EventRow = memo(function EventRow({
         </TableCell>
       )}
       <TableCell className="w-32 text-right">
-        <div className="grid grid-cols-[14px_106px] items-center justify-end gap-2 align-middle">
-          <span className="flex h-3.5 w-3.5 items-center justify-center">
-            <SignalLink slug={slug} signal={rowSignal} compact />
-          </span>
+        <div className="flex items-center justify-end align-middle">
           <EventWindowMetricsCell
             eventName={ev.name}
             color={eventType?.color ?? 'var(--accent)'}
             totalCount={windowTotal}
             data={windowData}
-            anomalyIdx={anomalyIdx >= 0 ? anomalyIdx : null}
-            signalTone={signalTone}
+            anomalyIdx={sparklineAnomalyIdx}
+            signalTone={null}
           />
         </div>
       </TableCell>

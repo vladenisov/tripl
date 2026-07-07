@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import uuid
 from datetime import UTC, date, datetime, timedelta
 
@@ -56,6 +57,14 @@ from tripl.semver import (
 )
 from tripl.services.monitoring_utils import classify_signal_state
 from tripl.services.project_lookup import get_project_by_slug
+from tripl.services.version_activation import (
+    DEFAULT_ACTIVE_SHARE_MIN,
+    active_release_versions,
+    compile_prerelease_pattern,
+    latest_active_version,
+    released_versions,
+    resolve_share_min,
+)
 
 
 async def _resolve_project(session: AsyncSession, slug: str) -> Project:
@@ -117,6 +126,20 @@ async def _get_scan_config_interval(
         select(ScanConfig.interval).where(ScanConfig.id == scan_config_id)
     )
     return result.scalar_one_or_none()
+
+
+async def _get_scan_config_sigma_threshold(
+    session: AsyncSession,
+    scan_config_id: uuid.UUID | None,
+) -> float:
+    """The scan's anomaly sigma threshold (the confidence-band multiplier the UI
+    serves), defaulting to 3.0 when the scan is unknown or unset."""
+    if scan_config_id is None:
+        return 3.0
+    result = await session.execute(
+        select(ScanConfig.sigma_threshold).where(ScanConfig.id == scan_config_id)
+    )
+    return result.scalar_one_or_none() or 3.0
 
 
 async def _get_default_scan_config_id(
@@ -282,6 +305,25 @@ def _signal_from_anomaly(
     )
 
 
+def _served_stddev(anomaly: MetricAnomaly | MetricBreakdownAnomaly) -> float:
+    """Stddev the UI band is drawn from: the FLOORED *effective* stddev actually
+    used in the z denominator (tripl-dmch C3/C4), so ``expected ± k*stddev``
+    matches the detector's flag decision. Falls back to the raw stored stddev
+    when the ``effective_stddev`` column is absent (pre-migration rows / hand-
+    built test objects), keeping existing behavior unchanged in that case.
+    """
+    effective = getattr(anomaly, "effective_stddev", None)
+    if effective is None or effective == 0.0:
+        return anomaly.stddev
+    return float(effective)
+
+
+def _served_detector_kind(anomaly: MetricAnomaly | MetricBreakdownAnomaly) -> str | None:
+    """Which detector path flagged the bucket, or ``None`` when the column is
+    absent (pre-migration rows / hand-built test objects)."""
+    return getattr(anomaly, "detector_kind", None)
+
+
 def _build_metric_points(
     *,
     interval: str | None,
@@ -317,7 +359,12 @@ def _build_metric_points(
                     else None
                 ),
                 stddev=(
-                    anomalies_by_bucket[point.bucket].stddev
+                    _served_stddev(anomalies_by_bucket[point.bucket])
+                    if point.bucket in anomalies_by_bucket
+                    else None
+                ),
+                detector_kind=(
+                    _served_detector_kind(anomalies_by_bucket[point.bucket])
                     if point.bucket in anomalies_by_bucket
                     else None
                 ),
@@ -346,7 +393,14 @@ def _build_metric_points(
                     else None
                 ),
                 stddev=(
-                    anomalies_by_bucket[bucket].stddev if bucket in anomalies_by_bucket else None
+                    _served_stddev(anomalies_by_bucket[bucket])
+                    if bucket in anomalies_by_bucket
+                    else None
+                ),
+                detector_kind=(
+                    _served_detector_kind(anomalies_by_bucket[bucket])
+                    if bucket in anomalies_by_bucket
+                    else None
                 ),
                 is_anomaly=bucket in anomalies_by_bucket,
                 anomaly_direction=(
@@ -397,6 +451,7 @@ def _build_metrics_response(
     anomalies: list[MetricAnomaly],
     event_id: uuid.UUID | None = None,
     event_type_id: uuid.UUID | None = None,
+    sigma_threshold: float = 3.0,
 ) -> EventMetricsResponse:
     data = _build_metric_points(
         interval=interval,
@@ -421,6 +476,7 @@ def _build_metrics_response(
         event_type_id=event_type_id,
         interval=interval,
         latest_signal=latest_signal,
+        sigma_threshold=sigma_threshold,
         data=data,
         forecast=_forecast_from_points(data=data, interval=interval),
     )
@@ -465,6 +521,7 @@ async def get_event_metrics(
         time_from=time_from,
         time_to=time_to,
     )
+    sigma_threshold = await _get_scan_config_sigma_threshold(session, scan_config_id)
     return _build_metrics_response(
         scope=SCOPE_EVENT,
         scan_config_id=scan_config_id,
@@ -473,6 +530,7 @@ async def get_event_metrics(
         metric_rows=metric_rows,
         anomalies=anomalies,
         event_id=event.id,
+        sigma_threshold=sigma_threshold,
     )
 
 
@@ -657,10 +715,41 @@ def _order_app_version_keys(keys: set[tuple[str, bool]]) -> list[tuple[str, bool
     return ordered + other_versions
 
 
-def _latest_app_version(keys: set[tuple[str, bool]]) -> str | None:
+def _latest_app_version(
+    keys: set[tuple[str, bool]], released: set[str] | None = None
+) -> str | None:
     explicit_versions = {version for version, is_other in keys if not is_other}
+    if released is not None:
+        explicit_versions &= released
     ordered = order_versions(explicit_versions, reverse=True)
     return ordered[0] if ordered else None
+
+
+def _retained_versions(
+    explicit_versions: set[str],
+    active_versions: set[str],
+    keep_releases: int,
+    *,
+    released: set[str] | None = None,
+) -> set[str]:
+    """Latest ``keep_releases`` versions, prioritizing released, active versions.
+
+    Retention slots are filled in priority order: released activated releases
+    (newest first), then released-but-inactive, then prerelease/dev builds. This
+    stops a higher-SemVer dev/tester build that never took real traffic — or a
+    SemVer-prerelease build — from occupying a retention slot ahead of a shipped
+    release (which would otherwise fold that release into "Other"). ``released``
+    defaults to "everything is released", degrading to the prior active-first
+    SemVer top-N and matching the previous behavior.
+    """
+    if keep_releases <= 0:
+        return set()
+    ordered = order_versions(explicit_versions, reverse=True)
+    released_set = released if released is not None else set(explicit_versions)
+    released_active = [v for v in ordered if v in released_set and v in active_versions]
+    released_inactive = [v for v in ordered if v in released_set and v not in active_versions]
+    prerelease = [v for v in ordered if v not in released_set]
+    return set((released_active + released_inactive + prerelease)[:keep_releases])
 
 
 async def _load_app_version_metric_rows(
@@ -720,6 +809,48 @@ async def _load_app_version_metric_rows(
     return metric_rows_by_series
 
 
+def _active_versions_from_metric_rows(
+    metric_rows_by_series: dict[tuple[str, bool], list[tuple[datetime, int]]],
+    *,
+    share_min: float = DEFAULT_ACTIVE_SHARE_MIN,
+) -> set[str]:
+    """Activation-gated versions computed from the raw (pre-fold) breakdown rows.
+
+    Mirrors the denominator build in ``_build_app_version_series`` so the two
+    share one definition of "active": per-version per-bucket totals against the
+    total traffic per bucket, fed to ``active_release_versions`` at the per-scan
+    ``share_min``.
+    """
+    release_totals_by_version: dict[str, dict[datetime, int]] = {}
+    all_traffic_by_bucket: dict[datetime, int] = {}
+    for (version, is_other), rows in metric_rows_by_series.items():
+        for bucket, count in rows:
+            all_traffic_by_bucket[bucket] = all_traffic_by_bucket.get(bucket, 0) + count
+            if not is_other:
+                per_bucket = release_totals_by_version.setdefault(version, {})
+                per_bucket[bucket] = per_bucket.get(bucket, 0) + count
+    return active_release_versions(
+        release_totals_by_version, all_traffic_by_bucket, share_min=share_min
+    )
+
+
+def _drop_immature_version_anomalies(
+    anomalies_by_series: dict[tuple[str, bool], list[MetricBreakdownAnomaly]],
+    active_versions: set[str],
+) -> dict[tuple[str, bool], list[MetricBreakdownAnomaly]]:
+    """Keep only anomalies on activation-gated version values (and the rolled-up
+    "Other" bucket). An immature (non-active) dev/tester build never took real
+    traffic, so its stored anomalies are noise — dropping them here also stops an
+    anomaly-only immature version from entering the app-version key union and
+    being picked as "latest" downstream.
+    """
+    return {
+        key: rows
+        for key, rows in anomalies_by_series.items()
+        if key[1] or key[0] in active_versions
+    }
+
+
 async def _load_app_version_anomaly_rows(
     session: AsyncSession,
     *,
@@ -728,6 +859,7 @@ async def _load_app_version_anomaly_rows(
     scope_ref: str,
     time_from: datetime | None,
     time_to: datetime | None,
+    metric_rows_by_series: dict[tuple[str, bool], list[tuple[datetime, int]]],
 ) -> dict[tuple[str, bool], list[MetricBreakdownAnomaly]]:
     if config.app_version_column is None:
         return {}
@@ -751,7 +883,14 @@ async def _load_app_version_anomaly_rows(
     for anomaly in (await session.execute(anomaly_query)).scalars():
         key = (anomaly.breakdown_value, anomaly.is_other)
         anomalies_by_series.setdefault(key, []).append(anomaly)
-    return anomalies_by_series
+
+    # Filter out anomalies on immature (non-activation-gated) versions so a
+    # dev/tester build that never took real traffic cannot surface anomaly
+    # markers — or, when anomaly-only, sneak into the version key union.
+    active_versions = _active_versions_from_metric_rows(
+        metric_rows_by_series, share_min=resolve_share_min(config.app_version_active_share_min)
+    )
+    return _drop_immature_version_anomalies(anomalies_by_series, active_versions)
 
 
 def _build_app_version_series(
@@ -760,19 +899,53 @@ def _build_app_version_series(
     metric_rows_by_series: dict[tuple[str, bool], list[tuple[datetime, int]]],
     anomalies_by_series: dict[tuple[str, bool], list[MetricBreakdownAnomaly]],
     keep_releases: int,
+    prerelease_pattern: re.Pattern[str] | None = None,
+    share_min: float = DEFAULT_ACTIVE_SHARE_MIN,
 ) -> tuple[str | None, list[AppVersionInfo], list[AppVersionMetricSeries]]:
     # Retention is applied here, at read time, over every version present in the
-    # requested window: keep the latest ``keep_releases`` by SemVer as explicit
-    # series and roll the rest — plus any legacy stored ``is_other`` rows — into
-    # a single "Other" series. Deciding the kept set once over the whole window
-    # (rather than per collection chunk at write time) stops a version from
-    # flipping in and out of "Other" between chunks.
+    # requested window: keep the latest ``keep_releases`` versions — activated
+    # releases first (see below) — as explicit series and roll the rest, plus any
+    # legacy stored ``is_other`` rows, into a single "Other" series. Deciding the
+    # kept set once over the whole window (rather than per collection chunk at
+    # write time) stops a version from flipping in and out of "Other" between
+    # chunks.
     explicit_versions = {
         version
         for version, is_other in (set(metric_rows_by_series) | set(anomalies_by_series))
         if not is_other
     }
-    kept_versions = set(order_versions(explicit_versions, reverse=True)[:keep_releases])
+    # Activation gate: a release can only be the "latest" — and can only hold a
+    # retention slot ahead of an untried build — once it takes a real share of
+    # traffic. Volumes are computed from the raw rows (pre-fold) so releases
+    # rolled into "Other" still count toward the total traffic denominator.
+    release_totals_by_version: dict[str, dict[datetime, int]] = {}
+    all_traffic_by_bucket: dict[datetime, int] = {}
+    for (version, is_other), rows in metric_rows_by_series.items():
+        for bucket, count in rows:
+            all_traffic_by_bucket[bucket] = all_traffic_by_bucket.get(bucket, 0) + count
+            if not is_other:
+                per_bucket = release_totals_by_version.setdefault(version, {})
+                per_bucket[bucket] = per_bucket.get(bucket, 0) + count
+
+    # Prerelease/dev builds (SemVer -tag by default, plus any per-scan pattern
+    # match) are never eligible to be latest/active and never take a retention
+    # slot ahead of a released version — but their series stays visible. Computing
+    # ``active`` over only released versions keeps the denominator (all traffic)
+    # intact while guaranteeing a prerelease is never marked active.
+    released = released_versions(explicit_versions, prerelease_pattern=prerelease_pattern)
+    released_totals = {
+        version: by_bucket
+        for version, by_bucket in release_totals_by_version.items()
+        if version in released
+    }
+    active_versions = active_release_versions(
+        released_totals, all_traffic_by_bucket, share_min=share_min
+    )
+    # Retain the latest ``keep_releases`` versions, released+active first, so a
+    # higher-SemVer dev/prerelease build cannot push a shipped release into "Other".
+    kept_versions = _retained_versions(
+        explicit_versions, active_versions, keep_releases, released=released
+    )
 
     def _display_key(version: str, is_other: bool) -> tuple[str, bool]:
         if not is_other and version in kept_versions:
@@ -794,13 +967,23 @@ def _build_app_version_series(
 
     keys = set(metric_rows_by_display) | set(folded_anomalies)
     ordered_keys = _order_app_version_keys(keys)
-    latest_version = _latest_app_version(keys)
+
+    # Prefer the SemVer-max ACTIVE released version; fall back to the SemVer-max
+    # released version only when nothing has activated yet (a young project still
+    # ramping). Prereleases are excluded from both, so they are never latest.
+    latest_version = latest_active_version(
+        released_totals, all_traffic_by_bucket, share_min=share_min
+    ) or _latest_app_version(keys, released)
+
+    def _is_active(version: str, is_other: bool) -> bool:
+        return not is_other and version in active_versions
 
     versions = [
         AppVersionInfo(
             version=version,
             is_other=is_other,
             is_latest=not is_other and version == latest_version,
+            is_active=_is_active(version, is_other),
         )
         for version, is_other in ordered_keys
     ]
@@ -818,6 +1001,7 @@ def _build_app_version_series(
                 version=version,
                 is_other=is_other,
                 is_latest=not is_other and version == latest_version,
+                is_active=_is_active(version, is_other),
                 total_count=sum(point.count for point in data),
                 data=data,
             )
@@ -888,12 +1072,15 @@ async def get_app_version_series(
         scope_ref=resolved_scope_ref,
         time_from=time_from,
         time_to=time_to,
+        metric_rows_by_series=metric_rows_by_series,
     )
     latest_version, versions, series = _build_app_version_series(
         interval=config.interval,
         metric_rows_by_series=metric_rows_by_series,
         anomalies_by_series=anomalies_by_series,
         keep_releases=config.app_version_keep_releases or DEFAULT_APP_VERSION_KEEP_RELEASES,
+        prerelease_pattern=compile_prerelease_pattern(config.app_version_prerelease_pattern),
+        share_min=resolve_share_min(config.app_version_active_share_min),
     )
     return AppVersionSeriesResponse(
         scan_config_id=config.id,
@@ -904,6 +1091,7 @@ async def get_app_version_series(
         app_version_column=config.app_version_column,
         interval=config.interval,
         latest_version=latest_version,
+        sigma_threshold=config.sigma_threshold,
         versions=versions,
         series=series,
     )
@@ -948,12 +1136,15 @@ async def get_app_version_adoption(
         scope_ref=scope_ref,
         time_from=time_from,
         time_to=time_to,
+        metric_rows_by_series=metric_rows_by_series,
     )
     latest_version, versions, series = _build_app_version_series(
         interval=config.interval,
         metric_rows_by_series=metric_rows_by_series,
         anomalies_by_series=anomalies_by_series,
         keep_releases=config.app_version_keep_releases or DEFAULT_APP_VERSION_KEEP_RELEASES,
+        prerelease_pattern=compile_prerelease_pattern(config.app_version_prerelease_pattern),
+        share_min=resolve_share_min(config.app_version_active_share_min),
     )
     return AppVersionAdoptionResponse(
         scan_config_id=config.id,
@@ -962,6 +1153,7 @@ async def get_app_version_adoption(
         app_version_column=config.app_version_column,
         interval=config.interval,
         latest_version=latest_version,
+        sigma_threshold=config.sigma_threshold,
         versions=versions,
         series=series,
         totals=_build_app_version_totals(metric_rows_by_series),
@@ -1177,13 +1369,17 @@ async def get_overview_kpi_series(
     start_day = (datetime.now(UTC) - timedelta(days=days - 1)).date()
     time_from = datetime(start_day.year, start_day.month, start_day.day, tzinfo=UTC)
     created_ats = (
-        await session.execute(
-            select(Event.created_at).where(
-                Event.project_id == project.id,
-                Event.created_at >= time_from,
+        (
+            await session.execute(
+                select(Event.created_at).where(
+                    Event.project_id == project.id,
+                    Event.created_at >= time_from,
+                )
             )
         )
-    ).scalars().all()
+        .scalars()
+        .all()
+    )
     counts: dict[date, int] = {}
     for created in created_ats:
         day = created.date()
@@ -1454,6 +1650,7 @@ async def get_event_type_metrics(
         time_from=time_from,
         time_to=time_to,
     )
+    sigma_threshold = await _get_scan_config_sigma_threshold(session, scan_config_id)
     return _build_metrics_response(
         scope=SCOPE_EVENT_TYPE,
         scan_config_id=scan_config_id,
@@ -1462,6 +1659,7 @@ async def get_event_type_metrics(
         metric_rows=metric_rows,
         anomalies=anomalies,
         event_type_id=event_type.id,
+        sigma_threshold=sigma_threshold,
     )
 
 
@@ -1506,4 +1704,5 @@ async def get_project_total_metrics(
         interval=config.interval,
         metric_rows=metric_rows,
         anomalies=anomalies,
+        sigma_threshold=config.sigma_threshold,
     )

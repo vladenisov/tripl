@@ -78,6 +78,78 @@ logger = logging.getLogger(__name__)
 COLLECT_METRICS_SOFT_TIME_LIMIT_SECONDS = 24 * 60 * 60
 COLLECT_METRICS_TIME_LIMIT_SECONDS = 25 * 60 * 60
 
+# Anomaly re-evaluation always sweeps at least this many trailing buckets, even
+# on an incremental run that only collected the newest one or two. A backfilled
+# or re-collected bucket inside this window then gets its flag cleared/updated on
+# the next run instead of being frozen at whatever the first pass decided
+# (tripl-dmch.14). Replays over a wider explicit window keep that wider window.
+ANOMALY_TRAILING_REEVAL_BUCKETS = 30
+
+
+def _covered_buckets_from_scan_jobs(
+    session: Session,
+    *,
+    scan_config_id: uuid.UUID,
+    delta: timedelta,
+    current_window: tuple[datetime, datetime],
+) -> set[datetime]:
+    """Buckets a successful collection actually covered, on the interval grid.
+
+    A collection gap (an interval that a failed/never-run job left uncollected)
+    is otherwise zero-filled by the detector and masquerades as a 'drop'
+    anomaly. We union the ``[time_from, time_to)`` windows of every COMPLETED
+    scan job (recorded in ``result_summary``) with the window this run just
+    wrote, and hand the enumerated set to ``detect_anomalies`` as
+    ``covered_buckets`` so a MISSING bucket is only zero-filled when it fell
+    inside real coverage; missing-and-uncovered buckets are excluded instead of
+    read as zeros.
+
+    Every bucket that already carries stored data is unioned in as well: data
+    only exists because a collection produced it, so a present observation is by
+    definition covered. This keeps the baseline intact even for buckets whose
+    originating job window is no longer recorded, and never marks a genuine gap
+    (which has no row) as covered.
+    """
+    windows: list[tuple[datetime, datetime]] = [current_window]
+    summaries = session.execute(
+        select(ScanJob.result_summary).where(
+            ScanJob.scan_config_id == scan_config_id,
+            ScanJob.status == ScanJobStatus.completed.value,
+        )
+    ).scalars()
+    for summary in summaries:
+        if not isinstance(summary, dict):
+            continue
+        raw_from = summary.get("time_from")
+        raw_to = summary.get("time_to")
+        if not isinstance(raw_from, str) or not isinstance(raw_to, str):
+            continue
+        try:
+            window_from = _parse_task_datetime(raw_from)
+            window_to = _parse_task_datetime(raw_to)
+        except (ValueError, TypeError):
+            continue
+        if window_from < window_to:
+            windows.append((window_from, window_to))
+
+    covered: set[datetime] = set()
+    for window_from, window_to in windows:
+        bucket = window_from
+        while bucket < window_to:
+            covered.add(bucket)
+            bucket += delta
+
+    present_buckets = session.execute(
+        select(EventMetric.bucket)
+        .where(
+            EventMetric.scan_config_id == scan_config_id,
+            EventMetric.bucket < current_window[1],
+        )
+        .distinct()
+    ).scalars()
+    covered.update(bucket for bucket in present_buckets if bucket is not None)
+    return covered
+
 
 def reserved_catalog_columns(config: ScanConfig) -> set[str]:
     """Scan columns that are metric dimensions, not tracked event fields.
@@ -638,17 +710,33 @@ def collect_metrics(
         # Anomaly detection and alert delivery read the metrics we just stored in
         # Postgres (not the warehouse), so they run once over the full window
         # regardless of how many sub-windows fetched it.
+        #
+        # Re-evaluate a trailing window (not just the collected slice) so a
+        # backfilled/re-collected bucket has its flag refreshed, and hand the
+        # detector the set of buckets a successful collection actually covered so
+        # gaps are excluded rather than flagged as fake drops (tripl-dmch.14/.16).
+        covered_buckets = _covered_buckets_from_scan_jobs(
+            session,
+            scan_config_id=config.id,
+            delta=delta,
+            current_window=(time_from_dt, time_to_dt),
+        )
+        anomaly_evaluation_start = min(
+            time_from_dt, time_to_dt - delta * ANOMALY_TRAILING_REEVAL_BUCKETS
+        )
         anomalies_detected = _recalculate_metric_anomalies(
             session,
             config,
-            evaluation_start=time_from_dt,
+            evaluation_start=anomaly_evaluation_start,
             evaluation_end=time_to_dt,
+            covered_buckets=covered_buckets,
         )
         breakdown_anomalies_detected = _recalculate_metric_breakdown_anomalies(
             session,
             config,
-            evaluation_start=time_from_dt,
+            evaluation_start=anomaly_evaluation_start,
             evaluation_end=time_to_dt,
+            covered_buckets=covered_buckets,
         )
         release_regressions_detected = _recalculate_release_regressions(
             session,

@@ -92,6 +92,9 @@ interface VersionChartSeries {
   version: string
   isOther: boolean
   isLatest: boolean
+  // The SemVer-newest release that has NOT taken a real share of traffic yet
+  // (backend is_latest && !is_active): a pre-release / not-yet-rolled-out build.
+  isPreRelease: boolean
   totalCount: number
   data: AppVersionMetricSeries['data']
   color: string
@@ -150,6 +153,9 @@ function adaptMetricSeries(res: MetricSeriesResponse): EventMetricsResponse {
 }
 
 function adaptMetricVersions(res: MetricVersionSeriesResponse): AppVersionSeriesResponse {
+  // MetricVersionSeries carries no is_active flag, but the versions catalog does;
+  // carry it across so the metric scope gets the same pre-release treatment.
+  const activeByVersion = new Map(res.versions.map(info => [info.version, info.is_active]))
   return {
     scan_config_id: res.scan_config_id ?? '',
     scope_type: 'event',
@@ -164,6 +170,7 @@ function adaptMetricVersions(res: MetricVersionSeriesResponse): AppVersionSeries
       version: series.version,
       is_other: series.is_other,
       is_latest: series.is_latest,
+      is_active: activeByVersion.get(series.version) ?? false,
       total_count: series.total_value,
       data: series.data.map(metricPointToEventPoint),
     })),
@@ -498,6 +505,28 @@ export default function MonitoringDetailPage() {
     [appVersionAdoptionQuery.data?.series],
   )
   const latestAdoptionShare = adoptionTotal > 0 ? latestAdoptionTotal / adoptionTotal : null
+
+  // The header/tab "latest" is the backend's activation-gated release: Wave 1
+  // made is_latest reflect the gated release, so it already agrees with the
+  // maturity-gated "latest active release" the ReleaseRegressionPanel derives.
+  // When that newest release has NOT yet taken a real share of traffic
+  // (is_active=false) it's a pre-release / not-yet-rolled-out build, and drops
+  // the primary "latest" highlight for a distinct pre-release treatment.
+  const latestVersion = appVersionSeriesQuery.data?.latest_version ?? null
+  const latestVersionIsActive = useMemo(() => {
+    const data = appVersionSeriesQuery.data
+    if (!data?.latest_version) return false
+    const info = data.versions.find(entry => entry.is_latest && !entry.is_other)
+      ?? data.series.find(entry => entry.is_latest && !entry.is_other)
+    return info?.is_active ?? false
+  }, [appVersionSeriesQuery.data])
+  const latestIsPreRelease = latestVersion !== null && !latestVersionIsActive
+  // Warn on the Latest filter whenever the newest release is not yet a rolled-out
+  // active release. The backend `is_active` already honors each scan's own
+  // app_version_active_share_min (which drives latestVersionIsActive), so this is
+  // the authoritative signal — a separate hardcoded low-share check could
+  // contradict a scan whose override differs from the default threshold.
+  const latestFilterNeedsWarning = latestIsPreRelease
 
   const queryClient = useQueryClient()
   const annotationsKey = useMemo(
@@ -987,10 +1016,27 @@ export default function MonitoringDetailPage() {
                   <div className="flex items-center gap-2">
                     <GitBranch className="h-4 w-4 text-muted-foreground" />
                     <h2 className="text-lg font-semibold">By version</h2>
-                    {appVersionSeriesQuery.data?.latest_version && (
-                      <Badge variant="outline" className="font-mono">
-                        latest {appVersionSeriesQuery.data.latest_version}
-                      </Badge>
+                    {latestVersion && (
+                      latestIsPreRelease ? (
+                        <Badge
+                          variant="outline"
+                          className="gap-1 border-[var(--warning)]/60 bg-[var(--warning-soft)] font-mono text-[var(--warning)]"
+                          title="Newest release by version, but it hasn't taken a real share of traffic yet — treat it as a pre-release / not-yet-rolled-out build."
+                        >
+                          <AlertTriangle aria-hidden="true" className="h-3 w-3" />
+                          <span>pre-release {latestVersion}</span>
+                          {latestAdoptionShare !== null && (
+                            <span className="opacity-80">· {formatPercent(latestAdoptionShare)}</span>
+                          )}
+                        </Badge>
+                      ) : (
+                        <Badge variant="outline" className="gap-1 font-mono">
+                          <span>latest {latestVersion}</span>
+                          {latestAdoptionShare !== null && (
+                            <span className="text-muted-foreground">· {formatPercent(latestAdoptionShare)}</span>
+                          )}
+                        </Badge>
+                      )
                     )}
                   </div>
                   <div className="flex flex-wrap items-center gap-2">
@@ -1008,11 +1054,17 @@ export default function MonitoringDetailPage() {
                         type="button"
                         size="sm"
                         variant={selectedVersionFilter === 'latest' ? 'secondary' : 'ghost'}
-                        className="h-6 px-2 text-xs"
+                        className="h-6 gap-1 px-2 text-xs"
                         onClick={() => setVersionFilter('latest')}
-                        disabled={!appVersionSeriesQuery.data?.latest_version}
+                        disabled={!latestVersion}
+                        title={latestFilterNeedsWarning
+                          ? 'The newest release is a pre-release with little traffic — not yet rolled out.'
+                          : undefined}
                       >
                         Latest
+                        {latestFilterNeedsWarning && (
+                          <AlertTriangle aria-hidden="true" className="h-3 w-3 text-[var(--warning)]" />
+                        )}
                       </Button>
                     </div>
                     <MetricsRangeControls
@@ -1035,7 +1087,7 @@ export default function MonitoringDetailPage() {
                       granularity={granularity}
                       emptyLabel="No version metrics available"
                     />
-                    <VersionLegend series={versionChartSeries} />
+                    <VersionLegend series={versionChartSeries} latestShare={latestAdoptionShare} />
                     {appVersionSeriesQuery.data?.interval && (
                       <p className="mt-2 text-xs text-muted-foreground">
                         Collection interval: {appVersionSeriesQuery.data.interval}
@@ -1052,9 +1104,19 @@ export default function MonitoringDetailPage() {
                   <div className="flex items-center gap-2">
                     <h2 className="text-lg font-semibold">Version adoption</h2>
                     {latestAdoptionShare !== null && (
-                      <Badge variant="outline">
-                        Latest {formatPercent(latestAdoptionShare)}
-                      </Badge>
+                      latestIsPreRelease ? (
+                        <Badge
+                          variant="outline"
+                          className="gap-1 border-[var(--warning)]/60 bg-[var(--warning-soft)] text-[var(--warning)]"
+                        >
+                          <AlertTriangle aria-hidden="true" className="h-3 w-3" />
+                          Pre-release {formatPercent(latestAdoptionShare)}
+                        </Badge>
+                      ) : (
+                        <Badge variant="outline">
+                          Latest {formatPercent(latestAdoptionShare)}
+                        </Badge>
+                      )
                     )}
                   </div>
                   {appVersionAdoptionQuery.data?.app_version_column && (
@@ -1075,7 +1137,7 @@ export default function MonitoringDetailPage() {
                       granularity={granularity}
                       emptyLabel="No adoption data available"
                     />
-                    <VersionLegend series={adoptionChartSeries} />
+                    <VersionLegend series={adoptionChartSeries} latestShare={latestAdoptionShare} />
                   </>
                 )}
               </CardContent>
@@ -1257,31 +1319,48 @@ function buildVersionChartSeries(
   return series
     .filter(item => versionFilter === 'all' || (!!latestVersion && item.is_latest))
     .map((item, index) => {
-      const isLatest = item.is_latest && !item.is_other
+      const isNewest = item.is_latest && !item.is_other
+      // Only the rolled-out (active) newest release keeps the primary "latest"
+      // identity and highlight; a not-yet-active newest release is a pre-release.
+      const isActiveLatest = isNewest && item.is_active
+      const isPreRelease = isNewest && !item.is_active
       return {
         label: formatVersionLabel(item),
         version: item.version,
         isOther: item.is_other,
-        isLatest,
+        isLatest: isActiveLatest,
+        isPreRelease,
         totalCount: item.total_count,
         data: aggregateMetricPoints(item.data, granularity),
-        color: isLatest
+        color: isActiveLatest
           ? 'var(--primary)'
-          : item.is_other
-            ? 'var(--muted-foreground)'
-            : VERSION_CHART_COLORS[index % VERSION_CHART_COLORS.length],
-        isHighlighted: isLatest,
+          : isPreRelease
+            ? 'var(--warning)'
+            : item.is_other
+              ? 'var(--muted-foreground)'
+              : VERSION_CHART_COLORS[index % VERSION_CHART_COLORS.length],
+        isHighlighted: isActiveLatest,
       }
     })
 }
 
 function formatVersionLabel(version: AppVersionMetricSeries) {
   const label = version.is_other ? 'Other' : (version.version || '(empty)')
-  return version.is_latest && !version.is_other ? `${label} · latest` : label
+  if (version.is_other || !version.is_latest) return label
+  // The gated-newest release reads "· latest" once rolled out, but "· pre-release"
+  // while it hasn't taken a real share of traffic (is_active=false).
+  return version.is_active ? `${label} · latest` : `${label} · pre-release`
 }
 
-function VersionLegend({ series }: { series: VersionChartSeries[] }) {
+function VersionLegend({
+  series,
+  latestShare,
+}: {
+  series: VersionChartSeries[]
+  latestShare?: number | null
+}) {
   if (!series.length) return null
+  const shareSuffix = latestShare != null ? ` · ${formatPercent(latestShare)}` : ''
   return (
     <div className="mt-3 flex flex-wrap gap-2">
       {series.map(item => (
@@ -1296,7 +1375,15 @@ function VersionLegend({ series }: { series: VersionChartSeries[] }) {
           <span className="min-w-0 truncate font-mono">{item.isOther ? 'Other' : item.version}</span>
           {item.isLatest && (
             <Badge variant="secondary" className="h-5 px-1.5 text-[10px]">
-              latest
+              latest{shareSuffix}
+            </Badge>
+          )}
+          {item.isPreRelease && (
+            <Badge
+              variant="outline"
+              className="h-5 gap-1 border-[var(--warning)]/60 bg-[var(--warning-soft)] px-1.5 text-[10px] text-[var(--warning)]"
+            >
+              pre-release{shareSuffix}
             </Badge>
           )}
           <span className="shrink-0 text-muted-foreground">

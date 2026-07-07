@@ -6,7 +6,11 @@ from types import SimpleNamespace
 import pytest
 from httpx import AsyncClient
 
-from tripl.services.monitoring_utils import summarize_monitor_states
+from tripl.services.monitoring_utils import (
+    classify_signal_state,
+    scan_interval_to_timedelta,
+    summarize_monitor_states,
+)
 
 
 def _state(*, is_active: bool, last_anomaly_bucket=None, last_notified_at=None) -> SimpleNamespace:
@@ -68,6 +72,100 @@ class TestSummarizeMonitorStates:
         assert rollup.firing_scope_count == 1
         # latest anomaly across ALL states (incl. inactive) is the 10-minutes-ago one
         assert rollup.last_anomaly_at == now - timedelta(minutes=10)
+
+
+class TestClassifySignalState:
+    def test_none_latest_metric_bucket_is_closed(self) -> None:
+        # No stored metric values -> nothing to keep open (previously "latest_scan").
+        now = datetime.now(UTC)
+        assert (
+            classify_signal_state(
+                anomaly_bucket=now,
+                latest_metric_bucket=None,
+                now=now,
+            )
+            is None
+        )
+
+    def test_fresh_latest_scan_is_open(self) -> None:
+        now = datetime.now(UTC)
+        bucket = now - timedelta(hours=1)
+        assert (
+            classify_signal_state(
+                anomaly_bucket=bucket,
+                latest_metric_bucket=bucket,
+                now=now,
+            )
+            == "latest_scan"
+        )
+
+    def test_stale_latest_scan_falls_through_to_closed(self) -> None:
+        # Anomaly still tops max(bucket) but is 2 days old with no interval hint,
+        # so it is stale against the 24h default horizon and no longer "latest_scan".
+        now = datetime.now(UTC)
+        bucket = now - timedelta(hours=48)
+        assert (
+            classify_signal_state(
+                anomaly_bucket=bucket,
+                latest_metric_bucket=bucket,
+                now=now,
+            )
+            is None
+        )
+
+    def test_interval_extends_latest_scan_horizon(self) -> None:
+        # A daily scan's 48h-old final anomaly is still fresh: horizon = 3 * 1d.
+        now = datetime.now(UTC)
+        bucket = now - timedelta(hours=48)
+        assert (
+            classify_signal_state(
+                anomaly_bucket=bucket,
+                latest_metric_bucket=bucket,
+                now=now,
+                interval=scan_interval_to_timedelta("1d"),
+            )
+            == "latest_scan"
+        )
+
+    def test_recent_branch_preserved(self) -> None:
+        # Anomaly older than the latest scan but inside the 24h recent window.
+        now = datetime.now(UTC)
+        assert (
+            classify_signal_state(
+                anomaly_bucket=now - timedelta(hours=2),
+                latest_metric_bucket=now - timedelta(hours=1),
+                now=now,
+            )
+            == "recent"
+        )
+
+    def test_old_anomaly_below_latest_is_closed(self) -> None:
+        now = datetime.now(UTC)
+        assert (
+            classify_signal_state(
+                anomaly_bucket=now - timedelta(hours=48),
+                latest_metric_bucket=now - timedelta(hours=1),
+                now=now,
+            )
+            is None
+        )
+
+    def test_tz_naive_buckets_do_not_raise(self) -> None:
+        now = datetime.now(UTC).replace(tzinfo=None)
+        bucket = now - timedelta(hours=1)
+        assert (
+            classify_signal_state(
+                anomaly_bucket=bucket,
+                latest_metric_bucket=bucket,
+                now=now,
+            )
+            == "latest_scan"
+        )
+
+    def test_scan_interval_to_timedelta_unknown_is_none(self) -> None:
+        assert scan_interval_to_timedelta(None) is None
+        assert scan_interval_to_timedelta("nope") is None
+        assert scan_interval_to_timedelta("6h") == timedelta(hours=6)
 
 
 async def _make_project(client: AsyncClient, slug: str) -> None:
