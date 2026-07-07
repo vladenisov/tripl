@@ -14,6 +14,7 @@ import type {
 import { Badge } from '@/components/ui/badge'
 import { Checkbox } from '@/components/ui/checkbox'
 import { TableCell, TableRow } from '@/components/ui/table'
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { Chip } from '@/components/primitives/chip'
 import { Dot } from '@/components/primitives/dot'
 import { EVENT_STATUS_DOT_TONE, EVENT_STATUS_LABELS } from '@/lib/eventStatus'
@@ -174,14 +175,25 @@ export const EventRow = memo(function EventRow({
       >
         <div className="inline-flex max-w-full items-center gap-2 align-middle">
           <Dot tone={statusTone} pulse={false} size={6} />
-          <button
-            type="button"
-            className="mono truncate text-left text-[12.5px] hover:underline underline-offset-4"
-            onClick={() => onRowAction('navigate-monitoring', ev)}
-            title={ev.name}
-          >
-            <EventName name={ev.name} />
-          </button>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <button
+                type="button"
+                className="mono truncate text-left text-[12.5px] hover:underline underline-offset-4"
+                onClick={() => onRowAction('navigate-monitoring', ev)}
+                // Native title only when there's no description to show in the
+                // richer tooltip — avoids a double (native + Radix) popover.
+                title={ev.description ? undefined : ev.name}
+              >
+                <EventName name={ev.name} />
+              </button>
+            </TooltipTrigger>
+            {ev.description && (
+              <TooltipContent side="bottom" align="start" className="max-w-xs whitespace-normal">
+                {ev.description}
+              </TooltipContent>
+            )}
+          </Tooltip>
           {ev.drift_count > 0 && (
             <EventDriftBadge slug={slug} eventTypeId={ev.event_type_id} count={ev.drift_count} />
           )}

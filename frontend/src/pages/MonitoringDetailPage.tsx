@@ -17,7 +17,6 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Chip } from '@/components/primitives/chip'
 import { Dot } from '@/components/primitives/dot'
-import { Sparkline } from '@/components/primitives/sparkline'
 import { SensitivityChip } from '@/components/primitives/sensitivity-chip'
 import { EmptyState } from '@/components/empty-state'
 import { ErrorState } from '@/components/error-state'
@@ -702,9 +701,6 @@ export default function MonitoringDetailPage() {
           event={event}
           eventType={eventType}
           metrics={metrics}
-          history={eventHistory}
-          fieldDefMap={fieldDefMap}
-          metaFieldMap={metaFieldMap}
           onBack={goBack}
           onEdit={() => navigate(
             `/p/${slug}/events/${event.event_type?.name ?? 'all'}/${event.id}/edit`,
@@ -876,11 +872,11 @@ export default function MonitoringDetailPage() {
                 />
               </div>
               {metricsQuery.isLoading ? (
-                <div className="h-[280px] flex items-center justify-center text-sm text-muted-foreground">
+                <div className="h-[200px] flex items-center justify-center text-sm text-muted-foreground">
                   Loading monitoring data…
                 </div>
               ) : chartData.length === 0 ? (
-                <div className="h-[280px] flex items-center justify-center">
+                <div className="h-[200px] flex items-center justify-center">
                   <EmptyState
                     icon={TrendingUp}
                     title="No metrics data available"
@@ -892,7 +888,7 @@ export default function MonitoringDetailPage() {
                   data={chartData}
                   forecast={metrics?.forecast}
                   annotations={annotations}
-                  height={280}
+                  height={200}
                   color={eventType?.color || metricDefinition?.color || 'var(--chart-3)'}
                   granularity={granularity}
                   seriesLabel={scope === 'metric' ? metricDefinition?.unit || 'value' : 'events'}
@@ -1258,6 +1254,13 @@ export default function MonitoringDetailPage() {
           </Card>
         </TabsContent>
       </Tabs>
+
+      {isEventDetail && event && (
+        <div className="grid items-start gap-[14px] lg:grid-cols-[1.5fr_1fr]">
+          <EventFieldsTable eventType={eventType} event={event} fieldDefMap={fieldDefMap} />
+          <EventSideColumn event={event} eventType={eventType} history={eventHistory} metaFieldMap={metaFieldMap} />
+        </div>
+      )}
 
       {scope === 'event' && scopeId && (
         <EventPhotosSection slug={slug!} eventId={scopeId} />
@@ -1639,9 +1642,6 @@ function EventDetailHero({
   event,
   eventType,
   metrics,
-  history,
-  fieldDefMap,
-  metaFieldMap,
   onBack,
   onEdit,
   onMetrics,
@@ -1649,9 +1649,6 @@ function EventDetailHero({
   event: TEvent
   eventType: EventType | undefined
   metrics: EventMetricsResponse | undefined
-  history: EventHistoryItem[]
-  fieldDefMap: Map<string, FieldDefinition>
-  metaFieldMap: Map<string, MetaFieldDefinition>
   onBack: () => void
   onEdit: () => void
   onMetrics: () => void
@@ -1665,27 +1662,6 @@ function EventDetailHero({
       <EventDetailHeader event={event} eventType={eventType} signal={signal} onEdit={onEdit} onMetrics={onMetrics} />
       {signal && <EventSignalBanner signal={signal} tone={signalTone} />}
       <EventStatStrip event={event} stats={stats} />
-      {stats.series24h.length > 1 && (
-        <div className={SURFACE_CARD} style={SURFACE_STYLE}>
-          <div className="flex items-center justify-between px-4 py-[14px]">
-            <span className="text-[12.5px] font-semibold">Volume · 24h</span>
-            <span className="mono text-[11px]" style={{ color: 'var(--fg-subtle)' }}>hourly</span>
-          </div>
-          <div className="px-4 pb-[14px]">
-            <Sparkline
-              data={stats.series24h}
-              width={920}
-              height={64}
-              color={signal ? `var(--${signalTone})` : 'var(--accent)'}
-              className="w-full"
-            />
-          </div>
-        </div>
-      )}
-      <div className="grid items-start gap-[14px] lg:grid-cols-[1.5fr_1fr]">
-        <EventFieldsTable eventType={eventType} event={event} fieldDefMap={fieldDefMap} />
-        <EventSideColumn event={event} eventType={eventType} history={history} metaFieldMap={metaFieldMap} />
-      </div>
     </div>
   )
 }
@@ -1809,6 +1785,11 @@ function EventDetailHeader({
           <span style={{ color: 'var(--fg-faint)' }}>·</span>
           <span>updated {formatRelativeTime(event.updated_at)}</span>
         </div>
+        {event.description && (
+          <p className="mt-[7px] max-w-[62ch] text-[13px] leading-snug" style={{ color: 'var(--fg-muted)' }}>
+            {event.description}
+          </p>
+        )}
       </div>
       <div className="flex flex-wrap items-center gap-2">
         <HeroAction icon={<TrendingUp size={12} />} label="Metrics" onClick={onMetrics} />
