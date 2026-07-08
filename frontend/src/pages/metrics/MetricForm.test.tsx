@@ -781,7 +781,7 @@ describe('MetricForm validation', () => {
     expect(screen.queryByRole('listbox', { name: 'Column suggestions' })).toBeNull()
   })
 
-  it('adds breakdown columns as chips and submits them in the payload', async () => {
+  it('adds breakdown columns and submits them in the payload', async () => {
     renderForm()
 
     fireEvent.change(screen.getByLabelText('Display name', { exact: false }), {
@@ -799,9 +799,9 @@ describe('MetricForm validation', () => {
     fireEvent.change(breakdowns, { target: { value: 'country' } })
     fireEvent.keyDown(breakdowns, { key: 'Enter' })
 
-    // Both chips render with remove affordances before submitting.
-    expect(screen.getByRole('button', { name: 'Remove platform' })).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'Remove country' })).toBeInTheDocument()
+    // Both added columns render as checked boxes in the picker before submitting.
+    expect(screen.getByRole('checkbox', { name: 'Break down by platform' })).toBeChecked()
+    expect(screen.getByRole('checkbox', { name: 'Break down by country' })).toBeChecked()
 
     submit()
 
@@ -809,6 +809,32 @@ describe('MetricForm validation', () => {
     expect(metricsCatalogApi.create).toHaveBeenCalledWith(
       'demo',
       expect.objectContaining({ breakdown_columns: ['platform', 'country'] }),
+    )
+  })
+
+  it('flushes a typed-but-not-entered breakdown column on blur so it is not lost on save', async () => {
+    renderForm()
+
+    fireEvent.change(screen.getByLabelText('Display name', { exact: false }), {
+      target: { value: 'Order count' },
+    })
+    fireEvent.change(document.getElementById('metric-sql-data-source')!, { target: { value: 'ds-1' } })
+    fireEvent.change(screen.getByLabelText('Metric SQL'), {
+      target: { value: 'SELECT bucket, count(*) AS value FROM events GROUP BY 1' },
+    })
+    fireEvent.change(document.getElementById('metric-sql-time')!, { target: { value: 'bucket' } })
+
+    // Type a breakdown column but never press Enter, then leave the field.
+    const breakdowns = document.getElementById('metric-breakdowns') as HTMLInputElement
+    fireEvent.change(breakdowns, { target: { value: 'device_type' } })
+    fireEvent.blur(breakdowns)
+
+    submit()
+
+    await waitFor(() => expect(metricsCatalogApi.create).toHaveBeenCalledTimes(1))
+    expect(metricsCatalogApi.create).toHaveBeenCalledWith(
+      'demo',
+      expect.objectContaining({ breakdown_columns: ['device_type'] }),
     )
   })
 

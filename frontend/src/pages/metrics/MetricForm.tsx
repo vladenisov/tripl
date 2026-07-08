@@ -6,7 +6,8 @@ import { dataSourcesApi } from '@/api/dataSources'
 import { eventsApi } from '@/api/events'
 import { factTablesApi } from '@/api/factTablesApi'
 import { metricsCatalogApi } from '@/api/metricsCatalogApi'
-import { ColumnChipsInput, ColumnSuggestInput } from '@/components/column-suggest'
+import { ColumnCheckboxPicker } from '@/components/column-checkbox-picker'
+import { ColumnSuggestInput } from '@/components/column-suggest'
 import { ErrorState } from '@/components/error-state'
 import { Sparkline } from '@/components/primitives/sparkline'
 import { SqlEditor } from '@/components/sql-editor'
@@ -701,6 +702,14 @@ export function MetricForm({ slug, metric, dataSources, events, onClose }: Metri
     return names
   }, [sqlSchemaData])
 
+  // Columns offered in the breakdown picker. Fact metrics have no data source,
+  // so their columns come from the (numerator) fact table's introspected
+  // schema; SQL metrics use the data-source schema union above.
+  const breakdownColumnChoices = useMemo(
+    () => (kind === 'fact' ? numeratorDetail.columns.map(column => column.name) : schemaColumns),
+    [kind, numeratorDetail, schemaColumns],
+  )
+
   // Field-keyed validation: each entry maps an input DOM id to its message.
   // Insertion order is top-to-bottom so the first key is the first offending
   // field to scroll to.
@@ -1376,14 +1385,15 @@ export function MetricForm({ slug, metric, dataSources, events, onClose }: Metri
               no data source, so hide these dimension inputs for that kind. */}
           {kind !== 'event_composition' && (
             <>
-              <MField label="Breakdown columns" htmlFor="metric-breakdowns" hint="Warehouse columns to roll up by. Pick a suggestion or type a name and press Enter.">
-                <div className="max-w-[280px]">
-                  <ColumnChipsInput
+              <MField label="Breakdown columns" htmlFor="metric-breakdowns" hint="Warehouse columns to roll up by. Tick a column, or add one that isn't listed.">
+                <div className="max-w-[420px]">
+                  <ColumnCheckboxPicker
                     id="metric-breakdowns"
+                    columns={breakdownColumnChoices}
                     value={breakdownColumns}
                     onChange={setBreakdownColumns}
-                    suggestions={schemaColumns}
-                    placeholder="platform, country"
+                    reserved={[appVersionColumn, platformColumn].filter(Boolean)}
+                    addPlaceholder="platform, country"
                   />
                 </div>
               </MField>
