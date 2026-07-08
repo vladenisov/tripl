@@ -141,6 +141,14 @@ export function ColumnSuggestInput({
         onChange={e => handleChange(e.target.value)}
         onKeyDown={handleKeyDown}
         onFocus={() => setOpen(true)}
+        onBlur={() => {
+          // Chips mode: a value typed but never turned into a chip (no Enter /
+          // no suggestion pick) would otherwise be silently dropped when focus
+          // leaves — e.g. clicking "Save". Flush the draft on blur so it is not
+          // lost. Suggestion clicks use onMouseDown preventDefault, so they
+          // commit via pick() without ever blurring here.
+          if (onCommit && value.trim()) onCommit(value)
+        }}
       />
       {expanded && (
         <div
