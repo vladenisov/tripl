@@ -791,15 +791,15 @@ export default function MonitoringDetailPage() {
         <MetricDefinitionCard slug={slug} definition={metricDefinition} />
       )}
 
+      {isEventDetail && event && (
+        <div className="grid items-start gap-[14px] lg:grid-cols-[1.5fr_1fr]">
+          <EventFieldsTable eventType={eventType} event={event} fieldDefMap={fieldDefMap} />
+          <EventSideColumn event={event} eventType={eventType} history={eventHistory} metaFieldMap={metaFieldMap} />
+        </div>
+      )}
+
       {isEventDetail && <span ref={metricsRef} aria-hidden className="-mt-5 block scroll-mt-4" />}
-      {/* On the event-detail layout the tabs follow the stat strip directly, so
-          give them a deliberate gap — the scroll-anchor span above otherwise
-          leaves them flush against the stat cards. */}
-      <Tabs
-        value={selectedTab}
-        onValueChange={value => setActiveTab(value as MonitoringDetailTab)}
-        className={isEventDetail ? 'mt-4' : undefined}
-      >
+      <Tabs value={selectedTab} onValueChange={value => setActiveTab(value as MonitoringDetailTab)}>
         <TabsList className="text-fg-muted">
           <TabsTrigger value="volume">{volumeLabel}</TabsTrigger>
           {hasVersionColumn && (
@@ -1261,13 +1261,6 @@ export default function MonitoringDetailPage() {
           </Card>
         </TabsContent>
       </Tabs>
-
-      {isEventDetail && event && (
-        <div className="grid items-start gap-[14px] lg:grid-cols-[1.5fr_1fr]">
-          <EventFieldsTable eventType={eventType} event={event} fieldDefMap={fieldDefMap} />
-          <EventSideColumn event={event} eventType={eventType} history={eventHistory} metaFieldMap={metaFieldMap} />
-        </div>
-      )}
 
       {scope === 'event' && scopeId && (
         <EventPhotosSection slug={slug!} eventId={scopeId} />
