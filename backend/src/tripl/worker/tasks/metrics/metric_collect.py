@@ -246,9 +246,7 @@ def _effective_value_window(
     """
     if window_override is not None:
         return window_override
-    return _resolve_value_window(
-        session, metric_definition_id=metric_definition_id, delta=delta
-    )
+    return _resolve_value_window(session, metric_definition_id=metric_definition_id, delta=delta)
 
 
 def _parse_window_override(
@@ -478,6 +476,68 @@ def _aggregate_fact_window(
     return values, base_query, measure
 
 
+def _metric_breakdown_columns(definition: MetricDefinition) -> list[str]:
+    """Return the metric's configured breakdown dimensions in collection order."""
+    breakdown_columns: list[str] = list(definition.breakdown_columns or [])
+    for extra in (definition.app_version_column, definition.platform_column):
+        if extra and extra not in breakdown_columns:
+            breakdown_columns.append(extra)
+    return breakdown_columns
+
+
+def _ratio_breakdown_value(
+    numerator_cell: object,
+    denominator_cell: object,
+) -> float | None:
+    """Compute one grouped ratio cell with the same zero-safe semantics as values."""
+    denominator = 0.0 if denominator_cell is None else _coerce_value(denominator_cell)
+    if denominator == 0:
+        return None
+    numerator = 0.0 if numerator_cell is None else _coerce_value(numerator_cell)
+    return numerator / denominator
+
+
+def _coerce_compare_bound(dt: datetime) -> datetime:
+    """Normalize collection-window bounds for comparison with coerced buckets."""
+    return dt if dt.tzinfo is not None else dt.replace(tzinfo=UTC)
+
+
+def _append_ratio_breakdown_rows(
+    rows_out: list[dict[str, object]],
+    *,
+    definition: MetricDefinition,
+    rows: list[tuple[object, ...]],
+    delta: timedelta,
+    time_from: datetime,
+    time_to: datetime,
+    breakdown_column: str,
+    numerator_index: int,
+    denominator_index: int,
+) -> None:
+    """Append finite ratio rows from one multi-aggregate breakdown result."""
+    compare_from = _coerce_compare_bound(time_from)
+    compare_to = _coerce_compare_bound(time_to)
+    for row in rows:
+        bucket = _coerce_bucket(row[0], delta)
+        if not (compare_from <= bucket < compare_to):
+            continue
+        value = _ratio_breakdown_value(row[numerator_index], row[denominator_index])
+        if value is None:
+            continue
+        rows_out.append(
+            {
+                "id": uuid.uuid4(),
+                "metric_definition_id": definition.id,
+                "scan_config_id": None,
+                "bucket": bucket,
+                "breakdown_column": breakdown_column,
+                "breakdown_value": str(row[1])[:MAX_BREAKDOWN_VALUE_LENGTH],
+                "is_other": bool(row[2]),
+                "value": value,
+            }
+        )
+
+
 def _collect_fact_breakdown_rows(
     session: Session,
     *,
@@ -498,10 +558,7 @@ def _collect_fact_breakdown_rows(
     window-deleted then UPSERTed so re-runs do not duplicate. Returns the number
     of breakdown rows written.
     """
-    breakdown_columns: list[str] = list(definition.breakdown_columns or [])
-    for extra in (definition.app_version_column, definition.platform_column):
-        if extra and extra not in breakdown_columns:
-            breakdown_columns.append(extra)
+    breakdown_columns = _metric_breakdown_columns(definition)
     if not breakdown_columns:
         return 0
 
@@ -535,6 +592,83 @@ def _collect_fact_breakdown_rows(
                     "value": _coerce_value(row[-1]),
                 }
             )
+
+    _delete_metric_value_breakdowns_window(
+        session,
+        metric_definition_id=definition.id,
+        time_from=chunk_from,
+        time_to=chunk_to,
+    )
+    _upsert_metric_value_breakdown_rows(session, rows=rows_out)
+    return len(rows_out)
+
+
+def _collect_fact_ratio_breakdown_rows(
+    session: Session,
+    *,
+    adapter: BaseAdapter,
+    definition: MetricDefinition,
+    fact_table: FactTable,
+    numerator_op: _FactOperand,
+    denominator_op: _FactOperand,
+    ch_interval: str,
+    delta: timedelta,
+    chunk_from: datetime,
+    chunk_to: datetime,
+) -> int:
+    """Collect same-table ratio breakdown values for one fact-metric chunk."""
+    breakdown_columns = _metric_breakdown_columns(definition)
+    if not breakdown_columns:
+        return 0
+
+    allowed_columns = {column.name for column in adapter.get_columns(fact_table.sql)}
+    numerator_measure, numerator_filter = _resolve_batch_operand(
+        numerator_op,
+        fact_table=fact_table,
+        allowed_columns=allowed_columns,
+    )
+    denominator_measure, denominator_filter = _resolve_batch_operand(
+        denominator_op,
+        fact_table=fact_table,
+        allowed_columns=allowed_columns,
+    )
+
+    rows_out: list[dict[str, object]] = []
+    for column in breakdown_columns:
+        registry = _SpecRegistry()
+        numerator_key = registry.register(
+            aggregation=numerator_op.aggregation,
+            measure=numerator_measure,
+            filter_sql=numerator_filter,
+        )
+        denominator_key = registry.register(
+            aggregation=denominator_op.aggregation,
+            measure=denominator_measure,
+            filter_sql=denominator_filter,
+        )
+        col_names, rows = adapter.get_time_bucketed_multi_aggregate_breakdown(
+            fact_table.sql,
+            fact_table.timestamp_column,
+            ch_interval,
+            column,
+            registry.specs,
+            chunk_from,
+            chunk_to,
+            values_limit=definition.breakdown_values_limit,
+            limit=METRIC_QUERY_ROW_LIMIT,
+        )
+        index_by_name = {name: index for index, name in enumerate(col_names)}
+        _append_ratio_breakdown_rows(
+            rows_out,
+            definition=definition,
+            rows=list(rows),
+            delta=delta,
+            time_from=chunk_from,
+            time_to=chunk_to,
+            breakdown_column=column,
+            numerator_index=index_by_name[numerator_key],
+            denominator_index=index_by_name[denominator_key],
+        )
 
     _delete_metric_value_breakdowns_window(
         session,
@@ -695,7 +829,9 @@ def _collect_fact_ratio(
     Each operand may reference a different FactTable / data source, so a separate
     adapter is built per operand. The two series are divided via
     ``evaluate_composition``; divide-by-zero buckets map to ``None`` and are
-    dropped by the NOT-NULL row builder.
+    dropped by the NOT-NULL row builder. Breakdown rows are supported for the
+    same-table case: both operand aggregates are sliced by the same dimension
+    values in one grouped query, then divided per ``(bucket, value)``.
     """
     config = definition.config or {}
     numerator_raw = config.get("numerator")
@@ -716,10 +852,18 @@ def _collect_fact_ratio(
     if numerator_ds is None or denominator_ds is None:
         msg = "DataSource for fact ratio operand not found"
         raise ScanError(msg)
+    breakdown_columns = _metric_breakdown_columns(definition)
+    if breakdown_columns and numerator_ft.id != denominator_ft.id:
+        msg = (
+            "ratio fact metric breakdowns require numerator and denominator "
+            "to use the same fact table"
+        )
+        raise ScanError(msg)
     ch_interval = interval_spec.ch_interval
 
     numerator_adapter = _build_adapter(numerator_ds)
     total_values = 0
+    total_breakdowns = 0
     try:
         denominator_adapter = _build_adapter(denominator_ds)
         try:
@@ -768,14 +912,26 @@ def _collect_fact_ratio(
                 )
                 _upsert_metric_values_rows(session, rows=value_rows)
                 total_values += len(value_rows)
+                if breakdown_columns:
+                    total_breakdowns += _collect_fact_ratio_breakdown_rows(
+                        session,
+                        adapter=numerator_adapter,
+                        definition=definition,
+                        fact_table=numerator_ft,
+                        numerator_op=numerator_op,
+                        denominator_op=denominator_op,
+                        ch_interval=ch_interval,
+                        delta=delta,
+                        chunk_from=chunk_from,
+                        chunk_to=chunk_to,
+                    )
                 session.commit()
         finally:
             denominator_adapter.close()
     finally:
         numerator_adapter.close()
 
-    # Ratio collects no breakdowns; report 0 for shape parity with _collect_fact_single.
-    return {"values": total_values, "breakdown_values": 0}
+    return {"values": total_values, "breakdown_values": total_breakdowns}
 
 
 # ── batched fact collection ──────────────────────────────────────────────────
@@ -858,6 +1014,16 @@ class _BreakdownPlan:
 
 
 @dataclass(frozen=True)
+class _RatioBreakdownPlan:
+    """One breakdown dimension a ratio metric reads from a shared scan."""
+
+    column: str
+    values_limit: int | None
+    numerator_key: str
+    denominator_key: str
+
+
+@dataclass(frozen=True)
 class _SingleMetricPlan:
     definition: MetricDefinition
     fact_table_id: uuid.UUID
@@ -874,6 +1040,7 @@ class _RatioMetricPlan:
     denominator_fact_table_id: uuid.UUID
     denominator_key: str
     window: tuple[datetime, datetime]
+    breakdowns: tuple[_RatioBreakdownPlan, ...]
 
 
 # A breakdown scan is keyed by (fact table, column, values_limit): the top-N
@@ -1079,10 +1246,7 @@ def _plan_single_metric(
         filter_sql=filter_sql,
     )
 
-    breakdown_columns: list[str] = list(definition.breakdown_columns or [])
-    for extra in (definition.app_version_column, definition.platform_column):
-        if extra and extra not in breakdown_columns:
-            breakdown_columns.append(extra)
+    breakdown_columns = _metric_breakdown_columns(definition)
     breakdowns: list[_BreakdownPlan] = []
     for column in breakdown_columns:
         scan_key: _BreakdownScanKey = (
@@ -1119,6 +1283,7 @@ def _plan_ratio_metric(
     definition: MetricDefinition,
     window: tuple[datetime, datetime],
     ft_registries: dict[uuid.UUID, _SpecRegistry],
+    bd_registries: dict[_BreakdownScanKey, _SpecRegistry],
 ) -> _RatioMetricPlan:
     """Resolve a ratio fact metric's two operands into shared-scan plans."""
     config = definition.config or {}
@@ -1128,6 +1293,7 @@ def _plan_ratio_metric(
         msg = "ratio fact metric requires numerator and denominator operands in config"
         raise ScanError(msg)
     keys: list[tuple[uuid.UUID, str]] = []
+    operand_plans: list[tuple[_FactOperand, uuid.UUID, str | None, str | None]] = []
     for raw in (numerator_raw, denominator_raw):
         operand = _operand_from_config(raw)
         fact_table, adapter = context.resolve(
@@ -1145,7 +1311,46 @@ def _plan_ratio_metric(
             filter_sql=filter_sql,
         )
         keys.append((fact_table.id, spec_key))
+        operand_plans.append((operand, fact_table.id, measure, filter_sql))
     (numerator_ft_id, numerator_key), (denominator_ft_id, denominator_key) = keys
+
+    ratio_breakdowns: list[_RatioBreakdownPlan] = []
+    breakdown_columns = _metric_breakdown_columns(definition)
+    if breakdown_columns:
+        if numerator_ft_id != denominator_ft_id:
+            msg = (
+                "ratio fact metric breakdowns require numerator and denominator "
+                "to use the same fact table"
+            )
+            raise ScanError(msg)
+        numerator_op, _num_ft_id, numerator_measure, numerator_filter = operand_plans[0]
+        denominator_op, _den_ft_id, denominator_measure, denominator_filter = operand_plans[1]
+        for column in breakdown_columns:
+            scan_key: _BreakdownScanKey = (
+                numerator_ft_id,
+                column,
+                definition.breakdown_values_limit,
+            )
+            bd_registry = bd_registries.setdefault(scan_key, _SpecRegistry())
+            numerator_bd_key = bd_registry.register(
+                aggregation=numerator_op.aggregation,
+                measure=numerator_measure,
+                filter_sql=numerator_filter,
+            )
+            denominator_bd_key = bd_registry.register(
+                aggregation=denominator_op.aggregation,
+                measure=denominator_measure,
+                filter_sql=denominator_filter,
+            )
+            ratio_breakdowns.append(
+                _RatioBreakdownPlan(
+                    column=column,
+                    values_limit=definition.breakdown_values_limit,
+                    numerator_key=numerator_bd_key,
+                    denominator_key=denominator_bd_key,
+                )
+            )
+
     return _RatioMetricPlan(
         definition=definition,
         numerator_fact_table_id=numerator_ft_id,
@@ -1153,6 +1358,7 @@ def _plan_ratio_metric(
         denominator_fact_table_id=denominator_ft_id,
         denominator_key=denominator_key,
         window=window,
+        breakdowns=tuple(ratio_breakdowns),
     )
 
 
@@ -1233,8 +1439,10 @@ def _assemble_ratio_metric(
     *,
     plan: _RatioMetricPlan,
     results: Mapping[uuid.UUID, Mapping[str, dict[datetime, float]]],
-) -> int:
-    """Write one ratio metric's values from the shared scan results (cross-table OK)."""
+    breakdown_results: Mapping[_BreakdownScanKey, tuple[dict[str, int], list[tuple[object, ...]]]],
+    delta: timedelta,
+) -> tuple[int, int]:
+    """Write one ratio metric's values + same-table breakdowns from shared scans."""
     definition = plan.definition
     numerator = _clip_series(
         results.get(plan.numerator_fact_table_id, {}).get(plan.numerator_key, {}), plan.window
@@ -1260,7 +1468,40 @@ def _assemble_ratio_metric(
         time_to=time_to,
     )
     _upsert_metric_values_rows(session, rows=value_rows)
-    return len(value_rows)
+
+    breakdown_rows: list[dict[str, object]] = []
+    for breakdown in plan.breakdowns:
+        scan_key: _BreakdownScanKey = (
+            plan.numerator_fact_table_id,
+            breakdown.column,
+            breakdown.values_limit,
+        )
+        entry = breakdown_results.get(scan_key)
+        if entry is None:
+            continue
+        index_by_key, rows = entry
+        _append_ratio_breakdown_rows(
+            breakdown_rows,
+            definition=definition,
+            rows=rows,
+            delta=delta,
+            time_from=time_from,
+            time_to=time_to,
+            breakdown_column=breakdown.column,
+            numerator_index=index_by_key[breakdown.numerator_key],
+            denominator_index=index_by_key[breakdown.denominator_key],
+        )
+
+    if plan.breakdowns:
+        _delete_metric_value_breakdowns_window(
+            session,
+            metric_definition_id=definition.id,
+            time_from=time_from,
+            time_to=time_to,
+        )
+        _upsert_metric_value_breakdown_rows(session, rows=breakdown_rows)
+
+    return len(value_rows), len(breakdown_rows)
 
 
 def _run_fact_interval_group(
@@ -1305,6 +1546,7 @@ def _run_fact_interval_group(
                             definition=definition,
                             window=window,
                             ft_registries=ft_registries,
+                            bd_registries=bd_registries,
                         )
                     )
                 else:
@@ -1441,12 +1683,27 @@ def _run_fact_interval_group(
                     fact_error = fact_errors.get(fact_table_id)
                     if fact_error is not None:
                         raise fact_error
-                values_written = _assemble_ratio_metric(
-                    session, plan=ratio_plan, results=results
+                for ratio_breakdown in ratio_plan.breakdowns:
+                    bd_error = breakdown_errors.get(
+                        (
+                            ratio_plan.numerator_fact_table_id,
+                            ratio_breakdown.column,
+                            ratio_breakdown.values_limit,
+                        )
+                    )
+                    if bd_error is not None:
+                        raise bd_error
+                values_written, breakdown_written = _assemble_ratio_metric(
+                    session,
+                    plan=ratio_plan,
+                    results=results,
+                    breakdown_results=breakdown_results,
+                    delta=delta,
                 )
                 _stamp_metric_success(session, ratio_plan.definition)
                 totals["collected"] += 1
                 totals["values"] += values_written
+                totals["breakdown_values"] += breakdown_written
             except Exception as exc:
                 logger.exception("Batch assembly failed for metric %s", ratio_plan.definition.id)
                 _stamp_metric_error(session, ratio_plan.definition, exc)
@@ -1483,9 +1740,7 @@ def _collect_sql(
         raise ScanError(msg)
     value_column = _config_str(config, "value_column") or SQL_VALUE_COLUMN
 
-    safe_sql = validate_select_sql(
-        metric_sql, value_column=value_column, time_column=time_column
-    )
+    safe_sql = validate_select_sql(metric_sql, value_column=value_column, time_column=time_column)
 
     ds = session.get(DataSource, definition.data_source_id)
     if ds is None:
@@ -1825,9 +2080,7 @@ def _run_fact_metrics_batch(
         if definition.interval is None:
             totals["metrics"] += 1
             totals["errors"] += 1
-            _stamp_metric_error(
-                session, definition, ScanError("fact metric requires an interval")
-            )
+            _stamp_metric_error(session, definition, ScanError("fact metric requires an interval"))
             continue
         by_interval.setdefault(str(definition.interval), []).append(definition)
 
@@ -1888,9 +2141,7 @@ def collect_fact_metrics_batch(
         ]
         if not definitions:
             return {"metrics": 0, "collected": 0, "errors": 0, "values": 0, "breakdown_values": 0}
-        return _run_fact_metrics_batch(
-            session, definitions=definitions, window_override=window
-        )
+        return _run_fact_metrics_batch(session, definitions=definitions, window_override=window)
     except Exception:
         logger.exception("Batch fact metric collection failed for %s", metric_ids)
         session.rollback()
