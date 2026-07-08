@@ -152,7 +152,10 @@ Locally, all of the above (except the warehouses) run under Docker Compose:
 - **Storage.** Values land in `metric_values`, with per-split rows in
   `metric_value_breakdowns` (platform / app-version / …, like event breakdowns).
   A **divide-by-zero** in a `ratio` bucket produces **no value** — a gap, not a
-  `0` — so the row is dropped rather than written as zero.
+  `0` — so the row is dropped rather than written as zero. Fact-ratio breakdowns
+  are supported when numerator and denominator use the same fact table; each
+  breakdown row stores that dimension value's numerator / denominator ratio, not
+  a component that sums to the top-line ratio.
 - **Surface.** Catalog CRUD lives at `/projects/{slug}/metrics`; a series read
   service feeds the frontend **MetricsPage** (list + kind-aware create/edit form)
   and the metric **drilldown**, which reuses the monitoring detail tabs.

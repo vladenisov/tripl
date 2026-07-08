@@ -1,4 +1,5 @@
 import uuid
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum
@@ -11,7 +12,7 @@ from sqlalchemy import update as sql_update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from tripl.models.data_source import DataSource
-from tripl.models.domain_enums import MetricKind, MetricScopeType, MetricStatus
+from tripl.models.domain_enums import MetricComposition, MetricKind, MetricScopeType, MetricStatus
 from tripl.models.event import Event
 from tripl.models.event_type import EventType
 from tripl.models.fact_table import FactTable
@@ -169,13 +170,93 @@ async def _verify_fact_operand(
                 )
 
 
+def _has_metric_breakdowns(
+    *,
+    breakdown_columns: list[str] | None,
+    app_version_column: str | None,
+    platform_column: str | None,
+) -> bool:
+    return bool(breakdown_columns or app_version_column or platform_column)
+
+
+def _extract_create_breakdown_fields(
+    data: FactMetricDefinition,
+) -> tuple[list[str], str | None, str | None]:
+    """Read shared metric breakdown fields when ``data`` is a create payload."""
+    return (
+        list(getattr(data, "breakdown_columns", []) or []),
+        getattr(data, "app_version_column", None),
+        getattr(data, "platform_column", None),
+    )
+
+
+def _reject_cross_table_ratio_breakdowns() -> None:
+    raise HTTPException(
+        status_code=422,
+        detail=(
+            "Ratio fact metric breakdowns require numerator and denominator "
+            "to use the same fact table"
+        ),
+    )
+
+
+def _verify_persisted_ratio_breakdown_compatibility(metric: MetricDefinition) -> None:
+    """Guard an already-persisted metric when only dimension fields change."""
+    kind = metric.kind if isinstance(metric.kind, MetricKind) else MetricKind(metric.kind)
+    if kind is not MetricKind.fact:
+        return
+    if metric.composition is None:
+        return
+    composition = (
+        metric.composition
+        if isinstance(metric.composition, MetricComposition)
+        else MetricComposition(metric.composition)
+    )
+    if composition is not MetricComposition.ratio:
+        return
+    if not _has_metric_breakdowns(
+        breakdown_columns=list(metric.breakdown_columns or []),
+        app_version_column=metric.app_version_column,
+        platform_column=metric.platform_column,
+    ):
+        return
+    config = metric.config if isinstance(metric.config, Mapping) else {}
+    numerator = config.get("numerator")
+    denominator = config.get("denominator")
+    if not isinstance(numerator, Mapping) or not isinstance(denominator, Mapping):
+        return
+    numerator_ft_id = numerator.get("fact_table_id")
+    denominator_ft_id = denominator.get("fact_table_id")
+    if numerator_ft_id is None or denominator_ft_id is None:
+        return
+    if str(numerator_ft_id) != str(denominator_ft_id):
+        _reject_cross_table_ratio_breakdowns()
+
+
 async def _verify_fact_metric(
     session: AsyncSession,
     project_id: uuid.UUID,
     data: FactMetricDefinition,
+    *,
+    breakdown_columns: list[str] | None = None,
+    app_version_column: str | None = None,
+    platform_column: str | None = None,
 ) -> None:
     """Validate a fact metric's operand(s) against their fact table(s)."""
+    if breakdown_columns is None and app_version_column is None and platform_column is None:
+        breakdown_columns, app_version_column, platform_column = _extract_create_breakdown_fields(
+            data
+        )
     if data.numerator is not None and data.denominator is not None:
+        if (
+            _has_metric_breakdowns(
+                breakdown_columns=breakdown_columns,
+                app_version_column=app_version_column,
+                platform_column=platform_column,
+            )
+            and data.numerator.fact_table_id != data.denominator.fact_table_id
+        ):
+            _reject_cross_table_ratio_breakdowns()
         operands: list[tuple[str, FactOperand]] = [
             ("numerator", data.numerator),
             ("denominator", data.denominator),
@@ -552,7 +633,14 @@ async def _apply_definition_update(
     if isinstance(definition, SqlMetricDefinition):
         await _verify_data_source(session, definition.data_source_id)
     elif isinstance(definition, FactMetricDefinition):
-        await _verify_fact_metric(session, project_id, definition)
+        await _verify_fact_metric(
+            session,
+            project_id,
+            definition,
+            breakdown_columns=list(metric.breakdown_columns or []),
+            app_version_column=metric.app_version_column,
+            platform_column=metric.platform_column,
+        )
     elif isinstance(definition, EventCompositionMetricDefinition):
         await _verify_composition_refs(session, project_id, definition)
 
@@ -579,6 +667,8 @@ async def update_metric_definition(
         setattr(metric, key, value)
     if data.definition is not None:
         await _apply_definition_update(session, metric, data.definition)
+    else:
+        _verify_persisted_ratio_breakdown_compatibility(metric)
     await session.commit()
     await session.refresh(metric)
     await _refresh_main_search_index(session, metric.project_id, slug)

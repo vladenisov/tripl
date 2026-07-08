@@ -18,7 +18,7 @@ from _pytest.monkeypatch import MonkeyPatch
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session, sessionmaker
 
-from tripl.core.adapters.base import ColumnInfo
+from tripl.core.adapters.base import AggregateSpec, ColumnInfo
 from tripl.models import Base
 from tripl.models.data_source import DataSource
 from tripl.models.domain_enums import (
@@ -169,6 +169,45 @@ class _FactRatioAdapter:
 
     def close(self) -> None:
         return None
+
+
+class _FactRatioBreakdownAdapter(_FactRatioAdapter):
+    def __init__(
+        self,
+        rowsets: list[list[tuple[object, ...]]],
+        breakdown_rows: list[tuple[datetime, str, bool, tuple[object, ...]]],
+    ) -> None:
+        super().__init__(rowsets)
+        self._breakdown_rows = breakdown_rows
+        self.breakdown_calls: list[tuple[str, int | None, list[AggregateSpec]]] = []
+
+    def get_columns(self, base_query: str) -> list[ColumnInfo]:
+        return [
+            ColumnInfo(name="ts", type_name="DateTime"),
+            ColumnInfo(name="amount", type_name="Float64"),
+            ColumnInfo(name="user_id", type_name="String"),
+            ColumnInfo(name="subscription", type_name="String"),
+        ]
+
+    def get_time_bucketed_multi_aggregate_breakdown(
+        self,
+        base_query: str,
+        time_column: str,
+        ch_interval: str,
+        breakdown_column: str,
+        specs: list[AggregateSpec],
+        time_from: datetime,
+        time_to: datetime,
+        *,
+        values_limit: int | None = None,
+        limit: int = 100000,
+    ) -> tuple[list[str], list[tuple[object, ...]]]:
+        self.breakdown_calls.append((breakdown_column, values_limit, list(specs)))
+        col_names = ["bucket", "breakdown_value", "is_other", *[spec.key for spec in specs]]
+        rows: list[tuple[object, ...]] = []
+        for bucket, value, is_other, cells in self._breakdown_rows:
+            rows.append((bucket, value, is_other, *cells))
+        return col_names, rows
 
 
 def _seed_fact_table(
@@ -419,6 +458,86 @@ def test_collect_fact_ratio_handles_divide_by_zero(
             .all()
         )
         assert {(row.bucket, row.value) for row in rows} == {(datetime(2026, 1, 1, 10), 5.0)}
+
+
+def test_collect_fact_ratio_writes_breakdown_values(
+    sync_session_factory: sessionmaker[Session],
+    monkeypatch: MonkeyPatch,
+) -> None:
+    with sync_session_factory() as session:
+        project, data_source = _seed_project_and_ds(session)
+        fact_table = _seed_fact_table(session, project, data_source)
+        definition = MetricDefinition(
+            id=uuid.uuid4(),
+            project_id=project.id,
+            name=f"fact-ratio-bd-{uuid.uuid4().hex[:6]}",
+            display_name="Paid conversion",
+            kind=MetricKind.fact,
+            composition=MetricComposition.ratio,
+            aggregation=MetricAggregation.count,
+            fact_table_id=fact_table.id,
+            config={
+                "numerator": {
+                    "fact_table_id": str(fact_table.id),
+                    "aggregation": "count",
+                },
+                "denominator": {
+                    "fact_table_id": str(fact_table.id),
+                    "aggregation": "count_distinct",
+                    "distinct_column": "user_id",
+                },
+            },
+            interval=ScanInterval.h1,
+            status=MetricStatus.active,
+            breakdown_columns=["subscription"],
+            breakdown_values_limit=2,
+        )
+        session.add(definition)
+        session.commit()
+        def_id = str(definition.id)
+
+    adapter = _FactRatioBreakdownAdapter(
+        [
+            [(datetime(2026, 1, 1, 10), 10.0), (datetime(2026, 1, 1, 11), 20.0)],
+            [(datetime(2026, 1, 1, 10), 2.0), (datetime(2026, 1, 1, 11), 0.0)],
+        ],
+        [
+            (datetime(2026, 1, 1, 10), "paid", False, (8.0, 2.0)),
+            (datetime(2026, 1, 1, 10), "free", False, (2.0, 0.0)),
+            (datetime(2026, 1, 1, 10), "Other", True, (None, 4.0)),
+        ],
+    )
+    monkeypatch.setattr(metric_collect, "_get_sync_session", sync_session_factory)
+    monkeypatch.setattr(metric_collect, "_build_adapter", lambda ds: adapter)
+    monkeypatch.setattr(
+        metric_collect,
+        "_resolve_value_window",
+        lambda *a, **k: (datetime(2026, 1, 1, 10), datetime(2026, 1, 1, 12)),
+    )
+
+    result = metric_collect.collect_metric_definitions.run(def_id)
+
+    assert result["values"] == 1
+    assert result["breakdown_values"] == 2
+    assert [(column, limit) for column, limit, _specs in adapter.breakdown_calls] == [
+        ("subscription", 2)
+    ]
+    with sync_session_factory() as session:
+        rows = (
+            session.execute(
+                select(MetricValueBreakdown).where(
+                    MetricValueBreakdown.metric_definition_id == uuid.UUID(def_id)
+                )
+            )
+            .scalars()
+            .all()
+        )
+        assert {
+            (row.breakdown_column, row.breakdown_value, row.is_other, row.value) for row in rows
+        } == {
+            ("subscription", "paid", False, 4.0),
+            ("subscription", "Other", True, 0.0),
+        }
 
 
 class _FactBreakdownAdapter(_FactAdapter):
@@ -1266,8 +1385,7 @@ def _filter_operand(
 def test_combined_filter_empty_is_none() -> None:
     fact_table = _filter_fact_table()
     assert (
-        metric_collect._resolve_combined_filter(fact_table, row_filters=(), filter_sql=None)
-        is None
+        metric_collect._resolve_combined_filter(fact_table, row_filters=(), filter_sql=None) is None
     )
 
 
@@ -1306,9 +1424,7 @@ def test_combined_filter_named_and_free_text_are_anded() -> None:
 def test_combined_filter_unknown_name_raises() -> None:
     fact_table = _filter_fact_table()
     with pytest.raises(ScanError):
-        metric_collect._resolve_combined_filter(
-            fact_table, row_filters=("ghost",), filter_sql=None
-        )
+        metric_collect._resolve_combined_filter(fact_table, row_filters=("ghost",), filter_sql=None)
 
 
 def test_per_metric_query_wraps_with_combined_filter() -> None:

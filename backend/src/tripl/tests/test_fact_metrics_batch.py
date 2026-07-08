@@ -415,6 +415,90 @@ def test_same_table_ratio(
         assert _values_for(session, def_id) == {(B10, 5.0), (B11, 4.0)}
 
 
+def test_same_table_ratio_writes_breakdown_values(
+    sync_session_factory: sessionmaker[Session],
+    monkeypatch: MonkeyPatch,
+) -> None:
+    with sync_session_factory() as session:
+        project, data_source = _seed_project_and_ds(session)
+        fact_table = _seed_fact_table(session, project, data_source)
+        sql = fact_table.sql
+        definition = MetricDefinition(
+            id=uuid.uuid4(),
+            project_id=project.id,
+            name="ratio-breakdown",
+            display_name="Conversion by country",
+            kind=MetricKind.fact,
+            composition=MetricComposition.ratio,
+            aggregation=MetricAggregation.count,
+            fact_table_id=fact_table.id,
+            config={
+                "numerator": {
+                    "fact_table_id": str(fact_table.id),
+                    "aggregation": "count",
+                },
+                "denominator": {
+                    "fact_table_id": str(fact_table.id),
+                    "aggregation": "count_distinct",
+                    "distinct_column": "user_id",
+                },
+            },
+            interval=ScanInterval.h1,
+            status=MetricStatus.active,
+            breakdown_columns=["country"],
+            breakdown_values_limit=2,
+        )
+        session.add(definition)
+        session.commit()
+        def_id = definition.id
+
+    num_sig = (sql, MetricAggregation.count, None, None)
+    den_sig = (sql, MetricAggregation.count_distinct, "user_id", None)
+    adapter = _BatchAdapter(
+        spec_values={
+            num_sig: {B10: 10.0, B11: 20.0},
+            den_sig: {B10: 2.0, B11: 0.0},
+        },
+        breakdown_rows={
+            "country": [
+                (B10, "US", False, {num_sig: 8.0, den_sig: 2.0}),
+                (B10, "FR", False, {num_sig: 2.0, den_sig: 0.0}),
+                (B10, "Other", True, {den_sig: 4.0}),
+            ]
+        },
+    )
+    _patch(monkeypatch, sync_session_factory, adapter)
+
+    result = metric_collect.collect_fact_metrics_batch.run([str(def_id)])
+
+    assert adapter.multi_calls == 1
+    assert adapter.breakdown_calls == 1
+    assert result == {
+        "metrics": 1,
+        "collected": 1,
+        "errors": 0,
+        "values": 1,
+        "breakdown_values": 2,
+    }
+    with sync_session_factory() as session:
+        assert _values_for(session, def_id) == {(B10, 5.0)}
+        rows = (
+            session.execute(
+                select(MetricValueBreakdown).where(
+                    MetricValueBreakdown.metric_definition_id == def_id
+                )
+            )
+            .scalars()
+            .all()
+        )
+        assert {
+            (row.breakdown_column, row.breakdown_value, row.is_other, row.value) for row in rows
+        } == {
+            ("country", "US", False, 4.0),
+            ("country", "Other", True, 0.0),
+        }
+
+
 # (d) cross-table ratio (two fact tables, divide, /0 -> gap) ────────────────────
 
 
@@ -560,9 +644,7 @@ def test_one_metric_error_isolated(
         )
         good_id, bad_id = good.id, bad.id
 
-    adapter = _BatchAdapter(
-        spec_values={(sql, MetricAggregation.sum, "amount", None): {B10: 9.0}}
-    )
+    adapter = _BatchAdapter(spec_values={(sql, MetricAggregation.sum, "amount", None): {B10: 9.0}})
     _patch(monkeypatch, sync_session_factory, adapter)
 
     result = metric_collect.collect_fact_metrics_batch.run([str(good_id), str(bad_id)])

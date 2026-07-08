@@ -572,9 +572,7 @@ class TestConfigValidation:
         )
         assert resp.status_code == 422
 
-    async def test_fact_single_without_fact_table_id(
-        self, client: AsyncClient, project: dict
-    ):
+    async def test_fact_single_without_fact_table_id(self, client: AsyncClient, project: dict):
         resp = await client.post(
             _metrics_url(project["slug"]),
             json={
@@ -646,9 +644,7 @@ class TestConfigValidation:
         )
         assert resp.status_code == 422, resp.text
 
-    async def test_fact_nonexistent_fact_table_rejected(
-        self, client: AsyncClient, project: dict
-    ):
+    async def test_fact_nonexistent_fact_table_rejected(self, client: AsyncClient, project: dict):
         resp = await client.post(
             _metrics_url(project["slug"]),
             json={
@@ -662,6 +658,49 @@ class TestConfigValidation:
             },
         )
         assert resp.status_code == 422, resp.text
+
+    async def test_fact_ratio_cross_table_breakdowns_rejected(
+        self, client: AsyncClient, project: dict, fact_table: dict
+    ):
+        other = await client.post(
+            f"/api/v1/projects/{project['slug']}/fact-tables",
+            json={
+                "name": "sessions_ratio_guard_ft",
+                "display_name": "Sessions",
+                "sql": "SELECT started_at, session_id, country FROM sessions",
+                "timestamp_column": "started_at",
+                "columns": [
+                    {"name": "started_at", "type": "timestamp"},
+                    {"name": "session_id", "type": "string"},
+                    {"name": "country", "type": "string"},
+                ],
+                "identifier_columns": ["session_id"],
+                "row_filters": [],
+            },
+        )
+        assert other.status_code == 201, other.text
+        denominator_ft = other.json()
+
+        resp = await client.post(
+            _metrics_url(project["slug"]),
+            json={
+                "kind": "fact",
+                "name": "orders_per_session_by_country",
+                "display_name": "Orders / session by country",
+                "composition": "ratio",
+                "interval": "1h",
+                "breakdown_columns": ["country"],
+                "numerator": {"fact_table_id": fact_table["id"], "aggregation": "count"},
+                "denominator": {
+                    "fact_table_id": denominator_ft["id"],
+                    "aggregation": "count_distinct",
+                    "distinct_column": "session_id",
+                },
+            },
+        )
+
+        assert resp.status_code == 422, resp.text
+        assert "same fact table" in resp.json()["detail"]
 
     async def test_sql_without_metric_sql(
         self, client: AsyncClient, project: dict, data_source: dict
@@ -918,6 +957,7 @@ class TestSchemaSecurityValidation:
         )
         assert resp.status_code == 422, resp.text
 
+
 class TestBulkUpdateOwner:
     async def test_owner_id_null_unassigns_owner(
         self, client: AsyncClient, project: dict, data_source: dict
@@ -1070,15 +1110,11 @@ class TestCollectNow:
         data_source: dict,
         dispatch_recorder: dict[str, _DispatchRecorder],
     ):
-        metric = await _create_sql_metric(
-            client, project["slug"], data_source["id"], "cn_sql"
-        )
+        metric = await _create_sql_metric(client, project["slug"], data_source["id"], "cn_sql")
         # A freshly-created metric is draft; collect-now must still dispatch
         # (and force collection so the worker does not skip on status).
         assert metric["status"] == "draft"
-        resp = await client.post(
-            f"{_metrics_url(project['slug'])}/{metric['id']}/collect"
-        )
+        resp = await client.post(f"{_metrics_url(project['slug'])}/{metric['id']}/collect")
         assert resp.status_code == 202, resp.text
         body = resp.json()
         assert body["metric_id"] == metric["id"]
@@ -1130,9 +1166,7 @@ class TestCollectNow:
         metric = created.json()
         assert metric["status"] == "draft"
 
-        resp = await client.post(
-            f"{_metrics_url(project['slug'])}/{metric['id']}/collect"
-        )
+        resp = await client.post(f"{_metrics_url(project['slug'])}/{metric['id']}/collect")
         assert resp.status_code == 202, resp.text
         body = resp.json()
         assert body["task_id"] == "task-fact"
@@ -1159,12 +1193,8 @@ class TestCollectNow:
         data_source: dict,
         dispatch_recorder: dict[str, _DispatchRecorder],
     ):
-        metric = await _create_sql_metric(
-            client, project["slug"], data_source["id"], "cn_run"
-        )
-        resp = await client.post(
-            f"{_metrics_url(project['slug'])}/{metric['id']}/collect"
-        )
+        metric = await _create_sql_metric(client, project["slug"], data_source["id"], "cn_run")
+        resp = await client.post(f"{_metrics_url(project['slug'])}/{metric['id']}/collect")
         assert resp.status_code == 202, resp.text
 
         # Stamped running before dispatch so the scheduler won't double-dispatch.
@@ -1177,9 +1207,7 @@ class TestCollectNow:
         project: dict,
         dispatch_recorder: dict[str, _DispatchRecorder],
     ):
-        resp = await client.post(
-            f"{_metrics_url(project['slug'])}/{uuid.uuid4()}/collect"
-        )
+        resp = await client.post(f"{_metrics_url(project['slug'])}/{uuid.uuid4()}/collect")
         assert resp.status_code == 404, resp.text
         assert dispatch_recorder["sql"].calls == []
         assert dispatch_recorder["fact"].calls == []
@@ -1201,9 +1229,7 @@ class TestCollectNow:
 
         app.dependency_overrides[get_current_user] = _viewer
         try:
-            resp = await client.post(
-                f"{_metrics_url(project['slug'])}/{uuid.uuid4()}/collect"
-            )
+            resp = await client.post(f"{_metrics_url(project['slug'])}/{uuid.uuid4()}/collect")
         finally:
             app.dependency_overrides.pop(get_current_user, None)
 

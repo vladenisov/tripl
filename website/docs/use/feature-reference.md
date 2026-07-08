@@ -194,7 +194,10 @@ The create/edit form picks a **kind** and then reveals kind-specific config:
   top-level `WITH ... SELECT`, an **aggregation** (`count`, `sum`, `avg`, `min`,
   `max`, `count_distinct`), the **measure column** it runs over (a **distinct
   column** for `count_distinct`), optional named/free-text filters, optional
-  **breakdowns**, and an interval.
+  **breakdowns**, and an interval. Ratio fact metrics can also use breakdowns
+  when both operands use the same fact table; each breakdown row is that value's
+  numerator divided by that value's denominator, so breakdown ratios do not add
+  up to the top-line ratio.
 - **Event composition** — derived from already-collected event series with no
   warehouse query of its own: a **single** event's count, a **ratio** of one event
   to another (A / B), or an event **per distinct user**.
