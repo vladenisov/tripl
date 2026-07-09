@@ -10,6 +10,7 @@ import type {
   FieldDefinition,
   MetaFieldDefinition,
   MonitoringSignal,
+  Variable,
 } from '@/types'
 import { Badge } from '@/components/ui/badge'
 import { Checkbox } from '@/components/ui/checkbox'
@@ -36,14 +37,22 @@ export type RowAction =
   | 'set-status-draft'
   | 'delete'
 
-function renderTemplateValue(value: string): ReactNode {
-  const parts = splitTemplateValue(value)
+function renderTemplateValue(value: string, variables?: Variable[]): ReactNode {
+  const parts = splitTemplateValue(value, variables)
   if (parts.length === 1 && !parts[0].token) return value
   return parts.map((part, i) =>
     part.token ? (
-      <span key={i} className="mono" style={{ color: 'var(--accent)' }}>
-        {part.text}
-      </span>
+      part.known === false ? (
+        // Amber = the ${token} resolves to no variable (name, source_name or
+        // binding) — it will never receive observed values.
+        <span key={i} className="mono text-amber-600" title="Unknown variable token">
+          {part.text}
+        </span>
+      ) : (
+        <span key={i} className="mono" style={{ color: 'var(--accent)' }}>
+          {part.text}
+        </span>
+      )
     ) : (
       <Fragment key={i}>{part.text}</Fragment>
     ),
@@ -75,6 +84,7 @@ export type EventRowProps = {
   hideLastSeen: boolean
   fieldColumns: FieldDefinition[]
   metaFields: MetaFieldDefinition[]
+  variables?: Variable[]
   slug: string
   expandedFieldId: string | null
   rowSignal: MonitoringSignal | undefined
@@ -102,6 +112,7 @@ export const EventRow = memo(function EventRow({
   hideLastSeen,
   fieldColumns,
   metaFields,
+  variables,
   slug,
   expandedFieldId,
   rowSignal,
@@ -339,7 +350,7 @@ export const EventRow = memo(function EventRow({
                 >
                   <pre className="max-w-sm whitespace-pre-wrap break-all font-mono text-[11px]">{renderTemplateValue((() => {
                     try { return JSON.stringify(JSON.parse(val), null, 2) } catch { return val }
-                  })())}</pre>
+                  })(), variables)}</pre>
                 </button>
                 <VariableValueContextTrigger contexts={fieldValue?.variable_values} />
               </div>
@@ -352,7 +363,7 @@ export const EventRow = memo(function EventRow({
                   aria-expanded={false}
                   aria-label={`Expand ${f.display_name}`}
                 >
-                  {renderTemplateValue(val)}
+                  {renderTemplateValue(val, variables)}
                 </button>
                 <VariableValueContextTrigger contexts={fieldValue?.variable_values} />
               </span>
@@ -365,7 +376,7 @@ export const EventRow = memo(function EventRow({
                     className="min-w-0"
                     style={val === '0' ? { color: 'var(--fg-faint)' } : undefined}
                   >
-                    {renderTemplateValue(val)}
+                    {renderTemplateValue(val, variables)}
                   </span>
                 )}
                 <VariableValueContextTrigger contexts={fieldValue?.variable_values} />

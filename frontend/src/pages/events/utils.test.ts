@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import type { EventMetricPoint, MonitoringSignal } from '@/types'
+import type { EventMetricPoint, MonitoringSignal, Variable } from '@/types'
 import {
   computeWindowDelta,
   deriveRowSignalFromMetrics,
@@ -7,6 +7,7 @@ import {
   mapLatestSignals,
   pickLatestSignal,
   reorderWithSelection,
+  resolveTemplateTokens,
   splitEventName,
   splitTemplateValue,
 } from './utils'
@@ -270,6 +271,46 @@ describe('splitTemplateValue', () => {
       { text: '${a}', token: true },
       { text: '/', token: false },
       { text: '${b}', token: true },
+    ])
+  })
+})
+
+describe('resolveTemplateTokens', () => {
+  const variables: Variable[] = [
+    {
+      id: 'var-1',
+      project_id: 'project-1',
+      name: 'variant',
+      source_name: 'legacy.variant',
+      variable_type: 'string',
+      description: 'Experiment variant',
+      allowed_values: ['control', 'treatment'],
+      bindings: ['payload.variant'],
+    },
+  ]
+
+  it('resolves canonical names, legacy source names, and bindings', () => {
+    const resolved = resolveTemplateTokens(
+      '${variant}/${legacy.variant}/${payload.variant}/${missing}',
+      variables,
+    )
+
+    expect(resolved.map(({ token, variable }) => ({ token, variable: variable?.name ?? null }))).toEqual([
+      { token: '${variant}', variable: 'variant' },
+      { token: '${legacy.variant}', variable: 'variant' },
+      { token: '${payload.variant}', variable: 'variant' },
+      { token: '${missing}', variable: null },
+    ])
+  })
+
+  it('ignores incomplete placeholders and marks unknown complete tokens in value parts', () => {
+    expect(resolveTemplateTokens('literal ${ and ${missing}', variables)).toEqual([
+      expect.objectContaining({ token: '${missing}', variable: null }),
+    ])
+    expect(splitTemplateValue('${variant}/${missing}', variables)).toEqual([
+      { text: '${variant}', token: true, known: true },
+      { text: '/', token: false },
+      { text: '${missing}', token: true, known: false },
     ])
   })
 })

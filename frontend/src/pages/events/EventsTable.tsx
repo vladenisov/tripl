@@ -1,4 +1,5 @@
 import { useMemo, useState } from 'react'
+import { useQuery } from '@tanstack/react-query'
 import { Calendar, ChevronDown, ChevronRight, Layers } from 'lucide-react'
 import {
   DndContext,
@@ -12,6 +13,8 @@ import {
   verticalListSortingStrategy,
 } from '@dnd-kit/sortable'
 import type { VirtualItem } from '@tanstack/react-virtual'
+import { variablesApi } from '@/api/variables'
+import { useActiveBranchId } from '@/hooks/useBranch'
 import { Button } from '@/components/ui/button'
 import { Checkbox } from '@/components/ui/checkbox'
 import {
@@ -140,6 +143,14 @@ export function EventsTable({
   onToggleExpandedCell,
   onRowAction,
 }: EventsTableProps) {
+  const branchId = useActiveBranchId()
+  // Same cache key as the Variables settings page/EventEditPage — one fetch
+  // powers unknown-token tinting across every row.
+  const { data: projectVariables } = useQuery({
+    queryKey: ['variables', slug, branchId],
+    queryFn: () => variablesApi.list(slug, branchId),
+  })
+
   // Cluster near-identical, scan-generated names so a block of look-alike rows
   // can be triaged as one. This is a read-only summary computed from the loaded
   // rows — it never reorders or replaces the flat/virtualized list below.
@@ -204,6 +215,7 @@ export function EventsTable({
         hideLastSeen={hideLastSeen}
         fieldColumns={visibleFieldColumns}
         metaFields={visibleMetaFields}
+        variables={projectVariables}
         slug={slug}
         expandedFieldId={expandedFieldId}
         rowSignal={eventRowSignals.get(ev.id)}

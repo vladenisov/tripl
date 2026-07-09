@@ -1,5 +1,35 @@
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react'
 import { Input } from '@/components/ui/input'
+import { suggestionMatches } from './utils'
+
+/** Structural subset of Variable — full Variable objects satisfy it. */
+export interface VariableSuggestion {
+  name: string
+  description?: string
+  bindings?: string[]
+  allowed_values?: string[]
+}
+
+export function SuggestionRow({ suggestion }: { suggestion: VariableSuggestion }) {
+  const bindings = suggestion.bindings ?? []
+  const values = suggestion.allowed_values ?? []
+  return (
+    <>
+      <code className="shrink-0 font-mono text-primary">{`\${${suggestion.name}}`}</code>
+      <span className="flex min-w-0 flex-col items-start gap-0.5 text-left">
+        {suggestion.description && (
+          <span className="truncate text-muted-foreground">{suggestion.description}</span>
+        )}
+        {bindings.length > 0 && (
+          <span className="truncate font-mono text-[10px] text-muted-foreground/80">{bindings.join(' · ')}</span>
+        )}
+        {values.length > 0 && (
+          <span className="truncate font-mono text-[10px] text-muted-foreground/80">{values.slice(0, 3).join(' · ')}</span>
+        )}
+      </span>
+    </>
+  )
+}
 
 export function VariableInput({
   id,
@@ -12,7 +42,7 @@ export function VariableInput({
   id?: string
   value: string
   onChange: (v: string) => void
-  variables: { name: string; label: string }[]
+  variables: VariableSuggestion[]
   required?: boolean
   type?: string
 }) {
@@ -26,10 +56,7 @@ export function VariableInput({
   const [insertPos, setInsertPos] = useState(0)
 
   const filtered = useMemo(
-    () => variables.filter(
-      v => v.name.toLowerCase().includes(filter.toLowerCase())
-        || v.label.toLowerCase().includes(filter.toLowerCase()),
-    ),
+    () => variables.filter(v => suggestionMatches(v, filter)),
     [variables, filter],
   )
 
@@ -122,8 +149,7 @@ export function VariableInput({
               onMouseDown={e => { e.preventDefault(); insert(v.name) }}
               className={`flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-xs ${i === highlightIdx ? 'bg-accent text-accent-foreground' : 'text-popover-foreground hover:bg-accent/50'}`}
             >
-              <code className="font-mono text-primary">${'{'}${v.name}{'}'}</code>
-              <span className="text-muted-foreground">{v.label}</span>
+              <SuggestionRow suggestion={v} />
             </button>
           ))}
         </div>
