@@ -6,13 +6,25 @@ export const variablesApi = {
     api.get<Variable[]>(withBranch(`/projects/${slug}/variables`, branchId)),
   create: (
     slug: string,
-    data: { name: string; variable_type?: VariableType; description?: string },
+    data: {
+      name: string
+      variable_type?: VariableType
+      description?: string
+      allowed_values?: string[]
+      bindings?: string[]
+    },
     branchId?: string | null,
   ) => api.post<Variable>(withBranch(`/projects/${slug}/variables`, branchId), data),
   update: (
     slug: string,
     id: string,
-    data: { name?: string; variable_type?: VariableType; description?: string },
+    data: {
+      name?: string
+      variable_type?: VariableType
+      description?: string
+      allowed_values?: string[]
+      bindings?: string[]
+    },
     branchId?: string | null,
   ) => api.patch<Variable>(withBranch(`/projects/${slug}/variables/${id}`, branchId), data),
   values: (slug: string, id: string, branchId?: string | null) =>
