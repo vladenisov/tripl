@@ -29,6 +29,7 @@ from tripl.models.plan_branch_reviewer import PlanBranchReviewer
 from tripl.models.plan_revision import PlanRevision
 from tripl.models.project_tracker_config import ProjectTrackerConfig
 from tripl.models.variable import Variable
+from tripl.models.variable_event_value_override import VariableEventValueOverride
 from tripl.schemas.plan_branch import PlanBranchDetailResponse
 from tripl.services.event_type_owner_service import load_owner_user_ids
 from tripl.services.plan_branch_conflicts import (
@@ -319,6 +320,8 @@ async def _apply_merge(
             m_v.source_name = b_v.source_name
             m_v.variable_type = b_v.variable_type
             m_v.description = b_v.description
+            m_v.allowed_values = list(b_v.allowed_values or [])
+            m_v.bindings = list(b_v.bindings or [])
         else:
             session.add(
                 Variable(
@@ -329,6 +332,8 @@ async def _apply_merge(
                     source_name=b_v.source_name,
                     variable_type=b_v.variable_type,
                     description=b_v.description,
+                    allowed_values=list(b_v.allowed_values or []),
+                    bindings=list(b_v.bindings or []),
                 )
             )
     for name, m_v in list(main_var_by_name.items()):
@@ -560,6 +565,48 @@ async def _apply_merge(
                     )
                 )
             await session.flush()
+
+    # --- variable event value overrides: wholesale replace on main using
+    # name-based remap (variable by name, event by (event_type_name, name)).
+    # The branch is the source of truth for documented values, mirroring the
+    # variables upsert above; overrides whose variable/event didn't survive the
+    # merge are dropped with them.
+    await session.execute(
+        delete(VariableEventValueOverride).where(
+            VariableEventValueOverride.project_id == project_id,
+            VariableEventValueOverride.branch_id == main_branch_id,
+        )
+    )
+    await session.flush()
+    main_vars_after = await _load_for_branch(session, Variable, project_id, main_branch_id)
+    main_var_name_to_id = {v.name: v.id for v in main_vars_after}
+    branch_var_id_to_name = {v.id: v.name for v in branch_vars}
+    branch_event_id_to_key = {e.id: key for key, e in branch_event_by_key.items()}
+    branch_overrides = await _load_for_branch(
+        session, VariableEventValueOverride, project_id, branch_id
+    )
+    for override in branch_overrides:
+        override_var_name = branch_var_id_to_name.get(override.variable_id)
+        main_var_id = (
+            main_var_name_to_id.get(override_var_name) if override_var_name is not None else None
+        )
+        override_event_key = branch_event_id_to_key.get(override.event_id)
+        main_override_event_id = (
+            main_event_key_to_id.get(override_event_key) if override_event_key is not None else None
+        )
+        if main_var_id is None or main_override_event_id is None:
+            continue
+        session.add(
+            VariableEventValueOverride(
+                id=uuid.uuid4(),
+                project_id=project_id,
+                branch_id=main_branch_id,
+                variable_id=main_var_id,
+                event_id=main_override_event_id,
+                values=list(override.values or []),
+            )
+        )
+    await session.flush()
 
     # --- relations: wholesale replace on main using name-based FK remap
     branch_relations = await _load_for_branch(session, EventTypeRelation, project_id, branch_id)

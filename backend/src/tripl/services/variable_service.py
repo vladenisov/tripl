@@ -1,3 +1,4 @@
+import re
 import uuid
 
 from fastapi import HTTPException
@@ -7,11 +8,50 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from tripl.models.event import Event
 from tripl.models.event_field_value import EventFieldValue
 from tripl.models.variable import Variable
-from tripl.schemas.variable import VariableCreate, VariableUpdate
+from tripl.models.variable_event_value_override import VariableEventValueOverride
+from tripl.schemas.variable import VariableCreate, VariableEventOverrideUpsert, VariableUpdate
 from tripl.services.plan_branch_service import resolve_branch_id
 from tripl.services.project_service import get_project_id_by_slug
 from tripl.services.search_service import reindex_project_branch
 from tripl.services.variable_value_service import attach_variable_summaries
+
+# Strict name for NEW names (create + actual renames). Legacy scan-created
+# dotted names stay valid as long as they are not being changed.
+_STRICT_NAME_PATTERN = re.compile(r"^[a-z][a-z0-9_]*$")
+
+
+async def _check_binding_conflicts(
+    session: AsyncSession,
+    *,
+    project_id: uuid.UUID,
+    branch_id: uuid.UUID | None,
+    bindings: list[str],
+    exclude_variable_id: uuid.UUID | None = None,
+) -> None:
+    """409 when a binding is already claimed by another variable in the branch.
+
+    A binding conflicts when another variable carries it in ``bindings`` or as
+    its scan identity (``source_name``): scan adoption matches on both, so a
+    shared path would make attribution ambiguous.
+    """
+    if not bindings:
+        return
+    result = await session.execute(
+        select(Variable).where(Variable.project_id == project_id, Variable.branch_id == branch_id)
+    )
+    wanted = set(bindings)
+    for other in result.scalars().all():
+        if exclude_variable_id is not None and other.id == exclude_variable_id:
+            continue
+        taken = set(other.bindings or [])
+        if other.source_name:
+            taken.add(other.source_name)
+        clash = wanted & taken
+        if clash:
+            raise HTTPException(
+                status_code=409,
+                detail=f"Binding '{sorted(clash)[0]}' is already used by variable '{other.name}'",
+            )
 
 
 async def list_variables(
@@ -46,6 +86,9 @@ async def create_variable(
     )
     if existing.scalar_one_or_none():
         raise HTTPException(status_code=409, detail="Variable with this name already exists")
+    await _check_binding_conflicts(
+        session, project_id=project_id, branch_id=branch_id, bindings=data.bindings
+    )
     var = Variable(**data.model_dump(), project_id=project_id, branch_id=branch_id)
     session.add(var)
     await session.commit()
@@ -74,7 +117,21 @@ async def update_variable(
     if not var:
         raise HTTPException(status_code=404, detail="Variable not found")
     update_data = data.model_dump(exclude_unset=True)
+    if "bindings" in update_data and update_data["bindings"] is not None:
+        await _check_binding_conflicts(
+            session,
+            project_id=project_id,
+            branch_id=branch_id,
+            bindings=update_data["bindings"],
+            exclude_variable_id=var.id,
+        )
     if "name" in update_data and update_data["name"] != var.name:
+        if not _STRICT_NAME_PATTERN.match(update_data["name"]):
+            raise HTTPException(
+                status_code=422,
+                detail="Variable names must be lowercase letters, digits and underscores"
+                " (bind data paths via 'bindings' instead of dotted names)",
+            )
         dup = await session.execute(
             select(Variable).where(
                 Variable.project_id == project_id,
@@ -133,3 +190,109 @@ async def delete_variable(
     await session.delete(var)
     await session.commit()
     await reindex_project_branch(session, project_id=project_id, branch_id=branch_id, slug=slug)
+
+
+async def _get_variable_in_branch(
+    session: AsyncSession,
+    project_id: uuid.UUID,
+    branch_id: uuid.UUID | None,
+    variable_id: uuid.UUID,
+) -> Variable:
+    result = await session.execute(
+        select(Variable).where(
+            Variable.id == variable_id,
+            Variable.project_id == project_id,
+            Variable.branch_id == branch_id,
+        )
+    )
+    var = result.scalar_one_or_none()
+    if not var:
+        raise HTTPException(status_code=404, detail="Variable not found")
+    return var
+
+
+async def list_event_overrides(
+    session: AsyncSession,
+    slug: str,
+    variable_id: uuid.UUID,
+    branch_id: uuid.UUID | None = None,
+) -> list[VariableEventValueOverride]:
+    project_id = await get_project_id_by_slug(session, slug)
+    branch_id = await resolve_branch_id(session, project_id, branch_id)
+    await _get_variable_in_branch(session, project_id, branch_id, variable_id)
+    result = await session.execute(
+        select(VariableEventValueOverride)
+        .where(
+            VariableEventValueOverride.project_id == project_id,
+            VariableEventValueOverride.branch_id == branch_id,
+            VariableEventValueOverride.variable_id == variable_id,
+        )
+        .order_by(VariableEventValueOverride.created_at)
+    )
+    return list(result.scalars().all())
+
+
+async def upsert_event_override(
+    session: AsyncSession,
+    slug: str,
+    variable_id: uuid.UUID,
+    event_id: uuid.UUID,
+    data: VariableEventOverrideUpsert,
+    branch_id: uuid.UUID | None = None,
+) -> VariableEventValueOverride:
+    project_id = await get_project_id_by_slug(session, slug)
+    branch_id = await resolve_branch_id(session, project_id, branch_id)
+    await _get_variable_in_branch(session, project_id, branch_id, variable_id)
+    event = await session.execute(
+        select(Event).where(
+            Event.id == event_id,
+            Event.project_id == project_id,
+            Event.branch_id == branch_id,
+        )
+    )
+    if not event.scalar_one_or_none():
+        raise HTTPException(status_code=404, detail="Event not found")
+    existing = await session.execute(
+        select(VariableEventValueOverride).where(
+            VariableEventValueOverride.variable_id == variable_id,
+            VariableEventValueOverride.event_id == event_id,
+        )
+    )
+    override = existing.scalar_one_or_none()
+    if override is None:
+        override = VariableEventValueOverride(
+            project_id=project_id,
+            branch_id=branch_id,
+            variable_id=variable_id,
+            event_id=event_id,
+            values=list(data.values),
+        )
+        session.add(override)
+    else:
+        override.values = list(data.values)
+    await session.commit()
+    await session.refresh(override)
+    return override
+
+
+async def delete_event_override(
+    session: AsyncSession,
+    slug: str,
+    variable_id: uuid.UUID,
+    event_id: uuid.UUID,
+    branch_id: uuid.UUID | None = None,
+) -> None:
+    project_id = await get_project_id_by_slug(session, slug)
+    branch_id = await resolve_branch_id(session, project_id, branch_id)
+    await _get_variable_in_branch(session, project_id, branch_id, variable_id)
+    result = await session.execute(
+        select(VariableEventValueOverride).where(
+            VariableEventValueOverride.variable_id == variable_id,
+            VariableEventValueOverride.event_id == event_id,
+        )
+    )
+    override = result.scalar_one_or_none()
+    if not override:
+        raise HTTPException(status_code=404, detail="Override not found")
+    await session.delete(override)
+    await session.commit()

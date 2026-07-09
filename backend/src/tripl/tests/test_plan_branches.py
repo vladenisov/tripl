@@ -17,6 +17,8 @@ from tripl.models.project import Project
 from tripl.models.project_branch_settings import ProjectBranchSettings
 from tripl.models.project_tracker_config import ProjectTrackerConfig
 from tripl.models.user import User
+from tripl.models.variable import Variable
+from tripl.models.variable_event_value_override import VariableEventValueOverride
 from tripl.services.plan_revision_service import build_plan_snapshot, plan_snapshot_hash
 from tripl.tests.conftest import TestSessionLocal
 from tripl.worker.tasks import implementation_tickets as impl_tasks
@@ -1602,3 +1604,136 @@ async def test_merge_discards_author_approval_when_self_approval_blocked(
 
     merged = await client.post(f"/api/v1/projects/branch-selfappr-merge/branches/{branch_id}/merge")
     assert merged.status_code == 200
+
+
+# --- variables: documented values / bindings / overrides round-trip (tripl-j94c.1)
+
+
+@pytest.mark.asyncio
+async def test_branch_round_trip_carries_variable_values_bindings_and_overrides(
+    client: AsyncClient,
+) -> None:
+    """Deep-copy, diff and merge must all carry the user-owned variable fields.
+
+    Covers all four branch-machinery touchpoints: branch creation deep-copies
+    allowed_values/bindings and override rows (with id remap), the snapshot/diff
+    surfaces changes to them, and merge writes them back to main (overrides
+    remapped to main event ids).
+    """
+    slug = "branch-var-docs"
+    await _seed_plan(client, slug)
+
+    async with TestSessionLocal() as session:
+        project = (
+            (await session.execute(select(Project).where(Project.slug == slug))).scalars().one()
+        )
+        main_event = (
+            (
+                await session.execute(
+                    select(Event).where(
+                        Event.project_id == project.id, Event.name == "purchase:success"
+                    )
+                )
+            )
+            .scalars()
+            .one()
+        )
+        event_id = str(main_event.id)
+
+    created = await client.post(
+        f"/api/v1/projects/{slug}/variables",
+        json={
+            "name": "variant",
+            "allowed_values": ["a", "b"],
+            "bindings": ["page_data.extra.variant"],
+        },
+    )
+    assert created.status_code == 201
+    main_var_id = uuid.UUID(created.json()["id"])
+    put = await client.put(
+        f"/api/v1/projects/{slug}/variables/{main_var_id}/event-overrides/{event_id}",
+        json={"values": ["a"]},
+    )
+    assert put.status_code == 200
+
+    branch_id = await _create_branch(client, slug)
+    branch_uuid = uuid.UUID(branch_id)
+
+    # Deep-copy carried fields + override (remapped to the branch's copies).
+    async with TestSessionLocal() as session:
+        branch_var = (
+            (
+                await session.execute(
+                    select(Variable).where(
+                        Variable.branch_id == branch_uuid, Variable.name == "variant"
+                    )
+                )
+            )
+            .scalars()
+            .one()
+        )
+        assert branch_var.allowed_values == ["a", "b"]
+        assert branch_var.bindings == ["page_data.extra.variant"]
+        branch_override = (
+            (
+                await session.execute(
+                    select(VariableEventValueOverride).where(
+                        VariableEventValueOverride.branch_id == branch_uuid
+                    )
+                )
+            )
+            .scalars()
+            .one()
+        )
+        assert branch_override.variable_id == branch_var.id
+        assert branch_override.values == ["a"]
+
+    # Edit documented values on the branch through the API (?branch= scoping).
+    upd = await client.patch(
+        f"/api/v1/projects/{slug}/variables/{branch_var.id}?branch={branch_id}",
+        json={"allowed_values": ["a", "b", "c"], "bindings": ["page_data.extra.variant"]},
+    )
+    assert upd.status_code == 200
+    put2 = await client.put(
+        f"/api/v1/projects/{slug}/variables/{branch_var.id}/event-overrides/"
+        f"{branch_override.event_id}?branch={branch_id}",
+        json={"values": ["a", "c"]},
+    )
+    assert put2.status_code == 200
+
+    # Diff must surface the changed variable with the new change keys.
+    diff = await client.get(f"/api/v1/projects/{slug}/branches/{branch_id}/diff")
+    assert diff.status_code == 200
+    var_entries = [e for e in diff.json()["entries"] if e["entity_type"] == "variable"]
+    assert len(var_entries) == 1
+    assert var_entries[0]["kind"] == "changed"
+    changes = var_entries[0]["changes"]
+    assert any(c.startswith("allowed_values") for c in changes)
+    assert any(c.startswith("event_value_overrides") for c in changes)
+
+    resp = await _approve_and_merge(client, slug, branch_id)
+    assert resp.status_code == 200, resp.text
+
+    # Merge wrote branch values back to main; override remapped to main event.
+    async with TestSessionLocal() as session:
+        merged_var = (
+            (await session.execute(select(Variable).where(Variable.id == main_var_id)))
+            .scalars()
+            .one()
+        )
+        assert merged_var.allowed_values == ["a", "b", "c"]
+        assert merged_var.bindings == ["page_data.extra.variant"]
+        main_override = (
+            (
+                await session.execute(
+                    select(VariableEventValueOverride).where(
+                        VariableEventValueOverride.branch_id == merged_var.branch_id
+                    )
+                )
+            )
+            .scalars()
+            .one()
+        )
+        assert main_override.variable_id == main_var_id
+        assert main_override.event_id == uuid.UUID(event_id)
+        assert main_override.values == ["a", "c"]

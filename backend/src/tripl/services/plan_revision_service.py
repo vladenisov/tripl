@@ -27,6 +27,7 @@ from tripl.models.plan_branch import BranchKind, PlanBranch
 from tripl.models.plan_revision import PlanRevision
 from tripl.models.project import Project
 from tripl.models.variable import Variable
+from tripl.models.variable_event_value_override import VariableEventValueOverride
 from tripl.schemas.plan_revision import (
     PlanDiff,
     PlanDiffEntry,
@@ -50,6 +51,7 @@ def plan_snapshot_hash(payload: dict[str, Any]) -> str:
     canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str)
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
+
 # Field-level keys we compare per entity type. Fields not listed are
 # treated as metadata and ignored by the diff (so cosmetic edits like
 # `order` don't churn the diff log).
@@ -72,7 +74,14 @@ _EVENT_CHANGE_KEYS = (
     "sunset_at",
     "event_type_name",
 )
-_VARIABLE_CHANGE_KEYS = ("variable_type", "source_name", "description")
+_VARIABLE_CHANGE_KEYS = (
+    "variable_type",
+    "source_name",
+    "description",
+    "allowed_values",
+    "bindings",
+    "event_value_overrides",
+)
 _META_FIELD_CHANGE_KEYS = (
     "field_type",
     "is_required",
@@ -191,6 +200,28 @@ async def build_plan_snapshot(
         .scalars()
         .all()
     )
+    event_name_by_id = {ev.id: ev.name for ev in events_rows}
+    override_rows = (
+        (
+            await session.execute(
+                select(VariableEventValueOverride).where(
+                    VariableEventValueOverride.project_id == project_id,
+                    VariableEventValueOverride.branch_id == branch_id,
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    overrides_by_variable: dict[uuid.UUID, dict[str, list[str]]] = {}
+    for override in override_rows:
+        event_name = event_name_by_id.get(override.event_id)
+        if event_name is None:
+            continue
+        overrides_by_variable.setdefault(override.variable_id, {})[event_name] = list(
+            override.values or []
+        )
+
     variables = [
         {
             "id": str(v.id),
@@ -198,6 +229,9 @@ async def build_plan_snapshot(
             "source_name": v.source_name,
             "variable_type": v.variable_type,
             "description": v.description,
+            "allowed_values": list(v.allowed_values or []),
+            "bindings": list(v.bindings or []),
+            "event_value_overrides": dict(sorted(overrides_by_variable.get(v.id, {}).items())),
         }
         for v in variables_rows
     ]

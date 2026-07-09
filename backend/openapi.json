@@ -15434,6 +15434,22 @@
       },
       "VariableCreate": {
         "properties": {
+          "allowed_values": {
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 500,
+            "title": "Allowed Values",
+            "type": "array"
+          },
+          "bindings": {
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 100,
+            "title": "Bindings",
+            "type": "array"
+          },
           "description": {
             "default": "",
             "title": "Description",
@@ -15457,8 +15473,80 @@
         "title": "VariableCreate",
         "type": "object"
       },
+      "VariableEventOverrideResponse": {
+        "properties": {
+          "event_id": {
+            "format": "uuid",
+            "title": "Event Id",
+            "type": "string"
+          },
+          "event_name": {
+            "title": "Event Name",
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "values": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Values",
+            "type": "array"
+          },
+          "variable_id": {
+            "format": "uuid",
+            "title": "Variable Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "variable_id",
+          "event_id",
+          "event_name"
+        ],
+        "title": "VariableEventOverrideResponse",
+        "type": "object"
+      },
+      "VariableEventOverrideUpsert": {
+        "properties": {
+          "values": {
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 500,
+            "title": "Values",
+            "type": "array"
+          }
+        },
+        "required": [
+          "values"
+        ],
+        "title": "VariableEventOverrideUpsert",
+        "type": "object"
+      },
       "VariableResponse": {
         "properties": {
+          "allowed_values": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Allowed Values",
+            "type": "array"
+          },
+          "bindings": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Bindings",
+            "type": "array"
+          },
           "context_count": {
             "default": 0,
             "title": "Context Count",
@@ -15547,6 +15635,36 @@
       },
       "VariableUpdate": {
         "properties": {
+          "allowed_values": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "maxItems": 500,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Allowed Values"
+          },
+          "bindings": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "maxItems": 100,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Bindings"
+          },
           "description": {
             "anyOf": [
               {
@@ -26484,6 +26602,187 @@
           }
         },
         "summary": "Update Variable",
+        "tags": [
+          "variables"
+        ]
+      }
+    },
+    "/api/v1/projects/{slug}/variables/{variable_id}/event-overrides": {
+      "get": {
+        "operationId": "list_event_overrides_api_v1_projects__slug__variables__variable_id__event_overrides_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "slug",
+            "required": true,
+            "schema": {
+              "title": "Slug",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "variable_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Variable Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/VariableEventOverrideResponse"
+                  },
+                  "title": "Response List Event Overrides Api V1 Projects  Slug  Variables  Variable Id  Event Overrides Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Event Overrides",
+        "tags": [
+          "variables"
+        ]
+      }
+    },
+    "/api/v1/projects/{slug}/variables/{variable_id}/event-overrides/{event_id}": {
+      "delete": {
+        "operationId": "delete_event_override_api_v1_projects__slug__variables__variable_id__event_overrides__event_id__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "slug",
+            "required": true,
+            "schema": {
+              "title": "Slug",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "variable_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Variable Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "event_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Event Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Delete Event Override",
+        "tags": [
+          "variables"
+        ]
+      },
+      "put": {
+        "operationId": "upsert_event_override_api_v1_projects__slug__variables__variable_id__event_overrides__event_id__put",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "slug",
+            "required": true,
+            "schema": {
+              "title": "Slug",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "variable_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Variable Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "event_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Event Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/VariableEventOverrideUpsert"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VariableEventOverrideResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Upsert Event Override",
         "tags": [
           "variables"
         ]

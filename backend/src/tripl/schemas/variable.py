@@ -1,7 +1,22 @@
+import re
 import uuid
 from enum import StrEnum
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
+
+# Warehouse column or dotted JSON path, e.g. "variant" or "page_data.extra.variant".
+BINDING_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_-]*(\.[A-Za-z0-9_-]+)*$")
+
+
+def _validate_bindings(bindings: list[str] | None) -> list[str] | None:
+    if bindings is None:
+        return None
+    for binding in bindings:
+        if not BINDING_PATTERN.match(binding):
+            raise ValueError(f"Invalid binding path: {binding!r}")
+    if len(set(bindings)) != len(bindings):
+        raise ValueError("Duplicate binding paths")
+    return bindings
 
 
 class VariableType(StrEnum):
@@ -24,12 +39,23 @@ class VariableCreate(BaseModel):
     name: str = Field(min_length=1, max_length=100, pattern=r"^[a-z][a-z0-9_]*$")
     variable_type: VariableType = VariableType.string
     description: str = ""
+    allowed_values: list[str] = Field(default_factory=list, max_length=500)
+    bindings: list[str] = Field(default_factory=list, max_length=100)
+
+    _check_bindings = field_validator("bindings")(_validate_bindings)
 
 
 class VariableUpdate(BaseModel):
+    # Dots stay permitted at the schema level so legacy scan-created dotted
+    # names remain loadable; the service enforces the strict (dot-free)
+    # pattern when the name actually changes.
     name: str | None = Field(None, min_length=1, max_length=100, pattern=r"^[a-z][a-z0-9_.]*$")
     variable_type: VariableType | None = None
     description: str | None = None
+    allowed_values: list[str] | None = Field(None, max_length=500)
+    bindings: list[str] | None = Field(None, max_length=100)
+
+    _check_bindings = field_validator("bindings")(_validate_bindings)
 
 
 class VariableResponse(BaseModel):
@@ -39,11 +65,27 @@ class VariableResponse(BaseModel):
     source_name: str | None
     variable_type: VariableType
     description: str
+    allowed_values: list[str] = []
+    bindings: list[str] = []
     event_count: int = 0
     context_count: int = 0
     low_context_count: int = 0
     high_context_count: int = 0
     sample_values: list[str] = []
+
+    model_config = {"from_attributes": True}
+
+
+class VariableEventOverrideUpsert(BaseModel):
+    values: list[str] = Field(max_length=500)
+
+
+class VariableEventOverrideResponse(BaseModel):
+    id: uuid.UUID
+    variable_id: uuid.UUID
+    event_id: uuid.UUID
+    event_name: str
+    values: list[str] = []
 
     model_config = {"from_attributes": True}
 

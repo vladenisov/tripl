@@ -4,9 +4,12 @@ from fastapi import APIRouter
 
 from tripl.api.deps import BranchIdDep, EditorUserDep, SessionDep
 from tripl.models.variable import Variable
+from tripl.models.variable_event_value_override import VariableEventValueOverride
 from tripl.models.variable_value import VariableValue
 from tripl.schemas.variable import (
     VariableCreate,
+    VariableEventOverrideResponse,
+    VariableEventOverrideUpsert,
     VariableResponse,
     VariableUpdate,
     VariableValueContextResponse,
@@ -51,6 +54,66 @@ async def list_variable_values(
     branch_id: BranchIdDep,
 ) -> list[VariableValue]:
     return await variable_value_service.list_variable_values(session, slug, variable_id, branch_id)
+
+
+@router.get("/{variable_id}/event-overrides", response_model=list[VariableEventOverrideResponse])
+async def list_event_overrides(
+    session: SessionDep,
+    slug: str,
+    variable_id: uuid.UUID,
+    branch_id: BranchIdDep,
+) -> list[VariableEventValueOverride]:
+    return await variable_service.list_event_overrides(session, slug, variable_id, branch_id)
+
+
+@router.put(
+    "/{variable_id}/event-overrides/{event_id}",
+    response_model=VariableEventOverrideResponse,
+)
+async def upsert_event_override(
+    session: SessionDep,
+    slug: str,
+    variable_id: uuid.UUID,
+    event_id: uuid.UUID,
+    data: VariableEventOverrideUpsert,
+    current_user: EditorUserDep,
+    branch_id: BranchIdDep,
+) -> VariableEventValueOverride:
+    override = await variable_service.upsert_event_override(
+        session, slug, variable_id, event_id, data, branch_id
+    )
+    await audit_service.record(
+        session,
+        user=current_user,
+        action="variable.override_set",
+        target_type="variable",
+        target_id=variable_id,
+        target_name=override.event_name,
+        project_slug=slug,
+        payload={"event_id": str(event_id), "values": data.values},
+    )
+    return override
+
+
+@router.delete("/{variable_id}/event-overrides/{event_id}", status_code=204)
+async def delete_event_override(
+    session: SessionDep,
+    slug: str,
+    variable_id: uuid.UUID,
+    event_id: uuid.UUID,
+    current_user: EditorUserDep,
+    branch_id: BranchIdDep,
+) -> None:
+    await variable_service.delete_event_override(session, slug, variable_id, event_id, branch_id)
+    await audit_service.record(
+        session,
+        user=current_user,
+        action="variable.override_delete",
+        target_type="variable",
+        target_id=variable_id,
+        project_slug=slug,
+        payload={"event_id": str(event_id)},
+    )
 
 
 @router.patch("/{variable_id}", response_model=VariableResponse)

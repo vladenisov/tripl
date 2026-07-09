@@ -4,6 +4,7 @@ import enum
 import uuid
 from typing import TYPE_CHECKING
 
+import sqlalchemy as sa
 from sqlalchemy import ForeignKey, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -13,6 +14,7 @@ from tripl.models.plan_branch import default_branch_id
 
 if TYPE_CHECKING:
     from tripl.models.project import Project
+    from tripl.models.variable_event_value_override import VariableEventValueOverride
     from tripl.models.variable_value import VariableValue
 
 
@@ -46,8 +48,16 @@ class Variable(UUIDMixin, Base):
         db_enum(VariableType, "variable_type"), default=VariableType.string.value
     )
     description: Mapped[str] = mapped_column(Text, default="")
+    # User-documented allowed values (global default list). Scans never write.
+    allowed_values: Mapped[list[str]] = mapped_column(sa.JSON, default=list, server_default="[]")
+    # User-editable warehouse column / JSON-path bindings (e.g.
+    # "page_data.extra.variant"); scans adopt existing variables through these.
+    bindings: Mapped[list[str]] = mapped_column(sa.JSON, default=list, server_default="[]")
 
     project: Mapped[Project] = relationship(back_populates="variables")
     value_contexts: Mapped[list[VariableValue]] = relationship(
         back_populates="variable", cascade="all, delete-orphan", lazy="selectin"
+    )
+    event_overrides: Mapped[list[VariableEventValueOverride]] = relationship(
+        back_populates="variable", cascade="all, delete-orphan"
     )

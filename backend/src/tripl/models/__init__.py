@@ -54,6 +54,7 @@ from tripl.models.shadow_event_candidate import ShadowEventCandidate
 from tripl.models.user import User
 from tripl.models.user_session import UserSession
 from tripl.models.variable import Variable
+from tripl.models.variable_event_value_override import VariableEventValueOverride
 from tripl.models.variable_value import VariableValue
 
 __all__ = [
@@ -113,5 +114,6 @@ __all__ = [
     "ShadowEventCandidate",
     "User",
     "UserSession",
+    "VariableEventValueOverride",
     "VariableValue",
 ]
