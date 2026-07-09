@@ -148,6 +148,7 @@ export interface Variable {
   description: string
   allowed_values: string[]
   bindings: string[]
+  open_drift_count?: number
   event_count?: number
   context_count?: number
   low_context_count?: number

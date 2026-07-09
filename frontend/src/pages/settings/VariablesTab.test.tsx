@@ -3,6 +3,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { eventsApi } from '@/api/events'
 import { variablesApi } from '@/api/variables'
+import { variableDriftsApi } from '@/api/variableDrifts'
 import { variableOverridesApi } from '@/api/variableOverrides'
 import { VariablesTab } from './VariablesTab'
 
@@ -15,6 +16,13 @@ vi.mock('@/api/variables', () => ({
     values: vi.fn(),
     bulkUpdate: vi.fn(),
     bulkDelete: vi.fn(),
+  },
+}))
+
+vi.mock('@/api/variableDrifts', () => ({
+  variableDriftsApi: {
+    list: vi.fn(),
+    action: vi.fn(),
   },
 }))
 
@@ -427,6 +435,67 @@ describe('VariablesTab', () => {
       expect(variablesApi.bulkUpdate).toHaveBeenCalledWith(
         'demo',
         { variable_ids: ['var-1', 'var-2'], allowed_values_add: ['a', 'b'] },
+        null,
+      ),
+    )
+  })
+
+  it('shows a drift badge and accepts drift values into the documented list', async () => {
+    vi.mocked(variablesApi.list).mockResolvedValue([
+      {
+        id: 'var-1',
+        project_id: 'p',
+        name: 'variant',
+        source_name: null,
+        variable_type: 'string',
+        allowed_values: ['a'],
+        bindings: [],
+        open_drift_count: 1,
+        description: '',
+      },
+    ])
+    vi.mocked(variablesApi.values).mockResolvedValue([])
+    vi.mocked(variableOverridesApi.list).mockResolvedValue([])
+    vi.mocked(eventsApi.list).mockResolvedValue({ items: [] as never, total: 0 })
+    vi.mocked(variableDriftsApi.list).mockResolvedValue({
+      items: [
+        {
+          id: 'drift-1',
+          variable_id: 'var-1',
+          variable_name: 'variant',
+          event_id: 'ev-1',
+          event_name: 'Onboarding',
+          scan_config_id: null,
+          observed_values: ['x', 'y'],
+          status: 'open',
+          resolution_note: null,
+          snoozed_until: null,
+          resolved_at: null,
+          resolved_by: null,
+          detected_at: '2026-07-09T00:00:00Z',
+        },
+      ],
+      total: 1,
+    })
+    vi.mocked(variableDriftsApi.action).mockResolvedValue({} as never)
+
+    renderVariablesTab()
+
+    // Row badge from open_drift_count.
+    expect(await screen.findByText('1 drift')).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Edit variable variant' }))
+    expect(
+      await screen.findByText(/value drift — observed values outside/i),
+    ).toBeInTheDocument()
+    expect(screen.getByText('x')).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Accept' }))
+    await waitFor(() =>
+      expect(variableDriftsApi.action).toHaveBeenCalledWith(
+        'demo',
+        'drift-1',
+        { action: 'accept', scope: 'global', snoozed_until: undefined },
         null,
       ),
     )
