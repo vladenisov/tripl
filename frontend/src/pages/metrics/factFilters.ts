@@ -5,20 +5,65 @@
  */
 
 /**
- * One row-filter on a fact operand: either a NAMED filter (a reusable WHERE
- * fragment defined on the fact table, picked from a list) or a free-text SQL
- * WHERE fragment written inline. A fact operand carries an ordered list of
+ * One row-filter on a fact operand: a NAMED filter (a reusable WHERE fragment
+ * defined on the fact table), a free-text SQL WHERE fragment, or a structured
+ * column/operator/value condition. A fact operand carries an ordered list of
  * these; all are combined with AND at collection time.
  */
+export type FactConditionOperator =
+  | 'eq'
+  | 'ne'
+  | 'gt'
+  | 'gte'
+  | 'lt'
+  | 'lte'
+  | 'contains'
+  | 'not_contains'
+  | 'like'
+  | 'not_like'
+  | 'in'
+  | 'not_in'
+  | 'is_null'
+  | 'is_not_null'
+  | 'is_true'
+  | 'is_false'
+
+export interface FactConditionPayload {
+  column: string
+  operator: FactConditionOperator
+  value?: string | null
+}
+
 export type FactFilter =
   | { id: string; kind: 'named'; name: string }
   | { id: string; kind: 'sql'; sql: string }
+  | {
+      id: string
+      kind: 'condition'
+      column: string
+      operator: FactConditionOperator
+      value: string
+    }
+
+export const VALUELESS_CONDITION_OPERATORS = new Set<FactConditionOperator>([
+  'is_null',
+  'is_not_null',
+  'is_true',
+  'is_false',
+])
 
 export function makeNamedFilter(name = ''): FactFilter {
   return { id: crypto.randomUUID(), kind: 'named', name }
 }
 export function makeSqlFilter(sql = ''): FactFilter {
   return { id: crypto.randomUUID(), kind: 'sql', sql }
+}
+export function makeConditionFilter(
+  column = '',
+  operator: FactConditionOperator = 'eq',
+  value = '',
+): FactFilter {
+  return { id: crypto.randomUUID(), kind: 'condition', column, operator, value }
 }
 
 /**
@@ -30,6 +75,7 @@ export function makeSqlFilter(sql = ''): FactFilter {
 export function filtersToPayload(filters: FactFilter[]): {
   row_filters: string[]
   filter_sql: string | null
+  conditions: FactConditionPayload[]
 } {
   const named: string[] = []
   for (const filter of filters) {
@@ -41,9 +87,22 @@ export function filtersToPayload(filters: FactFilter[]): {
     .filter((filter): filter is Extract<FactFilter, { kind: 'sql' }> => filter.kind === 'sql')
     .map(filter => filter.sql.trim())
     .filter(Boolean)
+  const conditions: FactConditionPayload[] = []
+  for (const filter of filters) {
+    if (filter.kind !== 'condition') continue
+    const column = filter.column.trim()
+    if (!column) continue
+    if (VALUELESS_CONDITION_OPERATORS.has(filter.operator)) {
+      conditions.push({ column, operator: filter.operator })
+      continue
+    }
+    const value = filter.value.trim()
+    if (value) conditions.push({ column, operator: filter.operator, value })
+  }
   return {
     row_filters: named,
     filter_sql: sqlFragments.length ? sqlFragments.map(sql => `(${sql})`).join(' AND ') : null,
+    conditions,
   }
 }
 
@@ -52,6 +111,7 @@ export function filtersFromConfig(
   rowFilters: unknown,
   legacyRowFilter: string,
   filterSql: string,
+  conditions: unknown = [],
 ): FactFilter[] {
   const names = Array.isArray(rowFilters)
     ? rowFilters.filter((value): value is string => typeof value === 'string')
@@ -59,6 +119,41 @@ export function filtersFromConfig(
       ? [legacyRowFilter]
       : []
   const out: FactFilter[] = names.map(name => makeNamedFilter(name))
+  if (Array.isArray(conditions)) {
+    for (const condition of conditions) {
+      if (!condition || typeof condition !== 'object') continue
+      const obj = condition as Record<string, unknown>
+      if (typeof obj.column !== 'string' || typeof obj.operator !== 'string') continue
+      out.push(
+        makeConditionFilter(
+          obj.column,
+          isConditionOperator(obj.operator) ? obj.operator : 'eq',
+          typeof obj.value === 'string' ? obj.value : obj.value == null ? '' : String(obj.value),
+        ),
+      )
+    }
+  }
   if (filterSql.trim()) out.push(makeSqlFilter(filterSql))
   return out
+}
+
+function isConditionOperator(value: string): value is FactConditionOperator {
+  return [
+    'eq',
+    'ne',
+    'gt',
+    'gte',
+    'lt',
+    'lte',
+    'contains',
+    'not_contains',
+    'like',
+    'not_like',
+    'in',
+    'not_in',
+    'is_null',
+    'is_not_null',
+    'is_true',
+    'is_false',
+  ].includes(value)
 }

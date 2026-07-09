@@ -98,6 +98,30 @@ _AGGREGATIONS_REQUIRING_MEASURE = frozenset(
 # event_composition-only operator and is rejected for ``fact``.
 _FACT_COMPOSITIONS = frozenset({MetricComposition.single, MetricComposition.ratio})
 
+FactConditionOperator = Literal[
+    "eq",
+    "ne",
+    "gt",
+    "gte",
+    "lt",
+    "lte",
+    "contains",
+    "not_contains",
+    "like",
+    "not_like",
+    "in",
+    "not_in",
+    "is_null",
+    "is_not_null",
+    "is_true",
+    "is_false",
+]
+FactConditionScalar = str | int | float | bool
+FactConditionValue = FactConditionScalar | list[FactConditionScalar] | None
+
+_CONDITION_VALUELESS_OPERATORS = frozenset({"is_null", "is_not_null", "is_true", "is_false"})
+_CONDITION_MULTI_VALUE_OPERATORS = frozenset({"in", "not_in"})
+
 
 def _validate_fact_operand_columns(
     *,
@@ -120,6 +144,56 @@ def _validate_fact_operand_columns(
         raise ValueError(msg)
 
 
+class FactCondition(BaseModel):
+    """One visual fact-row condition compiled into an ANDed SQL filter."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    column: str = Field(min_length=1, max_length=255)
+    operator: FactConditionOperator
+    value: FactConditionValue = None
+
+    @field_validator("column")
+    @classmethod
+    def _check_column(cls, value: str) -> str:
+        return validate_identifier(value)
+
+    @model_validator(mode="after")
+    def validate_condition(self) -> FactCondition:
+        if self.operator in _CONDITION_VALUELESS_OPERATORS:
+            if self.value not in (None, ""):
+                raise ValueError(f"{self.operator}: value must be omitted")
+            return self
+
+        if self.value is None:
+            raise ValueError(f"{self.operator}: value is required")
+
+        if self.operator in _CONDITION_MULTI_VALUE_OPERATORS:
+            values = self.value if isinstance(self.value, list) else [self.value]
+            if not values:
+                raise ValueError(f"{self.operator}: at least one value is required")
+            for value in values:
+                if isinstance(value, str) and not value.strip():
+                    raise ValueError(f"{self.operator}: values must not be empty")
+            return self
+
+        if isinstance(self.value, list):
+            raise ValueError(f"{self.operator}: value must be scalar")
+        if isinstance(self.value, str) and not self.value.strip():
+            raise ValueError(f"{self.operator}: value must not be empty")
+        return self
+
+    def to_config(self) -> dict[str, object]:
+        data = self.model_dump(mode="json", exclude_none=True)
+        if self.operator in _CONDITION_VALUELESS_OPERATORS:
+            data.pop("value", None)
+        return data
+
+
+def _conditions_to_config(conditions: list[FactCondition]) -> list[dict[str, object]]:
+    return [condition.to_config() for condition in conditions]
+
+
 # ── Kind-specific config payloads ────────────────────────────────────────────
 
 
@@ -132,13 +206,14 @@ class FactOperand(BaseModel):
     the referenced fact table's columns is checked in the service (it needs the
     DB).
 
-    Row filtering combines two inputs, ANDed together at collection time:
+    Row filtering combines three inputs, ANDed together at collection time:
     ``row_filters`` is a list of NAMES of that fact table's stored row filters
     (each resolved to its SQL fragment; membership checked in the service), and
     ``filter_sql`` is a free-text boolean WHERE fragment (SQL-safety-validated
-    here). The legacy single ``row_filter`` name is still accepted on input and
-    folded into the effective named-filter set; new writes use ``row_filters`` +
-    ``filter_sql``.
+    here). ``conditions`` is a list of visual column/operator/value conditions.
+    The legacy single ``row_filter`` name is still accepted on input and folded
+    into the effective named-filter set; new writes use ``row_filters`` +
+    ``filter_sql`` + ``conditions``.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -154,6 +229,8 @@ class FactOperand(BaseModel):
     row_filters: list[str] = Field(default_factory=list)
     # Free-text boolean WHERE fragment, ANDed with the named filters.
     filter_sql: str | None = Field(default=None, min_length=1)
+    # Visual column/operator/value rows, ANDed with named filters + filter_sql.
+    conditions: list[FactCondition] = Field(default_factory=list)
 
     @field_validator("measure_column", "distinct_column")
     @classmethod
@@ -193,6 +270,7 @@ class FactOperand(BaseModel):
             "distinct_column": self.distinct_column,
             "row_filters": self.effective_row_filters(),
             "filter_sql": self.filter_sql,
+            "conditions": _conditions_to_config(self.conditions),
         }
 
 
@@ -286,8 +364,9 @@ class FactMetricDefinition(BaseModel):
 
     SINGLE (``composition=single``, the default): one operand given by the
     top-level ``fact_table_id`` + ``aggregation`` + the ``measure_column`` /
-    ``distinct_column`` / ``row_filters`` / ``filter_sql`` config fields (the
-    legacy single ``row_filter`` name is still accepted and folded in).
+    ``distinct_column`` / ``row_filters`` / ``filter_sql`` / ``conditions``
+    config fields (the legacy single ``row_filter`` name is still accepted and
+    folded in).
 
     RATIO (``composition=ratio``): ``numerator`` / ``denominator`` operands (each
     a :class:`FactOperand`); the denominator MAY reference a different fact table.
@@ -296,8 +375,9 @@ class FactMetricDefinition(BaseModel):
 
     The data source and timestamp column are taken from the referenced fact
     table(s) at collection time; only the collection ``interval`` lives here.
-    Fact-table existence, project ownership, column membership, and row-filter
-    name resolution are checked in the service (they need the DB).
+    Fact-table existence, project ownership, column membership, condition-column
+    membership, and row-filter name resolution are checked in the service (they
+    need the DB).
     """
 
     kind: Literal[MetricKind.fact] = MetricKind.fact
@@ -316,6 +396,7 @@ class FactMetricDefinition(BaseModel):
     # Names of named filters on the fact table (ALL ANDed) + a free-text WHERE.
     row_filters: list[str] = Field(default_factory=list)
     filter_sql: str | None = Field(default=None, min_length=1)
+    conditions: list[FactCondition] = Field(default_factory=list)
 
     # RATIO operands.
     numerator: FactOperand | None = None
@@ -380,6 +461,7 @@ class FactMetricDefinition(BaseModel):
             or self.row_filter is not None
             or self.row_filters
             or self.filter_sql is not None
+            or self.conditions
         ):
             raise ValueError(
                 "ratio fact metric must not set top-level single-operand fields; "
@@ -395,6 +477,7 @@ class FactMetricDefinition(BaseModel):
                 "distinct_column": self.distinct_column,
                 "row_filters": self.effective_row_filters(),
                 "filter_sql": self.filter_sql,
+                "conditions": _conditions_to_config(self.conditions),
             }
         else:
             if self.numerator is None or self.denominator is None:

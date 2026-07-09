@@ -1370,7 +1370,10 @@ def _filter_fact_table() -> FactTable:
 
 
 def _filter_operand(
-    *, row_filters: tuple[str, ...] = (), filter_sql: str | None = None
+    *,
+    row_filters: tuple[str, ...] = (),
+    filter_sql: str | None = None,
+    conditions: tuple[metric_collect._FactCondition, ...] = (),
 ) -> metric_collect._FactOperand:
     return metric_collect._FactOperand(
         fact_table_id=uuid.uuid4(),
@@ -1379,6 +1382,7 @@ def _filter_operand(
         distinct_column=None,
         row_filters=row_filters,
         filter_sql=filter_sql,
+        conditions=conditions,
     )
 
 
@@ -1421,6 +1425,67 @@ def test_combined_filter_named_and_free_text_are_anded() -> None:
     assert combined == "(amount > 0) AND (status = 'paid')"
 
 
+def test_combined_filter_condition_only() -> None:
+    fact_table = _filter_fact_table()
+    combined = metric_collect._resolve_combined_filter(
+        fact_table,
+        row_filters=(),
+        filter_sql=None,
+        conditions=(metric_collect._FactCondition("amount", "gt", "3"),),
+    )
+    assert combined == "(amount > 3)"
+
+
+def test_combined_filter_conditions_escape_string_values() -> None:
+    fact_table = _filter_fact_table()
+    combined = metric_collect._resolve_combined_filter(
+        fact_table,
+        row_filters=(),
+        filter_sql=None,
+        conditions=(metric_collect._FactCondition("user_id", "eq", "u' OR 1=1 --"),),
+    )
+    assert combined == "(user_id = 'u'' OR 1=1 --')"
+
+
+@pytest.mark.parametrize(
+    ("operator", "value", "expected"),
+    [
+        ("ne", "trial", "user_id != 'trial'"),
+        ("contains", "wind", "user_id LIKE '%wind%'"),
+        ("not_contains", "test", "user_id NOT LIKE '%test%'"),
+        ("like", "u_%", "user_id LIKE 'u_%'"),
+        ("in", "a, b", "user_id IN ('a', 'b')"),
+        ("not_in", ["a", "b"], "user_id NOT IN ('a', 'b')"),
+        ("is_null", None, "user_id IS NULL"),
+        ("is_not_null", None, "user_id IS NOT NULL"),
+        ("is_true", None, "user_id = TRUE"),
+        ("is_false", None, "user_id = FALSE"),
+    ],
+)
+def test_combined_filter_condition_operators_compile(
+    operator: str, value: object | None, expected: str
+) -> None:
+    fact_table = _filter_fact_table()
+    combined = metric_collect._resolve_combined_filter(
+        fact_table,
+        row_filters=(),
+        filter_sql=None,
+        conditions=(metric_collect._FactCondition("user_id", operator, value),),
+    )
+    assert combined == f"({expected})"
+
+
+def test_combined_filter_named_free_text_and_condition_are_anded() -> None:
+    fact_table = _filter_fact_table()
+    combined = metric_collect._resolve_combined_filter(
+        fact_table,
+        row_filters=("positive",),
+        filter_sql="status = 'paid'",
+        conditions=(metric_collect._FactCondition("amount", "lte", "100"),),
+    )
+    assert combined == "(amount > 0) AND (status = 'paid') AND (amount <= 100)"
+
+
 def test_combined_filter_unknown_name_raises() -> None:
     fact_table = _filter_fact_table()
     with pytest.raises(ScanError):
@@ -1429,11 +1494,15 @@ def test_combined_filter_unknown_name_raises() -> None:
 
 def test_per_metric_query_wraps_with_combined_filter() -> None:
     fact_table = _filter_fact_table()
-    operand = _filter_operand(row_filters=("positive", "big"), filter_sql="status = 'paid'")
+    operand = _filter_operand(
+        row_filters=("positive", "big"),
+        filter_sql="status = 'paid'",
+        conditions=(metric_collect._FactCondition("amount", "lte", "100"),),
+    )
     query = metric_collect._resolve_fact_operand_query(fact_table, operand)
     assert query == (
         "SELECT * FROM (SELECT ts, amount FROM orders) AS _filtered "
-        "WHERE (amount > 0) AND (amount > 100) AND (status = 'paid')"
+        "WHERE (amount > 0) AND (amount > 100) AND (status = 'paid') AND (amount <= 100)"
     )
 
 
@@ -1446,7 +1515,11 @@ def test_per_metric_query_unfiltered_returns_source() -> None:
 def test_per_metric_and_batch_filter_are_value_identical() -> None:
     """The WHERE the per-metric path embeds == the conditional the batch injects."""
     fact_table = _filter_fact_table()
-    operand = _filter_operand(row_filters=("positive", "big"), filter_sql="status = 'paid'")
+    operand = _filter_operand(
+        row_filters=("positive", "big"),
+        filter_sql="status = 'paid'",
+        conditions=(metric_collect._FactCondition("amount", "lte", "100"),),
+    )
 
     batch_filter = metric_collect._resolve_fact_operand_filter(operand, fact_table=fact_table)
     per_metric_query = metric_collect._resolve_fact_operand_query(fact_table, operand)

@@ -173,6 +173,7 @@ function StatFilter({
 // The single fact operand shape (numerator / denominator) sent to the backend —
 // derived from the generated create schema so it stays in lock-step.
 type FactOperandPayload = NonNullable<FactMetricCreate['numerator']>
+type FactConditionPayload = NonNullable<FactOperandPayload['conditions']>[number]
 
 // A metric's internal name is a lowercase [a-z0-9_] identifier. Derive a unique
 // copy name: `<name>_copy`, then `_2` / `_3`… on collision against the loaded
@@ -199,7 +200,25 @@ function readFactOperand(raw: unknown): FactOperandPayload {
     distinct_column: strOrNull('distinct_column'),
     row_filters: Array.isArray(obj['row_filters']) ? (obj['row_filters'] as string[]) : [],
     filter_sql: strOrNull('filter_sql'),
+    conditions: readFactConditions(obj['conditions']),
   }
+}
+
+function readFactConditions(raw: unknown): FactConditionPayload[] {
+  if (!Array.isArray(raw)) return []
+  return raw
+    .filter(
+      (condition): condition is Record<string, unknown> =>
+        Boolean(condition) && typeof condition === 'object',
+    )
+    .filter(
+      condition => typeof condition.column === 'string' && typeof condition.operator === 'string',
+    )
+    .map(condition => ({
+      column: condition.column as string,
+      operator: condition.operator as FactConditionPayload['operator'],
+      ...(condition.value == null ? {} : { value: condition.value as FactConditionPayload['value'] }),
+    }))
 }
 
 /**
@@ -275,6 +294,7 @@ function buildDuplicatePayload(
       distinct_column: strOrNull('distinct_column'),
       row_filters: Array.isArray(config['row_filters']) ? (config['row_filters'] as string[]) : [],
       filter_sql: strOrNull('filter_sql'),
+      conditions: readFactConditions(config['conditions']),
       replay_chunk_interval: def.replay_chunk_interval,
     }
     return payload

@@ -6859,6 +6859,85 @@
         "title": "EventWindowMetricsResponse",
         "type": "object"
       },
+      "FactCondition": {
+        "additionalProperties": false,
+        "description": "One visual fact-row condition compiled into an ANDed SQL filter.",
+        "properties": {
+          "column": {
+            "maxLength": 255,
+            "minLength": 1,
+            "title": "Column",
+            "type": "string"
+          },
+          "operator": {
+            "enum": [
+              "eq",
+              "ne",
+              "gt",
+              "gte",
+              "lt",
+              "lte",
+              "contains",
+              "not_contains",
+              "like",
+              "not_like",
+              "in",
+              "not_in",
+              "is_null",
+              "is_not_null",
+              "is_true",
+              "is_false"
+            ],
+            "title": "Operator",
+            "type": "string"
+          },
+          "value": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "integer"
+              },
+              {
+                "type": "number"
+              },
+              {
+                "type": "boolean"
+              },
+              {
+                "items": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "integer"
+                    },
+                    {
+                      "type": "number"
+                    },
+                    {
+                      "type": "boolean"
+                    }
+                  ]
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Value"
+          }
+        },
+        "required": [
+          "column",
+          "operator"
+        ],
+        "title": "FactCondition",
+        "type": "object"
+      },
       "FactMetricCreate": {
         "properties": {
           "aggregation": {
@@ -6917,6 +6996,13 @@
           "composition": {
             "$ref": "#/components/schemas/MetricComposition",
             "default": "single"
+          },
+          "conditions": {
+            "items": {
+              "$ref": "#/components/schemas/FactCondition"
+            },
+            "title": "Conditions",
+            "type": "array"
           },
           "denominator": {
             "anyOf": [
@@ -7105,7 +7191,7 @@
         "type": "object"
       },
       "FactMetricDefinition": {
-        "description": "Kind + collection config for a ``fact`` metric.\n\nSINGLE (``composition=single``, the default): one operand given by the\ntop-level ``fact_table_id`` + ``aggregation`` + the ``measure_column`` /\n``distinct_column`` / ``row_filters`` / ``filter_sql`` config fields (the\nlegacy single ``row_filter`` name is still accepted and folded in).\n\nRATIO (``composition=ratio``): ``numerator`` / ``denominator`` operands (each\na :class:`FactOperand`); the denominator MAY reference a different fact table.\nThe numerator operand is mirrored onto the model's ``fact_table_id`` /\n``aggregation`` columns for catalog display and FK integrity.\n\nThe data source and timestamp column are taken from the referenced fact\ntable(s) at collection time; only the collection ``interval`` lives here.\nFact-table existence, project ownership, column membership, and row-filter\nname resolution are checked in the service (they need the DB).",
+        "description": "Kind + collection config for a ``fact`` metric.\n\nSINGLE (``composition=single``, the default): one operand given by the\ntop-level ``fact_table_id`` + ``aggregation`` + the ``measure_column`` /\n``distinct_column`` / ``row_filters`` / ``filter_sql`` / ``conditions``\nconfig fields (the legacy single ``row_filter`` name is still accepted and\nfolded in).\n\nRATIO (``composition=ratio``): ``numerator`` / ``denominator`` operands (each\na :class:`FactOperand`); the denominator MAY reference a different fact table.\nThe numerator operand is mirrored onto the model's ``fact_table_id`` /\n``aggregation`` columns for catalog display and FK integrity.\n\nThe data source and timestamp column are taken from the referenced fact\ntable(s) at collection time; only the collection ``interval`` lives here.\nFact-table existence, project ownership, column membership, condition-column\nmembership, and row-filter name resolution are checked in the service (they\nneed the DB).",
         "properties": {
           "aggregation": {
             "anyOf": [
@@ -7120,6 +7206,13 @@
           "composition": {
             "$ref": "#/components/schemas/MetricComposition",
             "default": "single"
+          },
+          "conditions": {
+            "items": {
+              "$ref": "#/components/schemas/FactCondition"
+            },
+            "title": "Conditions",
+            "type": "array"
           },
           "denominator": {
             "anyOf": [
@@ -7239,10 +7332,17 @@
       },
       "FactOperand": {
         "additionalProperties": false,
-        "description": "One fact-table aggregation operand (a single metric, or one ratio side).\n\nReferences a ``FactTable`` by id and aggregates one of its introspected\ncolumns. ``measure_column`` / ``distinct_column`` reach warehouse SQL\nunparameterised, so they are identifier-validated here; their membership in\nthe referenced fact table's columns is checked in the service (it needs the\nDB).\n\nRow filtering combines two inputs, ANDed together at collection time:\n``row_filters`` is a list of NAMES of that fact table's stored row filters\n(each resolved to its SQL fragment; membership checked in the service), and\n``filter_sql`` is a free-text boolean WHERE fragment (SQL-safety-validated\nhere). The legacy single ``row_filter`` name is still accepted on input and\nfolded into the effective named-filter set; new writes use ``row_filters`` +\n``filter_sql``.",
+        "description": "One fact-table aggregation operand (a single metric, or one ratio side).\n\nReferences a ``FactTable`` by id and aggregates one of its introspected\ncolumns. ``measure_column`` / ``distinct_column`` reach warehouse SQL\nunparameterised, so they are identifier-validated here; their membership in\nthe referenced fact table's columns is checked in the service (it needs the\nDB).\n\nRow filtering combines three inputs, ANDed together at collection time:\n``row_filters`` is a list of NAMES of that fact table's stored row filters\n(each resolved to its SQL fragment; membership checked in the service), and\n``filter_sql`` is a free-text boolean WHERE fragment (SQL-safety-validated\nhere). ``conditions`` is a list of visual column/operator/value conditions.\nThe legacy single ``row_filter`` name is still accepted on input and folded\ninto the effective named-filter set; new writes use ``row_filters`` +\n``filter_sql`` + ``conditions``.",
         "properties": {
           "aggregation": {
             "$ref": "#/components/schemas/MetricAggregation"
+          },
+          "conditions": {
+            "items": {
+              "$ref": "#/components/schemas/FactCondition"
+            },
+            "title": "Conditions",
+            "type": "array"
           },
           "distinct_column": {
             "anyOf": [

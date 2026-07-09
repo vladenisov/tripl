@@ -148,7 +148,9 @@ Locally, all of the above (except the warehouses) run under Docker Compose:
 - **Aggregations.** Adapter `_aggregate_value_sql` builds the per-kind SQL for
   ClickHouse / BigQuery / PostgreSQL; `core/adapters/measure_validator` checks the
   measure/distinct column against the source's real columns before it reaches a
-  query.
+  query. Fact row filters persist in metric `config` as named `row_filters`,
+  free-text `filter_sql`, and structured `conditions`; collection compiles them
+  into one `AND` expression for both per-metric and batched aggregate paths.
 - **Storage.** Values land in `metric_values`, with per-split rows in
   `metric_value_breakdowns` (platform / app-version / …, like event breakdowns).
   A **divide-by-zero** in a `ratio` bucket produces **no value** — a gap, not a

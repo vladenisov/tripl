@@ -5,6 +5,8 @@ import pytest
 from tripl.core.adapters.measure_validator import (
     build_aggregate_sql,
     coerce_aggregation,
+    quote_sql_literal,
+    quote_sql_string_literal,
     requires_measure,
     validate_identifier,
     validate_measure_column,
@@ -311,6 +313,40 @@ def test_validate_sql_fragment_accepts_realistic_filter() -> None:
 def test_validate_sql_fragment_rejects_injection(bad: str, match: str) -> None:
     with pytest.raises(ValueError, match=match):
         validate_sql_fragment(bad)
+
+
+# --- quote_sql_literal -------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        ("trial", "'trial'"),
+        ("O'Reilly", "'O''Reilly'"),
+        ("3", "3"),
+        ("-2.5", "-2.5"),
+        ("true", "TRUE"),
+        (False, "FALSE"),
+        (4, "4"),
+        (1.25, "1.25"),
+        ("x'; DROP TABLE users --", "'x''; DROP TABLE users --'"),
+    ],
+)
+def test_quote_sql_literal_renders_safe_literals(
+    value: str | int | float | bool, expected: str
+) -> None:
+    assert quote_sql_literal(value) == expected
+
+
+def test_quote_sql_literal_rejects_invalid_values() -> None:
+    with pytest.raises(ValueError, match="empty"):
+        quote_sql_literal("   ")
+    with pytest.raises(ValueError, match="finite"):
+        quote_sql_literal(float("nan"))
+
+
+def test_quote_sql_string_literal_keeps_numeric_text_quoted() -> None:
+    assert quote_sql_string_literal("3") == "'3'"
 
 
 # --- validate_select_sql_safety ---------------------------------------------

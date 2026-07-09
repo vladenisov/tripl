@@ -593,6 +593,42 @@ describe('MetricForm validation', () => {
     )
   })
 
+  it('submits a structured condition filter for fact metrics', async () => {
+    renderForm()
+    fillFactIdentity('Qualified orders', 'qualified_orders')
+
+    await waitFor(() =>
+      expect(document.querySelector('#metric-fact-table option[value="ft-1"]')).not.toBeNull(),
+    )
+    fireEvent.change(document.getElementById('metric-fact-table')!, { target: { value: 'ft-1' } })
+    await waitFor(() => expect(factTablesApi.get).toHaveBeenCalledWith('demo', 'ft-1'))
+
+    fireEvent.click(screen.getByRole('button', { name: 'Add filter' }))
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Condition' }))
+    fireEvent.change(screen.getByLabelText('Filter 1 condition column'), {
+      target: { value: 'amount' },
+    })
+    fireEvent.change(screen.getByLabelText('Filter 1 condition operator'), {
+      target: { value: 'gt' },
+    })
+    fireEvent.change(screen.getByLabelText('Filter 1 condition value'), {
+      target: { value: '3' },
+    })
+
+    submit()
+
+    await waitFor(() => expect(metricsCatalogApi.create).toHaveBeenCalledTimes(1))
+    expect(metricsCatalogApi.create).toHaveBeenCalledWith(
+      'demo',
+      expect.objectContaining({
+        kind: 'fact',
+        composition: 'single',
+        fact_table_id: 'ft-1',
+        conditions: [{ column: 'amount', operator: 'gt', value: '3' }],
+      }),
+    )
+  })
+
   it('rejects a sum fact metric with no measure column', async () => {
     renderForm()
     fillFactIdentity('Total revenue', 'total_revenue')

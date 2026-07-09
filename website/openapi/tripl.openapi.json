@@ -840,6 +840,112 @@
         }
       }
     },
+    "/api/v1/projects/{slug}/danger/reset-anomalies": {
+      "post": {
+        "tags": [
+          "projects"
+        ],
+        "summary": "Reset Anomalies",
+        "description": "Owner-only: clear every anomaly (+ breakdown) in the project's period.\n\nDestructive and irreversible. Derived monitoring signals disappear with the\nanomalies they are computed from.",
+        "operationId": "reset_anomalies_api_v1_projects__slug__danger_reset_anomalies_post",
+        "parameters": [
+          {
+            "name": "slug",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Slug"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DetectionResetPeriod"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AnomalyResetCounts"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/projects/{slug}/danger/reset-drifts": {
+      "post": {
+        "tags": [
+          "projects"
+        ],
+        "summary": "Reset Drifts",
+        "description": "Owner-only: clear every schema + distribution drift in the project's period.\n\nDestructive and irreversible.",
+        "operationId": "reset_drifts_api_v1_projects__slug__danger_reset_drifts_post",
+        "parameters": [
+          {
+            "name": "slug",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Slug"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DetectionResetPeriod"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DriftResetCounts"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/projects/{slug}/anomaly-settings": {
       "get": {
         "tags": [
@@ -915,6 +1021,192 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ProjectAnomalySettingsResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/projects/{slug}/branch-settings": {
+      "get": {
+        "tags": [
+          "branch-settings"
+        ],
+        "summary": "Get Project Branch Settings",
+        "operationId": "get_project_branch_settings_api_v1_projects__slug__branch_settings_get",
+        "parameters": [
+          {
+            "name": "slug",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Slug"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProjectBranchSettingsResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "patch": {
+        "tags": [
+          "branch-settings"
+        ],
+        "summary": "Update Project Branch Settings",
+        "description": "Owner-only: min_approvals/block_self_approval govern what editors may\nmerge, so editors must not be able to loosen the policy on themselves.",
+        "operationId": "update_project_branch_settings_api_v1_projects__slug__branch_settings_patch",
+        "parameters": [
+          {
+            "name": "slug",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Slug"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProjectBranchSettingsUpdate"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProjectBranchSettingsResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/projects/{slug}/tracker-config": {
+      "get": {
+        "tags": [
+          "tracker-config"
+        ],
+        "summary": "Get Project Tracker Config",
+        "operationId": "get_project_tracker_config_api_v1_projects__slug__tracker_config_get",
+        "parameters": [
+          {
+            "name": "slug",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Slug"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProjectTrackerConfigResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "patch": {
+        "tags": [
+          "tracker-config"
+        ],
+        "summary": "Update Project Tracker Config",
+        "description": "Owner-only: the tracker config stores an API token and drives outbound\nticket creation, so editors must not be able to point it at their own Jira.",
+        "operationId": "update_project_tracker_config_api_v1_projects__slug__tracker_config_patch",
+        "parameters": [
+          {
+            "name": "slug",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Slug"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProjectTrackerConfigUpdate"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProjectTrackerConfigResponse"
                 }
               }
             }
@@ -3507,6 +3799,20 @@
               "default": 200,
               "title": "Limit"
             }
+          },
+          {
+            "name": "order_by",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "enum": [
+                "catalog",
+                "volume"
+              ],
+              "type": "string",
+              "default": "catalog",
+              "title": "Order By"
+            }
           }
         ],
         "responses": {
@@ -5615,6 +5921,59 @@
         }
       }
     },
+    "/api/v1/projects/{slug}/scans/{scan_id}/platform-presence": {
+      "get": {
+        "tags": [
+          "scans"
+        ],
+        "summary": "Get Platform Presence",
+        "description": "Per-event platform presence matrix for the scan's platform_column.\n\nEmpty when the scan has no platform_column set (the platform dimension is\ninert), so callers can render the panel unconditionally.",
+        "operationId": "get_platform_presence_api_v1_projects__slug__scans__scan_id__platform_presence_get",
+        "parameters": [
+          {
+            "name": "slug",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Slug"
+            }
+          },
+          {
+            "name": "scan_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Scan Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlatformPresenceResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/projects/{slug}/scans/{scan_id}/run": {
       "post": {
         "tags": [
@@ -6005,7 +6364,9 @@
                       "meta_field",
                       "variable",
                       "relation",
-                      "tag"
+                      "tag",
+                      "metric",
+                      "fact_table"
                     ],
                     "type": "string"
                   }
@@ -7618,6 +7979,1227 @@
                 }
               }
             }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/projects/{slug}/metrics": {
+      "get": {
+        "tags": [
+          "metrics-catalog"
+        ],
+        "summary": "List Metric Definitions",
+        "operationId": "list_metric_definitions_api_v1_projects__slug__metrics_get",
+        "parameters": [
+          {
+            "name": "slug",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Slug"
+            }
+          },
+          {
+            "name": "status",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/MetricStatus"
+                  }
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Status"
+            }
+          },
+          {
+            "name": "kind",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/MetricKind"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Kind"
+            }
+          },
+          {
+            "name": "search",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Search"
+            }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0,
+              "default": 0,
+              "title": "Offset"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 1000,
+              "minimum": 1,
+              "default": 200,
+              "title": "Limit"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MetricDefinitionListResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "metrics-catalog"
+        ],
+        "summary": "Create Metric Definition",
+        "operationId": "create_metric_definition_api_v1_projects__slug__metrics_post",
+        "parameters": [
+          {
+            "name": "slug",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Slug"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "oneOf": [
+                  {
+                    "$ref": "#/components/schemas/FactMetricCreate"
+                  },
+                  {
+                    "$ref": "#/components/schemas/SqlMetricCreate"
+                  },
+                  {
+                    "$ref": "#/components/schemas/EventCompositionMetricCreate"
+                  }
+                ],
+                "discriminator": {
+                  "propertyName": "kind",
+                  "mapping": {
+                    "fact": "#/components/schemas/FactMetricCreate",
+                    "sql": "#/components/schemas/SqlMetricCreate",
+                    "event_composition": "#/components/schemas/EventCompositionMetricCreate"
+                  }
+                },
+                "title": "Data"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MetricDefinitionResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/projects/{slug}/metrics/bulk-update": {
+      "post": {
+        "tags": [
+          "metrics-catalog"
+        ],
+        "summary": "Bulk Update Metric Definitions",
+        "operationId": "bulk_update_metric_definitions_api_v1_projects__slug__metrics_bulk_update_post",
+        "parameters": [
+          {
+            "name": "slug",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Slug"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MetricDefinitionBulkUpdate"
+              }
+            }
+          }
+        },
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/projects/{slug}/metrics/preview": {
+      "post": {
+        "tags": [
+          "metrics-catalog"
+        ],
+        "summary": "Preview Metric Sql",
+        "description": "Stateless dry-run of a sql-kind metric SELECT (editor-gated).\n\nValidates the SQL with the same safety gate the worker uses and executes it\nagainst the data source over the last 50 buckets of the requested interval\n(hard-capped at 200 rows); nothing is persisted. Expected user mistakes \u2014\nbad SQL, missing time/value columns, warehouse errors \u2014 return 200 with\n``error`` set so the editor can render them inline; unknown data source is\na 404.",
+        "operationId": "preview_metric_sql_api_v1_projects__slug__metrics_preview_post",
+        "parameters": [
+          {
+            "name": "slug",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Slug"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MetricPreviewRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MetricPreviewResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/projects/{slug}/metrics/reorder": {
+      "patch": {
+        "tags": [
+          "metrics-catalog"
+        ],
+        "summary": "Reorder Metric Definitions",
+        "operationId": "reorder_metric_definitions_api_v1_projects__slug__metrics_reorder_patch",
+        "parameters": [
+          {
+            "name": "slug",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Slug"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MetricDefinitionReorder"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/MetricDefinitionResponse"
+                  },
+                  "title": "Response Reorder Metric Definitions Api V1 Projects  Slug  Metrics Reorder Patch"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/projects/{slug}/metrics/{metric_id}": {
+      "get": {
+        "tags": [
+          "metrics-catalog"
+        ],
+        "summary": "Get Metric Definition",
+        "operationId": "get_metric_definition_api_v1_projects__slug__metrics__metric_id__get",
+        "parameters": [
+          {
+            "name": "slug",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Slug"
+            }
+          },
+          {
+            "name": "metric_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Metric Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MetricDefinitionResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "patch": {
+        "tags": [
+          "metrics-catalog"
+        ],
+        "summary": "Update Metric Definition",
+        "operationId": "update_metric_definition_api_v1_projects__slug__metrics__metric_id__patch",
+        "parameters": [
+          {
+            "name": "slug",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Slug"
+            }
+          },
+          {
+            "name": "metric_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Metric Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MetricDefinitionUpdate"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MetricDefinitionResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "metrics-catalog"
+        ],
+        "summary": "Delete Metric Definition",
+        "operationId": "delete_metric_definition_api_v1_projects__slug__metrics__metric_id__delete",
+        "parameters": [
+          {
+            "name": "slug",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Slug"
+            }
+          },
+          {
+            "name": "metric_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Metric Id"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/projects/{slug}/metrics/{metric_id}/series": {
+      "get": {
+        "tags": [
+          "metrics-catalog"
+        ],
+        "summary": "Get Metric Series",
+        "operationId": "get_metric_series_api_v1_projects__slug__metrics__metric_id__series_get",
+        "parameters": [
+          {
+            "name": "slug",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Slug"
+            }
+          },
+          {
+            "name": "metric_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Metric Id"
+            }
+          },
+          {
+            "name": "from",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "format": "date-time"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "From"
+            }
+          },
+          {
+            "name": "to",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "format": "date-time"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "To"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MetricSeriesResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/projects/{slug}/metrics/{metric_id}/breakdowns": {
+      "get": {
+        "tags": [
+          "metrics-catalog"
+        ],
+        "summary": "Get Metric Breakdowns",
+        "operationId": "get_metric_breakdowns_api_v1_projects__slug__metrics__metric_id__breakdowns_get",
+        "parameters": [
+          {
+            "name": "slug",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Slug"
+            }
+          },
+          {
+            "name": "metric_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Metric Id"
+            }
+          },
+          {
+            "name": "column",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Column"
+            }
+          },
+          {
+            "name": "from",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "format": "date-time"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "From"
+            }
+          },
+          {
+            "name": "to",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "format": "date-time"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "To"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MetricBreakdownsResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/projects/{slug}/metrics/{metric_id}/versions": {
+      "get": {
+        "tags": [
+          "metrics-catalog"
+        ],
+        "summary": "Get Metric Version Series",
+        "operationId": "get_metric_version_series_api_v1_projects__slug__metrics__metric_id__versions_get",
+        "parameters": [
+          {
+            "name": "slug",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Slug"
+            }
+          },
+          {
+            "name": "metric_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Metric Id"
+            }
+          },
+          {
+            "name": "from",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "format": "date-time"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "From"
+            }
+          },
+          {
+            "name": "to",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "format": "date-time"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "To"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MetricVersionSeriesResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/projects/{slug}/metrics/{metric_id}/collect": {
+      "post": {
+        "tags": [
+          "metrics-catalog"
+        ],
+        "summary": "Collect Metric Now",
+        "description": "Trigger an immediate backfill collection for one metric (editor-gated).\n\nDispatches the same Celery collection the scheduler uses, backfilling a\nbounded recent window so the chart is not empty. Returns 202 once queued;\nthe warehouse query runs in the worker. Unknown metric -> 404.",
+        "operationId": "collect_metric_now_api_v1_projects__slug__metrics__metric_id__collect_post",
+        "parameters": [
+          {
+            "name": "slug",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Slug"
+            }
+          },
+          {
+            "name": "metric_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Metric Id"
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MetricCollectNowResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/projects/{slug}/metrics/{metric_id}/move": {
+      "patch": {
+        "tags": [
+          "metrics-catalog"
+        ],
+        "summary": "Move Metric Definition",
+        "operationId": "move_metric_definition_api_v1_projects__slug__metrics__metric_id__move_patch",
+        "parameters": [
+          {
+            "name": "slug",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Slug"
+            }
+          },
+          {
+            "name": "metric_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Metric Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MetricDefinitionMove"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MetricDefinitionResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/projects/{slug}/fact-tables": {
+      "get": {
+        "tags": [
+          "fact-tables"
+        ],
+        "summary": "List Fact Tables",
+        "operationId": "list_fact_tables_api_v1_projects__slug__fact_tables_get",
+        "parameters": [
+          {
+            "name": "slug",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Slug"
+            }
+          },
+          {
+            "name": "search",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Search"
+            }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0,
+              "default": 0,
+              "title": "Offset"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 1000,
+              "minimum": 1,
+              "default": 200,
+              "title": "Limit"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FactTableListResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "fact-tables"
+        ],
+        "summary": "Create Fact Table",
+        "operationId": "create_fact_table_api_v1_projects__slug__fact_tables_post",
+        "parameters": [
+          {
+            "name": "slug",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Slug"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FactTableCreate"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FactTableResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/projects/{slug}/fact-tables/preview": {
+      "post": {
+        "tags": [
+          "fact-tables"
+        ],
+        "summary": "Preview Fact Table",
+        "operationId": "preview_fact_table_api_v1_projects__slug__fact_tables_preview_post",
+        "parameters": [
+          {
+            "name": "slug",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Slug"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FactTablePreviewRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FactTablePreviewResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/projects/{slug}/fact-tables/{fact_table_id}": {
+      "get": {
+        "tags": [
+          "fact-tables"
+        ],
+        "summary": "Get Fact Table",
+        "operationId": "get_fact_table_api_v1_projects__slug__fact_tables__fact_table_id__get",
+        "parameters": [
+          {
+            "name": "slug",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Slug"
+            }
+          },
+          {
+            "name": "fact_table_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Fact Table Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FactTableResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "patch": {
+        "tags": [
+          "fact-tables"
+        ],
+        "summary": "Update Fact Table",
+        "operationId": "update_fact_table_api_v1_projects__slug__fact_tables__fact_table_id__patch",
+        "parameters": [
+          {
+            "name": "slug",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Slug"
+            }
+          },
+          {
+            "name": "fact_table_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Fact Table Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FactTableUpdate"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FactTableResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "fact-tables"
+        ],
+        "summary": "Delete Fact Table",
+        "operationId": "delete_fact_table_api_v1_projects__slug__fact_tables__fact_table_id__delete",
+        "parameters": [
+          {
+            "name": "slug",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Slug"
+            }
+          },
+          {
+            "name": "fact_table_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Fact Table Id"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
           },
           "422": {
             "description": "Validation Error",
@@ -10318,15 +11900,15 @@
             "$ref": "#/components/schemas/AnomalyDirection"
           },
           "actual_count": {
-            "type": "integer",
+            "type": "number",
             "title": "Actual Count"
           },
           "expected_count": {
-            "type": "integer",
+            "type": "number",
             "title": "Expected Count"
           },
           "absolute_delta": {
-            "type": "integer",
+            "type": "number",
             "title": "Absolute Delta"
           },
           "percent_delta": {
@@ -11534,6 +13116,11 @@
             "title": "Include Release Regressions",
             "default": false
           },
+          "include_metrics": {
+            "type": "boolean",
+            "title": "Include Metrics",
+            "default": false
+          },
           "notify_on_spike": {
             "type": "boolean",
             "title": "Notify On Spike",
@@ -11728,6 +13315,10 @@
             "type": "boolean",
             "title": "Include Release Regressions"
           },
+          "include_metrics": {
+            "type": "boolean",
+            "title": "Include Metrics"
+          },
           "notify_on_spike": {
             "type": "boolean",
             "title": "Notify On Spike"
@@ -11811,6 +13402,7 @@
           "include_schema_drifts",
           "include_distribution_drifts",
           "include_release_regressions",
+          "include_metrics",
           "notify_on_spike",
           "notify_on_drop",
           "ai_explanation_enabled",
@@ -11997,6 +13589,17 @@
             ],
             "title": "Include Release Regressions"
           },
+          "include_metrics": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Include Metrics"
+          },
           "notify_on_spike": {
             "anyOf": [
               {
@@ -12135,6 +13738,24 @@
           "drop"
         ],
         "title": "AnomalyDirection"
+      },
+      "AnomalyResetCounts": {
+        "properties": {
+          "metric_anomalies": {
+            "type": "integer",
+            "title": "Metric Anomalies"
+          },
+          "metric_breakdown_anomalies": {
+            "type": "integer",
+            "title": "Metric Breakdown Anomalies"
+          }
+        },
+        "type": "object",
+        "required": [
+          "metric_anomalies",
+          "metric_breakdown_anomalies"
+        ],
+        "title": "AnomalyResetCounts"
       },
       "ApiKeyCreate": {
         "properties": {
@@ -12437,6 +14058,11 @@
             ],
             "title": "Latest Version"
           },
+          "sigma_threshold": {
+            "type": "number",
+            "title": "Sigma Threshold",
+            "default": 3.0
+          },
           "versions": {
             "items": {
               "$ref": "#/components/schemas/AppVersionInfo"
@@ -12485,6 +14111,11 @@
             "type": "boolean",
             "title": "Is Latest",
             "default": false
+          },
+          "is_active": {
+            "type": "boolean",
+            "title": "Is Active",
+            "default": false
           }
         },
         "type": "object",
@@ -12507,6 +14138,11 @@
           "is_latest": {
             "type": "boolean",
             "title": "Is Latest",
+            "default": false
+          },
+          "is_active": {
+            "type": "boolean",
+            "title": "Is Active",
             "default": false
           },
           "total_count": {
@@ -12598,6 +14234,11 @@
               }
             ],
             "title": "Latest Version"
+          },
+          "sigma_threshold": {
+            "type": "number",
+            "title": "Sigma Threshold",
+            "default": 3.0
           },
           "versions": {
             "items": {
@@ -13245,7 +14886,8 @@
         "enum": [
           "project_total",
           "event_type",
-          "event"
+          "event",
+          "metric"
         ],
         "title": "ChartAnnotationScopeType"
       },
@@ -13480,6 +15122,21 @@
             ],
             "title": "Timeout Seconds"
           },
+          "json_path_discovery": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "all",
+                  "dynamic"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Json Path Discovery"
+          },
           "extra_params": {
             "anyOf": [
               {
@@ -13546,6 +15203,21 @@
               }
             ],
             "title": "Timeout Seconds"
+          },
+          "json_path_discovery": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "all",
+                  "dynamic"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Json Path Discovery"
           },
           "extra_params": {
             "anyOf": [
@@ -13815,6 +15487,21 @@
             ],
             "title": "Timeout Seconds"
           },
+          "json_path_discovery": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "all",
+                  "dynamic"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Json Path Discovery"
+          },
           "extra_params": {
             "anyOf": [
               {
@@ -13954,6 +15641,37 @@
           "days"
         ],
         "title": "DeadEventListResponse"
+      },
+      "DetectionResetPeriod": {
+        "properties": {
+          "before": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Before"
+          },
+          "after": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "After"
+          }
+        },
+        "type": "object",
+        "title": "DetectionResetPeriod",
+        "description": "Optional half-open window (``after <= t < before``) for a danger-zone reset.\n\nBoth bounds are optional; omitting both clears the whole project."
       },
       "DistributionDriftBand": {
         "type": "string",
@@ -14114,6 +15832,24 @@
           "data"
         ],
         "title": "DistributionDriftsResponse"
+      },
+      "DriftResetCounts": {
+        "properties": {
+          "schema_drifts": {
+            "type": "integer",
+            "title": "Schema Drifts"
+          },
+          "distribution_drifts": {
+            "type": "integer",
+            "title": "Distribution Drifts"
+          }
+        },
+        "type": "object",
+        "required": [
+          "schema_drifts",
+          "distribution_drifts"
+        ],
+        "title": "DriftResetCounts"
       },
       "EmailSettings": {
         "properties": {
@@ -14384,6 +16120,278 @@
           "created_at"
         ],
         "title": "EventChangeResponse"
+      },
+      "EventCompositionMetricCreate": {
+        "properties": {
+          "kind": {
+            "type": "string",
+            "const": "event_composition",
+            "title": "Kind",
+            "default": "event_composition"
+          },
+          "composition": {
+            "$ref": "#/components/schemas/MetricComposition"
+          },
+          "numerator_event_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Numerator Event Id"
+          },
+          "numerator_event_type_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Numerator Event Type Id"
+          },
+          "denominator_event_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Denominator Event Id"
+          },
+          "denominator_event_type_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Denominator Event Type Id"
+          },
+          "user_id_column": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 255,
+                "minLength": 1
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "User Id Column"
+          },
+          "name": {
+            "type": "string",
+            "maxLength": 255,
+            "minLength": 1,
+            "title": "Name"
+          },
+          "display_name": {
+            "type": "string",
+            "maxLength": 255,
+            "minLength": 1,
+            "title": "Display Name"
+          },
+          "description": {
+            "type": "string",
+            "title": "Description",
+            "default": ""
+          },
+          "color": {
+            "type": "string",
+            "pattern": "^#[0-9a-fA-F]{6}$",
+            "title": "Color",
+            "default": "#6366f1"
+          },
+          "order": {
+            "type": "integer",
+            "title": "Order",
+            "default": 0
+          },
+          "unit": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 50
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Unit"
+          },
+          "status": {
+            "$ref": "#/components/schemas/MetricStatus",
+            "default": "draft"
+          },
+          "owner_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Owner Id"
+          },
+          "reviewed": {
+            "type": "boolean",
+            "title": "Reviewed",
+            "default": false
+          },
+          "breakdown_columns": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Breakdown Columns"
+          },
+          "breakdown_values_limit": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 1.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Breakdown Values Limit"
+          },
+          "app_version_column": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 255,
+                "minLength": 1
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "App Version Column"
+          },
+          "platform_column": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 255,
+                "minLength": 1
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Platform Column"
+          },
+          "anomaly_detection_enabled": {
+            "type": "boolean",
+            "title": "Anomaly Detection Enabled",
+            "default": true
+          }
+        },
+        "type": "object",
+        "required": [
+          "composition",
+          "name",
+          "display_name"
+        ],
+        "title": "EventCompositionMetricCreate"
+      },
+      "EventCompositionMetricDefinition": {
+        "properties": {
+          "kind": {
+            "type": "string",
+            "const": "event_composition",
+            "title": "Kind",
+            "default": "event_composition"
+          },
+          "composition": {
+            "$ref": "#/components/schemas/MetricComposition"
+          },
+          "numerator_event_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Numerator Event Id"
+          },
+          "numerator_event_type_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Numerator Event Type Id"
+          },
+          "denominator_event_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Denominator Event Id"
+          },
+          "denominator_event_type_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Denominator Event Type Id"
+          },
+          "user_id_column": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 255,
+                "minLength": 1
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "User Id Column"
+          }
+        },
+        "type": "object",
+        "required": [
+          "composition"
+        ],
+        "title": "EventCompositionMetricDefinition",
+        "description": "Kind + config for an ``event_composition`` metric; no data source / interval.\n\nNumerator/denominator are each given as exactly one ref: an ``event_id`` or\nan ``event_type_id``. ``single``/``per_distinct_user`` use the numerator\nonly; ``ratio`` requires both numerator and denominator."
       },
       "EventCreate": {
         "properties": {
@@ -14717,6 +16725,11 @@
             "title": "Drift Count",
             "default": 0
           },
+          "monitored": {
+            "type": "boolean",
+            "title": "Monitored",
+            "default": false
+          },
           "tags": {
             "items": {
               "$ref": "#/components/schemas/EventTagResponse"
@@ -14959,6 +16972,17 @@
             ],
             "title": "Stddev"
           },
+          "detector_kind": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Detector Kind"
+          },
           "is_anomaly": {
             "type": "boolean",
             "title": "Is Anomaly",
@@ -15054,6 +17078,11 @@
                 "type": "null"
               }
             ]
+          },
+          "sigma_threshold": {
+            "type": "number",
+            "title": "Sigma Threshold",
+            "default": 3.0
           },
           "data": {
             "items": {
@@ -16021,6 +18050,1096 @@
         ],
         "title": "EventWindowMetricsResponse"
       },
+      "FactCondition": {
+        "properties": {
+          "column": {
+            "type": "string",
+            "maxLength": 255,
+            "minLength": 1,
+            "title": "Column"
+          },
+          "operator": {
+            "type": "string",
+            "enum": [
+              "eq",
+              "ne",
+              "gt",
+              "gte",
+              "lt",
+              "lte",
+              "contains",
+              "not_contains",
+              "like",
+              "not_like",
+              "in",
+              "not_in",
+              "is_null",
+              "is_not_null",
+              "is_true",
+              "is_false"
+            ],
+            "title": "Operator"
+          },
+          "value": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "integer"
+              },
+              {
+                "type": "number"
+              },
+              {
+                "type": "boolean"
+              },
+              {
+                "items": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "integer"
+                    },
+                    {
+                      "type": "number"
+                    },
+                    {
+                      "type": "boolean"
+                    }
+                  ]
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Value"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "column",
+          "operator"
+        ],
+        "title": "FactCondition",
+        "description": "One visual fact-row condition compiled into an ANDed SQL filter."
+      },
+      "FactMetricCreate": {
+        "properties": {
+          "kind": {
+            "type": "string",
+            "const": "fact",
+            "title": "Kind",
+            "default": "fact"
+          },
+          "composition": {
+            "$ref": "#/components/schemas/MetricComposition",
+            "default": "single"
+          },
+          "interval": {
+            "$ref": "#/components/schemas/ScanInterval"
+          },
+          "replay_chunk_interval": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ScanInterval"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "fact_table_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Fact Table Id"
+          },
+          "aggregation": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/MetricAggregation"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "measure_column": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 255,
+                "minLength": 1
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Measure Column"
+          },
+          "distinct_column": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 255,
+                "minLength": 1
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Distinct Column"
+          },
+          "row_filter": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 255,
+                "minLength": 1
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Row Filter"
+          },
+          "row_filters": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Row Filters"
+          },
+          "filter_sql": {
+            "anyOf": [
+              {
+                "type": "string",
+                "minLength": 1
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Filter Sql"
+          },
+          "conditions": {
+            "items": {
+              "$ref": "#/components/schemas/FactCondition"
+            },
+            "type": "array",
+            "title": "Conditions"
+          },
+          "numerator": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/FactOperand"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "denominator": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/FactOperand"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "name": {
+            "type": "string",
+            "maxLength": 255,
+            "minLength": 1,
+            "title": "Name"
+          },
+          "display_name": {
+            "type": "string",
+            "maxLength": 255,
+            "minLength": 1,
+            "title": "Display Name"
+          },
+          "description": {
+            "type": "string",
+            "title": "Description",
+            "default": ""
+          },
+          "color": {
+            "type": "string",
+            "pattern": "^#[0-9a-fA-F]{6}$",
+            "title": "Color",
+            "default": "#6366f1"
+          },
+          "order": {
+            "type": "integer",
+            "title": "Order",
+            "default": 0
+          },
+          "unit": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 50
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Unit"
+          },
+          "status": {
+            "$ref": "#/components/schemas/MetricStatus",
+            "default": "draft"
+          },
+          "owner_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Owner Id"
+          },
+          "reviewed": {
+            "type": "boolean",
+            "title": "Reviewed",
+            "default": false
+          },
+          "breakdown_columns": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Breakdown Columns"
+          },
+          "breakdown_values_limit": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 1.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Breakdown Values Limit"
+          },
+          "app_version_column": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 255,
+                "minLength": 1
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "App Version Column"
+          },
+          "platform_column": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 255,
+                "minLength": 1
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Platform Column"
+          },
+          "anomaly_detection_enabled": {
+            "type": "boolean",
+            "title": "Anomaly Detection Enabled",
+            "default": true
+          }
+        },
+        "type": "object",
+        "required": [
+          "interval",
+          "name",
+          "display_name"
+        ],
+        "title": "FactMetricCreate"
+      },
+      "FactMetricDefinition": {
+        "properties": {
+          "kind": {
+            "type": "string",
+            "const": "fact",
+            "title": "Kind",
+            "default": "fact"
+          },
+          "composition": {
+            "$ref": "#/components/schemas/MetricComposition",
+            "default": "single"
+          },
+          "interval": {
+            "$ref": "#/components/schemas/ScanInterval"
+          },
+          "replay_chunk_interval": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ScanInterval"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "fact_table_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Fact Table Id"
+          },
+          "aggregation": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/MetricAggregation"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "measure_column": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 255,
+                "minLength": 1
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Measure Column"
+          },
+          "distinct_column": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 255,
+                "minLength": 1
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Distinct Column"
+          },
+          "row_filter": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 255,
+                "minLength": 1
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Row Filter"
+          },
+          "row_filters": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Row Filters"
+          },
+          "filter_sql": {
+            "anyOf": [
+              {
+                "type": "string",
+                "minLength": 1
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Filter Sql"
+          },
+          "conditions": {
+            "items": {
+              "$ref": "#/components/schemas/FactCondition"
+            },
+            "type": "array",
+            "title": "Conditions"
+          },
+          "numerator": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/FactOperand"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "denominator": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/FactOperand"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "type": "object",
+        "required": [
+          "interval"
+        ],
+        "title": "FactMetricDefinition",
+        "description": "Kind + collection config for a ``fact`` metric.\n\nSINGLE (``composition=single``, the default): one operand given by the\ntop-level ``fact_table_id`` + ``aggregation`` + the ``measure_column`` /\n``distinct_column`` / ``row_filters`` / ``filter_sql`` / ``conditions``\nconfig fields (the legacy single ``row_filter`` name is still accepted and\nfolded in).\n\nRATIO (``composition=ratio``): ``numerator`` / ``denominator`` operands (each\na :class:`FactOperand`); the denominator MAY reference a different fact table.\nThe numerator operand is mirrored onto the model's ``fact_table_id`` /\n``aggregation`` columns for catalog display and FK integrity.\n\nThe data source and timestamp column are taken from the referenced fact\ntable(s) at collection time; only the collection ``interval`` lives here.\nFact-table existence, project ownership, column membership, condition-column\nmembership, and row-filter name resolution are checked in the service (they\nneed the DB)."
+      },
+      "FactOperand": {
+        "properties": {
+          "fact_table_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Fact Table Id"
+          },
+          "aggregation": {
+            "$ref": "#/components/schemas/MetricAggregation"
+          },
+          "measure_column": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 255,
+                "minLength": 1
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Measure Column"
+          },
+          "distinct_column": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 255,
+                "minLength": 1
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Distinct Column"
+          },
+          "row_filter": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 255,
+                "minLength": 1
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Row Filter"
+          },
+          "row_filters": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Row Filters"
+          },
+          "filter_sql": {
+            "anyOf": [
+              {
+                "type": "string",
+                "minLength": 1
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Filter Sql"
+          },
+          "conditions": {
+            "items": {
+              "$ref": "#/components/schemas/FactCondition"
+            },
+            "type": "array",
+            "title": "Conditions"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "fact_table_id",
+          "aggregation"
+        ],
+        "title": "FactOperand",
+        "description": "One fact-table aggregation operand (a single metric, or one ratio side).\n\nReferences a ``FactTable`` by id and aggregates one of its introspected\ncolumns. ``measure_column`` / ``distinct_column`` reach warehouse SQL\nunparameterised, so they are identifier-validated here; their membership in\nthe referenced fact table's columns is checked in the service (it needs the\nDB).\n\nRow filtering combines three inputs, ANDed together at collection time:\n``row_filters`` is a list of NAMES of that fact table's stored row filters\n(each resolved to its SQL fragment; membership checked in the service), and\n``filter_sql`` is a free-text boolean WHERE fragment (SQL-safety-validated\nhere). ``conditions`` is a list of visual column/operator/value conditions.\nThe legacy single ``row_filter`` name is still accepted on input and folded\ninto the effective named-filter set; new writes use ``row_filters`` +\n``filter_sql`` + ``conditions``."
+      },
+      "FactTableColumnSchema": {
+        "properties": {
+          "name": {
+            "type": "string",
+            "maxLength": 255,
+            "minLength": 1,
+            "title": "Name"
+          },
+          "type": {
+            "type": "string",
+            "maxLength": 255,
+            "minLength": 1,
+            "title": "Type"
+          }
+        },
+        "type": "object",
+        "required": [
+          "name",
+          "type"
+        ],
+        "title": "FactTableColumnSchema",
+        "description": "A single introspected column descriptor: its name and warehouse type."
+      },
+      "FactTableCreate": {
+        "properties": {
+          "name": {
+            "type": "string",
+            "maxLength": 255,
+            "minLength": 1,
+            "title": "Name"
+          },
+          "display_name": {
+            "type": "string",
+            "maxLength": 255,
+            "minLength": 1,
+            "title": "Display Name"
+          },
+          "description": {
+            "type": "string",
+            "title": "Description",
+            "default": ""
+          },
+          "color": {
+            "type": "string",
+            "pattern": "^#[0-9a-fA-F]{6}$",
+            "title": "Color",
+            "default": "#6366f1"
+          },
+          "data_source_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Data Source Id"
+          },
+          "sql": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Sql"
+          },
+          "timestamp_column": {
+            "type": "string",
+            "maxLength": 255,
+            "minLength": 1,
+            "title": "Timestamp Column"
+          },
+          "columns": {
+            "items": {
+              "$ref": "#/components/schemas/FactTableColumnSchema"
+            },
+            "type": "array",
+            "title": "Columns"
+          },
+          "identifier_columns": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Identifier Columns"
+          },
+          "row_filters": {
+            "items": {
+              "$ref": "#/components/schemas/FactTableRowFilter"
+            },
+            "type": "array",
+            "title": "Row Filters"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "name",
+          "display_name",
+          "sql",
+          "timestamp_column"
+        ],
+        "title": "FactTableCreate",
+        "description": "Create a fact table from a full read-only query plus its column metadata.\n\n``sql`` must be a single read-only ``SELECT`` or top-level ``WITH ... SELECT``\n(validated via the shared SELECT-safety path that rejects stacked statements,\ncomments, DDL/DML and ``UNION``). ``timestamp_column`` and\n``identifier_columns`` are validated as bare identifiers since they reach\nwarehouse SQL unparameterised."
+      },
+      "FactTableListItem": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Id"
+          },
+          "project_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Project Id"
+          },
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "display_name": {
+            "type": "string",
+            "title": "Display Name"
+          },
+          "description": {
+            "type": "string",
+            "title": "Description"
+          },
+          "color": {
+            "type": "string",
+            "title": "Color"
+          },
+          "order": {
+            "type": "integer",
+            "title": "Order"
+          },
+          "data_source_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Data Source Id"
+          },
+          "timestamp_column": {
+            "type": "string",
+            "title": "Timestamp Column"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Updated At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "project_id",
+          "name",
+          "display_name",
+          "description",
+          "color",
+          "order",
+          "data_source_id",
+          "timestamp_column",
+          "created_at",
+          "updated_at"
+        ],
+        "title": "FactTableListItem",
+        "description": "Slim catalog row: presentation + source binding, without the heavy SQL."
+      },
+      "FactTableListResponse": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/FactTableListItem"
+            },
+            "type": "array",
+            "title": "Items"
+          },
+          "total": {
+            "type": "integer",
+            "title": "Total"
+          }
+        },
+        "type": "object",
+        "required": [
+          "items",
+          "total"
+        ],
+        "title": "FactTableListResponse"
+      },
+      "FactTablePreviewRequest": {
+        "properties": {
+          "data_source_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Data Source Id"
+          },
+          "sql": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Sql"
+          },
+          "timestamp_column": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Timestamp Column"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "sql"
+        ],
+        "title": "FactTablePreviewRequest",
+        "description": "Introspect a candidate read-only SELECT/CTE before saving a fact table."
+      },
+      "FactTablePreviewResponse": {
+        "properties": {
+          "columns": {
+            "items": {
+              "$ref": "#/components/schemas/FactTableColumnSchema"
+            },
+            "type": "array",
+            "title": "Columns"
+          },
+          "identifier_candidates": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Identifier Candidates"
+          },
+          "sample_rows": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Sample Rows"
+          }
+        },
+        "type": "object",
+        "required": [
+          "columns",
+          "identifier_candidates",
+          "sample_rows"
+        ],
+        "title": "FactTablePreviewResponse"
+      },
+      "FactTableResponse": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Id"
+          },
+          "project_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Project Id"
+          },
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "display_name": {
+            "type": "string",
+            "title": "Display Name"
+          },
+          "description": {
+            "type": "string",
+            "title": "Description"
+          },
+          "color": {
+            "type": "string",
+            "title": "Color"
+          },
+          "order": {
+            "type": "integer",
+            "title": "Order"
+          },
+          "data_source_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Data Source Id"
+          },
+          "sql": {
+            "type": "string",
+            "title": "Sql"
+          },
+          "timestamp_column": {
+            "type": "string",
+            "title": "Timestamp Column"
+          },
+          "columns": {
+            "items": {
+              "$ref": "#/components/schemas/FactTableColumnSchema"
+            },
+            "type": "array",
+            "title": "Columns"
+          },
+          "identifier_columns": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Identifier Columns"
+          },
+          "row_filters": {
+            "items": {
+              "$ref": "#/components/schemas/FactTableRowFilter"
+            },
+            "type": "array",
+            "title": "Row Filters"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Updated At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "project_id",
+          "name",
+          "display_name",
+          "description",
+          "color",
+          "order",
+          "data_source_id",
+          "sql",
+          "timestamp_column",
+          "columns",
+          "identifier_columns",
+          "row_filters",
+          "created_at",
+          "updated_at"
+        ],
+        "title": "FactTableResponse"
+      },
+      "FactTableRowFilter": {
+        "properties": {
+          "name": {
+            "type": "string",
+            "maxLength": 255,
+            "minLength": 1,
+            "title": "Name"
+          },
+          "sql": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Sql"
+          }
+        },
+        "type": "object",
+        "required": [
+          "name",
+          "sql"
+        ],
+        "title": "FactTableRowFilter",
+        "description": "A reusable named row filter: a label plus a boolean WHERE fragment.\n\nThe ``sql`` fragment flows into warehouse SQL with no bound parameters, so it\nis validated at this boundary via the shared SQL-fragment validator (rejects\ncomment markers, ``;`` separators, and DDL/DML/``UNION`` keywords)."
+      },
+      "FactTableUpdate": {
+        "properties": {
+          "display_name": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 255,
+                "minLength": 1
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Display Name"
+          },
+          "description": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Description"
+          },
+          "color": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^#[0-9a-fA-F]{6}$"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Color"
+          },
+          "order": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Order"
+          },
+          "data_source_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Data Source Id"
+          },
+          "sql": {
+            "anyOf": [
+              {
+                "type": "string",
+                "minLength": 1
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sql"
+          },
+          "timestamp_column": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 255,
+                "minLength": 1
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Timestamp Column"
+          },
+          "columns": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/FactTableColumnSchema"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Columns"
+          },
+          "identifier_columns": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Identifier Columns"
+          },
+          "row_filters": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/FactTableRowFilter"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Row Filters"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "FactTableUpdate",
+        "description": "Partial update of a fact table.\n\n``name`` is immutable (it is the per-project identity) \u2014 recreate the fact\ntable to rename it. Every other field is optional; ``exclude_unset`` at the\nservice layer keeps only the fields the client actually sent."
+      },
       "FieldDefinitionBulkCreate": {
         "properties": {
           "fields": {
@@ -16786,6 +19905,1127 @@
         "type": "object",
         "title": "MetaFieldUpdate"
       },
+      "MetricAggregation": {
+        "type": "string",
+        "enum": [
+          "count",
+          "sum",
+          "avg",
+          "min",
+          "max",
+          "count_distinct"
+        ],
+        "title": "MetricAggregation",
+        "description": "Aggregation applied by a ``fact`` metric over a FactTable column."
+      },
+      "MetricBreakdownSeries": {
+        "properties": {
+          "breakdown_value": {
+            "type": "string",
+            "title": "Breakdown Value"
+          },
+          "is_other": {
+            "type": "boolean",
+            "title": "Is Other",
+            "default": false
+          },
+          "total_value": {
+            "type": "number",
+            "title": "Total Value"
+          },
+          "data": {
+            "items": {
+              "$ref": "#/components/schemas/MetricSeriesPoint"
+            },
+            "type": "array",
+            "title": "Data"
+          }
+        },
+        "type": "object",
+        "required": [
+          "breakdown_value",
+          "total_value",
+          "data"
+        ],
+        "title": "MetricBreakdownSeries"
+      },
+      "MetricBreakdownsResponse": {
+        "properties": {
+          "metric_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Metric Id"
+          },
+          "scan_config_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Scan Config Id"
+          },
+          "interval": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ScanInterval"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "columns": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Columns"
+          },
+          "selected_column": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Selected Column"
+          },
+          "series": {
+            "items": {
+              "$ref": "#/components/schemas/MetricBreakdownSeries"
+            },
+            "type": "array",
+            "title": "Series"
+          }
+        },
+        "type": "object",
+        "required": [
+          "metric_id",
+          "columns",
+          "series"
+        ],
+        "title": "MetricBreakdownsResponse"
+      },
+      "MetricCollectNowResponse": {
+        "properties": {
+          "metric_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Metric Id"
+          },
+          "status": {
+            "type": "string",
+            "const": "queued",
+            "title": "Status",
+            "default": "queued"
+          },
+          "window_from": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Window From"
+          },
+          "window_to": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Window To"
+          },
+          "task_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Task Id"
+          }
+        },
+        "type": "object",
+        "required": [
+          "metric_id"
+        ],
+        "title": "MetricCollectNowResponse",
+        "description": "202 payload for a manual ``POST /metrics/{id}/collect`` trigger.\n\n``window_from`` / ``window_to`` describe the backfilled [from, to) window for\n``fact`` / ``sql`` metrics; they are ``None`` for ``event_composition``\nmetrics, which have no interval and recompute from the full event-metric\nseries. ``task_id`` is the dispatched Celery task id when the broker returns\none, else ``None``."
+      },
+      "MetricComposition": {
+        "type": "string",
+        "enum": [
+          "single",
+          "ratio",
+          "per_distinct_user"
+        ],
+        "title": "MetricComposition",
+        "description": "How an ``event_composition`` or ``fact`` metric combines its series.\n\n``event_composition`` uses ``single`` / ``ratio`` / ``per_distinct_user``;\n``fact`` uses ``single`` (one operand) and ``ratio`` (numerator / denominator\noperands, each over a \u2014 possibly different \u2014 FactTable)."
+      },
+      "MetricDefinitionBulkUpdate": {
+        "properties": {
+          "metric_ids": {
+            "items": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "type": "array",
+            "minItems": 1,
+            "title": "Metric Ids"
+          },
+          "status": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/MetricStatus"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "owner_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Owner Id"
+          },
+          "reviewed": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reviewed"
+          },
+          "anomaly_detection_enabled": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Anomaly Detection Enabled"
+          }
+        },
+        "type": "object",
+        "required": [
+          "metric_ids"
+        ],
+        "title": "MetricDefinitionBulkUpdate"
+      },
+      "MetricDefinitionListItem": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Id"
+          },
+          "project_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Project Id"
+          },
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "display_name": {
+            "type": "string",
+            "title": "Display Name"
+          },
+          "description": {
+            "type": "string",
+            "title": "Description"
+          },
+          "color": {
+            "type": "string",
+            "title": "Color"
+          },
+          "order": {
+            "type": "integer",
+            "title": "Order"
+          },
+          "unit": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Unit"
+          },
+          "status": {
+            "$ref": "#/components/schemas/MetricStatus"
+          },
+          "owner_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Owner Id"
+          },
+          "reviewed": {
+            "type": "boolean",
+            "title": "Reviewed"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/MetricKind"
+          },
+          "aggregation": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/MetricAggregation"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "composition": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/MetricComposition"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "interval": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ScanInterval"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "anomaly_detection_enabled": {
+            "type": "boolean",
+            "title": "Anomaly Detection Enabled"
+          },
+          "last_collected_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Collected At"
+          },
+          "last_collection_status": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Collection Status"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Updated At"
+          },
+          "latest_value": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Latest Value"
+          },
+          "latest_bucket": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Latest Bucket"
+          },
+          "latest_signal": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/MetricSignalResponse"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "spark": {
+            "items": {
+              "type": "number"
+            },
+            "type": "array",
+            "title": "Spark",
+            "default": []
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "project_id",
+          "name",
+          "display_name",
+          "description",
+          "color",
+          "order",
+          "unit",
+          "status",
+          "owner_id",
+          "reviewed",
+          "kind",
+          "aggregation",
+          "composition",
+          "interval",
+          "anomaly_detection_enabled",
+          "last_collected_at",
+          "last_collection_status",
+          "created_at",
+          "updated_at"
+        ],
+        "title": "MetricDefinitionListItem",
+        "description": "Slim list row: the catalog table fields, without the heavier config/refs."
+      },
+      "MetricDefinitionListResponse": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/MetricDefinitionListItem"
+            },
+            "type": "array",
+            "title": "Items"
+          },
+          "total": {
+            "type": "integer",
+            "title": "Total"
+          }
+        },
+        "type": "object",
+        "required": [
+          "items",
+          "total"
+        ],
+        "title": "MetricDefinitionListResponse"
+      },
+      "MetricDefinitionMove": {
+        "properties": {
+          "direction": {
+            "type": "string",
+            "enum": [
+              "up",
+              "down"
+            ],
+            "title": "Direction"
+          },
+          "visible_metric_ids": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Visible Metric Ids"
+          }
+        },
+        "type": "object",
+        "required": [
+          "direction"
+        ],
+        "title": "MetricDefinitionMove"
+      },
+      "MetricDefinitionReorder": {
+        "properties": {
+          "metric_ids": {
+            "items": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "type": "array",
+            "minItems": 1,
+            "title": "Metric Ids"
+          }
+        },
+        "type": "object",
+        "required": [
+          "metric_ids"
+        ],
+        "title": "MetricDefinitionReorder"
+      },
+      "MetricDefinitionResponse": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Id"
+          },
+          "project_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Project Id"
+          },
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "display_name": {
+            "type": "string",
+            "title": "Display Name"
+          },
+          "description": {
+            "type": "string",
+            "title": "Description"
+          },
+          "color": {
+            "type": "string",
+            "title": "Color"
+          },
+          "order": {
+            "type": "integer",
+            "title": "Order"
+          },
+          "unit": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Unit"
+          },
+          "status": {
+            "$ref": "#/components/schemas/MetricStatus"
+          },
+          "owner_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Owner Id"
+          },
+          "reviewed": {
+            "type": "boolean",
+            "title": "Reviewed"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/MetricKind"
+          },
+          "aggregation": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/MetricAggregation"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "composition": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/MetricComposition"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "config": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Config"
+          },
+          "fact_table_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Fact Table Id"
+          },
+          "breakdown_columns": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Breakdown Columns"
+          },
+          "breakdown_values_limit": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Breakdown Values Limit"
+          },
+          "app_version_column": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "App Version Column"
+          },
+          "platform_column": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Platform Column"
+          },
+          "data_source_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Data Source Id"
+          },
+          "interval": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ScanInterval"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "replay_chunk_interval": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ScanInterval"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "numerator_event_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Numerator Event Id"
+          },
+          "numerator_event_type_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Numerator Event Type Id"
+          },
+          "denominator_event_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Denominator Event Id"
+          },
+          "denominator_event_type_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Denominator Event Type Id"
+          },
+          "anomaly_detection_enabled": {
+            "type": "boolean",
+            "title": "Anomaly Detection Enabled"
+          },
+          "last_collected_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Collected At"
+          },
+          "last_collection_status": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Collection Status"
+          },
+          "last_collection_error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Collection Error"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Updated At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "project_id",
+          "name",
+          "display_name",
+          "description",
+          "color",
+          "order",
+          "unit",
+          "status",
+          "owner_id",
+          "reviewed",
+          "kind",
+          "aggregation",
+          "composition",
+          "config",
+          "fact_table_id",
+          "breakdown_columns",
+          "breakdown_values_limit",
+          "app_version_column",
+          "platform_column",
+          "data_source_id",
+          "interval",
+          "replay_chunk_interval",
+          "numerator_event_id",
+          "numerator_event_type_id",
+          "denominator_event_id",
+          "denominator_event_type_id",
+          "anomaly_detection_enabled",
+          "last_collected_at",
+          "last_collection_status",
+          "last_collection_error",
+          "created_at",
+          "updated_at"
+        ],
+        "title": "MetricDefinitionResponse"
+      },
+      "MetricDefinitionUpdate": {
+        "properties": {
+          "display_name": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 255,
+                "minLength": 1
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Display Name"
+          },
+          "description": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Description"
+          },
+          "color": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^#[0-9a-fA-F]{6}$"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Color"
+          },
+          "order": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Order"
+          },
+          "unit": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 50
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Unit"
+          },
+          "status": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/MetricStatus"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "owner_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Owner Id"
+          },
+          "reviewed": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reviewed"
+          },
+          "breakdown_columns": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Breakdown Columns"
+          },
+          "breakdown_values_limit": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 1.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Breakdown Values Limit"
+          },
+          "app_version_column": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 255
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "App Version Column"
+          },
+          "platform_column": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 255
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Platform Column"
+          },
+          "anomaly_detection_enabled": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Anomaly Detection Enabled"
+          },
+          "definition": {
+            "anyOf": [
+              {
+                "oneOf": [
+                  {
+                    "$ref": "#/components/schemas/FactMetricDefinition"
+                  },
+                  {
+                    "$ref": "#/components/schemas/SqlMetricDefinition"
+                  },
+                  {
+                    "$ref": "#/components/schemas/EventCompositionMetricDefinition"
+                  }
+                ],
+                "discriminator": {
+                  "propertyName": "kind",
+                  "mapping": {
+                    "event_composition": "#/components/schemas/EventCompositionMetricDefinition",
+                    "fact": "#/components/schemas/FactMetricDefinition",
+                    "sql": "#/components/schemas/SqlMetricDefinition"
+                  }
+                }
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Definition"
+          }
+        },
+        "type": "object",
+        "title": "MetricDefinitionUpdate",
+        "description": "Partial update of presentation, lifecycle, dimension and monitoring fields,\nplus an optional ``definition`` block that re-defines the metric's kind +\ncollection config.\n\nThe internal ``name`` is the stable query identifier and stays IMMUTABLE: it\nhas no update field and is ignored if supplied. The optional ``definition``\nblock mirrors the create discriminated union (minus ``name`` and the other\npresentation fields, which keep their own update fields here); when present it\nis re-validated EXACTLY like creation and the service overwrites the metric's\n``kind`` / ``config`` / collection binding from it. A ``kind`` change clears\nthe metric's previously collected values (see the service)."
+      },
+      "MetricKind": {
+        "type": "string",
+        "enum": [
+          "sql",
+          "event_composition",
+          "fact"
+        ],
+        "title": "MetricKind",
+        "description": "How a MetricDefinition produces its per-bucket value."
+      },
+      "MetricPreviewPoint": {
+        "properties": {
+          "bucket": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Bucket"
+          },
+          "value": {
+            "type": "number",
+            "title": "Value"
+          }
+        },
+        "type": "object",
+        "required": [
+          "bucket",
+          "value"
+        ],
+        "title": "MetricPreviewPoint",
+        "description": "One interval-floored (bucket, value) preview point."
+      },
+      "MetricPreviewRequest": {
+        "properties": {
+          "data_source_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Data Source Id"
+          },
+          "sql": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Sql"
+          },
+          "time_column": {
+            "type": "string",
+            "maxLength": 255,
+            "minLength": 1,
+            "title": "Time Column"
+          },
+          "value_column": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 255,
+                "minLength": 1
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Value Column"
+          },
+          "interval": {
+            "$ref": "#/components/schemas/ScanInterval"
+          }
+        },
+        "type": "object",
+        "required": [
+          "data_source_id",
+          "sql",
+          "time_column",
+          "interval"
+        ],
+        "title": "MetricPreviewRequest",
+        "description": "Stateless dry-run of a ``sql``-kind metric SELECT (nothing is persisted).\n\nSQL semantics (read-only shape, projected columns, identifier validity) are\ndeliberately NOT validated at this schema boundary: those are expected user\nmistakes while drafting a query, and the preview endpoint reports them as a\n200 response with ``error`` set (see ``metric_preview_service``) instead of\na 422. Only structural shape (types, lengths, interval enum) is enforced\nhere."
+      },
+      "MetricPreviewResponse": {
+        "properties": {
+          "columns": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Columns"
+          },
+          "points": {
+            "items": {
+              "$ref": "#/components/schemas/MetricPreviewPoint"
+            },
+            "type": "array",
+            "title": "Points"
+          },
+          "point_count": {
+            "type": "integer",
+            "title": "Point Count",
+            "default": 0
+          },
+          "truncated": {
+            "type": "boolean",
+            "title": "Truncated",
+            "default": false
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          }
+        },
+        "type": "object",
+        "title": "MetricPreviewResponse",
+        "description": "Preview outcome; user-level failures set ``error`` with empty ``points``."
+      },
       "MetricScopeType": {
         "type": "string",
         "enum": [
@@ -16794,15 +21034,158 @@
           "event",
           "schema",
           "distribution",
-          "release_regression"
+          "release_regression",
+          "metric"
         ],
         "title": "MetricScopeType"
+      },
+      "MetricSeriesPoint": {
+        "properties": {
+          "bucket": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Bucket"
+          },
+          "value": {
+            "type": "number",
+            "title": "Value"
+          },
+          "expected_count": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expected Count"
+          },
+          "stddev": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Stddev"
+          },
+          "is_anomaly": {
+            "type": "boolean",
+            "title": "Is Anomaly",
+            "default": false
+          },
+          "anomaly_direction": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AnomalyDirection"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "z_score": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Z Score"
+          }
+        },
+        "type": "object",
+        "required": [
+          "bucket",
+          "value"
+        ],
+        "title": "MetricSeriesPoint",
+        "description": "One densified point of a catalog-metric series.\n\nMirrors ``EventMetricPoint`` but stores a float ``value``. ``expected_count``\n/ ``stddev`` / ``z_score`` / ``anomaly_direction`` are only populated for\nbuckets that carry an anomaly row; the rest leave them ``None``."
+      },
+      "MetricSeriesResponse": {
+        "properties": {
+          "metric_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Metric Id"
+          },
+          "scope": {
+            "type": "string",
+            "title": "Scope",
+            "default": "metric"
+          },
+          "scan_config_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Scan Config Id"
+          },
+          "interval": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ScanInterval"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "latest_signal": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/MetricSignalResponse"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "data": {
+            "items": {
+              "$ref": "#/components/schemas/MetricSeriesPoint"
+            },
+            "type": "array",
+            "title": "Data"
+          },
+          "forecast": {
+            "items": {
+              "$ref": "#/components/schemas/ForecastPoint"
+            },
+            "type": "array",
+            "title": "Forecast",
+            "default": []
+          }
+        },
+        "type": "object",
+        "required": [
+          "metric_id",
+          "data"
+        ],
+        "title": "MetricSeriesResponse"
       },
       "MetricSignalResponse": {
         "properties": {
           "scan_config_id": {
-            "type": "string",
-            "format": "uuid",
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
             "title": "Scan Config Id"
           },
           "scope_type": {
@@ -16846,7 +21229,7 @@
             "title": "Bucket"
           },
           "actual_count": {
-            "type": "integer",
+            "type": "number",
             "title": "Actual Count"
           },
           "expected_count": {
@@ -16867,7 +21250,6 @@
         },
         "type": "object",
         "required": [
-          "scan_config_id",
           "scope_type",
           "scope_ref",
           "state",
@@ -16879,6 +21261,131 @@
           "direction"
         ],
         "title": "MetricSignalResponse"
+      },
+      "MetricStatus": {
+        "type": "string",
+        "enum": [
+          "draft",
+          "active",
+          "archived"
+        ],
+        "title": "MetricStatus",
+        "description": "Simple catalog lifecycle for metrics (no dev-implementation states)."
+      },
+      "MetricVersionSeries": {
+        "properties": {
+          "version": {
+            "type": "string",
+            "title": "Version"
+          },
+          "is_other": {
+            "type": "boolean",
+            "title": "Is Other",
+            "default": false
+          },
+          "is_latest": {
+            "type": "boolean",
+            "title": "Is Latest",
+            "default": false
+          },
+          "is_active": {
+            "type": "boolean",
+            "title": "Is Active",
+            "default": false
+          },
+          "total_value": {
+            "type": "number",
+            "title": "Total Value"
+          },
+          "data": {
+            "items": {
+              "$ref": "#/components/schemas/MetricSeriesPoint"
+            },
+            "type": "array",
+            "title": "Data"
+          }
+        },
+        "type": "object",
+        "required": [
+          "version",
+          "total_value",
+          "data"
+        ],
+        "title": "MetricVersionSeries"
+      },
+      "MetricVersionSeriesResponse": {
+        "properties": {
+          "metric_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Metric Id"
+          },
+          "scan_config_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Scan Config Id"
+          },
+          "app_version_column": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "App Version Column"
+          },
+          "interval": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ScanInterval"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "latest_version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Latest Version"
+          },
+          "versions": {
+            "items": {
+              "$ref": "#/components/schemas/AppVersionInfo"
+            },
+            "type": "array",
+            "title": "Versions"
+          },
+          "series": {
+            "items": {
+              "$ref": "#/components/schemas/MetricVersionSeries"
+            },
+            "type": "array",
+            "title": "Series"
+          }
+        },
+        "type": "object",
+        "required": [
+          "metric_id",
+          "versions",
+          "series"
+        ],
+        "title": "MetricVersionSeriesResponse"
       },
       "MonitorDetailResponse": {
         "properties": {
@@ -17018,6 +21525,10 @@
             "type": "boolean",
             "title": "Include Release Regressions"
           },
+          "include_metrics": {
+            "type": "boolean",
+            "title": "Include Metrics"
+          },
           "total_deliveries": {
             "type": "integer",
             "title": "Total Deliveries"
@@ -17069,6 +21580,7 @@
           "include_schema_drifts",
           "include_distribution_drifts",
           "include_release_regressions",
+          "include_metrics",
           "total_deliveries"
         ],
         "title": "MonitorDetailResponse",
@@ -17911,6 +22423,76 @@
         "title": "PlanRevisionSummary",
         "description": "List-view of a revision \u2014 payload omitted to keep responses small."
       },
+      "PlatformPresenceResponse": {
+        "properties": {
+          "scan_config_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Scan Config Id"
+          },
+          "platform_column": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Platform Column"
+          },
+          "platforms": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Platforms"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/PlatformPresenceRow"
+            },
+            "type": "array",
+            "title": "Items"
+          }
+        },
+        "type": "object",
+        "required": [
+          "scan_config_id",
+          "platforms",
+          "items"
+        ],
+        "title": "PlatformPresenceResponse",
+        "description": "Per-event platform presence matrix derived from EventMetricBreakdown rows\non the scan's designated ``platform_column``. Empty when the column is unset."
+      },
+      "PlatformPresenceRow": {
+        "properties": {
+          "event_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Event Id"
+          },
+          "event_name": {
+            "type": "string",
+            "title": "Event Name"
+          },
+          "present_platforms": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Present Platforms"
+          }
+        },
+        "type": "object",
+        "required": [
+          "event_id",
+          "event_name",
+          "present_platforms"
+        ],
+        "title": "PlatformPresenceRow",
+        "description": "One event and the platform values it has stored breakdown data for."
+      },
       "ProjectAnomalySettingsResponse": {
         "properties": {
           "id": {
@@ -17938,6 +22520,10 @@
           "detect_events": {
             "type": "boolean",
             "title": "Detect Events"
+          },
+          "detect_metrics": {
+            "type": "boolean",
+            "title": "Detect Metrics"
           },
           "baseline_window_buckets": {
             "type": "integer",
@@ -17974,6 +22560,7 @@
           "detect_project_total",
           "detect_event_types",
           "detect_events",
+          "detect_metrics",
           "baseline_window_buckets",
           "min_history_buckets",
           "sigma_threshold",
@@ -18029,6 +22616,17 @@
             ],
             "title": "Detect Events"
           },
+          "detect_metrics": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Detect Metrics"
+          },
           "baseline_window_buckets": {
             "anyOf": [
               {
@@ -18080,6 +22678,97 @@
         },
         "type": "object",
         "title": "ProjectAnomalySettingsUpdate"
+      },
+      "ProjectBranchSettingsResponse": {
+        "properties": {
+          "id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Id"
+          },
+          "project_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Project Id"
+          },
+          "min_approvals": {
+            "type": "integer",
+            "title": "Min Approvals"
+          },
+          "block_self_approval": {
+            "type": "boolean",
+            "title": "Block Self Approval"
+          },
+          "created_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Created At"
+          },
+          "updated_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Updated At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "project_id",
+          "min_approvals",
+          "block_self_approval"
+        ],
+        "title": "ProjectBranchSettingsResponse",
+        "description": "``id``/timestamps are None while the project still rides the defaults \u2014\nthe settings row is only materialized on the first PATCH."
+      },
+      "ProjectBranchSettingsUpdate": {
+        "properties": {
+          "min_approvals": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "maximum": 100.0,
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Min Approvals"
+          },
+          "block_self_approval": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Block Self Approval"
+          }
+        },
+        "type": "object",
+        "title": "ProjectBranchSettingsUpdate"
       },
       "ProjectCreate": {
         "properties": {
@@ -18227,7 +22916,7 @@
             "title": "Bucket"
           },
           "actual_count": {
-            "type": "integer",
+            "type": "number",
             "title": "Actual Count"
           },
           "expected_count": {
@@ -18359,6 +23048,11 @@
             "title": "Firing Monitor Count",
             "default": 0
           },
+          "failing_scan_config_count": {
+            "type": "integer",
+            "title": "Failing Scan Config Count",
+            "default": 0
+          },
           "latest_scan_job": {
             "anyOf": [
               {
@@ -18382,6 +23076,176 @@
         },
         "type": "object",
         "title": "ProjectSummary"
+      },
+      "ProjectTrackerConfigResponse": {
+        "properties": {
+          "id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Id"
+          },
+          "project_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Project Id"
+          },
+          "enabled": {
+            "type": "boolean",
+            "title": "Enabled"
+          },
+          "tracker_type": {
+            "type": "string",
+            "title": "Tracker Type"
+          },
+          "base_url": {
+            "type": "string",
+            "title": "Base Url"
+          },
+          "project_key": {
+            "type": "string",
+            "title": "Project Key"
+          },
+          "auth_email": {
+            "type": "string",
+            "title": "Auth Email"
+          },
+          "issue_type": {
+            "type": "string",
+            "title": "Issue Type"
+          },
+          "api_token_set": {
+            "type": "boolean",
+            "title": "Api Token Set"
+          },
+          "created_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Created At"
+          },
+          "updated_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Updated At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "project_id",
+          "enabled",
+          "tracker_type",
+          "base_url",
+          "project_key",
+          "auth_email",
+          "issue_type",
+          "api_token_set"
+        ],
+        "title": "ProjectTrackerConfigResponse",
+        "description": "``id``/timestamps are None while the project rides the defaults \u2014 the row\nis only materialized on the first PATCH. The token is never returned; only\n``api_token_set`` signals whether one is stored."
+      },
+      "ProjectTrackerConfigUpdate": {
+        "properties": {
+          "enabled": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Enabled"
+          },
+          "tracker_type": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tracker Type"
+          },
+          "base_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Base Url"
+          },
+          "project_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Project Key"
+          },
+          "auth_email": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Auth Email"
+          },
+          "api_token": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Api Token"
+          },
+          "issue_type": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Issue Type"
+          }
+        },
+        "type": "object",
+        "title": "ProjectTrackerConfigUpdate",
+        "description": "Partial update \u2014 every field optional. ``api_token`` is the RAW token on\ninput; it is encrypted at rest and never echoed back. Passing ``\"\"`` clears\nthe stored token; omitting / null leaves it unchanged."
       },
       "ProjectUpdate": {
         "properties": {
@@ -19050,6 +23914,45 @@
               }
             ],
             "title": "App Version Keep Releases"
+          },
+          "app_version_prerelease_pattern": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 255,
+                "minLength": 1
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "App Version Prerelease Pattern"
+          },
+          "app_version_active_share_min": {
+            "anyOf": [
+              {
+                "type": "number",
+                "exclusiveMaximum": 1.0,
+                "exclusiveMinimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "App Version Active Share Min"
+          },
+          "platform_column": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 255,
+                "minLength": 1
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Platform Column"
           }
         },
         "type": "object",
@@ -19312,6 +24215,39 @@
             ],
             "title": "App Version Keep Releases"
           },
+          "app_version_prerelease_pattern": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "App Version Prerelease Pattern"
+          },
+          "app_version_active_share_min": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "App Version Active Share Min"
+          },
+          "platform_column": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Platform Column"
+          },
           "created_at": {
             "type": "string",
             "format": "date-time",
@@ -19347,6 +24283,9 @@
           "metrics_row_limit",
           "app_version_column",
           "app_version_keep_releases",
+          "app_version_prerelease_pattern",
+          "app_version_active_share_min",
+          "platform_column",
           "created_at",
           "updated_at"
         ],
@@ -19583,6 +24522,43 @@
               }
             ],
             "title": "App Version Keep Releases"
+          },
+          "app_version_prerelease_pattern": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 255
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "App Version Prerelease Pattern"
+          },
+          "app_version_active_share_min": {
+            "anyOf": [
+              {
+                "type": "number",
+                "exclusiveMaximum": 1.0,
+                "exclusiveMinimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "App Version Active Share Min"
+          },
+          "platform_column": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 255
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Platform Column"
           }
         },
         "type": "object",
@@ -20144,7 +25120,9 @@
               "meta_field",
               "variable",
               "relation",
-              "tag"
+              "tag",
+              "metric",
+              "fact_table"
             ],
             "title": "Entity Type"
           },
@@ -20977,7 +25955,7 @@
             "$ref": "#/components/schemas/AnomalyDirection"
           },
           "actual_count": {
-            "type": "integer",
+            "type": "number",
             "title": "Actual Count"
           },
           "expected_count": {
@@ -21021,6 +25999,232 @@
         ],
         "title": "SimulatedRuleFiring",
         "description": "One virtual delivery the rule would have triggered during the window."
+      },
+      "SqlConfig": {
+        "properties": {
+          "metric_sql": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Metric Sql"
+          },
+          "time_column": {
+            "type": "string",
+            "maxLength": 255,
+            "minLength": 1,
+            "title": "Time Column"
+          },
+          "value_column": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 255,
+                "minLength": 1
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Value Column"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "metric_sql",
+          "time_column"
+        ],
+        "title": "SqlConfig",
+        "description": "Config JSON for a ``sql`` metric: a user-authored per-bucket SELECT/CTE."
+      },
+      "SqlMetricCreate": {
+        "properties": {
+          "kind": {
+            "type": "string",
+            "const": "sql",
+            "title": "Kind",
+            "default": "sql"
+          },
+          "config": {
+            "$ref": "#/components/schemas/SqlConfig"
+          },
+          "data_source_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Data Source Id"
+          },
+          "interval": {
+            "$ref": "#/components/schemas/ScanInterval"
+          },
+          "replay_chunk_interval": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ScanInterval"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "name": {
+            "type": "string",
+            "maxLength": 255,
+            "minLength": 1,
+            "title": "Name"
+          },
+          "display_name": {
+            "type": "string",
+            "maxLength": 255,
+            "minLength": 1,
+            "title": "Display Name"
+          },
+          "description": {
+            "type": "string",
+            "title": "Description",
+            "default": ""
+          },
+          "color": {
+            "type": "string",
+            "pattern": "^#[0-9a-fA-F]{6}$",
+            "title": "Color",
+            "default": "#6366f1"
+          },
+          "order": {
+            "type": "integer",
+            "title": "Order",
+            "default": 0
+          },
+          "unit": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 50
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Unit"
+          },
+          "status": {
+            "$ref": "#/components/schemas/MetricStatus",
+            "default": "draft"
+          },
+          "owner_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Owner Id"
+          },
+          "reviewed": {
+            "type": "boolean",
+            "title": "Reviewed",
+            "default": false
+          },
+          "breakdown_columns": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Breakdown Columns"
+          },
+          "breakdown_values_limit": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 1.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Breakdown Values Limit"
+          },
+          "app_version_column": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 255,
+                "minLength": 1
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "App Version Column"
+          },
+          "platform_column": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 255,
+                "minLength": 1
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Platform Column"
+          },
+          "anomaly_detection_enabled": {
+            "type": "boolean",
+            "title": "Anomaly Detection Enabled",
+            "default": true
+          }
+        },
+        "type": "object",
+        "required": [
+          "config",
+          "data_source_id",
+          "interval",
+          "name",
+          "display_name"
+        ],
+        "title": "SqlMetricCreate"
+      },
+      "SqlMetricDefinition": {
+        "properties": {
+          "kind": {
+            "type": "string",
+            "const": "sql",
+            "title": "Kind",
+            "default": "sql"
+          },
+          "config": {
+            "$ref": "#/components/schemas/SqlConfig"
+          },
+          "data_source_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Data Source Id"
+          },
+          "interval": {
+            "$ref": "#/components/schemas/ScanInterval"
+          },
+          "replay_chunk_interval": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ScanInterval"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "type": "object",
+        "required": [
+          "config",
+          "data_source_id",
+          "interval"
+        ],
+        "title": "SqlMetricDefinition",
+        "description": "Kind + collection config for a ``sql`` metric: SELECT + its data source."
       },
       "StorageSettings": {
         "properties": {
@@ -21284,7 +26488,7 @@
             "title": "Is Other"
           },
           "actual_count": {
-            "type": "integer",
+            "type": "number",
             "title": "Actual Count"
           },
           "expected_count": {
