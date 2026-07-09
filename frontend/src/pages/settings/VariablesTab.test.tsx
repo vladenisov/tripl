@@ -1,7 +1,9 @@
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { eventsApi } from '@/api/events'
 import { variablesApi } from '@/api/variables'
+import { variableOverridesApi } from '@/api/variableOverrides'
 import { VariablesTab } from './VariablesTab'
 
 vi.mock('@/api/variables', () => ({
@@ -11,6 +13,20 @@ vi.mock('@/api/variables', () => ({
     update: vi.fn(),
     del: vi.fn(),
     values: vi.fn(),
+  },
+}))
+
+vi.mock('@/api/variableOverrides', () => ({
+  variableOverridesApi: {
+    list: vi.fn(),
+    upsert: vi.fn(),
+    del: vi.fn(),
+  },
+}))
+
+vi.mock('@/api/events', () => ({
+  eventsApi: {
+    list: vi.fn(),
   },
 }))
 
@@ -38,6 +54,8 @@ describe('VariablesTab', () => {
         name: 'spot_id',
         source_name: 'spot_id',
         variable_type: 'string',
+        allowed_values: [],
+        bindings: [],
         description: 'Spot identifier',
         event_count: 2,
         context_count: 2,
@@ -110,6 +128,8 @@ describe('VariablesTab', () => {
         name: 'spot_id',
         source_name: 'spot_id',
         variable_type: 'string',
+        allowed_values: [],
+        bindings: [],
         description: '',
       },
       {
@@ -118,6 +138,8 @@ describe('VariablesTab', () => {
         name: 'user_id',
         source_name: 'user_id',
         variable_type: 'string',
+        allowed_values: [],
+        bindings: [],
         description: '',
       },
     ])
@@ -172,6 +194,8 @@ describe('VariablesTab', () => {
         name: 'user_id',
         source_name: 'user_id',
         variable_type: 'string',
+        allowed_values: [],
+        bindings: [],
         description: 'User identifier',
       },
     ])
@@ -210,5 +234,147 @@ describe('VariablesTab', () => {
     expect(within(dialog).getByText('Profile View')).toBeInTheDocument()
     expect(within(dialog).getByText('u1')).toBeInTheDocument()
     expect(within(dialog).getByText('u2')).toBeInTheDocument()
+  })
+
+  it('creates a variable with documented values and bindings', async () => {
+    vi.mocked(variablesApi.list).mockResolvedValue([])
+    vi.mocked(variablesApi.create).mockResolvedValue({
+      id: 'var-new',
+      project_id: 'p',
+      name: 'variant',
+      source_name: null,
+      variable_type: 'string',
+      allowed_values: ['a'],
+      bindings: ['page_data.extra.variant'],
+      description: '',
+    })
+
+    renderVariablesTab()
+    fireEvent.click(await screen.findByRole('button', { name: /add variable/i }))
+    fireEvent.change(screen.getByPlaceholderText('my_variable'), { target: { value: 'variant' } })
+
+    const valueInput = screen.getByLabelText('Add possible value')
+    fireEvent.change(valueInput, { target: { value: 'a' } })
+    fireEvent.keyDown(valueInput, { key: 'Enter' })
+
+    const bindingInput = screen.getByLabelText('Add data binding')
+    fireEvent.change(bindingInput, { target: { value: 'page_data.extra.variant' } })
+    fireEvent.keyDown(bindingInput, { key: 'Enter' })
+
+    fireEvent.click(screen.getByRole('button', { name: 'Create' }))
+    await waitFor(() =>
+      expect(variablesApi.create).toHaveBeenCalledWith(
+        'demo',
+        expect.objectContaining({
+          name: 'variant',
+          allowed_values: ['a'],
+          bindings: ['page_data.extra.variant'],
+        }),
+        null,
+      ),
+    )
+  })
+
+  it('rejects an invalid binding path in the chip input', async () => {
+    vi.mocked(variablesApi.list).mockResolvedValue([])
+    renderVariablesTab()
+    fireEvent.click(await screen.findByRole('button', { name: /add variable/i }))
+
+    const bindingInput = screen.getByLabelText('Add data binding')
+    fireEvent.change(bindingInput, { target: { value: 'not a path!' } })
+    fireEvent.keyDown(bindingInput, { key: 'Enter' })
+
+    expect(await screen.findByText(/invalid path/i)).toBeInTheDocument()
+  })
+
+  it('saves a per-event override from the edit dialog', async () => {
+    vi.mocked(variablesApi.list).mockResolvedValue([
+      {
+        id: 'var-1',
+        project_id: 'p',
+        name: 'variant',
+        source_name: 'page_data.extra.variant',
+        variable_type: 'string',
+        allowed_values: ['a', 'b'],
+        bindings: ['page_data.extra.variant'],
+        description: '',
+      },
+    ])
+    vi.mocked(variablesApi.values).mockResolvedValue([])
+    vi.mocked(variableOverridesApi.list).mockResolvedValue([
+      {
+        id: 'ovr-1',
+        variable_id: 'var-1',
+        event_id: 'ev-1',
+        event_name: 'Onboarding',
+        values: ['x'],
+      },
+    ])
+    vi.mocked(eventsApi.list).mockResolvedValue({
+      items: [
+        { id: 'ev-1', name: 'Onboarding' },
+        { id: 'ev-2', name: 'Checkout' },
+      ] as never,
+      total: 2,
+    })
+    vi.mocked(variableOverridesApi.upsert).mockResolvedValue({
+      id: 'ovr-2',
+      variable_id: 'var-1',
+      event_id: 'ev-2',
+      event_name: 'Checkout',
+      values: ['y'],
+    })
+
+    renderVariablesTab()
+    fireEvent.click(await screen.findByRole('button', { name: 'Edit variable variant' }))
+
+    // Existing override renders with its event name and values.
+    expect(
+      await screen.findByRole('button', { name: 'Edit override for Onboarding' }),
+    ).toBeInTheDocument()
+    expect(screen.getByText('x')).toBeInTheDocument()
+
+    fireEvent.change(screen.getByLabelText('Override event'), { target: { value: 'ev-2' } })
+    const overrideInput = screen.getByLabelText('Add override value')
+    fireEvent.change(overrideInput, { target: { value: 'y' } })
+    fireEvent.keyDown(overrideInput, { key: 'Enter' })
+    fireEvent.click(screen.getByRole('button', { name: 'Save override' }))
+
+    await waitFor(() =>
+      expect(variableOverridesApi.upsert).toHaveBeenCalledWith('demo', 'var-1', 'ev-2', ['y'], null),
+    )
+  })
+
+  it('keeps a legacy dotted name editable while unchanged but restricts renames', async () => {
+    vi.mocked(variablesApi.list).mockResolvedValue([
+      {
+        id: 'var-legacy',
+        project_id: 'p',
+        name: 'page_data.extra.variant',
+        source_name: 'page_data.extra.variant',
+        variable_type: 'string',
+        allowed_values: [],
+        bindings: ['page_data.extra.variant'],
+        description: '',
+      },
+    ])
+    vi.mocked(variablesApi.values).mockResolvedValue([])
+    vi.mocked(variableOverridesApi.list).mockResolvedValue([])
+    vi.mocked(eventsApi.list).mockResolvedValue({ items: [] as never, total: 0 })
+
+    renderVariablesTab()
+    fireEvent.click(
+      await screen.findByRole('button', { name: 'Edit variable page_data.extra.variant' }),
+    )
+
+    const nameInput = screen.getByPlaceholderText('variable_name') as HTMLInputElement
+    // Unchanged legacy dotted name → no pattern restriction.
+    expect(nameInput.value).toBe('page_data.extra.variant')
+    expect(nameInput).not.toHaveAttribute('pattern')
+
+    // Renaming applies the strict dot-free pattern.
+    fireEvent.change(nameInput, { target: { value: 'page_data.renamed' } })
+    expect(nameInput).toHaveAttribute('pattern', '^[a-z][a-z0-9_]*$')
+    expect(nameInput.validity.patternMismatch).toBe(true)
   })
 })

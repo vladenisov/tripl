@@ -52,6 +52,10 @@ export interface Event {
   updated_at: string
 }
 
+export interface EventMutationResponse extends Event {
+  warnings: string[]
+}
+
 export interface EventChange {
   id: string
   event_id: string
@@ -142,6 +146,8 @@ export interface Variable {
   source_name: string | null
   variable_type: VariableType
   description: string
+  allowed_values: string[]
+  bindings: string[]
   event_count?: number
   context_count?: number
   low_context_count?: number
