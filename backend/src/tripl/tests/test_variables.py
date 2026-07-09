@@ -185,3 +185,174 @@ async def test_variable_types(client: AsyncClient):
         )
         assert resp.status_code == 201, f"Failed for type {vt}"
         assert resp.json()["variable_type"] == vt
+
+
+@pytest.mark.asyncio
+async def test_create_variable_with_values_and_bindings(client: AsyncClient):
+    await _setup_project(client, "var-vals")
+    resp = await client.post(
+        "/api/v1/projects/var-vals/variables",
+        json={
+            "name": "variant",
+            "variable_type": "string",
+            "allowed_values": ["a", "b", "c"],
+            "bindings": ["page_data.extra.variant"],
+        },
+    )
+    assert resp.status_code == 201
+    data = resp.json()
+    assert data["allowed_values"] == ["a", "b", "c"]
+    assert data["bindings"] == ["page_data.extra.variant"]
+
+    list_resp = await client.get("/api/v1/projects/var-vals/variables")
+    assert list_resp.json()[0]["allowed_values"] == ["a", "b", "c"]
+
+
+@pytest.mark.asyncio
+async def test_create_variable_invalid_binding_path(client: AsyncClient):
+    await _setup_project(client, "var-badbind")
+    resp = await client.post(
+        "/api/v1/projects/var-badbind/variables",
+        json={"name": "v_bad", "bindings": ["not a path!"]},
+    )
+    assert resp.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_binding_conflict_returns_409(client: AsyncClient):
+    await _setup_project(client, "var-binddup")
+    await client.post(
+        "/api/v1/projects/var-binddup/variables",
+        json={"name": "variant", "bindings": ["page_data.extra.variant"]},
+    )
+    resp = await client.post(
+        "/api/v1/projects/var-binddup/variables",
+        json={"name": "variant_two", "bindings": ["page_data.extra.variant"]},
+    )
+    assert resp.status_code == 409
+    assert "already used" in resp.json()["detail"]
+
+    # And via update on a third variable
+    third = await client.post(
+        "/api/v1/projects/var-binddup/variables", json={"name": "variant_three"}
+    )
+    upd = await client.patch(
+        f"/api/v1/projects/var-binddup/variables/{third.json()['id']}",
+        json={"bindings": ["page_data.extra.variant"]},
+    )
+    assert upd.status_code == 409
+
+
+@pytest.mark.asyncio
+async def test_binding_conflicts_with_other_variable_source_name(client: AsyncClient):
+    await _setup_project(client, "var-bindsrc")
+    created = await client.post("/api/v1/projects/var-bindsrc/variables", json={"name": "scanned"})
+    async with TestSessionLocal() as session, session.begin():
+        var = await session.get(Variable, uuid.UUID(created.json()["id"]))
+        var.source_name = "raw.path.token"
+    resp = await client.post(
+        "/api/v1/projects/var-bindsrc/variables",
+        json={"name": "manual", "bindings": ["raw.path.token"]},
+    )
+    assert resp.status_code == 409
+
+
+@pytest.mark.asyncio
+async def test_rename_to_dotted_name_rejected_but_legacy_editable(client: AsyncClient):
+    await _setup_project(client, "var-legacy")
+    created = await client.post("/api/v1/projects/var-legacy/variables", json={"name": "plain_var"})
+    var_id = created.json()["id"]
+    # Renaming TO a dotted name is rejected by the service
+    resp = await client.patch(
+        f"/api/v1/projects/var-legacy/variables/{var_id}",
+        json={"name": "page_data.extra.variant"},
+    )
+    assert resp.status_code == 422
+
+    # A legacy dotted-named variable stays editable while the name is unchanged
+    async with TestSessionLocal() as session, session.begin():
+        var = await session.get(Variable, uuid.UUID(var_id))
+        var.name = "page_data.extra.variant"
+    resp = await client.patch(
+        f"/api/v1/projects/var-legacy/variables/{var_id}",
+        json={"name": "page_data.extra.variant", "description": "still editable"},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["description"] == "still editable"
+
+
+async def _setup_event(client: AsyncClient, slug: str) -> tuple[str, str]:
+    et = await client.post(
+        f"/api/v1/projects/{slug}/event-types",
+        json={"name": "pv", "display_name": "Page View"},
+    )
+    et_id = et.json()["id"]
+    event = await client.post(
+        f"/api/v1/projects/{slug}/events",
+        json={"event_type_id": et_id, "name": "Onboarding Screen"},
+    )
+    return et_id, event.json()["id"]
+
+
+@pytest.mark.asyncio
+async def test_event_override_crud(client: AsyncClient):
+    await _setup_project(client, "var-ovr")
+    _, event_id = await _setup_event(client, "var-ovr")
+    created = await client.post(
+        "/api/v1/projects/var-ovr/variables",
+        json={"name": "variant", "allowed_values": ["a", "b"]},
+    )
+    var_id = created.json()["id"]
+
+    put = await client.put(
+        f"/api/v1/projects/var-ovr/variables/{var_id}/event-overrides/{event_id}",
+        json={"values": ["x", "y"]},
+    )
+    assert put.status_code == 200
+    assert put.json()["values"] == ["x", "y"]
+    assert put.json()["event_name"] == "Onboarding Screen"
+
+    listed = await client.get(f"/api/v1/projects/var-ovr/variables/{var_id}/event-overrides")
+    assert listed.status_code == 200
+    assert len(listed.json()) == 1
+
+    # PUT again replaces (upsert), no duplicate row
+    put2 = await client.put(
+        f"/api/v1/projects/var-ovr/variables/{var_id}/event-overrides/{event_id}",
+        json={"values": ["z"]},
+    )
+    assert put2.status_code == 200
+    assert put2.json()["values"] == ["z"]
+    listed2 = await client.get(f"/api/v1/projects/var-ovr/variables/{var_id}/event-overrides")
+    assert len(listed2.json()) == 1
+
+    deleted = await client.delete(
+        f"/api/v1/projects/var-ovr/variables/{var_id}/event-overrides/{event_id}"
+    )
+    assert deleted.status_code == 204
+    listed3 = await client.get(f"/api/v1/projects/var-ovr/variables/{var_id}/event-overrides")
+    assert listed3.json() == []
+
+
+@pytest.mark.asyncio
+async def test_event_override_404s(client: AsyncClient):
+    await _setup_project(client, "var-ovr404")
+    _, event_id = await _setup_event(client, "var-ovr404")
+    created = await client.post("/api/v1/projects/var-ovr404/variables", json={"name": "variant"})
+    var_id = created.json()["id"]
+    missing = str(uuid.uuid4())
+
+    resp = await client.put(
+        f"/api/v1/projects/var-ovr404/variables/{missing}/event-overrides/{event_id}",
+        json={"values": ["a"]},
+    )
+    assert resp.status_code == 404
+    resp = await client.put(
+        f"/api/v1/projects/var-ovr404/variables/{var_id}/event-overrides/{missing}",
+        json={"values": ["a"]},
+    )
+    assert resp.status_code == 404
+    resp = await client.delete(
+        f"/api/v1/projects/var-ovr404/variables/{var_id}/event-overrides/{event_id}"
+    )
+    assert resp.status_code == 404

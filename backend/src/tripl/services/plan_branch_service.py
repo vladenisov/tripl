@@ -35,6 +35,7 @@ from tripl.models.plan_revision import PlanRevision
 from tripl.models.project import Project
 from tripl.models.user import User
 from tripl.models.variable import Variable
+from tripl.models.variable_event_value_override import VariableEventValueOverride
 from tripl.models.variable_value import VariableValue
 from tripl.schemas.plan_branch import (
     BranchCommentCreate,
@@ -357,6 +358,8 @@ async def _deep_copy_plan(
                 source_name=var.source_name,
                 variable_type=var.variable_type,
                 description=var.description,
+                allowed_values=list(var.allowed_values or []),
+                bindings=list(var.bindings or []),
             )
         )
 
@@ -448,6 +451,34 @@ async def _deep_copy_plan(
                     value_kind=value_context.value_kind,
                     observed_count=value_context.observed_count,
                     values=list(value_context.values or []),
+                )
+            )
+
+        overrides = (
+            (
+                await session.execute(
+                    select(VariableEventValueOverride).where(
+                        VariableEventValueOverride.project_id == project_id,
+                        VariableEventValueOverride.branch_id == source_branch_id,
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        for override in overrides:
+            override_variable_id = var_map.get(override.variable_id)
+            override_event_id = event_id_map.get(override.event_id)
+            if override_variable_id is None or override_event_id is None:
+                continue
+            new_objs.append(
+                VariableEventValueOverride(
+                    id=uuid.uuid4(),
+                    project_id=project_id,
+                    branch_id=target_branch_id,
+                    variable_id=override_variable_id,
+                    event_id=override_event_id,
+                    values=list(override.values or []),
                 )
             )
 
