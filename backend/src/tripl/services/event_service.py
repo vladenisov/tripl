@@ -315,6 +315,7 @@ async def create_event(
                 event_id=event.id,
                 field_definition_id=fv.field_definition_id,
                 value=fv.value,
+                is_authored=True,
             )
         )
     for mv in data.meta_values:
@@ -402,6 +403,7 @@ async def update_event(
                         event_id=event.id,
                         field_definition_id=field_value.field_definition_id,
                         value=field_value.value,
+                        is_authored=True,
                     )
                     for field_value in data.field_values
                 ]
@@ -710,6 +712,7 @@ async def bulk_create_events(
                     event_id=event.id,
                     field_definition_id=fv.field_definition_id,
                     value=fv.value,
+                    is_authored=True,
                 )
             )
         for mv in data.meta_values:

@@ -9,6 +9,7 @@ from tripl.main import app
 from tripl.models.data_source import DataSource
 from tripl.models.event import Event
 from tripl.models.event_change import create_event_change
+from tripl.models.event_field_value import EventFieldValue
 from tripl.models.event_metric import EventMetric
 from tripl.models.project import Project
 from tripl.models.scan_config import ScanConfig
@@ -85,6 +86,51 @@ async def test_create_event(client: AsyncClient):
     assert data["metric_breakdown_columns"] == ["country", "platform"]
     assert len(data["field_values"]) == 1
     assert len(data["meta_values"]) == 1
+
+
+@pytest.mark.asyncio
+async def test_user_authored_field_values_are_marked_on_create_and_update(client: AsyncClient):
+    et_id, field_id, _ = await _setup_events(client, "ev-authored-values")
+    create_response = await client.post(
+        "/api/v1/projects/ev-authored-values/events",
+        json={
+            "event_type_id": et_id,
+            "name": "Home Page View",
+            "field_values": [{"field_definition_id": field_id, "value": "${variant}"}],
+        },
+    )
+    assert create_response.status_code == 201
+    event_id = uuid.UUID(create_response.json()["id"])
+    field_definition_id = uuid.UUID(field_id)
+
+    async with TestSessionLocal() as session:
+        created_value = (
+            await session.execute(
+                select(EventFieldValue).where(
+                    EventFieldValue.event_id == event_id,
+                    EventFieldValue.field_definition_id == field_definition_id,
+                )
+            )
+        ).scalar_one()
+    assert created_value.is_authored is True
+
+    update_response = await client.patch(
+        f"/api/v1/projects/ev-authored-values/events/{event_id}",
+        json={"field_values": [{"field_definition_id": field_id, "value": "${experiment}"}]},
+    )
+    assert update_response.status_code == 200
+
+    async with TestSessionLocal() as session:
+        updated_value = (
+            await session.execute(
+                select(EventFieldValue).where(
+                    EventFieldValue.event_id == event_id,
+                    EventFieldValue.field_definition_id == field_definition_id,
+                )
+            )
+        ).scalar_one()
+    assert updated_value.value == "${experiment}"
+    assert updated_value.is_authored is True
 
 
 @pytest.mark.asyncio
@@ -986,7 +1032,17 @@ async def test_bulk_create_events(client: AsyncClient):
         ],
     )
     assert resp.status_code == 201
-    assert len(resp.json()) == 2
+    event_ids = [uuid.UUID(event["id"]) for event in resp.json()]
+    assert len(event_ids) == 2
+
+    async with TestSessionLocal() as session:
+        field_values = (
+            await session.execute(
+                select(EventFieldValue).where(EventFieldValue.event_id.in_(event_ids))
+            )
+        ).scalars().all()
+    assert len(field_values) == 2
+    assert all(field_value.is_authored for field_value in field_values)
 
 
 @pytest.mark.asyncio
