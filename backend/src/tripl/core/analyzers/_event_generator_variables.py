@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 import logging
+import re
 import uuid
 from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any
 
-from sqlalchemy import delete, or_, select
+from sqlalchemy import delete, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -20,6 +21,75 @@ from tripl.models.variable_value import VariableValue, VariableValueKind
 logger = logging.getLogger(__name__)
 
 VARIABLE_VALUE_SAMPLE_LIMIT = 20
+
+_TOKEN_PATTERN = re.compile(r"\$\{([^}]+)\}")
+
+
+class VariableIndex:
+    """Token → Variable lookup across ``name``, ``source_name`` and ``bindings``.
+
+    Built once per generation run so scans adopt manually-created variables
+    (matched through user-editable bindings) instead of creating dotted-path
+    duplicates. When two variables claim the same token, the first by ``name``
+    ordering wins — adoption stays deterministic across runs.
+    """
+
+    def __init__(self, variables: Sequence[Variable] = ()) -> None:
+        self._by_token: dict[str, Variable] = {}
+        for variable in sorted(variables, key=lambda v: v.name):
+            self.add(variable)
+
+    @staticmethod
+    def tokens_of(variable: Variable) -> list[str]:
+        tokens = [variable.name]
+        if variable.source_name:
+            tokens.append(variable.source_name)
+        tokens.extend(variable.bindings or [])
+        seen: set[str] = set()
+        unique: list[str] = []
+        for token in tokens:
+            if token and token not in seen:
+                seen.add(token)
+                unique.append(token)
+        return unique
+
+    def add(self, variable: Variable) -> None:
+        for token in self.tokens_of(variable):
+            self._by_token.setdefault(token, variable)
+
+    def resolve(self, token: str) -> Variable | None:
+        return self._by_token.get(token)
+
+
+def build_variable_index(
+    session: Session,
+    *,
+    project_id: uuid.UUID,
+    branch_id: uuid.UUID | None,
+) -> VariableIndex:
+    query = select(Variable).where(Variable.project_id == project_id)
+    if branch_id is not None:
+        query = query.where(Variable.branch_id == branch_id)
+    return VariableIndex(session.execute(query).scalars().all())
+
+
+def normalize_variable_tokens(value: str, index: VariableIndex) -> str:
+    """Rewrite raw ``${path}`` tokens to the bound variable's display name.
+
+    Deterministic and idempotent: a display name resolves back to its own
+    variable, so re-running the scan leaves already-normalized values as-is.
+    """
+    if "${" not in value:
+        return value
+
+    def _replace(match: re.Match[str]) -> str:
+        token = match.group(1)
+        variable = index.resolve(token)
+        if variable is None or variable.name == token:
+            return match.group(0)
+        return f"${{{variable.name}}}"
+
+    return _TOKEN_PATTERN.sub(_replace, value)
 
 
 @dataclass(frozen=True)
@@ -49,32 +119,6 @@ def variable_observations(col_meta: dict[str, dict[str, Any]]) -> list[VariableO
     for meta in col_meta.values():
         observations.extend(meta.get("variable_observations") or [])
     return observations
-
-
-def load_variables_for_contexts(
-    session: Session,
-    *,
-    project_id: uuid.UUID,
-    branch_id: uuid.UUID | None,
-    col_meta: dict[str, dict[str, Any]],
-) -> dict[str, Variable]:
-    names = {observation.name for observation in variable_observations(col_meta)}
-    if not names:
-        return {}
-    query = select(Variable).where(
-        Variable.project_id == project_id,
-        or_(Variable.name.in_(names), Variable.source_name.in_(names)),
-    )
-    if branch_id is not None:
-        query = query.where(Variable.branch_id == branch_id)
-    variables = session.execute(query).scalars().all()
-    variable_by_token: dict[str, Variable] = {}
-    for variable in variables:
-        if variable.source_name in names:
-            variable_by_token.setdefault(variable.source_name, variable)
-        if variable.name in names:
-            variable_by_token.setdefault(variable.name, variable)
-    return variable_by_token
 
 
 def delete_variable_contexts_for_event_type(
@@ -148,7 +192,7 @@ def record_variable_contexts(
     event: Event,
     field_values: Sequence[tuple[uuid.UUID, str, str]],
     col_meta: dict[str, dict[str, Any]],
-    variable_by_token: dict[str, Variable],
+    index: VariableIndex,
 ) -> None:
     for field_definition_id, col_name, value in field_values:
         observations: list[VariableObservation] = (
@@ -157,10 +201,14 @@ def record_variable_contexts(
         if not observations:
             continue
         for observation in observations:
-            if f"${{{observation.name}}}" not in value:
-                continue
-            variable = variable_by_token.get(observation.name)
+            variable = index.resolve(observation.name)
             if variable is None:
+                continue
+            # Match the stored value by ANY of the variable's tokens: a
+            # hand-authored ${variant} attributes to an observation named
+            # page_data.extra.variant through the variable's binding.
+            tokens = VariableIndex.tokens_of(variable)
+            if not any(f"${{{token}}}" in value for token in tokens):
                 continue
             key = (variable.id, event.id, field_definition_id)
             existing = contexts.get(key)
@@ -240,40 +288,29 @@ def ensure_variable(
     name: str,
     inferred_type: str,
     branch_id: uuid.UUID | None = None,
+    index: VariableIndex | None = None,
 ) -> int:
     """Create a Variable if it doesn't exist. Returns 1 if created, 0 if already exists.
 
-    Looks up by source_name (the original scan-detected name) so that
-    user renames of the display ``name`` don't cause duplicates. Lookups are
+    Adoption goes through the ``VariableIndex`` (name, source_name and
+    user-editable bindings), so a manually-created ``variant`` bound to
+    ``page_data.extra.variant`` is adopted instead of duplicated. The index is
     scoped to ``branch_id`` (the scan's main branch) so a same-named variable on
-    another plan branch is not treated as an existing match — without that scope
-    the query spans branches and can match more than one row.
+    another plan branch is not treated as an existing match. Callers that loop
+    over many columns should build the index once and pass it in; created
+    variables are registered on it so later lookups in the same run see them.
     """
-    source_query = select(Variable).where(
-        Variable.project_id == project_id,
-        Variable.source_name == name,
-    )
-    if branch_id is not None:
-        source_query = source_query.where(Variable.branch_id == branch_id)
-    existing = session.execute(source_query).scalars().first()
+    if index is None:
+        index = build_variable_index(session, project_id=project_id, branch_id=branch_id)
 
+    existing = index.resolve(name)
     if existing is not None:
-        return 0
-
-    # Also check by name (covers manually created variables)
-    name_query = select(Variable).where(
-        Variable.project_id == project_id,
-        Variable.name == name,
-    )
-    if branch_id is not None:
-        name_query = name_query.where(Variable.branch_id == branch_id)
-    existing_by_name = session.execute(name_query).scalars().first()
-
-    if existing_by_name is not None:
-        # Backfill source_name if missing
-        if existing_by_name.source_name is None:
-            existing_by_name.source_name = name
+        # Backfill source_name for manually-created variables adopted by their
+        # display name or binding, so later scans keep matching them.
+        if existing.source_name is None:
+            existing.source_name = name
             session.flush()
+            index.add(existing)
         return 0
 
     var = Variable(
@@ -283,6 +320,7 @@ def ensure_variable(
         source_name=name,
         variable_type=inferred_type,
         description="Auto-detected variable from data source scan",
+        bindings=[name],
     )
     if branch_id is not None:
         var.branch_id = branch_id
@@ -307,4 +345,5 @@ def ensure_variable(
             },
         )
         return 0
+    index.add(var)
     return 1

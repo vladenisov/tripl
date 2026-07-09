@@ -32,6 +32,9 @@ from tripl.core.analyzers._event_generator_variables import (
     VariableObservation,
 )
 from tripl.core.analyzers._event_generator_variables import (
+    build_variable_index as _build_variable_index,
+)
+from tripl.core.analyzers._event_generator_variables import (
     delete_variable_contexts_for_event_type as _delete_variable_contexts_for_event_type,
 )
 from tripl.core.analyzers._event_generator_variables import (
@@ -41,7 +44,7 @@ from tripl.core.analyzers._event_generator_variables import (
     insert_variable_contexts as _insert_variable_contexts,
 )
 from tripl.core.analyzers._event_generator_variables import (
-    load_variables_for_contexts as _load_variables_for_contexts,
+    normalize_variable_tokens as _normalize_variable_tokens,
 )
 from tripl.core.analyzers._event_generator_variables import (
     preserve_existing_variable_context_values as _preserve_existing_variable_context_values,
@@ -129,6 +132,10 @@ def generate_events(
     # ``branch_id`` to it); resolve it once so variable existence checks are
     # scoped to the same branch (see ``_ensure_variable``).
     main_branch_id = _resolve_main_branch_id(session, project_id)
+    # One token→variable index for the whole run: scan adoption (by name,
+    # source_name or user-editable binding), context attribution and token
+    # normalization all resolve through it.
+    variable_index = _build_variable_index(session, project_id=project_id, branch_id=main_branch_id)
     # Columns referenced by the event-name format are the event's identity, so they must be
     # enumerated (one event per distinct value) even when high-cardinality — otherwise they
     # collapse into a single ${col} template and every row dedups to one event.
@@ -176,7 +183,12 @@ def generate_events(
                     continue
                 var_name = full_path
                 result.variables_created += _ensure_variable(
-                    session, project_id, var_name, "string", branch_id=main_branch_id
+                    session,
+                    project_id,
+                    var_name,
+                    "string",
+                    branch_id=main_branch_id,
+                    index=variable_index,
                 )
                 variable_observations.append(
                     VariableObservation(
@@ -211,7 +223,12 @@ def generate_events(
                 regular_variable_observations: list[VariableObservation] = []
                 for var in pattern.variables:
                     result.variables_created += _ensure_variable(
-                        session, project_id, var.name, var.inferred_type, branch_id=main_branch_id
+                        session,
+                        project_id,
+                        var.name,
+                        var.inferred_type,
+                        branch_id=main_branch_id,
+                        index=variable_index,
                     )
                     observed_count = var.distinct_count or len(var.values)
                     value_kind = (
@@ -236,13 +253,6 @@ def generate_events(
     if not col_meta:
         result.details.append("No columns matched field definitions")
         return result
-
-    variable_by_token = _load_variables_for_contexts(
-        session,
-        project_id=project_id,
-        branch_id=main_branch_id,
-        col_meta=col_meta,
-    )
 
     # Load existing events for dedup. Key on the stable scan identity (``source_name``),
     # NOT the display ``name`` — users may rename ``name`` freely, and matching on it would
@@ -371,6 +381,14 @@ def generate_events(
                     for fd_id, col_name, value in field_values
                 ]
 
+        # Rewrite raw path tokens to the bound variables' display names AFTER
+        # the event name is built: event identity (source_name) must stay keyed
+        # on raw tokens so bindings/renames don't duplicate existing events.
+        field_values = [
+            (fd_id, col_name, _normalize_variable_tokens(value, variable_index))
+            for fd_id, col_name, value in field_values
+        ]
+
         existing = existing_by_identity.get(event_name)
         if existing is not None:
             # Update field values on existing event
@@ -380,7 +398,7 @@ def generate_events(
                 event=existing,
                 field_values=field_values,
                 col_meta=col_meta,
-                variable_by_token=variable_by_token,
+                index=variable_index,
             )
             result.events_skipped += 1
             continue
@@ -405,7 +423,7 @@ def generate_events(
             event=event,
             field_values=field_values,
             col_meta=col_meta,
-            variable_by_token=variable_by_token,
+            index=variable_index,
         )
 
         existing_by_identity[event_name] = event
@@ -478,13 +496,15 @@ def _upsert_field_values(
     for fd_id, _, value in field_values:
         existing_fv = fv_by_fd.get(fd_id)
         if existing_fv is not None:
-            existing_fv.value = value
+            if not existing_fv.is_authored:
+                existing_fv.value = value
             continue
         new_fv = EventFieldValue(
             id=uuid.uuid4(),
             event_id=event.id,
             field_definition_id=fd_id,
             value=value,
+            is_authored=False,
         )
         event.field_values.append(new_fv)
         fv_by_fd[fd_id] = new_fv
