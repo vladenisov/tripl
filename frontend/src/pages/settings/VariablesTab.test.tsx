@@ -13,6 +13,8 @@ vi.mock('@/api/variables', () => ({
     update: vi.fn(),
     del: vi.fn(),
     values: vi.fn(),
+    bulkUpdate: vi.fn(),
+    bulkDelete: vi.fn(),
   },
 }))
 
@@ -376,5 +378,57 @@ describe('VariablesTab', () => {
     fireEvent.change(nameInput, { target: { value: 'page_data.renamed' } })
     expect(nameInput).toHaveAttribute('pattern', '^[a-z][a-z0-9_]*$')
     expect(nameInput.validity.patternMismatch).toBe(true)
+  })
+
+  it('bulk-updates selected variables from the bulk bar', async () => {
+    vi.mocked(variablesApi.list).mockResolvedValue([
+      {
+        id: 'var-1',
+        project_id: 'p',
+        name: 'one',
+        source_name: null,
+        variable_type: 'string',
+        allowed_values: [],
+        bindings: [],
+        description: '',
+      },
+      {
+        id: 'var-2',
+        project_id: 'p',
+        name: 'two',
+        source_name: null,
+        variable_type: 'string',
+        allowed_values: [],
+        bindings: [],
+        description: '',
+      },
+    ])
+    vi.mocked(variablesApi.values).mockResolvedValue([])
+    vi.mocked(variablesApi.bulkUpdate).mockResolvedValue(undefined)
+
+    renderVariablesTab()
+
+    fireEvent.click(await screen.findByLabelText('Select variable one'))
+    fireEvent.click(screen.getByLabelText('Select variable two'))
+    expect(screen.getByText('2')).toBeInTheDocument()
+
+    fireEvent.change(screen.getByLabelText('Bulk set type'), { target: { value: 'number' } })
+    await waitFor(() =>
+      expect(variablesApi.bulkUpdate).toHaveBeenCalledWith(
+        'demo',
+        { variable_ids: ['var-1', 'var-2'], variable_type: 'number' },
+        null,
+      ),
+    )
+
+    fireEvent.change(screen.getByLabelText('Bulk add values'), { target: { value: 'a, b' } })
+    fireEvent.keyDown(screen.getByLabelText('Bulk add values'), { key: 'Enter' })
+    await waitFor(() =>
+      expect(variablesApi.bulkUpdate).toHaveBeenCalledWith(
+        'demo',
+        { variable_ids: ['var-1', 'var-2'], allowed_values_add: ['a', 'b'] },
+        null,
+      ),
+    )
   })
 })

@@ -15579,6 +15579,91 @@
         "title": "ValidationError",
         "type": "object"
       },
+      "VariableBulkDelete": {
+        "properties": {
+          "variable_ids": {
+            "items": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "minItems": 1,
+            "title": "Variable Ids",
+            "type": "array"
+          }
+        },
+        "required": [
+          "variable_ids"
+        ],
+        "title": "VariableBulkDelete",
+        "type": "object"
+      },
+      "VariableBulkUpdate": {
+        "properties": {
+          "allowed_values_add": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Allowed Values Add"
+          },
+          "allowed_values_remove": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Allowed Values Remove"
+          },
+          "description": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Description"
+          },
+          "variable_ids": {
+            "items": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "minItems": 1,
+            "title": "Variable Ids",
+            "type": "array"
+          },
+          "variable_type": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/VariableType"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "variable_ids"
+        ],
+        "title": "VariableBulkUpdate",
+        "type": "object"
+      },
       "VariableCreate": {
         "properties": {
           "allowed_values": {
@@ -26836,6 +26921,96 @@
           }
         },
         "summary": "Create Variable",
+        "tags": [
+          "variables"
+        ]
+      }
+    },
+    "/api/v1/projects/{slug}/variables/bulk-delete": {
+      "post": {
+        "operationId": "bulk_delete_variables_api_v1_projects__slug__variables_bulk_delete_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "slug",
+            "required": true,
+            "schema": {
+              "title": "Slug",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/VariableBulkDelete"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Bulk Delete Variables",
+        "tags": [
+          "variables"
+        ]
+      }
+    },
+    "/api/v1/projects/{slug}/variables/bulk-update": {
+      "post": {
+        "operationId": "bulk_update_variables_api_v1_projects__slug__variables_bulk_update_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "slug",
+            "required": true,
+            "schema": {
+              "title": "Slug",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/VariableBulkUpdate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Bulk Update Variables",
         "tags": [
           "variables"
         ]
