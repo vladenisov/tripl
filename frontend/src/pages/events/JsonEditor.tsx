@@ -2,6 +2,8 @@ import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react'
 import { Button } from '@/components/ui/button'
 import { Textarea } from '@/components/ui/textarea'
 import { getErrorMessage } from '@/lib/utils'
+import { SuggestionRow, type VariableSuggestion } from './VariableInput'
+import { suggestionMatches } from './utils'
 
 function validateJsonWithVars(text: string): string | null {
   if (!text.trim()) return null
@@ -9,8 +11,11 @@ function validateJsonWithVars(text: string): string | null {
     try { JSON.parse(text); return null } catch (e) { return getErrorMessage(e) }
   }
   // Replace ${var} placeholders with a sentinel string before validating, so
-  // partially-templated JSON parses successfully.
-  const safe = text.replace(/\$\{[^}]*\}/g, '"__var__"')
+  // partially-templated JSON parses successfully. Quoted tokens ("${var}")
+  // must be swapped together with their quotes or the sentinel doubles them.
+  const safe = text
+    .replace(/"\$\{[^}{]*\}"/g, '"__var__"')
+    .replace(/\$\{[^}{]*\}/g, '"__var__"')
   try { JSON.parse(safe); return null } catch (e) { return getErrorMessage(e) }
 }
 
@@ -25,7 +30,7 @@ export function JsonEditor({
   value: string
   onChange: (v: string) => void
   required?: boolean
-  variables?: { name: string; label: string }[]
+  variables?: VariableSuggestion[]
 }) {
   const uid = useId()
   const listboxId = `json-var-listbox-${uid}`
@@ -45,10 +50,7 @@ export function JsonEditor({
   })
 
   const filtered = useMemo(
-    () => variables.filter(
-      v => v.name.toLowerCase().includes(filter.toLowerCase())
-        || v.label.toLowerCase().includes(filter.toLowerCase()),
-    ),
+    () => variables.filter(v => suggestionMatches(v, filter)),
     [variables, filter],
   )
 
@@ -139,11 +141,14 @@ export function JsonEditor({
     // Round-trip ${var} placeholders through unique sentinels so JSON.stringify
     // doesn't escape them — then put them back as-is.
     const placeholders: string[] = []
-    const safe = raw.replace(/\$\{[^}]*\}/g, (match) => {
+    const stash = (match: string) => {
       const idx = placeholders.length
       placeholders.push(match)
       return `"__TRIPL_VAR_${idx}__"`
-    })
+    }
+    const safe = raw
+      .replace(/"\$\{[^}{]*\}"/g, stash)
+      .replace(/\$\{[^}{]*\}/g, stash)
     try {
       let formatted = JSON.stringify(JSON.parse(safe), null, 2)
       placeholders.forEach((ph, idx) => {
@@ -170,6 +175,7 @@ export function JsonEditor({
           required={required}
           spellCheck={false}
           role="combobox"
+          aria-invalid={error ? 'true' : 'false'}
           aria-expanded={showMenu && filtered.length > 0}
           aria-haspopup="listbox"
           aria-autocomplete="list"
@@ -197,8 +203,7 @@ export function JsonEditor({
                 onMouseDown={e => { e.preventDefault(); insertVar(v.name) }}
                 className={`flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-xs ${i === highlightIdx ? 'bg-accent text-accent-foreground' : 'text-popover-foreground hover:bg-accent/50'}`}
               >
-                <code className="font-mono text-primary">${'{'}${v.name}{'}'}</code>
-                <span className="text-muted-foreground">{v.label}</span>
+                <SuggestionRow suggestion={v} />
               </button>
             ))}
           </div>

@@ -183,8 +183,8 @@ export function deriveRowSignalFromMetrics(
 // --- Glitchy / templated event-name + value rendering helpers (UX-9, UX-21) ---
 
 export const NAME_SEGMENT_SEPARATOR = ':'
-const TEMPLATE_TOKEN_SPLIT = /(\$\{[^}]*\})/g
-const TEMPLATE_TOKEN_MATCH = /^\$\{[^}]*\}$/
+const TEMPLATE_TOKEN_SPLIT = /(\$\{[^}{]*\})/g
+const TEMPLATE_TOKEN_MATCH = /^\$\{[^}{]*\}$/
 
 export type NameSegment = { text: string; empty: boolean }
 
@@ -207,16 +207,74 @@ export function splitEventName(name: string): NameSegment[] | null {
   return parts.map((p) => ({ text: p, empty: isEmptyNameSegment(p) }))
 }
 
-export type ValuePart = { text: string; token: boolean }
+export type ValuePart = { text: string; token: boolean; known?: boolean }
+
+export type ResolvedTemplateToken = {
+  token: string
+  variable: Variable | null
+}
+
+/**
+ * Resolve complete `${token}` placeholders against canonical variable names,
+ * legacy scan identities, and user-configured bindings.
+ */
+export function resolveTemplateTokens(
+  value: string,
+  variables: Variable[],
+): ResolvedTemplateToken[] {
+  if (!value.includes('${')) return []
+
+  const variablesByToken = new Map<string, Variable>()
+  for (const variable of variables) {
+    for (const token of [variable.name, variable.source_name, ...variable.bindings]) {
+      if (token && !variablesByToken.has(token)) variablesByToken.set(token, variable)
+    }
+  }
+
+  return value
+    .split(TEMPLATE_TOKEN_SPLIT)
+    .filter((part) => TEMPLATE_TOKEN_MATCH.test(part))
+    .map((token) => ({
+      token,
+      variable: variablesByToken.get(token.slice(2, -1)) ?? null,
+    }))
+}
 
 /**
  * Split a property value into plain-text and `${…}` template-token parts so the
  * tokens can be tinted to read as variables rather than literal text.
  */
-export function splitTemplateValue(value: string): ValuePart[] {
+export function splitTemplateValue(value: string, variables?: Variable[]): ValuePart[] {
   if (!value.includes('${')) return [{ text: value, token: false }]
+  const knownByToken = variables
+    ? new Map(resolveTemplateTokens(value, variables).map(({ token, variable }) => [token, variable !== null]))
+    : null
   return value
     .split(TEMPLATE_TOKEN_SPLIT)
     .filter((p) => p !== '')
-    .map((p) => ({ text: p, token: TEMPLATE_TOKEN_MATCH.test(p) }))
+    .map((p) => {
+      const token = TEMPLATE_TOKEN_MATCH.test(p)
+      return {
+        text: p,
+        token,
+        ...(token && knownByToken ? { known: knownByToken.get(p) ?? false } : {}),
+      }
+    })
+}
+
+/** Structural subset of Variable used by the ${} autocomplete surfaces. */
+export interface VariableSuggestionShape {
+  name: string
+  description?: string
+  bindings?: string[]
+  allowed_values?: string[]
+}
+
+export function suggestionMatches(v: VariableSuggestionShape, filter: string): boolean {
+  const needle = filter.toLowerCase()
+  return (
+    v.name.toLowerCase().includes(needle)
+    || (v.description ?? '').toLowerCase().includes(needle)
+    || (v.bindings ?? []).some(binding => binding.toLowerCase().includes(needle))
+  )
 }

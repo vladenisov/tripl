@@ -6,7 +6,9 @@ import type {
   EventListItem,
   EventMetricPoint,
   EventTypeBrief,
+  FieldDefinition,
   MonitoringSignal,
+  Variable,
 } from '@/types'
 import { TooltipProvider } from '@/components/ui/tooltip'
 import { EventRow } from './EventRow'
@@ -86,6 +88,15 @@ function renderRow(
   ev: EventListItem,
   windowData: EventMetricPoint[],
   rowSignal?: MonitoringSignal,
+  {
+    variables = [] as Variable[],
+    fieldColumns = [] as FieldDefinition[],
+    getFieldValue = () => '',
+  }: {
+    variables?: Variable[]
+    fieldColumns?: FieldDefinition[]
+    getFieldValue?: (event: EventListItem, field: FieldDefinition) => string
+  } = {},
 ) {
   return render(
     <TooltipProvider>
@@ -106,15 +117,16 @@ function renderRow(
                 usersById={new Map()}
                 hideTags={false}
                 hideLastSeen={false}
-                fieldColumns={[]}
+                fieldColumns={fieldColumns}
                 metaFields={[]}
+                variables={variables}
                 slug="proj-1"
                 expandedFieldId={null}
                 rowSignal={rowSignal}
                 windowTotal={windowData.length}
                 windowData={windowData}
                 metaValueMap={undefined}
-                getFieldValue={() => ''}
+                getFieldValue={getFieldValue}
                 onToggleSelected={() => {}}
                 onToggleExpanded={() => {}}
                 onRowAction={() => {}}
@@ -125,6 +137,28 @@ function renderRow(
       </DndContext>
     </TooltipProvider>,
   )
+}
+
+const TEMPLATE_FIELD = {
+  id: 'field-variant',
+  event_type_id: 'et-1',
+  name: 'variant',
+  display_name: 'Variant',
+  field_type: 'string',
+  is_required: false,
+  enum_options: null,
+  order: 0,
+} as unknown as FieldDefinition
+
+const TEMPLATE_VARIABLE: Variable = {
+  id: 'var-1',
+  project_id: 'proj-1',
+  name: 'variant',
+  source_name: null,
+  variable_type: 'string',
+  description: '',
+  allowed_values: [],
+  bindings: ['payload.variant'],
 }
 
 describe('EventRow Δ · 24h and Monitor cells', () => {
@@ -143,6 +177,26 @@ describe('EventRow Δ · 24h and Monitor cells', () => {
     renderRow(makeEvent({ monitored: false }), windowSeries(10, 20))
     expect(screen.queryByText('Monitored')).not.toBeInTheDocument()
     expect(screen.getByTitle('Not covered by any alert rule')).toBeInTheDocument()
+  })
+})
+
+describe('EventRow template token rendering', () => {
+  it('keeps known variable tokens accented and tints unknown tokens amber', () => {
+    renderRow(
+      makeEvent({
+        field_values: [{ id: 'fv-1', field_definition_id: TEMPLATE_FIELD.id, value: '${variant}/${missing}' }],
+      }),
+      [],
+      undefined,
+      {
+        variables: [TEMPLATE_VARIABLE],
+        fieldColumns: [TEMPLATE_FIELD],
+        getFieldValue: () => '${variant}/${missing}',
+      },
+    )
+
+    expect(screen.getByText('${variant}')).not.toHaveClass('text-amber-600')
+    expect(screen.getByText('${missing}')).toHaveClass('text-amber-600')
   })
 })
 

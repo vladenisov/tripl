@@ -1,5 +1,5 @@
 import { api, withBranch } from './client'
-import type { Event, EventChange, EventListResponse } from '../types'
+import type { Event, EventChange, EventListResponse, EventMutationResponse } from '../types'
 
 type ListParams = {
   event_type_id?: string
@@ -47,7 +47,7 @@ export const eventsApi = {
       meta_values?: { meta_field_definition_id: string; value: string }[]
     },
     branchId?: string | null,
-  ) => api.post<Event>(withBranch(`/projects/${slug}/events`, branchId), data),
+  ) => api.post<EventMutationResponse>(withBranch(`/projects/${slug}/events`, branchId), data),
   update: (
     slug: string,
     id: string,
@@ -62,7 +62,7 @@ export const eventsApi = {
       meta_values?: { meta_field_definition_id: string; value: string }[]
     },
     branchId?: string | null,
-  ) => api.patch<Event>(withBranch(`/projects/${slug}/events/${id}`, branchId), data),
+  ) => api.patch<EventMutationResponse>(withBranch(`/projects/${slug}/events/${id}`, branchId), data),
   del: (slug: string, id: string, branchId?: string | null) =>
     api.del(withBranch(`/projects/${slug}/events/${id}`, branchId)),
   bulkCreate: (

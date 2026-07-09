@@ -19,7 +19,8 @@ import { EVENT_STATUS_LABELS, EVENT_STATUSES } from '@/lib/eventStatus'
 import { META_FIELD_LINK_PLACEHOLDER } from '@/lib/metaFields'
 import { ErrorState } from '@/components/error-state'
 import { JsonEditor } from './JsonEditor'
-import { VariableInput } from './VariableInput'
+import { VariableInput, type VariableSuggestion } from './VariableInput'
+import { resolveTemplateTokens } from './utils'
 import { ChevronDown, ChevronLeft, Loader2, Plus, Save, Sparkles, X } from 'lucide-react'
 
 const EMPTY_EVENT_TYPES: EventType[] = []
@@ -145,11 +146,52 @@ function SelectControl({
   )
 }
 
+function FieldTemplateHints({ value, variables }: { value: string; variables: Variable[] }) {
+  const [copied, setCopied] = useState<string | null>(null)
+  const resolved = resolveTemplateTokens(value, variables)
+  if (resolved.length === 0) return null
+  const unknown = resolved.filter(({ variable }) => variable === null)
+  const documented = [
+    ...new Map(
+      resolved
+        .filter(({ variable }) => variable !== null && (variable.allowed_values ?? []).length > 0)
+        .map(({ variable }) => [variable!.id, variable!]),
+    ).values(),
+  ]
+  if (unknown.length === 0 && documented.length === 0) return null
+  return (
+    <div className="mt-1 space-y-1">
+      {unknown.map(({ token }) => (
+        <p key={token} className="text-xs text-amber-600">Unknown variable token: {token}</p>
+      ))}
+      {documented.map(variable => (
+        <div key={variable.id} className="flex flex-wrap items-center gap-1">
+          {variable.allowed_values.map(allowedValue => (
+            <button
+              key={allowedValue}
+              type="button"
+              aria-label={`Copy documented value ${allowedValue}`}
+              className="rounded border px-1.5 py-0.5 font-mono text-[10px] hover:bg-accent"
+              onClick={() => {
+                void navigator.clipboard.writeText(allowedValue)
+                setCopied(allowedValue)
+              }}
+            >
+              {allowedValue}
+            </button>
+          ))}
+          {copied && <span className="text-[10px] text-muted-foreground">Copied {copied}</span>}
+        </div>
+      ))}
+    </div>
+  )
+}
+
 type FieldValueControlProps = {
   field: FieldDefinition
   value: string
   onChange: (value: string) => void
-  variables: { name: string; label: string }[]
+  variables: VariableSuggestion[]
   inputId?: string
 }
 
@@ -200,7 +242,7 @@ function MetaFieldControl({
   metaField: MetaFieldDefinition
   value: string
   onChange: (value: string) => void
-  variables: { name: string; label: string }[]
+  variables: VariableSuggestion[]
   inputId?: string
 }) {
   if (metaField.field_type === 'boolean') {
@@ -259,7 +301,10 @@ export function EventForm({
   const branchId = useActiveBranchId()
   const aiEnabled = useAiStatus(slug)
   const isNew = !event
-  const [etId, setEtId] = useState(event?.event_type_id ?? defaultEventTypeId ?? '')
+  const [etId, setEtId] = useState(
+    // Preselect the only event type so a fresh form shows its fields at once.
+    event?.event_type_id ?? defaultEventTypeId ?? (eventTypes.length === 1 ? eventTypes[0].id : ''),
+  )
   const [name, setName] = useState(event?.name ?? '')
   const [description, setDescription] = useState(event?.description ?? '')
   const [status, setStatus] = useState(event?.status ?? 'draft')
@@ -281,10 +326,7 @@ export function EventForm({
     () => selectedEt ? [...selectedEt.field_definitions].sort((a, b) => a.order - b.order) : [],
     [selectedEt],
   )
-  const varSuggestions = useMemo(
-    () => projectVariables.map(v => ({ name: v.name, label: v.description || v.name })),
-    [projectVariables],
-  )
+  const varSuggestions = projectVariables
 
   const toggleBreakdown = (column: string) => {
     setMetricBreakdownColumns(current =>
@@ -519,6 +561,7 @@ export function EventForm({
                   onChange={v => setFieldValues({ ...fieldValues, [f.id]: v })}
                   variables={varSuggestions}
                 />
+                <FieldTemplateHints value={fieldValues[f.id] ?? ''} variables={projectVariables} />
               </EvField>
             ))}
           </SurfCard>

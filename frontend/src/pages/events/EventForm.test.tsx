@@ -1,8 +1,8 @@
-import { render, screen } from '@testing-library/react'
+import { fireEvent, render, screen } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { createElement, type ReactNode } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import type { Event as TEvent, EventType } from '@/types'
+import type { Event as TEvent, EventType, Variable } from '@/types'
 import { EventForm } from './EventForm'
 
 // useAiStatus fires aiApi.status under the hood; stub it so no real request runs.
@@ -35,19 +35,55 @@ const EXISTING_EVENT = {
   meta_values: [],
 } as unknown as TEvent
 
+const TEMPLATE_EVENT_TYPE = {
+  ...EVENT_TYPE,
+  field_definitions: [
+    {
+      id: 'field-variant',
+      event_type_id: 'et-1',
+      name: 'variant',
+      display_name: 'Variant',
+      field_type: 'string',
+      is_required: false,
+      enum_options: null,
+      order: 0,
+    },
+  ],
+} as unknown as EventType
+
+const TEMPLATE_VARIABLE: Variable = {
+  id: 'var-1',
+  project_id: 'project-1',
+  name: 'variant',
+  source_name: 'legacy.variant',
+  variable_type: 'string',
+  description: 'Experiment variant',
+  allowed_values: ['control', 'treatment', 'holdout', 'overflow'],
+  bindings: ['payload.variant'],
+}
+
 let queryClient: QueryClient
 
 function wrapper({ children }: { children: ReactNode }) {
   return createElement(QueryClientProvider, { client: queryClient }, children)
 }
 
-function renderForm(event: TEvent | null) {
+function renderForm(
+  event: TEvent | null,
+  {
+    eventTypes = [EVENT_TYPE],
+    projectVariables = [] as Variable[],
+  }: {
+    eventTypes?: EventType[]
+    projectVariables?: Variable[]
+  } = {},
+) {
   return render(
     createElement(EventForm, {
       slug: 'demo',
-      eventTypes: [EVENT_TYPE],
+      eventTypes,
       metaFields: [],
-      projectVariables: [],
+      projectVariables,
       event,
       onClose: () => {},
     }),
@@ -88,5 +124,37 @@ describe('EventForm name field', () => {
     expect(nameInput).toBeInTheDocument()
     // Colon-delimited convention, not snake_case (see ReconciliationPage naming).
     expect(nameInput.getAttribute('placeholder')).not.toMatch(/_/)
+  })
+})
+
+describe('EventForm template authoring', () => {
+  it('shows rich ${ suggestions, inline unknown-token warnings, and copyable documented values', () => {
+    const writeText = vi.fn().mockResolvedValue(undefined)
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText },
+    })
+    renderForm(null, {
+      eventTypes: [TEMPLATE_EVENT_TYPE],
+      projectVariables: [TEMPLATE_VARIABLE],
+    })
+
+    const input = screen.getByLabelText('Variant')
+    fireEvent.change(input, { target: { value: '${' } })
+
+    expect(screen.getByRole('option', { name: /\$\{variant\}/ })).toBeInTheDocument()
+    expect(screen.getByText('Experiment variant')).toBeInTheDocument()
+    expect(screen.getByText('payload.variant')).toBeInTheDocument()
+    expect(screen.getByText('control · treatment · holdout')).toBeInTheDocument()
+
+    fireEvent.change(input, { target: { value: '${missing}' } })
+    expect(screen.getByText('Unknown variable token: ${missing}')).toBeInTheDocument()
+
+    fireEvent.change(input, { target: { value: '${variant}' } })
+    const copyChip = screen.getByRole('button', { name: 'Copy documented value control' })
+    fireEvent.click(copyChip)
+    expect(writeText).toHaveBeenCalledWith('control')
+    expect(screen.getByText('Copied control')).toBeInTheDocument()
+    expect(input).toHaveValue('${variant}')
   })
 })
