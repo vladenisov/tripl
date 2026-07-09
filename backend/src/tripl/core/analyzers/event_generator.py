@@ -58,6 +58,9 @@ from tripl.core.analyzers._event_generator_variables import (
 from tripl.core.analyzers._event_generator_variables import (
     sample_variable_values as _sample_variable_values,
 )
+from tripl.core.analyzers._variable_value_drift import (
+    detect_variable_value_drifts as _detect_variable_value_drifts,
+)
 from tripl.core.analyzers.cardinality import BreakdownAnalysis
 from tripl.core.analyzers.variable_detector import (
     DetectedPattern,
@@ -100,6 +103,7 @@ class GenerationResult:
     events_grouped: int = 0
     events_merged: int = 0
     variables_created: int = 0
+    value_drifts_detected: int = 0
     columns_analyzed: int = 0
     details: list[str] = field(default_factory=list)
     col_meta: dict[str, dict[str, Any]] = field(default_factory=dict)
@@ -119,6 +123,7 @@ def generate_events(
     event_name_format: str | None = None,
     event_group_rules: Sequence[Mapping[str, object]] | None = None,
     max_events: int = 10000,
+    scan_config_id: uuid.UUID | None = None,
 ) -> GenerationResult:
     """Generate events from breakdown analysis.
 
@@ -454,6 +459,13 @@ def generate_events(
         session,
         project_id=project_id,
         branch_id=main_branch_id,
+        contexts=variable_contexts,
+    )
+    result.value_drifts_detected = _detect_variable_value_drifts(
+        session,
+        project_id=project_id,
+        branch_id=main_branch_id,
+        scan_config_id=scan_config_id,
         contexts=variable_contexts,
     )
     session.flush()

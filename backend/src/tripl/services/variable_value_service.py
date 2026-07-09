@@ -15,6 +15,7 @@ from tripl.models.variable import Variable
 from tripl.models.variable_value import VariableValue, VariableValueKind
 from tripl.services.plan_branch_service import resolve_branch_id
 from tripl.services.project_service import get_project_id_by_slug
+from tripl.services.variable_value_drift_service import get_open_drift_counts
 
 SUMMARY_VALUE_LIMIT = 20
 
@@ -61,12 +62,15 @@ async def attach_variable_summaries(
             limit=SUMMARY_VALUE_LIMIT,
         )
 
+    drift_counts = await get_open_drift_counts(session, variable_ids)
+
     for variable in variables:
         variable.event_count = len(event_ids_by_variable.get(variable.id, set()))  # type: ignore[attr-defined]
         variable.context_count = context_counts.get(variable.id, 0)  # type: ignore[attr-defined]
         variable.low_context_count = low_counts.get(variable.id, 0)  # type: ignore[attr-defined]
         variable.high_context_count = high_counts.get(variable.id, 0)  # type: ignore[attr-defined]
         variable.sample_values = sample_values.get(variable.id, [])  # type: ignore[attr-defined]
+        variable.open_drift_count = drift_counts.get(variable.id, 0)  # type: ignore[attr-defined]
 
 
 async def list_variable_values(

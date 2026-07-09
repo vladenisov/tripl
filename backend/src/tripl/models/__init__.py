@@ -56,6 +56,7 @@ from tripl.models.user_session import UserSession
 from tripl.models.variable import Variable
 from tripl.models.variable_event_value_override import VariableEventValueOverride
 from tripl.models.variable_value import VariableValue
+from tripl.models.variable_value_drift import VariableValueDrift
 
 __all__ = [
     "Base",
@@ -116,4 +117,5 @@ __all__ = [
     "UserSession",
     "VariableEventValueOverride",
     "VariableValue",
+    "VariableValueDrift",
 ]

@@ -11,6 +11,7 @@ from tripl.schemas.event import (
     EventChangeResponse,
     EventCreate,
     EventListResponse,
+    EventMutationResponse,
     EventMove,
     EventReorder,
     EventResponse,
@@ -69,7 +70,7 @@ async def list_tags(session: SessionDep, slug: str, branch_id: BranchIdDep) -> l
 
 @router.post(
     "",
-    response_model=EventResponse,
+    response_model=EventMutationResponse,
     status_code=201,
     dependencies=_editor_required,
 )
@@ -136,7 +137,7 @@ async def get_event_history(
 
 @router.patch(
     "/{event_id}",
-    response_model=EventResponse,
+    response_model=EventMutationResponse,
 )
 async def update_event(
     session: SessionDep,
