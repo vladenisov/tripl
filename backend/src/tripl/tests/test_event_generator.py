@@ -771,6 +771,99 @@ class TestEventGeneration:
         assert result2.events_created == 0
         assert result2.events_skipped == 2
 
+    def test_scan_preserves_authored_field_values_and_creates_missing_values(
+        self, sync_session: Session, project_and_type
+    ):
+        project, et, fds = project_and_type
+        existing = Event(
+            id=uuid.uuid4(),
+            project_id=project.id,
+            event_type_id=et.id,
+            name="/home",
+            source_name="/home",
+            order=0,
+            status="live",
+        )
+        sync_session.add(existing)
+        sync_session.flush()
+        sync_session.add(
+            EventFieldValue(
+                id=uuid.uuid4(),
+                event_id=existing.id,
+                field_definition_id=fds["screen"].id,
+                value="${screen}",
+                is_authored=True,
+            )
+        )
+        sync_session.commit()
+
+        cardinality = {
+            "screen": CardinalityResult(
+                column=ColumnInfo("screen", "String"),
+                count=1,
+                is_low=True,
+                sample_values=["/home"],
+            ),
+            "action": CardinalityResult(
+                column=ColumnInfo("action", "String"),
+                count=1,
+                is_low=True,
+                sample_values=["view"],
+            ),
+        }
+        analysis = _make_analysis(cardinality)
+
+        first_result = generate_events(
+            sync_session,
+            project.id,
+            et.id,
+            analysis,
+            fds,
+            event_name_format="{screen}",
+        )
+        sync_session.commit()
+
+        assert first_result.events_created == 0
+        assert first_result.events_skipped == 1
+        first_values = {
+            field_value.field_definition_id: field_value
+            for field_value in sync_session.execute(
+                select(EventFieldValue).where(EventFieldValue.event_id == existing.id)
+            ).scalars()
+        }
+        assert first_values[fds["screen"].id].value == "${screen}"
+        assert first_values[fds["screen"].id].is_authored is True
+        assert first_values[fds["action"].id].value == "view"
+        assert first_values[fds["action"].id].is_authored is False
+
+        second_result = generate_events(
+            sync_session,
+            project.id,
+            et.id,
+            analysis,
+            fds,
+            event_name_format="{screen}",
+        )
+        sync_session.commit()
+
+        assert second_result.events_created == 0
+        assert second_result.events_skipped == 1
+        second_values = (
+            sync_session.execute(
+                select(EventFieldValue).where(EventFieldValue.event_id == existing.id)
+            )
+            .scalars()
+            .all()
+        )
+        assert len(second_values) == 2
+        second_values_by_field = {
+            field_value.field_definition_id: field_value for field_value in second_values
+        }
+        assert second_values_by_field[fds["screen"].id].value == "${screen}"
+        assert second_values_by_field[fds["screen"].id].is_authored is True
+        assert second_values_by_field[fds["action"].id].value == "view"
+        assert second_values_by_field[fds["action"].id].is_authored is False
+
     def test_rename_does_not_recreate_event(self, sync_session: Session, project_and_type):
         """Renaming an event's display ``name`` must not make the next scan duplicate it:
         dedup keys on the stable ``source_name`` identity, not ``name``."""
@@ -1091,3 +1184,154 @@ class TestEventGeneration:
         assert result.events_created == 0
         assert result.events_skipped == 1
         assert "screen=/dashboard" not in result.events_by_name
+
+
+# --- binding-based adoption + token normalization (tripl-j94c.2) -------------
+
+
+def _payload_locale_analysis() -> BreakdownAnalysis:
+    return BreakdownAnalysis(
+        results={
+            "payload": CardinalityResult(
+                column=ColumnInfo("payload", "JSON"),
+                count=1,
+                is_low=True,
+                json_path_combos=[("locale",)],
+            ),
+        },
+        rows=[(("locale",),)],
+        reg_names=[],
+        json_names=["payload"],
+        json_value_names=[],
+    )
+
+
+def test_manual_variable_with_binding_is_adopted_not_duplicated(
+    sync_session: Session, project_and_type
+):
+    project, et, fds = project_and_type
+    manual = Variable(
+        id=uuid.uuid4(),
+        project_id=project.id,
+        name="variant",
+        variable_type="string",
+        description="documented before implementation",
+        bindings=["payload.locale"],
+    )
+    sync_session.add(manual)
+    sync_session.commit()
+
+    result = generate_events(sync_session, project.id, et.id, _payload_locale_analysis(), fds)
+    sync_session.commit()
+
+    assert result.events_created == 1
+    assert result.variables_created == 0
+
+    variables = (
+        sync_session.execute(select(Variable).where(Variable.project_id == project.id))
+        .scalars()
+        .all()
+    )
+    assert [v.name for v in variables] == ["variant"]
+    # Adoption backfills the scan identity for future runs.
+    assert variables[0].source_name == "payload.locale"
+
+    # The stored template is normalized to the display name...
+    payload_value = sync_session.execute(
+        select(EventFieldValue.value).where(
+            EventFieldValue.field_definition_id == fds["payload"].id
+        )
+    ).scalar_one()
+    assert payload_value == '{"locale": "${variant}"}'
+
+    # ...and the observation attributes to the manual variable.
+    contexts = (
+        sync_session.execute(select(VariableValue).where(VariableValue.project_id == project.id))
+        .scalars()
+        .all()
+    )
+    assert len(contexts) == 1
+    assert contexts[0].variable_id == manual.id
+    assert contexts[0].source_column == "payload.locale"
+
+
+def test_scan_twice_with_adopted_binding_is_idempotent(sync_session: Session, project_and_type):
+    project, et, fds = project_and_type
+    sync_session.add(
+        Variable(
+            id=uuid.uuid4(),
+            project_id=project.id,
+            name="variant",
+            variable_type="string",
+            description="",
+            bindings=["payload.locale"],
+        )
+    )
+    sync_session.commit()
+
+    first = generate_events(sync_session, project.id, et.id, _payload_locale_analysis(), fds)
+    sync_session.commit()
+    second = generate_events(sync_session, project.id, et.id, _payload_locale_analysis(), fds)
+    sync_session.commit()
+
+    assert first.events_created == 1
+    assert second.events_created == 0
+    assert second.events_skipped == 1
+    assert second.variables_created == 0
+
+    values = (
+        sync_session.execute(
+            select(EventFieldValue.value).where(
+                EventFieldValue.field_definition_id == fds["payload"].id
+            )
+        )
+        .scalars()
+        .all()
+    )
+    assert values == ['{"locale": "${variant}"}']
+    contexts = (
+        sync_session.execute(select(VariableValue).where(VariableValue.project_id == project.id))
+        .scalars()
+        .all()
+    )
+    assert len(contexts) == 1
+
+
+def test_renamed_scan_variable_keeps_matching_and_normalizes_on_rescan(
+    sync_session: Session, project_and_type
+):
+    project, et, fds = project_and_type
+
+    first = generate_events(sync_session, project.id, et.id, _payload_locale_analysis(), fds)
+    sync_session.commit()
+    assert first.variables_created == 1
+
+    scanned = sync_session.execute(
+        select(Variable).where(Variable.project_id == project.id)
+    ).scalar_one()
+    assert scanned.name == "payload.locale"
+    assert scanned.bindings == ["payload.locale"]
+
+    # User renames the scan-created variable; identity lives in
+    # source_name/bindings so the next scan must adopt, not duplicate.
+    scanned.name = "locale_var"
+    sync_session.commit()
+
+    second = generate_events(sync_session, project.id, et.id, _payload_locale_analysis(), fds)
+    sync_session.commit()
+
+    assert second.variables_created == 0
+    variables = (
+        sync_session.execute(select(Variable).where(Variable.project_id == project.id))
+        .scalars()
+        .all()
+    )
+    assert [v.name for v in variables] == ["locale_var"]
+
+    # The rescan rewrote the stored template to the new display name.
+    payload_value = sync_session.execute(
+        select(EventFieldValue.value).where(
+            EventFieldValue.field_definition_id == fds["payload"].id
+        )
+    ).scalar_one()
+    assert payload_value == '{"locale": "${locale_var}"}'
