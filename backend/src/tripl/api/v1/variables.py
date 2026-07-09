@@ -7,6 +7,8 @@ from tripl.models.variable import Variable
 from tripl.models.variable_event_value_override import VariableEventValueOverride
 from tripl.models.variable_value import VariableValue
 from tripl.schemas.variable import (
+    VariableBulkDelete,
+    VariableBulkUpdate,
     VariableCreate,
     VariableEventOverrideResponse,
     VariableEventOverrideUpsert,
@@ -27,6 +29,46 @@ from tripl.services import (
 )
 
 router = APIRouter(prefix="/projects/{slug}/variables", tags=["variables"])
+
+
+@router.post("/bulk-update", status_code=204)
+async def bulk_update_variables(
+    session: SessionDep,
+    slug: str,
+    data: VariableBulkUpdate,
+    current_user: EditorUserDep,
+    branch_id: BranchIdDep,
+) -> None:
+    await variable_service.bulk_update_variables(session, slug, data, branch_id)
+    await audit_service.record(
+        session,
+        user=current_user,
+        action="variable.bulk_update",
+        target_type="variable",
+        target_id=None,
+        project_slug=slug,
+        payload=data.model_dump(mode="json", exclude_none=True),
+    )
+
+
+@router.post("/bulk-delete", status_code=204)
+async def bulk_delete_variables(
+    session: SessionDep,
+    slug: str,
+    data: VariableBulkDelete,
+    current_user: EditorUserDep,
+    branch_id: BranchIdDep,
+) -> None:
+    await variable_service.bulk_delete_variables(session, slug, data, branch_id)
+    await audit_service.record(
+        session,
+        user=current_user,
+        action="variable.bulk_delete",
+        target_type="variable",
+        target_id=None,
+        project_slug=slug,
+        payload=data.model_dump(mode="json"),
+    )
 
 
 # Registered before the /{variable_id} routes so the literal "drifts" segment

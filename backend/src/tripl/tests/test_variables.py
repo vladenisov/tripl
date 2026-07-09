@@ -356,3 +356,74 @@ async def test_event_override_404s(client: AsyncClient):
         f"/api/v1/projects/var-ovr404/variables/{var_id}/event-overrides/{event_id}"
     )
     assert resp.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_bulk_update_variables(client: AsyncClient):
+    await _setup_project(client, "var-bulk")
+    ids = []
+    for n in ["bulk_a", "bulk_b", "bulk_c"]:
+        resp = await client.post(
+            "/api/v1/projects/var-bulk/variables",
+            json={"name": n, "allowed_values": ["keep", "drop"]},
+        )
+        ids.append(resp.json()["id"])
+
+    resp = await client.post(
+        "/api/v1/projects/var-bulk/variables/bulk-update",
+        json={
+            "variable_ids": ids[:2],
+            "variable_type": "number",
+            "allowed_values_add": ["new"],
+            "allowed_values_remove": ["drop"],
+        },
+    )
+    assert resp.status_code == 204
+
+    listed = {
+        v["name"]: v for v in (await client.get("/api/v1/projects/var-bulk/variables")).json()
+    }
+    for n in ["bulk_a", "bulk_b"]:
+        assert listed[n]["variable_type"] == "number"
+        assert listed[n]["allowed_values"] == ["keep", "new"]
+    # Untouched variable keeps its type and values.
+    assert listed["bulk_c"]["variable_type"] == "string"
+    assert listed["bulk_c"]["allowed_values"] == ["keep", "drop"]
+
+
+@pytest.mark.asyncio
+async def test_bulk_update_requires_an_operation_and_known_ids(client: AsyncClient):
+    await _setup_project(client, "var-bulk-val")
+    created = await client.post(
+        "/api/v1/projects/var-bulk-val/variables", json={"name": "only_var"}
+    )
+    var_id = created.json()["id"]
+
+    no_op = await client.post(
+        "/api/v1/projects/var-bulk-val/variables/bulk-update",
+        json={"variable_ids": [var_id]},
+    )
+    assert no_op.status_code == 422
+
+    unknown = await client.post(
+        "/api/v1/projects/var-bulk-val/variables/bulk-update",
+        json={"variable_ids": [var_id, str(uuid.uuid4())], "description": "x"},
+    )
+    assert unknown.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_bulk_delete_variables(client: AsyncClient):
+    await _setup_project(client, "var-bulk-del")
+    ids = []
+    for n in ["del_a", "del_b", "del_keep"]:
+        resp = await client.post("/api/v1/projects/var-bulk-del/variables", json={"name": n})
+        ids.append(resp.json()["id"])
+
+    resp = await client.post(
+        "/api/v1/projects/var-bulk-del/variables/bulk-delete",
+        json={"variable_ids": ids[:2]},
+    )
+    assert resp.status_code == 204
+    remaining = (await client.get("/api/v1/projects/var-bulk-del/variables")).json()
+    assert [v["name"] for v in remaining] == ["del_keep"]

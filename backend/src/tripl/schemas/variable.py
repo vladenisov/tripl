@@ -2,7 +2,7 @@ import re
 import uuid
 from enum import StrEnum
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 # Warehouse column or dotted JSON path, e.g. "variant" or "page_data.extra.variant".
 BINDING_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_-]*(\.[A-Za-z0-9_-]+)*$")
@@ -75,6 +75,32 @@ class VariableResponse(BaseModel):
     open_drift_count: int = 0
 
     model_config = {"from_attributes": True}
+
+
+class VariableBulkUpdate(BaseModel):
+    variable_ids: list[uuid.UUID] = Field(min_length=1)
+    variable_type: VariableType | None = None
+    description: str | None = None
+    allowed_values_add: list[str] | None = None
+    allowed_values_remove: list[str] | None = None
+
+    @model_validator(mode="after")
+    def validate_has_update(self) -> VariableBulkUpdate:
+        if (
+            self.variable_type is None
+            and self.description is None
+            and self.allowed_values_add is None
+            and self.allowed_values_remove is None
+        ):
+            raise ValueError(
+                "At least one of variable_type, description, allowed_values_add or"
+                " allowed_values_remove must be provided"
+            )
+        return self
+
+
+class VariableBulkDelete(BaseModel):
+    variable_ids: list[uuid.UUID] = Field(min_length=1)
 
 
 class VariableEventOverrideUpsert(BaseModel):

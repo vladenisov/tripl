@@ -9,7 +9,13 @@ from tripl.models.event import Event
 from tripl.models.event_field_value import EventFieldValue
 from tripl.models.variable import Variable
 from tripl.models.variable_event_value_override import VariableEventValueOverride
-from tripl.schemas.variable import VariableCreate, VariableEventOverrideUpsert, VariableUpdate
+from tripl.schemas.variable import (
+    VariableBulkDelete,
+    VariableBulkUpdate,
+    VariableCreate,
+    VariableEventOverrideUpsert,
+    VariableUpdate,
+)
 from tripl.services.plan_branch_service import resolve_branch_id
 from tripl.services.project_service import get_project_id_by_slug
 from tripl.services.search_service import reindex_project_branch
@@ -188,6 +194,71 @@ async def delete_variable(
     if not var:
         raise HTTPException(status_code=404, detail="Variable not found")
     await session.delete(var)
+    await session.commit()
+    await reindex_project_branch(session, project_id=project_id, branch_id=branch_id, slug=slug)
+
+
+async def _load_variables_by_ids(
+    session: AsyncSession,
+    project_id: uuid.UUID,
+    branch_id: uuid.UUID | None,
+    variable_ids: list[uuid.UUID],
+) -> list[Variable]:
+    result = await session.execute(
+        select(Variable).where(
+            Variable.project_id == project_id,
+            Variable.branch_id == branch_id,
+            Variable.id.in_(variable_ids),
+        )
+    )
+    variables = list(result.scalars().all())
+    missing = set(variable_ids) - {variable.id for variable in variables}
+    if missing:
+        raise HTTPException(status_code=404, detail="Variable not found")
+    return variables
+
+
+async def bulk_update_variables(
+    session: AsyncSession,
+    slug: str,
+    data: VariableBulkUpdate,
+    branch_id: uuid.UUID | None = None,
+) -> None:
+    project_id = await get_project_id_by_slug(session, slug)
+    branch_id = await resolve_branch_id(session, project_id, branch_id)
+    variables = await _load_variables_by_ids(session, project_id, branch_id, data.variable_ids)
+    for variable in variables:
+        if data.variable_type is not None:
+            variable.variable_type = data.variable_type
+        if data.description is not None:
+            variable.description = data.description
+        if data.allowed_values_add or data.allowed_values_remove:
+            values = list(variable.allowed_values or [])
+            if data.allowed_values_remove:
+                removed = set(data.allowed_values_remove)
+                values = [value for value in values if value not in removed]
+            if data.allowed_values_add:
+                seen = set(values)
+                for value in data.allowed_values_add:
+                    if value not in seen:
+                        seen.add(value)
+                        values.append(value)
+            variable.allowed_values = values
+    await session.commit()
+    await reindex_project_branch(session, project_id=project_id, branch_id=branch_id, slug=slug)
+
+
+async def bulk_delete_variables(
+    session: AsyncSession,
+    slug: str,
+    data: VariableBulkDelete,
+    branch_id: uuid.UUID | None = None,
+) -> None:
+    project_id = await get_project_id_by_slug(session, slug)
+    branch_id = await resolve_branch_id(session, project_id, branch_id)
+    variables = await _load_variables_by_ids(session, project_id, branch_id, data.variable_ids)
+    for variable in variables:
+        await session.delete(variable)
     await session.commit()
     await reindex_project_branch(session, project_id=project_id, branch_id=branch_id, slug=slug)
 

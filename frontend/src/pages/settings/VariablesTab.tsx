@@ -14,6 +14,7 @@ import { Label } from "@/components/ui/label"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { EmptyState } from "@/components/empty-state"
 import { Panel } from "@/components/settings/kit"
+import { VariablesBulkBar } from "./VariablesBulkBar"
 import { getErrorMessage } from '@/lib/utils'
 
 // Warehouse column or dotted JSON path, e.g. "variant" or "page_data.extra.variant".
@@ -79,6 +80,7 @@ export function VariablesTab({ slug }: { slug: string }) {
   const [editBindings, setEditBindings] = useState<string[]>([])
   const [overrideEventId, setOverrideEventId] = useState('')
   const [overrideValues, setOverrideValues] = useState<string[]>([])
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
   const { confirm, dialog } = useConfirm()
 
   // IDs for create dialog
@@ -152,6 +154,39 @@ export function VariablesTab({ slug }: { slug: string }) {
     mutationFn: (eventId: string) => variableOverridesApi.del(slug, editingVar!.id, eventId, branchId),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['variable-overrides', slug, branchId, editingVar?.id] }),
   })
+
+  const bulkUpdateMut = useMutation({
+    mutationFn: (patch: { variable_type?: VariableType; description?: string; allowed_values_add?: string[] }) =>
+      variablesApi.bulkUpdate(slug, { variable_ids: [...selectedIds], ...patch }, branchId),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['variables', slug, branchId] }),
+  })
+
+  const bulkDeleteMut = useMutation({
+    mutationFn: () => variablesApi.bulkDelete(slug, [...selectedIds], branchId),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['variables', slug, branchId] })
+      setSelectedIds(new Set())
+    },
+  })
+
+  const handleBulkDelete = async () => {
+    const ok = await confirm({
+      title: 'Delete variables',
+      message: `Delete ${selectedIds.size} selected variable${selectedIds.size === 1 ? '' : 's'}? Event fields referencing them will keep the literal text.`,
+      confirmLabel: 'Delete',
+      variant: 'danger',
+    })
+    if (ok) bulkDeleteMut.mutate()
+  }
+
+  const toggleSelected = (id: string) => {
+    setSelectedIds(prev => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
+  }
 
   const deleteMut = useMutation({
     mutationFn: (id: string) => variablesApi.del(slug, id, branchId),
@@ -411,6 +446,14 @@ export function VariablesTab({ slug }: { slug: string }) {
           <Table>
             <TableHeader>
               <TableRow>
+                <TableHead className="w-8">
+                  <input
+                    type="checkbox"
+                    aria-label="Select all variables"
+                    checked={variables.length > 0 && selectedIds.size === variables.length}
+                    onChange={e => setSelectedIds(e.target.checked ? new Set(variables.map(v => v.id)) : new Set())}
+                  />
+                </TableHead>
                 <TableHead>Variable</TableHead>
                 <TableHead>Events</TableHead>
                 <TableHead>Description</TableHead>
@@ -424,6 +467,14 @@ export function VariablesTab({ slug }: { slug: string }) {
                 const v = row.variable
                 return (
                 <TableRow key={row.id}>
+                  <TableCell className="align-top">
+                    <input
+                      type="checkbox"
+                      aria-label={`Select variable ${v.name}`}
+                      checked={selectedIds.has(v.id)}
+                      onChange={() => toggleSelected(v.id)}
+                    />
+                  </TableCell>
                   <TableCell className="font-mono text-xs align-top">
                     <div className="flex items-center gap-2">
                       <code className="rounded bg-primary/10 px-1.5 py-0.5 text-primary">
@@ -510,6 +561,17 @@ export function VariablesTab({ slug }: { slug: string }) {
           </div>
         )}
       </Panel>
+
+      <VariablesBulkBar
+        selectedCount={selectedIds.size}
+        isPending={bulkUpdateMut.isPending || bulkDeleteMut.isPending}
+        typeLabels={typeLabels}
+        onSetType={variableType => bulkUpdateMut.mutate({ variable_type: variableType })}
+        onSetDescription={description => bulkUpdateMut.mutate({ description })}
+        onAddValues={values => bulkUpdateMut.mutate({ allowed_values_add: values })}
+        onDelete={handleBulkDelete}
+        onClear={() => setSelectedIds(new Set())}
+      />
     </div>
   )
 }

@@ -33,4 +33,19 @@ export const variablesApi = {
     ),
   del: (slug: string, id: string, branchId?: string | null) =>
     api.del(withBranch(`/projects/${slug}/variables/${id}`, branchId)),
+  bulkUpdate: (
+    slug: string,
+    data: {
+      variable_ids: string[]
+      variable_type?: VariableType
+      description?: string
+      allowed_values_add?: string[]
+      allowed_values_remove?: string[]
+    },
+    branchId?: string | null,
+  ) => api.post<void>(withBranch(`/projects/${slug}/variables/bulk-update`, branchId), data),
+  bulkDelete: (slug: string, variableIds: string[], branchId?: string | null) =>
+    api.post<void>(withBranch(`/projects/${slug}/variables/bulk-delete`, branchId), {
+      variable_ids: variableIds,
+    }),
 }
