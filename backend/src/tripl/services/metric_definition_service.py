@@ -24,6 +24,7 @@ from tripl.schemas.event_metric import MetricSignalResponse
 from tripl.schemas.metric_definition import (
     EventCompositionMetricCreate,
     EventCompositionMetricDefinition,
+    FactCondition,
     FactMetricCreate,
     FactMetricDefinition,
     FactOperand,
@@ -123,16 +124,18 @@ async def _verify_fact_operand(
     measure_column: str | None,
     distinct_column: str | None,
     row_filters: list[str],
+    conditions: list[FactCondition],
     role: str,
 ) -> None:
     """Validate one fact operand against its referenced fact table.
 
     The fact table must exist and belong to the metric's project; any
-    ``measure_column`` / ``distinct_column`` must be one of the fact table's
-    introspected column names; EVERY name in ``row_filters`` must be the NAME of
-    one of the fact table's stored row filters (never a raw SQL fragment).
-    ``filter_sql`` is a free-text fragment guarded at the schema boundary (same
-    trust model as the named fragments), so it needs no DB-backed check here.
+    ``measure_column`` / ``distinct_column`` and every structured condition
+    column must be one of the fact table's introspected column names; EVERY name
+    in ``row_filters`` must be the NAME of one of the fact table's stored row
+    filters (never a raw SQL fragment). ``filter_sql`` is a free-text fragment
+    guarded at the schema boundary (same trust model as the named fragments), so
+    it needs no DB-backed check here.
     Identifier-shape and per-aggregation requirements were already enforced at
     the schema boundary.
     """
@@ -153,6 +156,15 @@ async def _verify_fact_operand(
             raise HTTPException(
                 status_code=422,
                 detail=f"{role}: column {column!r} is not a column of the referenced fact table",
+            )
+    for condition in conditions:
+        if condition.column not in column_names:
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    f"{role}: condition column {condition.column!r} is not a column of the "
+                    "referenced fact table"
+                ),
             )
 
     if row_filters:
@@ -269,6 +281,7 @@ async def _verify_fact_metric(
                 measure_column=operand.measure_column,
                 distinct_column=operand.distinct_column,
                 row_filters=operand.effective_row_filters(),
+                conditions=operand.conditions,
                 role=role,
             )
         return
@@ -283,6 +296,7 @@ async def _verify_fact_metric(
         measure_column=data.measure_column,
         distinct_column=data.distinct_column,
         row_filters=data.effective_row_filters(),
+        conditions=data.conditions,
         role="single",
     )
 

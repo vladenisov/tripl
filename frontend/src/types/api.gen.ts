@@ -5080,6 +5080,21 @@ export interface components {
             /** Total Count */
             total_count: number;
         };
+        /**
+         * FactCondition
+         * @description One visual fact-row condition compiled into an ANDed SQL filter.
+         */
+        FactCondition: {
+            /** Column */
+            column: string;
+            /**
+             * Operator
+             * @enum {string}
+             */
+            operator: "eq" | "ne" | "gt" | "gte" | "lt" | "lte" | "contains" | "not_contains" | "like" | "not_like" | "in" | "not_in" | "is_null" | "is_not_null" | "is_true" | "is_false";
+            /** Value */
+            value?: string | number | boolean | (string | number | boolean)[] | null;
+        };
         /** FactMetricCreate */
         FactMetricCreate: {
             aggregation?: components["schemas"]["MetricAggregation"] | null;
@@ -5101,6 +5116,8 @@ export interface components {
             color: string;
             /** @default single */
             composition: components["schemas"]["MetricComposition"];
+            /** Conditions */
+            conditions?: components["schemas"]["FactCondition"][];
             denominator?: components["schemas"]["FactOperand"] | null;
             /**
              * Description
@@ -5156,8 +5173,9 @@ export interface components {
          *
          *     SINGLE (``composition=single``, the default): one operand given by the
          *     top-level ``fact_table_id`` + ``aggregation`` + the ``measure_column`` /
-         *     ``distinct_column`` / ``row_filters`` / ``filter_sql`` config fields (the
-         *     legacy single ``row_filter`` name is still accepted and folded in).
+         *     ``distinct_column`` / ``row_filters`` / ``filter_sql`` / ``conditions``
+         *     config fields (the legacy single ``row_filter`` name is still accepted and
+         *     folded in).
          *
          *     RATIO (``composition=ratio``): ``numerator`` / ``denominator`` operands (each
          *     a :class:`FactOperand`); the denominator MAY reference a different fact table.
@@ -5166,13 +5184,16 @@ export interface components {
          *
          *     The data source and timestamp column are taken from the referenced fact
          *     table(s) at collection time; only the collection ``interval`` lives here.
-         *     Fact-table existence, project ownership, column membership, and row-filter
-         *     name resolution are checked in the service (they need the DB).
+         *     Fact-table existence, project ownership, column membership, condition-column
+         *     membership, and row-filter name resolution are checked in the service (they
+         *     need the DB).
          */
         FactMetricDefinition: {
             aggregation?: components["schemas"]["MetricAggregation"] | null;
             /** @default single */
             composition: components["schemas"]["MetricComposition"];
+            /** Conditions */
+            conditions?: components["schemas"]["FactCondition"][];
             denominator?: components["schemas"]["FactOperand"] | null;
             /** Distinct Column */
             distinct_column?: string | null;
@@ -5205,16 +5226,19 @@ export interface components {
          *     the referenced fact table's columns is checked in the service (it needs the
          *     DB).
          *
-         *     Row filtering combines two inputs, ANDed together at collection time:
+         *     Row filtering combines three inputs, ANDed together at collection time:
          *     ``row_filters`` is a list of NAMES of that fact table's stored row filters
          *     (each resolved to its SQL fragment; membership checked in the service), and
          *     ``filter_sql`` is a free-text boolean WHERE fragment (SQL-safety-validated
-         *     here). The legacy single ``row_filter`` name is still accepted on input and
-         *     folded into the effective named-filter set; new writes use ``row_filters`` +
-         *     ``filter_sql``.
+         *     here). ``conditions`` is a list of visual column/operator/value conditions.
+         *     The legacy single ``row_filter`` name is still accepted on input and folded
+         *     into the effective named-filter set; new writes use ``row_filters`` +
+         *     ``filter_sql`` + ``conditions``.
          */
         FactOperand: {
             aggregation: components["schemas"]["MetricAggregation"];
+            /** Conditions */
+            conditions?: components["schemas"]["FactCondition"][];
             /** Distinct Column */
             distinct_column?: string | null;
             /**

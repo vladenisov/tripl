@@ -273,6 +273,35 @@ class TestCreateHappyPaths:
         assert config["row_filters"] == ["positive"]
         assert config["filter_sql"] == "amount < 1000"
 
+    async def test_create_fact_single_with_structured_conditions(
+        self, client: AsyncClient, project: dict, fact_table: dict
+    ):
+        resp = await client.post(
+            _metrics_url(project["slug"]),
+            json={
+                "kind": "fact",
+                "name": "trial_revenue",
+                "display_name": "Trial Revenue",
+                "composition": "single",
+                "fact_table_id": fact_table["id"],
+                "aggregation": "sum",
+                "interval": "1h",
+                "measure_column": "amount",
+                "conditions": [
+                    {"column": "amount", "operator": "gt", "value": "3"},
+                    {"column": "user_id", "operator": "is_not_null"},
+                ],
+            },
+        )
+        assert resp.status_code == 201, resp.text
+        config = resp.json()["config"]
+        assert config["row_filters"] == []
+        assert config["filter_sql"] is None
+        assert config["conditions"] == [
+            {"column": "amount", "operator": "gt", "value": "3"},
+            {"column": "user_id", "operator": "is_not_null"},
+        ]
+
     async def test_create_fact_ratio_cross_fact_table(
         self, client: AsyncClient, project: dict, fact_table: dict
     ):
@@ -644,6 +673,24 @@ class TestConfigValidation:
         )
         assert resp.status_code == 422, resp.text
 
+    async def test_fact_unknown_condition_column_rejected(
+        self, client: AsyncClient, project: dict, fact_table: dict
+    ):
+        resp = await client.post(
+            _metrics_url(project["slug"]),
+            json={
+                "kind": "fact",
+                "name": "ghost_condition_column",
+                "display_name": "Ghost condition column",
+                "composition": "single",
+                "fact_table_id": fact_table["id"],
+                "aggregation": "count",
+                "interval": "1h",
+                "conditions": [{"column": "missing_col", "operator": "eq", "value": "x"}],
+            },
+        )
+        assert resp.status_code == 422, resp.text
+
     async def test_fact_nonexistent_fact_table_rejected(self, client: AsyncClient, project: dict):
         resp = await client.post(
             _metrics_url(project["slug"]),
@@ -864,6 +911,26 @@ class TestSchemaSecurityValidation:
                 "aggregation": "count",
                 "interval": "1h",
                 "filter_sql": "1=1; DROP TABLE users --",
+            },
+        )
+        assert resp.status_code == 422, resp.text
+
+    async def test_reject_condition_column_injection(
+        self, client: AsyncClient, project: dict, fact_table: dict
+    ):
+        resp = await client.post(
+            _metrics_url(project["slug"]),
+            json={
+                "kind": "fact",
+                "name": "inj_condition_column",
+                "display_name": "Inj Condition Column",
+                "composition": "single",
+                "fact_table_id": fact_table["id"],
+                "aggregation": "count",
+                "interval": "1h",
+                "conditions": [
+                    {"column": "amount; DROP TABLE users", "operator": "eq", "value": "1"}
+                ],
             },
         )
         assert resp.status_code == 422, resp.text

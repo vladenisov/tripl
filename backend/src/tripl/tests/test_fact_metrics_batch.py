@@ -833,6 +833,45 @@ def test_named_filters_and_filter_sql_together(
         assert _values_for(session, def_id) == {(B10, 2.0)}
 
 
+def test_structured_conditions_share_batched_filter_identity(
+    sync_session_factory: sessionmaker[Session],
+    monkeypatch: MonkeyPatch,
+) -> None:
+    with sync_session_factory() as session:
+        project, data_source = _seed_project_and_ds(session)
+        fact_table = _seed_fact_table(
+            session,
+            project,
+            data_source,
+            row_filters=[{"name": "positive", "sql": "amount > 0"}],
+        )
+        sql = fact_table.sql
+        metric = _make_single_metric(
+            session,
+            project,
+            fact_table,
+            aggregation=MetricAggregation.count,
+            config={
+                "row_filters": ["positive"],
+                "filter_sql": "country = 'US'",
+                "conditions": [{"column": "amount", "operator": "gt", "value": "3"}],
+            },
+        )
+        def_id = metric.id
+
+    combined = "(amount > 0) AND (country = 'US') AND (amount > 3)"
+    adapter = _BatchAdapter(
+        spec_values={(sql, MetricAggregation.count, None, combined): {B10: 5.0}}
+    )
+    _patch(monkeypatch, sync_session_factory, adapter)
+
+    metric_collect.collect_fact_metrics_batch.run([str(def_id)])
+
+    assert {spec.filter_sql for spec in adapter.seen_specs[0]} == {combined}
+    with sync_session_factory() as session:
+        assert _values_for(session, def_id) == {(B10, 5.0)}
+
+
 def test_legacy_single_row_filter_still_works(
     sync_session_factory: sessionmaker[Session],
     monkeypatch: MonkeyPatch,

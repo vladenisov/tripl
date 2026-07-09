@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import re
 
 from tripl.models.domain_enums import MetricAggregation
@@ -8,16 +9,16 @@ from tripl.models.domain_enums import MetricAggregation
 # columns, and sql-kind SELECTs used by ``fact`` / ``sql`` metrics.
 #
 # Security model (matches the warehouse adapters): IDENTIFIER-ALLOWLIST +
-# LITERAL-ESCAPING with NO bound parameters. This module never escapes literals
-# itself; callers pass already-escaped identifiers built with the adapter's own
-# quoting helper. It only validates raw identifiers against the allowlist and
-# assembles the safe aggregate fragment from the constrained DSL.
+# LITERAL-ESCAPING with NO bound parameters. It validates raw identifiers against
+# the allowlist and exposes one small literal-quoting helper for constrained
+# DSLs that compile user-entered values into warehouse SQL.
 
 # Mirrors the adapters' ``_IDENTIFIER_RE``: a leading letter/underscore followed
 # by letters/digits/underscores and dots (for qualified names). This rejects
 # whitespace, quotes, semicolons, parentheses, comment markers, and operators,
 # so injection attempts never reach the SQL string.
 _IDENTIFIER_RE = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_.]*$")
+_NUMERIC_LITERAL_RE = re.compile(r"^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?$")
 
 # Aggregations that require a measure column. ``count`` is the only member that
 # operates without one (it counts rows via ``count(*)``).
@@ -176,6 +177,55 @@ def validate_identifier(name: str) -> str:
         msg = f"Invalid identifier: {name!r}"
         raise ValueError(msg)
     return name
+
+
+def quote_sql_string_literal(text: str) -> str:
+    """Quote a plain SQL string literal with single-quote escaping.
+
+    This helper intentionally does not accept arbitrary objects. It is for SQL
+    operators that require string-pattern semantics (``LIKE`` / ``contains``),
+    where a numeric-looking value must still be represented as a quoted string.
+    """
+    stripped = text.strip()
+    if not stripped:
+        raise ValueError("SQL string literal must not be empty")
+    if "\x00" in stripped:
+        raise ValueError("SQL string literal must not contain NUL bytes")
+    return "'" + stripped.replace("'", "''") + "'"
+
+
+def quote_sql_literal(value: str | int | float | bool) -> str:
+    """Render one scalar as an injection-safe SQL literal.
+
+    Numeric and boolean values are emitted as SQL literals. String values are
+    trimmed and then interpreted as boolean / numeric literals when they match
+    those narrow forms; every other string is single-quoted with embedded quotes
+    doubled. This keeps visual condition-builder values such as ``3`` usable for
+    ``amount > 3`` while safely quoting free text like ``subscription = trial``.
+    """
+    if isinstance(value, bool):
+        return "TRUE" if value else "FALSE"
+    if isinstance(value, int):
+        return str(value)
+    if isinstance(value, float):
+        if not math.isfinite(value):
+            raise ValueError("SQL numeric literal must be finite")
+        return repr(value)
+
+    stripped = value.strip()
+    if not stripped:
+        raise ValueError("SQL literal string must not be empty")
+    if "\x00" in stripped:
+        raise ValueError("SQL literal string must not contain NUL bytes")
+
+    lowered = stripped.lower()
+    if lowered == "true":
+        return "TRUE"
+    if lowered == "false":
+        return "FALSE"
+    if _NUMERIC_LITERAL_RE.fullmatch(stripped):
+        return stripped
+    return quote_sql_string_literal(stripped)
 
 
 def validate_sql_fragment(text: str) -> str:

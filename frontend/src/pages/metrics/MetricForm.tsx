@@ -190,7 +190,12 @@ function readOperandFromConfig(raw: unknown): FactOperandState {
     aggregation: isMetricAggregation(aggregation) ? aggregation : 'count',
     measureColumn: str('measure_column'),
     distinctColumn: str('distinct_column'),
-    filters: filtersFromConfig(obj['row_filters'], str('row_filter'), str('filter_sql')),
+    filters: filtersFromConfig(
+      obj['row_filters'],
+      str('row_filter'),
+      str('filter_sql'),
+      obj['conditions'],
+    ),
   }
 }
 
@@ -349,12 +354,13 @@ function FactOperandEditor({
         label="Filters"
         last
         stacked
-        hint="Optional. Add named filters from the fact table or write SQL conditions inline; all are combined with AND."
+        hint="Optional. Add named filters, structured conditions, or SQL fragments; all are combined with AND."
       >
         <FactFilterEditor
           filters={operand.filters}
           onChange={filters => set('filters', filters)}
           namedOptions={detail.rowFilters}
+          conditionColumns={detail.columns}
           disabled={!operand.factTableId}
         />
       </MField>
@@ -615,6 +621,7 @@ export function MetricForm({ slug, metric, dataSources, events, onClose }: Metri
         initialConfig['row_filters'],
         configString('row_filter'),
         configString('filter_sql'),
+        initialConfig['conditions'],
       ),
     }
     if (metric?.kind === 'fact' && metric.composition === 'ratio') {

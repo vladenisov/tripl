@@ -42,7 +42,7 @@ import uuid
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
-from typing import cast
+from typing import TypeGuard, cast
 
 from sqlalchemy import func as sa_func
 from sqlalchemy import select
@@ -51,7 +51,10 @@ from sqlalchemy.orm import Session
 from tripl.core.adapters.base import AggregateSpec, BaseAdapter
 from tripl.core.adapters.measure_validator import (
     coerce_aggregation,
+    quote_sql_literal,
+    quote_sql_string_literal,
     requires_measure,
+    validate_identifier,
     validate_measure_column,
     validate_select_sql,
     validate_sql_fragment,
@@ -300,13 +303,50 @@ def _read_event_metric_series(
 
 
 @dataclass(frozen=True)
+class _FactCondition:
+    """One stored visual condition row after defensive config parsing."""
+
+    column: str
+    operator: str
+    value: object | None
+
+
+type _SqlLiteralValue = str | int | float | bool
+_CONDITION_VALUELESS_OPERATORS = frozenset({"is_null", "is_not_null", "is_true", "is_false"})
+_CONDITION_MULTI_VALUE_OPERATORS = frozenset({"in", "not_in"})
+_CONDITION_BINARY_OPERATORS = {
+    "eq": "=",
+    "ne": "!=",
+    "gt": ">",
+    "gte": ">=",
+    "lt": "<",
+    "lte": "<=",
+}
+_CONDITION_OPERATORS = frozenset(
+    {
+        *_CONDITION_VALUELESS_OPERATORS,
+        *_CONDITION_MULTI_VALUE_OPERATORS,
+        *_CONDITION_BINARY_OPERATORS.keys(),
+        "contains",
+        "not_contains",
+        "like",
+        "not_like",
+    }
+)
+
+
+def _is_sql_literal_value(value: object) -> TypeGuard[_SqlLiteralValue]:
+    return isinstance(value, (str, int, float, bool))
+
+
+@dataclass(frozen=True)
 class _FactOperand:
     """One resolved fact operand (the single metric, or one ratio side).
 
     ``row_filters`` is the effective named-filter set (legacy single
-    ``row_filter`` already folded in) and ``filter_sql`` is the optional
-    free-text WHERE fragment; both are resolved to one ANDed WHERE expression at
-    collection time.
+    ``row_filter`` already folded in), ``filter_sql`` is the optional free-text
+    WHERE fragment, and ``conditions`` are visual column/operator/value rows; all
+    are resolved to one ANDed WHERE expression at collection time.
     """
 
     fact_table_id: uuid.UUID
@@ -315,6 +355,7 @@ class _FactOperand:
     distinct_column: str | None
     row_filters: tuple[str, ...]
     filter_sql: str | None
+    conditions: tuple[_FactCondition, ...]
 
 
 def _operand_from_config(raw: Mapping[str, object]) -> _FactOperand:
@@ -331,7 +372,40 @@ def _operand_from_config(raw: Mapping[str, object]) -> _FactOperand:
         distinct_column=_config_str(raw, "distinct_column"),
         row_filters=_effective_filter_names(raw),
         filter_sql=_config_str(raw, "filter_sql"),
+        conditions=_conditions_from_config(raw),
     )
+
+
+def _conditions_from_config(raw: Mapping[str, object]) -> tuple[_FactCondition, ...]:
+    raw_conditions = raw.get("conditions", [])
+    if raw_conditions is None:
+        return ()
+    if not isinstance(raw_conditions, list):
+        msg = "fact operand conditions must be a list"
+        raise ScanError(msg)
+
+    conditions: list[_FactCondition] = []
+    for raw_condition in raw_conditions:
+        if not isinstance(raw_condition, Mapping):
+            msg = "fact operand condition entries must be objects"
+            raise ScanError(msg)
+        column = raw_condition.get("column")
+        operator = raw_condition.get("operator")
+        if not isinstance(column, str) or not isinstance(operator, str):
+            msg = "fact operand condition requires column and operator"
+            raise ScanError(msg)
+        try:
+            column = validate_identifier(column)
+        except ValueError as exc:
+            msg = f"fact operand condition has invalid column {column!r}"
+            raise ScanError(msg) from exc
+        if operator not in _CONDITION_OPERATORS:
+            msg = f"fact operand condition has unsupported operator {operator!r}"
+            raise ScanError(msg)
+        conditions.append(
+            _FactCondition(column=column, operator=operator, value=raw_condition.get("value"))
+        )
+    return tuple(conditions)
 
 
 def _fact_operand_measure(operand: _FactOperand) -> str | None:
@@ -364,21 +438,116 @@ def _resolve_named_filter_fragment(fact_table: FactTable, name: str) -> str:
     raise ScanError(msg)
 
 
+def _condition_literal(value: object) -> str:
+    if not _is_sql_literal_value(value):
+        msg = "fact operand condition value must be a scalar"
+        raise ScanError(msg)
+    try:
+        return quote_sql_literal(value)
+    except ValueError as exc:
+        msg = f"fact operand condition value is invalid: {exc}"
+        raise ScanError(msg) from exc
+
+
+def _condition_text(value: object) -> str:
+    if not _is_sql_literal_value(value):
+        msg = "fact operand condition value must be a scalar"
+        raise ScanError(msg)
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, (int, float)):
+        return _condition_literal(value)
+    text = value.strip()
+    if not text:
+        msg = "fact operand condition value must not be empty"
+        raise ScanError(msg)
+    return text
+
+
+def _condition_list_literals(value: object) -> list[str]:
+    values: list[object]
+    if isinstance(value, list):
+        values = list(value)
+    elif isinstance(value, str):
+        values = [part.strip() for part in value.split(",")]
+    else:
+        values = [value]
+
+    literals = [
+        _condition_literal(item) for item in values if not (isinstance(item, str) and not item)
+    ]
+    if not literals:
+        msg = "fact operand IN condition requires at least one value"
+        raise ScanError(msg)
+    return literals
+
+
+def _resolve_condition_fragment(condition: _FactCondition) -> str:
+    column = validate_identifier(condition.column)
+    operator = condition.operator
+    value = condition.value
+
+    if operator == "is_null":
+        return f"{column} IS NULL"
+    if operator == "is_not_null":
+        return f"{column} IS NOT NULL"
+    if operator == "is_true":
+        return f"{column} = TRUE"
+    if operator == "is_false":
+        return f"{column} = FALSE"
+
+    if operator in _CONDITION_BINARY_OPERATORS:
+        if value is None:
+            msg = f"fact operand condition {operator!r} requires a value"
+            raise ScanError(msg)
+        return f"{column} {_CONDITION_BINARY_OPERATORS[operator]} {_condition_literal(value)}"
+
+    if operator in _CONDITION_MULTI_VALUE_OPERATORS:
+        if value is None:
+            msg = f"fact operand condition {operator!r} requires a value"
+            raise ScanError(msg)
+        keyword = "NOT IN" if operator == "not_in" else "IN"
+        return f"{column} {keyword} ({', '.join(_condition_list_literals(value))})"
+
+    if operator in {"like", "not_like", "contains", "not_contains"}:
+        if value is None:
+            msg = f"fact operand condition {operator!r} requires a value"
+            raise ScanError(msg)
+        text = _condition_text(value)
+        pattern = f"%{text}%" if operator in {"contains", "not_contains"} else text
+        keyword = "NOT LIKE" if operator in {"not_like", "not_contains"} else "LIKE"
+        try:
+            literal = quote_sql_string_literal(pattern)
+        except ValueError as exc:
+            msg = f"fact operand condition value is invalid: {exc}"
+            raise ScanError(msg) from exc
+        return f"{column} {keyword} {literal}"
+
+    msg = f"fact operand condition has unsupported operator {operator!r}"
+    raise ScanError(msg)
+
+
 def _resolve_combined_filter(
-    fact_table: FactTable, *, row_filters: tuple[str, ...], filter_sql: str | None
+    fact_table: FactTable,
+    *,
+    row_filters: tuple[str, ...],
+    filter_sql: str | None,
+    conditions: tuple[_FactCondition, ...] = (),
 ) -> str | None:
-    """Resolve an operand's named filters + free-text ``filter_sql`` into one WHERE.
+    """Resolve named filters + free-text SQL + conditions into one WHERE.
 
     Every name in ``row_filters`` is resolved to its stored SQL fragment (by
-    NAME), then a present ``filter_sql`` is appended; each fragment is wrapped in
-    parentheses and the list is joined with ``" AND "``. An empty set returns
-    ``None`` (no extra WHERE). The SAME combined string is consumed by both the
-    per-metric path (a bounded ``WHERE`` subquery) and the batched path (a
-    conditional aggregate), preserving value-identity between them.
+    NAME), then a present ``filter_sql`` and any structured conditions are
+    appended; each fragment is wrapped in parentheses and the list is joined
+    with ``" AND "``. An empty set returns ``None`` (no extra WHERE). The SAME
+    combined string is consumed by both the per-metric path (a bounded ``WHERE``
+    subquery) and the batched path (a conditional aggregate), preserving
+    value-identity between them.
     """
     fragments = [_resolve_named_filter_fragment(fact_table, name) for name in row_filters]
     if filter_sql is not None:
         fragments.append(validate_sql_fragment(filter_sql))
+    fragments.extend(_resolve_condition_fragment(condition) for condition in conditions)
     if not fragments:
         return None
     return " AND ".join(f"({fragment})" for fragment in fragments)
@@ -394,7 +563,10 @@ def _resolve_fact_operand_query(fact_table: FactTable, operand: _FactOperand) ->
     """
     source = fact_table.sql
     combined = _resolve_combined_filter(
-        fact_table, row_filters=operand.row_filters, filter_sql=operand.filter_sql
+        fact_table,
+        row_filters=operand.row_filters,
+        filter_sql=operand.filter_sql,
+        conditions=operand.conditions,
     )
     if combined is None:
         return source
@@ -755,6 +927,7 @@ def _collect_fact_single(
         distinct_column=_config_str(config, "distinct_column"),
         row_filters=_effective_filter_names(config),
         filter_sql=_config_str(config, "filter_sql"),
+        conditions=_conditions_from_config(config),
     )
     ds = session.get(DataSource, fact_table.data_source_id)
     if ds is None:
@@ -957,7 +1130,10 @@ def _resolve_fact_operand_filter(operand: _FactOperand, *, fact_table: FactTable
     aggregate computes the identical value. ``None`` means no filter.
     """
     return _resolve_combined_filter(
-        fact_table, row_filters=operand.row_filters, filter_sql=operand.filter_sql
+        fact_table,
+        row_filters=operand.row_filters,
+        filter_sql=operand.filter_sql,
+        conditions=operand.conditions,
     )
 
 
@@ -1233,6 +1409,7 @@ def _plan_single_metric(
         distinct_column=_config_str(config, "distinct_column"),
         row_filters=_effective_filter_names(config),
         filter_sql=_config_str(config, "filter_sql"),
+        conditions=_conditions_from_config(config),
     )
     measure, filter_sql = _resolve_batch_operand(
         operand,

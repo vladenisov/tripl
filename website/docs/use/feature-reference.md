@@ -193,8 +193,10 @@ The create/edit form picks a **kind** and then reveals kind-specific config:
 - **Fact aggregation** — a reusable fact table built from a read-only `SELECT` or
   top-level `WITH ... SELECT`, an **aggregation** (`count`, `sum`, `avg`, `min`,
   `max`, `count_distinct`), the **measure column** it runs over (a **distinct
-  column** for `count_distinct`), optional named/free-text filters, optional
-  **breakdowns**, and an interval. Ratio fact metrics can also use breakdowns
+  column** for `count_distinct`), optional row filters, optional **breakdowns**,
+  and an interval. Row filters can mix reusable named filters from the fact
+  table, structured column/operator/value conditions, and raw SQL fragments; all
+  rows are combined with `AND`. Ratio fact metrics can also use breakdowns
   when both operands use the same fact table; each breakdown row is that value's
   numerator divided by that value's denominator, so breakdown ratios do not add
   up to the top-line ratio.

@@ -2,17 +2,27 @@ import { useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { Plus, Trash2 } from 'lucide-react'
 import { SqlEditor } from '@/components/sql-editor'
-import { Select, type SelectOption } from '@/components/settings/kit'
+import { Select, TextInput, type SelectOption } from '@/components/settings/kit'
 import type { DbType } from '@/types/dataSources'
 import type { TableSchema } from '@/types/dataSourceSchema'
+import type { FactTableColumn } from '@/types/factTables'
 
-import { makeNamedFilter, makeSqlFilter, type FactFilter } from './factFilters'
+import {
+  VALUELESS_CONDITION_OPERATORS,
+  makeConditionFilter,
+  makeNamedFilter,
+  makeSqlFilter,
+  type FactConditionOperator,
+  type FactFilter,
+} from './factFilters'
 
 interface FactFilterEditorProps {
   filters: FactFilter[]
   onChange: (next: FactFilter[]) => void
   /** Named filters defined on the operand's fact table. */
   namedOptions: string[]
+  /** Columns defined on the operand's fact table. */
+  conditionColumns?: FactTableColumn[]
   dialect?: DbType
   tables?: TableSchema[]
   disabled?: boolean
@@ -28,6 +38,7 @@ export function FactFilterEditor({
   filters,
   onChange,
   namedOptions,
+  conditionColumns = [],
   dialect,
   tables,
   disabled,
@@ -53,6 +64,13 @@ export function FactFilterEditor({
     onChange(filters.map(f => (f.id === id && f.kind === 'named' ? { ...f, name } : f)))
   const setSql = (id: string, sql: string): void =>
     onChange(filters.map(f => (f.id === id && f.kind === 'sql' ? { ...f, sql } : f)))
+  const setCondition = (
+    id: string,
+    patch: Partial<Extract<FactFilter, { kind: 'condition' }>>,
+  ): void =>
+    onChange(
+      filters.map(f => (f.id === id && f.kind === 'condition' ? { ...f, ...patch } : f)),
+    )
   const remove = (id: string): void => onChange(filters.filter(f => f.id !== id))
   const add = (filter: FactFilter): void => {
     onChange([...filters, filter])
@@ -63,6 +81,17 @@ export function FactFilterEditor({
     { value: '', label: 'Select filter…' },
     ...namedOptions.map(name => ({ value: name, label: name })),
   ]
+  const conditionColumnOptions: SelectOption[] = [
+    { value: '', label: 'Select column…' },
+    ...conditionColumns.map(column => ({
+      value: column.name,
+      label: `${column.name} · ${column.type}`,
+    })),
+  ]
+  const conditionOperatorOptions: SelectOption[] = CONDITION_OPERATORS.map(operator => ({
+    value: operator.value,
+    label: operator.label,
+  }))
 
   return (
     <div className="flex flex-col gap-2">
@@ -79,6 +108,34 @@ export function FactFilterEditor({
                     disabled={disabled}
                     aria-label={`Filter ${index + 1} named filter`}
                   />
+                ) : filter.kind === 'condition' ? (
+                  <div className="grid grid-cols-1 gap-2 sm:grid-cols-[minmax(150px,1fr)_120px_minmax(150px,1fr)]">
+                    <Select
+                      value={filter.column}
+                      onChange={value => setCondition(filter.id, { column: value })}
+                      options={conditionColumnOptions}
+                      disabled={disabled}
+                      aria-label={`Filter ${index + 1} condition column`}
+                    />
+                    <Select
+                      value={filter.operator}
+                      onChange={value =>
+                        setCondition(filter.id, { operator: value as FactConditionOperator })
+                      }
+                      options={conditionOperatorOptions}
+                      disabled={disabled}
+                      aria-label={`Filter ${index + 1} condition operator`}
+                    />
+                    {!VALUELESS_CONDITION_OPERATORS.has(filter.operator) && (
+                      <TextInput
+                        value={filter.value}
+                        onChange={value => setCondition(filter.id, { value })}
+                        placeholder={filter.operator === 'in' || filter.operator === 'not_in' ? 'a, b, c' : 'value'}
+                        disabled={disabled}
+                        aria-label={`Filter ${index + 1} condition value`}
+                      />
+                    )}
+                  </div>
                 ) : (
                   <SqlEditor
                     ariaLabel={`Filter ${index + 1} SQL`}
@@ -149,6 +206,15 @@ export function FactFilterEditor({
               <button
                 type="button"
                 role="menuitem"
+                onClick={() => add(makeConditionFilter())}
+                className="block w-full px-3 py-1.5 text-left text-[12.5px] transition-colors hover:bg-[var(--surface-hover)]"
+                style={{ color: 'var(--fg)' }}
+              >
+                Condition
+              </button>
+              <button
+                type="button"
+                role="menuitem"
                 onClick={() => add(makeSqlFilter())}
                 className="block w-full px-3 py-1.5 text-left text-[12.5px] transition-colors hover:bg-[var(--surface-hover)]"
                 style={{ color: 'var(--fg)' }}
@@ -162,3 +228,22 @@ export function FactFilterEditor({
     </div>
   )
 }
+
+const CONDITION_OPERATORS: { value: FactConditionOperator; label: string }[] = [
+  { value: 'eq', label: '=' },
+  { value: 'ne', label: '!=' },
+  { value: 'gt', label: '>' },
+  { value: 'gte', label: '>=' },
+  { value: 'lt', label: '<' },
+  { value: 'lte', label: '<=' },
+  { value: 'contains', label: 'contains' },
+  { value: 'not_contains', label: 'does not contain' },
+  { value: 'like', label: 'like' },
+  { value: 'not_like', label: 'not like' },
+  { value: 'in', label: 'in' },
+  { value: 'not_in', label: 'not in' },
+  { value: 'is_null', label: 'is null' },
+  { value: 'is_not_null', label: 'is not null' },
+  { value: 'is_true', label: 'is true' },
+  { value: 'is_false', label: 'is false' },
+]
