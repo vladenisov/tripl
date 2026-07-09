@@ -209,6 +209,7 @@ def run_scan(self: object, scan_config_id: str, job_id: str) -> dict[str, object
                 time_column=config.time_column,
                 event_name_format=config.event_name_format,
                 event_group_rules=config.event_group_rules,
+                scan_config_id=config.id,
             )
             group_results = None
             scan_rows_processed = len(analysis.rows)

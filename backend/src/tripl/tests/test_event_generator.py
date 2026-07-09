@@ -1335,3 +1335,166 @@ def test_renamed_scan_variable_keeps_matching_and_normalizes_on_rescan(
         )
     ).scalar_one()
     assert payload_value == '{"locale": "${locale_var}"}'
+
+
+# --- variable value drift detection (tripl-j94c.5) ---------------------------
+
+
+def _drift_rows(session: Session, project_id):
+    from tripl.models.variable_value_drift import VariableValueDrift
+
+    return (
+        session.execute(
+            select(VariableValueDrift).where(VariableValueDrift.project_id == project_id)
+        )
+        .scalars()
+        .all()
+    )
+
+
+def _make_context_entry(variable, event, fd, values):
+    return {
+        (variable.id, event.id, fd.id): {
+            "variable_id": variable.id,
+            "event_id": event.id,
+            "field_definition_id": fd.id,
+            "source_column": "screen",
+            "value_kind": "low",
+            "observed_count": len(values),
+            "values": list(values),
+        }
+    }
+
+
+def _seed_variable_event(sync_session: Session, project, et, fds, allowed_values):
+    variable = Variable(
+        id=uuid.uuid4(),
+        project_id=project.id,
+        name="variant",
+        variable_type="string",
+        description="",
+        allowed_values=list(allowed_values),
+        bindings=["screen"],
+    )
+    event = Event(
+        id=uuid.uuid4(),
+        project_id=project.id,
+        event_type_id=et.id,
+        name="Onboarding",
+        description="",
+        order=0,
+    )
+    sync_session.add_all([variable, event])
+    sync_session.commit()
+    return variable, event
+
+
+def test_value_drift_detected_for_undocumented_values(sync_session: Session, project_and_type):
+    from tripl.core.analyzers._variable_value_drift import detect_variable_value_drifts
+
+    project, et, fds = project_and_type
+    variable, event = _seed_variable_event(sync_session, project, et, fds, ["a", "b"])
+
+    detected = detect_variable_value_drifts(
+        sync_session,
+        project_id=project.id,
+        branch_id=variable.branch_id,
+        scan_config_id=None,
+        contexts=_make_context_entry(variable, event, fds["screen"], ["a", "x", "y"]),
+    )
+    sync_session.commit()
+
+    assert detected == 1
+    rows = _drift_rows(sync_session, project.id)
+    assert len(rows) == 1
+    assert rows[0].observed_values == ["x", "y"]
+    assert rows[0].status == "open"
+
+
+def test_value_drift_respects_event_override(sync_session: Session, project_and_type):
+    from tripl.core.analyzers._variable_value_drift import detect_variable_value_drifts
+    from tripl.models.variable_event_value_override import VariableEventValueOverride
+
+    project, et, fds = project_and_type
+    variable, event = _seed_variable_event(sync_session, project, et, fds, ["a", "b"])
+    sync_session.add(
+        VariableEventValueOverride(
+            id=uuid.uuid4(),
+            project_id=project.id,
+            branch_id=variable.branch_id,
+            variable_id=variable.id,
+            event_id=event.id,
+            values=["x"],
+        )
+    )
+    sync_session.commit()
+
+    detected = detect_variable_value_drifts(
+        sync_session,
+        project_id=project.id,
+        branch_id=variable.branch_id,
+        scan_config_id=None,
+        contexts=_make_context_entry(variable, event, fds["screen"], ["a", "x", "y"]),
+    )
+    sync_session.commit()
+
+    # Override replaces the global list: "a" is novel now, "x" documented.
+    assert detected == 1
+    rows = _drift_rows(sync_session, project.id)
+    assert rows[0].observed_values == ["a", "y"]
+
+
+def test_value_drift_skipped_without_documented_contract(sync_session: Session, project_and_type):
+    from tripl.core.analyzers._variable_value_drift import detect_variable_value_drifts
+
+    project, et, fds = project_and_type
+    variable, event = _seed_variable_event(sync_session, project, et, fds, [])
+
+    detected = detect_variable_value_drifts(
+        sync_session,
+        project_id=project.id,
+        branch_id=variable.branch_id,
+        scan_config_id=None,
+        contexts=_make_context_entry(variable, event, fds["screen"], ["whatever"]),
+    )
+    sync_session.commit()
+
+    assert detected == 0
+    assert _drift_rows(sync_session, project.id) == []
+
+
+def test_value_drift_upsert_refreshes_without_reopening(sync_session: Session, project_and_type):
+    from tripl.core.analyzers._variable_value_drift import detect_variable_value_drifts
+
+    project, et, fds = project_and_type
+    variable, event = _seed_variable_event(sync_session, project, et, fds, ["a"])
+
+    detect_variable_value_drifts(
+        sync_session,
+        project_id=project.id,
+        branch_id=variable.branch_id,
+        scan_config_id=None,
+        contexts=_make_context_entry(variable, event, fds["screen"], ["x"]),
+    )
+    sync_session.commit()
+
+    row = _drift_rows(sync_session, project.id)[0]
+    row.status = "false_positive"
+    sync_session.commit()
+
+    detect_variable_value_drifts(
+        sync_session,
+        project_id=project.id,
+        branch_id=variable.branch_id,
+        scan_config_id=None,
+        contexts=_make_context_entry(variable, event, fds["screen"], ["x", "z"]),
+    )
+    sync_session.commit()
+
+    # The upsert bypasses the ORM identity map — expire before re-reading.
+    sync_session.expire_all()
+    rows = _drift_rows(sync_session, project.id)
+    assert len(rows) == 1
+    # Refresh updated the sample but did NOT reopen the resolution.
+    assert rows[0].observed_values == ["x", "z"]
+    assert rows[0].status == "false_positive"

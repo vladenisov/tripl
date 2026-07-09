@@ -14,9 +14,54 @@ from tripl.schemas.variable import (
     VariableUpdate,
     VariableValueContextResponse,
 )
-from tripl.services import audit_service, variable_service, variable_value_service
+from tripl.schemas.variable_value_drift import (
+    VariableValueDriftActionRequest,
+    VariableValueDriftListResponse,
+    VariableValueDriftResponse,
+)
+from tripl.services import (
+    audit_service,
+    variable_service,
+    variable_value_drift_service,
+    variable_value_service,
+)
 
 router = APIRouter(prefix="/projects/{slug}/variables", tags=["variables"])
+
+
+# Registered before the /{variable_id} routes so the literal "drifts" segment
+# never gets parsed as a variable id.
+@router.get("/drifts", response_model=VariableValueDriftListResponse)
+async def list_value_drifts(
+    session: SessionDep,
+    slug: str,
+    variable_id: uuid.UUID | None = None,
+) -> VariableValueDriftListResponse:
+    return await variable_value_drift_service.list_value_drifts(session, slug, variable_id)
+
+
+@router.post("/drifts/{drift_id}/action", response_model=VariableValueDriftResponse)
+async def apply_value_drift_action(
+    session: SessionDep,
+    slug: str,
+    drift_id: uuid.UUID,
+    data: VariableValueDriftActionRequest,
+    current_user: EditorUserDep,
+) -> VariableValueDriftResponse:
+    result = await variable_value_drift_service.apply_drift_action(
+        session, slug, drift_id, data, current_user
+    )
+    await audit_service.record(
+        session,
+        user=current_user,
+        action="variable.drift_action",
+        target_type="variable",
+        target_id=result.variable_id,
+        target_name=result.variable_name,
+        project_slug=slug,
+        payload=data.model_dump(mode="json", exclude_none=True),
+    )
+    return result
 
 
 @router.get("", response_model=list[VariableResponse])

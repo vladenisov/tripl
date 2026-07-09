@@ -134,6 +134,49 @@ async def test_user_authored_field_values_are_marked_on_create_and_update(client
 
 
 @pytest.mark.asyncio
+async def test_event_mutations_warn_for_unknown_template_tokens(client: AsyncClient):
+    et_id, field_id, meta_id = await _setup_events(client, "ev-template-warnings")
+    variable_response = await client.post(
+        "/api/v1/projects/ev-template-warnings/variables",
+        json={"name": "variant", "bindings": ["payload.variant"]},
+    )
+    assert variable_response.status_code == 201
+
+    async with TestSessionLocal() as session, session.begin():
+        variable = await session.get(Variable, uuid.UUID(variable_response.json()["id"]))
+        assert variable is not None
+        variable.source_name = "legacy.variant"
+
+    create_response = await client.post(
+        "/api/v1/projects/ev-template-warnings/events",
+        json={
+            "event_type_id": et_id,
+            "name": "Checkout",
+            "field_values": [
+                {
+                    "field_definition_id": field_id,
+                    "value": "${variant}:${legacy.variant}:${payload.variant}:${missing}:${missing}",
+                }
+            ],
+            "meta_values": [{"meta_field_definition_id": meta_id, "value": "${variant}"}],
+        },
+    )
+    assert create_response.status_code == 201
+    assert create_response.json()["warnings"] == ["Unknown variable token: ${missing}"]
+
+    event_id = create_response.json()["id"]
+    update_response = await client.patch(
+        f"/api/v1/projects/ev-template-warnings/events/{event_id}",
+        json={
+            "field_values": [{"field_definition_id": field_id, "value": "${unknown_after_update}"}],
+            "meta_values": [{"meta_field_definition_id": meta_id, "value": "literal ${"}],
+        },
+    )
+    assert update_response.status_code == 200
+    assert update_response.json()["warnings"] == ["Unknown variable token: ${unknown_after_update}"]
+
+
+@pytest.mark.asyncio
 async def test_event_responses_include_variable_value_contexts(client: AsyncClient):
     et_id, field_id, _ = await _setup_events(client, "ev-var-values")
     variable_resp = await client.post(

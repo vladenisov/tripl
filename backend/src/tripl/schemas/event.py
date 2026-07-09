@@ -180,6 +180,12 @@ class EventResponse(BaseModel):
     model_config = {"from_attributes": True}
 
 
+class EventMutationResponse(EventResponse):
+    """Event returned after a create or update, with advisory template warnings."""
+
+    warnings: list[str] = Field(default_factory=list)
+
+
 class EventListItemResponse(BaseModel):
     """Slim variant of EventResponse used by the list endpoint.
 

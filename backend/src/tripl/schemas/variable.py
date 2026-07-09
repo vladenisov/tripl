@@ -72,6 +72,7 @@ class VariableResponse(BaseModel):
     low_context_count: int = 0
     high_context_count: int = 0
     sample_values: list[str] = []
+    open_drift_count: int = 0
 
     model_config = {"from_attributes": True}
 

@@ -1,3 +1,4 @@
+import re
 import uuid
 from datetime import UTC, datetime, timedelta
 
@@ -19,6 +20,7 @@ from tripl.models.event_metric import EventMetric
 from tripl.models.event_tag import EventTag
 from tripl.models.field_definition import FieldDefinition
 from tripl.models.user import User
+from tripl.models.variable import Variable
 from tripl.schemas.event import (
     EventBulkDelete,
     EventBulkUpdate,
@@ -38,6 +40,37 @@ from tripl.services.search_service import (
 from tripl.services.variable_value_service import attach_event_field_variable_values
 
 _TRACKED_FIELDS = ("status", "name", "description", "sunset_at")
+_TEMPLATE_TOKEN_PATTERN = re.compile(r"\$\{([^}]+)\}")
+
+
+async def _attach_template_warnings(session: AsyncSession, event: Event) -> None:
+    """Attach advisory warnings for complete template tokens unknown in the event branch."""
+    result = await session.execute(
+        select(Variable).where(
+            Variable.project_id == event.project_id,
+            Variable.branch_id == event.branch_id,
+        )
+    )
+    known_tokens = {
+        token
+        for variable in result.scalars().all()
+        for token in (variable.name, variable.source_name, *(variable.bindings or []))
+        if token
+    }
+    unknown_tokens = {
+        match.group(1)
+        for value in [
+            *(field_value.value for field_value in event.field_values),
+            *(meta_value.value for meta_value in event.meta_values),
+        ]
+        for match in _TEMPLATE_TOKEN_PATTERN.finditer(value)
+        if match.group(1) not in known_tokens
+    }
+    setattr(
+        event,
+        "warnings",
+        [f"Unknown variable token: ${{{token}}}" for token in sorted(unknown_tokens)],
+    )
 
 
 def _record_changes(
@@ -342,6 +375,7 @@ async def create_event(
     _queue_embedding_refresh(project_id, branch_id, ai_config=ai_config)
     await session.refresh(event)
     await attach_event_field_variable_values(session, [event])
+    await _attach_template_warnings(session, event)
     if is_main:
         await cache.delete_prefix(cache.prefix_projects())
     return event
@@ -437,6 +471,7 @@ async def update_event(
     _queue_embedding_refresh(event_project_id, event_branch_id, ai_config=ai_config)
     await session.refresh(event)
     await attach_event_field_variable_values(session, [event])
+    await _attach_template_warnings(session, event)
     if is_main:
         await cache.delete_prefix(cache.prefix_projects())
     return event
