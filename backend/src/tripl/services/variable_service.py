@@ -2,13 +2,15 @@ import re
 import uuid
 
 from fastapi import HTTPException
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from tripl.models.event import Event
 from tripl.models.event_field_value import EventFieldValue
 from tripl.models.variable import Variable
 from tripl.models.variable_event_value_override import VariableEventValueOverride
+from tripl.models.variable_value import VariableValue
+from tripl.models.variable_value_drift import VariableValueDrift
 from tripl.schemas.variable import (
     VariableBulkDelete,
     VariableBulkUpdate,
@@ -167,6 +169,13 @@ async def update_variable(
         for fv in fv_result.scalars().all():
             fv.value = fv.value.replace(old_ref, new_ref)
 
+    if update_data.get("excluded_from_scans") and not var.excluded_from_scans:
+        # Excluding purges the scan-observed side (contexts + drift) but keeps
+        # the user-owned documentation (allowed_values, overrides) for restore.
+        await session.execute(delete(VariableValue).where(VariableValue.variable_id == var.id))
+        await session.execute(
+            delete(VariableValueDrift).where(VariableValueDrift.variable_id == var.id)
+        )
     for key, value in update_data.items():
         setattr(var, key, value)
     await session.commit()

@@ -85,7 +85,7 @@ def normalize_variable_tokens(value: str, index: VariableIndex) -> str:
     def _replace(match: re.Match[str]) -> str:
         token = match.group(1)
         variable = index.resolve(token)
-        if variable is None or variable.name == token:
+        if variable is None or variable.excluded_from_scans or variable.name == token:
             return match.group(0)
         return f"${{{variable.name}}}"
 
@@ -202,7 +202,7 @@ def record_variable_contexts(
             continue
         for observation in observations:
             variable = index.resolve(observation.name)
-            if variable is None:
+            if variable is None or variable.excluded_from_scans:
                 continue
             # Match the stored value by ANY of the variable's tokens: a
             # hand-authored ${variant} attributes to an observation named

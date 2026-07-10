@@ -53,6 +53,12 @@ class Variable(UUIDMixin, Base):
     # User-editable warehouse column / JSON-path bindings (e.g.
     # "page_data.extra.variant"); scans adopt existing variables through these.
     bindings: Mapped[list[str]] = mapped_column(sa.JSON, default=list, server_default="[]")
+    # Tombstone: scans adopt-and-skip excluded variables — the row prevents
+    # re-creation while contexts/drift stop accumulating (plain deletion is
+    # undone by the next scan).
+    excluded_from_scans: Mapped[bool] = mapped_column(
+        sa.Boolean, default=False, server_default="false"
+    )
 
     project: Mapped[Project] = relationship(back_populates="variables")
     value_contexts: Mapped[list[VariableValue]] = relationship(

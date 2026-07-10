@@ -322,6 +322,7 @@ async def _apply_merge(
             m_v.description = b_v.description
             m_v.allowed_values = list(b_v.allowed_values or [])
             m_v.bindings = list(b_v.bindings or [])
+            m_v.excluded_from_scans = b_v.excluded_from_scans
         else:
             session.add(
                 Variable(
@@ -334,6 +335,7 @@ async def _apply_merge(
                     description=b_v.description,
                     allowed_values=list(b_v.allowed_values or []),
                     bindings=list(b_v.bindings or []),
+                    excluded_from_scans=b_v.excluded_from_scans,
                 )
             )
     for name, m_v in list(main_var_by_name.items()):

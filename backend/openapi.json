@@ -15820,6 +15820,11 @@
             "title": "Event Count",
             "type": "integer"
           },
+          "excluded_from_scans": {
+            "default": false,
+            "title": "Excluded From Scans",
+            "type": "boolean"
+          },
           "high_context_count": {
             "default": 0,
             "title": "High Context Count",
@@ -15939,6 +15944,17 @@
               }
             ],
             "title": "Description"
+          },
+          "excluded_from_scans": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Excluded From Scans"
           },
           "name": {
             "anyOf": [

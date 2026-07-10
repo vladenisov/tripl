@@ -500,4 +500,63 @@ describe('VariablesTab', () => {
       ),
     )
   })
+
+  it('excludes a variable from scans and restores it from the excluded section', async () => {
+    vi.mocked(variablesApi.list).mockResolvedValue([
+      {
+        id: 'var-1',
+        project_id: 'p',
+        name: 'variant',
+        source_name: 'payload.variant',
+        variable_type: 'string',
+        allowed_values: [],
+        bindings: ['payload.variant'],
+        description: '',
+      },
+      {
+        id: 'var-2',
+        project_id: 'p',
+        name: 'old_junk',
+        source_name: 'old.junk',
+        variable_type: 'string',
+        allowed_values: [],
+        bindings: [],
+        excluded_from_scans: true,
+        description: '',
+      },
+    ])
+    vi.mocked(variablesApi.values).mockResolvedValue([])
+    vi.mocked(variablesApi.update).mockResolvedValue({} as never)
+
+    renderVariablesTab()
+
+    // Excluded variable lives in its own section, not the main table.
+    expect(await screen.findByText('Excluded from scans')).toBeInTheDocument()
+    expect(screen.getByText('${old_junk}')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Edit variable old_junk' })).not.toBeInTheDocument()
+
+    // Exclude an active variable (confirm dialog -> update with the flag).
+    fireEvent.click(screen.getByRole('button', { name: 'Exclude variable variant from scans' }))
+    expect(await screen.findByText(/future scans will NOT re-create it/)).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Exclude' }))
+    await waitFor(() =>
+      expect(variablesApi.update).toHaveBeenCalledWith(
+        'demo',
+        'var-1',
+        { excluded_from_scans: true },
+        null,
+      ),
+    )
+
+    // Restore from the excluded section clears the tombstone.
+    fireEvent.click(screen.getByRole('button', { name: 'Restore variable old_junk' }))
+    await waitFor(() =>
+      expect(variablesApi.update).toHaveBeenCalledWith(
+        'demo',
+        'var-2',
+        { excluded_from_scans: false },
+        null,
+      ),
+    )
+  })
 })
