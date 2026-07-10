@@ -21,6 +21,7 @@ import { SensitivityChip } from '@/components/primitives/sensitivity-chip'
 import { EmptyState } from '@/components/empty-state'
 import { ErrorState } from '@/components/error-state'
 import EventPhotosSection from '@/components/event-photos-section'
+import { EventValueDriftPanel } from '@/pages/events/EventValueDriftPanel'
 import { MetricDefinitionCard } from '@/components/monitoring/metric-definition-card'
 import { ReleaseRegressionPanel } from '@/components/monitoring/release-regression-panel'
 import { SeasonalityHeatmap } from '@/components/monitoring/seasonality-heatmap'
@@ -1262,6 +1263,9 @@ export default function MonitoringDetailPage() {
         </TabsContent>
       </Tabs>
 
+      {scope === 'event' && scopeId && (
+        <EventValueDriftPanel slug={slug!} eventId={scopeId} />
+      )}
       {scope === 'event' && scopeId && (
         <EventPhotosSection slug={slug!} eventId={scopeId} />
       )}

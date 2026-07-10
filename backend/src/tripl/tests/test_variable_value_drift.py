@@ -155,3 +155,16 @@ async def test_drift_action_scoped_to_project(client: AsyncClient):
         json={"action": "reopen"},
     )
     assert resp.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_list_value_drifts_filters_by_event(client: AsyncClient):
+    var_id, event_id = await _seed(client, "vvd-evfilter")
+    await _insert_drift(var_id, event_id, ["x"])
+
+    hit = await client.get(f"/api/v1/projects/vvd-evfilter/variables/drifts?event_id={event_id}")
+    assert hit.json()["total"] == 1
+    miss = await client.get(
+        f"/api/v1/projects/vvd-evfilter/variables/drifts?event_id={uuid.uuid4()}"
+    )
+    assert miss.json()["total"] == 0

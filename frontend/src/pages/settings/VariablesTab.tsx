@@ -158,7 +158,7 @@ export function VariablesTab({ slug }: { slug: string }) {
 
   const { data: driftList } = useQuery({
     queryKey: ['variable-drifts', slug, branchId, editingVar?.id],
-    queryFn: () => variableDriftsApi.list(slug, editingVar!.id, branchId),
+    queryFn: () => variableDriftsApi.list(slug, { variableId: editingVar!.id }, branchId),
     enabled: !!editingVar,
   })
   const activeDrifts = (driftList?.items ?? []).filter(

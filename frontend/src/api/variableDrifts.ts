@@ -26,9 +26,16 @@ export interface VariableValueDriftList {
 }
 
 export const variableDriftsApi = {
-  list: (slug: string, variableId?: string, branchId?: string | null) => {
-    const base = `/projects/${slug}/variables/drifts`
-    const path = variableId ? `${base}?variable_id=${variableId}` : base
+  list: (
+    slug: string,
+    filters?: { variableId?: string; eventId?: string },
+    branchId?: string | null,
+  ) => {
+    const params = new URLSearchParams()
+    if (filters?.variableId) params.set('variable_id', filters.variableId)
+    if (filters?.eventId) params.set('event_id', filters.eventId)
+    const query = params.toString()
+    const path = `/projects/${slug}/variables/drifts${query ? `?${query}` : ''}`
     return api.get<VariableValueDriftList>(withBranch(path, branchId))
   },
   action: (
