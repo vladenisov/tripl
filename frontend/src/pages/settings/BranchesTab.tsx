@@ -114,6 +114,9 @@ function describeBranchActionError(error: unknown): string {
     if (detail.missing_owner_approvals) {
       return 'Merge blocked: owners of the touched event types have not approved.'
     }
+    if (detail.branch_behind_base) {
+      return 'Merge blocked: plan entities on main changed after this branch was created. Recreate the branch from current main.'
+    }
     if (detail.unresolved_field_conflicts) {
       return 'Merge blocked: resolve the field conflicts below first.'
     }
@@ -408,8 +411,8 @@ function FeatureBranchDetail({ slug, branch, diff, confirm }: FeatureBranchDetai
   }
 
   const entries = diff?.entries ?? []
-  // Merge deletes main variables absent from the branch — and their documented
-  // values, per-event overrides and drift history cascade away with them.
+  // A variable removed relative to the branch base is an intentional deletion;
+  // warn because its documented values, overrides and drift history cascade.
   const removedVariables = entries
     .filter((entry) => entry.entity_type === 'variable' && entry.kind === 'removed')
     .map((entry) => entry.name)
@@ -522,10 +525,10 @@ function FeatureBranchDetail({ slug, branch, diff, confirm }: FeatureBranchDetai
         ) : null}
       </Panel>
 
-      <Panel title="Changes" subtitle={`${entries.length} events affected`}>
+      <Panel title="Changes" subtitle={`${entries.length} changes`}>
         {entries.length === 0 ? (
           <p className="px-4 py-7 text-center text-[12.5px]" style={{ color: 'var(--fg-subtle)' }}>
-            No differences vs main.
+            No changes in this branch.
           </p>
         ) : (
           <div>

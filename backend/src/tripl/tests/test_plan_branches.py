@@ -20,7 +20,10 @@ from tripl.models.project_tracker_config import ProjectTrackerConfig
 from tripl.models.user import User
 from tripl.models.variable import Variable
 from tripl.models.variable_event_value_override import VariableEventValueOverride
-from tripl.services.plan_revision_service import build_plan_snapshot, plan_snapshot_hash
+from tripl.services.plan_revision_service import (
+    build_plan_snapshot,
+    plan_snapshot_hash,
+)
 from tripl.tests.conftest import TestSessionLocal
 from tripl.worker.tasks import implementation_tickets as impl_tasks
 
@@ -443,7 +446,7 @@ async def test_empty_body_comment_rejected(client: AsyncClient) -> None:
 
 
 @pytest.mark.asyncio
-async def test_diff_initially_empty_then_behind_base(client: AsyncClient) -> None:
+async def test_diff_only_reports_branch_changes_when_main_advances(client: AsyncClient) -> None:
     await _seed_plan(client, "branch-diff")
     branch_id = await _create_branch(client, "branch-diff")
 
@@ -455,20 +458,40 @@ async def test_diff_initially_empty_then_behind_base(client: AsyncClient) -> Non
     assert body["summary"] == {"added": 0, "removed": 0, "changed": 0}
     assert body["behind_base"] is False
 
-    # Advance main by adding a new event type. The branch now lags its base.
-    await client.post(
-        "/api/v1/projects/branch-diff/event-types",
-        json={"name": "alerts", "display_name": "Alerts"},
+    async with TestSessionLocal() as session:
+        branch_event = (
+            await session.execute(
+                select(Event).where(
+                    Event.branch_id == uuid.UUID(branch_id),
+                    Event.name == "purchase:success",
+                )
+            )
+        ).scalar_one()
+        branch_event.description = "edited on branch"
+        await session.commit()
+
+    main_event_types = await client.get("/api/v1/projects/branch-diff/event-types")
+    track_id = next(et["id"] for et in main_event_types.json() if et["name"] == "track")
+    added_on_main = await client.post(
+        "/api/v1/projects/branch-diff/events",
+        json={"event_type_id": track_id, "name": "main:added-after-branch"},
     )
+    assert added_on_main.status_code == 201
 
     after = await client.get(f"/api/v1/projects/branch-diff/branches/{branch_id}/diff")
     assert after.status_code == 200
     after_body = after.json()
-    # The new event type exists on main but not the branch — branch reports it
-    # as "removed" relative to main.
     assert after_body["behind_base"] is True
-    kinds = {e["kind"] for e in after_body["entries"]}
-    assert "removed" in kinds
+    assert after_body["summary"] == {"added": 0, "removed": 0, "changed": 1}
+    assert after_body["entries"] == [
+        {
+            "entity_type": "event",
+            "kind": "changed",
+            "name": "purchase:success",
+            "parent": "track",
+            "changes": ["description: '' → 'edited on branch'"],
+        }
+    ]
 
 
 @pytest.mark.asyncio
@@ -791,6 +814,64 @@ async def test_merge_adds_and_removes_event_types(client: AsyncClient) -> None:
     names = {et["name"] for et in main_ets.json()}
     assert "track" not in names
     assert "checkout" in names
+
+
+@pytest.mark.asyncio
+async def test_merge_rejects_branch_when_main_advanced(client: AsyncClient) -> None:
+    await _seed_plan(client, "merge-behind")
+    branch_id = await _create_branch(client, "merge-behind")
+
+    main_event_types = await client.get("/api/v1/projects/merge-behind/event-types")
+    track_id = next(et["id"] for et in main_event_types.json() if et["name"] == "track")
+    added_on_main = await client.post(
+        "/api/v1/projects/merge-behind/events",
+        json={"event_type_id": track_id, "name": "main:added-after-branch"},
+    )
+    assert added_on_main.status_code == 201
+
+    merged = await _approve_and_merge(client, "merge-behind", branch_id)
+    assert merged.status_code == 409
+    assert merged.json()["detail"] == {
+        "branch_behind_base": True,
+        "message": (
+            "Main changed after this branch was created. "
+            "Recreate the branch from current main before merging."
+        ),
+    }
+
+
+@pytest.mark.asyncio
+async def test_merge_rejects_branch_when_main_event_changed(client: AsyncClient) -> None:
+    await _seed_plan(client, "merge-behind-change")
+    branch_id = await _create_branch(client, "merge-behind-change")
+
+    events = await client.get("/api/v1/projects/merge-behind-change/events")
+    event_id = events.json()["items"][0]["id"]
+    changed_on_main = await client.patch(
+        f"/api/v1/projects/merge-behind-change/events/{event_id}",
+        json={"description": "edited on main"},
+    )
+    assert changed_on_main.status_code == 200
+
+    merged = await _approve_and_merge(client, "merge-behind-change", branch_id)
+    assert merged.status_code == 409
+    assert merged.json()["detail"]["branch_behind_base"] is True
+
+
+@pytest.mark.asyncio
+async def test_merge_keeps_legacy_branch_without_base_snapshot_compatible(
+    client: AsyncClient,
+) -> None:
+    await _seed_plan(client, "merge-legacy")
+    branch_id = await _create_branch(client, "merge-legacy")
+    async with TestSessionLocal() as session:
+        branch = await session.get(PlanBranch, uuid.UUID(branch_id))
+        assert branch is not None
+        branch.base_revision_id = None
+        await session.commit()
+
+    merged = await _approve_and_merge(client, "merge-legacy", branch_id)
+    assert merged.status_code == 200, merged.text
 
 
 @pytest.mark.asyncio

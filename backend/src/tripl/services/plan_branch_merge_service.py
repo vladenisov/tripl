@@ -47,7 +47,11 @@ from tripl.services.plan_branch_service import (
     _to_detail,
     ensure_main_branch_id,
 )
-from tripl.services.plan_revision_service import build_plan_snapshot, plan_snapshot_hash
+from tripl.services.plan_revision_service import (
+    build_plan_snapshot,
+    compute_plan_diff_entries,
+    plan_snapshot_hash,
+)
 from tripl.services.project_branch_settings_service import read_branch_merge_policy
 
 logger = logging.getLogger(__name__)
@@ -875,12 +879,32 @@ async def merge_branch(
 
     main_branch_id = await ensure_main_branch_id(session, project.id)
     base_payload: dict[str, Any] = {}
+    has_base_snapshot = False
     if branch.base_revision_id is not None:
         base_rev = await session.get(PlanRevision, branch.base_revision_id)
         if base_rev is not None:
             base_payload = base_rev.payload or {}
+            has_base_snapshot = True
     main_payload = await build_plan_snapshot(session, project.id, branch_id=main_branch_id)
     branch_payload = await build_plan_snapshot(session, project.id, branch_id=branch.id)
+
+    main_changes = compute_plan_diff_entries(base_payload, main_payload)
+    unsafe_main_changes = [
+        entry
+        for entry in main_changes
+        if not (entry.entity_type == "event_type" and entry.kind == "changed")
+    ]
+    if has_base_snapshot and unsafe_main_changes:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "branch_behind_base": True,
+                "message": (
+                    "Main changed after this branch was created. "
+                    "Recreate the branch from current main before merging."
+                ),
+            },
+        )
 
     all_conflicts = _detect_merge_conflicts(base_payload, main_payload, branch_payload)
     field_conflicts = _field_conflicts_event_type(base_payload, main_payload, branch_payload)

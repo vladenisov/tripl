@@ -204,12 +204,16 @@ branch instead — the same idea as a pull request for code.
 2. Make your changes on the branch. A branch switcher keeps every plan page in
    that branch's context, so the live (main) plan is untouched while you work.
 3. Set the branch to **Ready for review** and assign a reviewer.
-4. The reviewer reads the **diff** — exactly what changed versus main — leaves
-   comments, and either requests changes or approves.
+4. The reviewer reads the **diff** — exactly what changed on the branch since it
+   was created. Changes that landed only on main appear as the branch being
+   behind, not as branch changes. The reviewer leaves comments and either
+   requests changes or approves.
 5. **Merge.** tripl matches events by name, so nothing is duplicated and the
    metrics, history, and alerts already attached to an event stay attached.
    Non-conflicting edits merge automatically; if two people edited the same
-   thing, you choose which version wins.
+   thing, you choose which version wins. If other plan entities changed on main
+   after the branch was created, merge is blocked; recreate the branch from
+   current main and reapply its changes.
 
 If an event type has **owners**, merging a branch that touches it requires a
 sign-off from one of them.
