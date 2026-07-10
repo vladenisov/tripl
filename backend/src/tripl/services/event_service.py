@@ -66,11 +66,7 @@ async def _attach_template_warnings(session: AsyncSession, event: Event) -> None
         for match in _TEMPLATE_TOKEN_PATTERN.finditer(value)
         if match.group(1) not in known_tokens
     }
-    setattr(
-        event,
-        "warnings",
-        [f"Unknown variable token: ${{{token}}}" for token in sorted(unknown_tokens)],
-    )
+    event.warnings = [f"Unknown variable token: ${{{token}}}" for token in sorted(unknown_tokens)]  # type: ignore[attr-defined]
 
 
 def _record_changes(

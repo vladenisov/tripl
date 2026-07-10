@@ -155,7 +155,8 @@ async def test_event_mutations_warn_for_unknown_template_tokens(client: AsyncCli
             "field_values": [
                 {
                     "field_definition_id": field_id,
-                    "value": "${variant}:${legacy.variant}:${payload.variant}:${missing}:${missing}",
+                    "value": "${variant}:${legacy.variant}:${payload.variant}"
+                    ":${missing}:${missing}",
                 }
             ],
             "meta_values": [{"meta_field_definition_id": meta_id, "value": "${variant}"}],
