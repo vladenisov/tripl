@@ -282,6 +282,32 @@ def resolve_main_branch_id(session: Session, project_id: uuid.UUID) -> uuid.UUID
     )
 
 
+_NAME_CLEAN_PATTERN = re.compile(r"[^a-z0-9_]+")
+
+
+def derive_display_name(token: str, index: VariableIndex) -> str:
+    """Short human name for a scan-discovered dotted path.
+
+    Candidates grow from the trailing path segments (``variant`` →
+    ``extra_variant`` → ``page_data_extra_variant``), normalized to the strict
+    variable-name grammar; the first one not already claimed by any token in
+    the index wins. Falls back to the raw path (legacy style) when every
+    candidate is taken. Non-dotted tokens pass through unchanged.
+    """
+    if "." not in token:
+        return token
+    segments = token.split(".")
+    for take in range(1, len(segments) + 1):
+        candidate = _NAME_CLEAN_PATTERN.sub("_", "_".join(segments[-take:]).lower()).strip("_")
+        if not candidate:
+            continue
+        if not candidate[0].isalpha():
+            candidate = f"v_{candidate}"
+        if index.resolve(candidate) is None:
+            return candidate
+    return token
+
+
 def ensure_variable(
     session: Session,
     project_id: uuid.UUID,
@@ -316,7 +342,9 @@ def ensure_variable(
     var = Variable(
         id=uuid.uuid4(),
         project_id=project_id,
-        name=name,
+        # Dotted paths get a short display name; identity stays on
+        # source_name/bindings so adoption and attribution are unaffected.
+        name=derive_display_name(name, index),
         source_name=name,
         variable_type=inferred_type,
         description="Auto-detected variable from data source scan",

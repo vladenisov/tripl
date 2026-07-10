@@ -730,7 +730,7 @@ class TestEventGeneration:
 
         def _flush_once_fails(*args, **kwargs):
             has_target_pending = any(
-                isinstance(obj, Variable) and obj.name == "property.concurrent"
+                isinstance(obj, Variable) and obj.source_name == "property.concurrent"
                 for obj in sync_session.new
             )
             if has_target_pending and not state["raised"]:
@@ -1090,7 +1090,7 @@ class TestEventGeneration:
                 EventFieldValue.field_definition_id == fds["payload"].id
             )
         ).scalar_one()
-        assert payload_value == '{"extra": {"key": "TASK-123"}, "locale": "${payload.locale}"}'
+        assert payload_value == '{"extra": {"key": "TASK-123"}, "locale": "${locale}"}'
 
         variable_names = {
             variable.name
@@ -1098,8 +1098,11 @@ class TestEventGeneration:
                 select(Variable).where(Variable.project_id == project.id)
             ).scalars()
         }
-        assert "payload.locale" in variable_names
-        assert "payload.extra.key" not in variable_names
+        # Scan-created path variables get short display names (identity stays
+        # on source_name/bindings).
+        assert "locale" in variable_names
+        assert "payload.locale" not in variable_names
+        assert "extra.key" not in variable_names
 
     def test_longest_event_name_truncated(
         self,
@@ -1309,7 +1312,8 @@ def test_renamed_scan_variable_keeps_matching_and_normalizes_on_rescan(
     scanned = sync_session.execute(
         select(Variable).where(Variable.project_id == project.id)
     ).scalar_one()
-    assert scanned.name == "payload.locale"
+    assert scanned.name == "locale"
+    assert scanned.source_name == "payload.locale"
     assert scanned.bindings == ["payload.locale"]
 
     # User renames the scan-created variable; identity lives in
@@ -1571,3 +1575,29 @@ def test_group_merge_preserves_authorship_unless_rule_overrides(
     # ...the rule-overridden value does not (it is no longer the user's text).
     assert values[fds["action"].id].value == "/^click:/"
     assert values[fds["action"].id].is_authored is False
+
+
+def test_scan_short_names_extend_on_collision(sync_session: Session, project_and_type):
+    from tripl.core.analyzers._event_generator_variables import (
+        VariableIndex,
+        derive_display_name,
+    )
+
+    project, et, fds = project_and_type
+    taken = Variable(
+        id=uuid.uuid4(),
+        project_id=project.id,
+        name="locale",
+        variable_type="string",
+        description="",
+        bindings=["settings.locale"],
+    )
+    sync_session.add(taken)
+    sync_session.commit()
+
+    index = VariableIndex([taken])
+    # Last segment is claimed -> extend with the parent segment; raw path is
+    # the final fallback when everything is taken.
+    assert derive_display_name("payload.locale", index) == "payload_locale"
+    assert derive_display_name("user.Name-Full.v2", index) == "v2"
+    assert derive_display_name("plain_column", index) == "plain_column"
