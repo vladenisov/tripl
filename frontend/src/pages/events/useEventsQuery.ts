@@ -18,6 +18,24 @@ const EVENTS_ID_FETCH_PAGE_SIZE = 10000
 // the existing UX where archived events are hidden unless explicitly selected.
 const DEFAULT_ACTIVE_STATUSES: EventStatus[] = EVENT_STATUSES.filter(s => s !== 'archived')
 
+/**
+ * Statuses the list request should filter by, from tab + explicit user filter.
+ *
+ * The explicit dropdown filter ALWAYS wins: the review/archived tabs only
+ * provide defaults, so picking "Draft" (or "Any status") on those tabs is
+ * honored instead of being silently overridden — "Any status" shows every
+ * status except archived (the established hidden-unless-asked default).
+ */
+export function resolveQueryStatuses(
+  activeTab: string,
+  filterStatuses: EventStatus[],
+): string[] {
+  if (filterStatuses.length > 0) return filterStatuses
+  if (activeTab === 'review') return ['in_review']
+  if (activeTab === 'archived') return ['archived']
+  return DEFAULT_ACTIVE_STATUSES
+}
+
 // Review-queue sort order: 'catalog' keeps the manual/creation order; 'volume'
 // asks the server for busiest-first (24h EventMetric volume).
 export type EventsSortOrder = 'catalog' | 'volume'
@@ -219,15 +237,10 @@ export function useEventsQuery({
     ? undefined
     : eventTypes.find((e) => e.name === activeTab)?.id
 
-  // Determine query statuses based on tab + user filter
-  const queryStatuses = useMemo((): string[] | undefined => {
-    if (activeTab === 'review') return ['in_review']
-    if (activeTab === 'archived') return ['archived']
-    // User has an explicit status filter set
-    if (filterStatuses.length > 0) return filterStatuses
-    // Default: exclude archived
-    return DEFAULT_ACTIVE_STATUSES
-  }, [activeTab, filterStatuses])
+  const queryStatuses = useMemo(
+    () => resolveQueryStatuses(activeTab, filterStatuses),
+    [activeTab, filterStatuses],
+  )
 
   const eventsQuery = useInfiniteQuery({
     queryKey: [
