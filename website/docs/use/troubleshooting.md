@@ -165,7 +165,7 @@ sanitized summary instead:
 - *"Scan failed: the data source did not respond in time."* — a timeout.
 - *"Scan failed: could not connect to the data source."* — connection refused,
   DNS failure, network unreachable, reset, etc.
-- *"Scan failed due to an internal error. Please try again or contact support."*
+- *"Scan failed due to an internal error."*
   — anything else.
 
 The full exception (with host/port/driver detail) is only in the **worker
@@ -197,6 +197,12 @@ A handful of conditions are surfaced **verbatim** because they're actionable:
 The async **Test connection** persists `last_test_status` and a sanitized
 `last_test_message` on the data source and invalidates the cached list, so the
 result you see in the UI is the worker's actual probe — not a stale value.
+
+The scan detail shows this curated error beside the failed run. Identical recent
+failures collapse into a **failed last N runs** streak; expand it when you need
+the individual attempts. After fixing the source/query/configuration, use **Run
+again** on the failed config. This creates a new job and preserves the earlier
+failure history.
 
 :::note
 Scan tasks have a hard time limit of 60 minutes (the worker's default) and do
@@ -396,8 +402,20 @@ failed` bullet list in the logs and set each missing secret/origin. See
 **Can I retry a failed scan automatically?**
 No. Scan, metrics, and connection-test tasks use `max_retries=0` — a failure is
 final for that run. Fix the underlying cause (connection, row limit, query) and
-re-trigger. Stranded *alert deliveries* are the exception: those are re-enqueued
-automatically by the maintenance reaper.
+click **Run again**. Stranded *alert deliveries* are the exception: those are
+re-enqueued automatically by the maintenance reaper.
+
+**Why did a deleted variable come back after the next scan?**
+The scan rediscovered its warehouse column or JSON-path binding. Delete removes
+the plan row, while **Exclude from scans** keeps a tombstone that prevents
+recreation and stops new contexts/drift. Open **Plan → Variables**, exclude the
+variable, and use **Restore** if the decision changes later.
+
+**Why does a variable show value drift?**
+The scan observed values outside the effective documented list (the event
+override when present, otherwise the global list). Review it from Variables or
+the event detail: accept globally, accept for that event, snooze, or mark false
+positive. See [Variables & templates](./variables-and-templates.md).
 
 **Where do I configure SMTP, encryption keys, and connection URLs?**
 All via environment variables / `.env`. See [Configuration](../run/configuration)

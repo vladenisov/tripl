@@ -1,13 +1,13 @@
 ---
 title: Alerting rules
-sidebar_position: 5
+sidebar_position: 6
 ---
 
 # Alerting rules
 
 Alerting turns the anomaly and drift **signals** tripl finds during a scan into
 notifications and tickets. You configure it per project on the **Alerting** tab
-(Project settings → Alerting). Any member can read alerting config; creating,
+(**Observe → Alerting**). Any member can read alerting config; creating,
 editing, retrying, or muting requires the **editor** or **owner** role.
 
 The model has three layers:
@@ -27,7 +27,8 @@ bucket against a seasonal baseline and scores the gap as
 `|z| ≥ sigma_threshold` (default 3) and the expected volume clears
 `min_expected_count` (default 10). It also emits **distribution-drift** signals
 (a value mix shifted) and **release-regression** signals (a new app version
-under-fires an event).
+under-fires an event), plus **variable-value drift** when an event observes
+values outside its effective documented variable list.
 
 The full math — seasonal vs rolling baselines, the robust spread and its floor,
 the PSI drift score, and the release-regression test — is in
@@ -55,8 +56,13 @@ post a message; **Webhook** POSTs a JSON payload. **MarkdownV2** falls back to
 plain text automatically if a message can't be rendered safely.
 :::
 
-Test a destination right after creating it — a failing webhook or an unverified
-bot token is the most common reason alerts never arrive.
+There is no separate destination-test endpoint. Use rule replay to validate
+matching, then confirm the first real delivery in **Audit**; a failing webhook
+or an unverified bot token is the most common transport failure.
+
+Enabled **Slack** and **Email** destinations also receive the scheduled weekly
+plan digest. The digest is destination-level and independent of routing rules;
+disable the destination if it should receive neither alerts nor the digest.
 
 ## Rules — what fires an alert
 
@@ -72,17 +78,19 @@ the drift/regression signals are opt-in:
 | Event volume | on |
 | Schema drift | off |
 | Distribution drift | off |
+| Variable value drift | off |
 | Release regression | off |
 | Metric anomaly | off |
 
-**Metric anomalies** are opt-in via a rule's **`include_metrics`** flag (off by
-default). Unlike the drift and regression signals they behave like a volume anomaly
-— they carry a real spike/drop direction and **do** honor the count thresholds
-below.
+**Metric anomalies** are opt-in via a rule's **`include_metrics`** API field
+(off by default; the visual rule editor does not expose this switch yet). Unlike
+the drift and regression signals they behave like a volume anomaly — they carry
+a real spike/drop direction and **do** honor the count thresholds below.
 
 **Direction.** *Notify on spike* and *notify on drop* (at least one must be on).
-Schema and distribution drift are reported as a **spike**; release regressions are
-reported as a **drop** — so a drift-only rule still needs *notify on spike* enabled.
+Schema, distribution, and variable-value drift are reported as a **spike**;
+release regressions are reported as a **drop** — so a drift-only rule still
+needs *notify on spike* enabled.
 
 **Thresholds** — gate the noise on **volume anomalies only**:
 
@@ -92,14 +100,18 @@ reported as a **drop** — so a drift-only rule still needs *notify on spike* en
 
 :::warning
 Thresholds apply to the volume scopes (project total / event type / event) and to
-**metric anomalies**. Schema drift, distribution drift, and release regressions
-**bypass** thresholds — if you enable those scopes, they fire regardless of the
-count thresholds.
+**metric anomalies**. Schema drift, distribution drift, variable-value drift,
+and release regressions **bypass** thresholds — if you enable those scopes, they
+fire regardless of the count thresholds.
 :::
 
 **Filters** narrow further by `event_type`, `event`, or `direction`, with
 operators `eq` / `ne` / `in` / `not_in`. Multiple filters are ANDed; a signal
 that doesn't carry the filtered field passes through.
+
+Variable-value drift carries its affected `event_id`, so event filters apply;
+its alert item uses the variable name as `drift_field` and a bounded novel-value
+sample as `sample_value`.
 
 **Cooldown** suppresses repeats. Default **1440 minutes (24h)**, tracked
 separately per *(rule, scan, scope)*. A rule fires when the anomaly first opens,
@@ -165,7 +177,7 @@ count) so the same benign pattern is less likely to alert again.
 
 ## Set up your first alert
 
-1. **Project settings → Alerting → Destinations** — add a destination (e.g. a
+1. **Observe → Alerting → Destinations** — add a destination (e.g. a
    Slack webhook) and test it.
 2. **Add a routing rule** on that destination: choose the scope, direction(s),
    thresholds, optional filters, and cooldown.

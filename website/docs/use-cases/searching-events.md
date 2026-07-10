@@ -77,8 +77,8 @@ them precisely and only returns events that actually carry them.
 ## Smart / semantic search — `GET /search`
 
 The smart search endpoint takes a natural-language query `q` and returns ranked hits
-across the whole tracking plan — not just events, but event types, fields, meta
-fields, variables, relations, and tags. The response is
+across the whole project — not just events, but event types, fields, meta
+fields, variables, relations, tags, metrics, and fact tables. The response is
 `{items, total, semantic_used}`.
 
 Query parameters:
@@ -93,7 +93,7 @@ Query parameters:
 Each item carries:
 
 - `entity_type` — one of `event`, `event_type`, `field`, `meta_field`, `variable`,
-  `relation`, `tag`
+  `relation`, `tag`, `metric`, `fact_table`
 - `title`, `subtitle`, `description` (or `snippet`)
 - `confidence` — relevance in `0..1`
 - `route_path` — where the entity lives in the app

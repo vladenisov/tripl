@@ -50,7 +50,9 @@ needs no warehouse, so you can learn the product before wiring up any data.
 :::
 
 A **project** is one tracking plan and everything around it — its own events,
-its own monitors, its own alert rules, its own access list. A company with an
+scans, monitors, metrics, and alert rules. Membership roles and data-source
+connections are workspace-wide, although API keys can be bound to one project.
+A company with an
 iOS app, an Android app, and a website that share analytics is usually *one*
 project; two unrelated products are two projects.
 
@@ -59,8 +61,8 @@ project; two unrelated products are two projects.
 ## Tour the demo project
 
 Generate the demo project and open it. You now have a realistic catalog with
-events, collected metrics, a few injected anomalies, and some schema drift — all
-synthetic.
+events, collected metrics, detector-produced anomalies, and schema/distribution
+drift — all synthetic.
 
 :::note The demo project is not your data
 Every row in the demo is generated locally. Its data source is a placeholder
@@ -145,6 +147,12 @@ commonly — do a bit of both.
 3. The scan proposes **events, fields, and value lists** from what it actually
    found. Keep what makes sense and adjust the rest.
 
+Set the scan's **Event name format** when event identity is assembled from field
+values (for example `{action}:{category}`). The same template governs manual
+creation for that event type: the event form previews the generated name and
+requires every referenced field. This prevents a hand-written event and its
+scan-generated counterpart from becoming two different catalog rows.
+
 This is the fastest way to turn an existing warehouse into a written plan, and
 it is what populates monitoring later.
 
@@ -155,9 +163,23 @@ it is what populates monitoring later.
 2. **Events** — add events, give each a clear description, and attach the
    **fields** it carries. Mark any field that holds personal or sensitive data.
 3. **Schema & fields** — define **meta fields** that ride along with every event
-   (app version, platform, country), reusable **variables** for value lists you
+   (app version, platform, country), reusable **variables** for templates you
    use in more than one place, and **relations** that record how one event is
    expected to follow another.
+
+### Reuse values with variables
+
+Create a variable under **Plan → Variables**, document the values the team
+expects, and add the warehouse column or dotted JSON path that supplies it. Use
+`${variable_name}` in event field or meta values; the event form shows matching
+variables, documented values, and warnings for unknown tokens.
+
+Scans keep observed samples separate from the documented list. If a new value
+appears, review the drift from the Variables table or the affected event: accept
+it globally, accept a complete override for that event, snooze it, or mark it a
+false positive. If a scan-created variable should stay out of the plan, choose
+**Exclude from scans** instead of delete so the next scan does not recreate it.
+See [Variables & templates](./variables-and-templates.md) for the full workflow.
 
 ### Move events through their lifecycle
 
@@ -191,6 +213,20 @@ branch instead — the same idea as a pull request for code.
 
 If an event type has **owners**, merging a branch that touches it requires a
 sign-off from one of them.
+
+Owners can make review stricter under **Plan → Plan branches → Merge policy**:
+require several distinct approvals and block authors from approving their own
+branch. Approvals are tied to the reviewed plan hash, so any later content edit
+makes them stale and requires review again. The separate **Settings → Project →
+Plan rules** page is currently a non-persistent preview and does not enforce
+these rules.
+
+Optionally configure the **Implementation tracker** from Plan branches. After a
+merge, tripl creates one Jira implementation ticket for added/changed events and
+polls it in the background; when Jira reports Done, those events advance to
+`implemented` unless they are already further along the lifecycle. This tracker
+is separate from a Jira alert destination, which opens incident tickets from
+monitoring signals.
 
 ### Branch best practices
 
@@ -237,6 +273,11 @@ With a plan in place and metrics collecting, monitoring comes to life.
 - **Monitors** — each monitor learns the normal rhythm of an event, including
   time-of-day and weekday patterns, and raises a **signal** on an unexpected
   spike, drop, or change of shape.
+- **Metrics** — define project-wide SQL metrics, event compositions, or fact
+  metrics. Fact tables keep a reusable read-only query, introspected columns,
+  and named filters; a fact metric applies an aggregate or ratio to them. Active
+  metrics collect on schedule and open the same monitoring drilldown as event
+  volume.
 
 Open a monitor (or an event's monitoring detail) to see, across tabs:
 
@@ -303,8 +344,9 @@ Mark the destination **enabled** when you save it.
 A rule decides *which* signals are worth interrupting someone for and routes them
 to a destination. Set its scope, the direction (spikes, drops, or both), how big
 a change has to be, and a **cooldown** so the same problem doesn't notify you
-repeatedly. Write the message template. Release regressions are an opt-in toggle
-on the rule, kept separate from generic volume anomalies.
+repeatedly. Write the message template. Schema drift, distribution drift,
+variable value drift, and release regressions are separate opt-in toggles; they
+stay off until the rule explicitly subscribes to them.
 
 :::tip Simulate before you switch it on
 Use the rule's **Replay** to run recent days of real data against it and see
@@ -381,6 +423,8 @@ If you're rolling tripl out on real data, this order tends to work well:
 | Data source card is amber | Last successful test is stale | Click **Re-test connection** |
 | Data source card is red | Connection failed | Fix credentials, **Edit** then **Re-test** |
 | "By version" tab missing | Scan has no app-version column | Set the version column on the scan (optional) |
+| A deleted scan variable comes back | Its source binding is still present | Use **Exclude from scans**; restore it later if needed |
+| A variable value keeps showing as drift | It is outside the effective documented list | Accept it globally or for that event, or resolve/snooze the drift |
 | Alert never arrived | No signal, rule off, threshold/cooldown, or delivery failed | Work the "alert never fired" checklist above |
 | Wrong change merged | — | Use the **Audit log** + a corrective branch through review |
 | Event deleted by mistake | Deletion is permanent | Re-create the definition by hand; earlier metrics/history are not restored |

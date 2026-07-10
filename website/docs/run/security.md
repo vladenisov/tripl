@@ -143,9 +143,8 @@ The middleware reads `CONTENT_SECURITY_POLICY`, `SERVE_FRONTEND`, `HSTS_ENABLED`
 
 Buckets are keyed per `(route, client-IP)`, so the two routes do not share quota. Exceeding a limit returns `429 Too Many Requests` with a `Retry-After` header. To turn rate limiting off entirely, set `RATE_LIMIT_ENABLED=false`.
 
-:::warning
-The configured per-route values are clamped to a minimum of 1: the limiter is built with `capacity=max(1, <value>)`, so setting `RATE_LIMIT_LOGIN_PER_MINUTE=0` yields 1/minute, **not** "disabled". Use `RATE_LIMIT_ENABLED=false` to disable.
-:::
+Set an individual route's limit to `0` to disable that route limiter while
+leaving the other one active. Use `RATE_LIMIT_ENABLED=false` to disable both.
 
 **Client-IP source — read this before exposing the API directly.** By default the limiter keys on the real socket peer (`request.client.host`), which is correct when the API is the edge (including the single-container `SERVE_FRONTEND` deploy). `RATE_LIMIT_TRUST_FORWARDED_FOR` defaults to **false** on purpose: a raw `X-Forwarded-For` is attacker-controlled, so trusting it on a directly-exposed API lets an unauthenticated caller rotate the header per request and bypass the limit entirely. Enable it **only** behind a trusted proxy that *overwrites* `X-Real-IP` with the true client address on every request (the shipped nginx config does this). When enabled the limiter prefers `X-Real-IP`, falling back to the leftmost `X-Forwarded-For` entry.
 

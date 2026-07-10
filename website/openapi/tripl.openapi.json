@@ -3871,7 +3871,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/EventResponse"
+                  "$ref": "#/components/schemas/EventMutationResponse"
                 }
               }
             }
@@ -4235,7 +4235,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/EventResponse"
+                  "$ref": "#/components/schemas/EventMutationResponse"
                 }
               }
             }
@@ -4975,6 +4975,234 @@
         }
       }
     },
+    "/api/v1/projects/{slug}/variables/bulk-update": {
+      "post": {
+        "tags": [
+          "variables"
+        ],
+        "summary": "Bulk Update Variables",
+        "operationId": "bulk_update_variables_api_v1_projects__slug__variables_bulk_update_post",
+        "parameters": [
+          {
+            "name": "slug",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Slug"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/VariableBulkUpdate"
+              }
+            }
+          }
+        },
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/projects/{slug}/variables/bulk-delete": {
+      "post": {
+        "tags": [
+          "variables"
+        ],
+        "summary": "Bulk Delete Variables",
+        "operationId": "bulk_delete_variables_api_v1_projects__slug__variables_bulk_delete_post",
+        "parameters": [
+          {
+            "name": "slug",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Slug"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/VariableBulkDelete"
+              }
+            }
+          }
+        },
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/projects/{slug}/variables/drifts": {
+      "get": {
+        "tags": [
+          "variables"
+        ],
+        "summary": "List Value Drifts",
+        "operationId": "list_value_drifts_api_v1_projects__slug__variables_drifts_get",
+        "parameters": [
+          {
+            "name": "slug",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Slug"
+            }
+          },
+          {
+            "name": "variable_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Variable Id"
+            }
+          },
+          {
+            "name": "event_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Event Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VariableValueDriftListResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/projects/{slug}/variables/drifts/{drift_id}/action": {
+      "post": {
+        "tags": [
+          "variables"
+        ],
+        "summary": "Apply Value Drift Action",
+        "operationId": "apply_value_drift_action_api_v1_projects__slug__variables_drifts__drift_id__action_post",
+        "parameters": [
+          {
+            "name": "slug",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Slug"
+            }
+          },
+          {
+            "name": "drift_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Drift Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/VariableValueDriftActionRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VariableValueDriftResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/projects/{slug}/variables": {
       "get": {
         "tags": [
@@ -5113,6 +5341,187 @@
                 }
               }
             }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/projects/{slug}/variables/{variable_id}/event-overrides": {
+      "get": {
+        "tags": [
+          "variables"
+        ],
+        "summary": "List Event Overrides",
+        "operationId": "list_event_overrides_api_v1_projects__slug__variables__variable_id__event_overrides_get",
+        "parameters": [
+          {
+            "name": "slug",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Slug"
+            }
+          },
+          {
+            "name": "variable_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Variable Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/VariableEventOverrideResponse"
+                  },
+                  "title": "Response List Event Overrides Api V1 Projects  Slug  Variables  Variable Id  Event Overrides Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/projects/{slug}/variables/{variable_id}/event-overrides/{event_id}": {
+      "put": {
+        "tags": [
+          "variables"
+        ],
+        "summary": "Upsert Event Override",
+        "operationId": "upsert_event_override_api_v1_projects__slug__variables__variable_id__event_overrides__event_id__put",
+        "parameters": [
+          {
+            "name": "slug",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Slug"
+            }
+          },
+          {
+            "name": "variable_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Variable Id"
+            }
+          },
+          {
+            "name": "event_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Event Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/VariableEventOverrideUpsert"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VariableEventOverrideResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "variables"
+        ],
+        "summary": "Delete Event Override",
+        "operationId": "delete_event_override_api_v1_projects__slug__variables__variable_id__event_overrides__event_id__delete",
+        "parameters": [
+          {
+            "name": "slug",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Slug"
+            }
+          },
+          {
+            "name": "variable_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Variable Id"
+            }
+          },
+          {
+            "name": "event_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Event Id"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
           },
           "422": {
             "description": "Validation Error",
@@ -13111,6 +13520,11 @@
             "title": "Include Distribution Drifts",
             "default": false
           },
+          "include_variable_value_drifts": {
+            "type": "boolean",
+            "title": "Include Variable Value Drifts",
+            "default": false
+          },
           "include_release_regressions": {
             "type": "boolean",
             "title": "Include Release Regressions",
@@ -13311,6 +13725,10 @@
             "type": "boolean",
             "title": "Include Distribution Drifts"
           },
+          "include_variable_value_drifts": {
+            "type": "boolean",
+            "title": "Include Variable Value Drifts"
+          },
           "include_release_regressions": {
             "type": "boolean",
             "title": "Include Release Regressions"
@@ -13401,6 +13819,7 @@
           "include_events",
           "include_schema_drifts",
           "include_distribution_drifts",
+          "include_variable_value_drifts",
           "include_release_regressions",
           "include_metrics",
           "notify_on_spike",
@@ -13577,6 +13996,17 @@
               }
             ],
             "title": "Include Distribution Drifts"
+          },
+          "include_variable_value_drifts": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Include Variable Value Drifts"
           },
           "include_release_regressions": {
             "anyOf": [
@@ -17138,6 +17568,153 @@
           "direction"
         ],
         "title": "EventMove"
+      },
+      "EventMutationResponse": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Id"
+          },
+          "project_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Project Id"
+          },
+          "event_type_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Event Type Id"
+          },
+          "event_type": {
+            "$ref": "#/components/schemas/EventTypeBrief"
+          },
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "description": {
+            "type": "string",
+            "title": "Description"
+          },
+          "order": {
+            "type": "integer",
+            "title": "Order"
+          },
+          "status": {
+            "$ref": "#/components/schemas/EventStatus"
+          },
+          "sunset_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sunset At"
+          },
+          "last_seen_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Seen At"
+          },
+          "owner_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Owner Id"
+          },
+          "reviewed": {
+            "type": "boolean",
+            "title": "Reviewed",
+            "default": false
+          },
+          "metric_breakdown_columns": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Metric Breakdown Columns",
+            "default": []
+          },
+          "drift_count": {
+            "type": "integer",
+            "title": "Drift Count",
+            "default": 0
+          },
+          "tags": {
+            "items": {
+              "$ref": "#/components/schemas/EventTagResponse"
+            },
+            "type": "array",
+            "title": "Tags",
+            "default": []
+          },
+          "field_values": {
+            "items": {
+              "$ref": "#/components/schemas/EventFieldValueResponse"
+            },
+            "type": "array",
+            "title": "Field Values",
+            "default": []
+          },
+          "meta_values": {
+            "items": {
+              "$ref": "#/components/schemas/EventMetaValueResponse"
+            },
+            "type": "array",
+            "title": "Meta Values",
+            "default": []
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Updated At"
+          },
+          "warnings": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Warnings"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "project_id",
+          "event_type_id",
+          "event_type",
+          "name",
+          "description",
+          "order",
+          "status",
+          "created_at",
+          "updated_at"
+        ],
+        "title": "EventMutationResponse",
+        "description": "Event returned after a create or update, with advisory template warnings."
       },
       "EventPhotoCommentCreate": {
         "properties": {
@@ -21035,7 +21612,8 @@
           "schema",
           "distribution",
           "release_regression",
-          "metric"
+          "metric",
+          "variable_value_drift"
         ],
         "title": "MetricScopeType"
       },
@@ -21521,6 +22099,10 @@
             "type": "boolean",
             "title": "Include Distribution Drifts"
           },
+          "include_variable_value_drifts": {
+            "type": "boolean",
+            "title": "Include Variable Value Drifts"
+          },
           "include_release_regressions": {
             "type": "boolean",
             "title": "Include Release Regressions"
@@ -21579,6 +22161,7 @@
           "include_events",
           "include_schema_drifts",
           "include_distribution_drifts",
+          "include_variable_value_drifts",
           "include_release_regressions",
           "include_metrics",
           "total_deliveries"
@@ -26623,6 +27206,91 @@
         ],
         "title": "ValidationError"
       },
+      "VariableBulkDelete": {
+        "properties": {
+          "variable_ids": {
+            "items": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "type": "array",
+            "minItems": 1,
+            "title": "Variable Ids"
+          }
+        },
+        "type": "object",
+        "required": [
+          "variable_ids"
+        ],
+        "title": "VariableBulkDelete"
+      },
+      "VariableBulkUpdate": {
+        "properties": {
+          "variable_ids": {
+            "items": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "type": "array",
+            "minItems": 1,
+            "title": "Variable Ids"
+          },
+          "variable_type": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/VariableType"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "description": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Description"
+          },
+          "allowed_values_add": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Allowed Values Add"
+          },
+          "allowed_values_remove": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Allowed Values Remove"
+          }
+        },
+        "type": "object",
+        "required": [
+          "variable_ids"
+        ],
+        "title": "VariableBulkUpdate"
+      },
       "VariableCreate": {
         "properties": {
           "name": {
@@ -26640,6 +27308,22 @@
             "type": "string",
             "title": "Description",
             "default": ""
+          },
+          "allowed_values": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "maxItems": 500,
+            "title": "Allowed Values"
+          },
+          "bindings": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "maxItems": 100,
+            "title": "Bindings"
           }
         },
         "type": "object",
@@ -26647,6 +27331,62 @@
           "name"
         ],
         "title": "VariableCreate"
+      },
+      "VariableEventOverrideResponse": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Id"
+          },
+          "variable_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Variable Id"
+          },
+          "event_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Event Id"
+          },
+          "event_name": {
+            "type": "string",
+            "title": "Event Name"
+          },
+          "values": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Values",
+            "default": []
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "variable_id",
+          "event_id",
+          "event_name"
+        ],
+        "title": "VariableEventOverrideResponse"
+      },
+      "VariableEventOverrideUpsert": {
+        "properties": {
+          "values": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "maxItems": 500,
+            "title": "Values"
+          }
+        },
+        "type": "object",
+        "required": [
+          "values"
+        ],
+        "title": "VariableEventOverrideUpsert"
       },
       "VariableResponse": {
         "properties": {
@@ -26682,6 +27422,27 @@
             "type": "string",
             "title": "Description"
           },
+          "allowed_values": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Allowed Values",
+            "default": []
+          },
+          "bindings": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Bindings",
+            "default": []
+          },
+          "excluded_from_scans": {
+            "type": "boolean",
+            "title": "Excluded From Scans",
+            "default": false
+          },
           "event_count": {
             "type": "integer",
             "title": "Event Count",
@@ -26709,6 +27470,11 @@
             "type": "array",
             "title": "Sample Values",
             "default": []
+          },
+          "open_drift_count": {
+            "type": "integer",
+            "title": "Open Drift Count",
+            "default": 0
           }
         },
         "type": "object",
@@ -26772,6 +27538,47 @@
               }
             ],
             "title": "Description"
+          },
+          "allowed_values": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array",
+                "maxItems": 500
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Allowed Values"
+          },
+          "bindings": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array",
+                "maxItems": 100
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Bindings"
+          },
+          "excluded_from_scans": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Excluded From Scans"
           }
         },
         "type": "object",
@@ -26850,6 +27657,193 @@
           "observed_count"
         ],
         "title": "VariableValueContextResponse"
+      },
+      "VariableValueDriftActionRequest": {
+        "properties": {
+          "action": {
+            "type": "string",
+            "enum": [
+              "accept",
+              "snooze",
+              "false_positive",
+              "reopen"
+            ],
+            "title": "Action"
+          },
+          "scope": {
+            "type": "string",
+            "enum": [
+              "global",
+              "event"
+            ],
+            "title": "Scope",
+            "default": "global"
+          },
+          "note": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 2000
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Note"
+          },
+          "snoozed_until": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Snoozed Until"
+          }
+        },
+        "type": "object",
+        "required": [
+          "action"
+        ],
+        "title": "VariableValueDriftActionRequest"
+      },
+      "VariableValueDriftListResponse": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/VariableValueDriftResponse"
+            },
+            "type": "array",
+            "title": "Items"
+          },
+          "total": {
+            "type": "integer",
+            "title": "Total"
+          }
+        },
+        "type": "object",
+        "required": [
+          "items",
+          "total"
+        ],
+        "title": "VariableValueDriftListResponse"
+      },
+      "VariableValueDriftResponse": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Id"
+          },
+          "variable_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Variable Id"
+          },
+          "variable_name": {
+            "type": "string",
+            "title": "Variable Name"
+          },
+          "event_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Event Id"
+          },
+          "event_name": {
+            "type": "string",
+            "title": "Event Name"
+          },
+          "scan_config_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Scan Config Id"
+          },
+          "observed_values": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Observed Values",
+            "default": []
+          },
+          "status": {
+            "$ref": "#/components/schemas/SchemaDriftStatus",
+            "default": "open"
+          },
+          "resolution_note": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Resolution Note"
+          },
+          "snoozed_until": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Snoozed Until"
+          },
+          "resolved_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Resolved At"
+          },
+          "resolved_by": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Resolved By"
+          },
+          "detected_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Detected At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "variable_id",
+          "variable_name",
+          "event_id",
+          "event_name",
+          "scan_config_id",
+          "detected_at"
+        ],
+        "title": "VariableValueDriftResponse"
       },
       "VariableValueKind": {
         "type": "string",

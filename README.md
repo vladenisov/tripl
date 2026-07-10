@@ -54,17 +54,19 @@ a couple of minutes.
 
 ## What you can do with it
 
-tripl is organised around four jobs. They map directly to the four sections of
-the app's navigation.
+tripl is organised around three jobs in the project navigation — **Plan**,
+**Observe**, and **Govern** — with workspace and instance configuration kept in
+**Settings**.
 
 ### 📐 Plan — design what should be tracked
 
 - A clean, searchable **catalog** of every event, grouped by event type.
 - **Fields, variables, and relations** describe the shape of each event and the
-  values it can carry — define a value list once as a variable and reuse it
-  everywhere.
-- Mark events as implemented, reviewed, archived, or tag them however your team
-  works.
+  values it can carry. Variables are typed `${placeholders}` with documented
+  values, warehouse bindings, per-event overrides, and drift review.
+- Move events through a lifecycle from draft and review to implementation,
+  live operation, deprecation, and archive; assign owners and tags along the
+  way.
 - **Plan branches**: make changes on a branch, get them reviewed, and merge —
   exactly like a pull request, but for your tracking plan. The live plan stays
   stable while work is in progress, and merges are smart enough to keep the
@@ -78,8 +80,12 @@ the app's navigation.
   and day-of-week patterns) and raise a signal when something spikes, drops, or
   changes shape. A short forecast shows where the next data point is expected to
   land.
+- A project-wide **metrics catalog** for SQL, reusable fact-table aggregations,
+  ratios, and event-composition metrics, with the same monitoring drilldowns as
+  event volume.
 - **Schema drift** detection — get told when a field appears, disappears, or
-  starts carrying values it never used to.
+  starts carrying values it never used to — plus variable-value drift,
+  distribution drift, and release regressions when a new app version rolls out.
 - Drill into any signal to see what moved, when, and which slice of the data
   caused it.
 
@@ -88,18 +94,22 @@ the app's navigation.
 - **Reconciliation** compares the plan to reality and answers two questions at
   once: *what is documented but no longer arriving* (dead events), and *what is
   arriving but isn't documented yet*.
+- **Coverage** shows which active definitions are implemented and which planned
+  events have gone quiet in real data.
 - An **audit log** records who changed what, with filters to find any change.
 - **Roles** (owner / editor / viewer) and revocable **API keys** keep access
   appropriate, so scripts and AI agents get exactly the permissions they need
   and nothing more.
 
-### 🔌 Connect — plug in your data
+### 🔌 Settings — connect and administer
 
-- Connect a **data warehouse** as a data source: ClickHouse, BigQuery, or
-  PostgreSQL.
+- Connect a **data warehouse** under workspace settings: ClickHouse, BigQuery,
+  or PostgreSQL.
 - **Scans** read your real tables and propose events, fields, and value lists
   automatically — a fast way to bootstrap a plan from data you already have, or
   to keep an existing plan in step with what's flowing through.
+- Owners can manage members, API keys, security, storage, email, AI/search, and
+  observability settings without mixing those controls into project navigation.
 
 ### 🔔 Alerting
 
@@ -124,7 +134,7 @@ docker compose -f compose.dev.yaml up --build
 
 Then open the app, create the first account on the sign-in page, and click
 **Generate demo project** to explore — or connect your own warehouse under
-**Connect → Data sources**.
+**Settings → Data sources**.
 
 | Where | URL |
 |---|---|
@@ -141,7 +151,7 @@ release is one command (`bin/release.sh`). See the **[deployment guide](website/
 
 ## Documentation
 
-📖 The full, searchable documentation site lives at **[vladenisov.github.io/tripl](https://vladenisov.github.io/tripl/)** (page sources are under [`website/docs/`](website/docs)).
+📖 The full documentation site lives at **[vladenisov.github.io/tripl](https://vladenisov.github.io/tripl/)** (page sources are under [`website/docs/`](website/docs)).
 
 New to tripl? Start at the top and work down:
 
@@ -150,6 +160,8 @@ New to tripl? Start at the top and work down:
   together. Read this first.
 - **[User guide](website/docs/use/user-guide.md)** — a hands-on walkthrough, from
   your first project to a working alert.
+- **[Variables & templates](website/docs/use/variables-and-templates.md)** —
+  documented values, source bindings, per-event overrides, and value drift.
 - **[Agent & API guide](website/docs/integrate/agent-api-guide.md)** — how to let an LLM
   agent or a script read and update the plan through the API.
 
@@ -159,7 +171,6 @@ For people working on tripl itself:
   why; the technical details that used to live in this file.
 - **[CONTRIBUTING.md](CONTRIBUTING.md)** — local setup, commands, and project
   structure.
-- **[PLAN.md](PLAN.md)** — product scope and roadmap.
 - **[AGENTS.md](AGENTS.md)** — repo navigation map for coding agents.
 
 ---

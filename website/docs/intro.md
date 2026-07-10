@@ -22,13 +22,10 @@ nothing to re-instrument.
 
 - **[Using tripl](./use/concepts)** — what a tracking plan, branch, and monitor
   are, and how to walk from an empty screen to a working alert.
+- **[Variables & templates](./use/variables-and-templates)** — document reusable
+  values, bind them to warehouse paths, and review value drift.
 - **[Self-hosting & Operations](./run/release)** — deploy and operate your own
   tripl instance.
 - **[Development](./develop/architecture)** — architecture and how to contribute.
 - **[API & Integrations](./integrate/agent-api-guide)** — drive tripl from
   scripts and LLM agents.
-
-:::note
-This documentation site is being built out. Sections marked **🚧 In progress**
-are placeholders that the P0/P1 documentation work will fill in.
-:::

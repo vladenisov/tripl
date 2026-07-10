@@ -41,7 +41,9 @@ tripl is three cooperating processes plus a database and a message broker:
   warehouses.
 - **celery-beat** — the scheduler. Triggers due metric-collection checks — for
   both event counts and the **metric catalog** (a ~300 s due-check) — and the
-  schema-drift retention cleanup.
+  schema-drift retention cleanup. It also polls implementation tickets, chases
+  stranded search embeddings, reaps stuck alert deliveries, and runs periodic
+  alert/maintenance tasks.
 - **PostgreSQL** — the system of record for the plan, metrics, anomalies, audit
   log, and alert deliveries.
 - **RabbitMQ** — the broker between the api and the workers.
@@ -111,8 +113,14 @@ Locally, all of the above (except the warehouses) run under Docker Compose:
 - **Schema drift** — detects fields appearing, disappearing, or carrying new
   values; keeps sample values; and prunes old drift records on a retention
   schedule.
+- **Variable value drift** — compares scan-observed values with a variable's
+  effective documented list (per-event override, otherwise global) and keeps
+  the review state independent from later evidence refreshes.
 - **Distribution drift** — uses **PSI** (Population Stability Index) over event
   field values.
+- **Release regression** — activation-gated comparison of the newest stable app
+  version with the previous release, inert unless a scan names an app-version
+  column.
 - **Correlation-aware grouping** collapses signals that share an underlying
   cause so one root problem yields one alert, not many.
 - **Metric anomalies** run the same detector at a dedicated **metric scope**.
@@ -135,14 +143,14 @@ Locally, all of the above (except the warehouses) run under Docker Compose:
 - **`MetricDefinition`** is a user-defined, **project-scoped** metric (the
   catalog) — global rather than branched. Three kinds: **`sql`** (a user
   read-only `SELECT` or top-level `WITH ... SELECT` returning a per-bucket value
-  against a data source on its own interval), **`fact_aggregation`** (`count` /
+  against a data source on its own interval), **`fact`** (`count` /
   `sum` / `avg` / `min` / `max` / `count_distinct` over a measure column of a
   reusable fact table, with optional filters and breakdowns), and
   **`event_composition`** (a `single` event count, a `ratio` A/B, or an event
   `per_distinct_user`, derived from already-collected `event_metrics`).
 - **Scheduling.** The `check_metric_definitions_due` beat task runs about every
   **300 s** and dispatches `collect_metric_definitions` for each **active** metric
-  whose interval is due. `sql` / `fact_aggregation` metrics query their own data
+  whose interval is due. `sql` / `fact` metrics query their own data
   source through the adapter; `event_composition` metrics read existing event
   series on the shared scan grid (no warehouse query).
 - **Aggregations.** Adapter `_aggregate_value_sql` builds the per-kind SQL for
@@ -170,9 +178,10 @@ Locally, all of the above (except the warehouses) run under Docker Compose:
 - **Tailwind CSS 4** with **shadcn**-style UI primitives.
 - **TanStack Query** for server state, **Recharts** for charts, **dnd-kit** for
   drag-and-drop reordering.
-- The information architecture is four job-based groups — **Plan / Observe /
-  Govern / Connect** — defined once in `src/lib/navigation.ts` and consumed by
-  both the sidebar and the breadcrumbs so they never drift apart.
+- The project information architecture is three job-based groups — **Plan /
+  Observe / Govern** — defined once in `src/lib/navigation.ts` and consumed by
+  both the sidebar and breadcrumbs. Data sources, members, API keys, personal
+  security, and instance controls live in the separate Settings surface.
 - **Serving.** In development the **Vite dev server** serves the SPA with HMR and
   proxies `/api` to the backend. In production there are two options: **(a)
   consolidated single container** — FastAPI serves the built SPA itself via
@@ -200,22 +209,29 @@ see [RELEASE.md](../run/release.md)); or
 | `Event` | A concrete tracked event. |
 | `FieldDefinition` | A typed field on an event type. |
 | `MetaFieldDefinition` | Project-level metadata carried by every event. |
-| `Variable` | A reusable value list. |
+| `Variable` | A typed `${placeholder}` with documented values, source bindings, and scan exclusion state. |
+| `VariableValue` | One scan-observed variable context for an event/field. |
+| `VariableEventValueOverride` | A complete per-event replacement for a variable's global documented list. |
+| `VariableValueDrift` | Novel observed values plus their review/resolution state. |
 | `Relation` | A declared connection between events. |
 | `DataSource` | A connection to an external warehouse. |
 | `ScanConfig` | A saved scan query + extraction rules. |
 | `ScanJob` | One async execution of a scan config. |
 | `EventMetric` | Time-bucketed counts for an event. |
 | `MetricDefinition` | A user-defined metric (the metrics catalog); project-scoped, not branched. |
+| `FactTable` | A reusable safe query, timestamp/column schema, and named filters for fact metrics. |
 | `MetricValue` | Time-bucketed values for a `MetricDefinition`. |
 | `MetricValueBreakdown` | Per-breakdown metric values (platform / app-version / …). |
 | `MetricAnomaly` | A persisted anomaly bucket. |
 | `AlertDestination` | A delivery channel (Slack, Telegram, …). |
 | `AlertRule` | Filtering + delivery configuration for signals. |
 | `AlertDelivery` | A record of one alert that was sent. |
+| `ProjectTrackerConfig` | Owner-managed Jira settings for post-merge implementation tickets. |
+| `ImplementationTicket` | A branch-merge ticket and the events it covers. |
 
 Plan branches deep-copy the relevant objects (event types, fields, events,
-variables, meta fields, relations, photos, comments) and merge back via a
+variables, documented values/overrides/exclusions, meta fields, relations,
+photos, comments) and merge back via a
 3-way merge that preserves live IDs by natural key. Metrics are deliberately
 **not** branched — they are project-scoped and shared across every branch.
 
@@ -229,8 +245,10 @@ variables, meta fields, relations, photos, comments) and merge back via a
 2. Running it creates a `ScanJob`.
 3. A Celery task executes the query against the warehouse via the adapter.
 4. Cardinality analysis decides whether observed values become event fields or
-   variables.
-5. Events and variables are created or updated in PostgreSQL.
+   variables; bindings adopt existing variables and naming/group rules produce
+   stable event identities.
+5. Events and variables are created or updated in PostgreSQL. Scan writes do
+   not overwrite user-authored field values or recreate excluded variables.
 6. `ScanJob.result_summary` is filled in for the UI.
 
 ### Metrics flow
@@ -245,7 +263,8 @@ variables, meta fields, relations, photos, comments) and merge back via a
 
 1. Beat (`check_metric_definitions_due`, ~300 s) finds active, due metrics.
 2. `collect_metric_definitions` evaluates each — querying the warehouse
-   (`sql` / `fact_aggregation`) or composing event series (`event_composition`).
+   (`sql` / `fact`) or composing event series (`event_composition`). Compatible
+   fact aggregates are batched by fact table.
 3. Values upsert into `metric_values` / `metric_value_breakdowns`.
 4. Metric-scope anomalies are recalculated into `metric_anomalies`.
 5. Alert rules with `include_metrics` enqueue deliveries.
@@ -256,6 +275,29 @@ variables, meta fields, relations, photos, comments) and merge back via a
 2. `AlertDelivery` and `AlertDeliveryItem` rows are written.
 3. A Celery task sends the formatted notification.
 4. Delivery status becomes `pending`, `sent`, or `failed`.
+
+Separately, the weekly plan-digest beat task sends directly to every enabled
+Slack/email destination; it does not evaluate routing rules or create a normal
+anomaly delivery.
+
+### Branch and implementation-ticket flow
+
+1. A branch snapshots plan objects and records review approvals against a plan
+   hash; edits make older approvals stale.
+2. Merge policy and event-type owner gates are checked before the three-way
+   merge applies changes to `main`.
+3. Search is reindexed after merge. If a project tracker is enabled, creating a
+   Jira implementation ticket is best-effort and cannot roll back the merge.
+4. A periodic worker polls open tickets; a Done issue promotes its covered
+   events to `implemented` without downgrading a later lifecycle state.
+
+### Search flow
+
+Plan changes, scans, branch merges, and metric/fact-table CRUD refresh
+`search_documents`. Reindexing diffs content hashes so unchanged embeddings are
+preserved. PostgreSQL full-text/trigram ranking is always available; optional
+provider embeddings add semantic ranking, and a periodic chaser requeues old
+pending documents.
 
 ---
 
@@ -283,7 +325,6 @@ variables, meta fields, relations, photos, comments) and merge back via a
 
 - **[CONTRIBUTING.md](https://github.com/vladenisov/tripl/blob/main/CONTRIBUTING.md)** — setup, commands, source tree,
   API surface.
-- **[PLAN.md](https://github.com/vladenisov/tripl/blob/main/PLAN.md)** — product scope and roadmap.
 - **[agent-api-guide.md](../integrate/agent-api-guide.md)** — the API contract for agents and
   scripts.
 - **[concepts.md](../use/concepts.md)** — the same system in plain language.

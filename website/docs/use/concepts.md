@@ -1,3 +1,8 @@
+---
+title: Concepts
+sidebar_position: 1
+---
+
 # Concepts
 
 This page explains the ideas behind tripl in plain language. Read it once and
@@ -27,8 +32,9 @@ Everything below is a piece of one of those three jobs.
 A **project** is one tracking plan and everything around it. If your company has
 an iOS app, an Android app, and a website that share the same analytics, that's
 usually one project. If you run two products that have nothing to do with each
-other, that's two projects. Each project is its own world: its own events, its
-own data sources, its own alerts, its own access list.
+other, that's two projects. Each project has its own plan, scans, metrics, and
+alerts. Users and data-source connections belong to the workspace; an API key
+can still be restricted to one project slug.
 
 ---
 
@@ -40,8 +46,10 @@ These are the pieces you arrange to describe what should be tracked.
 
 An **event** is one thing that happens in your product that you care about:
 `checkout_completed`, `video_played`, `signup_started`. It's the central object
-in tripl. An event has a name, a description, the fields it carries, and a status
-(is it implemented yet? has it been reviewed? is it retired?).
+in tripl. An event has a name, a description, the fields it carries, and a
+lifecycle status: `draft`, `in_review`, `ready_for_dev`, `implemented`, `live`,
+`deprecated`, or `archived`. Review state, owner, and an optional deprecation
+sunset date add workflow context without changing the event's identity.
 
 ### Event type
 
@@ -63,10 +71,13 @@ level instead of repeating it on every event.
 
 ### Variable
 
-A **variable** is a reusable list of possible values. If twenty events all carry
-a `currency` field that can be `USD`, `EUR`, or `GBP`, you define that list once
-as a variable and point those events at it. Change the list in one place and
-everything stays consistent.
+A **variable** is a typed, reusable `${placeholder}`. It separates the contract
+your team documents from the values a scan observes. A variable can hold a
+global documented-value list, warehouse column or dotted JSON-path bindings,
+and a complete per-event override when one event is the exception. Scans use the
+bindings to adopt the same variable, report novel values as drift, and preserve
+hand-authored event field values instead of overwriting them. See
+[Variables & templates](./variables-and-templates.md) for the full workflow.
 
 ### Relation
 
@@ -84,8 +95,10 @@ time bucket**. A metric is one of three kinds:
 
 - **SQL** — a read-only `SELECT` or top-level `WITH ... SELECT` you write that
   returns one value per bucket, run against a data source on its own interval.
-- **Fact aggregation** — a count, sum, average, min, max, or distinct count over a
-  column of a table, with an optional filter and breakdowns — no SQL to write.
+- **Fact** — a count, sum, average, min, max, or distinct count over a reusable
+  fact table. A fact metric can be one aggregate or a ratio of two operands;
+  named filters, structured conditions, raw filter fragments, and breakdowns
+  are optional.
 - **Event composition** — built from events you already collect: a single event's
   count, a ratio of one event to another, or an event per distinct user.
 
@@ -176,6 +189,13 @@ volume: a field shows up that you never documented, one you relied on stops
 appearing, or a field starts carrying values it never used to. tripl watches for
 this and surfaces it alongside the catalog.
 
+### Variable value drift
+
+**Variable value drift** is when a bound variable starts carrying values outside
+its effective documented list. It is reviewed per event: accept the new values
+globally or only for that event, snooze the evidence, mark it false-positive, or
+reopen it. Unlike observed samples, accepting a drift changes the plan contract.
+
 ### Reconciliation
 
 **Reconciliation** is the plan-versus-reality report. It answers two questions
@@ -241,7 +261,7 @@ for everything tripl has told the team.
 
 ### Roles
 
-Every member of a project has a **role**:
+Every workspace member has a **role** that applies across the instance:
 
 - **Viewer** — can look, can't change anything.
 - **Editor** — can change the plan, scans, and alerts.
