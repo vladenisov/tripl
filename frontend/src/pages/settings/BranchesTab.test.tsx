@@ -122,6 +122,9 @@ describe('BranchesTab', () => {
           name: 'checkout_address_autofilled',
           parent: null,
           changes: ['New event'],
+          field_changes: [],
+          before: null,
+          after: { name: 'checkout_address_autofilled', status: 'active' },
         },
         {
           entity_type: 'event',
@@ -129,6 +132,9 @@ describe('BranchesTab', () => {
           name: 'payment_failed',
           parent: null,
           changes: ['Added field error_code'],
+          field_changes: [],
+          before: null,
+          after: null,
         },
         {
           entity_type: 'event',
@@ -136,6 +142,9 @@ describe('BranchesTab', () => {
           name: 'promo_code_invalid',
           parent: null,
           changes: [],
+          field_changes: [],
+          before: { name: 'promo_code_invalid', status: 'deprecated' },
+          after: null,
         },
       ],
     })
@@ -155,6 +164,52 @@ describe('BranchesTab', () => {
     expect(screen.getByText('Added')).toBeInTheDocument()
     expect(screen.getByText('Modified')).toBeInTheDocument()
     expect(screen.getByText('Removed')).toBeInTheDocument()
+  })
+
+  it('expands a change row to reveal the field diff and full state', async () => {
+    vi.mocked(planBranchesApi.list).mockResolvedValue({ items: [MAIN, FEATURE], total: 2 })
+    vi.mocked(planBranchesApi.getConflicts).mockResolvedValue({ entities: [], unresolved_count: 0 })
+    vi.mocked(planBranchesApi.listComments).mockResolvedValue([])
+    vi.mocked(planBranchesApi.diff).mockResolvedValue({
+      behind_base: false,
+      summary: { added: 0, removed: 0, changed: 1 },
+      entries: [
+        {
+          entity_type: 'variable',
+          kind: 'changed',
+          name: 'user_plan',
+          parent: null,
+          changes: ["variable_type: 'string' → 'enum'"],
+          field_changes: [{ field: 'variable_type', before: 'string', after: 'enum' }],
+          before: { name: 'user_plan', variable_type: 'string' },
+          after: { name: 'user_plan', variable_type: 'enum' },
+        },
+      ],
+    })
+
+    renderTab()
+
+    fireEvent.click(await screen.findByText('checkout-v2'))
+
+    // The row is a collapsed, clickable disclosure until the user opens it.
+    const row = await screen.findByRole('button', { name: /user_plan/i })
+    expect(row).toHaveAttribute('aria-expanded', 'false')
+    expect(screen.queryByText('Full state')).not.toBeInTheDocument()
+
+    fireEvent.click(row)
+
+    expect(row).toHaveAttribute('aria-expanded', 'true')
+    // Field-level diff and full state both surface once expanded.
+    expect(await screen.findByText('Field changes')).toBeInTheDocument()
+    expect(screen.getByText('Full state')).toBeInTheDocument()
+    // The before value of the changed field renders (the 'string' → 'enum' move).
+    expect(screen.getByText('string')).toBeInTheDocument()
+    expect(screen.getAllByText('variable_type').length).toBeGreaterThan(0)
+
+    // Clicking again collapses the detail.
+    fireEvent.click(row)
+    expect(row).toHaveAttribute('aria-expanded', 'false')
+    expect(screen.queryByText('Full state')).not.toBeInTheDocument()
   })
 
   it('preserves the merge workflow: approved branch exposes Merge to main', async () => {

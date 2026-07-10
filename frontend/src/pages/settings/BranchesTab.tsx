@@ -1,6 +1,15 @@
-import { useId, useState, type ReactNode } from 'react'
+import { Fragment, useId, useState, type ReactNode } from 'react'
 import { useMutation, useQueries, useQuery, useQueryClient } from '@tanstack/react-query'
-import { GitBranch, GitCompare, GitMerge, Plus, Settings2, Ticket, Trash2 } from 'lucide-react'
+import {
+  ChevronRight,
+  GitBranch,
+  GitCompare,
+  GitMerge,
+  Plus,
+  Settings2,
+  Ticket,
+  Trash2,
+} from 'lucide-react'
 
 import { branchSettingsApi } from '@/api/branchSettings'
 import { ApiError } from '@/api/client'
@@ -29,8 +38,10 @@ import type {
   PlanBranchSummary,
   PlanBranchStatus,
   PlanBranchTransitionAction,
+  PlanDiffEntityType,
   PlanDiffEntry,
   PlanDiffKind,
+  PlanFieldChange,
   ProjectBranchSettings,
   ResolutionChoice,
 } from '@/types'
@@ -77,6 +88,16 @@ const KIND_META: Record<PlanDiffKind, { tone: ChipTone; sym: string; label: stri
   added: { tone: 'success', sym: '+', label: 'Added' },
   changed: { tone: 'warning', sym: '~', label: 'Modified' },
   removed: { tone: 'danger', sym: '−', label: 'Removed' },
+}
+
+// Human-readable entity labels for the expanded change detail.
+const ENTITY_LABEL: Record<PlanDiffEntityType, string> = {
+  event_type: 'event type',
+  field_definition: 'field',
+  event: 'event',
+  variable: 'variable',
+  meta_field: 'meta field',
+  relation: 'relation',
 }
 
 function branchSubtitle(branch: PlanBranchSummary): string {
@@ -570,31 +591,173 @@ function SummaryCount({
 }
 
 function ChangeRow({ entry }: { entry: PlanDiffEntry }) {
+  const [open, setOpen] = useState(false)
+  const detailId = useId()
   const meta = KIND_META[entry.kind]
+  // Removed entities only exist on the base side; everything else shows the
+  // branch-side (current) state.
+  const fullState = (entry.kind === 'removed' ? entry.before : entry.after) ?? null
+  const hasState = !!fullState && Object.keys(fullState).length > 0
+  const fieldChanges = entry.field_changes ?? []
+  const hasFieldChanges = fieldChanges.length > 0
+
   return (
     <div
-      className="flex items-center gap-3 border-t px-4 py-2.5"
+      className="border-t"
       style={{
         borderColor: 'var(--border-subtle)',
         background: `color-mix(in oklab, var(--${meta.tone}) 6%, transparent)`,
       }}
     >
-      <span
-        className="mono w-4 shrink-0 text-center text-[14px] font-bold"
-        style={{ color: `var(--${meta.tone})` }}
+      <button
+        type="button"
+        onClick={() => setOpen((value) => !value)}
+        aria-expanded={open}
+        aria-controls={detailId}
+        className="flex w-full items-center gap-3 px-4 py-2.5 text-left transition-colors hover:bg-[var(--surface-hover)]"
       >
-        {meta.sym}
-      </span>
-      <span className="mono min-w-0 truncate text-[12.5px]" style={{ color: 'var(--fg)' }}>
-        {entry.name}
-      </span>
-      <span className="flex-1 text-right text-[11.5px]" style={{ color: 'var(--fg-subtle)' }}>
-        {diffEntryDetail(entry)}
-      </span>
-      <Chip tone={meta.tone} size="xs">
-        {meta.label}
-      </Chip>
+        <ChevronRight
+          className="size-3.5 shrink-0 transition-transform"
+          style={{ color: 'var(--fg-faint)', transform: open ? 'rotate(90deg)' : 'none' }}
+          aria-hidden="true"
+        />
+        <span
+          className="mono w-4 shrink-0 text-center text-[14px] font-bold"
+          style={{ color: `var(--${meta.tone})` }}
+        >
+          {meta.sym}
+        </span>
+        <span className="mono min-w-0 truncate text-[12.5px]" style={{ color: 'var(--fg)' }}>
+          {entry.name}
+        </span>
+        <span className="flex-1 text-right text-[11.5px]" style={{ color: 'var(--fg-subtle)' }}>
+          {diffEntryDetail(entry)}
+        </span>
+        <Chip tone={meta.tone} size="xs">
+          {meta.label}
+        </Chip>
+      </button>
+      {open ? (
+        <div
+          id={detailId}
+          className="flex flex-col gap-3 border-t px-4 py-3"
+          style={{ borderColor: 'var(--border-subtle)', background: 'var(--surface)' }}
+        >
+          <p className="text-[11px]" style={{ color: 'var(--fg-subtle)' }}>
+            {meta.label} {ENTITY_LABEL[entry.entity_type]}
+            {entry.parent ? (
+              <>
+                {' in '}
+                <span className="mono" style={{ color: 'var(--fg)' }}>
+                  {entry.parent}
+                </span>
+              </>
+            ) : null}
+          </p>
+          {hasFieldChanges ? (
+            <DetailSection title="Field changes">
+              <FieldChangeList changes={fieldChanges} />
+            </DetailSection>
+          ) : null}
+          {hasState ? (
+            <DetailSection title={entry.kind === 'removed' ? 'Removed state' : 'Full state'}>
+              <StateView state={fullState} />
+            </DetailSection>
+          ) : null}
+          {!hasFieldChanges && !hasState ? (
+            <p className="text-[11.5px]" style={{ color: 'var(--fg-subtle)' }}>
+              No further detail for this change.
+            </p>
+          ) : null}
+        </div>
+      ) : null}
     </div>
+  )
+}
+
+function DetailSection({ title, children }: { title: string; children: ReactNode }) {
+  return (
+    <div>
+      <div
+        className="mb-1.5 text-[10px] font-semibold uppercase tracking-wide"
+        style={{ color: 'var(--fg-subtle)' }}
+      >
+        {title}
+      </div>
+      {children}
+    </div>
+  )
+}
+
+function FieldChangeList({ changes }: { changes: PlanFieldChange[] }) {
+  return (
+    <div className="flex flex-col gap-2">
+      {changes.map((change) => (
+        <div
+          key={change.field}
+          className="rounded-md border px-2.5 py-2"
+          style={{ borderColor: 'var(--border-subtle)' }}
+        >
+          <div className="mono mb-1 text-[11.5px] font-medium" style={{ color: 'var(--fg)' }}>
+            {change.field}
+          </div>
+          <div className="flex flex-wrap items-start gap-1.5">
+            <DiffValue value={change.before} tone="danger" />
+            <span className="text-[12px]" style={{ color: 'var(--fg-faint)' }} aria-hidden="true">
+              →
+            </span>
+            <DiffValue value={change.after} tone="success" />
+          </div>
+        </div>
+      ))}
+    </div>
+  )
+}
+
+function StateView({ state }: { state: Record<string, unknown> }) {
+  const keys = Object.keys(state)
+  return (
+    <dl className="grid grid-cols-[minmax(0,140px)_1fr] gap-x-3 gap-y-1.5">
+      {keys.map((key) => (
+        <Fragment key={key}>
+          <dt className="mono truncate text-[11.5px]" style={{ color: 'var(--fg-subtle)' }}>
+            {key}
+          </dt>
+          <dd className="min-w-0">
+            <DiffValue value={state[key]} />
+          </dd>
+        </Fragment>
+      ))}
+    </dl>
+  )
+}
+
+/** Renders a raw JSON value: scalars inline, objects/arrays as a pretty-printed
+ * block. `tone` colours the before (danger) / after (success) sides of a diff. */
+function DiffValue({ value, tone }: { value: unknown; tone?: ChipTone }) {
+  const color = tone ? `var(--${tone})` : 'var(--fg)'
+  const isEmpty = value === null || value === undefined || value === ''
+  if (isEmpty) {
+    return (
+      <span className="mono text-[11.5px]" style={{ color: 'var(--fg-faint)' }}>
+        ∅
+      </span>
+    )
+  }
+  if (typeof value === 'object') {
+    return (
+      <pre
+        className="mono max-h-40 max-w-full overflow-auto whitespace-pre-wrap break-words rounded px-2 py-1 text-[11px]"
+        style={{ color, background: 'color-mix(in oklab, var(--fg) 5%, transparent)' }}
+      >
+        {JSON.stringify(value, null, 2)}
+      </pre>
+    )
+  }
+  return (
+    <span className="mono break-words text-[11.5px]" style={{ color }}>
+      {String(value)}
+    </span>
   )
 }
 

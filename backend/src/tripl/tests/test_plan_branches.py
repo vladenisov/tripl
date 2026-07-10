@@ -483,15 +483,78 @@ async def test_diff_only_reports_branch_changes_when_main_advances(client: Async
     after_body = after.json()
     assert after_body["behind_base"] is True
     assert after_body["summary"] == {"added": 0, "removed": 0, "changed": 1}
-    assert after_body["entries"] == [
-        {
-            "entity_type": "event",
-            "kind": "changed",
-            "name": "purchase:success",
-            "parent": "track",
-            "changes": ["description: '' → 'edited on branch'"],
-        }
+    assert len(after_body["entries"]) == 1
+    entry = after_body["entries"][0]
+    assert entry["entity_type"] == "event"
+    assert entry["kind"] == "changed"
+    assert entry["name"] == "purchase:success"
+    assert entry["parent"] == "track"
+    assert entry["changes"] == ["description: '' → 'edited on branch'"]
+    # Structured field-level diff mirrors the human-readable string.
+    assert entry["field_changes"] == [
+        {"field": "description", "before": "", "after": "edited on branch"}
     ]
+    # Full before/after state carries the raw values, with DB ids / ordering stripped.
+    assert entry["before"]["description"] == ""
+    assert entry["after"]["description"] == "edited on branch"
+    assert entry["before"]["name"] == "purchase:success"
+    assert entry["after"]["event_type_name"] == "track"
+    for state in (entry["before"], entry["after"]):
+        assert "id" not in state
+        assert "order" not in state
+        assert "event_type_id" not in state
+
+
+@pytest.mark.asyncio
+async def test_diff_entries_carry_before_after_state(client: AsyncClient) -> None:
+    """Added/removed entries expose one-sided full state for the detail view.
+
+    The branch page renders the entity's full state (branch side for added,
+    base side for removed) alongside the field-level diff, so the diff endpoint
+    must carry ``before``/``after`` snapshots — not just field names.
+    """
+    await _seed_plan(client, "branch-diff-state")
+    branch_id = await _create_branch(client, "branch-diff-state")
+
+    # Add a brand-new event on the branch (using the branch's own event-type id,
+    # since branch copies are FK-remapped away from main).
+    branch_ets = await client.get(
+        f"/api/v1/projects/branch-diff-state/event-types?branch={branch_id}"
+    )
+    branch_et_id = next(et["id"] for et in branch_ets.json() if et["name"] == "track")
+    added = await client.post(
+        f"/api/v1/projects/branch-diff-state/events?branch={branch_id}",
+        json={"event_type_id": branch_et_id, "name": "checkout:started"},
+    )
+    assert added.status_code == 201
+
+    # Remove the deep-copied seed event from the branch.
+    branch_events = await client.get(
+        f"/api/v1/projects/branch-diff-state/events?branch={branch_id}"
+    )
+    seed_event = next(e for e in branch_events.json()["items"] if e["name"] == "purchase:success")
+    deleted = await client.delete(
+        f"/api/v1/projects/branch-diff-state/events/{seed_event['id']}?branch={branch_id}"
+    )
+    assert deleted.status_code == 204
+
+    diff = await client.get(f"/api/v1/projects/branch-diff-state/branches/{branch_id}/diff")
+    assert diff.status_code == 200
+    entries = {e["name"]: e for e in diff.json()["entries"]}
+
+    added_entry = entries["checkout:started"]
+    assert added_entry["kind"] == "added"
+    assert added_entry["before"] is None
+    assert added_entry["after"]["name"] == "checkout:started"
+    assert added_entry["after"]["event_type_name"] == "track"
+    assert added_entry["field_changes"] == []
+    assert "id" not in added_entry["after"]
+
+    removed_entry = entries["purchase:success"]
+    assert removed_entry["kind"] == "removed"
+    assert removed_entry["after"] is None
+    assert removed_entry["before"]["name"] == "purchase:success"
+    assert "id" not in removed_entry["before"]
 
 
 @pytest.mark.asyncio

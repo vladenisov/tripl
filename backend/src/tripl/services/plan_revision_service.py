@@ -31,6 +31,7 @@ from tripl.models.variable_event_value_override import VariableEventValueOverrid
 from tripl.schemas.plan_revision import (
     PlanDiff,
     PlanDiffEntry,
+    PlanFieldChange,
     PlanRevisionCreate,
     PlanRevisionDetail,
     PlanRevisionList,
@@ -348,12 +349,38 @@ def _format_change(key: str, old: Any, new: Any) -> str:
     return f"{key}: {old!r} → {new!r}"
 
 
-def _changes_between(old: dict[str, Any], new: dict[str, Any], keys: Iterable[str]) -> list[str]:
+def _field_changes_between(
+    old: dict[str, Any], new: dict[str, Any], keys: Iterable[str]
+) -> list[PlanFieldChange]:
     return [
-        _format_change(key, old.get(key), new.get(key))
+        PlanFieldChange(field=key, before=old.get(key), after=new.get(key))
         for key in keys
         if old.get(key) != new.get(key)
     ]
+
+
+def _changes_between(old: dict[str, Any], new: dict[str, Any], keys: Iterable[str]) -> list[str]:
+    return [
+        _format_change(fc.field, fc.before, fc.after)
+        for fc in _field_changes_between(old, new, keys)
+    ]
+
+
+def _public_state(item: dict[str, Any]) -> dict[str, Any]:
+    """The user-facing state of a plan entity for the diff detail view.
+
+    Strips DB ids (``id`` and ``*_id`` foreign keys), the cosmetic ``order``,
+    internal join keys (``_event_type_name``), and the nested
+    ``field_definitions`` list — the latter surface as their own diff entries,
+    so embedding them here would be redundant and noisy.
+    """
+    return {
+        key: value
+        for key, value in item.items()
+        if key not in ("id", "order", "field_definitions")
+        and not key.startswith("_")
+        and not key.endswith("_id")
+    }
 
 
 def _diff_set(
@@ -378,6 +405,7 @@ def _diff_set(
                     kind="added",
                     name=name_of(item),
                     parent=parent_of(item) if parent_of else None,
+                    after=_public_state(item),
                 )
             )
     for key, item in old_by_key.items():
@@ -388,21 +416,25 @@ def _diff_set(
                     kind="removed",
                     name=name_of(item),
                     parent=parent_of(item) if parent_of else None,
+                    before=_public_state(item),
                 )
             )
     for key, new_item in new_by_key.items():
         old_item = old_by_key.get(key)
         if old_item is None:
             continue
-        changes = _changes_between(old_item, new_item, change_keys)
-        if changes:
+        field_changes = _field_changes_between(old_item, new_item, change_keys)
+        if field_changes:
             entries.append(
                 PlanDiffEntry(
                     entity_type=entity_type,
                     kind="changed",
                     name=name_of(new_item),
                     parent=parent_of(new_item) if parent_of else None,
-                    changes=changes,
+                    changes=[_format_change(fc.field, fc.before, fc.after) for fc in field_changes],
+                    field_changes=field_changes,
+                    before=_public_state(old_item),
+                    after=_public_state(new_item),
                 )
             )
     return entries

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -35,6 +35,19 @@ class PlanRevisionList(BaseModel):
 DriftKind = Literal["added", "removed", "changed"]
 
 
+class PlanFieldChange(BaseModel):
+    """A single field that changed between the base and branch state.
+
+    ``before``/``after`` carry the raw JSON values (not repr strings) so the UI
+    can render structured values — arrays, override maps — instead of a Python
+    ``repr``. Only present on ``changed`` entries.
+    """
+
+    field: str
+    before: Any = None
+    after: Any = None
+
+
 class PlanDiffEntry(BaseModel):
     entity_type: Literal[
         "event_type",
@@ -50,6 +63,14 @@ class PlanDiffEntry(BaseModel):
     # For changed entries: list of human-readable field-level changes,
     # e.g. ["field_type: string → number", "is_required: false → true"].
     changes: list[str] = Field(default_factory=list)
+    # Structured mirror of ``changes`` for changed entries: raw before/after
+    # values per field so the UI can render a proper diff table.
+    field_changes: list[PlanFieldChange] = Field(default_factory=list)
+    # Full entity state on each side, with DB ids / ordering / nested child
+    # collections stripped. ``before`` is null for added entries, ``after`` is
+    # null for removed entries; both are populated for changed entries.
+    before: dict[str, Any] | None = None
+    after: dict[str, Any] | None = None
 
 
 class PlanDiff(BaseModel):
