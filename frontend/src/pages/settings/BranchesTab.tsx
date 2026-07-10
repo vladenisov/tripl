@@ -408,6 +408,26 @@ function FeatureBranchDetail({ slug, branch, diff, confirm }: FeatureBranchDetai
   }
 
   const entries = diff?.entries ?? []
+  // Merge deletes main variables absent from the branch — and their documented
+  // values, per-event overrides and drift history cascade away with them.
+  const removedVariables = entries
+    .filter((entry) => entry.entity_type === 'variable' && entry.kind === 'removed')
+    .map((entry) => entry.name)
+
+  const handleMerge = async () => {
+    if (removedVariables.length > 0) {
+      const shown = removedVariables.slice(0, 8).join(', ')
+      const more = removedVariables.length > 8 ? ` and ${removedVariables.length - 8} more` : ''
+      const ok = await confirm({
+        title: 'Merge deletes variables from main',
+        message: `Merging removes ${removedVariables.length} variable${removedVariables.length === 1 ? '' : 's'} from main: ${shown}${more}. Their documented values, per-event overrides and drift history are deleted with them.`,
+        confirmLabel: 'Merge anyway',
+        variant: 'danger',
+      })
+      if (!ok) return
+    }
+    actionMut.mutate('merge')
+  }
   const behind = diff?.behind_base ? 1 : 0
   const summary = diff?.summary ?? { added: 0, removed: 0, changed: 0 }
   // Mirror the backend gate: distinct non-null approvers, minus the author
@@ -446,7 +466,7 @@ function FeatureBranchDetail({ slug, branch, diff, confirm }: FeatureBranchDetai
               <Button
                 size="sm"
                 disabled={actionMut.isPending}
-                onClick={() => actionMut.mutate('merge')}
+                onClick={handleMerge}
               >
                 <GitMerge className="size-3" />
                 Merge to main
