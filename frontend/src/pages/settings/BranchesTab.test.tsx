@@ -288,4 +288,31 @@ describe('BranchesTab', () => {
       await screen.findByText('Not enough approvals to merge: 1 of 2 required.'),
     ).toBeInTheDocument()
   })
+
+  it('warns before merging when the diff removes variables from main', async () => {
+    vi.mocked(planBranchesApi.list).mockResolvedValue({ items: [MAIN, FEATURE], total: 2 })
+    vi.mocked(planBranchesApi.getConflicts).mockResolvedValue({ entities: [], unresolved_count: 0 })
+    vi.mocked(planBranchesApi.listComments).mockResolvedValue([])
+    vi.mocked(planBranchesApi.diff).mockResolvedValue({
+      behind_base: false,
+      summary: { added: 0, removed: 1, changed: 0 },
+      entries: [
+        { entity_type: 'variable', kind: 'removed', name: 'variant', parent: null, changes: [] },
+      ],
+    })
+    vi.mocked(planBranchesApi.merge).mockResolvedValue({} as never)
+
+    renderTab()
+
+    fireEvent.click(await screen.findByText('checkout-v2'))
+    fireEvent.click(await screen.findByRole('button', { name: /Merge to main/i }))
+
+    // The confirm dialog lists the doomed variable; merge waits for consent.
+    expect(await screen.findByText('Merge deletes variables from main')).toBeInTheDocument()
+    expect(screen.getByText(/removes 1 variable from main: variant/)).toBeInTheDocument()
+    expect(planBranchesApi.merge).not.toHaveBeenCalled()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Merge anyway' }))
+    await waitFor(() => expect(planBranchesApi.merge).toHaveBeenCalledWith('demo', 'feat-1'))
+  })
 })
