@@ -24,7 +24,11 @@ from tripl.alert_templates import (
     normalize_message_template,
     render_alert_template,
 )
-from tripl.alerting_matching import SCOPE_METRIC, SCOPE_RELEASE_REGRESSION
+from tripl.alerting_matching import (
+    SCOPE_METRIC,
+    SCOPE_RELEASE_REGRESSION,
+    SCOPE_VARIABLE_VALUE_DRIFT,
+)
 from tripl.anomaly_context import build_alert_item_context
 from tripl.models.alert_delivery import AlertDelivery
 from tripl.models.alert_delivery_item import AlertDeliveryItem
@@ -118,6 +122,11 @@ def _build_item_template_context(
         release_version = item.drift_field or "the new release"
         previous_clause = f" (was {item.sample_value})" if item.sample_value else ""
         drift_line = f"\n  release: {kind_label} in {release_version}{previous_clause}"
+    elif item.scope_type == SCOPE_VARIABLE_VALUE_DRIFT:
+        # Value drift rides the shared fields: variable -> drift_field, sampled
+        # novel values -> sample_value.
+        observed_clause = f" observed {item.sample_value}" if item.sample_value else ""
+        drift_line = f"\n  value drift: ${{{item.drift_field}}}{observed_clause}"
     else:
         drift_parts = [
             item.drift_type or "",

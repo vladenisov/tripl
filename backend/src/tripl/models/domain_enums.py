@@ -92,6 +92,9 @@ class MetricScopeType(enum.StrEnum):
     # ``metric`` (user-defined MetricDefinition series). Added by the metrics
     # epic's anomaly-scope ticket (tripl-dxhp.6) via an ALTER TYPE migration.
     metric = "metric"
+    # Observed variable values outside the documented list (epic tripl-j94c,
+    # S13). Added via ALTER TYPE migration d1c2b3a4f5e6.
+    variable_value_drift = "variable_value_drift"
 
 
 class MetricKind(enum.StrEnum):

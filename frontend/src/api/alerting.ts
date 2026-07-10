@@ -88,6 +88,7 @@ export const alertingApi = {
       include_schema_drifts?: boolean
       include_distribution_drifts?: boolean
       include_release_regressions?: boolean
+      include_variable_value_drifts?: boolean
       notify_on_spike?: boolean
       notify_on_drop?: boolean
       ai_explanation_enabled?: boolean
@@ -115,6 +116,7 @@ export const alertingApi = {
       include_schema_drifts?: boolean
       include_distribution_drifts?: boolean
       include_release_regressions?: boolean
+      include_variable_value_drifts?: boolean
       notify_on_spike?: boolean
       notify_on_drop?: boolean
       ai_explanation_enabled?: boolean

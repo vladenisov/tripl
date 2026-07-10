@@ -1944,6 +1944,11 @@
             "title": "Include Schema Drifts",
             "type": "boolean"
           },
+          "include_variable_value_drifts": {
+            "default": false,
+            "title": "Include Variable Value Drifts",
+            "type": "boolean"
+          },
           "items_template": {
             "anyOf": [
               {
@@ -2144,6 +2149,10 @@
             "title": "Include Schema Drifts",
             "type": "boolean"
           },
+          "include_variable_value_drifts": {
+            "title": "Include Variable Value Drifts",
+            "type": "boolean"
+          },
           "items_template": {
             "anyOf": [
               {
@@ -2209,6 +2218,7 @@
           "include_events",
           "include_schema_drifts",
           "include_distribution_drifts",
+          "include_variable_value_drifts",
           "include_release_regressions",
           "include_metrics",
           "notify_on_spike",
@@ -2434,6 +2444,17 @@
               }
             ],
             "title": "Include Schema Drifts"
+          },
+          "include_variable_value_drifts": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Include Variable Value Drifts"
           },
           "items_template": {
             "anyOf": [
@@ -9990,7 +10011,8 @@
           "schema",
           "distribution",
           "release_regression",
-          "metric"
+          "metric",
+          "variable_value_drift"
         ],
         "title": "MetricScopeType",
         "type": "string"
@@ -10407,6 +10429,10 @@
             "title": "Include Schema Drifts",
             "type": "boolean"
           },
+          "include_variable_value_drifts": {
+            "title": "Include Variable Value Drifts",
+            "type": "boolean"
+          },
           "last_anomaly_at": {
             "anyOf": [
               {
@@ -10535,6 +10561,7 @@
           "include_events",
           "include_schema_drifts",
           "include_distribution_drifts",
+          "include_variable_value_drifts",
           "include_release_regressions",
           "include_metrics",
           "total_deliveries"
