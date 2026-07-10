@@ -7,6 +7,7 @@ import {
   mapLatestSignals,
   pickLatestSignal,
   reorderWithSelection,
+  applyEventNameFormat,
   resolveTemplateTokens,
   splitEventName,
   splitTemplateValue,
@@ -361,5 +362,23 @@ describe('computeWindowDelta', () => {
     const points = windowSeries(4, 8)
     expect(points.every((p) => p.expected_count === null)).toBe(true)
     expect(computeWindowDelta(points)).toBeCloseTo(100)
+  })
+})
+
+describe('applyEventNameFormat', () => {
+  it('substitutes field values and walks dotted JSON paths', () => {
+    const result = applyEventNameFormat('pv:{screen}:{payload.extra.variant}', {
+      screen: 'onboarding',
+      payload: '{"extra": {"variant": "b2"}}',
+    })
+    expect(result).toEqual({ name: 'pv:onboarding:b2', missing: [] })
+  })
+
+  it('reports unresolved keys and keeps them literal', () => {
+    const result = applyEventNameFormat('pv:{screen}:{payload.extra.variant}', {
+      payload: '{"extra": {}}',
+    })
+    expect(result.name).toBe('pv:{screen}:{payload.extra.variant}')
+    expect(result.missing).toEqual(['screen', 'payload.extra.variant'])
   })
 })

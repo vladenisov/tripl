@@ -278,3 +278,43 @@ export function suggestionMatches(v: VariableSuggestionShape, filter: string): b
     || (v.bindings ?? []).some(binding => binding.toLowerCase().includes(needle))
   )
 }
+
+const NAME_FORMAT_TOKEN = /\{([^}]+)\}/g
+
+/**
+ * Apply a scan `event_name_format` to entered field values (client mirror of
+ * backend core/name_template.py). Dotted keys walk the field's JSON value;
+ * unresolved keys stay literal `{key}` and are reported in `missing`.
+ */
+export function applyEventNameFormat(
+  fmt: string,
+  valuesByField: Record<string, string>,
+): { name: string; missing: string[] } {
+  const missing: string[] = []
+  const name = fmt.replace(NAME_FORMAT_TOKEN, (whole, key: string) => {
+    const direct = valuesByField[key]
+    if (direct) return direct
+    if (key.includes('.')) {
+      const [column, ...segments] = key.split('.')
+      const raw = valuesByField[column]
+      if (raw) {
+        try {
+          let node: unknown = JSON.parse(raw)
+          for (const segment of segments) {
+            if (typeof node !== 'object' || node === null || Array.isArray(node)) {
+              node = undefined
+              break
+            }
+            node = (node as Record<string, unknown>)[segment]
+          }
+          if (node !== undefined && node !== null && typeof node !== 'object') return String(node)
+        } catch {
+          // unparseable (e.g. still ${templated}) — fall through to missing
+        }
+      }
+    }
+    missing.push(key)
+    return whole
+  })
+  return { name, missing }
+}
