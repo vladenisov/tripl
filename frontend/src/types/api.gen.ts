@@ -2443,6 +2443,74 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/projects/{slug}/variables/bulk-delete": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Bulk Delete Variables */
+        post: operations["bulk_delete_variables_api_v1_projects__slug__variables_bulk_delete_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/projects/{slug}/variables/bulk-update": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Bulk Update Variables */
+        post: operations["bulk_update_variables_api_v1_projects__slug__variables_bulk_update_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/projects/{slug}/variables/drifts": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Value Drifts */
+        get: operations["list_value_drifts_api_v1_projects__slug__variables_drifts_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/projects/{slug}/variables/drifts/{drift_id}/action": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Apply Value Drift Action */
+        post: operations["apply_value_drift_action_api_v1_projects__slug__variables_drifts__drift_id__action_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/projects/{slug}/variables/{variable_id}": {
         parameters: {
             query?: never;
@@ -2459,6 +2527,41 @@ export interface paths {
         head?: never;
         /** Update Variable */
         patch: operations["update_variable_api_v1_projects__slug__variables__variable_id__patch"];
+        trace?: never;
+    };
+    "/api/v1/projects/{slug}/variables/{variable_id}/event-overrides": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Event Overrides */
+        get: operations["list_event_overrides_api_v1_projects__slug__variables__variable_id__event_overrides_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/projects/{slug}/variables/{variable_id}/event-overrides/{event_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /** Upsert Event Override */
+        put: operations["upsert_event_override_api_v1_projects__slug__variables__variable_id__event_overrides__event_id__put"];
+        post?: never;
+        /** Delete Event Override */
+        delete: operations["delete_event_override_api_v1_projects__slug__variables__variable_id__event_overrides__event_id__delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
         trace?: never;
     };
     "/api/v1/projects/{slug}/variables/{variable_id}/values": {
@@ -3229,6 +3332,11 @@ export interface components {
              * @default false
              */
             include_schema_drifts: boolean;
+            /**
+             * Include Variable Value Drifts
+             * @default false
+             */
+            include_variable_value_drifts: boolean;
             /** Items Template */
             items_template?: string | null;
             /** @default plain */
@@ -3331,6 +3439,8 @@ export interface components {
             include_release_regressions: boolean;
             /** Include Schema Drifts */
             include_schema_drifts: boolean;
+            /** Include Variable Value Drifts */
+            include_variable_value_drifts: boolean;
             /** Items Template */
             items_template: string | null;
             message_format: components["schemas"]["AlertMessageFormat"];
@@ -3414,6 +3524,8 @@ export interface components {
             include_release_regressions?: boolean | null;
             /** Include Schema Drifts */
             include_schema_drifts?: boolean | null;
+            /** Include Variable Value Drifts */
+            include_variable_value_drifts?: boolean | null;
             /** Items Template */
             items_template?: string | null;
             message_format?: components["schemas"]["AlertMessageFormat"] | null;
@@ -4714,6 +4826,83 @@ export interface components {
             direction: "up" | "down";
             /** Visible Event Ids */
             visible_event_ids?: string[] | null;
+        };
+        /**
+         * EventMutationResponse
+         * @description Event returned after a create or update, with advisory template warnings.
+         */
+        EventMutationResponse: {
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /** Description */
+            description: string;
+            /**
+             * Drift Count
+             * @default 0
+             */
+            drift_count: number;
+            event_type: components["schemas"]["EventTypeBrief"];
+            /**
+             * Event Type Id
+             * Format: uuid
+             */
+            event_type_id: string;
+            /**
+             * Field Values
+             * @default []
+             */
+            field_values: components["schemas"]["EventFieldValueResponse"][];
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** Last Seen At */
+            last_seen_at?: string | null;
+            /**
+             * Meta Values
+             * @default []
+             */
+            meta_values: components["schemas"]["EventMetaValueResponse"][];
+            /**
+             * Metric Breakdown Columns
+             * @default []
+             */
+            metric_breakdown_columns: string[];
+            /** Name */
+            name: string;
+            /** Order */
+            order: number;
+            /** Owner Id */
+            owner_id?: string | null;
+            /**
+             * Project Id
+             * Format: uuid
+             */
+            project_id: string;
+            /**
+             * Reviewed
+             * @default false
+             */
+            reviewed: boolean;
+            status: components["schemas"]["EventStatus"];
+            /** Sunset At */
+            sunset_at?: string | null;
+            /**
+             * Tags
+             * @default []
+             */
+            tags: components["schemas"]["EventTagResponse"][];
+            /**
+             * Updated At
+             * Format: date-time
+             */
+            updated_at: string;
+            /** Warnings */
+            warnings?: string[];
         };
         /** EventPhotoCommentCreate */
         EventPhotoCommentCreate: {
@@ -6055,7 +6244,7 @@ export interface components {
          * MetricScopeType
          * @enum {string}
          */
-        MetricScopeType: "project_total" | "event_type" | "event" | "schema" | "distribution" | "release_regression" | "metric";
+        MetricScopeType: "project_total" | "event_type" | "event" | "schema" | "distribution" | "release_regression" | "metric" | "variable_value_drift";
         /**
          * MetricSeriesPoint
          * @description One densified point of a catalog-metric series.
@@ -6224,6 +6413,8 @@ export interface components {
             include_release_regressions: boolean;
             /** Include Schema Drifts */
             include_schema_drifts: boolean;
+            /** Include Variable Value Drifts */
+            include_variable_value_drifts: boolean;
             /** Last Anomaly At */
             last_anomaly_at?: string | null;
             /** Last Delivery At */
@@ -6510,6 +6701,14 @@ export interface components {
         };
         /** PlanDiffEntry */
         PlanDiffEntry: {
+            /** After */
+            after?: {
+                [key: string]: unknown;
+            } | null;
+            /** Before */
+            before?: {
+                [key: string]: unknown;
+            } | null;
             /** Changes */
             changes?: string[];
             /**
@@ -6517,6 +6716,8 @@ export interface components {
              * @enum {string}
              */
             entity_type: "event_type" | "field_definition" | "event" | "variable" | "meta_field" | "relation";
+            /** Field Changes */
+            field_changes?: components["schemas"]["PlanFieldChange"][];
             /**
              * Kind
              * @enum {string}
@@ -6526,6 +6727,22 @@ export interface components {
             name: string;
             /** Parent */
             parent?: string | null;
+        };
+        /**
+         * PlanFieldChange
+         * @description A single field that changed between the base and branch state.
+         *
+         *     ``before``/``after`` carry the raw JSON values (not repr strings) so the UI
+         *     can render structured values — arrays, override maps — instead of a Python
+         *     ``repr``. Only present on ``changed`` entries.
+         */
+        PlanFieldChange: {
+            /** After */
+            after?: unknown;
+            /** Before */
+            before?: unknown;
+            /** Field */
+            field: string;
         };
         /** PlanRevisionCreate */
         PlanRevisionCreate: {
@@ -8106,8 +8323,29 @@ export interface components {
             /** Error Type */
             type: string;
         };
+        /** VariableBulkDelete */
+        VariableBulkDelete: {
+            /** Variable Ids */
+            variable_ids: string[];
+        };
+        /** VariableBulkUpdate */
+        VariableBulkUpdate: {
+            /** Allowed Values Add */
+            allowed_values_add?: string[] | null;
+            /** Allowed Values Remove */
+            allowed_values_remove?: string[] | null;
+            /** Description */
+            description?: string | null;
+            /** Variable Ids */
+            variable_ids: string[];
+            variable_type?: components["schemas"]["VariableType"] | null;
+        };
         /** VariableCreate */
         VariableCreate: {
+            /** Allowed Values */
+            allowed_values?: string[];
+            /** Bindings */
+            bindings?: string[];
             /**
              * Description
              * @default
@@ -8118,8 +8356,48 @@ export interface components {
             /** @default string */
             variable_type: components["schemas"]["VariableType"];
         };
+        /** VariableEventOverrideResponse */
+        VariableEventOverrideResponse: {
+            /**
+             * Event Id
+             * Format: uuid
+             */
+            event_id: string;
+            /** Event Name */
+            event_name: string;
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /**
+             * Values
+             * @default []
+             */
+            values: string[];
+            /**
+             * Variable Id
+             * Format: uuid
+             */
+            variable_id: string;
+        };
+        /** VariableEventOverrideUpsert */
+        VariableEventOverrideUpsert: {
+            /** Values */
+            values: string[];
+        };
         /** VariableResponse */
         VariableResponse: {
+            /**
+             * Allowed Values
+             * @default []
+             */
+            allowed_values: string[];
+            /**
+             * Bindings
+             * @default []
+             */
+            bindings: string[];
             /**
              * Context Count
              * @default 0
@@ -8132,6 +8410,11 @@ export interface components {
              * @default 0
              */
             event_count: number;
+            /**
+             * Excluded From Scans
+             * @default false
+             */
+            excluded_from_scans: boolean;
             /**
              * High Context Count
              * @default 0
@@ -8149,6 +8432,11 @@ export interface components {
             low_context_count: number;
             /** Name */
             name: string;
+            /**
+             * Open Drift Count
+             * @default 0
+             */
+            open_drift_count: number;
             /**
              * Project Id
              * Format: uuid
@@ -8170,8 +8458,14 @@ export interface components {
         VariableType: "string" | "number" | "boolean" | "date" | "datetime" | "json" | "string_array" | "number_array";
         /** VariableUpdate */
         VariableUpdate: {
+            /** Allowed Values */
+            allowed_values?: string[] | null;
+            /** Bindings */
+            bindings?: string[] | null;
             /** Description */
             description?: string | null;
+            /** Excluded From Scans */
+            excluded_from_scans?: boolean | null;
             /** Name */
             name?: string | null;
             variable_type?: components["schemas"]["VariableType"] | null;
@@ -8209,6 +8503,75 @@ export interface components {
              * @default []
              */
             values: string[];
+            /**
+             * Variable Id
+             * Format: uuid
+             */
+            variable_id: string;
+            /** Variable Name */
+            variable_name: string;
+        };
+        /** VariableValueDriftActionRequest */
+        VariableValueDriftActionRequest: {
+            /**
+             * Action
+             * @enum {string}
+             */
+            action: "accept" | "snooze" | "false_positive" | "reopen";
+            /** Note */
+            note?: string | null;
+            /**
+             * Scope
+             * @default global
+             * @enum {string}
+             */
+            scope: "global" | "event";
+            /** Snoozed Until */
+            snoozed_until?: string | null;
+        };
+        /** VariableValueDriftListResponse */
+        VariableValueDriftListResponse: {
+            /** Items */
+            items: components["schemas"]["VariableValueDriftResponse"][];
+            /** Total */
+            total: number;
+        };
+        /** VariableValueDriftResponse */
+        VariableValueDriftResponse: {
+            /**
+             * Detected At
+             * Format: date-time
+             */
+            detected_at: string;
+            /**
+             * Event Id
+             * Format: uuid
+             */
+            event_id: string;
+            /** Event Name */
+            event_name: string;
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /**
+             * Observed Values
+             * @default []
+             */
+            observed_values: string[];
+            /** Resolution Note */
+            resolution_note?: string | null;
+            /** Resolved At */
+            resolved_at?: string | null;
+            /** Resolved By */
+            resolved_by?: string | null;
+            /** Scan Config Id */
+            scan_config_id: string | null;
+            /** Snoozed Until */
+            snoozed_until?: string | null;
+            /** @default open */
+            status: components["schemas"]["SchemaDriftStatus"];
             /**
              * Variable Id
              * Format: uuid
@@ -11084,7 +11447,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["EventResponse"];
+                    "application/json": components["schemas"]["EventMutationResponse"];
                 };
             };
             /** @description Validation Error */
@@ -11422,7 +11785,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["EventResponse"];
+                    "application/json": components["schemas"]["EventMutationResponse"];
                 };
             };
             /** @description Validation Error */
@@ -14211,6 +14574,142 @@ export interface operations {
             };
         };
     };
+    bulk_delete_variables_api_v1_projects__slug__variables_bulk_delete_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                slug: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["VariableBulkDelete"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    bulk_update_variables_api_v1_projects__slug__variables_bulk_update_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                slug: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["VariableBulkUpdate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_value_drifts_api_v1_projects__slug__variables_drifts_get: {
+        parameters: {
+            query?: {
+                variable_id?: string | null;
+                event_id?: string | null;
+            };
+            header?: never;
+            path: {
+                slug: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["VariableValueDriftListResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    apply_value_drift_action_api_v1_projects__slug__variables_drifts__drift_id__action_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                slug: string;
+                drift_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["VariableValueDriftActionRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["VariableValueDriftResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     delete_variable_api_v1_projects__slug__variables__variable_id__delete: {
         parameters: {
             query?: never;
@@ -14265,6 +14764,106 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["VariableResponse"];
                 };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_event_overrides_api_v1_projects__slug__variables__variable_id__event_overrides_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                slug: string;
+                variable_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["VariableEventOverrideResponse"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    upsert_event_override_api_v1_projects__slug__variables__variable_id__event_overrides__event_id__put: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                slug: string;
+                variable_id: string;
+                event_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["VariableEventOverrideUpsert"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["VariableEventOverrideResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    delete_event_override_api_v1_projects__slug__variables__variable_id__event_overrides__event_id__delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                slug: string;
+                variable_id: string;
+                event_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
             /** @description Validation Error */
             422: {
