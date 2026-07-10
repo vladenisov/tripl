@@ -24,6 +24,7 @@ export const variablesApi = {
       description?: string
       allowed_values?: string[]
       bindings?: string[]
+      excluded_from_scans?: boolean
     },
     branchId?: string | null,
   ) => api.patch<Variable>(withBranch(`/projects/${slug}/variables/${id}`, branchId), data),

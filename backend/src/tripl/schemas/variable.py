@@ -54,6 +54,7 @@ class VariableUpdate(BaseModel):
     description: str | None = None
     allowed_values: list[str] | None = Field(None, max_length=500)
     bindings: list[str] | None = Field(None, max_length=100)
+    excluded_from_scans: bool | None = None
 
     _check_bindings = field_validator("bindings")(_validate_bindings)
 
@@ -67,6 +68,7 @@ class VariableResponse(BaseModel):
     description: str
     allowed_values: list[str] = []
     bindings: list[str] = []
+    excluded_from_scans: bool = False
     event_count: int = 0
     context_count: int = 0
     low_context_count: int = 0

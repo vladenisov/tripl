@@ -360,6 +360,7 @@ async def _deep_copy_plan(
                 description=var.description,
                 allowed_values=list(var.allowed_values or []),
                 bindings=list(var.bindings or []),
+                excluded_from_scans=var.excluded_from_scans,
             )
         )
 

@@ -1601,3 +1601,46 @@ def test_scan_short_names_extend_on_collision(sync_session: Session, project_and
     assert derive_display_name("payload.locale", index) == "payload_locale"
     assert derive_display_name("user.Name-Full.v2", index) == "v2"
     assert derive_display_name("plain_column", index) == "plain_column"
+
+
+def test_excluded_variable_is_not_recreated_or_attributed(sync_session: Session, project_and_type):
+    project, et, fds = project_and_type
+    tombstone = Variable(
+        id=uuid.uuid4(),
+        project_id=project.id,
+        name="locale",
+        source_name="payload.locale",
+        variable_type="string",
+        description="",
+        bindings=["payload.locale"],
+        excluded_from_scans=True,
+    )
+    sync_session.add(tombstone)
+    sync_session.commit()
+
+    result = generate_events(sync_session, project.id, et.id, _payload_locale_analysis(), fds)
+    sync_session.commit()
+
+    # The tombstone prevents re-creation...
+    assert result.variables_created == 0
+    variables = (
+        sync_session.execute(select(Variable).where(Variable.project_id == project.id))
+        .scalars()
+        .all()
+    )
+    assert [v.name for v in variables] == ["locale"]
+    # ...no observed contexts accumulate...
+    contexts = (
+        sync_session.execute(select(VariableValue).where(VariableValue.project_id == project.id))
+        .scalars()
+        .all()
+    )
+    assert contexts == []
+    # ...and the scan-written value keeps the raw token (no normalization to
+    # an excluded variable's display name).
+    payload_value = sync_session.execute(
+        select(EventFieldValue.value).where(
+            EventFieldValue.field_definition_id == fds["payload"].id
+        )
+    ).scalar_one()
+    assert payload_value == '{"locale": "${payload.locale}"}'

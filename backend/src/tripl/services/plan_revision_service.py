@@ -80,6 +80,7 @@ _VARIABLE_CHANGE_KEYS = (
     "description",
     "allowed_values",
     "bindings",
+    "excluded_from_scans",
     "event_value_overrides",
 )
 _META_FIELD_CHANGE_KEYS = (
@@ -231,6 +232,7 @@ async def build_plan_snapshot(
             "description": v.description,
             "allowed_values": list(v.allowed_values or []),
             "bindings": list(v.bindings or []),
+            "excluded_from_scans": v.excluded_from_scans,
             "event_value_overrides": dict(sorted(overrides_by_variable.get(v.id, {}).items())),
         }
         for v in variables_rows

@@ -1,6 +1,6 @@
 import { useId, useState } from "react"
 import { useMutation, useQueries, useQuery, useQueryClient } from "@tanstack/react-query"
-import { Pencil, Plus, Trash2, Variable as VariableIcon, X } from "lucide-react"
+import { Ban, Pencil, Plus, RotateCcw, Trash2, Variable as VariableIcon, X } from "lucide-react"
 import { eventsApi } from "@/api/events"
 import { variablesApi } from "@/api/variables"
 import { variableDriftsApi } from "@/api/variableDrifts"
@@ -223,13 +223,32 @@ export function VariablesTab({ slug }: { slug: string }) {
   })
 
   const handleDelete = async (v: Variable) => {
+    const rescanNote = v.source_name || (v.bindings ?? []).length > 0
+      ? ' The next scan will likely re-create it — use Exclude to keep it out.'
+      : ''
     const ok = await confirm({
       title: 'Delete variable',
-      message: `Delete "${v.name}"? Any event fields referencing \${${v.name}} will keep the literal text.`,
+      message: `Delete "${v.name}"? Any event fields referencing \${${v.name}} will keep the literal text.${rescanNote}`,
       confirmLabel: 'Delete',
       variant: 'danger',
     })
     if (ok) deleteMut.mutate(v.id)
+  }
+
+  const excludeMut = useMutation({
+    mutationFn: ({ id, excluded }: { id: string; excluded: boolean }) =>
+      variablesApi.update(slug, id, { excluded_from_scans: excluded }, branchId),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['variables', slug, branchId] }),
+  })
+
+  const handleExclude = async (v: Variable) => {
+    const ok = await confirm({
+      title: 'Exclude from scans',
+      message: `Exclude "${v.name}" from scans? Observed values and drift are removed, and future scans will NOT re-create it. Documented values stay for restore.`,
+      confirmLabel: 'Exclude',
+      variant: 'danger',
+    })
+    if (ok) excludeMut.mutate({ id: v.id, excluded: true })
   }
 
   const startEdit = (v: Variable) => {
@@ -250,10 +269,13 @@ export function VariablesTab({ slug }: { slug: string }) {
     ]),
   )
 
+  const activeVariables = variables.filter(v => !v.excluded_from_scans)
+  const excludedVariables = variables.filter(v => !!v.excluded_from_scans)
+
   // One row PER VARIABLE. The variable's events are collected into a sub-list so
   // a variable referenced by N events reads as a single entry, not N duplicate
   // rows. Possible values are unioned across every (variable, event) context.
-  const rows = variables.map((variable) => {
+  const rows = activeVariables.map((variable) => {
     const contexts = contextsByVariableId.get(variable.id) ?? []
     const events = contexts.map((context) => ({
       id: context.id,
@@ -509,14 +531,14 @@ export function VariablesTab({ slug }: { slug: string }) {
 
       <Panel
         title="Variables"
-        subtitle={`${variables.length} variable${variables.length === 1 ? '' : 's'}`}
+        subtitle={`${activeVariables.length} variable${activeVariables.length === 1 ? '' : 's'}`}
         right={
           <Button size="sm" onClick={() => setShowForm(true)}>
             <Plus className="mr-2 h-4 w-4" />Add variable
           </Button>
         }
       >
-        {variables.length > 0 ? (
+        {activeVariables.length > 0 ? (
           <Table>
             <TableHeader>
               <TableRow>
@@ -524,8 +546,8 @@ export function VariablesTab({ slug }: { slug: string }) {
                   <input
                     type="checkbox"
                     aria-label="Select all variables"
-                    checked={variables.length > 0 && selectedIds.size === variables.length}
-                    onChange={e => setSelectedIds(e.target.checked ? new Set(variables.map(v => v.id)) : new Set())}
+                    checked={activeVariables.length > 0 && selectedIds.size === activeVariables.length}
+                    onChange={e => setSelectedIds(e.target.checked ? new Set(activeVariables.map(v => v.id)) : new Set())}
                   />
                 </TableHead>
                 <TableHead>Variable</TableHead>
@@ -627,6 +649,7 @@ export function VariablesTab({ slug }: { slug: string }) {
                   <TableCell>
                     <div className="flex gap-1 justify-end">
                       <Button variant="ghost" size="icon" className="h-7 w-7" aria-label={`Edit variable ${v.name}`} onClick={() => startEdit(v)}><Pencil className="h-3 w-3" aria-hidden="true" /></Button>
+                      <Button variant="ghost" size="icon" className="h-7 w-7 text-muted-foreground hover:text-amber-600" aria-label={`Exclude variable ${v.name} from scans`} onClick={() => handleExclude(v)}><Ban className="h-3 w-3" aria-hidden="true" /></Button>
                       <Button variant="ghost" size="icon" className="h-7 w-7 text-muted-foreground hover:text-destructive" aria-label={`Delete variable ${v.name}`} onClick={() => handleDelete(v)}><Trash2 className="h-3 w-3" aria-hidden="true" /></Button>
                     </div>
                   </TableCell>
@@ -640,6 +663,34 @@ export function VariablesTab({ slug }: { slug: string }) {
           </div>
         )}
       </Panel>
+
+      {excludedVariables.length > 0 && (
+        <Panel
+          title="Excluded from scans"
+          subtitle={`${excludedVariables.length} variable${excludedVariables.length === 1 ? '' : 's'} — scans will not re-create these`}
+        >
+          <ul className="divide-y">
+            {excludedVariables.map(v => (
+              <li key={v.id} className="flex items-center justify-between gap-2 px-4 py-2">
+                <div className="min-w-0">
+                  <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-xs">{`\${${v.name}}`}</code>
+                  {(v.bindings ?? []).length > 0 && (
+                    <span className="ml-2 truncate font-mono text-[10px] text-muted-foreground">{(v.bindings ?? []).join(' · ')}</span>
+                  )}
+                </div>
+                <div className="flex shrink-0 gap-1">
+                  <Button variant="ghost" size="sm" className="h-7 px-2 text-xs" aria-label={`Restore variable ${v.name}`} onClick={() => excludeMut.mutate({ id: v.id, excluded: false })}>
+                    <RotateCcw className="mr-1 h-3 w-3" aria-hidden="true" />Restore
+                  </Button>
+                  <Button variant="ghost" size="icon" className="h-7 w-7 text-muted-foreground hover:text-destructive" aria-label={`Delete variable ${v.name}`} onClick={() => handleDelete(v)}>
+                    <Trash2 className="h-3 w-3" aria-hidden="true" />
+                  </Button>
+                </div>
+              </li>
+            ))}
+          </ul>
+        </Panel>
+      )}
 
       <VariablesBulkBar
         selectedCount={selectedIds.size}

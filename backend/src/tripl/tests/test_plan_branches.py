@@ -1836,3 +1836,48 @@ async def test_branch_round_trip_preserves_field_value_authorship(
         # Merge rebuilt main's field values from the branch — flag preserved.
         assert merged_fv.value == "${variant}"
         assert merged_fv.is_authored is True
+
+
+@pytest.mark.asyncio
+async def test_branch_round_trip_carries_variable_exclusion_flag(client: AsyncClient) -> None:
+    slug = "branch-var-excl"
+    await _seed_plan(client, slug)
+    created = await client.post(f"/api/v1/projects/{slug}/variables", json={"name": "junk_var"})
+    main_var_id = uuid.UUID(created.json()["id"])
+
+    branch_id = await _create_branch(client, slug)
+    branch_uuid = uuid.UUID(branch_id)
+
+    async with TestSessionLocal() as session:
+        branch_var = (
+            (
+                await session.execute(
+                    select(Variable).where(
+                        Variable.branch_id == branch_uuid, Variable.name == "junk_var"
+                    )
+                )
+            )
+            .scalars()
+            .one()
+        )
+        # Deep-copy carried the (false) flag; exclude on the branch.
+        assert branch_var.excluded_from_scans is False
+
+    resp = await client.patch(
+        f"/api/v1/projects/{slug}/variables/{branch_var.id}?branch={branch_id}",
+        json={"excluded_from_scans": True},
+    )
+    assert resp.status_code == 200
+
+    # Diff surfaces the exclusion as a variable change.
+    diff = await client.get(f"/api/v1/projects/{slug}/branches/{branch_id}/diff")
+    var_entries = [e for e in diff.json()["entries"] if e["entity_type"] == "variable"]
+    assert len(var_entries) == 1
+    assert any(c.startswith("excluded_from_scans") for c in var_entries[0]["changes"])
+
+    merged = await _approve_and_merge(client, slug, branch_id)
+    assert merged.status_code == 200, merged.text
+
+    async with TestSessionLocal() as session:
+        main_var = await session.get(Variable, main_var_id)
+        assert main_var.excluded_from_scans is True

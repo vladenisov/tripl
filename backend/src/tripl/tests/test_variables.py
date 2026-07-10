@@ -427,3 +427,77 @@ async def test_bulk_delete_variables(client: AsyncClient):
     assert resp.status_code == 204
     remaining = (await client.get("/api/v1/projects/var-bulk-del/variables")).json()
     assert [v["name"] for v in remaining] == ["del_keep"]
+
+
+@pytest.mark.asyncio
+async def test_exclude_from_scans_purges_observed_data_keeps_documentation(
+    client: AsyncClient,
+):
+    from tripl.models.variable_value_drift import VariableValueDrift
+
+    await _setup_project(client, "var-excl")
+    et = await client.post(
+        "/api/v1/projects/var-excl/event-types",
+        json={"name": "pv", "display_name": "Page View"},
+    )
+    field = await client.post(
+        f"/api/v1/projects/var-excl/event-types/{et.json()['id']}/fields",
+        json={"name": "screen", "display_name": "Screen", "field_type": "string"},
+    )
+    event = await client.post(
+        "/api/v1/projects/var-excl/events",
+        json={"event_type_id": et.json()["id"], "name": "Onboarding"},
+    )
+    created = await client.post(
+        "/api/v1/projects/var-excl/variables",
+        json={"name": "variant", "allowed_values": ["a"], "bindings": ["screen"]},
+    )
+    var_id = uuid.UUID(created.json()["id"])
+    event_id = uuid.UUID(event.json()["id"])
+
+    async with TestSessionLocal() as session, session.begin():
+        variable = await session.get(Variable, var_id)
+        session.add(
+            VariableValue(
+                project_id=variable.project_id,
+                branch_id=variable.branch_id,
+                variable_id=var_id,
+                event_id=event_id,
+                field_definition_id=uuid.UUID(field.json()["id"]),
+                source_column="screen",
+                value_kind="low",
+                observed_count=2,
+                values=["x"],
+            )
+        )
+        session.add(
+            VariableValueDrift(
+                project_id=variable.project_id,
+                variable_id=var_id,
+                event_id=event_id,
+                observed_values=["x"],
+            )
+        )
+
+    resp = await client.patch(
+        f"/api/v1/projects/var-excl/variables/{var_id}",
+        json={"excluded_from_scans": True},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["excluded_from_scans"] is True
+    # Documentation survives; observed contexts and drift are purged.
+    assert resp.json()["allowed_values"] == ["a"]
+
+    listed = await client.get("/api/v1/projects/var-excl/variables")
+    row = listed.json()[0]
+    assert row["excluded_from_scans"] is True
+    assert row["context_count"] == 0
+    assert row["sample_values"] == []
+    assert row["open_drift_count"] == 0
+
+    # Restore clears the tombstone.
+    restored = await client.patch(
+        f"/api/v1/projects/var-excl/variables/{var_id}",
+        json={"excluded_from_scans": False},
+    )
+    assert restored.json()["excluded_from_scans"] is False
