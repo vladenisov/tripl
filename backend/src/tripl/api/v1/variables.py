@@ -78,8 +78,11 @@ async def list_value_drifts(
     session: SessionDep,
     slug: str,
     variable_id: uuid.UUID | None = None,
+    event_id: uuid.UUID | None = None,
 ) -> VariableValueDriftListResponse:
-    return await variable_value_drift_service.list_value_drifts(session, slug, variable_id)
+    return await variable_value_drift_service.list_value_drifts(
+        session, slug, variable_id, event_id
+    )
 
 
 @router.post("/drifts/{drift_id}/action", response_model=VariableValueDriftResponse)

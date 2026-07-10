@@ -49,6 +49,7 @@ async def list_value_drifts(
     session: AsyncSession,
     slug: str,
     variable_id: uuid.UUID | None = None,
+    event_id: uuid.UUID | None = None,
 ) -> VariableValueDriftListResponse:
     project_id = await get_project_id_by_slug(session, slug)
     cutoff = _retention_cutoff()
@@ -62,6 +63,8 @@ async def list_value_drifts(
     )
     if variable_id is not None:
         query = query.where(VariableValueDrift.variable_id == variable_id)
+    if event_id is not None:
+        query = query.where(VariableValueDrift.event_id == event_id)
     drifts = list((await session.execute(query)).scalars().all())
     items = [VariableValueDriftResponse.model_validate(drift) for drift in drifts]
     return VariableValueDriftListResponse(items=items, total=len(items))
