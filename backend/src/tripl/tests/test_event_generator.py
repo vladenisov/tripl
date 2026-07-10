@@ -1498,3 +1498,76 @@ def test_value_drift_upsert_refreshes_without_reopening(sync_session: Session, p
     # Refresh updated the sample but did NOT reopen the resolution.
     assert rows[0].observed_values == ["x", "z"]
     assert rows[0].status == "false_positive"
+
+
+# --- authored provenance across grouping copies (tripl-j94c.9) ---------------
+
+
+def test_group_merge_preserves_authorship_unless_rule_overrides(
+    sync_session: Session, project_and_type
+):
+    project, et, fds = project_and_type
+    for index, action in enumerate(["click:one", "click:two"]):
+        event = Event(
+            id=uuid.uuid4(),
+            project_id=project.id,
+            event_type_id=et.id,
+            name=action,
+            source_name=action,
+            order=index,
+            status="implemented",
+        )
+        sync_session.add(event)
+        sync_session.flush()
+        # 'screen' is hand-authored and untouched by the rule; 'action' is the
+        # matched field whose value the rule replaces with /pattern/.
+        sync_session.add(
+            EventFieldValue(
+                id=uuid.uuid4(),
+                event_id=event.id,
+                field_definition_id=fds["screen"].id,
+                value="${variant}",
+                is_authored=True,
+            )
+        )
+        sync_session.add(
+            EventFieldValue(
+                id=uuid.uuid4(),
+                event_id=event.id,
+                field_definition_id=fds["action"].id,
+                value=action,
+                is_authored=True,
+            )
+        )
+    sync_session.commit()
+
+    merged = merge_existing_events_for_group_rules(
+        sync_session,
+        project_id=project.id,
+        event_type_ids=[et.id],
+        event_group_rules=[
+            {
+                "name": "click events",
+                "condition_logic": "all",
+                "conditions": [{"field": "action", "pattern": "^click:"}],
+            }
+        ],
+    )
+    sync_session.commit()
+    assert merged == 2
+
+    grouped_event = sync_session.execute(
+        select(Event).where(Event.project_id == project.id)
+    ).scalar_one()
+    values = {
+        fv.field_definition_id: fv
+        for fv in sync_session.execute(
+            select(EventFieldValue).where(EventFieldValue.event_id == grouped_event.id)
+        ).scalars()
+    }
+    # Untouched value keeps its authored provenance...
+    assert values[fds["screen"].id].value == "${variant}"
+    assert values[fds["screen"].id].is_authored is True
+    # ...the rule-overridden value does not (it is no longer the user's text).
+    assert values[fds["action"].id].value == "/^click:/"
+    assert values[fds["action"].id].is_authored is False

@@ -5,6 +5,7 @@ from httpx import AsyncClient
 from sqlalchemy import select
 
 from tripl.models.event import Event
+from tripl.models.event_field_value import EventFieldValue
 from tripl.models.event_photo import EventPhoto
 from tripl.models.event_photo_comment import EventPhotoComment
 from tripl.models.event_type import EventType
@@ -1737,3 +1738,101 @@ async def test_branch_round_trip_carries_variable_values_bindings_and_overrides(
         assert main_override.variable_id == main_var_id
         assert main_override.event_id == uuid.UUID(event_id)
         assert main_override.values == ["a", "c"]
+
+
+@pytest.mark.asyncio
+async def test_branch_round_trip_preserves_field_value_authorship(
+    client: AsyncClient,
+) -> None:
+    """Deep-copy and merge must carry is_authored so scans keep skipping the value.
+
+    If either copy path recreated EventFieldValue rows without the flag, a
+    hand-authored value would silently become unauthored after branching or
+    merging — and the next scan would overwrite it.
+    """
+    slug = "branch-fv-authored"
+    await _seed_plan(client, slug)
+
+    async with TestSessionLocal() as session:
+        project = (
+            (await session.execute(select(Project).where(Project.slug == slug))).scalars().one()
+        )
+        main_event = (
+            (
+                await session.execute(
+                    select(Event).where(
+                        Event.project_id == project.id, Event.name == "purchase:success"
+                    )
+                )
+            )
+            .scalars()
+            .one()
+        )
+        field = (
+            (
+                await session.execute(
+                    select(FieldDefinition).where(
+                        FieldDefinition.event_type_id == main_event.event_type_id
+                    )
+                )
+            )
+            .scalars()
+            .one()
+        )
+        session.add(
+            EventFieldValue(
+                event_id=main_event.id,
+                field_definition_id=field.id,
+                value="${variant}",
+                is_authored=True,
+            )
+        )
+        await session.commit()
+        main_event_id = main_event.id
+
+    branch_id = await _create_branch(client, slug)
+    branch_uuid = uuid.UUID(branch_id)
+
+    async with TestSessionLocal() as session:
+        branch_event = (
+            (
+                await session.execute(
+                    select(Event).where(
+                        Event.branch_id == branch_uuid, Event.name == "purchase:success"
+                    )
+                )
+            )
+            .scalars()
+            .one()
+        )
+        branch_fv = (
+            (
+                await session.execute(
+                    select(EventFieldValue).where(EventFieldValue.event_id == branch_event.id)
+                )
+            )
+            .scalars()
+            .one()
+        )
+        # Deep-copy carried the authored flag onto the branch copy.
+        assert branch_fv.is_authored is True
+        # Touch something unrelated so merge hits the update-existing path.
+        branch_event.description = "edited on branch"
+        await session.commit()
+
+    resp = await _approve_and_merge(client, slug, branch_id)
+    assert resp.status_code == 200, resp.text
+
+    async with TestSessionLocal() as session:
+        merged_fv = (
+            (
+                await session.execute(
+                    select(EventFieldValue).where(EventFieldValue.event_id == main_event_id)
+                )
+            )
+            .scalars()
+            .one()
+        )
+        # Merge rebuilt main's field values from the branch — flag preserved.
+        assert merged_fv.value == "${variant}"
+        assert merged_fv.is_authored is True
