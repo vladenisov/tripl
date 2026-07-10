@@ -142,8 +142,9 @@ The create form (and the `POST /api/v1/me/api-keys` endpoint) takes:
 
 **Scopes:**
 
-- **`read`** — GET endpoints only. Any write surface returns `403 API key has
-  read-only scope`.
+- **`read`** — read/query operations only. Mutation surfaces return `403 API key
+  has read-only scope`; a few complex read-only queries use `POST` with a JSON
+  body and remain available.
 - **`write`** — full editor-level access, *still subject to the owning user's
   role*. A write key is useless beyond reading if its owner is a viewer.
   Creating a write-scoped key itself requires the creator to be **editor or

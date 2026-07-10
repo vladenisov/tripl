@@ -36,7 +36,7 @@ at a glance what a key can do:
 
 | Scope | Token prefix | Can call |
 |-------|--------------|----------|
-| `read` | `tk_r_…` | `GET` endpoints only (list, search, read). Write endpoints return `403`. |
+| `read` | `tk_r_…` | Read/query operations only; mutation endpoints return `403` (some complex read-only queries use `POST`). |
 | `write` | `tk_w_…` | Everything a read key can, plus create / update / delete. |
 
 :::tip
@@ -88,7 +88,7 @@ retired ones, pass `status=archived`.
 | Query param | Meaning |
 |-------------|---------|
 | `q` | Natural-language phrase (1–500 chars) |
-| `types` | Restrict to entity kinds (repeatable): `event`, `event_type`, `field`, `meta_field`, `variable`, `relation`, `tag` |
+| `types` | Restrict to entity kinds (repeatable): `event`, `event_type`, `field`, `meta_field`, `variable`, `relation`, `tag`, `metric`, `fact_table` |
 | `include_archived` | Include archived entities (default `false`) |
 | `limit` | Max results (default `20`, max `100`) |
 
@@ -191,9 +191,15 @@ Key safety rules baked into the loop:
 
 - **Dry-run by default.** Build and print the payload; only switch
   `dry_run=False` once it looks right.
-- **Upsert by exact name.** Match on the event `name` you already read back. If
-  it exists, `PATCH` it; otherwise `POST`. This stops an agent from creating a
-  second `checkout:completed` every run.
+- **Upsert by exact canonical name.** Match on the event `name` you already read
+  back. If it exists, `PATCH` it; otherwise `POST`. When the target event type
+  has a scan `event_name_format`, the server generates that canonical name from
+  field values: supply every template field and use the name/id returned by the
+  mutation rather than assuming the proposed name was kept.
+- **Read mutation warnings.** Event create/update responses include `warnings`.
+  A different proposed name may be ignored because a scan naming rule owns the
+  identity; unknown `${variable}` tokens are also advisory contract problems to
+  surface to the operator.
 - **Attach the originating ticket.** Always set a `ticket` meta value (e.g.
   `PROJ-123`). That single link is what lets the next run find the event by task
   rather than guessing.

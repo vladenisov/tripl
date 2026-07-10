@@ -24,11 +24,13 @@ re-trigger an install on every run.
 Content lives in `docs/`, grouped by audience (sidebar order and labels come
 from each folder's `_category_.json`):
 
-- `use/` — using tripl (concepts, user guide, troubleshooting)
+- `use/` — using tripl (concepts, user guide, variables, monitoring, alerting,
+  troubleshooting)
+- `use-cases/` — task-specific guides for search and agent-driven workflows
 - `administer/` — instance administration & settings
 - `run/` — self-hosting, deployment, operations, release process
 - `develop/` — architecture & contributing
-- `integrate/` — API & integration guide (OpenAPI reference added in a follow-up)
+- `integrate/` — API & integration guide and the generated OpenAPI reference
 
 ## Notes
 

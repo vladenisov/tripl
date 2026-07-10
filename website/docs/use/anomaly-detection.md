@@ -1,6 +1,6 @@
 ---
 title: How anomaly detection works
-sidebar_position: 4
+sidebar_position: 5
 ---
 
 # How anomaly detection works
@@ -35,7 +35,7 @@ When a series is too young to have three full seasonal cycles (a brand-new scan,
 
 On top of the per-bucket phase check, the detector runs a second, slower-moving test built on **seasonal decomposition** (STL for a single season, MSTL when both a daily and a weekly season are present). Decomposition splits the series into three layers: a smooth **trend**, the repeating **seasonal** shape, and the left-over **residual** noise.
 
-The **trend-shift detector** works entirely on the deseasonalized trend layer. It compares the trend level *now* against the trend level *exactly one full seasonal cycle ago*, scaled by the robust spread of the residuals. Because it operates on the deseasonalized trend, it can never be fooled by the time of day — its job is to catch **slow, sustained level changes** (a gradual 30% decline over a week) that the per-bucket band quietly absorbs one bucket at a time. The same decomposition also powers the forecast band you see drawn ahead of the latest data in the UI.
+The **trend-shift detector** works entirely on the deseasonalized trend layer. It compares the trend level *now* against the trend level *exactly one full seasonal cycle ago*, scaled by the robust spread of the residuals. Because it operates on the deseasonalized trend, it can never be fooled by the time of day — its job is to catch **slow, sustained level changes** (a gradual 30% decline over a week) that the per-bucket band quietly absorbs one bucket at a time. A shift must clear both the sigma threshold and a **15% relative effect-size gate**, and a contiguous run is collapsed into one anomaly instead of one row per bucket. The same decomposition also powers the forecast band you see drawn ahead of the latest data in the UI.
 
 When both detectors flag the same bucket, the one with the **larger absolute z-score** wins, so you see the more significant explanation.
 
@@ -60,9 +60,10 @@ There is one more guard hidden inside the spread. A perfectly stable series has 
 
 | Baseline | Relative floor on the spread |
 |---|---|
-| Rolling baseline | ~3% of expected |
+| Rolling baseline (counts) | larger of 1, ~3% of expected, and `√expected` |
 | Per-bucket phase baseline | ~5% of expected (a single point per phase is noisier) |
-| Trend-shift detector | ~1% of expected (averaged over a whole cycle, so it can be tighter) |
+| Trend-shift detector | ~5% of expected, plus the separate 15% effect-size gate |
+| Fractional metric | ~4% of the series' robust magnitude (with a tiny epsilon floor) |
 
 In plain terms: on a series running around 1,000 events, a phase baseline won't treat anything inside roughly ±50 (5%) as remarkable, no matter how flat the history looks. The floor anchors the z-scale to "a *noticeable change relative to volume*" instead of to raw counts.
 
@@ -70,6 +71,12 @@ In plain terms: on a series running around 1,000 events, a phase baseline won't 
 
 - **The minimum-count gate (`min_expected_count`)** silences low-traffic noise. On a series expecting 4 events, a jump to 12 is a 3× swing but statistically meaningless — small counts are dominated by randomness. Requiring a minimum expected volume keeps the detector from screaming about every sparse event.
 - **The spread floor** kills divide-by-tiny blow-ups on near-constant series, as described above.
+- **The Poisson floor** on the count-shaped rolling fallback acknowledges that a
+  count process around `N` naturally wobbles by roughly `√N`; it prevents small
+  low-volume jitter from looking multi-sigma merely because history was flat.
+- **The trend effect-size gate** requires a visible level shift, not just a
+  statistically tidy one. Smooth fractional ramps of at least four steps are
+  deferred from per-bucket detection to this trend path so they surface once.
 - **The sigma threshold** is the headline sensitivity dial: it sets how many "normal wobbles" of deviation are required before anything is flagged.
 
 ### A worked example
@@ -125,13 +132,36 @@ For a categorical field (platform, country, app version, …) the detector compa
 
 Only the **significant** band (PSI ≥ 0.25) is surfaced as a drift signal that alert rules can subscribe to. Alongside the score, the detector reports the handful of category values that moved the most (their before/after shares), so you can see *what* shifted, not just *that* it shifted.
 
+## Variable value drift
+
+Variable value drift compares observed values for one event with that variable's
+effective documented contract: the event override when one exists, otherwise
+the global `allowed_values` list. An empty effective list means no finite value
+contract has been declared, so observations do not create drift.
+
+One current row is kept per variable/event context. New scans refresh its novel
+value evidence without silently changing a prior review decision; the read
+surface uses a 30-day evidence window. Accepting the drift updates the documented
+contract either globally or for that event. Snooze, false-positive, and reopen
+change only review state. Alert rules must opt in, and these candidates behave as
+spike-like drift signals that bypass numeric volume thresholds.
+
+See [Variables & templates](./variables-and-templates.md) for the authoring and
+review workflow.
+
 ## Release regression
 
 Release regression watches for events that **break or vanish in a new app version** relative to the version before it — the classic "we shipped 2.4.0 and the checkout event stopped firing" problem. It only runs when a scan has an app-version column.
 
 The test is deliberately careful about young releases:
 
-1. **Maturity gate.** A release is only considered "active" once it carries a real share of total traffic (at least ~5%) for a couple of consecutive buckets — this excludes the dev/tester trickle before a rollout. At least two active releases must exist to compare, and the newest active release must have accumulated a minimum total volume before it is judged at all.
+1. **Maturity gate.** A release is only considered "active" once it carries the
+   scan's configured minimum share of total traffic (5% by default) for a couple
+   of consecutive buckets — this excludes the dev/tester trickle before a
+   rollout. SemVer prereleases are excluded by default, and a scan can provide a
+   custom prerelease pattern. At least two active releases must exist to compare,
+   and the newest active release must have accumulated a minimum total volume
+   before it is judged at all.
 2. **Fair comparison.** Counts are normalized by each release's **adoption share**, so a young release with few users isn't unfairly compared head-to-head against a mature one. For each event, the **expected** count under the new release is the previous release's share of that event applied to the new release's total volume.
 3. **Verdict.** The ratio of observed to expected decides the outcome. If an event has nearly disappeared (observed far below expected — under ~5% of expected) it is classed as **missing**; if it merely dropped substantially (roughly half or less of expected) *and* the shortfall is also large in statistical terms — observed below `expected − 3 × √expected` — it is classed as a **volume drop**. Anything in between is not flagged. Only deficits are tested; an event firing *more* in the new release is not a regression.
 
@@ -139,22 +169,49 @@ The test is deliberately careful about young releases:
 
 User-defined **metrics** are watched by the very same detector, at a dedicated **metric scope**. The one twist is the *shape* of the series. Each metric is classified as either **count-shaped** (a count or sum — it behaves just like an event volume) or **fractional** (a ratio, an average, or a free-form SQL value).
 
-- **Count-shaped** metrics keep the standard treatment: missing buckets are zero-filled, and the `min_expected_count` gate applies.
+- **Count-shaped** metrics keep the standard treatment and the
+  `min_expected_count` gate. A missing bucket is zero-filled only when scan-job
+  coverage proves the warehouse interval was actually collected; uncovered
+  collection gaps are omitted so an outage in collection does not become a fake
+  traffic drop.
 - **Fractional** metrics drop both. A gap means "no data for this bucket" rather than zero — a ratio whose denominator was zero produces *no value at all* — and the minimum-count gate is lifted, so a ratio that naturally sits below 1, or a sparse average, is neither silenced nor constantly flagged as "too low".
 
-Per project, **`detect_metrics`** turns the metric scope on or off; per alert rule, **`include_metrics`** decides whether metric anomalies are actually delivered (see [Alerting](./alerting.md)). Everything else — the seasonal baseline, the robust spread and its floor, the z-score, and false-positive self-tuning — works exactly as it does for events.
+Per project, **`detect_metrics`** turns the metric scope on or off; per alert
+rule, the API's **`include_metrics`** field decides whether metric anomalies are
+actually delivered (the visual rule editor does not expose this switch yet; see
+[Alerting](./alerting.md)). Everything else — the seasonal baseline, the robust
+spread and its floor, the z-score, and false-positive self-tuning — works exactly
+as it does for events.
 
 ## From a detected anomaly to a signal
 
-A flagged bucket is written to the scan as an anomaly record carrying its scope (project total / event type / event), bucket, actual count, expected count, spread, z-score, and direction. The detector **replaces** the records for the window it just evaluated on every run, so each scan reflects the current state of the data rather than accumulating stale flags.
+A flagged bucket is written as an anomaly record carrying its scope (project
+total / event type / event / metric), bucket, actual count, expected count, raw
+and effective spread, detector kind, z-score, and direction. The detector
+**replaces** the records for the window it just evaluated on every run, so each
+scan reflects the current state of the data rather than accumulating stale
+flags.
 
-These records become the **signals** you see on the monitoring views, and they are the candidates the alerting layer evaluates. Distribution drift and release regression feed the same machinery as additional candidate types.
+These records become the **signals** you see on the monitoring views, and they
+are the candidates the alerting layer evaluates. Schema, distribution, and
+variable-value drift plus release regression feed the same machinery as
+additional candidate types.
+
+A latest-scan signal remains open only while it is fresh in wall-clock time:
+`max(24 hours, 3 × scan interval)`. This prevents a stopped scan from pinning its
+last anomaly red forever. When the same scan/bucket/direction fires at project,
+event-type, and event scopes, the active-signals view keeps the project-total row
+as one incident and suppresses the child fan-out; the underlying rows remain for
+drilldown.
 
 ### Alert rules are an additional gate
 
 Detection deciding a bucket is anomalous is **not** the same as you getting notified. Each alert rule applies its **own** set of gates on top of detection before anything is delivered:
 
-- **Scope toggles** — a rule can subscribe to project totals, event types, and/or individual events, and must explicitly opt in to metric anomalies (`include_metrics`) and to schema-drift, distribution-drift, and release-regression signals (all off by default).
+- **Scope toggles** — a rule can subscribe to project totals, event types, and/or
+  individual events, and must explicitly opt in to metric anomalies
+  (`include_metrics`) and to schema-drift, distribution-drift,
+  variable-value-drift, and release-regression signals (all off by default).
 - **Direction** — a rule can choose to notify on spikes only, drops only, or both.
 - **Its own thresholds** — a minimum expected count, a minimum absolute change, and a minimum percent change, all of which the anomaly must clear *in addition to* the detector's own thresholds.
 - **Cooldown** — a rule won't re-fire for the same scope until its cooldown window has passed.

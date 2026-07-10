@@ -56,7 +56,9 @@ its latest anomaly **signal** state, and a **schema-drift badge** when the event
 type has open drift. Controls include free-text search, status and tag filters, a
 "silent since N days" filter, per-column field-value and meta-value filters,
 saved views, column visibility, bulk actions, and a per-tab aggregate metrics
-chart.
+chart. The review queue can sort **Busiest first**, collapse similar-name
+clusters for group selection, and expand the selection from loaded rows to
+**Select all N** matching events before a bulk status/owner/review/delete action.
 
 ### Event detail & editing
 
@@ -68,10 +70,19 @@ creation); **Name** (e.g. `checkout:completed`); **Description** — with a
 **Suggest with AI** action that appears when editing an existing event and AI is
 enabled; **Status** — one of `draft`, `in_review`, `ready_for_dev`,
 `implemented`, `live`, `deprecated`, `archived` (selecting `deprecated` reveals a
-**Sunset date**); **Tags**; **Metric breakdowns** (a fixed set of warehouse
-columns: `platform`, `app_version`, `country`, `device_model`); **Field values**
+**Sunset date**); **Tags**; **Metric breakdowns** (select scalar event-type
+fields or add another warehouse column manually; JSON fields are excluded);
+**Field values**
 (per the event type's schema — boolean/enum selects, a JSON editor for `json`
 fields, variable-aware text inputs); and **Meta fields** values.
+
+When a scan targeting the selected event type defines an **Event name format**,
+new manual events use that same template. The form renders a live name preview
+from field values and blocks save until every referenced scalar or JSON-path
+field is present. The backend treats the generated name as the identity and
+returns advisory `warnings` if a client supplied a different name. Values saved
+manually are marked as authored, so later scans add missing values but do not
+overwrite the authored ones.
 
 ### Event field, meta values & tags
 
@@ -103,8 +114,9 @@ The detail view stacks: **General** (name, display name, color), a **Fields**
 editor (add/edit/reorder/delete fields — type, required flag, enum options,
 validation such as regex/range, and a sensitivity level), a **Sensitive fields**
 summary, and **Owners** (shown only on the `main` branch). Owners gate branch
-merges: a type **with** owners is "gated" (only its owners can merge changes to
-that type); a type with no owners is "ungated" (anyone may merge).
+merges: a type **with** owners is "gated" (the branch needs a fresh approval from
+one of those owners before an authorized editor can merge changes to that type);
+a type with no owners has no owner-approval gate.
 
 ### Schema drift
 
@@ -122,8 +134,19 @@ events (name, type, enum options, optional link template). Create, edit, delete.
 
 ### Variables
 
-**Where:** Plan › Variables. Named, reusable template values referenced from
-event field and meta values. A variable's value can vary by context.
+**Where:** Plan › Variables. Typed, reusable `${name}` placeholders referenced
+from event field and meta values. Each variable separates **documented values**
+from scan-observed contexts, and can bind to one or more warehouse columns or
+dotted JSON paths. A per-event override replaces the global documented list for
+that event.
+
+The table shows documented/observed samples, binding paths, usage counts, and
+open value drift. Drift can be accepted globally or for one event, snoozed,
+marked false-positive, or reopened; the event detail repeats the affected
+event's review panel. Selection enables bulk type/description/value changes and
+delete. **Exclude from scans** keeps a restorable tombstone so a deliberately
+removed scan-owned variable is not recreated. See
+[Variables & templates](./variables-and-templates.md).
 
 ### Event-type relations
 
@@ -138,11 +161,38 @@ merging. Working surfaces are scoped to the active branch via a `?branch=`
 context. Merging an owned event type re-checks ownership (see
 [Event types](#event-types)).
 
+The branch policy can require a minimum number of **distinct approvals** and can
+forbid self-approval. A content change after approval makes the approval stale,
+so reviewers sign off on the exact diff that will merge. The merge dialog shows
+field-level conflicts and also warns when the branch deletes variables that
+still exist on `main`, including the overrides and drift history that deletion
+would remove.
+
+An owner may configure a separate **Implementation tracker** for the project.
+When enabled, a successful merge best-effort creates one Jira implementation
+ticket for the added/changed events; a scheduled sync promotes covered events to
+`implemented` when Jira reports the ticket done. This is branch workflow
+automation, distinct from the Jira **alert destination** that creates incident
+tickets from monitoring signals.
+
 ### Plan rules
 
 **Where:** Workspace settings › Project › **Plan rules** (in the full-takeover
-Settings area, route `/settings/project/plan-rules`). Project-level plan rules
-managed as genuine configuration.
+Settings area, route `/settings/project/plan-rules`). The naming, governance,
+and PII controls on this screen are currently a clearly labelled preview: they
+use local state and **Save** is disabled because no backend contract exists yet.
+The working branch-review controls live under **Plan → Plan branches → Merge
+policy** (`min_approvals`, `block_self_approval`). Scan **Event name format** is
+the working naming rule for scan-targeted event types.
+
+### Project general & danger zone
+
+**Where:** Workspace settings › Project › **General**. Edit the project name,
+slug, and description; rebuild its search index; or use owner-only destructive
+resets. **Reset anomalies** removes metric and breakdown anomaly records (and
+their derived active signals) across every scan/catalog metric. **Reset drifts**
+removes schema and distribution drift, but not variable-value drift. Both can be
+limited to a selected historical period and cannot be undone.
 
 ### Plan history & revisions
 
@@ -176,7 +226,7 @@ band), **By version** with version-adoption (only when the scan config defines a
 app-version column), **Heatmap** (7×24 seasonality), **Distribution** (drift
 bands), and **Breakdowns**. The page also surfaces top movers and release
 regressions, plus chart annotations on the Volume tab. For an `event` scope it
-additionally renders the Photos & specs panel.
+additionally renders variable-value drift review and the Photos & specs panel.
 
 ### Metrics catalog
 
@@ -186,11 +236,14 @@ catalog. Each row shows the metric's name, kind, status (`draft` / `active` /
 `archived`), interval, and latest signal state. Metrics are **not branched**: the
 catalog reads the same on every branch.
 
-The create/edit form picks a **kind** and then reveals kind-specific config:
+The catalog supports kind/status/search filters, anomaly and stale-data filters,
+reordering, uniform bulk status changes, duplicate-as-draft, manual **Collect
+now**, archive/restore, and delete. The create/edit form picks a **kind** and
+then reveals kind-specific config:
 
 - **SQL** — a data source, a read-only `SELECT` or top-level `WITH ... SELECT`
   returning one value per bucket, a time column, and a collection interval.
-- **Fact aggregation** — a reusable fact table built from a read-only `SELECT` or
+- **Fact** — a reusable fact table built from a read-only `SELECT` or
   top-level `WITH ... SELECT`, an **aggregation** (`count`, `sum`, `avg`, `min`,
   `max`, `count_distinct`), the **measure column** it runs over (a **distinct
   column** for `count_distinct`), optional row filters, optional **breakdowns**,
@@ -204,10 +257,25 @@ The create/edit form picks a **kind** and then reveals kind-specific config:
   warehouse query of its own: a **single** event's count, a **ratio** of one event
   to another (A / B), or an event **per distinct user**.
 
-Shared fields are name, description, status, and breakdown columns (`platform`,
-`app_version`, …, exactly like events). A metric is collected only while
+Shared fields are name, display name, description, color, unit, owner/review,
+status, breakdown columns/limit, optional version/platform columns, and the
+anomaly-detection toggle. A metric is collected only while
 **active**; `draft` metrics are saved but not collected, and `archived` metrics
 stop collecting.
+
+### Fact tables
+
+**Where:** Observe › Metrics › **Fact tables**. A fact table is a reusable,
+project-wide data definition behind fact metrics: a safe read-only `SELECT` or
+top-level `WITH ... SELECT`, a timestamp column, previewed columns/types,
+identifier columns, and named row-filter fragments. Preview runs the query with
+a bounded sample so the form can validate and persist the available columns.
+
+Fact metrics can reference the table's named filters, add structured
+column/operator/value conditions, and add a guarded raw filter fragment; all
+effective filters are combined with `AND`. A ratio can combine two fact
+operands, including operands from different fact tables. Fact tables and metrics
+are indexed by global search and are not copied into plan branches.
 
 ### Metric detail
 
@@ -252,13 +320,16 @@ the chart and deletable.
 rules carry a **cooldown** (minutes); filters on `event_type` / `event` /
 `direction` with operators `=`, `!=`, `IN`, `NOT IN`; thresholds for minimum
 percent delta, minimum absolute delta, and minimum expected count; an **include
-metrics** opt-in that routes metric-scope anomalies (off by default); and message
-and items templates with variables such as `${channel}`, `${destination_name}`,
-`${rule_name}`, `${scan_name}`, `${scope_label}`, `${matched_count}`, and
-`${items_text}`. A rule can be **simulated/replayed** over the last N days
-(default 7), optionally overriding the saved cooldown. The **Inbox** groups
-correlated deliveries; the **Audit** view lists deliveries filterable by status
-(pending / sent / failed) with retry on failures.
+variable value drift** opt-in alongside schema, distribution, and release drift;
+and message and items templates with variables such as `${channel}`,
+`${destination_name}`, `${rule_name}`, `${scan_name}`, `${scope_label}`,
+`${matched_count}`, and `${items_text}`. Metric-scope anomalies are also safe-off
+and can currently be enabled through the API's `include_metrics` field (the
+visual rule editor does not expose that switch yet). A rule can be
+**simulated/replayed** over the last N days (default 7), optionally overriding
+the saved cooldown. The **Inbox** groups correlated deliveries; the **Audit**
+view lists deliveries filterable by status (pending / sent / failed) with retry
+on failures.
 
 ---
 
@@ -291,16 +362,28 @@ to Reconciliation to triage.
 **Where:** Govern › Scans (requires a data source). A scan config covers: source
 & query (name, data source, base query used as a subquery, with async preview);
 event mapping (event type or auto-detect, event-type column, time column,
-event-name format); an app-version column; metrics & drift (breakdown columns,
-distribution-drift fields, JSON paths); and a **Schedule** — one of *No schedule
+event-name format); optional app-version and platform columns; metrics & drift
+(breakdown columns, distribution-drift fields, JSON paths); ordered
+**event-group rules** that can rename/group matching values; and a **Schedule**
+— one of *No schedule
 (manual)*, *Every 15 min* (`15m`), *Every hour* (`1h`), *Every 6 hours* (`6h`),
 *Every day* (`1d`), or *Every week* (`1w`).
+
+Advanced controls bound catalog/metrics row counts and scan lookback, choose a
+replay chunk interval, cap breakdown cardinality, and configure how many app
+versions to retain. Version monitoring also exposes the active-traffic share
+gate and an optional prerelease pattern; the platform column powers the
+platform-presence matrix. Reserved role columns (event type, time, version,
+platform) cannot simultaneously be selected as scalar breakdown/drift fields.
 
 ### Scan jobs
 
 Running a scan creates a job. From a config you can run a scan, apply event
-groups, or replay metrics over historical chunks (replay requires a time column
-and an interval). Jobs expose status and detail.
+groups, jump directly to **Review events**, or replay metrics over historical
+chunks (replay requires a time column and an interval). Jobs expose status,
+progress, and curated failure detail. Repeated identical failures collapse into
+a streak with an expander, and **Run again** retries the config without losing
+its history.
 
 ### Audit log
 
@@ -318,9 +401,10 @@ contenteditable). It offers: **Navigate** commands (Overview, Data sources,
 Members, Account, and owner-only Runtime); a **Current project** group (Events,
 Project settings, and per-surface settings jumps); a **Projects** switcher; an
 **Event types** jump list; **branch-aware knowledge search** (from 2 characters)
-across events, event types, fields, meta fields, variables, relations, and tags,
-each with a confidence badge; **Ask AI** (when AI is enabled and the query is at
-least 8 characters, with cited sources); and **Sign out**.
+across events, event types, fields, meta fields, variables, relations, tags,
+metrics, and fact tables, each with a confidence badge; **Ask AI** (when AI is
+enabled and the query is at least 8 characters, with cited sources); and **Sign
+out**.
 
 ### Activity feed ("Now")
 

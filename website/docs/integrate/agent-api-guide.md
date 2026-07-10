@@ -39,7 +39,9 @@ Creation payload:
 
 Scopes:
 
-- `read`: allowed on `GET` endpoints only. Use this for retrieval, search, indexing, and agent context loading.
+- `read`: read-only. Mutation endpoints reject it, while read/query operations
+  remain available even when an endpoint uses `POST` for a complex query body.
+  Use this for retrieval, search, and agent context loading.
 - `write`: allowed on mutation endpoints, subject to the user role behind the key. Editor-only routes still require an editor or owner user.
 - Owner-only security and instance-administration routes require an interactive owner session; API keys do not perform owner-only actions.
 
@@ -87,12 +89,18 @@ GET /api/v1/projects/{slug}/search?q=user_id&types=variable&limit=10&branch=<bra
 Useful query parameters:
 
 - `q`: required search text, 1 to 500 characters.
-- `types`: optional repeated filter. Supported values are `event`, `event_type`, `field`, `meta_field`, `variable`, `relation`, and `tag`.
+- `types`: optional repeated filter. Supported values are `event`, `event_type`,
+  `field`, `meta_field`, `variable`, `relation`, `tag`, `metric`, and
+  `fact_table`.
 - `include_archived`: defaults to `false`.
 - `limit`: 1 to 100, defaults to 20.
 - `branch`: optional branch id.
 
-Search results include `entity_type`, `entity_id`, `title`, `subtitle`, `description`, `snippet`, `route_path`, `score`, `confidence`, and `highlights`. Results linked to a concrete catalog event also include `event_id`, `name`, `implemented`, and safe `variable_values` contexts with possible values for non-sensitive fields.
+Search results include `entity_type`, `entity_id`, `title`, `subtitle`,
+`description`, `snippet`, `route_path`, `score`, `confidence`, and `highlights`.
+Results linked to a concrete catalog event also include `event_id`, `name`, the
+compatibility `implemented` projection, and safe `variable_values` contexts with
+possible values for non-sensitive fields.
 
 Use entity-specific endpoints for full context after search:
 
@@ -104,18 +112,26 @@ GET /api/v1/projects/{slug}/event-types/{event_type_id}
 GET /api/v1/projects/{slug}/event-types/{event_type_id}/fields
 GET /api/v1/projects/{slug}/variables
 GET /api/v1/projects/{slug}/variables/{variable_id}/values?branch=<branch_id>
+GET /api/v1/projects/{slug}/variables/{variable_id}/event-overrides?branch=<branch_id>
+GET /api/v1/projects/{slug}/variables/drifts?branch=<branch_id>
 ```
 
 Event responses include:
 
-- event identity and state: `name`, `description`, `implemented`, `reviewed`, `archived`;
+- event identity and state: `name`, `description`, lifecycle `status`,
+  `reviewed`, `owner_id`, and optional `sunset_at`;
 - event type id and brief event type data;
 - field values and meta values;
 - tags;
 - metric breakdown columns;
 - variable value contexts on field values that contain real `${variable}` placeholders.
 
-Variable responses include usage summary fields, and `/variables/{variable_id}/values` returns per-event value contexts. Low-cardinality contexts list all observed values; high-cardinality contexts list bounded samples and an observed count.
+Variable responses include `allowed_values`, warehouse/JSON-path `bindings`,
+`excluded_from_scans`, usage summaries, samples, and `open_drift_count`.
+`/variables/{variable_id}/values` returns per-event observed contexts:
+low-cardinality contexts list all observed values, while high-cardinality
+contexts list bounded samples and an observed count. Event overrides replace the
+global documented list for their event.
 
 ## Updating Events
 
@@ -142,7 +158,7 @@ Example payload for state-only review workflow:
 ```json
 {
   "reviewed": false,
-  "archived": false
+  "status": "in_review"
 }
 ```
 
@@ -150,15 +166,27 @@ Example payload for state-only review workflow:
 
 - `name`
 - `description`
-- `implemented`
+- `status`
+- `sunset_at`
+- `owner_id`
 - `reviewed`
-- `archived`
 - `metric_breakdown_columns`
 - `tags`
 - `field_values`
 - `meta_values`
 
-When updating `field_values` or `meta_values`, send the full replacement list for that collection. For narrow text edits, prefer patching only `description`, `name`, tags, or state fields.
+When updating `field_values` or `meta_values`, send the full replacement list
+for that collection. For narrow text edits, prefer patching only `description`,
+`name`, tags, or state fields. Values written through event mutations are
+treated as authored and are protected from later scan overwrite.
+
+Event create and patch return `EventMutationResponse`, which is the event plus a
+`warnings` array. When a scan config governs the event type with an
+`event_name_format`, manual creation derives the canonical name from the
+referenced field values. Missing template values produce `422`; a differing
+client-supplied name is ignored with a warning. Read the mutation response and
+use its returned name/id instead of assuming your proposed name became the
+identity.
 
 Bulk state updates are available for review/archive workflows:
 
@@ -172,9 +200,12 @@ Payload:
 {
   "event_ids": ["00000000-0000-0000-0000-000000000000"],
   "reviewed": true,
-  "archived": false
+  "status": "ready_for_dev"
 }
 ```
+
+The uniform bulk patch supports `status`, `sunset_at`, `owner_id`, and
+`reviewed`. Bulk delete is a separate endpoint; both are write operations.
 
 ## Search Indexing
 
@@ -196,7 +227,10 @@ Use this after out-of-band maintenance or imports if search results look stale. 
 - Search first, then fetch the canonical entity by id before making decisions.
 - Prefer partial `PATCH` payloads over sending whole objects.
 - Treat field and meta value lists as full replacements when included in an event update.
-- Monitoring outputs — signals, schema/distribution drift, and app-version **release regressions** — are read-only. Read them through the metrics endpoints in `/openapi.json`; they are produced by scans, never written by agents.
+- Monitoring outputs — signals, schema/distribution/variable-value drift, and
+  app-version **release regressions** — are scan-produced. Query them through
+  the endpoints in `/openapi.json`; only their explicit review/action endpoints
+  mutate resolution state.
 - Keep `/openapi.json` in the agent's tool context and use this guide for tripl-specific auth, branch, and workflow rules.
 
 ## Interactive API reference

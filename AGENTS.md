@@ -1,6 +1,6 @@
 # AGENTS.md
 
-_Last updated: 2026-06-27._
+_Last updated: 2026-07-10._
 
 ## What This Repo Is
 
@@ -9,14 +9,19 @@ _Last updated: 2026-06-27._
 Use it to:
 - manage projects and tracking plans;
 - define event types, fields, relations, meta fields, and reusable variables;
-- store concrete catalog events with implementation/review/archive state;
+- store concrete catalog events with lifecycle, review, ownership, media, and
+  change history;
 - connect external analytics DBs — ClickHouse, BigQuery, or PostgreSQL;
 - run scan jobs that infer events and variables from real data;
-- collect time-bucketed metrics;
-- detect anomalies;
-- route alert deliveries to notification channels.
+- collect time-bucketed event and user-defined business metrics;
+- detect anomalies, schema/distribution/value drift, and release regressions;
+- review plan changes on branches and reconcile the plan with live data;
+- route alerts to chat, email, webhook, and issue-tracker destinations.
 
-The long-form product and architecture spec is in [PLAN.md](PLAN.md). This file is the fast navigation map for agents working in the codebase.
+An optional local [PLAN.md](PLAN.md) contains the internal product plan and is
+intentionally gitignored. Public product/architecture documentation lives under
+[website/docs](website/docs). This file is the fast navigation map for agents
+working in the codebase.
 
 ## Agent Workflow
 
@@ -28,21 +33,29 @@ If `mem0` MCP is available in the current session, use it for every task.
 ## Current Product Scope
 
 Already implemented in code:
-- event catalog CRUD;
-- data sources and scan configs;
+- session auth, owner/editor/viewer RBAC, and scoped API keys;
+- event catalog CRUD, lifecycle, bulk triage, owners, history, photos/specs, and
+  comments;
+- plan branches, review policy, conflicts, merge, revisions, and optional Jira
+  implementation tickets;
+- typed variables with documented values, source bindings, per-event overrides,
+  drift review, and scan exclusion;
+- ClickHouse, BigQuery, and PostgreSQL data sources and scan configs;
 - async scan pipeline via Celery + RabbitMQ;
-- auto-generated events from cardinality analysis;
-- variable detection for high-cardinality values;
-- metrics collection into PostgreSQL;
-- anomaly detection for project total, event type, and event scopes;
-- alerting with destinations, rules, delivery history, and message templating;
-- frontend pages for catalog, settings, data sources, monitoring, and alerting.
+- auto-generated events/variables from cardinality and JSON-path analysis;
+- event metrics plus a SQL/fact/event-composition metrics catalog;
+- anomaly detection for project total, event type, event, and metric scopes;
+- schema, distribution, variable-value, and app-version regression detection;
+- reconciliation, coverage, monitoring, search/AI, and audit surfaces;
+- alerting with six destination types, rules, simulation, inbox, retries,
+  delivery history, and message templating;
+- workspace/project/instance settings and production hardening.
 
 Not a safe assumption unless you verify:
-- auth and roles;
-- tracking plan versioning;
 - import/export;
-- any local ClickHouse container.
+- per-project membership separate from workspace-wide roles;
+- automatic rollback of a merged branch;
+- any local analytics warehouse container.
 
 ## Stack And Runtime
 
@@ -80,7 +93,9 @@ published image via [compose.yaml](compose.yaml); see [website/docs/run/release.
 Important runtime facts:
 - Warehouses (ClickHouse, BigQuery, PostgreSQL) are external. The repo does not run them in Compose.
 - `api` runs `alembic upgrade head` before `uvicorn`.
-- Celery beat schedules metrics due-checks every 5 minutes (300s).
+- Celery beat schedules event/catalog metric due-checks every 5 minutes (300s),
+  implementation-ticket sync every 5 minutes, and stranded embedding recovery
+  every 15 minutes.
 - API health endpoint is `GET /health`.
 - CORS is open in dev app setup.
 
@@ -116,8 +131,10 @@ Practical notes:
 ## Repo Layout
 
 Top level:
-- [PLAN.md](PLAN.md): product scope and longer architecture notes.
+- [PLAN.md](PLAN.md): optional, gitignored internal product notes.
 - [README.md](README.md): quick start and user-facing overview.
+- [website/docs](website/docs): public product, operations, API, and architecture
+  documentation.
 - [compose.yaml](compose.yaml): production stack (published image); [compose.dev.yaml](compose.dev.yaml): local dev topology.
 - [backend](backend): Python service.
 - [frontend](frontend): React app.
@@ -156,34 +173,52 @@ Core planning entities:
 - `FieldDefinition`: typed field under an event type.
 - `EventTypeRelation`: relation between event types via fields.
 - `MetaFieldDefinition`: project-level metadata schema.
-- `Variable`: reusable placeholder such as `${user_id}`.
+- `Variable`: typed `${placeholder}` with documented values, warehouse bindings,
+  per-event overrides, observed contexts, and scan-exclusion state.
+- `PlanBranch`, `PlanBranchApproval`, `PlanBranchReviewer`,
+  `PlanBranchComment`, `PlanBranchMergeResolution`, `PlanRevision`: reviewable
+  plan-change workflow.
 
 Catalog entities:
 - `Event`: concrete expected event instance in the plan.
 - `EventFieldValue`: field value attached to an event.
 - `EventMetaValue`: meta value attached to an event.
 - `EventTag`: freeform event tag.
+- `EventChange`: field-level event history.
+- `EventPhoto`, `EventPhotoComment`: images/Figma specs and threaded discussion.
 
 Analytics and monitoring entities:
 - `DataSource`: external analytics DB connection — ClickHouse, BigQuery, or PostgreSQL.
-- `ScanConfig`: saved scan definition. Important fields include `base_query`, `event_type_id`, `event_type_column`, `time_column`, `event_name_format`, `json_value_paths`, `cardinality_threshold`, `interval`.
+- `ScanConfig`: saved scan definition. Important fields include `base_query`,
+  event/time/name mapping, JSON paths, grouping rules, breakdown/drift columns,
+  row/lookback/replay limits, app-version/platform roles, and interval.
 - `ScanJob`: async execution record for a scan config.
-- `EventMetric`: aggregated count buckets.
-- `MetricAnomaly`: persisted anomaly bucket.
+- `EventMetric`, `EventMetricBreakdown`: aggregated event-count buckets.
+- `FactTable`: reusable safe source query and named filters for fact metrics.
+- `MetricDefinition`, `MetricValue`, `MetricValueBreakdown`: the project-wide
+  SQL/fact/event-composition metrics catalog and collected series.
+- `MetricAnomaly`, `MetricBreakdownAnomaly`: persisted anomaly buckets.
+- `SchemaDrift`, `DistributionDrift`, `VariableValueDrift`,
+  `ReleaseRegression`: non-volume detection records.
 - `ProjectAnomalySettings`: anomaly detector thresholds and scope toggles.
 
 Alerting entities:
-- `AlertDestination`: channel config. Current supported types are `slack` and `telegram`.
+- `AlertDestination`: Slack, Telegram, webhook, email, Jira, or Linear channel
+  config.
 - `AlertRule`: filters, thresholds, cooldown, include/exclude scope, and message templates.
 - `AlertRuleState`: cooldown/state tracking.
 - `AlertDelivery`: one queued/sent/failed delivery attempt.
 - `AlertDeliveryItem`: matched anomaly items included in a delivery.
+- `ProjectTrackerConfig`, `ImplementationTicket`: separate Jira automation for
+  branch-to-implementation workflow.
 
 ## API Map
 
 Base prefix: `/api/v1`
 
 Routers currently registered:
+- `/auth`, `/users`, `/me/api-keys`, `/settings`
+- `/activity`, `/audit`
 - `/projects`
 - `/projects/{slug}/event-types`
 - `/projects/{slug}/event-types/{event_type_id}/fields`
@@ -191,17 +226,27 @@ Routers currently registered:
 - `/projects/{slug}/meta-fields`
 - `/projects/{slug}/variables`
 - `/projects/{slug}/events`
-- `/projects/{slug}/data-sources`
+- `/data-sources`
 - `/projects/{slug}/scans`
+- `/projects/{slug}/search`
+- `/projects/{slug}/metrics` (catalog plus series)
+- `/projects/{slug}/fact-tables`
+- `/projects/{slug}/branches`, `/projects/{slug}/revisions`
+- `/projects/{slug}/reconciliation`
 - `/projects/{slug}/anomaly-settings`
 - `/projects/{slug}/alert-destinations`
 - `/projects/{slug}/alert-deliveries`
-- metrics routes under project, event, and event-type paths
+- `/projects/{slug}/annotations`, `/projects/{slug}/tracker-config`
+- event-volume metric routes under project, event, and event-type paths
 
 Useful endpoint groups:
-- Events: list/filter/create/update/delete, bulk create, bulk delete, reorder/move, tags.
-- Data sources: CRUD plus connection test.
-- Scans: CRUD, preview, run, list jobs, get job.
+- Events: list/filter/create/update/delete, bulk create/update/delete,
+  reorder/move, tags, history, photos/specs/comments.
+- Variables: CRUD, bulk update/delete, observed contexts, per-event overrides,
+  drift list/actions.
+- Data sources: CRUD, connection test, stats, and schema browse.
+- Scans: CRUD, async preview, run/cancel, groups, replay, version/platform and
+  monitoring insight endpoints, job history.
 - Metrics:
   - `GET /projects/{slug}/events-metrics`
   - `POST /projects/{slug}/events/window-metrics`
@@ -209,35 +254,51 @@ Useful endpoint groups:
   - `GET /projects/{slug}/events/{event_id}/metrics`
   - `GET /projects/{slug}/event-types/{event_type_id}/metrics`
   - `GET /projects/{slug}/anomalies/signals`
+- Catalog metrics/fact tables: CRUD, preview, collect, series, breakdowns,
+  versions, reorder/bulk status.
+- Branches: lifecycle, reviewers, comments, diff/conflicts/resolutions/merge;
+  revisions snapshot/list/diff.
+- Reconciliation: shadow/dead events and coverage.
 - Alerting:
   - destinations CRUD
   - rules CRUD nested under a destination
-  - deliveries list/detail
+  - rule simulation, monitor mute/unmute
+  - deliveries list/detail/retry and Inbox actions
 
 If you need exact request/response shapes, open the corresponding file in `backend/src/tripl/schemas` before digging into services.
 
 ## Frontend Route Map
 
 Defined in [frontend/src/App.tsx](frontend/src/App.tsx):
-- `/`: projects list
-- `/data-sources`
-- `/data-sources/:dsId`
-- `/p/:slug`
+- `/`: single-project redirect or workspace project list
+- `/workspace`
+- `/settings/{members|api-keys|profile|security|data-sources}`
+- `/settings/project/{general|plan-rules}`
+- `/settings/instance/:instSection`
+- `/p/:slug/overview`
 - `/p/:slug/events`
 - `/p/:slug/events/:tab`
-- `/p/:slug/events/:tab/:eventId`
-- `/p/:slug/events/detail/:eventId`
+- `/p/:slug/events/:tab/{new|:eventId|:eventId/edit}`
 - `/p/:slug/monitoring/:scope/:id`
+- `/p/:slug/monitors[/:monitorId]`
+- `/p/:slug/metrics` and `/p/:slug/metrics/:metricId/edit`
+- `/p/:slug/metrics/fact-tables[/:factTableId/edit]`
+- `/p/:slug/reconciliation`, `/p/:slug/anomalies`, `/p/:slug/coverage`
 - `/p/:slug/settings`
-- `/p/:slug/settings/:tab`
+- `/p/:slug/settings/:tab[/:itemId]`
 
 Main pages:
-- `ProjectsPage`: project list/create.
-- `EventsPage`: main catalog table, review/archive flows, metrics snippets, monitoring signals.
-- `EventDetailPage` and `MonitoringDetailPage`: metric drilldowns.
-- `ProjectSettingsPage`: event types, meta fields, relations, variables, monitoring, alerting, scans.
-- `ProjectAlertingTab`: destinations, rules, templates, delivery history.
-- `DataSourcesPage`: global data-source management.
+- `ProjectsPage`: project portfolio, create/demo, health rollups.
+- `EventsPage` / `EventForm`: catalog, lifecycle/review triage, bulk flows,
+  template-aware create/edit.
+- `OverviewPage`, `MonitorsPage`, `MonitoringDetailPage`, `AnomaliesPage`:
+  observation surfaces.
+- `MetricsPage`, `MetricForm`, `FactTableForm`: metrics catalog and fact tables.
+- `ReconciliationPage`, `CoveragePage`: governance surfaces.
+- `ProjectSettingsPage`: event types, meta fields, relations, variables,
+  monitoring, alerting, scans, branches, history, audit.
+- `SettingsArea`: workspace, project-general, data-source, account, and instance
+  configuration.
 
 Settings tabs currently include:
 - `event-types`
@@ -247,6 +308,9 @@ Settings tabs currently include:
 - `monitoring`
 - `alerting`
 - `scans`
+- `branches`
+- `history`
+- `audit`
 
 ## Async Pipeline Map
 
@@ -255,8 +319,10 @@ Scan flow:
 2. API creates a `ScanJob`.
 3. Celery task `tripl.worker.tasks.scan.run_scan` executes.
 4. Adapter connects to the configured warehouse (ClickHouse, BigQuery, or PostgreSQL).
-5. Cardinality analysis decides low-cardinality vs variable-like fields.
-6. Event generation creates or updates tracking-plan events and variables.
+5. Cardinality/JSON-path analysis decides low-cardinality vs variable-like
+   fields; bindings and name/group rules resolve stable identities.
+6. Event generation creates or updates plan objects without overwriting authored
+   field values or recreating excluded variables.
 7. Job summary is written back to `ScanJob.result_summary`.
 
 Metrics flow:
@@ -265,6 +331,25 @@ Metrics flow:
 3. Metrics are collected into `event_metrics`.
 4. Anomalies are recalculated and persisted.
 5. Alert deliveries may be created for matched rules.
+
+Catalog metrics flow:
+1. Beat schedules `check_metric_definitions_due` every 5 minutes.
+2. SQL metrics query their source; fact metrics batch compatible aggregates by
+   fact table; event-composition metrics reuse event series.
+3. Values/breakdowns are written to `metric_values` tables.
+4. Metric-scope anomalies are recalculated and can alert when a rule opts in.
+
+Branch flow:
+1. Branch changes are reviewed against a plan hash; later edits stale approvals.
+2. Merge policy, ownership approvals, conflicts, and explicit resolutions gate
+   the three-way merge.
+3. Merge refreshes search and can best-effort create a Jira implementation
+   ticket; beat polls ticket completion every 5 minutes.
+
+Search flow:
+1. Plan/metric/fact-table mutations incrementally refresh `search_documents`.
+2. Keyword search is always available; optional embeddings add semantic rank.
+3. Beat requeues stranded embedding batches every 15 minutes.
 
 Alert flow:
 1. Metrics/anomaly pipeline identifies matched alert-rule conditions.
@@ -275,6 +360,10 @@ Alert flow:
 Current alert channel support:
 - Slack webhook
 - Telegram bot/chat
+- Generic webhook
+- Email via SMTP
+- Jira issue
+- Linear issue
 
 Current message formats exposed in frontend/backend types:
 - `plain`
@@ -295,8 +384,12 @@ If the task is about event catalog CRUD:
 If the task is about event types, fields, relations, meta fields, or variables:
 - matching files in `backend/src/tripl/api/v1`
 - matching service and schema files
+- `backend/src/tripl/services/variable_value_drift_service.py`
+- `backend/src/tripl/core/analyzers/_event_generator_variables.py`
 - `frontend/src/pages/ProjectSettingsPage.tsx`
-- backend tests: `test_event_types.py`, `test_fields.py`, `test_relations.py`, `test_meta_fields.py`, `test_variables.py`
+- `frontend/src/pages/settings/VariablesTab.tsx`
+- backend tests: `test_event_types.py`, `test_fields.py`, `test_relations.py`,
+  `test_meta_fields.py`, `test_variables.py`, `test_variable_value_drift.py`
 
 If the task is about data sources or scans:
 - `backend/src/tripl/api/v1/data_sources.py`
@@ -312,8 +405,12 @@ If the task is about data sources or scans:
 
 If the task is about metrics or anomaly detection:
 - `backend/src/tripl/api/v1/metrics.py`
+- `backend/src/tripl/api/v1/metrics_catalog.py`
+- `backend/src/tripl/api/v1/fact_tables.py`
 - `backend/src/tripl/services/metrics_service.py`
-- `backend/src/tripl/worker/tasks/metrics.py`
+- `backend/src/tripl/services/metric_definition_service.py`
+- `backend/src/tripl/services/metric_series_service.py`
+- `backend/src/tripl/worker/tasks/metrics/`
 - `backend/src/tripl/core/analyzers/anomaly_detector.py`
 - `backend/src/tripl/models/event_metric.py`
 - `backend/src/tripl/models/metric_anomaly.py`
@@ -321,21 +418,40 @@ If the task is about metrics or anomaly detection:
 - `backend/src/tripl/tests/test_metrics_tasks.py`
 - `backend/src/tripl/tests/test_anomaly_detector.py`
 - `backend/src/tripl/tests/test_project_anomaly_settings.py`
-- `frontend/src/pages/EventDetailPage.tsx`
 - `frontend/src/pages/MonitoringDetailPage.tsx`
+- `frontend/src/pages/metrics/`
+- `frontend/src/pages/fact-tables/`
 - `frontend/src/lib/metrics.ts`
 
 If the task is about alerting:
 - `backend/src/tripl/api/v1/alerting.py`
 - `backend/src/tripl/services/alerting_service.py`
 - `backend/src/tripl/schemas/alerting.py`
-- `backend/src/tripl/worker/tasks/alerts.py`
+- `backend/src/tripl/worker/tasks/alerts*.py`
+- `backend/src/tripl/worker/tasks/alerts_*.py`
 - `backend/src/tripl/alert_templates.py`
 - `backend/src/tripl/alerting_validation.py`
 - `backend/src/tripl/models/alert_*.py`
 - `backend/src/tripl/tests/test_alerting.py`
-- `frontend/src/pages/ProjectAlertingTab.tsx`
+- `frontend/src/pages/alerting/`
 - `frontend/src/api/alerting.ts`
+
+If the task is about branches, revisions, or implementation tracking:
+- `backend/src/tripl/api/v1/plan_branches.py`
+- `backend/src/tripl/services/plan_branch_*.py`
+- `backend/src/tripl/api/v1/project_tracker_config.py`
+- `backend/src/tripl/worker/tasks/implementation_tickets.py`
+- `frontend/src/pages/settings/BranchesTab.tsx`
+- backend tests: `test_plan_branches.py`, `test_implementation_tickets.py`
+
+If the task is about search or AI:
+- `backend/src/tripl/api/v1/search.py`, `backend/src/tripl/api/v1/ai.py`
+- `backend/src/tripl/services/search_service.py`,
+  `backend/src/tripl/services/_search_documents.py`
+- `backend/src/tripl/worker/tasks/search.py`
+- `frontend/src/components/command-palette.tsx`
+- backend tests: `test_search.py`, `test_search_incremental_reindex.py`,
+  `test_search_embed_task.py`
 
 ## Practical Coding Guidance
 
