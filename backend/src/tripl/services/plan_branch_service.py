@@ -834,16 +834,21 @@ async def diff_branch(session: AsyncSession, slug: str, branch_id: uuid.UUID) ->
 
     main_snapshot = await build_plan_snapshot(session, project.id, branch_id=main_branch_id)
     branch_snapshot = await build_plan_snapshot(session, project.id, branch_id=branch.id)
-    # old = main, new = branch — entries describe what the branch changes vs main.
-    entries = compute_plan_diff_entries(main_snapshot, branch_snapshot)
-
+    entries: list[Any] = []
     behind_base = False
     if branch.base_revision_id is not None:
         base_revision = await session.get(PlanRevision, branch.base_revision_id)
         if base_revision is not None:
             base_payload = base_revision.payload or {}
+            # Visible entries are changes authored on the branch, not changes
+            # that landed on main after the branch was opened.
+            entries = compute_plan_diff_entries(base_payload, branch_snapshot)
             behind_entries = compute_plan_diff_entries(base_payload, main_snapshot)
             behind_base = len(behind_entries) > 0
+    else:
+        # Legacy working branches without a base snapshot cannot distinguish
+        # branch-authored changes from later main changes.
+        entries = compute_plan_diff_entries(main_snapshot, branch_snapshot)
 
     return PlanBranchDiff(
         entries=entries,

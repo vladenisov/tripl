@@ -171,6 +171,8 @@ describe('BranchesTab', () => {
     renderTab()
 
     fireEvent.click(await screen.findByText('checkout-v2'))
+    expect(await screen.findByText('No changes in this branch.')).toBeInTheDocument()
+    expect(screen.getByText('0 changes')).toBeInTheDocument()
     const mergeBtn = await screen.findByRole('button', { name: /Merge to main/i })
     fireEvent.click(mergeBtn)
     await waitFor(() => expect(planBranchesApi.merge).toHaveBeenCalledWith('demo', 'feat-1'))
@@ -286,6 +288,31 @@ describe('BranchesTab', () => {
 
     expect(
       await screen.findByText('Not enough approvals to merge: 1 of 2 required.'),
+    ).toBeInTheDocument()
+  })
+
+  it('explains a merge rejection when plan entities on main changed', async () => {
+    vi.mocked(planBranchesApi.list).mockResolvedValue({ items: [MAIN, FEATURE], total: 2 })
+    vi.mocked(planBranchesApi.getConflicts).mockResolvedValue({ entities: [], unresolved_count: 0 })
+    vi.mocked(planBranchesApi.listComments).mockResolvedValue([])
+    vi.mocked(planBranchesApi.diff).mockResolvedValue({
+      behind_base: true,
+      summary: { added: 1, removed: 0, changed: 0 },
+      entries: [
+        { entity_type: 'event', kind: 'added', name: 'checkout', parent: 'track', changes: [] },
+      ],
+    })
+    const error = new ApiError('409 Conflict', 409)
+    error.detail = { branch_behind_base: true }
+    vi.mocked(planBranchesApi.merge).mockRejectedValue(error)
+
+    renderTab()
+
+    fireEvent.click(await screen.findByText('checkout-v2'))
+    fireEvent.click(await screen.findByRole('button', { name: /Merge to main/i }))
+
+    expect(
+      await screen.findByText(/plan entities on main changed.*recreate the branch/i),
     ).toBeInTheDocument()
   })
 

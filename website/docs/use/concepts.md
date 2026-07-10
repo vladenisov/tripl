@@ -122,17 +122,21 @@ point. It means:
 
 - The live plan is never half-finished or broken while you work.
 - Every change gets a second pair of eyes before it lands.
-- You can see precisely what a branch changes compared to main (the **diff**).
+- You can see precisely what changed on a branch since it was created (the
+  **diff**). Changes that landed only on main are shown separately as the branch
+  being behind; they are not misreported as branch deletions.
 
 A couple of things tripl handles for you so merging is safe:
 
 - **Identities survive a merge.** When your branch and main both touched the
   same event, tripl matches them up by name rather than creating a duplicate, so
   the metrics, history, and alerts already attached to that event stay attached.
-- **Non-conflicting edits merge automatically.** If you changed an event's
-  description and a teammate changed its tags, both land. If you *both* edited
-  the same description, tripl shows you both versions side by side and asks you
-  to pick one.
+- **Non-conflicting event-type edits merge automatically.** If you changed an
+  event type's description and a teammate changed its color, both land. If you
+  *both* edited the same field, tripl shows both versions side by side and asks
+  you to pick one. If other plan entities changed on main after the branch was
+  created, recreate the branch from current main before merging so those newer
+  changes cannot be overwritten by the older branch copy.
 - **Owners can gate their events.** An event type can have **owners**; merging a
   branch that touches an owned type requires a sign-off from one of them.
 
