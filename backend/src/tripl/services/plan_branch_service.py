@@ -405,6 +405,7 @@ async def _deep_copy_plan(
                     event_id=new_ev_id,
                     field_definition_id=fd_map[fv.field_definition_id],
                     value=fv.value,
+                    is_authored=fv.is_authored,
                 )
             )
         for mv in ev.meta_values:

@@ -268,6 +268,9 @@ def _create_group_event_from_source(
                 event_id=target.id,
                 field_definition_id=fv.field_definition_id,
                 value=value,
+                # A rule override replaces the hand-written value, so authored
+                # provenance only survives when the value came through as-is.
+                is_authored=fv.is_authored and value == fv.value,
             )
         )
     session.flush()

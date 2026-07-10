@@ -415,6 +415,7 @@ async def _apply_merge(
                         event_id=m_ev.id,
                         field_definition_id=main_field_by_key[(bf_et, bf_name)],
                         value=fv.value,
+                        is_authored=fv.is_authored,
                     )
                 )
             for mv in b_ev.meta_values:
@@ -455,6 +456,7 @@ async def _apply_merge(
                         event_id=new_ev_id,
                         field_definition_id=main_field_by_key[(bf_et, bf_name)],
                         value=fv.value,
+                        is_authored=fv.is_authored,
                     )
                 )
             for mv in b_ev.meta_values:
