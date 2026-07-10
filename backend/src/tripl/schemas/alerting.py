@@ -82,6 +82,7 @@ class AlertRuleBase(BaseModel):
     include_events: bool | None = None
     include_schema_drifts: bool | None = None
     include_distribution_drifts: bool | None = None
+    include_variable_value_drifts: bool | None = None
     include_release_regressions: bool | None = None
     include_metrics: bool | None = None
     notify_on_spike: bool | None = None
@@ -113,6 +114,7 @@ class AlertRuleCreate(AlertRuleBase):
     include_events: bool = True
     include_schema_drifts: bool = False
     include_distribution_drifts: bool = False
+    include_variable_value_drifts: bool = False
     include_release_regressions: bool = False
     include_metrics: bool = False
     notify_on_spike: bool = True
@@ -142,6 +144,7 @@ class AlertRuleResponse(BaseModel):
     include_events: bool
     include_schema_drifts: bool
     include_distribution_drifts: bool
+    include_variable_value_drifts: bool
     include_release_regressions: bool
     include_metrics: bool
     notify_on_spike: bool
@@ -608,6 +611,7 @@ class MonitorDetailResponse(MonitorSummaryItem):
     include_events: bool
     include_schema_drifts: bool
     include_distribution_drifts: bool
+    include_variable_value_drifts: bool
     include_release_regressions: bool
     include_metrics: bool
     # Quick fired-history stats for the detail header (full history comes from

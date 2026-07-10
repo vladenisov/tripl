@@ -48,6 +48,7 @@ export type RuleFormState = {
   include_schema_drifts: boolean
   include_distribution_drifts: boolean
   include_release_regressions: boolean
+  include_variable_value_drifts: boolean
   notify_on_spike: boolean
   notify_on_drop: boolean
   ai_explanation_enabled: boolean
@@ -275,6 +276,7 @@ export function defaultRuleForm(): RuleFormState {
     include_schema_drifts: false,
     include_distribution_drifts: false,
     include_release_regressions: false,
+    include_variable_value_drifts: false,
     notify_on_spike: true,
     notify_on_drop: true,
     ai_explanation_enabled: false,
@@ -299,6 +301,7 @@ export function ruleToForm(rule: AlertRule): RuleFormState {
     include_schema_drifts: rule.include_schema_drifts,
     include_distribution_drifts: rule.include_distribution_drifts,
     include_release_regressions: rule.include_release_regressions,
+    include_variable_value_drifts: rule.include_variable_value_drifts,
     notify_on_spike: rule.notify_on_spike,
     notify_on_drop: rule.notify_on_drop,
     ai_explanation_enabled: rule.ai_explanation_enabled,
@@ -360,6 +363,7 @@ export function scopeSummary(rule: AlertRule) {
     rule.include_schema_drifts ? 'schema' : null,
     rule.include_distribution_drifts ? 'distribution' : null,
     rule.include_release_regressions ? 'regressions' : null,
+    rule.include_variable_value_drifts ? 'value drift' : null,
   ].filter(Boolean).join(', ')
 }
 

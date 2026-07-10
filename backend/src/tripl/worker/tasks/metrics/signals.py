@@ -18,6 +18,7 @@ from sqlalchemy.orm import Session
 from tripl.alerting_matching import (
     SCOPE_DISTRIBUTION_DRIFT,
     SCOPE_RELEASE_REGRESSION,
+    SCOPE_VARIABLE_VALUE_DRIFT,
     DistributionDriftAlertCandidate,
     DriftAlertCandidate,
     SchemaDriftAlertCandidate,
@@ -39,6 +40,8 @@ from tripl.models.metric_value import MetricValue
 from tripl.models.release_regression import ReleaseRegression
 from tripl.models.scan_config import ScanConfig
 from tripl.models.schema_drift import SchemaDrift
+from tripl.models.variable import Variable
+from tripl.models.variable_value_drift import VariableValueDrift
 
 from ._helpers import RECENT_SIGNAL_WINDOW, SCOPE_SCHEMA_DRIFT
 from .urls import _trim_alert_text
@@ -315,6 +318,51 @@ def _get_active_schema_drift_candidates(
             drift_field=drift.field_name,
             drift_type=drift.drift_type,
             sample_value=_trim_alert_text(drift.sample_value),
+        )
+        candidates[(candidate.scope_type, candidate.scope_ref)] = candidate
+    return candidates
+
+
+def _get_active_variable_value_drift_candidates(
+    session: Session,
+    config: ScanConfig,
+) -> dict[tuple[str, str], DriftAlertCandidate]:
+    """Turn open/snooze-expired variable value drifts into alert candidates.
+
+    Rides the shared drift fields: variable display name -> drift_field,
+    "value_drift" -> drift_type, sampled novel values -> sample_value. The
+    per-event anchor flows through ``event_id`` so event filters apply.
+    """
+    retention_cutoff = datetime.now(UTC) - timedelta(days=30)
+    candidates: dict[tuple[str, str], DriftAlertCandidate] = {}
+    for drift, variable_name in session.execute(
+        select(VariableValueDrift, Variable.name)
+        .join(Variable, Variable.id == VariableValueDrift.variable_id)
+        .where(
+            VariableValueDrift.project_id == config.project_id,
+            VariableValueDrift.scan_config_id == config.id,
+            VariableValueDrift.detected_at >= retention_cutoff,
+            VariableValueDrift.status.in_(("open", "snoozed")),
+            (VariableValueDrift.status != "snoozed")
+            | (VariableValueDrift.snoozed_until.is_(None))
+            | (VariableValueDrift.snoozed_until <= datetime.now(UTC)),
+        )
+        .order_by(VariableValueDrift.detected_at.desc())
+    ).all():
+        scope_ref = str(drift.id)
+        candidate = DriftAlertCandidate(
+            id=drift.id,
+            scope_type=SCOPE_VARIABLE_VALUE_DRIFT,
+            scope_ref=scope_ref,
+            event_id=drift.event_id,
+            event_type_id=None,
+            bucket=drift.detected_at,
+            direction="spike",
+            actual_count=float(len(drift.observed_values or [])),
+            expected_count=0.0,
+            drift_field=variable_name,
+            drift_type="value_drift",
+            sample_value=_trim_alert_text(", ".join(drift.observed_values or [])),
         )
         candidates[(candidate.scope_type, candidate.scope_ref)] = candidate
     return candidates

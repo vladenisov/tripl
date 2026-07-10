@@ -15,6 +15,7 @@ from tripl.alerting_matching import (
     SCOPE_DISTRIBUTION_DRIFT,
     SCOPE_METRIC,
     SCOPE_RELEASE_REGRESSION,
+    SCOPE_VARIABLE_VALUE_DRIFT,
     AlertMatchCandidate,
 )
 from tripl.core.analyzers.anomaly_detector import (
@@ -78,10 +79,20 @@ def _build_alert_scope_names(
 
     event_ids = {anomaly.event_id for anomaly in anomalies if anomaly.event_id is not None}
     if event_ids:
+        event_names_by_id: dict[uuid.UUID, str] = {}
         for event_id, name in session.execute(
             select(Event.id, Event.name).where(Event.id.in_(event_ids))
         ).all():
+            event_names_by_id[event_id] = name
             scope_names[(SCOPE_EVENT, str(event_id))] = name
+        for anomaly in anomalies:
+            if anomaly.scope_type != SCOPE_VARIABLE_VALUE_DRIFT or anomaly.event_id is None:
+                continue
+            event_name = event_names_by_id.get(anomaly.event_id, "Event")
+            drift_field = getattr(anomaly, "drift_field", None) or anomaly.scope_ref
+            scope_names[(SCOPE_VARIABLE_VALUE_DRIFT, anomaly.scope_ref)] = (
+                f"{event_name}.{drift_field}"
+            )
 
     # Catalog metric anomalies resolve to the metric's display name (scope_ref is
     # the metric definition id).

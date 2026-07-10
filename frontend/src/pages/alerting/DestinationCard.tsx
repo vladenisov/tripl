@@ -313,6 +313,13 @@ export function DestinationCard({
                   />
                   Release regressions
                 </label>
+                <label className="flex items-center gap-2 text-sm">
+                  <Checkbox
+                    checked={ruleForm.include_variable_value_drifts}
+                    onCheckedChange={checked => setRuleForm(current => ({ ...current, include_variable_value_drifts: !!checked }))}
+                  />
+                  Value drift
+                </label>
               </div>
 
               <div className="grid grid-cols-1 md:grid-cols-3 gap-3">

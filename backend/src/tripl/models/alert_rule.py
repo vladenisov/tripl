@@ -46,6 +46,11 @@ class AlertRule(UUIDMixin, TimestampMixin, Base):
         default=False,
         server_default="false",
     )
+    include_variable_value_drifts: Mapped[bool] = mapped_column(
+        Boolean,
+        default=False,
+        server_default="false",
+    )
     # Opt-in to app-version release-regression signals (events that disappeared
     # or dropped in the latest release). Off by default, like the drift toggles,
     # so regressions are a deliberate subscription rather than riding on the
