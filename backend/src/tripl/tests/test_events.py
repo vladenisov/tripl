@@ -1081,10 +1081,14 @@ async def test_bulk_create_events(client: AsyncClient):
 
     async with TestSessionLocal() as session:
         field_values = (
-            await session.execute(
-                select(EventFieldValue).where(EventFieldValue.event_id.in_(event_ids))
+            (
+                await session.execute(
+                    select(EventFieldValue).where(EventFieldValue.event_id.in_(event_ids))
+                )
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
     assert len(field_values) == 2
     assert all(field_value.is_authored for field_value in field_values)
 
@@ -1303,3 +1307,118 @@ async def test_bulk_create_across_multiple_event_types_validates_per_type(client
         ],
     )
     assert bad.status_code == 422
+
+
+async def _seed_scan_name_rule(slug: str, event_type_id: str, name_format: str) -> None:
+    from tripl.models.data_source import DataSource
+    from tripl.models.scan_config import ScanConfig
+    from tripl.models.project import Project
+
+    async with TestSessionLocal() as session, session.begin():
+        project = (await session.execute(select(Project).where(Project.slug == slug))).scalar_one()
+        data_source = DataSource(
+            id=uuid.uuid4(),
+            name=f"wh-{slug}",
+            db_type="clickhouse",
+            host="localhost",
+            port=9000,
+            database_name="db",
+            username="u",
+            password_encrypted="x",
+        )
+        session.add(data_source)
+        await session.flush()
+        session.add(
+            ScanConfig(
+                id=uuid.uuid4(),
+                project_id=project.id,
+                data_source_id=data_source.id,
+                event_type_id=uuid.UUID(event_type_id),
+                name="scan",
+                base_query="SELECT * FROM events",
+                event_name_format=name_format,
+            )
+        )
+
+
+@pytest.mark.asyncio
+async def test_create_event_name_generated_from_scan_rule(client: AsyncClient):
+    slug = "ev-namegen"
+    await client.post("/api/v1/projects", json={"name": slug, "slug": slug})
+    et = await client.post(
+        f"/api/v1/projects/{slug}/event-types",
+        json={"name": "pv", "display_name": "Page View"},
+    )
+    et_id = et.json()["id"]
+    screen = await client.post(
+        f"/api/v1/projects/{slug}/event-types/{et_id}/fields",
+        json={"name": "screen", "display_name": "Screen", "field_type": "string"},
+    )
+    payload_field = await client.post(
+        f"/api/v1/projects/{slug}/event-types/{et_id}/fields",
+        json={"name": "payload", "display_name": "Payload", "field_type": "json"},
+    )
+    await _seed_scan_name_rule(slug, et_id, "pv:{screen}:{payload.extra.variant}")
+
+    resp = await client.post(
+        f"/api/v1/projects/{slug}/events",
+        json={
+            "event_type_id": et_id,
+            "name": "my crooked name",
+            "field_values": [
+                {"field_definition_id": screen.json()["id"], "value": "onboarding"},
+                {
+                    "field_definition_id": payload_field.json()["id"],
+                    "value": '{"extra": {"variant": "b2"}}',
+                },
+            ],
+        },
+    )
+    assert resp.status_code == 201, resp.text
+    body = resp.json()
+    # The template decides the identity; the provided name is ignored with a warning.
+    assert body["name"] == "pv:onboarding:b2"
+    assert any("generated from the scan rule" in w for w in body["warnings"])
+
+    async with TestSessionLocal() as session:
+        event = await session.get(Event, uuid.UUID(body["id"]))
+        assert event.source_name == "pv:onboarding:b2"
+
+
+@pytest.mark.asyncio
+async def test_create_event_scan_rule_requires_template_fields(client: AsyncClient):
+    slug = "ev-namegen-422"
+    await client.post("/api/v1/projects", json={"name": slug, "slug": slug})
+    et = await client.post(
+        f"/api/v1/projects/{slug}/event-types",
+        json={"name": "pv", "display_name": "Page View"},
+    )
+    et_id = et.json()["id"]
+    await client.post(
+        f"/api/v1/projects/{slug}/event-types/{et_id}/fields",
+        json={"name": "screen", "display_name": "Screen", "field_type": "string"},
+    )
+    await _seed_scan_name_rule(slug, et_id, "pv:{screen}")
+
+    resp = await client.post(
+        f"/api/v1/projects/{slug}/events",
+        json={"event_type_id": et_id, "name": "whatever", "field_values": []},
+    )
+    assert resp.status_code == 422
+    assert "fill field values for: screen" in resp.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_create_event_free_name_without_scan_rule(client: AsyncClient):
+    slug = "ev-freename"
+    await client.post("/api/v1/projects", json={"name": slug, "slug": slug})
+    et = await client.post(
+        f"/api/v1/projects/{slug}/event-types",
+        json={"name": "pv", "display_name": "Page View"},
+    )
+    resp = await client.post(
+        f"/api/v1/projects/{slug}/events",
+        json={"event_type_id": et.json()["id"], "name": "hand written"},
+    )
+    assert resp.status_code == 201
+    assert resp.json()["name"] == "hand written"
