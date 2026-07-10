@@ -1311,8 +1311,8 @@ async def test_bulk_create_across_multiple_event_types_validates_per_type(client
 
 async def _seed_scan_name_rule(slug: str, event_type_id: str, name_format: str) -> None:
     from tripl.models.data_source import DataSource
-    from tripl.models.scan_config import ScanConfig
     from tripl.models.project import Project
+    from tripl.models.scan_config import ScanConfig
 
     async with TestSessionLocal() as session, session.begin():
         project = (await session.execute(select(Project).where(Project.slug == slug))).scalar_one()
