@@ -30,6 +30,7 @@ from tripl.services.fact_table_introspection_service import (
     FactTableIntrospectionError,
     bucket_warehouse_type,
     introspect_fact_table,
+    is_identifier_column,
 )
 
 # --------------------------------------------------------------------------- #
@@ -88,6 +89,50 @@ from tripl.services.fact_table_introspection_service import (
 )
 def test_bucket_warehouse_type(type_name: str, expected: str) -> None:
     assert bucket_warehouse_type(type_name) == expected
+
+
+# --------------------------------------------------------------------------- #
+# is_identifier_column — pure helper, no DB / adapter                          #
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.parametrize(
+    ("name", "type_name", "expected"),
+    [
+        # Bare identifier names (any case).
+        ("id", "String", True),
+        ("ID", "String", True),
+        ("Id", "String", True),
+        ("uuid", "String", True),
+        ("guid", "String", True),
+        # snake_case suffixes (any case).
+        ("user_id", "String", True),
+        ("USER_ID", "String", True),
+        ("device_uuid", "LowCardinality(String)", True),
+        ("session_guid", "text", True),
+        # camelCase suffixes (lower/digit boundary before the suffix).
+        ("deviceId", "String", True),
+        ("deviceID", "String", True),
+        ("sessionUuid", "String", True),
+        # Declared-type signal: UUID-typed columns are identifiers by construction.
+        ("trace", "UUID", True),
+        ("trace", "Nullable(UUID)", True),
+        # Plain words that merely end in "id" must NOT match (tripl-8pc0).
+        ("paid", "String", False),
+        ("valid", "String", False),
+        ("android", "String", False),
+        ("PAID", "String", False),
+        # Ordinary dimensions / measures.
+        ("country", "String", False),
+        ("session_start", "String", False),
+        ("platform", "LowCardinality(String)", False),
+        ("idea", "String", False),
+        ("identity_theft_reports", "String", False),
+        ("", "String", False),
+    ],
+)
+def test_is_identifier_column(name: str, type_name: str, expected: bool) -> None:
+    assert is_identifier_column(name, type_name) is expected
 
 
 # --------------------------------------------------------------------------- #
@@ -223,9 +268,52 @@ async def test_introspect_buckets_columns_and_identifiers(
         FactTableColumn(name="created_at", type="timestamp"),
         FactTableColumn(name="event_id", type="string"),
     ]
-    # String columns, in projection order, excluding the timestamp column.
+    # Id-like string columns, in projection order, excluding the timestamp
+    # column: ``user_id`` by name, ``event_id`` by name and UUID type.
     assert result.identifier_candidates == ["user_id", "event_id"]
     assert adapter.closed is True
+
+
+async def test_introspect_does_not_suggest_ordinary_string_columns(
+    session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Regression for tripl-8pc0: string-typed is not enough to be an identifier.
+
+    Under the old rule every non-timestamp string column was a candidate, so
+    ordinary dimensions (``country``) and words merely ending in "id"
+    (``paid``/``valid``/``android``) were suggested — and then persisted by the
+    edit UI's pre-selection.
+    """
+    project = await _make_project(session)
+    data_source = await _make_data_source(session)
+    await _bind_scan_config(session, project, data_source)
+
+    columns = [
+        ColumnInfo(name="id", type_name="String"),
+        ColumnInfo(name="paid", type_name="String"),
+        ColumnInfo(name="valid", type_name="String"),
+        ColumnInfo(name="android", type_name="String"),
+        ColumnInfo(name="country", type_name="LowCardinality(String)"),
+        ColumnInfo(name="session_start", type_name="String"),
+        ColumnInfo(name="user_id", type_name="String"),
+        ColumnInfo(name="deviceId", type_name="String"),
+        ColumnInfo(name="created_at", type_name="DateTime"),
+    ]
+    adapter = _FakeAdapter(columns, [c.name for c in columns], [])
+    _install_fake_adapter(monkeypatch, adapter)
+
+    result = await introspect_fact_table(
+        session,
+        project_id=project.id,
+        data_source_id=data_source.id,
+        sql=(
+            "SELECT id, paid, valid, android, country, session_start,"
+            " user_id, deviceId, created_at FROM events"
+        ),
+        timestamp_column="created_at",
+    )
+
+    assert result.identifier_candidates == ["id", "user_id", "deviceId"]
 
 
 async def test_introspect_sample_rows_are_json_safe(

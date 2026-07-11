@@ -124,10 +124,25 @@ export function FactTableForm({ slug, factTable, dataSources, onClose }: FactTab
       }),
     onSuccess: res => {
       setColumns(res.columns)
+      // Re-derive the selection from the fresh suggestions while preserving the
+      // user's manual overrides relative to the previous suggestion set:
+      // columns the user checked beyond the old suggestions stay checked (if
+      // they still exist), columns the user unchecked stay unchecked. For an
+      // existing fact table the seeded "suggestions" are its saved
+      // identifier_columns, so an untouched (possibly stale) selection is
+      // simply replaced by the backend's current candidates.
+      const existingNames = new Set(res.columns.map(column => column.name))
+      setIdentifierColumns(current => {
+        const manuallyAdded = current.filter(
+          name => !identifierCandidates.includes(name) && existingNames.has(name),
+        )
+        const manuallyRemoved = new Set(
+          identifierCandidates.filter(name => !current.includes(name)),
+        )
+        const next = res.identifier_candidates.filter(name => !manuallyRemoved.has(name))
+        return [...next, ...manuallyAdded.filter(name => !next.includes(name))]
+      })
       setIdentifierCandidates(res.identifier_candidates)
-      // Pre-select the backend's suggested identifier columns; the user can
-      // refine the selection before saving.
-      setIdentifierColumns(res.identifier_candidates)
     },
   })
 
