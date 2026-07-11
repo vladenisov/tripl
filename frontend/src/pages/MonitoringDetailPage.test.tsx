@@ -27,11 +27,21 @@ vi.mock('@/components/ui/chart-lazy', () => ({
   MetricsMultiSeriesChart: ({
     series,
     emptyLabel,
+    seriesLabel,
+    valueFormatter,
   }: {
     series: Array<{ label: string }>
     emptyLabel?: string
+    seriesLabel?: string
+    valueFormatter?: (value: number) => string
   }) => (
-    <div data-testid="multi-chart" data-labels={series.map(item => item.label).join('|')}>
+    <div
+      data-testid="multi-chart"
+      data-labels={series.map(item => item.label).join('|')}
+      data-series-label={seriesLabel ?? ''}
+      // Probe the optional formatter: percent metrics turn 0.08 into '8%'.
+      data-value-sample={valueFormatter ? valueFormatter(0.08) : ''}
+    >
       {series.length ? series.map(item => <span key={item.label}>{item.label}</span>) : emptyLabel}
     </div>
   ),
@@ -686,6 +696,60 @@ describe('MonitoringDetailPage event-detail header and semantics', () => {
 
     expect(await screen.findByText('platform share anomalies')).toBeInTheDocument()
     expect(screen.getByLabelText('ios share drop: 50.0% -> 10.0%')).toBeInTheDocument()
+
+    // Event-scope breakdowns keep today's rendering exactly: the 'events'
+    // label and NO value formatter (tripl-4dej regression guard).
+    const chart = screen.getByTestId('multi-chart')
+    expect(chart).toHaveAttribute('data-series-label', 'events')
+    expect(chart).toHaveAttribute('data-value-sample', '')
+  })
+
+  it('filters breakdown series to the selected values (tripl-egt5)', async () => {
+    const point = metricPoint('2026-01-02T00:00:00Z', 10)
+    installEventDetailFetch({
+      breakdowns: {
+        event_id: 'event-1',
+        scan_config_id: 'scan-1',
+        interval: '1h',
+        columns: ['platform'],
+        selected_column: 'platform',
+        series: [
+          { breakdown_value: 'ios', is_other: false, total_count: 60, data: [point], parity_anomalies: [] },
+          { breakdown_value: 'android', is_other: false, total_count: 40, data: [point], parity_anomalies: [] },
+          { breakdown_value: 'web', is_other: false, total_count: 20, data: [point], parity_anomalies: [] },
+        ],
+      },
+    })
+    renderEventDetail()
+    await screen.findByRole('heading', { name: 'checkout_completed' })
+
+    const breakdownsTab = screen.getByRole('tab', { name: /Breakdowns/i })
+    fireEvent.pointerDown(breakdownsTab, { button: 0, ctrlKey: false })
+    fireEvent.mouseDown(breakdownsTab, { button: 0, ctrlKey: false })
+    fireEvent.pointerUp(breakdownsTab, { button: 0, ctrlKey: false })
+    fireEvent.mouseUp(breakdownsTab, { button: 0, ctrlKey: false })
+    fireEvent.click(breakdownsTab)
+
+    // Default: every value renders.
+    const chart = await screen.findByTestId('multi-chart')
+    expect(chart).toHaveAttribute('data-labels', 'ios|android|web')
+
+    // Picking one value isolates its series…
+    fireEvent.click(screen.getByRole('button', { name: 'Toggle android' }))
+    await waitFor(() =>
+      expect(screen.getByTestId('multi-chart')).toHaveAttribute('data-labels', 'android'))
+    expect(screen.getByRole('button', { name: 'Toggle android' }))
+      .toHaveAttribute('aria-pressed', 'true')
+
+    // …picking a second adds it (response order preserved)…
+    fireEvent.click(screen.getByRole('button', { name: 'Toggle web' }))
+    await waitFor(() =>
+      expect(screen.getByTestId('multi-chart')).toHaveAttribute('data-labels', 'android|web'))
+
+    // …and "Show all" resets to the full set.
+    fireEvent.click(screen.getByRole('button', { name: 'Show all' }))
+    await waitFor(() =>
+      expect(screen.getByTestId('multi-chart')).toHaveAttribute('data-labels', 'ios|android|web'))
   })
 
   it('shows a Plan / Events / <name> breadcrumb for the event scope', async () => {
@@ -849,6 +913,7 @@ describe('MonitoringDetailPage catalog-metric drilldown', () => {
     definitionOverrides: Record<string, unknown> = {},
     seriesOverrides: Record<string, unknown> = {},
     annotations: Array<Record<string, unknown>> = [],
+    breakdownsOverrides: Record<string, unknown> = {},
   ) {
     return vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
       const url = String(input)
@@ -887,6 +952,7 @@ describe('MonitoringDetailPage catalog-metric drilldown', () => {
           columns: [],
           selected_column: null,
           series: [],
+          ...breakdownsOverrides,
         })
       }
       if (url.endsWith('/api/v1/projects/demo/metrics/metric-1')) {
@@ -1025,6 +1091,49 @@ describe('MonitoringDetailPage catalog-metric drilldown', () => {
       expect(body.scope_ref).toBe('metric-1')
       expect(body.label).toBe('campaign launch')
     })
+  })
+
+  it('renders percent-metric breakdowns with the percent formatter and unit label (tripl-4dej)', async () => {
+    installMetricDetailFetch(
+      '1d',
+      { unit: '%' },
+      {},
+      [],
+      {
+        columns: ['platform'],
+        selected_column: 'platform',
+        series: [
+          {
+            breakdown_value: 'ios',
+            is_other: false,
+            total_value: 0.4,
+            data: [metricSeriesPoint('2026-01-02T00:00:00Z', 0.08)],
+          },
+          {
+            breakdown_value: 'android',
+            is_other: false,
+            total_value: 0.3,
+            data: [metricSeriesPoint('2026-01-02T00:00:00Z', 0.05)],
+          },
+        ],
+      },
+    )
+    renderMetricDetail()
+
+    await screen.findByTestId('metrics-chart')
+    const breakdownsTab = screen.getByRole('tab', { name: /Breakdowns/i })
+    fireEvent.pointerDown(breakdownsTab, { button: 0, ctrlKey: false })
+    fireEvent.mouseDown(breakdownsTab, { button: 0, ctrlKey: false })
+    fireEvent.pointerUp(breakdownsTab, { button: 0, ctrlKey: false })
+    fireEvent.mouseUp(breakdownsTab, { button: 0, ctrlKey: false })
+    fireEvent.click(breakdownsTab)
+
+    const chart = await screen.findByTestId('multi-chart')
+    expect(chart).toHaveAttribute('data-labels', 'ios|android')
+    // The percent-aware formatter reached the breakdown chart (0.08 → '8%'),
+    // and the tooltip label is the metric's unit — never 'events'.
+    expect(chart).toHaveAttribute('data-value-sample', '8%')
+    expect(chart).toHaveAttribute('data-series-label', '%')
   })
 
   it('coaches the metric-scope Breakdowns empty state with an Edit metric link', async () => {

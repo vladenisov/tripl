@@ -6,6 +6,7 @@ import type {
   DataSource,
   FactTableListItem,
   FactTableListResponse,
+  MetricCollectNowResponse,
   MetricDefinitionListItem,
   MetricDefinitionListResponse,
   MetricDefinitionResponse,
@@ -29,7 +30,12 @@ vi.mock('@/api/factTablesApi', () => ({
 vi.mock('@/api/dataSources', () => ({
   dataSourcesApi: { list: vi.fn() },
 }))
+// Mocked so collect-now toasts are observable (no <Toaster> mounts in tests).
+vi.mock('sonner', () => ({
+  toast: { success: vi.fn(), error: vi.fn(), info: vi.fn() },
+}))
 
+import { toast } from 'sonner'
 import { metricsCatalogApi } from '@/api/metricsCatalogApi'
 import { factTablesApi } from '@/api/factTablesApi'
 import { dataSourcesApi } from '@/api/dataSources'
@@ -454,6 +460,102 @@ describe('MetricsPage', () => {
           status: 'archived',
         }),
       )
+    })
+
+    // Manual collect feedback (tripl-4mju): the row action must confirm the run
+    // started, then watch the persisted last_collection_status and report the
+    // terminal outcome — success, or the failure reason the worker stamped.
+    describe('collect now feedback (tripl-4mju)', () => {
+      function mockCollectQueued() {
+        vi.mocked(metricsCatalogApi.collect).mockResolvedValue({
+          metric_id: 'm-1',
+          status: 'queued',
+          window_from: null,
+          window_to: null,
+          task_id: 'task-1',
+        } as unknown as MetricCollectNowResponse)
+      }
+
+      it('confirms the start and toasts success once the run settles', async () => {
+        mockList({
+          items: [makeItem({ id: 'm-1', display_name: 'Checkout conversion' })],
+          total: 1,
+        })
+        mockCollectQueued()
+        vi.mocked(metricsCatalogApi.get).mockResolvedValue(
+          makeDefinition({ id: 'm-1', last_collection_status: 'success' }),
+        )
+
+        renderMetrics()
+
+        await openRowMenu('Checkout conversion')
+        fireEvent.click(await screen.findByRole('menuitem', { name: 'Collect now' }))
+
+        await waitFor(() =>
+          expect(metricsCatalogApi.collect).toHaveBeenCalledWith('demo', 'm-1'),
+        )
+        // Immediate confirmation the run started…
+        await waitFor(() =>
+          expect(toast.success).toHaveBeenCalledWith(
+            'Collection started — you will be notified when it finishes.',
+          ),
+        )
+        // …then the terminal outcome from the status watch.
+        await waitFor(() =>
+          expect(toast.success).toHaveBeenCalledWith(
+            '"Checkout conversion" collected — the chart is up to date.',
+          ),
+        )
+        expect(toast.error).not.toHaveBeenCalled()
+      })
+
+      it('surfaces the worker-persisted failure reason', async () => {
+        mockList({
+          items: [makeItem({ id: 'm-1', display_name: 'Checkout conversion' })],
+          total: 1,
+        })
+        mockCollectQueued()
+        vi.mocked(metricsCatalogApi.get).mockResolvedValue(
+          makeDefinition({
+            id: 'm-1',
+            last_collection_status: 'error',
+            last_collection_error: 'SQL syntax error near SELECT',
+          }),
+        )
+
+        renderMetrics()
+
+        await openRowMenu('Checkout conversion')
+        fireEvent.click(await screen.findByRole('menuitem', { name: 'Collect now' }))
+
+        await waitFor(() =>
+          expect(toast.error).toHaveBeenCalledWith(
+            'Collection failed: SQL syntax error near SELECT',
+          ),
+        )
+      })
+
+      it('toasts an error when the trigger request itself fails', async () => {
+        mockList({
+          items: [makeItem({ id: 'm-1', display_name: 'Checkout conversion' })],
+          total: 1,
+        })
+        vi.mocked(metricsCatalogApi.collect).mockRejectedValue(new Error('503'))
+        // Drop call history leaked from earlier tests in this file (module-factory
+        // vi.fn()s survive restoreAllMocks) so the "never polled" check is real.
+        vi.mocked(metricsCatalogApi.get).mockClear()
+
+        renderMetrics()
+
+        await openRowMenu('Checkout conversion')
+        fireEvent.click(await screen.findByRole('menuitem', { name: 'Collect now' }))
+
+        await waitFor(() =>
+          expect(toast.error).toHaveBeenCalledWith('Could not start collection.'),
+        )
+        // No watch starts, so the status endpoint is never polled.
+        expect(metricsCatalogApi.get).not.toHaveBeenCalled()
+      })
     })
   })
 

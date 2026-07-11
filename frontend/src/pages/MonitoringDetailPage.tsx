@@ -68,6 +68,7 @@ import {
 } from 'lucide-react'
 import { toast } from 'sonner'
 import { useConfirm } from '@/hooks/useConfirm'
+import { useMetricCollectionWatcher } from '@/hooks/useMetricCollectionWatcher'
 
 // Stable empty reference so `metaFieldsQuery.data ?? EMPTY_META_FIELDS`
 // doesn't mint a new array each render and bust the memoized lookup map.
@@ -222,6 +223,9 @@ export default function MonitoringDetailPage() {
   const [versionFilter, setVersionFilter] = useState<VersionFilter>('all')
   const [distributionField, setDistributionField] = useState('')
   const [breakdownColumn, setBreakdownColumn] = useState('')
+  // Breakdown VALUE filter: empty = show every value (the default). Selecting
+  // labels narrows the chart to just those series (tripl-egt5).
+  const [breakdownValueFilter, setBreakdownValueFilter] = useState<string[]>([])
 
   const branchId = useActiveBranchId()
   // The legacy `/events/detail/:eventId` route carries no `:scope`; default to
@@ -288,6 +292,10 @@ export default function MonitoringDetailPage() {
     () => (metricIsPercent ? metricAxisFormatter(metricUnit) : undefined),
     [metricIsPercent, metricUnit],
   )
+  // One tooltip/aria label for every chart on this page: catalog metrics carry
+  // their unit ('%', 'ms', …, falling back to 'value'); event scopes keep the
+  // historical 'events'.
+  const metricSeriesLabel = scope === 'metric' ? metricDefinition?.unit || 'value' : 'events'
 
   const metricsQuery = useQuery({
     queryKey: ['monitoringMetrics', slug, scope, scopeId, rangeDays],
@@ -459,15 +467,47 @@ export default function MonitoringDetailPage() {
   })
   const breakdowns = breakdownQuery.data
   const selectedBreakdownColumn = breakdownColumn || breakdowns?.selected_column || ''
-  const breakdownChartSeries = useMemo(
-    () => (breakdowns?.series ?? [])
-      .slice(0, 8)
-      .map(series => ({
-        label: series.is_other ? 'Other' : (series.breakdown_value || '(empty)'),
-        data: aggregateMetricPoints(series.data, granularity),
-      })),
-    [breakdowns?.series, granularity],
+  const breakdownSeriesEntries = useMemo(
+    () => (breakdowns?.series ?? []).map((series, index) => ({
+      label: series.is_other ? 'Other' : (series.breakdown_value || '(empty)'),
+      // Pin each value to a palette slot from the UNFILTERED order (identical
+      // to the chart's own fallback palette) so a series keeps its color when
+      // the value filter hides its neighbours.
+      color: VERSION_CHART_COLORS[index % VERSION_CHART_COLORS.length],
+      totalCount: series.total_count,
+      data: series.data,
+    })),
+    [breakdowns?.series],
   )
+  // Only labels that still exist in the response count: a stale selection
+  // (e.g. after a range change drops a value) falls back to "show everything"
+  // instead of an inexplicably empty chart.
+  const effectiveBreakdownFilter = useMemo(
+    () => breakdownValueFilter.filter(label =>
+      breakdownSeriesEntries.some(entry => entry.label === label)),
+    [breakdownSeriesEntries, breakdownValueFilter],
+  )
+  const breakdownChartSeries = useMemo(
+    () => breakdownSeriesEntries
+      // Filter BEFORE the 8-series render cap so values outside the top 8
+      // become visible once picked.
+      .filter(entry => effectiveBreakdownFilter.length === 0
+        || effectiveBreakdownFilter.includes(entry.label))
+      .slice(0, 8)
+      .map(entry => ({
+        label: entry.label,
+        color: entry.color,
+        data: aggregateMetricPoints(entry.data, granularity),
+      })),
+    [breakdownSeriesEntries, effectiveBreakdownFilter, granularity],
+  )
+  const toggleBreakdownValue = (label: string) => {
+    setBreakdownValueFilter(current => (
+      current.includes(label)
+        ? current.filter(value => value !== label)
+        : [...current, label]
+    ))
+  }
   const latestParityAnomalies = useMemo(
     () => (breakdowns?.series ?? []).flatMap(series => {
       const latest = [...(series.parity_anomalies ?? [])]
@@ -579,21 +619,26 @@ export default function MonitoringDetailPage() {
     },
   })
   // Manual "collect now": backfill a recent window for this metric so its chart
-  // populates without waiting for the scheduler. Collection runs in the worker,
-  // so refetch the series a few seconds after the trigger (the 60s
-  // refetchInterval is the backstop).
+  // populates without waiting for the scheduler. Collection runs in the worker;
+  // the watcher polls the persisted last_collection_status until the run
+  // settles, toasts success or the persisted failure reason (tripl-4mju), and
+  // refreshes the series/definition once data landed.
+  const collectWatcher = useMetricCollectionWatcher(slug, (metricId, status) => {
+    if (status !== 'success') return
+    void queryClient.invalidateQueries({
+      queryKey: ['monitoringMetrics', slug, scope, scopeId],
+    })
+    void queryClient.invalidateQueries({ queryKey: ['metricDefinition', slug, metricId] })
+  })
   const collectMut = useMutation({
     mutationFn: () => metricsCatalogApi.collect(slug!, scopeId),
     onSuccess: () => {
-      toast.success('Collection queued — the chart will update shortly.')
-      window.setTimeout(() => {
-        void queryClient.invalidateQueries({
-          queryKey: ['monitoringMetrics', slug, scope, scopeId],
-        })
-      }, 5000)
+      toast.success('Collection started — you will be notified when it finishes.')
+      collectWatcher.watch(scopeId, metricDefinition?.display_name ?? 'This metric')
     },
     onError: () => toast.error('Could not start collection.'),
   })
+  const isCollecting = collectMut.isPending || collectWatcher.isWatching
 
   const { confirm: confirmDelete, dialog: deleteDialog } = useConfirm()
   const deleteMetric = async (): Promise<void> => {
@@ -743,15 +788,15 @@ export default function MonitoringDetailPage() {
                   variant="outline"
                   size="sm"
                   onClick={() => collectMut.mutate()}
-                  disabled={collectMut.isPending}
+                  disabled={isCollecting}
                   title="Backfill a recent window now so the chart populates without waiting for the scheduler."
                 >
-                  {collectMut.isPending ? (
+                  {isCollecting ? (
                     <Loader2 className="mr-2 h-4 w-4 animate-spin" />
                   ) : (
                     <RefreshCw className="mr-2 h-4 w-4" />
                   )}
-                  {collectMut.isPending ? 'Collecting…' : 'Collect now'}
+                  {isCollecting ? 'Collecting…' : 'Collect now'}
                 </Button>
                 <Button
                   variant="ghost"
@@ -909,7 +954,7 @@ export default function MonitoringDetailPage() {
                   height={200}
                   color={eventType?.color || metricDefinition?.color || 'var(--chart-3)'}
                   granularity={granularity}
-                  seriesLabel={scope === 'metric' ? metricDefinition?.unit || 'value' : 'events'}
+                  seriesLabel={metricSeriesLabel}
                   valueFormatter={metricValueFormatter}
                 />
               )}
@@ -1099,9 +1144,15 @@ export default function MonitoringDetailPage() {
                       series={versionChartSeries}
                       height={280}
                       granularity={granularity}
+                      seriesLabel={metricSeriesLabel}
+                      valueFormatter={metricValueFormatter}
                       emptyLabel="No version metrics available"
                     />
-                    <VersionLegend series={versionChartSeries} latestShare={latestAdoptionShare} />
+                    <VersionLegend
+                      series={versionChartSeries}
+                      latestShare={latestAdoptionShare}
+                      valueFormatter={metricValueFormatter}
+                    />
                     {appVersionSeriesQuery.data?.interval && (
                       <p className="mt-2 text-xs text-muted-foreground">
                         Collection interval: {appVersionSeriesQuery.data.interval}
@@ -1208,7 +1259,12 @@ export default function MonitoringDetailPage() {
                 </div>
                 <Select
                   value={selectedBreakdownColumn}
-                  onValueChange={value => setBreakdownColumn(value)}
+                  onValueChange={value => {
+                    setBreakdownColumn(value)
+                    // A new column has a different value set; a carried-over
+                    // selection would silently blank the chart.
+                    setBreakdownValueFilter([])
+                  }}
                   disabled={!breakdowns?.columns.length}
                 >
                   <SelectTrigger className="h-8 w-[200px]">
@@ -1260,6 +1316,15 @@ export default function MonitoringDetailPage() {
                     series={breakdownChartSeries}
                     height={280}
                     granularity={granularity}
+                    seriesLabel={metricSeriesLabel}
+                    valueFormatter={metricValueFormatter}
+                  />
+                  <BreakdownValueChips
+                    options={breakdownSeriesEntries}
+                    selected={effectiveBreakdownFilter}
+                    valueFormatter={metricValueFormatter}
+                    onToggle={toggleBreakdownValue}
+                    onReset={() => setBreakdownValueFilter([])}
                   />
                   {latestParityAnomalies.length > 0 && (
                     <div className="mt-4 rounded-md border border-border bg-muted/30 p-3">
@@ -1395,9 +1460,13 @@ function formatVersionLabel(version: AppVersionMetricSeries) {
 function VersionLegend({
   series,
   latestShare,
+  valueFormatter,
 }: {
   series: VersionChartSeries[]
   latestShare?: number | null
+  // Same convention as the charts: the formatted string carries its own unit
+  // (percent-unit catalog metrics render stored fractions ×100).
+  valueFormatter?: (value: number) => string
 }) {
   if (!series.length) return null
   const shareSuffix = latestShare != null ? ` · ${formatPercent(latestShare)}` : ''
@@ -1427,10 +1496,75 @@ function VersionLegend({
             </Badge>
           )}
           <span className="shrink-0 text-muted-foreground">
-            {item.totalCount.toLocaleString()}
+            {valueFormatter ? valueFormatter(item.totalCount) : item.totalCount.toLocaleString()}
           </span>
         </div>
       ))}
+    </div>
+  )
+}
+
+// Legend-style toggles for the breakdown chart: when the selected column has
+// many values, click chips to isolate one or several series (tripl-egt5).
+// Empty selection = every value shown, and a single-value breakdown has
+// nothing to filter, so the row hides itself.
+function BreakdownValueChips({
+  options,
+  selected,
+  valueFormatter,
+  onToggle,
+  onReset,
+}: {
+  options: Array<{ label: string; color: string; totalCount: number }>
+  selected: string[]
+  valueFormatter?: (value: number) => string
+  onToggle: (label: string) => void
+  onReset: () => void
+}) {
+  if (options.length < 2) return null
+  const hasFilter = selected.length > 0
+  return (
+    <div className="mt-3 flex flex-wrap items-center gap-2">
+      {options.map(option => {
+        const isSelected = selected.includes(option.label)
+        const isVisible = !hasFilter || isSelected
+        return (
+          <button
+            key={option.label}
+            type="button"
+            aria-pressed={isSelected}
+            aria-label={`Toggle ${option.label}`}
+            onClick={() => onToggle(option.label)}
+            className={`flex min-w-0 items-center gap-2 rounded-md border px-2 py-1 text-xs transition-colors hover:bg-muted/40 ${
+              isSelected
+                ? 'border-[var(--accent)]/60 bg-[var(--accent-soft)]'
+                : isVisible
+                  ? 'bg-background'
+                  : 'bg-background opacity-50'
+            }`}
+          >
+            <span
+              className="h-2.5 w-2.5 shrink-0 rounded-full"
+              style={{ backgroundColor: option.color }}
+            />
+            <span className="min-w-0 truncate font-mono">{option.label}</span>
+            <span className="shrink-0 text-muted-foreground">
+              {valueFormatter ? valueFormatter(option.totalCount) : option.totalCount.toLocaleString()}
+            </span>
+          </button>
+        )
+      })}
+      {hasFilter && (
+        <Button
+          type="button"
+          variant="ghost"
+          size="sm"
+          className="h-6 px-2 text-xs"
+          onClick={onReset}
+        >
+          Show all
+        </Button>
+      )}
     </div>
   )
 }
