@@ -10,6 +10,7 @@ const DATA_SOURCE: DataSource = {
   id: 'ds-1',
   name: 'Warehouse',
   db_type: 'clickhouse',
+  is_synthetic: false,
   host: 'localhost',
   port: 8123,
   database_name: 'analytics',

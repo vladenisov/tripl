@@ -112,7 +112,16 @@ export default function ProjectAlertingTab({ slug }: { slug: string }) {
     })))
 
   const createDestinationMut = useMutation({
-    mutationFn: () => alertingApi.createDestination(slug, destinationForm),
+    mutationFn: () => {
+      // The demo-only ``demo_sink`` is created by the seeder, never here — so the
+      // create payload always carries a real ``DestinationChannel``. Narrow the
+      // widened form type explicitly rather than casting.
+      const { type } = destinationForm
+      if (type === 'demo_sink') {
+        throw new Error('The local demo sink cannot be created from the UI')
+      }
+      return alertingApi.createDestination(slug, { ...destinationForm, type })
+    },
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['alertDestinations', slug] })
       setCreateType(null)

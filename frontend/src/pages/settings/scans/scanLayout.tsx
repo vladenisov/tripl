@@ -10,6 +10,9 @@ const DB_HUE: Record<DbType, string> = {
   clickhouse: 'oklch(0.62 0.17 65)',
   postgres: 'oklch(0.62 0.12 240)',
   bigquery: 'oklch(0.62 0.16 290)',
+  // Local demo synthetic warehouse — a distinct teal so it never reads as a
+  // real engine.
+  synthetic: 'oklch(0.62 0.13 175)',
 }
 
 export function SrcIcon({ dbType, size = 30 }: { dbType: DbType | null; size?: number }) {

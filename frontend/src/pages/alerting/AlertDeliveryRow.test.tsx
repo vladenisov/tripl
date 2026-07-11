@@ -24,6 +24,8 @@ function mockDelivery(overrides: Partial<AlertDelivery> = {}): AlertDelivery {
     scan_name: 'Main scan',
     status: 'failed',
     channel: 'slack',
+    is_local: false,
+    is_simulated: false,
     matched_count: 1,
     payload_snapshot: null,
     error_message: 'Webhook failed',
