@@ -1,6 +1,8 @@
 import pytest
 from httpx import AsyncClient
 
+from tripl.services.plan_revision_service import _public_snapshot_payload
+
 
 async def _setup_project(client: AsyncClient, slug: str = "rev-proj"):
     await client.post("/api/v1/projects", json={"name": "R", "slug": slug})
@@ -28,6 +30,36 @@ async def _setup_project(client: AsyncClient, slug: str = "rev-proj"):
         },
     )
     return et_id, field_id, ev_resp.json()["id"]
+
+
+def test_public_snapshot_redacts_internal_merge_fingerprints() -> None:
+    payload = {
+        "events": [
+            {
+                "photos": [
+                    {
+                        "storage_key_fingerprint": "secret-hash",
+                        "comments": [
+                            {
+                                "user_fingerprint": "user-hash",
+                                "body_fingerprint": "body-hash",
+                            }
+                        ],
+                    }
+                ]
+            }
+        ]
+    }
+
+    public = _public_snapshot_payload(payload)
+
+    photo = public["events"][0]["photos"][0]
+    assert photo["storage_key_fingerprint"] == "<redacted>"
+    assert photo["comments"][0] == {
+        "user_fingerprint": "<redacted>",
+        "body_fingerprint": "<redacted>",
+    }
+    assert payload["events"][0]["photos"][0]["storage_key_fingerprint"] == "secret-hash"
 
 
 @pytest.mark.asyncio

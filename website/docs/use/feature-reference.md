@@ -162,11 +162,11 @@ context. Merging an owned event type re-checks ownership (see
 [Event types](#event-types)).
 
 The branch policy can require a minimum number of **distinct approvals** and can
-forbid self-approval. A content change after approval makes the approval stale,
-so reviewers sign off on the exact diff that will merge. The merge dialog shows
-field-level conflicts and also warns when the branch deletes variables that
-still exist on `main`, including the overrides and drift history that deletion
-would remove.
+forbid self-approval. Approval hashes include event values, tags,
+photos/comments, ownership/review state, variable overrides, and metric
+breakdown settings, so any later merge-relevant edit makes the approval stale.
+Three-way merge preserves one-sided main and branch edits; divergent edits to
+the same state and parent deletion versus a new child fail with a conflict.
 
 An owner may configure a separate **Implementation tracker** for the project.
 When enabled, a successful merge best-effort creates one Jira implementation

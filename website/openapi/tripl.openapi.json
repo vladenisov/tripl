@@ -17296,6 +17296,14 @@
             },
             "type": "array",
             "title": "Data"
+          },
+          "parity_anomalies": {
+            "items": {
+              "$ref": "#/components/schemas/PlatformParityAnomaly"
+            },
+            "type": "array",
+            "title": "Parity Anomalies",
+            "default": []
           }
         },
         "type": "object",
@@ -22852,6 +22860,37 @@
             },
             "type": "array",
             "title": "Changes"
+          },
+          "field_changes": {
+            "items": {
+              "$ref": "#/components/schemas/PlanFieldChange"
+            },
+            "type": "array",
+            "title": "Field Changes"
+          },
+          "before": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Before"
+          },
+          "after": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "After"
           }
         },
         "type": "object",
@@ -22861,6 +22900,26 @@
           "name"
         ],
         "title": "PlanDiffEntry"
+      },
+      "PlanFieldChange": {
+        "properties": {
+          "field": {
+            "type": "string",
+            "title": "Field"
+          },
+          "before": {
+            "title": "Before"
+          },
+          "after": {
+            "title": "After"
+          }
+        },
+        "type": "object",
+        "required": [
+          "field"
+        ],
+        "title": "PlanFieldChange",
+        "description": "A single field that changed between the base and branch state.\n\n``before``/``after`` carry the raw JSON values (not repr strings) so the UI\ncan render structured values \u2014 arrays, override maps \u2014 instead of a Python\n``repr``. Only present on ``changed`` entries."
       },
       "PlanRevisionCreate": {
         "properties": {
@@ -23005,6 +23064,44 @@
         ],
         "title": "PlanRevisionSummary",
         "description": "List-view of a revision \u2014 payload omitted to keep responses small."
+      },
+      "PlatformParityAnomaly": {
+        "properties": {
+          "bucket": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Bucket"
+          },
+          "actual_share": {
+            "type": "number",
+            "title": "Actual Share"
+          },
+          "expected_share": {
+            "type": "number",
+            "title": "Expected Share"
+          },
+          "stddev": {
+            "type": "number",
+            "title": "Stddev"
+          },
+          "z_score": {
+            "type": "number",
+            "title": "Z Score"
+          },
+          "direction": {
+            "$ref": "#/components/schemas/AnomalyDirection"
+          }
+        },
+        "type": "object",
+        "required": [
+          "bucket",
+          "actual_share",
+          "expected_share",
+          "stddev",
+          "z_score",
+          "direction"
+        ],
+        "title": "PlatformParityAnomaly"
       },
       "PlatformPresenceResponse": {
         "properties": {

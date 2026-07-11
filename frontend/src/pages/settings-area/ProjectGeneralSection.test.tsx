@@ -2,6 +2,7 @@ import { fireEvent, render, screen, within } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { MemoryRouter } from 'react-router-dom'
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { searchApi } from '@/api/search'
 import { AuthContext, type AuthContextValue } from '@/components/auth-context'
 import ProjectGeneralSection from './ProjectGeneralSection'
 
@@ -57,8 +58,15 @@ function ownerAuthValue(): AuthContextValue {
   return authValue('owner')
 }
 
-function renderSection(auth: AuthContextValue = ownerAuthValue()) {
+function renderSection(
+  auth: AuthContextValue = ownerAuthValue(),
+  initialProject?: typeof PROJECT,
+) {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+  if (initialProject) {
+    queryClient.setQueryDefaults(['project', initialProject.slug], { staleTime: Infinity })
+    queryClient.setQueryData(['project', initialProject.slug], initialProject)
+  }
   return render(
     <QueryClientProvider client={queryClient}>
       <AuthContext.Provider value={auth}>
@@ -76,23 +84,17 @@ afterEach(() => {
 
 describe('ProjectGeneralSection', () => {
   it('rebuilds the search index', async () => {
-    const calls: string[] = []
-    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
-      const url = String(input)
-      calls.push(`${init?.method ?? 'GET'} ${url}`)
-      if (url.endsWith('/api/v1/projects/demo')) return jsonResponse(PROJECT)
-      if (url.endsWith('/api/v1/projects/demo/search/reindex') && init?.method === 'POST') {
-        return jsonResponse({ documents_indexed: 42, embeddings_scheduled: false })
-      }
-      throw new Error(`Unhandled fetch: ${url}`)
+    const reindex = vi.spyOn(searchApi, 'reindex').mockResolvedValue({
+      documents_indexed: 42,
+      embeddings_scheduled: false,
     })
 
-    renderSection()
+    renderSection(ownerAuthValue(), PROJECT)
 
-    fireEvent.click(await screen.findByRole('button', { name: /Rebuild index/i }))
+    fireEvent.click(screen.getByRole('button', { name: /Rebuild index/i }))
 
     expect(await screen.findByText('Indexed 42 documents.')).toBeInTheDocument()
-    expect(calls).toContain('POST /api/v1/projects/demo/search/reindex')
+    expect(reindex).toHaveBeenCalledWith('demo')
   })
 
   it('hides the unfinished "Coming soon" project-config fields for release', async () => {

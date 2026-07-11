@@ -397,6 +397,8 @@ async def _deep_copy_plan(
                 sunset_at=ev.sunset_at,
                 last_seen_at=ev.last_seen_at,
                 metric_breakdown_columns=list(ev.metric_breakdown_columns or []),
+                owner_id=ev.owner_id,
+                reviewed=ev.reviewed,
             )
         )
         for fv in ev.field_values:

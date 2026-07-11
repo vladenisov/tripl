@@ -16,7 +16,11 @@ from sqlalchemy import (
 from sqlalchemy.orm import Mapped, mapped_column
 
 from tripl.models.base import Base, UUIDMixin
-from tripl.models.domain_enums import AnomalyDirection, MetricScopeType
+from tripl.models.domain_enums import (
+    AnomalyDirection,
+    MetricBreakdownAnomalyKind,
+    MetricScopeType,
+)
 from tripl.models.enum_types import db_enum
 
 
@@ -31,6 +35,7 @@ class MetricBreakdownAnomaly(UUIDMixin, Base):
             "breakdown_value",
             "is_other",
             "bucket",
+            "kind",
             name="uq_metric_breakdown_anomaly_scope_bucket_value",
         ),
         Index(
@@ -74,6 +79,11 @@ class MetricBreakdownAnomaly(UUIDMixin, Base):
     breakdown_column: Mapped[str] = mapped_column(String(255))
     breakdown_value: Mapped[str] = mapped_column(String(500))
     is_other: Mapped[bool] = mapped_column(Boolean, default=False)
+    kind: Mapped[str] = mapped_column(
+        db_enum(MetricBreakdownAnomalyKind, "metric_breakdown_anomaly_kind"),
+        nullable=False,
+        server_default="volume",
+    )
     # Float for the same reason as MetricAnomaly.actual_count (tripl-68bc).
     actual_count: Mapped[float] = mapped_column(Float)
     expected_count: Mapped[float] = mapped_column(Float)

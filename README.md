@@ -142,6 +142,10 @@ Then open the app, create the first account on the sign-in page, and click
 | API | http://localhost:8000 |
 | API reference (interactive) | http://localhost:8000/docs |
 
+Working on the code? A root `Makefile` collects the common flows — run `make`
+for the list (`make dev`, `make check`, `make sync-types`, `make test-fe`/`make
+test-be`). Full contributor setup lives in [CONTRIBUTING.md](CONTRIBUTING.md).
+
 **Deploying?** The default `compose.yaml` runs the published release image — set
 your secrets and `docker compose up -d` (API + SPA on `:8000`). Cutting a new
 release is one command (`bin/release.sh`). See the **[deployment guide](website/docs/run/deployment.md)** and **[release process](website/docs/run/release.md)**.

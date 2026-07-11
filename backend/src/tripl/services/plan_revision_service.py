@@ -20,6 +20,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from tripl.models.event import Event
+from tripl.models.event_photo import EventPhoto
+from tripl.models.event_photo_comment import EventPhotoComment
 from tripl.models.event_type import EventType
 from tripl.models.event_type_relation import EventTypeRelation
 from tripl.models.meta_field_definition import MetaFieldDefinition
@@ -31,6 +33,7 @@ from tripl.models.variable_event_value_override import VariableEventValueOverrid
 from tripl.schemas.plan_revision import (
     PlanDiff,
     PlanDiffEntry,
+    PlanFieldChange,
     PlanRevisionCreate,
     PlanRevisionDetail,
     PlanRevisionList,
@@ -39,6 +42,33 @@ from tripl.schemas.plan_revision import (
 from tripl.services.project_lookup import get_project_by_slug
 
 PLAN_REVISIONS_DEFAULT_LIMIT = 50
+PLAN_SNAPSHOT_VERSION = 2
+
+
+def _snapshot_fingerprint(value: str | uuid.UUID | None) -> str | None:
+    if value is None:
+        return None
+    return hashlib.sha256(str(value).encode("utf-8")).hexdigest()
+
+
+def _sanitize_public_value(value: Any, *, key: str | None = None) -> Any:
+    """Redact internal merge fingerprints from API and diff payloads."""
+    if key is not None and key.endswith("_fingerprint"):
+        return None if value is None else "<redacted>"
+    if isinstance(value, dict):
+        return {
+            item_key: _sanitize_public_value(item, key=item_key)
+            for item_key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [_sanitize_public_value(item) for item in value]
+    return value
+
+
+def _public_snapshot_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    sanitized = _sanitize_public_value(payload)
+    assert isinstance(sanitized, dict)
+    return sanitized
 
 
 def plan_snapshot_hash(payload: dict[str, Any]) -> str:
@@ -69,10 +99,18 @@ _FIELD_DEFINITION_CHANGE_KEYS = (
 )
 _EVENT_TYPE_CHANGE_KEYS = ("display_name", "description", "color")
 _EVENT_CHANGE_KEYS = (
+    "source_name",
     "description",
     "status",
     "sunset_at",
     "event_type_name",
+    "owner_id",
+    "reviewed",
+    "metric_breakdown_columns",
+    "field_values",
+    "meta_values",
+    "tags",
+    "photos",
 )
 _VARIABLE_CHANGE_KEYS = (
     "variable_type",
@@ -123,6 +161,7 @@ async def build_plan_snapshot(
                 select(EventType)
                 .where(EventType.project_id == project_id, EventType.branch_id == branch_id)
                 .options(selectinload(EventType.field_definitions))
+                .execution_options(populate_existing=True)
                 .order_by(EventType.name)
             )
         )
@@ -131,6 +170,9 @@ async def build_plan_snapshot(
     )
 
     event_type_name_by_id: dict[uuid.UUID, str] = {et.id: et.name for et in event_types_rows}
+    field_name_by_id = {
+        fd.id: fd.name for event_type in event_types_rows for fd in event_type.field_definitions
+    }
 
     event_types: list[dict[str, Any]] = []
     for et in event_types_rows:
@@ -170,26 +212,18 @@ async def build_plan_snapshot(
             await session.execute(
                 select(Event)
                 .where(Event.project_id == project_id, Event.branch_id == branch_id)
+                .options(
+                    selectinload(Event.field_values),
+                    selectinload(Event.meta_values),
+                    selectinload(Event.tags),
+                )
+                .execution_options(populate_existing=True)
                 .order_by(Event.name)
             )
         )
         .scalars()
         .all()
     )
-    events = [
-        {
-            "id": str(ev.id),
-            "event_type_id": str(ev.event_type_id),
-            "event_type_name": event_type_name_by_id.get(ev.event_type_id, ""),
-            "name": ev.name,
-            "description": ev.description,
-            "order": ev.order,
-            "status": ev.status,
-            "sunset_at": str(ev.sunset_at) if ev.sunset_at is not None else None,
-        }
-        for ev in events_rows
-    ]
-
     variables_rows = (
         (
             await session.execute(
@@ -201,7 +235,10 @@ async def build_plan_snapshot(
         .scalars()
         .all()
     )
-    event_name_by_id = {ev.id: ev.name for ev in events_rows}
+    event_key_by_id = {
+        ev.id: (event_type_name_by_id.get(ev.event_type_id, ""), ev.name)
+        for ev in events_rows
+    }
     override_rows = (
         (
             await session.execute(
@@ -214,13 +251,22 @@ async def build_plan_snapshot(
         .scalars()
         .all()
     )
-    overrides_by_variable: dict[uuid.UUID, dict[str, list[str]]] = {}
+    overrides_by_variable: dict[uuid.UUID, list[dict[str, Any]]] = {}
     for override in override_rows:
-        event_name = event_name_by_id.get(override.event_id)
-        if event_name is None:
+        event_key = event_key_by_id.get(override.event_id)
+        if event_key is None:
             continue
-        overrides_by_variable.setdefault(override.variable_id, {})[event_name] = list(
-            override.values or []
+        event_type_name, event_name = event_key
+        overrides_by_variable.setdefault(override.variable_id, []).append(
+            {
+                "event_type_name": event_type_name,
+                "event_name": event_name,
+                "values": list(override.values or []),
+            }
+        )
+    for variable_overrides in overrides_by_variable.values():
+        variable_overrides.sort(
+            key=lambda override: (override["event_type_name"], override["event_name"])
         )
 
     variables = [
@@ -233,7 +279,7 @@ async def build_plan_snapshot(
             "allowed_values": list(v.allowed_values or []),
             "bindings": list(v.bindings or []),
             "excluded_from_scans": v.excluded_from_scans,
-            "event_value_overrides": dict(sorted(overrides_by_variable.get(v.id, {}).items())),
+            "event_value_overrides": overrides_by_variable.get(v.id, []),
         }
         for v in variables_rows
     ]
@@ -267,6 +313,124 @@ async def build_plan_snapshot(
         }
         for mf in meta_fields_rows
     ]
+    meta_field_name_by_id = {mf.id: mf.name for mf in meta_fields_rows}
+
+    event_ids = [event.id for event in events_rows]
+    photos_by_event: dict[uuid.UUID, list[EventPhoto]] = {}
+    comments_by_photo: dict[uuid.UUID, list[EventPhotoComment]] = {}
+    if event_ids:
+        photo_rows = list(
+            (
+                await session.execute(select(EventPhoto).where(EventPhoto.event_id.in_(event_ids)))
+            )
+            .scalars()
+            .all()
+        )
+        for photo in photo_rows:
+            photos_by_event.setdefault(photo.event_id, []).append(photo)
+        if photo_rows:
+            comment_rows = list(
+                (
+                    await session.execute(
+                        select(EventPhotoComment).where(
+                            EventPhotoComment.photo_id.in_([photo.id for photo in photo_rows])
+                        )
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            for comment in comment_rows:
+                comments_by_photo.setdefault(comment.photo_id, []).append(comment)
+
+    def serialize_comments(photo_id: uuid.UUID) -> list[dict[str, Any]]:
+        rows = comments_by_photo.get(photo_id, [])
+        children: dict[uuid.UUID | None, list[EventPhotoComment]] = {}
+        for row in rows:
+            children.setdefault(row.parent_id, []).append(row)
+
+        def walk(parent_id: uuid.UUID | None) -> list[dict[str, Any]]:
+            serialized = [
+                {
+                    "user_fingerprint": _snapshot_fingerprint(row.user_id),
+                    "body_fingerprint": _snapshot_fingerprint(row.body),
+                    "replies": walk(row.id),
+                }
+                for row in children.get(parent_id, [])
+            ]
+            return sorted(
+                serialized,
+                key=lambda item: json.dumps(item, sort_keys=True, separators=(",", ":")),
+            )
+
+        return walk(None)
+
+    def serialize_photos(event_id: uuid.UUID) -> list[dict[str, Any]]:
+        serialized = [
+            {
+                "uploaded_by_user_fingerprint": _snapshot_fingerprint(
+                    photo.uploaded_by_user_id
+                ),
+                "original_filename": photo.original_filename,
+                "content_type": photo.content_type,
+                "size_bytes": photo.size_bytes,
+                "kind": photo.kind,
+                "external_url": photo.external_url,
+                "storage_backend": photo.storage_backend,
+                "storage_key_fingerprint": _snapshot_fingerprint(photo.storage_key),
+                "sort_order": photo.sort_order,
+                "comments": serialize_comments(photo.id),
+            }
+            for photo in photos_by_event.get(event_id, [])
+        ]
+        return sorted(
+            serialized,
+            key=lambda item: json.dumps(item, sort_keys=True, separators=(",", ":")),
+        )
+
+    events = [
+        {
+            "id": str(ev.id),
+            "event_type_id": str(ev.event_type_id),
+            "event_type_name": event_type_name_by_id.get(ev.event_type_id, ""),
+            "name": ev.name,
+            "source_name": ev.source_name,
+            "description": ev.description,
+            "order": ev.order,
+            "status": ev.status,
+            "sunset_at": str(ev.sunset_at) if ev.sunset_at is not None else None,
+            "owner_id": str(ev.owner_id) if ev.owner_id is not None else None,
+            "reviewed": ev.reviewed,
+            "metric_breakdown_columns": list(ev.metric_breakdown_columns or []),
+            "field_values": sorted(
+                [
+                    {
+                        "field_name": field_name_by_id.get(value.field_definition_id, ""),
+                        "value": value.value,
+                        "is_authored": value.is_authored,
+                    }
+                    for value in ev.field_values
+                ],
+                key=lambda value: str(value["field_name"]),
+            ),
+            "meta_values": sorted(
+                [
+                    {
+                        "meta_field_name": meta_field_name_by_id.get(
+                            value.meta_field_definition_id, ""
+                        ),
+                        "value": value.value,
+                    }
+                    for value in ev.meta_values
+                ],
+                key=lambda value: value["meta_field_name"],
+            ),
+            "tags": sorted(tag.name for tag in ev.tags),
+            "photos": serialize_photos(ev.id),
+        }
+        for ev in events_rows
+    ]
+    events.sort(key=lambda event: (event["event_type_name"], event["name"]))
 
     relations_rows = (
         (
@@ -311,6 +475,7 @@ async def build_plan_snapshot(
     )
 
     return {
+        "snapshot_version": PLAN_SNAPSHOT_VERSION,
         "event_types": event_types,
         "events": events,
         "variables": variables,
@@ -348,12 +513,37 @@ def _format_change(key: str, old: Any, new: Any) -> str:
     return f"{key}: {old!r} → {new!r}"
 
 
-def _changes_between(old: dict[str, Any], new: dict[str, Any], keys: Iterable[str]) -> list[str]:
+def _field_changes_between(
+    old: dict[str, Any], new: dict[str, Any], keys: Iterable[str]
+) -> list[PlanFieldChange]:
     return [
-        _format_change(key, old.get(key), new.get(key))
+        PlanFieldChange(
+            field=key,
+            before=_sanitize_public_value(old.get(key)),
+            after=_sanitize_public_value(new.get(key)),
+        )
         for key in keys
         if old.get(key) != new.get(key)
     ]
+
+
+
+
+def _public_state(item: dict[str, Any]) -> dict[str, Any]:
+    """The user-facing state of a plan entity for the diff detail view.
+
+    Strips DB ids (``id`` and ``*_id`` foreign keys), the cosmetic ``order``,
+    internal join keys (``_event_type_name``), and the nested
+    ``field_definitions`` list — the latter surface as their own diff entries,
+    so embedding them here would be redundant and noisy.
+    """
+    return {
+        key: _sanitize_public_value(value, key=key)
+        for key, value in item.items()
+        if key not in ("id", "order", "field_definitions")
+        and not key.startswith("_")
+        and not key.endswith("_id")
+    }
 
 
 def _diff_set(
@@ -378,6 +568,7 @@ def _diff_set(
                     kind="added",
                     name=name_of(item),
                     parent=parent_of(item) if parent_of else None,
+                    after=_public_state(item),
                 )
             )
     for key, item in old_by_key.items():
@@ -388,21 +579,25 @@ def _diff_set(
                     kind="removed",
                     name=name_of(item),
                     parent=parent_of(item) if parent_of else None,
+                    before=_public_state(item),
                 )
             )
     for key, new_item in new_by_key.items():
         old_item = old_by_key.get(key)
         if old_item is None:
             continue
-        changes = _changes_between(old_item, new_item, change_keys)
-        if changes:
+        field_changes = _field_changes_between(old_item, new_item, change_keys)
+        if field_changes:
             entries.append(
                 PlanDiffEntry(
                     entity_type=entity_type,
                     kind="changed",
                     name=name_of(new_item),
                     parent=parent_of(new_item) if parent_of else None,
-                    changes=changes,
+                    changes=[_format_change(fc.field, fc.before, fc.after) for fc in field_changes],
+                    field_changes=field_changes,
+                    before=_public_state(old_item),
+                    after=_public_state(new_item),
                 )
             )
     return entries
@@ -534,7 +729,7 @@ async def create_revision(
         created_at=revision.created_at,
         created_by=revision.created_by,
         entity_counts=_entity_counts(payload),
-        payload=payload,
+        payload=_public_snapshot_payload(payload),
     )
 
 
@@ -587,7 +782,7 @@ async def get_revision(
         created_at=revision.created_at,
         created_by=revision.created_by,
         entity_counts=_entity_counts(revision.payload or {}),
-        payload=revision.payload or {},
+        payload=_public_snapshot_payload(revision.payload or {}),
     )
 
 

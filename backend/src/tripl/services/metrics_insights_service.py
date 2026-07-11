@@ -17,6 +17,7 @@ from tripl.core.analyzers.anomaly_detector import (
     SCOPE_PROJECT_TOTAL,
 )
 from tripl.models.distribution_drift import DistributionDrift
+from tripl.models.domain_enums import MetricBreakdownAnomalyKind
 from tripl.models.event_metric import EventMetric
 from tripl.models.event_metric_breakdown import EventMetricBreakdown
 from tripl.models.metric_anomaly import MetricAnomaly
@@ -473,6 +474,7 @@ async def get_top_movers(
                     MetricBreakdownAnomaly.scope_type == scope_type,
                     MetricBreakdownAnomaly.scope_ref == scope_ref,
                     MetricBreakdownAnomaly.bucket == bucket,
+                    MetricBreakdownAnomaly.kind == MetricBreakdownAnomalyKind.volume,
                 )
                 .order_by(func.abs(MetricBreakdownAnomaly.z_score).desc())
                 .limit(limit)

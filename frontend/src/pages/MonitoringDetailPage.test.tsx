@@ -555,7 +555,11 @@ describe('MonitoringDetailPage event detail', () => {
 })
 
 function installEventDetailFetch(
-  opts: { metricsData?: EventMetricPoint[]; event?: Record<string, unknown> } = {},
+  opts: {
+    metricsData?: EventMetricPoint[]
+    event?: Record<string, unknown>
+    breakdowns?: Record<string, unknown>
+  } = {},
 ) {
   const metricsData = opts.metricsData ?? [metricPoint('2026-01-02T00:00:00Z', 200)]
   const event = opts.event ?? eventFixture()
@@ -567,6 +571,16 @@ function installEventDetailFetch(
     if (url.endsWith('/api/v1/projects/demo/meta-fields')) return mockJsonResponse([])
     if (url.endsWith('/api/v1/projects/demo/variables')) return mockJsonResponse([])
     if (url.includes('/api/v1/projects/demo/events/event-1/history')) return mockJsonResponse([])
+    if (url.includes('/api/v1/projects/demo/events/event-1/metrics/breakdowns')) {
+      return mockJsonResponse(opts.breakdowns ?? {
+        event_id: 'event-1',
+        scan_config_id: 'scan-1',
+        interval: '1h',
+        columns: [],
+        selected_column: null,
+        series: [],
+      })
+    }
     if (url.includes('/api/v1/projects/demo/events/event-1/metrics')) {
       return mockJsonResponse({
         scope: 'event',
@@ -630,6 +644,48 @@ describe('MonitoringDetailPage event-detail header and semantics', () => {
 
     // They live behind an overflow ("…") menu instead.
     expect(screen.getByRole('button', { name: 'More actions' })).toBeInTheDocument()
+  })
+
+  it('shows platform share anomalies separately from breakdown volume series', async () => {
+    installEventDetailFetch({
+      breakdowns: {
+        event_id: 'event-1',
+        scan_config_id: 'scan-1',
+        interval: '1h',
+        columns: ['platform'],
+        selected_column: 'platform',
+        series: [
+          {
+            breakdown_value: 'ios',
+            is_other: false,
+            total_count: 60,
+            data: [metricPoint('2026-01-02T00:00:00Z', 10)],
+            parity_anomalies: [
+              {
+                bucket: '2026-01-02T00:00:00Z',
+                actual_share: 0.1,
+                expected_share: 0.5,
+                stddev: 0.02,
+                z_score: -20,
+                direction: 'drop',
+              },
+            ],
+          },
+        ],
+      },
+    })
+    renderEventDetail()
+    await screen.findByRole('heading', { name: 'checkout_completed' })
+
+    const breakdownsTab = screen.getByRole('tab', { name: /Breakdowns/i })
+    fireEvent.pointerDown(breakdownsTab, { button: 0, ctrlKey: false })
+    fireEvent.mouseDown(breakdownsTab, { button: 0, ctrlKey: false })
+    fireEvent.pointerUp(breakdownsTab, { button: 0, ctrlKey: false })
+    fireEvent.mouseUp(breakdownsTab, { button: 0, ctrlKey: false })
+    fireEvent.click(breakdownsTab)
+
+    expect(await screen.findByText('platform share anomalies')).toBeInTheDocument()
+    expect(screen.getByLabelText('ios share drop: 50.0% -> 10.0%')).toBeInTheDocument()
   })
 
   it('shows a Plan / Events / <name> breadcrumb for the event scope', async () => {

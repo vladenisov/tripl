@@ -146,12 +146,27 @@ export type PlanDiffEntityType =
 
 export type PlanDiffKind = 'added' | 'removed' | 'changed'
 
+/** Raw before/after values for a single changed field (structured mirror of
+ * the human-readable `changes` strings). Present on `changed` entries. */
+export interface PlanFieldChange {
+  field: string
+  before: unknown
+  after: unknown
+}
+
 export interface PlanDiffEntry {
   entity_type: PlanDiffEntityType
   kind: PlanDiffKind
   name: string
   parent: string | null
   changes: string[]
+  /** Per-field before/after for `changed` entries; empty/absent otherwise.
+   * Optional to match the OpenAPI shape (Pydantic default → not required). */
+  field_changes?: PlanFieldChange[]
+  /** Full entity state on the base side; null/absent for `added` entries. */
+  before?: Record<string, unknown> | null
+  /** Full entity state on the branch side; null/absent for `removed` entries. */
+  after?: Record<string, unknown> | null
 }
 
 export interface PlanDiff {
