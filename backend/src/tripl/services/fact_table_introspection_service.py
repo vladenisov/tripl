@@ -7,8 +7,9 @@ bounded set of preview rows, then returns:
 
 * ``columns`` with each warehouse type bucketed to one of
   ``number`` / ``string`` / ``bool`` / ``timestamp``,
-* ``identifier_candidates`` (string-typed columns suitable for
-  ``count_distinct``, excluding the timestamp column), and
+* ``identifier_candidates`` (string-typed columns whose name or declared
+  warehouse type carries an identifier signal — see
+  :func:`is_identifier_column` — excluding the timestamp column), and
 * ``sample_rows`` coerced to JSON-safe scalars.
 
 Scope: a data source is global in this schema; it "belongs to" a project when
@@ -27,6 +28,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import math
+import re
 import uuid
 from dataclasses import dataclass
 from datetime import date, datetime
@@ -98,6 +100,49 @@ _NON_NUMBER_EXACT: frozenset[str] = frozenset({"interval"})
 # ClickHouse type wrappers stripped before bucketing the inner type.
 _TYPE_WRAPPERS: tuple[str, ...] = ("nullable(", "lowcardinality(")
 
+# --- Identifier-candidate detection -----------------------------------------
+# A column is only suggested as an identifier when its NAME (or declared
+# warehouse type) carries a standard identifier signal. Being string-typed is
+# necessary (count_distinct contract) but no longer sufficient: with the old
+# "every string column" rule, ordinary dimensions like ``country`` or
+# ``platform`` — and every other string column — were suggested and then
+# persisted wholesale by the edit UI's pre-selection.
+#
+# Bare names that are identifiers on their own, matched case-insensitively.
+_IDENTIFIER_EXACT_NAMES: frozenset[str] = frozenset({"id", "uuid", "guid"})
+# snake_case suffixes, matched case-insensitively (``user_id``, ``DEVICE_UUID``).
+_IDENTIFIER_SNAKE_SUFFIXES: tuple[str, ...] = ("_id", "_uuid", "_guid")
+# camelCase suffixes (``deviceId``, ``deviceID``, ``sessionUuid``). The
+# case-sensitive lower/digit boundary before the suffix is what keeps plain
+# words that merely END in "id" — ``paid``, ``valid``, ``android`` — out.
+_IDENTIFIER_CAMEL_SUFFIX_RE = re.compile(r"[a-z0-9](?:Id|ID|Uuid|UUID|Guid|GUID)$")
+# Declared warehouse types that mark a column as an identifier regardless of
+# its name (a UUID-typed column is an identifier by construction). Compared
+# against the unwrapped leading type token, lowercased.
+_IDENTIFIER_TYPE_TOKENS: frozenset[str] = frozenset({"uuid", "uniqueidentifier"})
+
+
+def is_identifier_column(name: str, type_name: str = "") -> bool:
+    """Whether a column looks like an identifier (by name, or by declared type).
+
+    Name signals: exact ``id``/``uuid``/``guid`` (any case), a ``_id``/``_uuid``/
+    ``_guid`` snake_case suffix (any case), or a camelCase ``Id``/``ID``/
+    ``Uuid``/... suffix preceded by a lowercase letter or digit. Type signal: a
+    declared ``UUID`` warehouse type. Deliberately conservative — words that
+    merely end in "id" (``paid``, ``valid``, ``android``) do not match, and no
+    data is scanned.
+    """
+    lowered = name.strip().lower()
+    if lowered in _IDENTIFIER_EXACT_NAMES:
+        return True
+    if lowered.endswith(_IDENTIFIER_SNAKE_SUFFIXES):
+        return True
+    if _IDENTIFIER_CAMEL_SUFFIX_RE.search(name.strip()):
+        return True
+    if not type_name:
+        return False
+    return _leading_token(_unwrap_type(type_name.strip().lower())) in _IDENTIFIER_TYPE_TOKENS
+
 
 class FactTableIntrospectionError(ValueError):
     """A fact-table SQL could not be introspected.
@@ -117,8 +162,9 @@ class FactTableColumn:
 @dataclass(frozen=True)
 class FactTableIntrospection:
     columns: list[FactTableColumn]
-    # String-typed columns suitable for count_distinct (excludes the timestamp
-    # column). Order mirrors the projected column order for determinism.
+    # String-typed columns with an identifier signal in their name or declared
+    # type (see ``is_identifier_column``), excluding the timestamp column.
+    # Order mirrors the projected column order for determinism.
     identifier_candidates: list[str]
     # Up to ``sample_limit`` preview rows with JSON-safe scalar values.
     sample_rows: list[dict[str, object]]
@@ -312,7 +358,9 @@ async def introspect_fact_table(
     Loads and scope-checks the data source, then runs the adapter on a worker
     thread (the adapters are synchronous). Each warehouse column type is bucketed
     via :func:`bucket_warehouse_type`; ``identifier_candidates`` are the
-    string-typed columns excluding ``timestamp_column``, in projection order.
+    string-typed columns that also pass :func:`is_identifier_column` (id-like
+    name or UUID-declared type), excluding ``timestamp_column``, in projection
+    order.
 
     Raises ``FactTableIntrospectionError`` when the data source is missing/out of
     scope, the SQL is not a safe read-only ``SELECT``, or the adapter cannot read
@@ -335,9 +383,11 @@ async def introspect_fact_table(
         for column in columns
     ]
     identifier_candidates = [
-        column.name
-        for column in bucketed
-        if column.type == _STRING and column.name != timestamp_column
+        raw.name
+        for raw, column in zip(columns, bucketed, strict=True)
+        if column.type == _STRING
+        and column.name != timestamp_column
+        and is_identifier_column(raw.name, raw.type_name)
     ]
     return FactTableIntrospection(
         columns=bucketed,

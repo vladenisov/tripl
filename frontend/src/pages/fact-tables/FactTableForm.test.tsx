@@ -185,6 +185,75 @@ describe('FactTableForm', () => {
     )
   })
 
+  it('re-detect replaces a stale identifier selection but preserves manual overrides', async () => {
+    const columns = [
+      { name: 'paid', type: 'string' },
+      { name: 'valid', type: 'string' },
+      { name: 'android', type: 'string' },
+      { name: 'country', type: 'string' },
+      { name: 'user_id', type: 'string' },
+      { name: 'created_at', type: 'timestamp' },
+    ]
+    vi.mocked(factTablesApi.preview).mockResolvedValue({
+      columns,
+      identifier_candidates: ['user_id'],
+      sample_rows: [],
+    })
+
+    const existing = {
+      id: 'ft-9',
+      project_id: 'p-1',
+      name: 'events',
+      display_name: 'Events',
+      description: '',
+      color: '#6366f1',
+      order: 0,
+      data_source_id: 'ds-1',
+      timestamp_column: 'created_at',
+      columns,
+      // Saved under the old "every string column is an identifier" suggestion
+      // rule (tripl-8pc0): ordinary columns are checked as identifiers.
+      identifier_columns: ['paid', 'valid', 'android', 'country', 'user_id'],
+      row_filters: [],
+      sql: 'SELECT paid, valid, android, country, user_id, created_at FROM events',
+      created_at: '2026-06-01T00:00:00Z',
+      updated_at: '2026-06-20T00:00:00Z',
+    } as unknown as FactTable
+
+    renderForm(existing)
+
+    // The stale saved selection renders checked.
+    expect(screen.getByLabelText('Use paid as an identifier column')).toBeChecked()
+
+    // Explicit re-detect: the backend's tightened candidates replace the stale
+    // untouched selection.
+    fireEvent.click(screen.getByRole('button', { name: /Preview columns/ }))
+    await waitFor(() =>
+      expect(screen.getByLabelText('Use paid as an identifier column')).not.toBeChecked(),
+    )
+    expect(screen.getByLabelText('Use android as an identifier column')).not.toBeChecked()
+    expect(screen.getByLabelText('Use user_id as an identifier column')).toBeChecked()
+
+    // Manual overrides: add country, remove the suggested user_id...
+    fireEvent.click(screen.getByLabelText('Use country as an identifier column'))
+    fireEvent.click(screen.getByLabelText('Use user_id as an identifier column'))
+
+    // ...then re-preview: both overrides survive the refresh.
+    fireEvent.click(screen.getByRole('button', { name: /Preview columns/ }))
+    await waitFor(() => expect(factTablesApi.preview).toHaveBeenCalledTimes(2))
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: /Preview columns/ })).toBeEnabled(),
+    )
+    expect(screen.getByLabelText('Use country as an identifier column')).toBeChecked()
+    expect(screen.getByLabelText('Use user_id as an identifier column')).not.toBeChecked()
+
+    submit()
+
+    await waitFor(() => expect(factTablesApi.update).toHaveBeenCalledTimes(1))
+    const [, , payload] = vi.mocked(factTablesApi.update).mock.calls[0]
+    expect(payload).toMatchObject({ identifier_columns: ['country'] })
+  })
+
   it('renders the internal name read-only when editing and omits it from the update', async () => {
     const existing = {
       id: 'ft-9',
