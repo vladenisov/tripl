@@ -12,7 +12,7 @@ vi.mock('recharts', async () => {
 
 import { metricAxisFormatter } from '@/lib/metricFormat'
 import type { EventMetricPoint } from '@/types'
-import { buildChartData, CustomTooltip, MetricsChart } from './chart'
+import { buildChartData, CustomTooltip, MetricsChart, MultiSeriesTooltip } from './chart'
 
 describe('MetricsChart', () => {
   it('renders anomaly dots for anomalous points', () => {
@@ -182,6 +182,51 @@ describe('CustomTooltip', () => {
     )
 
     expect(screen.getByText('±2.5σ band: 3%–7%')).toBeInTheDocument()
+  })
+})
+
+// Same jsdom constraint as CustomTooltip: the breakdown/version tooltip is
+// verified directly. Percent-unit catalog metrics store fractions, so without
+// a formatter the old hardcoded `value.toLocaleString() events` rendered
+// "0.081 events" (tripl-4dej).
+describe('MultiSeriesTooltip', () => {
+  const payload = [
+    { value: 0.081, dataKey: 'series_0', color: '#111111', name: 'ios' },
+    { value: 0.05, dataKey: 'series_1', color: '#222222', name: 'android' },
+  ]
+
+  it('keeps the default `value seriesLabel` lines without a formatter', () => {
+    render(
+      <MultiSeriesTooltip
+        active
+        payload={payload}
+        label="2026-01-01T10:00:00Z"
+        granularity="hour"
+        seriesLabel="events"
+      />,
+    )
+
+    expect(screen.getByText('0.081 events')).toBeInTheDocument()
+    expect(screen.getByText('0.05 events')).toBeInTheDocument()
+  })
+
+  it('routes series values through valueFormatter and drops the label suffix', () => {
+    render(
+      <MultiSeriesTooltip
+        active
+        payload={payload}
+        label="2026-01-01T10:00:00Z"
+        granularity="hour"
+        seriesLabel="%"
+        valueFormatter={metricAxisFormatter('%')}
+      />,
+    )
+
+    // Stored fractions render ×100 with the formatter's own unit…
+    expect(screen.getByText('8.1%')).toBeInTheDocument()
+    expect(screen.getByText('5%')).toBeInTheDocument()
+    // …and the seriesLabel suffix disappears entirely.
+    expect(screen.queryByText(/events/)).not.toBeInTheDocument()
   })
 })
 

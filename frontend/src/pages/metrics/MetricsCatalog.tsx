@@ -40,6 +40,7 @@ import { Dot } from '@/components/primitives/dot'
 import { MiniStat, MiniStatDivider } from '@/components/primitives/mini-stat'
 import { Sparkline } from '@/components/primitives/sparkline'
 import { useDebouncedValue } from '@/hooks/useDebouncedValue'
+import { useMetricCollectionWatcher } from '@/hooks/useMetricCollectionWatcher'
 import { useEventsDndSensors } from '@/pages/events/useEventsDndSensors'
 import { formatDateTime, formatRelativeTime } from '@/lib/datetime'
 import { formatMetricValue } from '@/lib/metricFormat'
@@ -901,13 +902,23 @@ function MetricRowMenu({ metric, slug, existingNames }: MetricRowMenuProps) {
     onError: error => toast.error(getErrorMessage(error)),
   })
 
+  // Watch the queued run's persisted last_collection_status until it settles so
+  // the user sees "collected" or the failure reason, not silence (tripl-4mju).
+  const collectWatcher = useMetricCollectionWatcher(slug, (_metricId, status) => {
+    if (status !== 'success') return
+    void qc.invalidateQueries({ queryKey: ['metrics-catalog', slug] })
+  })
   const collectMut = useMutation({
     mutationFn: () => metricsCatalogApi.collect(slug, metric.id),
-    onSuccess: () => toast.success('Collection queued — the chart will update shortly.'),
+    onSuccess: () => {
+      toast.success('Collection started — you will be notified when it finishes.')
+      collectWatcher.watch(metric.id, metric.display_name)
+    },
     onError: () => toast.error('Could not start collection.'),
   })
 
-  const busy = duplicateMut.isPending || statusMut.isPending || collectMut.isPending
+  const busy =
+    duplicateMut.isPending || statusMut.isPending || collectMut.isPending || collectWatcher.isWatching
 
   return (
     <DropdownMenu>
@@ -922,7 +933,15 @@ function MetricRowMenu({ metric, slug, existingNames }: MetricRowMenuProps) {
           <MoreVertical className="h-3.5 w-3.5" />
         </button>
       </DropdownMenuTrigger>
-      <DropdownMenuContent align="end" sideOffset={6} className="w-[184px]">
+      {/* The portaled content still bubbles clicks through the REACT tree (portal
+          synthetic events), so without this stop the row's navigate-on-click fires
+          for every item selection and unmounts the row mid-action (tripl-4mju). */}
+      <DropdownMenuContent
+        align="end"
+        sideOffset={6}
+        className="w-[184px]"
+        onClick={event => event.stopPropagation()}
+      >
         <DropdownMenuItem
           className="text-[12.5px]"
           onSelect={() => navigate(`/p/${slug}/metrics/${metric.id}/edit`)}

@@ -63,6 +63,14 @@ interface MetricsMultiSeriesChartProps {
   granularity?: MetricsGranularity
   seriesLabel?: string
   emptyLabel?: string
+  /**
+   * Optional formatter for Y-axis ticks and tooltip values, mirroring
+   * `MetricsChartProps.valueFormatter` (percent-unit catalog metrics render
+   * stored fractions ×100). The formatted string carries its own unit, so the
+   * tooltip skips the `seriesLabel` suffix. When omitted, the chart keeps its
+   * default compact-count ticks and `value seriesLabel` tooltip lines.
+   */
+  valueFormatter?: (value: number) => string
 }
 
 function formatTick(dateStr: string, granularity: MetricsGranularity) {
@@ -311,18 +319,22 @@ export function CustomTooltip({
   )
 }
 
-function MultiSeriesTooltip({
+// Exported for unit tests only — recharts never paints its tooltip in jsdom
+// (mirrors CustomTooltip above).
+export function MultiSeriesTooltip({
   active,
   payload,
   label,
   granularity,
   seriesLabel,
+  valueFormatter,
 }: {
   active?: boolean
   payload?: Array<{ value: number; dataKey?: string; color?: string; name?: string }>
   label?: string | number
   granularity: MetricsGranularity
   seriesLabel: string
+  valueFormatter?: (value: number) => string
 }) {
   if (!active || !payload?.length) return null
   const visiblePayload = payload.filter(item => typeof item.value === 'number')
@@ -338,7 +350,11 @@ function MultiSeriesTooltip({
               <span className="h-2 w-2 shrink-0 rounded-full" style={{ backgroundColor: item.color }} />
               <span className="truncate">{item.name}</span>
             </span>
-            <span className="font-medium">{Number(item.value).toLocaleString()} {seriesLabel}</span>
+            <span className="font-medium">
+              {valueFormatter
+                ? valueFormatter(Number(item.value))
+                : `${Number(item.value).toLocaleString()} ${seriesLabel}`}
+            </span>
           </div>
         ))}
       </div>
@@ -576,6 +592,7 @@ export function MetricsMultiSeriesChart({
   granularity = 'hour',
   seriesLabel = 'events',
   emptyLabel = 'No breakdown metrics available',
+  valueFormatter,
 }: MetricsMultiSeriesChartProps) {
   const chartSeries = useMemo(
     () => series
@@ -603,8 +620,8 @@ export function MetricsMultiSeriesChart({
   }, [chartSeries])
   const { ref: containerRef, ready: containerReady } = useChartContainerReady()
   const yAxisWidth = useMemo(
-    () => axisWidthForValues(collectMultiSeriesYValues(chartData), formatCount),
-    [chartData],
+    () => axisWidthForValues(collectMultiSeriesYValues(chartData), valueFormatter ?? formatCount),
+    [chartData, valueFormatter],
   )
 
   if (!chartSeries.length || !chartData.length) {
@@ -647,14 +664,22 @@ export function MetricsMultiSeriesChart({
             tickMargin={8}
           />
           <YAxis
-            tickFormatter={formatCount}
+            tickFormatter={valueFormatter ?? formatCount}
             className="text-xs fill-muted-foreground"
             tickLine={false}
             axisLine={false}
             tickMargin={8}
             width={yAxisWidth}
           />
-          <Tooltip content={<MultiSeriesTooltip granularity={granularity} seriesLabel={seriesLabel} />} />
+          <Tooltip
+            content={
+              <MultiSeriesTooltip
+                granularity={granularity}
+                seriesLabel={seriesLabel}
+                valueFormatter={valueFormatter}
+              />
+            }
+          />
           {chartSeries.map(item => (
             <Line
               key={item.key}

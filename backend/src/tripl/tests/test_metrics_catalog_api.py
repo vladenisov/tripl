@@ -1268,6 +1268,30 @@ class TestCollectNow:
         got = await client.get(f"{_metrics_url(project['slug'])}/{metric['id']}")
         assert got.json()["last_collection_status"] == "running"
 
+    async def test_dispatch_failure_returns_503_and_stamps_error(
+        self,
+        client: AsyncClient,
+        project: dict,
+        data_source: dict,
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        metric = await _create_sql_metric(client, project["slug"], data_source["id"], "cn_fail")
+
+        def _broker_down(*args: object) -> None:
+            raise RuntimeError("broker unavailable")
+
+        monkeypatch.setattr(mc.collect_metric_definitions, "delay", _broker_down)
+        resp = await client.post(f"{_metrics_url(project['slug'])}/{metric['id']}/collect")
+        assert resp.status_code == 503, resp.text
+
+        # The failed dispatch is persisted as a terminal error (not a stuck
+        # "running") so the UI's status poll and the scheduler's one-active-job
+        # guard both see the truth (tripl-4mju).
+        got = await client.get(f"{_metrics_url(project['slug'])}/{metric['id']}")
+        body = got.json()
+        assert body["last_collection_status"] == "error"
+        assert body["last_collection_error"] == "Failed to dispatch collection task to worker"
+
     async def test_unknown_metric_returns_404(
         self,
         client: AsyncClient,
