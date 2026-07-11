@@ -154,6 +154,23 @@ def sync_delete_prefix(prefix: str) -> None:
         logger.warning("redis sync SCAN+DEL %s* failed: %s", prefix, exc)
 
 
+# ── Shared client accessors ──────────────────────────────────────────────
+# The realtime pub/sub bus (``tripl.realtime``) reuses these same lazily-built,
+# gracefully-degrading clients so it shares one connection style with the cache
+# (and is a no-op when ``REDIS_URL`` is empty — tests). Both return ``None`` when
+# Redis is unavailable so callers stay non-blocking.
+
+
+def get_async_client() -> redis_asyncio.Redis | None:
+    """Return the shared async Redis client, or ``None`` when Redis is off."""
+    return _get_client()
+
+
+def get_sync_client() -> redis_sync.Redis | None:
+    """Return the shared sync Redis client, or ``None`` when Redis is off."""
+    return _get_sync_client()
+
+
 async def close() -> None:
     """Close the shared client — call from FastAPI shutdown if needed."""
     global _client

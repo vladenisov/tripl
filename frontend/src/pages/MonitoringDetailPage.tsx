@@ -42,6 +42,7 @@ import { formatMetricValue, isPercentUnit, metricAxisFormatter } from '@/lib/met
 import { GRANULARITY_OPTIONS, RANGE_OPTIONS, aggregateMetricPoints, defaultGranularityForRange, type MetricsGranularity } from '@/lib/metrics'
 import { resolveMetaFieldHref } from '@/lib/metaFields'
 import { resolveDetailScope } from '@/lib/monitoring'
+import { useAdaptiveRefetchInterval } from '@/realtime/streamContext'
 import type {
   AppVersionSeriesResponse,
   DistributionDriftBand,
@@ -244,6 +245,9 @@ export default function MonitoringDetailPage() {
     const from = new Date(to.getTime() - rangeDays * 24 * 60 * 60 * 1000)
     return { from: from.toISOString(), to: to.toISOString() }
   }, [rangeDays])
+  // Live-metric/monitoring queries fall back to polling only while the stream is
+  // unavailable; metric_collection.updated / signals.updated refresh them live.
+  const refetchInterval = useAdaptiveRefetchInterval({ activeMs: 60_000 })
 
   const eventQuery = useQuery({
     queryKey: ['event', slug, branchId, scopeId],
@@ -315,7 +319,7 @@ export default function MonitoringDetailPage() {
       return metricsApi.getEventMetrics(slug!, scopeId, timeRange)
     },
     enabled: !!slug && !!scopeId,
-    refetchInterval: 60000,
+    refetchInterval,
     // Keep the previous range's series on screen while the new range loads so the
     // chart doesn't remount into a loading flash on range change (tripl-7l83.10).
     placeholderData: (prev) => prev,
@@ -387,7 +391,7 @@ export default function MonitoringDetailPage() {
     },
     enabled: selectedTab === 'versions' && hasVersionColumn && !!slug && !!scopeId
       && (scope === 'metric' || (!!scanConfigId && !!appVersionScope)),
-    refetchInterval: 60000,
+    refetchInterval,
   })
 
   const appVersionAdoptionQuery = useQuery({
@@ -395,7 +399,7 @@ export default function MonitoringDetailPage() {
     queryFn: () => metricsApi.getAppVersionAdoption(slug!, scanConfigId!, timeRange),
     // No catalog adoption endpoint — the metric scope leaves this card empty.
     enabled: scope !== 'metric' && selectedTab === 'versions' && hasVersionColumn && !!slug && !!scanConfigId,
-    refetchInterval: 60000,
+    refetchInterval,
   })
   const selectedVersionFilter: VersionFilter = versionFilter === 'latest' && !appVersionSeriesQuery.data?.latest_version
     ? 'all'
@@ -437,7 +441,7 @@ export default function MonitoringDetailPage() {
       ...timeRange,
     }),
     enabled: selectedTab === 'distribution' && !!slug && !!distributionScope,
-    refetchInterval: 60000,
+    refetchInterval,
   })
 
   const chartData = useMemo(
@@ -463,7 +467,7 @@ export default function MonitoringDetailPage() {
     },
     enabled: (scope === 'event' || scope === 'metric')
       && selectedTab === 'breakdowns' && !!slug && !!scopeId,
-    refetchInterval: 60000,
+    refetchInterval,
   })
   const breakdowns = breakdownQuery.data
   const selectedBreakdownColumn = breakdownColumn || breakdowns?.selected_column || ''

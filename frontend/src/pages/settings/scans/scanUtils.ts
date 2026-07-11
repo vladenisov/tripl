@@ -10,6 +10,15 @@ export interface ScanRunInfo {
   lastJob: ScanJob | null
 }
 
+/**
+ * Whether any job is still in a non-terminal state (pending/running). Drives the
+ * adaptive polling fallback: fast polling stops once every job settles, and the
+ * live stream (`scan_job.updated`) refreshes the list in the meantime.
+ */
+export function scanJobsHaveActiveWork(jobs: ScanJob[] | undefined): boolean {
+  return (jobs ?? []).some((job) => job.status === 'running' || job.status === 'pending')
+}
+
 export function deriveScanRunInfo(jobs: ScanJob[]): ScanRunInfo {
   const lastJob = jobs[0] ?? null
   if (!lastJob) return { status: 'idle', lastRunLabel: 'never', lastJob: null }

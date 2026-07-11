@@ -24,6 +24,7 @@ import { coverageTone, dataSourceHealthLexeme, type StatusLexeme } from '@/lib/s
 import { formatDateTime, formatRelativeTime } from '@/lib/datetime'
 import { getMonitoringPath } from '@/lib/monitoring'
 import { friendlyScanError } from '@/lib/scanError'
+import { useAdaptiveRefetchInterval } from '@/realtime/streamContext'
 import type {
   ActivityItem,
   ActivityItemSeverity,
@@ -41,6 +42,9 @@ const SOURCE_HEALTH_STALE_MS = 24 * 60 * 60 * 1000
 export default function OverviewPage() {
   const { slug } = useParams<{ slug: string }>()
   const { chartStyle } = useTheme()
+  // Adaptive fallback cadence: the live stream refreshes signals/activity via the
+  // invalidation map, so poll only while the stream is unavailable.
+  const refetchInterval = useAdaptiveRefetchInterval({ activeMs: 60_000 })
 
   const projectQuery = useQuery({
     queryKey: ['project', slug],
@@ -70,14 +74,14 @@ export default function OverviewPage() {
     queryFn: () => metricsApi.getActiveSignals(slug!),
     enabled: !!slug,
     staleTime: 30_000,
-    refetchInterval: 60_000,
+    refetchInterval,
   })
   const activityQuery = useQuery({
     queryKey: ['activity', slug ?? 'workspace'],
     queryFn: () => activityApi.list({ slug, limit: ACTIVITY_LIMIT }),
     enabled: !!slug,
     staleTime: 30_000,
-    refetchInterval: 60_000,
+    refetchInterval,
   })
   const sourcesQuery = useQuery({
     queryKey: ['dataSources'],

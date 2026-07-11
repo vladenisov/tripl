@@ -60,7 +60,7 @@ from sqlalchemy import func as sa_func
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from tripl import cache
+from tripl import cache, realtime
 from tripl.config import settings
 from tripl.core.analyzers.anomaly_detector import (
     SCOPE_EVENT,
@@ -694,11 +694,18 @@ def _prune_retention(
 
 
 def _emit_status(slug: str) -> None:
-    """Emit a project-scoped 'updated' signal that tripl-2su6.8 will consume.
+    """Emit a project-scoped 'updated' signal for the tripl-2su6.8 live stream.
 
-    A lightweight hook: invalidate the project-scoped cache prefixes so the next
-    read serves the freshly-appended series. Redis-off (tests) is a no-op. The
-    live-update consumer is built in .8; .7 only needs to emit.
+    Invalidates the project-scoped cache prefixes so the next read serves the
+    freshly-appended series, then publishes the realtime events so subscribed
+    clients refresh without waiting on the polling fallback. Redis-off (tests) is
+    a no-op for both. Runs AFTER the tick's commit.
     """
     cache.sync_delete_prefix(cache.prefix_projects())
     cache.sync_delete_prefix(f"{cache.prefix_signals()}{slug}:")
+    realtime.publish_project_event(
+        slug, realtime.EVENT_METRIC_COLLECTION_UPDATED, {"source": "demo_runtime"}
+    )
+    realtime.publish_project_event(
+        slug, realtime.EVENT_SIGNALS_UPDATED, {"source": "demo_runtime"}
+    )

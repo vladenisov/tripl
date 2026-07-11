@@ -21,6 +21,7 @@ import { useCommandPalette } from '@/components/command-palette-context'
 import { Kbd } from '@/components/primitives/kbd'
 import { Dot } from '@/components/primitives/dot'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
+import { useAdaptiveRefetchInterval } from '@/realtime/streamContext'
 import type { AlertDelivery, MonitoringSignal } from '@/types'
 
 type TopBarProps = {
@@ -112,18 +113,21 @@ export function TopBar({
 }
 
 function NotificationsMenu({ projectSlug }: { projectSlug?: string }) {
+  // Stream-aware fallback: the SSE invalidation map refreshes these on
+  // signals.updated / activity.created, so poll only when the stream is down.
+  const refetchInterval = useAdaptiveRefetchInterval({ activeMs: 60_000 })
   const signalsQuery = useQuery({
     queryKey: ['topbarNotifications', projectSlug, 'signals'],
     queryFn: () => metricsApi.getActiveSignals(projectSlug!),
     enabled: !!projectSlug,
-    refetchInterval: 60_000,
+    refetchInterval,
     staleTime: 30_000,
   })
   const deliveriesQuery = useQuery({
     queryKey: ['topbarNotifications', projectSlug, 'deliveries'],
     queryFn: () => alertingApi.listDeliveries(projectSlug!, { limit: 5 }),
     enabled: !!projectSlug,
-    refetchInterval: 60_000,
+    refetchInterval,
     staleTime: 30_000,
   })
 

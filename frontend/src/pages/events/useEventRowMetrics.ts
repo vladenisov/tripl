@@ -2,6 +2,7 @@ import { useMemo } from 'react'
 import { useQueries } from '@tanstack/react-query'
 
 import { metricsApi } from '@/api/metrics'
+import { useAdaptiveRefetchInterval } from '@/realtime/streamContext'
 import type { EventListItem, MonitoringSignal } from '@/types'
 
 import {
@@ -56,6 +57,7 @@ export function useEventRowMetrics({
     () => chunkEventIds(eventIdsForWindowMetrics),
     [eventIdsForWindowMetrics],
   )
+  const refetchInterval = useAdaptiveRefetchInterval({ activeMs: 60_000 })
 
   // `combine` runs on every render and isn't memoized by React Query, so it only
   // flattens (structural sharing keeps the array stable when data is unchanged);
@@ -74,7 +76,7 @@ export function useEventRowMetrics({
         ...rowMetricsRange,
       }),
       enabled: !!slug && bucketIds.length > 0,
-      refetchInterval: 60000,
+      refetchInterval,
     })),
     combine: results => results.flatMap(result => result.data ?? EMPTY_EVENT_WINDOW_METRICS),
   })

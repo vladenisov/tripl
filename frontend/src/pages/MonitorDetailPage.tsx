@@ -14,6 +14,7 @@ import {
   MONITOR_STATUS_LABEL as STATUS_LABEL,
   MONITOR_STATUS_TONE as STATUS_TONE,
 } from '@/lib/statusLexicon'
+import { useAdaptiveRefetchInterval } from '@/realtime/streamContext'
 import type { AlertDelivery, MonitorDetail } from '@/types'
 
 const HOUR_MS = 60 * 60 * 1000
@@ -36,12 +37,13 @@ export default function MonitorDetailPage() {
 
   const monitorKey = useMemo(() => ['monitor', slug, monitorId], [slug, monitorId])
   const historyKey = useMemo(() => ['monitor-history', slug, monitorId], [slug, monitorId])
+  const refetchInterval = useAdaptiveRefetchInterval({ activeMs: 60_000 })
 
   const monitorQuery = useQuery({
     queryKey: monitorKey,
     queryFn: () => alertingApi.getMonitor(slug!, monitorId!),
     enabled: !!slug && !!monitorId,
-    refetchInterval: 60_000,
+    refetchInterval,
     staleTime: 30_000,
   })
 
@@ -49,7 +51,7 @@ export default function MonitorDetailPage() {
     queryKey: historyKey,
     queryFn: () => alertingApi.getMonitorHistory(slug!, monitorId!, { limit: 50 }),
     enabled: !!slug && !!monitorId,
-    refetchInterval: 60_000,
+    refetchInterval,
   })
 
   const muteMut = useMutation({
