@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import enum
+import uuid
 from datetime import datetime
 from typing import TYPE_CHECKING
 
 import sqlalchemy as sa
-from sqlalchemy import DateTime, Integer, String, Text, UniqueConstraint
+from sqlalchemy import DateTime, ForeignKey, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from tripl.models.base import Base, TimestampMixin, UUIDMixin
@@ -29,6 +30,14 @@ class TestStatus(enum.StrEnum):
 class DataSource(UUIDMixin, TimestampMixin, Base):
     __tablename__ = "data_sources"
     __table_args__ = (UniqueConstraint("name", name="uq_data_source_name"),)
+
+    # Ownership. NULL = workspace-global source (the normal case, shared across
+    # projects). A non-NULL owner scopes this source to one project — used by
+    # generated demo workspaces so their synthetic warehouse is cleaned up with
+    # the project (ON DELETE CASCADE) instead of leaking a workspace-wide orphan.
+    project_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("projects.id", ondelete="CASCADE"), nullable=True, default=None, index=True
+    )
 
     name: Mapped[str] = mapped_column(String(255))
     db_type: Mapped[str] = mapped_column(db_enum(DBType, "data_source_db_type"))

@@ -3,7 +3,11 @@ from datetime import datetime
 
 from pydantic import BaseModel, Field
 
-from tripl.models.domain_enums import AnomalyDirection, MetricScopeType
+from tripl.models.domain_enums import (
+    AnomalyDirection,
+    MetricScopeType,
+    ProjectGenerationStatus,
+)
 from tripl.models.scan_job import ScanJobStatus
 
 
@@ -97,5 +101,15 @@ class ProjectResponse(BaseModel):
     created_at: datetime
     updated_at: datetime
     summary: ProjectSummary = Field(default_factory=ProjectSummary)
+    # Demo identity & provisioning state (real projects: is_demo=False,
+    # generation_status="ready", the rest null). Surfaces provisioning progress
+    # and failure detail to the UI without leaking internals.
+    is_demo: bool = False
+    generation_status: ProjectGenerationStatus = ProjectGenerationStatus.ready
+    generation_stage: str | None = None
+    generation_error: str | None = None
+    demo_recipe_version: str | None = None
+    demo_seeded_at: datetime | None = None
+    created_by_user_id: uuid.UUID | None = None
 
     model_config = {"from_attributes": True}
