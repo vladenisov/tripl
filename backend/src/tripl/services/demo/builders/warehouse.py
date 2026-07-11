@@ -67,10 +67,21 @@ async def _build_scan_config(session: AsyncSession, ctx: DemoContext) -> None:
         # run against the in-memory dataset served by the SyntheticAdapter.
         base_query="SELECT * FROM events",
         time_column="event_time",  # required for _get_default_scan_config_id
+        # ``event_type`` groups synthetic rows into the authored event types
+        # (screen_view/click/purchase) so a real Run now / Replay over the
+        # synthetic source scans and reconciles against the authored plan.
+        event_type_column="event_type",
         interval="1h",
+        replay_chunk_interval="6h",
         anomaly_detection_enabled=True,
         distribution_drift_fields=["platform"],
         metric_breakdown_columns=["platform"],
+        # Platform + app-version observation are CONFIGURED here (the synthetic
+        # dataset carries both columns), so the presence matrix, per-platform
+        # volume, version adoption, and release-regression features are live —
+        # they go inert only if these columns are cleared.
+        platform_column="platform",
+        app_version_column="app_version",
     )
     session.add(scan_config)
     await session.flush()

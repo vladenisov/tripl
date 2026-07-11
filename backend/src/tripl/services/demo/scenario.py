@@ -90,6 +90,7 @@ def build_default_scenario() -> DemoScenario:
         activity,
         branches,
         catalog,
+        governance,
         monitoring,
         plan,
         search,
@@ -112,7 +113,10 @@ def build_default_scenario() -> DemoScenario:
             # 5. Monitoring: anomaly settings + detector-derived anomalies, real
             #    PSI drift, schema drift.
             monitoring.build_monitoring,
-            # 6. Metrics catalog: fact table + four metric definitions + values.
+            # 6. Governance: scan-job history, coverage, shadow/dead-event
+            #    reconciliation — coherent with the seeded warehouse volume.
+            governance.build_governance,
+            # 7. Metrics catalog: fact table + four metric definitions + values.
             catalog.build_catalog,
             # 7. A small feature-branch journey (revision + branch + comment).
             branches.build_branches,
