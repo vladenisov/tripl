@@ -1,4 +1,15 @@
-export type AlertDestinationType = 'slack' | 'telegram' | 'webhook' | 'email' | 'jira' | 'linear'
+// 'demo_sink' is the demo-only local sink: it renders + records deliveries with
+// no outbound network. It appears here so existing destinations/deliveries can
+// carry it, but is intentionally kept out of the user-selectable
+// `DestinationChannel` create options in pages/alerting/constants.ts.
+export type AlertDestinationType =
+  | 'slack'
+  | 'telegram'
+  | 'webhook'
+  | 'email'
+  | 'jira'
+  | 'linear'
+  | 'demo_sink'
 export type AlertDeliveryStatus = 'pending' | 'sent' | 'failed'
 export type AlertMessageFormat =
   | 'plain'
@@ -72,6 +83,8 @@ export interface AlertDestination {
   linear_team_id: string | null
   linear_state_id: string | null
   linear_label_ids: string | null
+  // True for a demo_sink: a local, non-sendable sink badged LOCAL SIMULATED.
+  is_local: boolean
   rules: AlertRule[]
   created_at: string
   updated_at: string
@@ -148,6 +161,9 @@ export interface AlertDelivery {
   matched_count: number
   payload_snapshot: Record<string, unknown> | null
   error_message: string | null
+  // True when a demo_sink recorded this delivery locally (no external send).
+  is_local: boolean
+  is_simulated: boolean
   created_at: string
   updated_at: string
   sent_at: string | null

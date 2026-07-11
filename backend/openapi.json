@@ -551,6 +551,16 @@
             "title": "Id",
             "type": "string"
           },
+          "is_local": {
+            "default": false,
+            "title": "Is Local",
+            "type": "boolean"
+          },
+          "is_simulated": {
+            "default": false,
+            "title": "Is Simulated",
+            "type": "boolean"
+          },
           "items": {
             "items": {
               "$ref": "#/components/schemas/AlertDeliveryItemResponse"
@@ -869,6 +879,16 @@
             "format": "uuid",
             "title": "Id",
             "type": "string"
+          },
+          "is_local": {
+            "default": false,
+            "title": "Is Local",
+            "type": "boolean"
+          },
+          "is_simulated": {
+            "default": false,
+            "title": "Is Simulated",
+            "type": "boolean"
           },
           "matched_count": {
             "title": "Matched Count",
@@ -1257,6 +1277,11 @@
             "title": "Id",
             "type": "string"
           },
+          "is_local": {
+            "default": false,
+            "title": "Is Local",
+            "type": "boolean"
+          },
           "jira_api_token_set": {
             "title": "Jira Api Token Set",
             "type": "boolean"
@@ -1423,7 +1448,8 @@
           "webhook",
           "email",
           "jira",
-          "linear"
+          "linear",
+          "demo_sink"
         ],
         "title": "AlertDestinationType",
         "type": "string"

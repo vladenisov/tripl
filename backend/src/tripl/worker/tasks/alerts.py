@@ -511,6 +511,25 @@ def send_alert_delivery(self: object, delivery_id: str) -> dict[str, object]:
                 # status=sent commit, so a crash in between can't create a
                 # duplicate ticket on re-run (see the Jira branch above).
                 session.commit()
+        elif destination.type == AlertDestinationType.demo_sink:
+            # Local, non-sendable sink for generated demo projects
+            # (tripl-2su6.6). The message is already rendered above and stored in
+            # payload_snapshot["rendered_message"]; here we ONLY stamp local
+            # markers and perform NO network call — no httpx/urllib POST, no
+            # SMTP, no SSRF re-check. The delivery then falls through to the
+            # shared status=sent block below, so retry and simulate for a
+            # demo_sink take this same zero-network path. The is_local /
+            # simulated markers (and channel=demo_sink) make the API response
+            # clearly a LOCAL SIMULATED delivery that never claims an external
+            # Slack/Jira/Linear/email success.
+            payload_snapshot["delivery_mode"] = "local_sink"
+            payload_snapshot["is_local"] = True
+            payload_snapshot["simulated"] = True
+            payload_snapshot["local_notice"] = (
+                "Simulated local delivery (demo_sink) — rendered and recorded "
+                "locally with no external message sent."
+            )
+            delivery.payload_snapshot = payload_snapshot
         else:
             raise ValueError(f"Unsupported destination type {destination.type}")
 
