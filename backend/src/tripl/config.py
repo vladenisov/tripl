@@ -131,6 +131,13 @@ class Settings(BaseSettings):
     scan_row_limit_default: int = 50_000
     metrics_row_limit_default: int = 100_000
 
+    # Demo runtime tick (``advance_demos`` beat task). When true, active demos are
+    # kept fresh by appending new synthetic buckets/jobs/signals on a schedule.
+    # When false the beat task is a no-op — REAL scan/metric scheduling
+    # (check_metrics_due / check_metric_definitions_due) is entirely unaffected,
+    # so this only turns demo self-advancement on or off.
+    demo_runtime_enabled: bool = True
+
     # AI features (LLM-powered descriptions, Q&A). Disabled by default because
     # plan content — event names, descriptions, field names — is sent to the
     # configured provider when enabled.
