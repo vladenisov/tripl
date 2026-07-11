@@ -62,6 +62,20 @@ class Project(UUIDMixin, TimestampMixin, Base):
     demo_seeded_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True, default=None
     )
+    # When the demo-runtime tick (``advance_demos``) last advanced this demo's
+    # synthetic clock. NULL until the first tick. Diagnostic/observability only —
+    # the tick's correctness comes from the seeded series + DB unique constraints,
+    # not this stamp.
+    demo_last_tick_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True, default=None
+    )
+    # Last explicit activity on this demo (a GET on the project, a reset/run). The
+    # tick uses this to pause demos nobody is looking at (older than
+    # ``DEMO_IDLE_PAUSE_MINUTES``) so inactive demos stop consuming worker time;
+    # the next access resumes them. NULL falls back to ``demo_seeded_at``.
+    demo_last_accessed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True, default=None
+    )
 
     event_types: Mapped[list[EventType]] = relationship(
         back_populates="project", cascade="all, delete-orphan", lazy="selectin"

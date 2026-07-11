@@ -565,9 +565,42 @@ async def get_project_by_slug(session: AsyncSession, slug: str) -> Project:
     return await _lookup_project_by_slug(session, slug)
 
 
+# A demo's ``demo_last_accessed_at`` is only rewritten when it is this stale, so a
+# burst of reads doesn't turn every GET into a write. Comfortably tighter than the
+# tick's idle-pause window so an active viewer always keeps the demo resumed.
+_DEMO_ACCESS_TOUCH_SECONDS = 60
+
+
 async def get_project(session: AsyncSession, slug: str) -> ProjectResponse:
     project = await get_project_by_slug(session, slug)
-    return await _serialize_project(session, project)
+    # Decide WHILE attributes are fresh, serialize, then commit the touch last: the
+    # commit expires the ORM object, but the response is already a detached model,
+    # so serialization never lazy-loads on the async session (MissingGreenlet).
+    should_touch = _should_touch_demo_access(project)
+    response = await _serialize_project(session, project)
+    if should_touch:
+        project.demo_last_accessed_at = datetime.now(UTC)
+        await session.commit()
+    return response
+
+
+def _should_touch_demo_access(project: Project) -> bool:
+    """Whether to bump a demo's ``demo_last_accessed_at`` on this access.
+
+    Explicit demo activity (a project GET, or a reset which returns through
+    ``get_project``) marks the demo active so the runtime tick keeps advancing it;
+    the tick pauses demos whose last access is older than ``DEMO_IDLE_PAUSE_MINUTES``
+    so inactive demos stop consuming worker time, and resumes them on the next
+    access. No-op for real projects; throttled so repeated reads don't write on
+    every call.
+    """
+    if not project.is_demo:
+        return False
+    last = project.demo_last_accessed_at
+    if last is None:
+        return True
+    last_aware = last if last.tzinfo is not None else last.replace(tzinfo=UTC)
+    return (datetime.now(UTC) - last_aware).total_seconds() >= _DEMO_ACCESS_TOUCH_SECONDS
 
 
 async def create_project(session: AsyncSession, data: ProjectCreate) -> ProjectResponse:

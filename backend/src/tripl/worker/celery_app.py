@@ -91,10 +91,20 @@ celery_app.conf.beat_schedule = {
         # batch retry can leave documents pending (STRANDED_EMBEDDING_MINUTES).
         "schedule": 900.0,
     },
+    "advance-demos": {
+        "task": "tripl.worker.tasks.demo_runtime.advance_demos",
+        # Every 5 minutes — demos advance on hourly bucket boundaries, so 5-minute
+        # polling keeps them inside the freshness horizon with headroom, and the
+        # per-demo tick is idempotent so an early/overlapping run is a no-op. A
+        # no-op entirely when demo_runtime_enabled is false. Independent of the
+        # metrics dispatchers (own task + per-project advisory lock).
+        "schedule": 300.0,
+    },
 }
 
 # Import tasks so they are registered with the celery app
 import tripl.worker.tasks.alerts  # noqa: F401, E402
+import tripl.worker.tasks.demo_runtime  # noqa: F401, E402
 import tripl.worker.tasks.implementation_tickets  # noqa: F401, E402
 import tripl.worker.tasks.maintenance  # noqa: F401, E402
 import tripl.worker.tasks.metrics  # noqa: F401, E402
