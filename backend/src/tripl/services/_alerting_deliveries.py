@@ -13,7 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from tripl.models.alert_correlation_state import AlertCorrelationState
 from tripl.models.alert_delivery import AlertDelivery, AlertDeliveryStatus
 from tripl.models.alert_delivery_item import AlertDeliveryItem
-from tripl.models.alert_destination import AlertDestination
+from tripl.models.alert_destination import AlertDestination, AlertDestinationType
 from tripl.models.alert_rule import AlertRule
 from tripl.models.project_anomaly_settings import ProjectAnomalySettings
 from tripl.models.scan_config import ScanConfig
@@ -40,6 +40,7 @@ def delivery_to_response(
     rule_name: str,
     scan_name: str,
 ) -> AlertDeliveryResponse:
+    is_local = delivery.channel == AlertDestinationType.demo_sink
     return AlertDeliveryResponse(
         id=delivery.id,
         project_id=delivery.project_id,
@@ -55,6 +56,8 @@ def delivery_to_response(
         matched_count=delivery.matched_count,
         payload_snapshot=delivery.payload_snapshot,
         error_message=delivery.error_message,
+        is_local=is_local,
+        is_simulated=is_local,
         created_at=delivery.created_at,
         updated_at=delivery.updated_at,
         sent_at=delivery.sent_at,

@@ -22,6 +22,15 @@ class AlertDestinationType(enum.StrEnum):
     email = "email"
     jira = "jira"
     linear = "linear"
+    # Local, non-sendable sink for generated demo projects (epic tripl-2su6.6).
+    # A ``demo_sink`` destination carries NO credentials and never performs an
+    # outbound send: the dispatch worker renders the message and records it
+    # locally so Monitors / inbox / delivery history / retry / simulate are all
+    # explorable with zero network side effects. It is demo-only (creatable only
+    # on ``Project.is_demo`` projects) and is kept out of the user-selectable
+    # "create a real destination" options. Added via ALTER TYPE migration
+    # f1a2b3c4d5e8.
+    demo_sink = "demo_sink"
 
 
 class AlertDestination(UUIDMixin, TimestampMixin, Base):

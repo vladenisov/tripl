@@ -2925,6 +2925,16 @@ export interface components {
              * Format: uuid
              */
             id: string;
+            /**
+             * Is Local
+             * @default false
+             */
+            is_local: boolean;
+            /**
+             * Is Simulated
+             * @default false
+             */
+            is_simulated: boolean;
             /** Items */
             items: components["schemas"]["AlertDeliveryItemResponse"][];
             /** Matched Count */
@@ -3039,6 +3049,16 @@ export interface components {
              * Format: uuid
              */
             id: string;
+            /**
+             * Is Local
+             * @default false
+             */
+            is_local: boolean;
+            /**
+             * Is Simulated
+             * @default false
+             */
+            is_simulated: boolean;
             /** Matched Count */
             matched_count: number;
             /** Payload Snapshot */
@@ -3151,6 +3171,11 @@ export interface components {
              * Format: uuid
              */
             id: string;
+            /**
+             * Is Local
+             * @default false
+             */
+            is_local: boolean;
             /** Jira Api Token Set */
             jira_api_token_set: boolean;
             /** Jira Auth Email */
@@ -3195,7 +3220,7 @@ export interface components {
          * AlertDestinationType
          * @enum {string}
          */
-        AlertDestinationType: "slack" | "telegram" | "webhook" | "email" | "jira" | "linear";
+        AlertDestinationType: "slack" | "telegram" | "webhook" | "email" | "jira" | "linear" | "demo_sink";
         /** AlertDestinationUpdate */
         AlertDestinationUpdate: {
             /** Bot Token */

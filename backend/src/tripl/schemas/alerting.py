@@ -248,6 +248,39 @@ class AlertDestinationCreate(BaseModel):
             self.linear_team_id = validate_linear_team_id(self.linear_team_id)
             self.linear_state_id = validate_linear_state_id(self.linear_state_id)
             self.linear_label_ids = validate_linear_label_ids(self.linear_label_ids)
+        elif self.type == "demo_sink":
+            # A demo_sink is a local, non-sendable sink: it carries NO
+            # credentials or channel configuration and never stores a secret or
+            # fake token. Reject any attempt to supply them (tripl-2su6.6).
+            provided = [
+                name
+                for name in (
+                    "webhook_url",
+                    "bot_token",
+                    "chat_id",
+                    "target_url",
+                    "webhook_header_name",
+                    "webhook_header_value",
+                    "email_recipients",
+                    "email_from_address",
+                    "email_subject_template",
+                    "jira_base_url",
+                    "jira_auth_email",
+                    "jira_api_token",
+                    "jira_project_key",
+                    "jira_issue_type",
+                    "linear_api_key",
+                    "linear_team_id",
+                    "linear_state_id",
+                    "linear_label_ids",
+                )
+                if getattr(self, name) is not None
+            ]
+            if provided:
+                raise ValueError(
+                    "A demo_sink destination is a local sink and must not carry "
+                    "any credentials or channel configuration"
+                )
         else:
             raise ValueError("Unsupported destination type")
         return self
@@ -426,6 +459,10 @@ class AlertDestinationResponse(BaseModel):
     linear_team_id: str | None
     linear_state_id: str | None
     linear_label_ids: str | None
+    # True for a ``demo_sink`` destination: a local, non-sendable sink that
+    # renders and records deliveries locally with no outbound network. The UI
+    # uses it to badge the destination as LOCAL SIMULATED (tripl-2su6.6).
+    is_local: bool = False
     rules: list[AlertRuleResponse]
     created_at: datetime
     updated_at: datetime
@@ -474,6 +511,13 @@ class AlertDeliveryResponse(BaseModel):
     matched_count: int
     payload_snapshot: dict[str, object] | None
     error_message: str | None
+    # True when the delivery was rendered + recorded locally by a ``demo_sink``
+    # destination with no outbound network. ``is_local`` and ``is_simulated``
+    # both track ``channel == demo_sink`` so the UI can badge the delivery as a
+    # LOCAL SIMULATED send that never claims a real external success
+    # (tripl-2su6.6).
+    is_local: bool = False
+    is_simulated: bool = False
     created_at: datetime
     updated_at: datetime
     sent_at: datetime | None

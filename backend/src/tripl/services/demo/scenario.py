@@ -24,7 +24,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 # and a feature-branch journey), so demos seeded under recipe "1" are semantically
 # older. Reset re-runs the current recipe, so re-seeding yields equivalent
 # semantics with no duplicate rows (every id is minted fresh per run).
-DEMO_RECIPE_VERSION = "2"
+DEMO_RECIPE_VERSION = "3"
 
 # Default scenario seed. Fixed so the seeded metrics/anomalies/drift are
 # reproducible for a given clock; overridable per DemoContext for tests.
@@ -88,6 +88,7 @@ def build_default_scenario() -> DemoScenario:
     """
     from tripl.services.demo.builders import (
         activity,
+        alerts,
         branches,
         catalog,
         governance,
@@ -118,9 +119,16 @@ def build_default_scenario() -> DemoScenario:
             governance.build_governance,
             # 7. Metrics catalog: fact table + four metric definitions + values.
             catalog.build_catalog,
-            # 7. A small feature-branch journey (revision + branch + comment).
+            # 8. Alerting: a demo-only local ``demo_sink`` destination + a firing
+            #    rule (over the seeded anomalies incl. the catalog metric) and a
+            #    healthy rule, states, one locally-recorded delivery + items,
+            #    inbox correlation group, and a spike annotation. Runs after
+            #    catalog so it can reference the seeded metrics/anomalies. Emits
+            #    zero network side effects.
+            alerts.build_alerts,
+            # 9. A small feature-branch journey (revision + branch + comment).
             branches.build_branches,
-            # 8. Search reindex (last).
+            # 10. Search reindex (last).
             search.build_search,
         ),
     )

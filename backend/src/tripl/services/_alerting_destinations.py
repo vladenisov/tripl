@@ -201,10 +201,36 @@ def destination_to_response(destination: AlertDestination) -> AlertDestinationRe
         linear_team_id=destination.linear_team_id,
         linear_state_id=destination.linear_state_id,
         linear_label_ids=destination.linear_label_ids,
+        is_local=destination.type == AlertDestinationType.demo_sink,
         rules=[rule_to_response(rule) for rule in rules],
         created_at=destination.created_at,
         updated_at=destination.updated_at,
     )
+
+
+# Credential / channel-config fields on AlertDestinationUpdate. A ``demo_sink``
+# is a local sink and must never gain any of these (that would turn it into a
+# real external channel), so an update touching them is rejected.
+_DEMO_SINK_FORBIDDEN_UPDATE_FIELDS = (
+    "webhook_url",
+    "bot_token",
+    "chat_id",
+    "target_url",
+    "webhook_header_name",
+    "webhook_header_value",
+    "email_recipients",
+    "email_from_address",
+    "email_subject_template",
+    "jira_base_url",
+    "jira_auth_email",
+    "jira_api_token",
+    "jira_project_key",
+    "jira_issue_type",
+    "linear_api_key",
+    "linear_team_id",
+    "linear_state_id",
+    "linear_label_ids",
+)
 
 
 async def replace_rule_filters(
@@ -246,6 +272,14 @@ async def create_destination(
     data: AlertDestinationCreate,
 ) -> AlertDestinationResponse:
     project = await _get_project(session, slug)
+    # A ``demo_sink`` is a local, non-sendable sink that only ever belongs to a
+    # generated demo project — mirroring how synthetic data sources are
+    # demo-only. Block creating one on a real project (tripl-2su6.6).
+    if data.type == AlertDestinationType.demo_sink and not project.is_demo:
+        raise HTTPException(
+            status_code=422,
+            detail="A demo_sink destination can only be created on a demo project",
+        )
     destination = AlertDestination(
         project_id=project.id,
         type=data.type,
@@ -307,6 +341,23 @@ async def update_destination(
         destination_id=destination_id,
     )
     update_dict = data.model_dump(exclude_unset=True)
+    # A ``demo_sink`` stays a local sink: block editing it into a real external
+    # channel by adding a url/token/recipients/credentials. Only name/enabled
+    # may change. (The destination ``type`` itself is immutable — there is no
+    # ``type`` field on AlertDestinationUpdate — so a demo_sink can never become
+    # slack/webhook/... and a real destination can never become a demo_sink.)
+    if destination.type == AlertDestinationType.demo_sink:
+        forbidden = [
+            field for field in _DEMO_SINK_FORBIDDEN_UPDATE_FIELDS if field in update_dict
+        ]
+        if forbidden:
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    "A demo_sink destination is a local sink and cannot be given "
+                    "credentials or converted into an external channel"
+                ),
+            )
     if "name" in update_dict:
         destination.name = update_dict["name"]
     if "enabled" in update_dict:
