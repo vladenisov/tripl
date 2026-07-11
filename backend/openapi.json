@@ -11878,6 +11878,17 @@
         "title": "ProjectCreate",
         "type": "object"
       },
+      "ProjectGenerationStatus": {
+        "description": "Provisioning lifecycle for generated (demo) projects.\n\nOrdinary projects are created ``ready`` in a single step. Demo projects move\n``seeding`` -> ``ready`` on success or ``seeding`` -> ``failed`` when\nprovisioning raises; non-``ready`` demos are hidden from normal project lists\nso a partially built or failed demo never surfaces as a real workspace.",
+        "enum": [
+          "pending",
+          "seeding",
+          "ready",
+          "failed"
+        ],
+        "title": "ProjectGenerationStatus",
+        "type": "string"
+      },
       "ProjectLatestScanJob": {
         "properties": {
           "completed_at": {
@@ -12034,14 +12045,80 @@
             "title": "Created At",
             "type": "string"
           },
+          "created_by_user_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Created By User Id"
+          },
+          "demo_recipe_version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Demo Recipe Version"
+          },
+          "demo_seeded_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Demo Seeded At"
+          },
           "description": {
             "title": "Description",
             "type": "string"
+          },
+          "generation_error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Generation Error"
+          },
+          "generation_stage": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Generation Stage"
+          },
+          "generation_status": {
+            "$ref": "#/components/schemas/ProjectGenerationStatus",
+            "default": "ready"
           },
           "id": {
             "format": "uuid",
             "title": "Id",
             "type": "string"
+          },
+          "is_demo": {
+            "default": false,
+            "title": "Is Demo",
+            "type": "boolean"
           },
           "name": {
             "title": "Name",
@@ -17251,6 +17328,85 @@
           }
         },
         "summary": "Create Demo Project",
+        "tags": [
+          "projects"
+        ]
+      }
+    },
+    "/api/v1/projects/demo/{slug}": {
+      "delete": {
+        "description": "Delete a demo and its owned synthetic warehouse. Creator or owner only.",
+        "operationId": "delete_demo_project_api_v1_projects_demo__slug__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "slug",
+            "required": true,
+            "schema": {
+              "title": "Slug",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Delete Demo Project",
+        "tags": [
+          "projects"
+        ]
+      }
+    },
+    "/api/v1/projects/demo/{slug}/reset": {
+      "post": {
+        "description": "Re-seed a demo in place. Restricted to the demo's creator or an owner.",
+        "operationId": "reset_demo_project_api_v1_projects_demo__slug__reset_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "slug",
+            "required": true,
+            "schema": {
+              "title": "Slug",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProjectResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Reset Demo Project",
         "tags": [
           "projects"
         ]

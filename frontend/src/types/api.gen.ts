@@ -281,6 +281,46 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/projects/demo/{slug}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * Delete Demo Project
+         * @description Delete a demo and its owned synthetic warehouse. Creator or owner only.
+         */
+        delete: operations["delete_demo_project_api_v1_projects_demo__slug__delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/projects/demo/{slug}/reset": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Reset Demo Project
+         * @description Re-seed a demo in place. Restricted to the demo's creator or an owner.
+         */
+        post: operations["reset_demo_project_api_v1_projects_demo__slug__reset_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/projects/{slug}": {
         parameters: {
             query?: never;
@@ -6976,6 +7016,17 @@ export interface components {
             /** Slug */
             slug: string;
         };
+        /**
+         * ProjectGenerationStatus
+         * @description Provisioning lifecycle for generated (demo) projects.
+         *
+         *     Ordinary projects are created ``ready`` in a single step. Demo projects move
+         *     ``seeding`` -> ``ready`` on success or ``seeding`` -> ``failed`` when
+         *     provisioning raises; non-``ready`` demos are hidden from normal project lists
+         *     so a partially built or failed demo never surfaces as a real workspace.
+         * @enum {string}
+         */
+        ProjectGenerationStatus: "pending" | "seeding" | "ready" | "failed";
         /** ProjectLatestScanJob */
         ProjectLatestScanJob: {
             /** Completed At */
@@ -7043,13 +7094,30 @@ export interface components {
              * Format: date-time
              */
             created_at: string;
+            /** Created By User Id */
+            created_by_user_id?: string | null;
+            /** Demo Recipe Version */
+            demo_recipe_version?: string | null;
+            /** Demo Seeded At */
+            demo_seeded_at?: string | null;
             /** Description */
             description: string;
+            /** Generation Error */
+            generation_error?: string | null;
+            /** Generation Stage */
+            generation_stage?: string | null;
+            /** @default ready */
+            generation_status: components["schemas"]["ProjectGenerationStatus"];
             /**
              * Id
              * Format: uuid
              */
             id: string;
+            /**
+             * Is Demo
+             * @default false
+             */
+            is_demo: boolean;
             /** Name */
             name: string;
             /** Slug */
@@ -9216,6 +9284,66 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ProjectResponse"];
+                };
+            };
+        };
+    };
+    delete_demo_project_api_v1_projects_demo__slug__delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                slug: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    reset_demo_project_api_v1_projects_demo__slug__reset_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                slug: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProjectResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };

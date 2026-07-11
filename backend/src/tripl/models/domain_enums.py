@@ -199,6 +199,21 @@ class AlertMessageFormat(enum.StrEnum):
     telegram_markdownv2 = "telegram_markdownv2"
 
 
+class ProjectGenerationStatus(enum.StrEnum):
+    """Provisioning lifecycle for generated (demo) projects.
+
+    Ordinary projects are created ``ready`` in a single step. Demo projects move
+    ``seeding`` -> ``ready`` on success or ``seeding`` -> ``failed`` when
+    provisioning raises; non-``ready`` demos are hidden from normal project lists
+    so a partially built or failed demo never surfaces as a real workspace.
+    """
+
+    pending = "pending"
+    seeding = "seeding"
+    ready = "ready"
+    failed = "failed"
+
+
 class UserRole(enum.StrEnum):
     owner = "owner"
     editor = "editor"

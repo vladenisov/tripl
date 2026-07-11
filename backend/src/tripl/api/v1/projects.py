@@ -1,6 +1,9 @@
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 
-from tripl.api.deps import OwnerUserDep, SessionDep, get_editor_user, get_owner_user
+from tripl.api.deps import EditorUserDep, OwnerUserDep, SessionDep, get_editor_user, get_owner_user
+from tripl.models.domain_enums import UserRole
+from tripl.models.project import Project
+from tripl.models.user import User
 from tripl.schemas.project import (
     AnomalyResetCounts,
     DetectionResetPeriod,
@@ -15,6 +18,21 @@ router = APIRouter(prefix="/projects", tags=["projects"])
 
 _editor_required = [Depends(get_editor_user)]
 _owner_required = [Depends(get_owner_user)]
+
+
+def _require_demo_manager(user: User, project: Project) -> None:
+    """Allow a demo's creator (any editor) or an owner to manage it.
+
+    Resolves the create/delete permission mismatch: editors may create a demo,
+    so a creator may also reset or delete the demo they made, while owners may
+    manage any demo. Real projects stay owner-only for deletion.
+    """
+    if user.role == UserRole.owner.value or project.created_by_user_id == user.id:
+        return
+    raise HTTPException(
+        status_code=403,
+        detail="Only the demo creator or an owner can manage this demo",
+    )
 
 
 @router.get("", response_model=list[ProjectResponse])
@@ -36,10 +54,35 @@ async def create_project(session: SessionDep, data: ProjectCreate) -> ProjectRes
     "/demo",
     response_model=ProjectResponse,
     status_code=201,
-    dependencies=_editor_required,
 )
-async def create_demo_project(session: SessionDep) -> ProjectResponse:
-    return await demo_service.create_demo_project(session)
+async def create_demo_project(
+    session: SessionDep, current_user: EditorUserDep
+) -> ProjectResponse:
+    return await demo_service.create_demo_project(session, created_by=current_user.id)
+
+
+@router.post("/demo/{slug}/reset", response_model=ProjectResponse)
+async def reset_demo_project(
+    session: SessionDep, current_user: EditorUserDep, slug: str
+) -> ProjectResponse:
+    """Re-seed a demo in place. Restricted to the demo's creator or an owner."""
+    project = await project_service.get_project_by_slug(session, slug)
+    if not project.is_demo:
+        raise HTTPException(status_code=404, detail="Demo project not found")
+    _require_demo_manager(current_user, project)
+    return await demo_service.reset_demo_project(session, slug, created_by=current_user.id)
+
+
+@router.delete("/demo/{slug}", status_code=204)
+async def delete_demo_project(
+    session: SessionDep, current_user: EditorUserDep, slug: str
+) -> None:
+    """Delete a demo and its owned synthetic warehouse. Creator or owner only."""
+    project = await project_service.get_project_by_slug(session, slug)
+    if not project.is_demo:
+        raise HTTPException(status_code=404, detail="Demo project not found")
+    _require_demo_manager(current_user, project)
+    await project_service.delete_project(session, slug)
 
 
 @router.get("/{slug}", response_model=ProjectResponse)

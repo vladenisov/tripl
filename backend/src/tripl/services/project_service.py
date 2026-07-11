@@ -3,7 +3,7 @@ from collections import defaultdict
 from datetime import UTC, datetime
 
 from fastapi import HTTPException
-from sqlalchemy import String, case, cast, func, literal, select, union_all
+from sqlalchemy import String, case, cast, delete, func, literal, or_, select, union_all
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from tripl import cache
@@ -14,6 +14,8 @@ from tripl.core.analyzers.anomaly_detector import (
 from tripl.models.alert_destination import AlertDestination
 from tripl.models.alert_rule import AlertRule
 from tripl.models.alert_rule_state import AlertRuleState
+from tripl.models.data_source import DataSource
+from tripl.models.domain_enums import ProjectGenerationStatus
 from tripl.models.event import Event
 from tripl.models.event_metric import EventMetric
 from tripl.models.event_type import EventType
@@ -535,7 +537,19 @@ async def list_projects(session: AsyncSession) -> list[ProjectResponse]:
     if cached is not None:
         return [ProjectResponse.model_validate(item) for item in cached]
 
-    result = await session.execute(select(Project).order_by(Project.created_at.desc()))
+    # Hide demos that are still seeding or failed: a partially built or failed
+    # demo must never surface as a real workspace. Real projects (is_demo=False)
+    # and successfully seeded demos (generation_status="ready") are listed.
+    result = await session.execute(
+        select(Project)
+        .where(
+            or_(
+                Project.is_demo.is_(False),
+                Project.generation_status == ProjectGenerationStatus.ready.value,
+            )
+        )
+        .order_by(Project.created_at.desc())
+    )
     projects = list(result.scalars().all())
     summaries = await _get_project_summaries(session, [project.id for project in projects])
     responses = _serialize_projects(projects, summaries)
@@ -597,9 +611,16 @@ def demo_data_source_name(slug: str) -> str:
 
 async def delete_project(session: AsyncSession, slug: str) -> None:
     project = await get_project_by_slug(session, slug)
+    # Remove data sources OWNED by this project (a demo's synthetic warehouse)
+    # before deleting the project, so nothing leaks a workspace-wide orphan.
+    # Real, workspace-global sources carry project_id IS NULL and are untouched.
+    # On Postgres the FK cascade would also remove them, but doing it explicitly
+    # keeps behaviour correct under SQLite (tests) where FK cascades are off.
+    await session.execute(delete(DataSource).where(DataSource.project_id == project.id))
     await session.delete(project)
     await session.commit()
     await cache.delete_prefix(cache.prefix_projects())
+    await cache.delete_prefix(cache.prefix_data_sources())
 
 
 async def get_project_id_by_slug(session: AsyncSession, slug: str) -> uuid.UUID:
