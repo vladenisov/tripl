@@ -103,6 +103,83 @@ export default function ApiKeysSection() {
         }
       />
 
+      {/* Create key — inline page-style form (no modal) */}
+      {showForm && (
+        <SCard title="New API key" description="Generate a long-lived bearer token for non-browser clients.">
+          <form
+            onSubmit={(e) => {
+              e.preventDefault()
+              createMut.mutate()
+            }}
+            className="grid gap-4 px-[18px] py-4"
+          >
+              <div className="grid gap-2">
+                <Label htmlFor="key-name">Name</Label>
+                <Input
+                  id="key-name"
+                  value={name}
+                  onChange={(e) => setName(e.target.value)}
+                  placeholder="e.g. claude-agent"
+                  required
+                  // eslint-disable-next-line jsx-a11y/no-autofocus -- form revealed by explicit "Create key" click; focusing its first input is expected
+                  autoFocus
+                />
+              </div>
+              <div className="grid gap-2">
+                <Label htmlFor="key-scope">Scope</Label>
+                <select
+                  id="key-scope"
+                  value={scope}
+                  onChange={(e) => setScope(e.target.value as ApiKeyScope)}
+                  className="h-9 rounded-md border bg-background px-2 text-sm"
+                >
+                  <option value="read">read — GET endpoints only</option>
+                  {canCreateWriteKeys && <option value="write">write — full editor access</option>}
+                </select>
+              </div>
+              <div className="grid gap-2">
+                <Label htmlFor="key-project">Project (optional)</Label>
+                <select
+                  id="key-project"
+                  value={projectSlug}
+                  onChange={(e) => setProjectSlug(e.target.value)}
+                  className="h-9 rounded-md border bg-background px-2 text-sm"
+                >
+                  <option value="">All projects — full account reach</option>
+                  {(projectsQuery.data ?? []).map((p) => (
+                    <option key={p.id} value={p.slug}>
+                      {p.name}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <div className="grid gap-2">
+                <Label htmlFor="key-expires">Expires in (days, optional)</Label>
+                <Input
+                  id="key-expires"
+                  type="number"
+                  min={1}
+                  max={3650}
+                  value={expiresInDays}
+                  onChange={(e) => setExpiresInDays(e.target.value)}
+                  placeholder="leave blank for no expiration"
+                />
+              </div>
+              {createMut.isError && (
+                <p role="alert" className="text-xs text-destructive">{getErrorMessage(createMut.error)}</p>
+              )}
+            <div className="flex justify-end gap-2">
+              <Button type="button" variant="outline" onClick={() => setShowForm(false)}>
+                Cancel
+              </Button>
+              <Button type="submit" disabled={createMut.isPending || !name.trim()}>
+                Generate
+              </Button>
+            </div>
+          </form>
+        </SCard>
+      )}
+
       <div
         className="mb-5 flex gap-2.5 rounded-[10px] px-3.5 py-3"
         style={{
@@ -196,81 +273,6 @@ export default function ApiKeysSection() {
           })
         )}
       </SCard>
-
-      {/* Create key — inline page-style form (no modal) */}
-      {showForm && (
-        <SCard title="New API key" description="Generate a long-lived bearer token for non-browser clients.">
-          <form
-            onSubmit={(e) => {
-              e.preventDefault()
-              createMut.mutate()
-            }}
-            className="grid gap-4 px-[18px] py-4"
-          >
-              <div className="grid gap-2">
-                <Label htmlFor="key-name">Name</Label>
-                <Input
-                  id="key-name"
-                  value={name}
-                  onChange={(e) => setName(e.target.value)}
-                  placeholder="e.g. claude-agent"
-                  required
-                />
-              </div>
-              <div className="grid gap-2">
-                <Label htmlFor="key-scope">Scope</Label>
-                <select
-                  id="key-scope"
-                  value={scope}
-                  onChange={(e) => setScope(e.target.value as ApiKeyScope)}
-                  className="h-9 rounded-md border bg-background px-2 text-sm"
-                >
-                  <option value="read">read — GET endpoints only</option>
-                  {canCreateWriteKeys && <option value="write">write — full editor access</option>}
-                </select>
-              </div>
-              <div className="grid gap-2">
-                <Label htmlFor="key-project">Project (optional)</Label>
-                <select
-                  id="key-project"
-                  value={projectSlug}
-                  onChange={(e) => setProjectSlug(e.target.value)}
-                  className="h-9 rounded-md border bg-background px-2 text-sm"
-                >
-                  <option value="">All projects — full account reach</option>
-                  {(projectsQuery.data ?? []).map((p) => (
-                    <option key={p.id} value={p.slug}>
-                      {p.name}
-                    </option>
-                  ))}
-                </select>
-              </div>
-              <div className="grid gap-2">
-                <Label htmlFor="key-expires">Expires in (days, optional)</Label>
-                <Input
-                  id="key-expires"
-                  type="number"
-                  min={1}
-                  max={3650}
-                  value={expiresInDays}
-                  onChange={(e) => setExpiresInDays(e.target.value)}
-                  placeholder="leave blank for no expiration"
-                />
-              </div>
-              {createMut.isError && (
-                <p role="alert" className="text-xs text-destructive">{getErrorMessage(createMut.error)}</p>
-              )}
-            <div className="flex justify-end gap-2">
-              <Button type="button" variant="outline" onClick={() => setShowForm(false)}>
-                Cancel
-              </Button>
-              <Button type="submit" disabled={createMut.isPending || !name.trim()}>
-                Generate
-              </Button>
-            </div>
-          </form>
-        </SCard>
-      )}
 
       {/* One-time token reveal */}
       <Dialog open={revealed != null} onOpenChange={(open) => !open && setRevealed(null)}>
