@@ -22,7 +22,7 @@ from tripl.core.analyzers.anomaly_detector import (
     required_history_buckets,
 )
 from tripl.core.intervals import get_interval
-from tripl.models.domain_enums import MetricStatus
+from tripl.models.domain_enums import MetricBreakdownAnomalyKind, MetricStatus
 from tripl.models.event import Event
 from tripl.models.event_metric import EventMetric
 from tripl.models.event_metric_breakdown import EventMetricBreakdown
@@ -297,6 +297,50 @@ def _load_breakdown_scope_points(
     return [SeriesPoint(bucket=bucket, count=int(count)) for bucket, count in rows]
 
 
+def _load_platform_ratio_points(
+    session: Session,
+    *,
+    scan_config_id: uuid.UUID,
+    scope_type: str,
+    scope_ref: str,
+    breakdown_column: str,
+    breakdown_value: str,
+    is_other: bool,
+    history_from: datetime,
+    time_to: datetime,
+    covered_buckets: set[datetime] | None = None,
+) -> list[SeriesPoint]:
+    breakdown_points = _load_breakdown_scope_points(
+        session,
+        scan_config_id=scan_config_id,
+        scope_type=scope_type,
+        scope_ref=scope_ref,
+        breakdown_column=breakdown_column,
+        breakdown_value=breakdown_value,
+        is_other=is_other,
+        history_from=history_from,
+        time_to=time_to,
+    )
+    breakdown_by_bucket = {point.bucket: point.count for point in breakdown_points}
+    total_points = _load_scope_points(
+        session,
+        scan_config_id=scan_config_id,
+        scope_type=scope_type,
+        scope_ref=scope_ref,
+        history_from=history_from,
+        time_to=time_to,
+    )
+    return [
+        SeriesPoint(
+            bucket=point.bucket,
+            count=breakdown_by_bucket.get(point.bucket, 0) / point.count,
+        )
+        for point in total_points
+        if point.count > 0
+        and (covered_buckets is None or point.bucket in covered_buckets)
+    ]
+
+
 def _replace_scope_breakdown_anomalies(
     session: Session,
     *,
@@ -311,6 +355,7 @@ def _replace_scope_breakdown_anomalies(
     event_id: uuid.UUID | None,
     event_type_id: uuid.UUID | None,
     anomalies: list[DetectedAnomaly],
+    kind: MetricBreakdownAnomalyKind = MetricBreakdownAnomalyKind.volume,
 ) -> int:
     session.execute(
         delete(MetricBreakdownAnomaly).where(
@@ -320,6 +365,7 @@ def _replace_scope_breakdown_anomalies(
             MetricBreakdownAnomaly.breakdown_column == breakdown_column,
             MetricBreakdownAnomaly.breakdown_value == breakdown_value,
             MetricBreakdownAnomaly.is_other.is_(is_other),
+            MetricBreakdownAnomaly.kind == kind,
             MetricBreakdownAnomaly.bucket >= evaluation_start,
             MetricBreakdownAnomaly.bucket < evaluation_end,
         )
@@ -342,6 +388,7 @@ def _replace_scope_breakdown_anomalies(
                 "breakdown_column": breakdown_column,
                 "breakdown_value": breakdown_value,
                 "is_other": is_other,
+                "kind": kind,
                 "actual_count": anomaly.actual_count,
                 "expected_count": anomaly.expected_count,
                 "stddev": anomaly.stddev,
@@ -379,6 +426,7 @@ def _replace_scope_breakdown_anomalies(
                     "breakdown_value",
                     "is_other",
                     "bucket",
+                    "kind",
                 ],
                 set_={col: getattr(sqlite_stmt.excluded, col) for col in _updatable},
             )
@@ -567,6 +615,7 @@ def _collect_breakdown_scope_keys(
     scope_type: str,
     app_version_column: str | None = None,
     app_version_share_min: float = DEFAULT_ACTIVE_SHARE_MIN,
+    kind: MetricBreakdownAnomalyKind = MetricBreakdownAnomalyKind.volume,
 ) -> set[tuple[uuid.UUID | None, uuid.UUID | None, str, str, bool]]:
     metric_id_column = (
         EventMetricBreakdown.event_type_id
@@ -599,6 +648,7 @@ def _collect_breakdown_scope_keys(
     ).where(
         MetricBreakdownAnomaly.scan_config_id == scan_config_id,
         MetricBreakdownAnomaly.scope_type == scope_type,
+        MetricBreakdownAnomaly.kind == kind,
         MetricBreakdownAnomaly.bucket >= evaluation_start,
         MetricBreakdownAnomaly.bucket < evaluation_end,
     )
@@ -1018,6 +1068,125 @@ def _recalculate_metric_anomalies(
     return anomalies_detected
 
 
+def _recalculate_platform_parity_anomalies(
+    session: Session,
+    config: ScanConfig,
+    *,
+    project_settings: ProjectAnomalySettings,
+    settings: AnomalyDetectionSettings,
+    evaluation_start: datetime,
+    evaluation_end: datetime,
+    covered_buckets: set[datetime] | None = None,
+) -> int:
+    platform_column = config.platform_column
+    if not platform_column or not config.interval:
+        session.execute(
+            delete(MetricBreakdownAnomaly).where(
+                MetricBreakdownAnomaly.scan_config_id == config.id,
+                MetricBreakdownAnomaly.kind == MetricBreakdownAnomalyKind.parity,
+            )
+        )
+        return 0
+
+    session.execute(
+        delete(MetricBreakdownAnomaly).where(
+            MetricBreakdownAnomaly.scan_config_id == config.id,
+            MetricBreakdownAnomaly.kind == MetricBreakdownAnomalyKind.parity,
+            MetricBreakdownAnomaly.breakdown_column != platform_column,
+        )
+    )
+
+    interval_spec = get_interval(config.interval)
+    ratio_settings = replace(settings, min_expected_count=0)
+    history_from = evaluation_start - interval_spec.delta * required_history_buckets(
+        interval_spec.delta, ratio_settings
+    )
+    detected = 0
+
+    scope_settings = (
+        (SCOPE_PROJECT_TOTAL, project_settings.detect_project_total),
+        (SCOPE_EVENT_TYPE, project_settings.detect_event_types),
+        (SCOPE_EVENT, project_settings.detect_events),
+    )
+    for scope_type, enabled in scope_settings:
+        if not enabled:
+            session.execute(
+                delete(MetricBreakdownAnomaly).where(
+                    MetricBreakdownAnomaly.scan_config_id == config.id,
+                    MetricBreakdownAnomaly.scope_type == scope_type,
+                    MetricBreakdownAnomaly.kind == MetricBreakdownAnomalyKind.parity,
+                    MetricBreakdownAnomaly.bucket >= evaluation_start,
+                    MetricBreakdownAnomaly.bucket < evaluation_end,
+                )
+            )
+            continue
+
+        keys = _collect_breakdown_scope_keys(
+            session,
+            scan_config_id=config.id,
+            history_from=history_from,
+            evaluation_start=evaluation_start,
+            evaluation_end=evaluation_end,
+            scope_type=scope_type,
+            kind=MetricBreakdownAnomalyKind.parity,
+        )
+        for event_id, event_type_id, column, value, is_other in keys:
+            if column != platform_column:
+                continue
+            if scope_type == SCOPE_PROJECT_TOTAL:
+                scope_ref = str(config.id)
+                stored_event_id = None
+                stored_event_type_id = None
+            elif scope_type == SCOPE_EVENT_TYPE:
+                if event_type_id is None:
+                    continue
+                scope_ref = str(event_type_id)
+                stored_event_id = None
+                stored_event_type_id = event_type_id
+            else:
+                if event_id is None:
+                    continue
+                scope_ref = str(event_id)
+                stored_event_id = event_id
+                stored_event_type_id = None
+
+            points = _load_platform_ratio_points(
+                session,
+                scan_config_id=config.id,
+                scope_type=scope_type,
+                scope_ref=scope_ref,
+                breakdown_column=platform_column,
+                breakdown_value=value,
+                is_other=is_other,
+                history_from=history_from,
+                time_to=evaluation_end,
+                covered_buckets=covered_buckets,
+            )
+            detected += _replace_scope_breakdown_anomalies(
+                session,
+                scan_config_id=config.id,
+                scope_type=scope_type,
+                scope_ref=scope_ref,
+                breakdown_column=platform_column,
+                breakdown_value=value,
+                is_other=is_other,
+                evaluation_start=evaluation_start,
+                evaluation_end=evaluation_end,
+                event_id=stored_event_id,
+                event_type_id=stored_event_type_id,
+                anomalies=detect_anomalies(
+                    points,
+                    interval=interval_spec.delta,
+                    evaluation_start=evaluation_start,
+                    evaluation_end=evaluation_end,
+                    settings=ratio_settings,
+                    fill_gaps=False,
+                ),
+                kind=MetricBreakdownAnomalyKind.parity,
+            )
+    return detected
+
+
 def _recalculate_metric_breakdown_anomalies(
     session: Session,
     config: ScanConfig,
@@ -1036,6 +1205,8 @@ def _recalculate_metric_breakdown_anomalies(
 
     if not config.interval or (
         not config.metric_breakdown_columns
+        and not config.app_version_column
+        and not config.platform_column
         and not _scan_has_event_level_breakdown_columns(session, config.id)
     ):
         session.execute(
@@ -1218,6 +1389,16 @@ def _recalculate_metric_breakdown_anomalies(
                 MetricBreakdownAnomaly.bucket < evaluation_end,
             )
         )
+
+    anomalies_detected += _recalculate_platform_parity_anomalies(
+        session,
+        config,
+        project_settings=project_settings,
+        settings=settings,
+        evaluation_start=evaluation_start,
+        evaluation_end=evaluation_end,
+        covered_buckets=covered_buckets,
+    )
 
     session.flush()
     return anomalies_detected

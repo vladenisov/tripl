@@ -31,6 +31,15 @@ class EventMetricPoint(BaseModel):
     z_score: float | None = None
 
 
+class PlatformParityAnomaly(BaseModel):
+    bucket: datetime
+    actual_share: float
+    expected_share: float
+    stddev: float
+    z_score: float
+    direction: AnomalyDirection
+
+
 class MetricSignalResponse(BaseModel):
     # NULL for ``metric``-scope signals (catalog MetricDefinition series are
     # project-global and not tied to a single scan config).
@@ -121,6 +130,7 @@ class EventMetricBreakdownSeries(BaseModel):
     is_other: bool = False
     total_count: int
     data: list[EventMetricPoint]
+    parity_anomalies: list[PlatformParityAnomaly] = []
 
 
 class EventMetricBreakdownsResponse(BaseModel):

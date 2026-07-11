@@ -5693,6 +5693,14 @@
             "title": "Is Other",
             "type": "boolean"
           },
+          "parity_anomalies": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/PlatformParityAnomaly"
+            },
+            "title": "Parity Anomalies",
+            "type": "array"
+          },
           "total_count": {
             "title": "Total Count",
             "type": "integer"
@@ -11455,6 +11463,44 @@
           "entity_counts"
         ],
         "title": "PlanRevisionSummary",
+        "type": "object"
+      },
+      "PlatformParityAnomaly": {
+        "properties": {
+          "actual_share": {
+            "title": "Actual Share",
+            "type": "number"
+          },
+          "bucket": {
+            "format": "date-time",
+            "title": "Bucket",
+            "type": "string"
+          },
+          "direction": {
+            "$ref": "#/components/schemas/AnomalyDirection"
+          },
+          "expected_share": {
+            "title": "Expected Share",
+            "type": "number"
+          },
+          "stddev": {
+            "title": "Stddev",
+            "type": "number"
+          },
+          "z_score": {
+            "title": "Z Score",
+            "type": "number"
+          }
+        },
+        "required": [
+          "bucket",
+          "actual_share",
+          "expected_share",
+          "stddev",
+          "z_score",
+          "direction"
+        ],
+        "title": "PlatformParityAnomaly",
         "type": "object"
       },
       "PlatformPresenceResponse": {

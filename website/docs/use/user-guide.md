@@ -295,7 +295,9 @@ Open a monitor (or an event's monitoring detail) to see, across tabs:
 - **Distribution** — whether a field's mix of values is drifting (reported as a
   PSI score and a band of *normal / minor / significant*).
 - **Breakdowns** *(event-level)* — splits an event's volume into one series per
-  value of a chosen column.
+  value of a chosen column. For the scan's designated platform column, share
+  anomalies are called out separately when one platform's ratio changes even
+  though total volume remains stable.
 - **By version** — appears only when the event's scan names an app-version
   column. It splits volume across recent releases, tracks adoption, and lists
   **release regressions** (what disappeared or dropped in the newest release
