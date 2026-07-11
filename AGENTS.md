@@ -497,6 +497,39 @@ Frontend:
 - `pnpm test`
 - `pnpm exec tsc --noEmit`
 
+### Running tests: no database, no services
+
+Backend tests do **not** touch Postgres. `backend/src/tripl/tests/conftest.py`
+hardcodes an in-memory SQLite engine (`sqlite+aiosqlite:///:memory:`) and
+overrides the app's session dependency, so `uv run pytest` needs no Postgres,
+RabbitMQ, Redis, warehouse, or compose stack — and no `alembic upgrade`
+beforehand. Frontend Vitest suites likewise mock all HTTP; no backend needs
+to be running.
+
+If a test run fails with connection errors mentioning
+`postgresql+asyncpg://tripl:tripl@localhost:5432/tripl`, the tests are being
+run the wrong way — that URL is the app-runtime default from
+`backend/src/tripl/config.py`, and pytest never connects to it. Usual causes:
+
+- bare `pytest` / `python -m pytest` from a system or pip venv instead of
+  `uv run pytest` (the only supported env — uv provisions Python 3.14 and
+  deps from `uv.lock`);
+- running from the repo root — backend tests run from `backend/`
+  (or use `make test-be ARGS="..."` from the root, which scopes for you);
+- "preparing" a database first (`docker compose up`, `alembic upgrade head`,
+  exporting `DATABASE_URL`) — tests neither need nor read any of that;
+  `alembic upgrade head` *does* require a live Postgres and is only for the
+  compose dev stack, never a test prerequisite.
+
+pytest-asyncio runs in `auto` mode with a session-scoped event loop (pinned in
+`backend/pyproject.toml`); do not add `event_loop` fixtures or `asyncio_mode`
+overrides — pytest-asyncio 1.x ignores custom loop fixtures and the shared
+in-memory SQLite connection depends on the single session loop.
+
+Scoped runs:
+- `cd backend && uv run pytest src/tripl/tests/test_events.py -k "diff" -q`
+- `cd frontend && pnpm vitest run src/pages/settings/BranchesTab.test.tsx`
+
 Compose:
 - `docker compose up -d --build`
 - `docker compose config`
