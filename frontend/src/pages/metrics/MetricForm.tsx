@@ -1392,15 +1392,15 @@ export function MetricForm({ slug, metric, dataSources, events, onClose }: Metri
               no data source, so hide these dimension inputs for that kind. */}
           {kind !== 'event_composition' && (
             <>
-              <MField label="Breakdown columns" htmlFor="metric-breakdowns" hint="Warehouse columns to roll up by. Tick a column, or add one that isn't listed.">
+              <MField label="Breakdown columns" hint="Warehouse columns to roll up by. Tick the columns to break this metric down by.">
                 <div className="max-w-[420px]">
                   <ColumnCheckboxPicker
                     id="metric-breakdowns"
+                    aria-label="Breakdown columns"
                     columns={breakdownColumnChoices}
                     value={breakdownColumns}
                     onChange={setBreakdownColumns}
                     reserved={[appVersionColumn, platformColumn].filter(Boolean)}
-                    addPlaceholder="platform, country"
                   />
                 </div>
               </MField>
