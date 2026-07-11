@@ -818,24 +818,92 @@ class SyntheticAdapter(BaseAdapter):
 
         Supports comparisons (``=``/``!=``/``<>``/``>``/``>=``/``<``/``<=``) of a
         column against a quoted-string or numeric literal, combined with ``AND`` /
-        ``OR``. Parentheses and anything else raise a capability error — the
-        adapter never guesses at a filter it cannot faithfully evaluate.
+        ``OR``, plus the *fully-parenthesised* fragments the metric collector
+        emits: each named / free-text row filter is wrapped in parentheses and
+        ANDed (e.g. ``(status = 'completed')`` or ``(amount > 0) AND (amount >
+        100)``), so this evaluator strips boolean grouping parentheses and splits
+        on top-level ``AND`` / ``OR`` at parenthesis depth zero. A parenthesis
+        that is NOT boolean grouping (e.g. a subquery ``IN (SELECT ...)`` or a
+        function call) survives into an atom and still raises a capability error —
+        the adapter never guesses at a filter it cannot faithfully evaluate.
         """
-        expression = filter_sql.strip()
-        if "(" in expression or ")" in expression:
-            msg = f"Unsupported filter expression: {filter_sql!r}"
-            raise SyntheticCapabilityError(msg)
-        or_parts = re.split(r"\bor\b", expression, flags=re.IGNORECASE)
-        return any(self._and_matches(row, part) for part in or_parts)
+        return self._eval_filter(row, filter_sql.strip())
 
-    def _and_matches(self, row: dict[str, object], part: str) -> bool:
-        return all(
-            self._atom_matches(row, atom)
-            for atom in re.split(r"\band\b", part, flags=re.IGNORECASE)
-        )
+    def _eval_filter(self, row: dict[str, object], expression: str) -> bool:
+        expression = self._strip_wrapping_parens(expression.strip())
+        or_parts = self._split_top_level(expression, "or")
+        if len(or_parts) > 1:
+            return any(self._eval_filter(row, part) for part in or_parts)
+        and_parts = self._split_top_level(expression, "and")
+        if len(and_parts) > 1:
+            return all(self._eval_filter(row, part) for part in and_parts)
+        return self._atom_matches(row, expression)
+
+    def _strip_wrapping_parens(self, expression: str) -> str:
+        """Strip balanced parentheses that enclose the WHOLE expression.
+
+        Only a paren pair whose opening bracket at index 0 closes at the final
+        index is removed (repeatedly). ``(a) AND (b)`` is left untouched because
+        its first ``(`` closes mid-string, so only true grouping wrappers like
+        ``((status = 'x'))`` collapse.
+        """
+        while len(expression) >= 2 and expression[0] == "(" and expression[-1] == ")":
+            depth = 0
+            wraps_whole = True
+            for index, char in enumerate(expression):
+                if char == "(":
+                    depth += 1
+                elif char == ")":
+                    depth -= 1
+                    if depth == 0 and index != len(expression) - 1:
+                        wraps_whole = False
+                        break
+            if not wraps_whole:
+                break
+            expression = expression[1:-1].strip()
+        return expression
+
+    def _split_top_level(self, expression: str, keyword: str) -> list[str]:
+        """Split ``expression`` on a whole-word ``keyword`` at paren depth zero."""
+        parts: list[str] = []
+        lowered = expression.lower()
+        depth = 0
+        start = 0
+        index = 0
+        length = len(expression)
+        klen = len(keyword)
+        while index < length:
+            char = expression[index]
+            if char == "(":
+                depth += 1
+            elif char == ")":
+                depth -= 1
+            elif (
+                depth == 0
+                and lowered.startswith(keyword, index)
+                and self._word_boundaries(expression, index, index + klen)
+            ):
+                parts.append(expression[start:index])
+                index += klen
+                start = index
+                continue
+            index += 1
+        parts.append(expression[start:])
+        return [part.strip() for part in parts if part.strip()]
+
+    @staticmethod
+    def _word_boundaries(expression: str, start: int, end: int) -> bool:
+        before = expression[start - 1] if start > 0 else " "
+        after = expression[end] if end < len(expression) else " "
+        return not (before.isalnum() or before == "_") and not (after.isalnum() or after == "_")
 
     def _atom_matches(self, row: dict[str, object], atom: str) -> bool:
-        atom = atom.strip()
+        atom = self._strip_wrapping_parens(atom.strip())
+        # A residual parenthesis means the atom is not a plain column/literal
+        # comparison (a subquery or function call slipped through); refuse it.
+        if "(" in atom or ")" in atom:
+            msg = f"Unsupported filter expression: {atom!r}"
+            raise SyntheticCapabilityError(msg)
         for operator in ("!=", "<>", ">=", "<=", "=", ">", "<"):
             index = atom.find(operator)
             if index != -1:

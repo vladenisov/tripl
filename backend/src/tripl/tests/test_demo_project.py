@@ -113,6 +113,54 @@ async def test_demo_project_has_fact_table_with_named_filter(client: AsyncClient
 
 
 @pytest.mark.asyncio
+async def test_demo_fact_table_preview_serves_synthetic_orders(client: AsyncClient) -> None:
+    """The fact-table preview endpoint reads real synthetic ``orders`` rows.
+
+    The demo fact table is backed by a ``db_type='synthetic'`` DataSource, so the
+    normal preview path (``POST /fact-tables/preview`` -> introspection service ->
+    ``build_adapter`` -> ``SyntheticAdapter``) returns the in-memory orders rows
+    and their bucketed column types with no network/filesystem access.
+    """
+    resp = await client.post("/api/v1/projects/demo")
+    assert resp.status_code == 201
+    slug = resp.json()["slug"]
+
+    fact_tables = (await client.get(f"/api/v1/projects/{slug}/fact-tables")).json()["items"]
+    fact_table_id = fact_tables[0]["id"]
+    detail = (
+        await client.get(f"/api/v1/projects/{slug}/fact-tables/{fact_table_id}")
+    ).json()
+
+    # Preview (used by the create/edit "Preview columns" surface AND schema
+    # refresh) over the fact table's own SQL / data source.
+    preview_resp = await client.post(
+        f"/api/v1/projects/{slug}/fact-tables/preview",
+        json={
+            "data_source_id": detail["data_source_id"],
+            "sql": detail["sql"],
+            "timestamp_column": detail["timestamp_column"],
+        },
+    )
+    assert preview_resp.status_code == 200, preview_resp.text
+    preview = preview_resp.json()
+
+    # The synthetic ``orders`` schema, bucketed by the introspection service.
+    columns = {column["name"]: column["type"] for column in preview["columns"]}
+    assert {"created_at", "amount", "currency", "user_id", "country", "status"} <= set(columns)
+    assert columns["created_at"] == "timestamp"
+    assert columns["amount"] == "number"
+    assert columns["status"] == "string"
+    # ``user_id`` carries an identifier signal and is offered as a candidate.
+    assert "user_id" in preview["identifier_candidates"]
+
+    # Real rows from the in-memory dataset (never fabricated, never empty).
+    assert preview["sample_rows"], "Expected synthetic orders sample rows"
+    first_row = preview["sample_rows"][0]
+    assert set(first_row) >= {"created_at", "amount", "status"}
+    assert first_row["status"] in {"completed", "pending", "refunded", "failed"}
+
+
+@pytest.mark.asyncio
 async def test_create_demo_project_twice_unique_slugs(client: AsyncClient) -> None:
     resp1 = await client.post("/api/v1/projects/demo")
     resp2 = await client.post("/api/v1/projects/demo")
