@@ -3895,7 +3895,8 @@
         "enum": [
           "clickhouse",
           "postgres",
-          "bigquery"
+          "bigquery",
+          "synthetic"
         ],
         "title": "DBType",
         "type": "string"
@@ -4024,6 +4025,10 @@
             "title": "Id",
             "type": "string"
           },
+          "is_synthetic": {
+            "title": "Is Synthetic",
+            "type": "boolean"
+          },
           "json_path_discovery": {
             "anyOf": [
               {
@@ -4109,6 +4114,7 @@
           "id",
           "name",
           "db_type",
+          "is_synthetic",
           "host",
           "port",
           "database_name",

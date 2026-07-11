@@ -10,7 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from tripl import cache
 from tripl.crypto import encrypt_value
-from tripl.models.data_source import DataSource, TestStatus
+from tripl.models.data_source import DataSource, DBType, TestStatus
 from tripl.schemas.data_source import (
     DataSourceCreate,
     DataSourceResponse,
@@ -42,7 +42,22 @@ async def get_data_source(session: AsyncSession, ds_id: uuid.UUID) -> DataSource
     return _to_response(ds)
 
 
+# Fields on a synthetic source that, if edited, would turn it into (or point it
+# at) a real warehouse. They are locked: a synthetic source is demo-only and must
+# never gain a real host, port, database, or credentials.
+_SYNTHETIC_LOCKED_FIELDS = ("host", "port", "database_name", "username", "password", "extra_params")
+
+
 async def create_data_source(session: AsyncSession, data: DataSourceCreate) -> DataSourceResponse:
+    # Synthetic sources are local demo data created ONLY by the demo seeder (which
+    # constructs the ORM row directly, bypassing this service). The user-facing
+    # create path must never mint one.
+    if data.db_type == DBType.synthetic:
+        raise HTTPException(
+            status_code=422,
+            detail="Synthetic data sources are created only by demo projects, not directly.",
+        )
+
     # Check for duplicates
     existing = await session.execute(select(DataSource).where(DataSource.name == data.name))
     if existing.scalar_one_or_none():
@@ -72,6 +87,7 @@ async def update_data_source(
 ) -> DataSourceResponse:
     ds = await _fetch_data_source(session, ds_id)
     update_dict = data.model_dump(exclude_unset=True)
+    _reject_synthetic_conversion(ds, update_dict)
 
     # Handle password separately
     if "password" in update_dict:
@@ -103,11 +119,43 @@ async def _fetch_data_source(session: AsyncSession, ds_id: uuid.UUID) -> DataSou
     return ds
 
 
+def _reject_synthetic_conversion(ds: DataSource, update_dict: dict[str, object]) -> None:
+    """Guard synthetic-source identity on update.
+
+    A synthetic source cannot be edited into a real db_type or pointed at a real
+    host / given real credentials, and a real source cannot be converted into a
+    synthetic one. Everything else (rename, timeout) is allowed.
+    """
+    new_db_type = update_dict.get("db_type")
+    if ds.db_type == DBType.synthetic:
+        if new_db_type is not None and new_db_type != DBType.synthetic:
+            raise HTTPException(
+                status_code=422,
+                detail="A synthetic data source's type cannot be changed to a real warehouse.",
+            )
+        locked = [
+            field
+            for field in _SYNTHETIC_LOCKED_FIELDS
+            if field in update_dict and update_dict[field] is not None
+        ]
+        if locked:
+            raise HTTPException(
+                status_code=422,
+                detail="A synthetic data source cannot be given a real host or credentials.",
+            )
+    elif new_db_type == DBType.synthetic:
+        raise HTTPException(
+            status_code=422,
+            detail="A data source cannot be converted to the synthetic type.",
+        )
+
+
 def _to_response(ds: DataSource) -> DataSourceResponse:
     return DataSourceResponse(
         id=ds.id,
         name=ds.name,
         db_type=ds.db_type,
+        is_synthetic=ds.db_type == DBType.synthetic,
         host=ds.host,
         port=ds.port,
         database_name=ds.database_name,

@@ -20,6 +20,11 @@ class DBType(enum.StrEnum):
     clickhouse = "clickhouse"
     postgres = "postgres"
     bigquery = "bigquery"
+    # Local, in-memory synthetic warehouse. Created ONLY by the demo seeder (never
+    # by the user-facing create path) and always scoped to a demo project. Its
+    # adapter serves a bounded, deterministic dataset with no network/filesystem
+    # access, so the normal warehouse-facing paths run against a fake source.
+    synthetic = "synthetic"
 
 
 class TestStatus(enum.StrEnum):

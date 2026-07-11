@@ -4101,7 +4101,7 @@ export interface components {
          * DBType
          * @enum {string}
          */
-        DBType: "clickhouse" | "postgres" | "bigquery";
+        DBType: "clickhouse" | "postgres" | "bigquery" | "synthetic";
         /** DataSourceCreate */
         DataSourceCreate: {
             /** Database Name */
@@ -4156,6 +4156,8 @@ export interface components {
              * Format: uuid
              */
             id: string;
+            /** Is Synthetic */
+            is_synthetic: boolean;
             /** Json Path Discovery */
             json_path_discovery?: ("all" | "dynamic") | null;
             /** Last Test At */

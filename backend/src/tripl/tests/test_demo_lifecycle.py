@@ -12,7 +12,7 @@ from httpx import AsyncClient
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from tripl.models.data_source import DataSource
+from tripl.models.data_source import DataSource, DBType
 from tripl.models.event_type import EventType
 from tripl.models.project import Project
 from tripl.services import demo_service
@@ -165,3 +165,43 @@ async def test_demo_lifecycle_requires_auth(anon_client: AsyncClient) -> None:
     assert (await anon_client.post("/api/v1/projects/demo")).status_code == 401
     assert (await anon_client.post("/api/v1/projects/demo/x/reset")).status_code == 401
     assert (await anon_client.delete("/api/v1/projects/demo/x")).status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_ordinary_project_cannot_select_synthetic_source(client: AsyncClient) -> None:
+    # The demo's synthetic warehouse belongs to its demo project. An ordinary
+    # project must not be able to point a scan/preview at it (tripl-2su6.3).
+    demo = await client.post("/api/v1/projects/demo")
+    demo_slug = demo.json()["slug"]
+    async with TestSessionLocal() as session:
+        synthetic = (
+            await session.execute(select(DataSource).where(DataSource.db_type == DBType.synthetic))
+        ).scalar_one()
+    synthetic_id = str(synthetic.id)
+
+    create = await client.post(
+        "/api/v1/projects",
+        json={"name": "Real", "slug": "ordinary-proj", "description": ""},
+    )
+    assert create.status_code == 201
+
+    payload = {
+        "data_source_id": synthetic_id,
+        "name": "borrowed",
+        "base_query": "SELECT * FROM events",
+    }
+    scan = await client.post("/api/v1/projects/ordinary-proj/scans", json=payload)
+    assert scan.status_code == 422, scan.text
+
+    preview = await client.post(
+        "/api/v1/projects/ordinary-proj/scans/preview",
+        json={"data_source_id": synthetic_id, "base_query": "SELECT * FROM events"},
+    )
+    assert preview.status_code == 422, preview.text
+
+    # The demo project that owns it can still use it.
+    own = await client.post(
+        f"/api/v1/projects/{demo_slug}/scans",
+        json=payload,
+    )
+    assert own.status_code == 201, own.text

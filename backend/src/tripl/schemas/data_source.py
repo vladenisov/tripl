@@ -74,6 +74,9 @@ class DataSourceResponse(BaseModel):
     id: uuid.UUID
     name: str
     db_type: DBType
+    # True when this is a local, in-memory synthetic warehouse (demo data). The
+    # UI uses it to badge the source as synthetic rather than a real connection.
+    is_synthetic: bool
     host: str
     port: int
     database_name: str
