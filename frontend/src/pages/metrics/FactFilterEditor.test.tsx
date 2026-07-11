@@ -40,7 +40,13 @@ describe('filtersToPayload', () => {
         makeSqlFilter('   '),
         makeSqlFilter('z = 2'),
       ]),
-    ).toEqual({ row_filters: ['a'], filter_sql: '(z = 2)', conditions: [] })
+    ).toEqual({ row_filters: ['a'], filter_sql: 'z = 2', conditions: [] })
+  })
+
+  it('stores a single SQL fragment verbatim (collection wraps it before ANDing)', () => {
+    expect(filtersToPayload([makeSqlFilter("platform = 'ios'")]).filter_sql).toBe(
+      "platform = 'ios'",
+    )
   })
 
   it('maps structured conditions and omits incomplete rows', () => {
@@ -94,5 +100,55 @@ describe('filtersFromConfig', () => {
 
   it('returns an empty list for empty config', () => {
     expect(filtersFromConfig(undefined, '', '')).toEqual([])
+  })
+})
+
+// The metric edit page loads `filter_sql` back into the editor with
+// `filtersFromConfig` and re-serialises it with `filtersToPayload` on save.
+// That round trip MUST be a fixed point — the historical bug (tripl-wumc) was
+// serialize(parse(x)) === `(${x})`, so every open→save of the edit form grew
+// the stored expression by one paren layer.
+describe('filter_sql round-trip idempotency (tripl-wumc)', () => {
+  const roundTrip = (filterSql: string): string | null =>
+    filtersToPayload(filtersFromConfig([], '', filterSql)).filter_sql
+
+  it('is a fixed point: saving a loaded filter_sql never adds parentheses', () => {
+    const first = filtersToPayload([makeSqlFilter("platform = 'ios'")]).filter_sql
+    expect(first).not.toBeNull()
+    const second = roundTrip(first!)
+    expect(second).toBe(first)
+    expect(roundTrip(second!)).toBe(second)
+  })
+
+  it('keeps multi-fragment AND grouping stable across round trips', () => {
+    const first = filtersToPayload([
+      makeSqlFilter('a = 1 OR b = 2'),
+      makeSqlFilter('c = 3'),
+    ]).filter_sql
+    // The OR fragment stays parenthesised so ANDing cannot change precedence.
+    expect(first).toBe('(a = 1 OR b = 2) AND (c = 3)')
+    expect(roundTrip(first!)).toBe(first)
+  })
+
+  it('self-heals stored expressions already polluted with redundant parens', () => {
+    const filters = filtersFromConfig([], '', "((((platform = 'ios'))))")
+    expect(filters).toMatchObject([{ kind: 'sql', sql: "platform = 'ios'" }])
+    expect(filtersToPayload(filters).filter_sql).toBe("platform = 'ios'")
+  })
+
+  it('never strips parens that affect AND/OR evaluation order', () => {
+    // The leading paren closes before the end of the string: NOT a redundant
+    // outer wrap, so unwrapping it would change how AND binds against OR.
+    const mixed = "(status = 'a' OR status = 'b') AND amount > 5"
+    expect(filtersFromConfig([], '', mixed)).toMatchObject([{ kind: 'sql', sql: mixed }])
+    expect(roundTrip(mixed)).toBe(mixed)
+  })
+
+  it('ignores parentheses inside quoted literals when unwrapping', () => {
+    const filters = filtersFromConfig([], '', "(name = '(nested)')")
+    expect(filters).toMatchObject([{ kind: 'sql', sql: "name = '(nested)'" }])
+    // A stray closing paren inside a literal must not fool the scanner.
+    const literal = "note = ')'"
+    expect(roundTrip(literal)).toBe(literal)
   })
 })

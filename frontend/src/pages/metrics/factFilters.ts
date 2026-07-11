@@ -67,10 +67,68 @@ export function makeConditionFilter(
 }
 
 /**
+ * True when `sql` starts with an opening paren whose matching closing paren is
+ * the final character — i.e. the whole fragment is one parenthesised group and
+ * the outer pair is semantically redundant. Quoted spans (`'…'` literals and
+ * `"…"` / `` `…` `` identifiers, with doubled-quote escaping) are skipped so
+ * parentheses inside strings never confuse the scan. A fragment with
+ * unbalanced parens or an unterminated quote returns false (never "repaired").
+ */
+function isFullyWrapped(sql: string): boolean {
+  if (sql.length < 2 || !sql.startsWith('(') || !sql.endsWith(')')) return false
+  let depth = 0
+  let quote: string | null = null
+  for (let i = 0; i < sql.length; i++) {
+    const char = sql[i]
+    if (quote !== null) {
+      if (char !== quote) continue
+      // SQL escapes a quote inside a quoted span by doubling it; skip the pair.
+      if (sql[i + 1] === quote) {
+        i++
+        continue
+      }
+      quote = null
+      continue
+    }
+    if (char === "'" || char === '"' || char === '`') {
+      quote = char
+    } else if (char === '(') {
+      depth++
+    } else if (char === ')') {
+      depth--
+      if (depth === 0) return i === sql.length - 1
+      if (depth < 0) return false
+    }
+  }
+  return false
+}
+
+/**
+ * Normalise a free-text SQL boolean fragment by stripping redundant
+ * fully-wrapping outer parens: `((x = 1))` → `x = 1`, while
+ * `(a = 1) AND (b = 2)` is untouched (its leading paren closes mid-string, so
+ * removing it would change AND/OR evaluation order). Applied on BOTH load
+ * ({@link filtersFromConfig}) and save ({@link filtersToPayload}) so the edit
+ * round trip is a fixed point and definitions polluted by the historical
+ * wrap-on-every-save bug (tripl-wumc) self-heal on their next save.
+ */
+export function stripRedundantOuterParens(sql: string): string {
+  let out = sql.trim()
+  while (isFullyWrapped(out)) out = out.slice(1, -1).trim()
+  return out
+}
+
+/**
  * Map the UI's mixed named/SQL filter list to the backend operand contract:
  * named filters become `row_filters` (deduped, order-preserved); free-text SQL
- * fragments are each parenthesised and ANDed into a single `filter_sql` string
- * (the backend ANDs `row_filters` with `filter_sql`). Empty entries are dropped.
+ * fragments are normalised ({@link stripRedundantOuterParens}) and combined
+ * into a single `filter_sql` string. A single fragment is stored verbatim;
+ * multiple fragments are each parenthesised and ANDed (the parens keep an OR
+ * fragment's precedence intact inside the joined string). Adding NO wrap to a
+ * single fragment is safe because the collector parenthesises every stored
+ * fragment itself before ANDing it with `row_filters` / `conditions`
+ * (`_resolve_combined_filter` in metric_collect.py) — and it keeps the
+ * load→save round trip idempotent (tripl-wumc). Empty entries are dropped.
  */
 export function filtersToPayload(filters: FactFilter[]): {
   row_filters: string[]
@@ -85,7 +143,7 @@ export function filtersToPayload(filters: FactFilter[]): {
   }
   const sqlFragments = filters
     .filter((filter): filter is Extract<FactFilter, { kind: 'sql' }> => filter.kind === 'sql')
-    .map(filter => filter.sql.trim())
+    .map(filter => stripRedundantOuterParens(filter.sql))
     .filter(Boolean)
   const conditions: FactConditionPayload[] = []
   for (const filter of filters) {
@@ -101,7 +159,12 @@ export function filtersToPayload(filters: FactFilter[]): {
   }
   return {
     row_filters: named,
-    filter_sql: sqlFragments.length ? sqlFragments.map(sql => `(${sql})`).join(' AND ') : null,
+    filter_sql:
+      sqlFragments.length === 0
+        ? null
+        : sqlFragments.length === 1
+          ? sqlFragments[0]
+          : sqlFragments.map(sql => `(${sql})`).join(' AND '),
     conditions,
   }
 }
@@ -133,7 +196,10 @@ export function filtersFromConfig(
       )
     }
   }
-  if (filterSql.trim()) out.push(makeSqlFilter(filterSql))
+  // Normalise on load as well as on save: a definition polluted by the old
+  // wrap-on-every-save bug renders (and re-saves) without the stacked parens.
+  const sql = stripRedundantOuterParens(filterSql)
+  if (sql) out.push(makeSqlFilter(sql))
   return out
 }
 
