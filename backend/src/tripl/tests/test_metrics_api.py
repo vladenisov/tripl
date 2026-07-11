@@ -643,6 +643,7 @@ async def test_get_event_metric_breakdowns_returns_series(client: AsyncClient) -
             base_query="SELECT time, event_name, country FROM events",
             time_column="time",
             metric_breakdown_columns=["platform"],
+            platform_column="country",
             cardinality_threshold=100,
             interval="1h",
         )
@@ -694,6 +695,26 @@ async def test_get_event_metric_breakdowns_returns_series(client: AsyncClient) -
                 direction="drop",
             )
         )
+        session.add(
+            MetricBreakdownAnomaly(
+                id=uuid.uuid4(),
+                scan_config_id=scan_config.id,
+                scope_type="event",
+                scope_ref=event_id,
+                event_id=uuid.UUID(event_id),
+                event_type_id=None,
+                bucket=datetime(2026, 1, 1, 10, tzinfo=UTC),
+                breakdown_column="country",
+                breakdown_value="US",
+                is_other=False,
+                kind="parity",
+                actual_count=0.25,
+                expected_count=0.5,
+                stddev=0.02,
+                z_score=-12.5,
+                direction="drop",
+            )
+        )
         await session.commit()
 
     resp = await client.get(
@@ -706,6 +727,17 @@ async def test_get_event_metric_breakdowns_returns_series(client: AsyncClient) -
     assert body["selected_column"] == "country"
     assert [series["breakdown_value"] for series in body["series"]] == ["US", "Other"]
     assert body["series"][0]["total_count"] == 22
+    assert body["series"][0]["data"][0]["is_anomaly"] is False
+    assert body["series"][0]["parity_anomalies"] == [
+        {
+            "bucket": "2026-01-01T10:00:00",
+            "actual_share": 0.25,
+            "expected_share": 0.5,
+            "stddev": 0.02,
+            "z_score": -12.5,
+            "direction": "drop",
+        }
+    ]
     other_series = body["series"][1]
     assert other_series["is_other"] is True
     assert other_series["data"][0]["is_anomaly"] is True

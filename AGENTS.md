@@ -474,6 +474,16 @@ Operational assumptions to preserve unless intentionally changing them:
 
 ## Commands
 
+Prefer the root `Makefile` — run `make` (or `make help`) for the grouped list.
+It wraps the underlying uv/pnpm/compose commands so common flows are one keystroke
+from the repo root. The ones you'll reach for most:
+- `make check` — every gate (lint + typecheck + tests), CI parity
+- `make sync-types` — regenerate `backend/openapi.json` + `frontend/src/types/api.gen.ts` after any HTTP API change (guarded by `test_openapi_contract`)
+- `make test-be ARGS="-k diff -v"` / `make test-fe ARGS=BranchesTab` — scoped tests
+- `make dev` — full stack via `compose.dev.yaml` (watch mode)
+
+The raw commands the targets wrap (still the source of truth):
+
 Backend:
 - `uv sync`
 - `uv run pytest`
@@ -502,6 +512,7 @@ Minimum checks before finishing:
 - lint/type checks for the side you changed;
 - `docker compose config` when Compose or env wiring changes.
 - **docs updated**: behavior / API / config / feature changes are reflected in `website/docs/` (and `./bin/dump-openapi.sh` re-run if the HTTP API changed). Docs are not optional follow-up — they ship with the change.
+- **API types synced**: any change to the HTTP API surface (routes, request/response models, status codes) must regenerate `backend/openapi.json` + `frontend/src/types/api.gen.ts` via `make sync-types` — `test_openapi_contract` fails on a stale snapshot, and the frontend types drift silently otherwise.
 
 Extra checks expected for specific areas:
 - scan/data-source changes: verify connection test or scan execution path;

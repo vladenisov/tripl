@@ -150,6 +150,11 @@ class AnomalyDirection(enum.StrEnum):
     drop = "drop"
 
 
+class MetricBreakdownAnomalyKind(enum.StrEnum):
+    volume = "volume"
+    parity = "parity"
+
+
 class AlertDriftType(enum.StrEnum):
     new_field = "new_field"
     missing_field = "missing_field"

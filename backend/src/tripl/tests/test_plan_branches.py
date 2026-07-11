@@ -6,14 +6,19 @@ from sqlalchemy import select
 
 from tripl.models.event import Event
 from tripl.models.event_field_value import EventFieldValue
+from tripl.models.event_meta_value import EventMetaValue
 from tripl.models.event_photo import EventPhoto
 from tripl.models.event_photo_comment import EventPhotoComment
+from tripl.models.event_tag import EventTag
 from tripl.models.event_type import EventType
 from tripl.models.event_type_owner import EventTypeOwner
+from tripl.models.event_type_relation import EventTypeRelation
 from tripl.models.field_definition import FieldDefinition
+from tripl.models.meta_field_definition import MetaFieldDefinition
 from tripl.models.plan_branch import PlanBranch
 from tripl.models.plan_branch_approval import PlanBranchApproval
 from tripl.models.plan_branch_reviewer import PlanBranchReviewer
+from tripl.models.plan_revision import PlanRevision
 from tripl.models.project import Project
 from tripl.models.project_branch_settings import ProjectBranchSettings
 from tripl.models.project_tracker_config import ProjectTrackerConfig
@@ -483,15 +488,78 @@ async def test_diff_only_reports_branch_changes_when_main_advances(client: Async
     after_body = after.json()
     assert after_body["behind_base"] is True
     assert after_body["summary"] == {"added": 0, "removed": 0, "changed": 1}
-    assert after_body["entries"] == [
-        {
-            "entity_type": "event",
-            "kind": "changed",
-            "name": "purchase:success",
-            "parent": "track",
-            "changes": ["description: '' → 'edited on branch'"],
-        }
+    assert len(after_body["entries"]) == 1
+    entry = after_body["entries"][0]
+    assert entry["entity_type"] == "event"
+    assert entry["kind"] == "changed"
+    assert entry["name"] == "purchase:success"
+    assert entry["parent"] == "track"
+    assert entry["changes"] == ["description: '' → 'edited on branch'"]
+    # Structured field-level diff mirrors the human-readable string.
+    assert entry["field_changes"] == [
+        {"field": "description", "before": "", "after": "edited on branch"}
     ]
+    # Full before/after state carries the raw values, with DB ids / ordering stripped.
+    assert entry["before"]["description"] == ""
+    assert entry["after"]["description"] == "edited on branch"
+    assert entry["before"]["name"] == "purchase:success"
+    assert entry["after"]["event_type_name"] == "track"
+    for state in (entry["before"], entry["after"]):
+        assert "id" not in state
+        assert "order" not in state
+        assert "event_type_id" not in state
+
+
+@pytest.mark.asyncio
+async def test_diff_entries_carry_before_after_state(client: AsyncClient) -> None:
+    """Added/removed entries expose one-sided full state for the detail view.
+
+    The branch page renders the entity's full state (branch side for added,
+    base side for removed) alongside the field-level diff, so the diff endpoint
+    must carry ``before``/``after`` snapshots — not just field names.
+    """
+    await _seed_plan(client, "branch-diff-state")
+    branch_id = await _create_branch(client, "branch-diff-state")
+
+    # Add a brand-new event on the branch (using the branch's own event-type id,
+    # since branch copies are FK-remapped away from main).
+    branch_ets = await client.get(
+        f"/api/v1/projects/branch-diff-state/event-types?branch={branch_id}"
+    )
+    branch_et_id = next(et["id"] for et in branch_ets.json() if et["name"] == "track")
+    added = await client.post(
+        f"/api/v1/projects/branch-diff-state/events?branch={branch_id}",
+        json={"event_type_id": branch_et_id, "name": "checkout:started"},
+    )
+    assert added.status_code == 201
+
+    # Remove the deep-copied seed event from the branch.
+    branch_events = await client.get(
+        f"/api/v1/projects/branch-diff-state/events?branch={branch_id}"
+    )
+    seed_event = next(e for e in branch_events.json()["items"] if e["name"] == "purchase:success")
+    deleted = await client.delete(
+        f"/api/v1/projects/branch-diff-state/events/{seed_event['id']}?branch={branch_id}"
+    )
+    assert deleted.status_code == 204
+
+    diff = await client.get(f"/api/v1/projects/branch-diff-state/branches/{branch_id}/diff")
+    assert diff.status_code == 200
+    entries = {e["name"]: e for e in diff.json()["entries"]}
+
+    added_entry = entries["checkout:started"]
+    assert added_entry["kind"] == "added"
+    assert added_entry["before"] is None
+    assert added_entry["after"]["name"] == "checkout:started"
+    assert added_entry["after"]["event_type_name"] == "track"
+    assert added_entry["field_changes"] == []
+    assert "id" not in added_entry["after"]
+
+    removed_entry = entries["purchase:success"]
+    assert removed_entry["kind"] == "removed"
+    assert removed_entry["after"] is None
+    assert removed_entry["before"]["name"] == "purchase:success"
+    assert "id" not in removed_entry["before"]
 
 
 @pytest.mark.asyncio
@@ -817,7 +885,7 @@ async def test_merge_adds_and_removes_event_types(client: AsyncClient) -> None:
 
 
 @pytest.mark.asyncio
-async def test_merge_rejects_branch_when_main_advanced(client: AsyncClient) -> None:
+async def test_merge_preserves_main_only_event_addition(client: AsyncClient) -> None:
     await _seed_plan(client, "merge-behind")
     branch_id = await _create_branch(client, "merge-behind")
 
@@ -830,18 +898,16 @@ async def test_merge_rejects_branch_when_main_advanced(client: AsyncClient) -> N
     assert added_on_main.status_code == 201
 
     merged = await _approve_and_merge(client, "merge-behind", branch_id)
-    assert merged.status_code == 409
-    assert merged.json()["detail"] == {
-        "branch_behind_base": True,
-        "message": (
-            "Main changed after this branch was created. "
-            "Recreate the branch from current main before merging."
-        ),
+    assert merged.status_code == 200, merged.text
+    events = (await client.get("/api/v1/projects/merge-behind/events")).json()["items"]
+    assert {event["name"] for event in events} == {
+        "purchase:success",
+        "main:added-after-branch",
     }
 
 
 @pytest.mark.asyncio
-async def test_merge_rejects_branch_when_main_event_changed(client: AsyncClient) -> None:
+async def test_merge_preserves_main_only_event_edit(client: AsyncClient) -> None:
     await _seed_plan(client, "merge-behind-change")
     branch_id = await _create_branch(client, "merge-behind-change")
 
@@ -854,12 +920,15 @@ async def test_merge_rejects_branch_when_main_event_changed(client: AsyncClient)
     assert changed_on_main.status_code == 200
 
     merged = await _approve_and_merge(client, "merge-behind-change", branch_id)
-    assert merged.status_code == 409
-    assert merged.json()["detail"]["branch_behind_base"] is True
+    assert merged.status_code == 200, merged.text
+    event = (
+        await client.get("/api/v1/projects/merge-behind-change/events")
+    ).json()["items"][0]
+    assert event["description"] == "edited on main"
 
 
 @pytest.mark.asyncio
-async def test_merge_keeps_legacy_branch_without_base_snapshot_compatible(
+async def test_merge_rejects_legacy_branch_without_complete_base_snapshot(
     client: AsyncClient,
 ) -> None:
     await _seed_plan(client, "merge-legacy")
@@ -871,7 +940,469 @@ async def test_merge_keeps_legacy_branch_without_base_snapshot_compatible(
         await session.commit()
 
     merged = await _approve_and_merge(client, "merge-legacy", branch_id)
+    assert merged.status_code == 409
+    assert merged.json()["detail"]["incomplete_base_snapshot"] is True
+
+
+@pytest.mark.asyncio
+async def test_merge_preserves_main_only_event_tag_during_unrelated_branch_edit(
+    client: AsyncClient,
+) -> None:
+    slug = "merge-main-tag"
+    await _seed_plan(client, slug)
+    branch_id = await _create_branch(client, slug)
+
+    async with TestSessionLocal() as session:
+        main_event = (
+            (
+                await session.execute(
+                    select(Event).where(
+                        Event.name == "purchase:success",
+                        Event.branch_id != uuid.UUID(branch_id),
+                    )
+                )
+            )
+            .scalars()
+            .one()
+        )
+        branch_event = (
+            (
+                await session.execute(
+                    select(Event).where(
+                        Event.name == "purchase:success",
+                        Event.branch_id == uuid.UUID(branch_id),
+                    )
+                )
+            )
+            .scalars()
+            .one()
+        )
+        session.add(EventTag(event_id=main_event.id, name="main-only"))
+        branch_event.description = "unrelated branch edit"
+        await session.commit()
+        main_event_id = main_event.id
+
+    merged = await _approve_and_merge(client, slug, branch_id)
     assert merged.status_code == 200, merged.text
+
+    async with TestSessionLocal() as session:
+        tags = (
+            (
+                await session.execute(select(EventTag).where(EventTag.event_id == main_event_id))
+            )
+            .scalars()
+            .all()
+        )
+        assert [tag.name for tag in tags] == ["main-only"]
+
+
+@pytest.mark.asyncio
+async def test_branch_tag_change_invalidates_approval_hash(client: AsyncClient) -> None:
+    slug = "branch-tag-hash"
+    await _seed_plan(client, slug)
+    branch_id = await _create_branch(client, slug)
+    await _transition(client, slug, branch_id, "submit")
+    await _transition(client, slug, branch_id, "approve")
+
+    async with TestSessionLocal() as session:
+        branch_event = (
+            (
+                await session.execute(
+                    select(Event).where(Event.branch_id == uuid.UUID(branch_id))
+                )
+            )
+            .scalars()
+            .one()
+        )
+        session.add(EventTag(event_id=branch_event.id, name="after-approval"))
+        await session.commit()
+
+    merged = await client.post(f"/api/v1/projects/{slug}/branches/{branch_id}/merge")
+    assert merged.status_code == 409
+    assert merged.json()["detail"]["insufficient_approvals"]["stale"] == 1
+
+
+@pytest.mark.asyncio
+async def test_snapshot_v2_captures_all_merge_relevant_event_child_state(
+    client: AsyncClient,
+) -> None:
+    slug = "snapshot-v2-children"
+    await _seed_plan(client, slug)
+    meta = await client.post(
+        f"/api/v1/projects/{slug}/meta-fields",
+        json={"name": "owner_team", "display_name": "Owner team", "field_type": "string"},
+    )
+    assert meta.status_code == 201
+
+    async with TestSessionLocal() as session:
+        project = (
+            (await session.execute(select(Project).where(Project.slug == slug))).scalars().one()
+        )
+        event = (
+            (await session.execute(select(Event).where(Event.project_id == project.id)))
+            .scalars()
+            .one()
+        )
+        field = (
+            (
+                await session.execute(
+                    select(FieldDefinition).where(
+                        FieldDefinition.event_type_id == event.event_type_id
+                    )
+                )
+            )
+            .scalars()
+            .one()
+        )
+        meta_field = await session.get(MetaFieldDefinition, uuid.UUID(meta.json()["id"]))
+        assert meta_field is not None
+        event.source_name = "purchase_source"
+        event.reviewed = True
+        event.metric_breakdown_columns = ["platform"]
+        session.add(
+            EventFieldValue(
+                event_id=event.id,
+                field_definition_id=field.id,
+                value="${variant}",
+                is_authored=True,
+            )
+        )
+        session.add(
+            EventMetaValue(
+                event_id=event.id,
+                meta_field_definition_id=meta_field.id,
+                value="growth",
+            )
+        )
+        session.add(EventTag(event_id=event.id, name="critical"))
+        photo = EventPhoto(
+            project_id=project.id,
+            event_id=event.id,
+            original_filename="Spec",
+            content_type="",
+            size_bytes=0,
+            kind="figma",
+            external_url="https://www.figma.com/file/snapshot/Spec",
+            sort_order=0,
+        )
+        session.add(photo)
+        await session.flush()
+        session.add(EventPhotoComment(photo_id=photo.id, body="ship it"))
+        await session.commit()
+
+        snapshot = await build_plan_snapshot(session, project.id, branch_id=event.branch_id)
+
+    assert snapshot["snapshot_version"] == 2
+    event_state = snapshot["events"][0]
+    assert event_state["source_name"] == "purchase_source"
+    assert event_state["reviewed"] is True
+    assert event_state["metric_breakdown_columns"] == ["platform"]
+    assert event_state["field_values"] == [
+        {"field_name": "name", "value": "${variant}", "is_authored": True}
+    ]
+    assert event_state["meta_values"] == [
+        {"meta_field_name": "owner_team", "value": "growth"}
+    ]
+    assert event_state["tags"] == ["critical"]
+    comment_state = event_state["photos"][0]["comments"][0]
+    assert comment_state["user_fingerprint"] is None
+    assert len(comment_state["body_fingerprint"]) == 64
+    assert comment_state["replies"] == []
+    assert "body" not in comment_state
+    assert "storage_key" not in event_state["photos"][0]
+
+
+@pytest.mark.asyncio
+async def test_parent_delete_conflicts_with_main_child_addition(client: AsyncClient) -> None:
+    slug = "merge-parent-child-conflict"
+    event_type_id = await _seed_plan(client, slug)
+    branch_id = await _create_branch(client, slug)
+
+    added = await client.post(
+        f"/api/v1/projects/{slug}/event-types/{event_type_id}/fields",
+        json={"name": "main_only", "display_name": "Main only", "field_type": "string"},
+    )
+    assert added.status_code == 201
+
+    async with TestSessionLocal() as session:
+        branch_type = (
+            (
+                await session.execute(
+                    select(EventType).where(EventType.branch_id == uuid.UUID(branch_id))
+                )
+            )
+            .scalars()
+            .one()
+        )
+        branch_event = (
+            (
+                await session.execute(
+                    select(Event).where(Event.branch_id == uuid.UUID(branch_id))
+                )
+            )
+            .scalars()
+            .one()
+        )
+        await session.delete(branch_event)
+        await session.delete(branch_type)
+        await session.commit()
+
+    merged = await _approve_and_merge(client, slug, branch_id)
+    assert merged.status_code == 409
+    assert merged.json()["detail"]["conflicts"] == [
+        {"entity_type": "event_type", "name": "track"}
+    ]
+
+
+@pytest.mark.asyncio
+async def test_field_delete_conflicts_with_main_dependent_value(client: AsyncClient) -> None:
+    slug = "merge-field-value-conflict"
+    await _seed_plan(client, slug)
+    branch_id = await _create_branch(client, slug)
+
+    async with TestSessionLocal() as session:
+        main_event = (
+            (
+                await session.execute(
+                    select(Event).where(Event.branch_id != uuid.UUID(branch_id))
+                )
+            )
+            .scalars()
+            .one()
+        )
+        main_field = (
+            (
+                await session.execute(
+                    select(FieldDefinition).where(
+                        FieldDefinition.event_type_id == main_event.event_type_id
+                    )
+                )
+            )
+            .scalars()
+            .one()
+        )
+        branch_type = (
+            (
+                await session.execute(
+                    select(EventType).where(EventType.branch_id == uuid.UUID(branch_id))
+                )
+            )
+            .scalars()
+            .one()
+        )
+        branch_field = (
+            (
+                await session.execute(
+                    select(FieldDefinition).where(
+                        FieldDefinition.event_type_id == branch_type.id
+                    )
+                )
+            )
+            .scalars()
+            .one()
+        )
+        session.add(
+            EventFieldValue(
+                event_id=main_event.id,
+                field_definition_id=main_field.id,
+                value="main-only",
+            )
+        )
+        await session.delete(branch_field)
+        await session.commit()
+
+    merged = await _approve_and_merge(client, slug, branch_id)
+    assert merged.status_code == 409
+    assert {tuple(conflict.values()) for conflict in merged.json()["detail"]["conflicts"]} >= {
+        ("field_definition", "track.name")
+    }
+
+
+@pytest.mark.asyncio
+async def test_field_delete_conflicts_with_main_dependent_relation(client: AsyncClient) -> None:
+    slug = "merge-field-relation-conflict"
+    event_type_id = await _seed_plan(client, slug)
+    second = await client.post(
+        f"/api/v1/projects/{slug}/event-types/{event_type_id}/fields",
+        json={"name": "target", "display_name": "Target", "field_type": "string"},
+    )
+    assert second.status_code == 201
+    branch_id = await _create_branch(client, slug)
+
+    async with TestSessionLocal() as session:
+        main_type = await session.get(EventType, uuid.UUID(event_type_id))
+        assert main_type is not None
+        main_fields = {
+            field.name: field
+            for field in (
+                (
+                    await session.execute(
+                        select(FieldDefinition).where(
+                            FieldDefinition.event_type_id == main_type.id
+                        )
+                    )
+                )
+                .scalars()
+                .all()
+            )
+        }
+        project = await session.get(Project, main_type.project_id)
+        assert project is not None
+        session.add(
+            EventTypeRelation(
+                project_id=project.id,
+                branch_id=main_type.branch_id,
+                source_event_type_id=main_type.id,
+                target_event_type_id=main_type.id,
+                source_field_id=main_fields["name"].id,
+                target_field_id=main_fields["target"].id,
+                relation_type="one_to_one",
+                description="main-only",
+            )
+        )
+        branch_type = (
+            (
+                await session.execute(
+                    select(EventType).where(EventType.branch_id == uuid.UUID(branch_id))
+                )
+            )
+            .scalars()
+            .one()
+        )
+        branch_field = (
+            (
+                await session.execute(
+                    select(FieldDefinition).where(
+                        FieldDefinition.event_type_id == branch_type.id,
+                        FieldDefinition.name == "name",
+                    )
+                )
+            )
+            .scalars()
+            .one()
+        )
+        await session.delete(branch_field)
+        await session.commit()
+
+    merged = await _approve_and_merge(client, slug, branch_id)
+    assert merged.status_code == 409
+    assert {tuple(conflict.values()) for conflict in merged.json()["detail"]["conflicts"]} >= {
+        ("field_definition", "track.name")
+    }
+
+
+@pytest.mark.asyncio
+async def test_meta_field_delete_conflicts_with_main_dependent_value(client: AsyncClient) -> None:
+    slug = "merge-meta-value-conflict"
+    await _seed_plan(client, slug)
+    created = await client.post(
+        f"/api/v1/projects/{slug}/meta-fields",
+        json={"name": "team", "display_name": "Team", "field_type": "string"},
+    )
+    assert created.status_code == 201
+    branch_id = await _create_branch(client, slug)
+
+    async with TestSessionLocal() as session:
+        main_event = (
+            (
+                await session.execute(
+                    select(Event).where(Event.branch_id != uuid.UUID(branch_id))
+                )
+            )
+            .scalars()
+            .one()
+        )
+        main_meta = await session.get(MetaFieldDefinition, uuid.UUID(created.json()["id"]))
+        assert main_meta is not None
+        branch_meta = (
+            (
+                await session.execute(
+                    select(MetaFieldDefinition).where(
+                        MetaFieldDefinition.branch_id == uuid.UUID(branch_id)
+                    )
+                )
+            )
+            .scalars()
+            .one()
+        )
+        session.add(
+            EventMetaValue(
+                event_id=main_event.id,
+                meta_field_definition_id=main_meta.id,
+                value="main-only",
+            )
+        )
+        await session.delete(branch_meta)
+        await session.commit()
+
+    merged = await _approve_and_merge(client, slug, branch_id)
+    assert merged.status_code == 409
+    assert {tuple(conflict.values()) for conflict in merged.json()["detail"]["conflicts"]} >= {
+        ("meta_field", "team")
+    }
+
+
+@pytest.mark.asyncio
+async def test_snapshot_override_keys_include_event_type_for_duplicate_names(
+    client: AsyncClient,
+) -> None:
+    slug = "snapshot-duplicate-event-names"
+    await _seed_plan(client, slug)
+    second_type = await client.post(
+        f"/api/v1/projects/{slug}/event-types",
+        json={"name": "screen", "display_name": "Screen"},
+    )
+    assert second_type.status_code == 201
+    second_event = await client.post(
+        f"/api/v1/projects/{slug}/events",
+        json={"event_type_id": second_type.json()["id"], "name": "purchase:success"},
+    )
+    assert second_event.status_code == 201
+    variable = await client.post(f"/api/v1/projects/{slug}/variables", json={"name": "variant"})
+    assert variable.status_code == 201
+    events = (await client.get(f"/api/v1/projects/{slug}/events")).json()["items"]
+    for event in events:
+        response = await client.put(
+            f"/api/v1/projects/{slug}/variables/{variable.json()['id']}/event-overrides/"
+            f"{event['id']}",
+            json={"values": [event["event_type_id"]]},
+        )
+        assert response.status_code == 200
+
+    branch_id = await _create_branch(client, slug)
+    async with TestSessionLocal() as session:
+        branch = await session.get(PlanBranch, uuid.UUID(branch_id))
+        assert branch is not None and branch.base_revision_id is not None
+        base = await session.get(PlanRevision, branch.base_revision_id)
+        assert base is not None
+        branch_snapshot = await build_plan_snapshot(
+            session, branch.project_id, branch_id=branch.id
+        )
+
+    assert [
+        (event["event_type_name"], event["name"]) for event in branch_snapshot["events"]
+    ] == [("screen", "purchase:success"), ("track", "purchase:success")]
+    base_overrides = base.payload["variables"][0]["event_value_overrides"]
+    branch_overrides = branch_snapshot["variables"][0]["event_value_overrides"]
+    assert branch_overrides == base_overrides
+    assert [(row["event_type_name"], row["event_name"]) for row in branch_overrides] == [
+        ("screen", "purchase:success"),
+        ("track", "purchase:success"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_merge_preserves_main_only_event_deletion(client: AsyncClient) -> None:
+    slug = "merge-main-delete"
+    await _seed_plan(client, slug)
+    branch_id = await _create_branch(client, slug)
+    event_id = (await client.get(f"/api/v1/projects/{slug}/events")).json()["items"][0]["id"]
+    deleted = await client.delete(f"/api/v1/projects/{slug}/events/{event_id}")
+    assert deleted.status_code == 204
+
+    merged = await _approve_and_merge(client, slug, branch_id)
+    assert merged.status_code == 200, merged.text
+    assert (await client.get(f"/api/v1/projects/{slug}/events")).json()["items"] == []
 
 
 @pytest.mark.asyncio

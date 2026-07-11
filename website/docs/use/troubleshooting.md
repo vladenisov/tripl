@@ -225,8 +225,8 @@ out.
 | --- | --- | --- |
 | `400 Branch is already merged` | The branch was merged previously. | Nothing to do; open a new branch for further changes. |
 | `409 Branch must be approved before merging` | The branch isn't in the approved state. | Get the required approvals first. |
-| `409 branch_behind_base` | Plan entities on main changed after this branch was created and cannot be merged safely from the older copy. | Recreate the branch from current main and reapply the intended changes before merging. |
-| `409 conflicts` (entity adds/removes) | The same entity was added/removed on both sides, or a conflict on a non–event-type entity. These are **hard blockers** — not auto-resolvable. | Reconcile manually: re-create the branch off current main, or remove the conflicting change. |
+| `409 incomplete_base_snapshot` | The branch was created before complete merge baselines were available, so a safe three-way merge is impossible. | Recreate the branch from current main and reapply the intended changes. |
+| `409 conflicts` | Both sides changed the same state differently, or one side deleted a parent while the other added/changed a child. These are **hard blockers** unless listed as field-level resolutions. | Reconcile manually: recreate the branch from current main, or remove the conflicting change. |
 | `409 unresolved_field_conflicts` | An event-type **field** was changed on both branch and main relative to the base. | Resolve each field inline (choose **ours**/**theirs**) in the conflict view, then merge again. |
 | `409 missing_owner_approvals` | The branch touches an **owned** event type without that owner's approval. | Request approval from the listed owner(s) before merging. |
 

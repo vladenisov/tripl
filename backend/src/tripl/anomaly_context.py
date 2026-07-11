@@ -13,7 +13,7 @@ from datetime import datetime
 from sqlalchemy import desc, func, select
 from sqlalchemy.orm import Session
 
-from tripl.models.domain_enums import MetricScopeType
+from tripl.models.domain_enums import MetricBreakdownAnomalyKind, MetricScopeType
 from tripl.models.event_metric import EventMetric
 from tripl.models.metric_breakdown_anomaly import MetricBreakdownAnomaly
 
@@ -89,6 +89,7 @@ def load_top_movers(
                 MetricBreakdownAnomaly.scope_type == scope_type,
                 MetricBreakdownAnomaly.scope_ref == scope_ref,
                 MetricBreakdownAnomaly.bucket == bucket,
+                MetricBreakdownAnomaly.kind == MetricBreakdownAnomalyKind.volume,
             )
             .order_by(desc(func.abs(MetricBreakdownAnomaly.z_score)))
             .limit(limit)
