@@ -32,6 +32,117 @@ interface FactOperandView {
   factTableId: string | null
   aggregation: string
   column: string | null
+  filters: FactFiltersView
+}
+
+/** One visual column/operator/value condition row from a fact config. */
+interface FactConditionView {
+  column: string
+  operator: string
+  value: unknown
+}
+
+/**
+ * The three row-filter inputs of one fact operand, ANDed at collection time:
+ * named row filters (labels of the fact table's stored filters), visual
+ * conditions, and a free-text SQL WHERE fragment.
+ */
+interface FactFiltersView {
+  rowFilters: string[]
+  conditions: FactConditionView[]
+  filterSql: string | null
+}
+
+/** Operators that take no value; rendered as `column <operator>`. */
+const VALUELESS_CONDITION_OPERATORS = new Set([
+  'is_null',
+  'is_not_null',
+  'is_true',
+  'is_false',
+])
+
+/** SQL-ish display label per condition operator; unknown operators pass through. */
+const CONDITION_OPERATOR_LABEL: Record<string, string> = {
+  eq: '=',
+  ne: '!=',
+  gt: '>',
+  gte: '>=',
+  lt: '<',
+  lte: '<=',
+  contains: 'contains',
+  not_contains: 'not contains',
+  like: 'like',
+  not_like: 'not like',
+  in: 'in',
+  not_in: 'not in',
+  is_null: 'is null',
+  is_not_null: 'is not null',
+  is_true: 'is true',
+  is_false: 'is false',
+}
+
+/** Named row filters: `row_filters` plus a folded legacy single `row_filter`. */
+function readRowFilterNames(record: Record<string, unknown>): string[] {
+  const names = Array.isArray(record.row_filters)
+    ? record.row_filters.filter(
+        (name): name is string => typeof name === 'string' && !!name,
+      )
+    : []
+  const legacy = configString(record, 'row_filter')
+  return legacy && !names.includes(legacy) ? [...names, legacy] : names
+}
+
+/** Narrows an untyped `conditions` config array, skipping malformed entries. */
+function readConditions(value: unknown): FactConditionView[] {
+  if (!Array.isArray(value)) return []
+  const conditions: FactConditionView[] = []
+  for (const entry of value) {
+    if (!entry || typeof entry !== 'object') continue
+    const record = entry as Record<string, unknown>
+    const column = configString(record, 'column')
+    const operator = configString(record, 'operator')
+    if (!column || !operator) continue
+    conditions.push({ column, operator, value: record.value })
+  }
+  return conditions
+}
+
+/** Reads the filter block shared by top-level fact configs and ratio operands. */
+function readFactFilters(record: Record<string, unknown>): FactFiltersView {
+  return {
+    rowFilters: readRowFilterNames(record),
+    conditions: readConditions(record.conditions),
+    filterSql: configString(record, 'filter_sql'),
+  }
+}
+
+function hasFilters(filters: FactFiltersView): boolean {
+  return (
+    filters.rowFilters.length > 0
+    || filters.conditions.length > 0
+    || filters.filterSql !== null
+  )
+}
+
+function conditionScalarText(value: unknown): string {
+  return typeof value === 'string' ? `'${value}'` : String(value)
+}
+
+/** SQL-ish one-liner for a condition, e.g. `platform = 'ios'` / `plan in ('a', 'b')`. */
+function conditionText(condition: FactConditionView): string {
+  const operator = CONDITION_OPERATOR_LABEL[condition.operator] ?? condition.operator
+  if (
+    VALUELESS_CONDITION_OPERATORS.has(condition.operator)
+    || condition.value === null
+    || condition.value === undefined
+  ) {
+    return `${condition.column} ${operator}`
+  }
+  if (Array.isArray(condition.value)) {
+    const values = condition.value.map(conditionScalarText).join(', ')
+    return `${condition.column} ${operator} (${values})`
+  }
+  return `${condition.column} ${operator} ${conditionScalarText(condition.value)}`
 }
 
 /**
@@ -61,6 +172,7 @@ function readFactOperand(value: unknown): FactOperandView | null {
     factTableId,
     aggregation,
     column: aggregation === 'count_distinct' ? distinct : measure,
+    filters: readFactFilters(record),
   }
 }
 
@@ -71,8 +183,8 @@ interface MetricDefinitionCardProps {
 
 /**
  * Compact "Definition" summary for the catalog-metric drilldown: what the
- * metric computes (kind + human-readable expression) plus its collection
- * settings, without opening the edit form. Name lookups (fact tables, events,
+ * metric computes (kind + human-readable expression + row filters) plus its
+ * collection settings, without opening the edit form. Name lookups (fact tables, events,
  * data sources) are best-effort — failures degrade to short ids, so these
  * queries stay out of the page-level error state.
  */
@@ -182,7 +294,38 @@ function SqlExpression({ config }: { config: Record<string, unknown> }) {
   )
 }
 
-function FactOperandLine({
+/**
+ * Row-filter summary for one fact operand: each named filter, visual condition,
+ * and the free-text SQL fragment gets its own labelled line, indented under the
+ * operand's expression. Renders nothing when the operand is unfiltered.
+ */
+function FactFilterLines({ filters }: { filters: FactFiltersView }) {
+  if (!hasFilters(filters)) return null
+  return (
+    <ul className="space-y-0.5 pl-4 text-xs">
+      {filters.rowFilters.map(name => (
+        <li key={`row-filter-${name}`}>
+          <span className="text-muted-foreground">filter · </span>
+          {name}
+        </li>
+      ))}
+      {filters.conditions.map((condition, index) => (
+        <li key={`condition-${index}`}>
+          <span className="text-muted-foreground">where </span>
+          <code className="font-mono">{conditionText(condition)}</code>
+        </li>
+      ))}
+      {filters.filterSql && (
+        <li>
+          <span className="text-muted-foreground">where </span>
+          <code className="font-mono">{filters.filterSql}</code>
+        </li>
+      )}
+    </ul>
+  )
+}
+
+function FactOperandBlock({
   operand,
   factTableName,
 }: {
@@ -190,11 +333,14 @@ function FactOperandLine({
   factTableName: (id: string | null) => string
 }) {
   return (
-    <p className="font-mono text-sm">
-      {operand.aggregation}({operand.column ?? '*'})
-      <span className="text-muted-foreground"> from </span>
-      {factTableName(operand.factTableId)}
-    </p>
+    <div className="space-y-0.5">
+      <p className="font-mono text-sm">
+        {operand.aggregation}({operand.column ?? '*'})
+        <span className="text-muted-foreground"> from </span>
+        {factTableName(operand.factTableId)}
+      </p>
+      <FactFilterLines filters={operand.filters} />
+    </div>
   )
 }
 
@@ -211,9 +357,9 @@ function FactExpression({
     const denominator = readFactOperand(config['denominator'])
     return (
       <div className="space-y-1">
-        {numerator && <FactOperandLine operand={numerator} factTableName={factTableName} />}
+        {numerator && <FactOperandBlock operand={numerator} factTableName={factTableName} />}
         <p aria-hidden="true" className="text-sm text-muted-foreground">÷</p>
-        {denominator && <FactOperandLine operand={denominator} factTableName={factTableName} />}
+        {denominator && <FactOperandBlock operand={denominator} factTableName={factTableName} />}
       </div>
     )
   }
@@ -224,8 +370,9 @@ function FactExpression({
       definition.aggregation === 'count_distinct'
         ? configString(config, 'distinct_column')
         : configString(config, 'measure_column'),
+    filters: readFactFilters(config),
   }
-  return <FactOperandLine operand={single} factTableName={factTableName} />
+  return <FactOperandBlock operand={single} factTableName={factTableName} />
 }
 
 function EventCompositionExpression({
