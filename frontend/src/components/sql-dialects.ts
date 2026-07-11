@@ -68,6 +68,9 @@ const HIGHLIGHT_DIALECT: Record<DbType, SQLDialect> = {
   postgres: PostgreSQL,
   clickhouse: ClickHouseDialect,
   bigquery: BigQueryDialect,
+  // The local demo synthetic source mimics ClickHouse semantics, so reuse its
+  // dialect for highlighting/autocomplete of the (rarely-edited) demo SQL.
+  synthetic: ClickHouseDialect,
 }
 
 /** CodeMirror dialect for the engine; StandardSQL when none is selected yet. */
@@ -79,6 +82,7 @@ const FORMAT_LANGUAGE: Record<DbType, SqlLanguage> = {
   postgres: 'postgresql',
   clickhouse: 'clickhouse',
   bigquery: 'bigquery',
+  synthetic: 'clickhouse',
 }
 
 /** sql-formatter language for the engine; generic 'sql' when none is selected. */

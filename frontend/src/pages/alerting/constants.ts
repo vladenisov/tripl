@@ -1,4 +1,5 @@
 import type {
+  AlertDestinationType,
   AlertMessageFormat,
   AlertRule,
   AlertRuleFilterField,
@@ -6,10 +7,15 @@ import type {
   AlertRuleFilterPayload,
 } from "@/types"
 
+// User-selectable channels for creating a real destination. The demo-only
+// ``demo_sink`` (a local, non-sendable sink) is intentionally excluded here — it
+// is created by the demo seeder, never through this create UI.
 export type DestinationChannel = 'slack' | 'telegram' | 'webhook' | 'email' | 'jira' | 'linear'
 
 export type DestinationFormState = {
-  type: DestinationChannel
+  // Any existing destination's type when editing (incl. the read-only
+  // ``demo_sink``); the create flow only ever sets a ``DestinationChannel``.
+  type: AlertDestinationType
   name: string
   enabled: boolean
   webhook_url: string
@@ -163,7 +169,7 @@ export const DEFAULT_ITEMS_TEMPLATES: Record<AlertMessageFormat, string> = {
   telegram_markdownv2: '\\- ${scope_label} ${scope_name}: ${direction_label}, actual=${actual_count}, expected=${expected_count}, delta=${absolute_delta} \\(${percent_delta}%\\)${drift_line}${details_line}${monitoring_line}',
 }
 
-export const MESSAGE_FORMAT_OPTIONS: Record<DestinationChannel, { value: AlertMessageFormat; label: string }[]> = {
+export const MESSAGE_FORMAT_OPTIONS: Record<AlertDestinationType, { value: AlertMessageFormat; label: string }[]> = {
   slack: [
     { value: 'plain', label: 'Plain text' },
     { value: 'slack_mrkdwn', label: 'Slack mrkdwn' },
@@ -183,6 +189,10 @@ export const MESSAGE_FORMAT_OPTIONS: Record<DestinationChannel, { value: AlertMe
     { value: 'plain', label: 'Plain text' },
   ],
   linear: [
+    { value: 'plain', label: 'Plain text' },
+  ],
+  // Local demo sink renders plain text only (recorded locally, never sent).
+  demo_sink: [
     { value: 'plain', label: 'Plain text' },
   ],
 }
