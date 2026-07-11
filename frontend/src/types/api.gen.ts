@@ -4748,6 +4748,11 @@ export interface components {
              * @default false
              */
             is_other: boolean;
+            /**
+             * Parity Anomalies
+             * @default []
+             */
+            parity_anomalies: components["schemas"]["PlatformParityAnomaly"][];
             /** Total Count */
             total_count: number;
         };
@@ -6817,6 +6822,23 @@ export interface components {
             project_id: string;
             /** Summary */
             summary: string;
+        };
+        /** PlatformParityAnomaly */
+        PlatformParityAnomaly: {
+            /** Actual Share */
+            actual_share: number;
+            /**
+             * Bucket
+             * Format: date-time
+             */
+            bucket: string;
+            direction: components["schemas"]["AnomalyDirection"];
+            /** Expected Share */
+            expected_share: number;
+            /** Stddev */
+            stddev: number;
+            /** Z Score */
+            z_score: number;
         };
         /**
          * PlatformPresenceResponse

@@ -122,6 +122,13 @@ The two dials you will actually reach for:
 
 Volume detection answers "did the count spike or drop?" Distribution drift answers a different question: **"did the *mix* change even though the total stayed flat?"** — for example, 80% of an event's traffic suddenly arriving from a single platform when it used to be evenly split.
 
+When a scan designates a **platform column**, Tripl also monitors each platform's
+share of the same event total (`platform count / total count`) bucket by bucket.
+These **platform parity** anomalies appear as before/after share badges on the
+Breakdowns tab and stay separate from count-based volume markers. Breakdown
+parity rows are not yet dispatched by alert rules; they are currently a
+monitoring-detail signal.
+
 For a categorical field (platform, country, app version, …) the detector compares the **composition** over a baseline window against the current window using the **Population Stability Index (PSI)**. PSI sums, across every category value, `(current_share − baseline_share) × ln(current_share / baseline_share)`. A larger PSI means the two distributions diverged more. The result is bucketed into interpretive bands:
 
 | PSI | Band |

@@ -189,6 +189,7 @@ function adaptMetricBreakdowns(res: MetricBreakdownsResponse): EventMetricBreakd
       is_other: series.is_other,
       total_count: series.total_value,
       data: series.data.map(metricPointToEventPoint),
+      parity_anomalies: [],
     })),
   }
 }
@@ -466,6 +467,15 @@ export default function MonitoringDetailPage() {
         data: aggregateMetricPoints(series.data, granularity),
       })),
     [breakdowns?.series, granularity],
+  )
+  const latestParityAnomalies = useMemo(
+    () => (breakdowns?.series ?? []).flatMap(series => {
+      const latest = [...(series.parity_anomalies ?? [])]
+        .sort((left, right) => left.bucket.localeCompare(right.bucket))
+        .at(-1)
+      return latest ? [{ series, anomaly: latest }] : []
+    }),
+    [breakdowns?.series],
   )
   const versionChartSeries = useMemo(
     () => buildVersionChartSeries(
@@ -1251,6 +1261,29 @@ export default function MonitoringDetailPage() {
                     height={280}
                     granularity={granularity}
                   />
+                  {latestParityAnomalies.length > 0 && (
+                    <div className="mt-4 rounded-md border border-border bg-muted/30 p-3">
+                      <p className="mb-2 text-xs font-medium text-muted-foreground">
+                        {selectedBreakdownColumn} share anomalies
+                      </p>
+                      <div className="flex flex-wrap gap-2">
+                        {latestParityAnomalies.map(({ series, anomaly }) => (
+                          <Badge
+                            key={`${series.breakdown_value}-${anomaly.bucket}`}
+                            aria-label={`${series.is_other ? 'Other' : (series.breakdown_value || '(empty)')} share ${anomaly.direction}: ${formatPercent(anomaly.expected_share)} -> ${formatPercent(anomaly.actual_share)}`}
+                            variant="outline"
+                            className={anomaly.direction === 'drop'
+                              ? 'border-destructive/50 text-destructive'
+                              : 'border-amber-500/60 text-amber-800'}
+                          >
+                            {series.is_other ? 'Other' : (series.breakdown_value || '(empty)')}
+                            {' share '}{anomaly.direction}:{' '}
+                            {formatPercent(anomaly.expected_share)} {'->'} {formatPercent(anomaly.actual_share)}
+                          </Badge>
+                        ))}
+                      </div>
+                    </div>
+                  )}
                   {breakdowns?.interval && (
                     <p className="mt-2 text-xs text-muted-foreground">
                       Collection interval: {breakdowns.interval}

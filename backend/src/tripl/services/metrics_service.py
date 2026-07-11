@@ -19,6 +19,7 @@ from tripl.core.analyzers.anomaly_detector import (
     forecast_next_buckets,
 )
 from tripl.core.intervals import get_interval
+from tripl.models.domain_enums import MetricBreakdownAnomalyKind
 from tripl.models.event import Event
 from tripl.models.event_metric import EventMetric
 from tripl.models.event_metric_breakdown import EventMetricBreakdown
@@ -44,6 +45,7 @@ from tripl.schemas.event_metric import (
     ForecastPoint,
     MetricSignalResponse,
     OverviewKpiSeriesResponse,
+    PlatformParityAnomaly,
     PlatformPresenceResponse,
     PlatformPresenceRow,
     ReleaseRegressionItem,
@@ -642,12 +644,18 @@ async def get_event_metric_breakdowns(
         anomaly_query = anomaly_query.where(MetricBreakdownAnomaly.bucket < time_to)
 
     anomalies_by_series: dict[tuple[str, bool], list[MetricBreakdownAnomaly]] = {}
+    parity_by_series: dict[tuple[str, bool], list[MetricBreakdownAnomaly]] = {}
     for anomaly in (await session.execute(anomaly_query)).scalars():
         key = (anomaly.breakdown_value, anomaly.is_other)
-        anomalies_by_series.setdefault(key, []).append(anomaly)
+        target = (
+            parity_by_series
+            if anomaly.kind == MetricBreakdownAnomalyKind.parity
+            else anomalies_by_series
+        )
+        target.setdefault(key, []).append(anomaly)
 
     series: list[EventMetricBreakdownSeries] = []
-    for key in set(metric_rows_by_series) | set(anomalies_by_series):
+    for key in set(metric_rows_by_series) | set(anomalies_by_series) | set(parity_by_series):
         value, is_other = key
         data = _build_metric_points(
             interval=config.interval,
@@ -660,6 +668,17 @@ async def get_event_metric_breakdowns(
                 is_other=is_other,
                 total_count=sum(point.count for point in data),
                 data=data,
+                parity_anomalies=[
+                    PlatformParityAnomaly(
+                        bucket=anomaly.bucket,
+                        actual_share=anomaly.actual_count,
+                        expected_share=anomaly.expected_count,
+                        stddev=anomaly.stddev,
+                        z_score=anomaly.z_score,
+                        direction=anomaly.direction,
+                    )
+                    for anomaly in parity_by_series.get(key, [])
+                ],
             )
         )
 
@@ -871,6 +890,7 @@ async def _load_app_version_anomaly_rows(
             MetricBreakdownAnomaly.scope_type == scope_type,
             MetricBreakdownAnomaly.scope_ref == scope_ref,
             MetricBreakdownAnomaly.breakdown_column == config.app_version_column,
+            MetricBreakdownAnomaly.kind == MetricBreakdownAnomalyKind.volume,
         )
         .order_by(MetricBreakdownAnomaly.breakdown_value, MetricBreakdownAnomaly.bucket)
     )

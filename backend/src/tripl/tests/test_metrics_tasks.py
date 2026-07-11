@@ -4087,6 +4087,155 @@ def test_replace_scope_breakdown_anomalies_persists_detector_fields(
         assert row.detector_kind == "phase"
 
 
+def test_platform_share_shift_creates_distinct_parity_anomaly(
+    sync_session_factory: sessionmaker[Session],
+) -> None:
+    """A platform share drop is detectable even while total volume is flat."""
+    from tripl.worker.tasks.metrics.detect import _recalculate_metric_breakdown_anomalies
+
+    base = datetime(2026, 1, 1, 0, 0)
+    with sync_session_factory() as session:
+        config, _event_type, event = _seed_anomaly_scan_state(session, base=base)
+        config.platform_column = "platform"
+        settings = session.execute(
+            select(ProjectAnomalySettings).where(
+                ProjectAnomalySettings.project_id == config.project_id
+            )
+        ).scalar_one()
+        settings.detect_project_total = False
+        settings.detect_event_types = False
+        settings.min_history_buckets = 7
+        settings.baseline_window_buckets = 7
+        settings.sigma_threshold = 3.0
+
+        event_metrics = session.execute(
+            select(EventMetric).where(EventMetric.event_id == event.id)
+        ).scalars()
+        for metric in event_metrics:
+            metric.count = 100
+
+        for hour in range(10):
+            session.add(
+                EventMetricBreakdown(
+                    id=uuid.uuid4(),
+                    scan_config_id=config.id,
+                    event_id=event.id,
+                    event_type_id=None,
+                    bucket=base + timedelta(hours=hour),
+                    breakdown_column="platform",
+                    breakdown_value="ios",
+                    is_other=False,
+                    count=10 if hour == 9 else 50,
+                )
+            )
+        session.flush()
+
+        detected = _recalculate_metric_breakdown_anomalies(
+            session,
+            config,
+            evaluation_start=base + timedelta(hours=9),
+            evaluation_end=base + timedelta(hours=10),
+        )
+
+        rows = session.execute(
+            select(MetricBreakdownAnomaly).where(
+                MetricBreakdownAnomaly.breakdown_value == "ios"
+            )
+        ).scalars().all()
+
+        assert detected == 2
+        assert {row.kind for row in rows} == {"volume", "parity"}
+        parity = next(row for row in rows if row.kind == "parity")
+        assert parity.actual_count == pytest.approx(0.1)
+        assert parity.expected_count == pytest.approx(0.5)
+
+
+def test_platform_disappearance_creates_parity_drop_only_when_bucket_is_covered(
+    sync_session_factory: sessionmaker[Session],
+) -> None:
+    """A missing numerator means 0% share when collection covered the bucket,
+    but remains missing data when that bucket was never collected."""
+    from tripl.worker.tasks.metrics.detect import _recalculate_metric_breakdown_anomalies
+
+    base = datetime(2026, 1, 1, 0, 0)
+    with sync_session_factory() as session:
+        config, _event_type, event = _seed_anomaly_scan_state(session, base=base)
+        config.platform_column = "platform"
+        settings = session.execute(
+            select(ProjectAnomalySettings).where(
+                ProjectAnomalySettings.project_id == config.project_id
+            )
+        ).scalar_one()
+        settings.detect_project_total = False
+        settings.detect_event_types = False
+        settings.min_history_buckets = 7
+        settings.baseline_window_buckets = 7
+        settings.sigma_threshold = 3.0
+
+        for metric in session.execute(
+            select(EventMetric).where(EventMetric.event_id == event.id)
+        ).scalars():
+            metric.count = 100
+
+        # iOS is 50% for the baseline, then has no numerator row at hour 9.
+        for hour in range(9):
+            session.add(
+                EventMetricBreakdown(
+                    id=uuid.uuid4(),
+                    scan_config_id=config.id,
+                    event_id=event.id,
+                    event_type_id=None,
+                    bucket=base + timedelta(hours=hour),
+                    breakdown_column="platform",
+                    breakdown_value="ios",
+                    is_other=False,
+                    count=50,
+                )
+            )
+        session.flush()
+
+        all_covered = {base + timedelta(hours=hour) for hour in range(10)}
+        detected = _recalculate_metric_breakdown_anomalies(
+            session,
+            config,
+            evaluation_start=base + timedelta(hours=9),
+            evaluation_end=base + timedelta(hours=10),
+            covered_buckets=all_covered,
+        )
+        rows = session.execute(
+            select(MetricBreakdownAnomaly).where(
+                MetricBreakdownAnomaly.breakdown_value == "ios"
+            )
+        ).scalars().all()
+
+        assert detected == 2
+        parity = next(row for row in rows if row.kind == "parity")
+        assert parity.actual_count == 0
+        assert parity.expected_count == pytest.approx(0.5)
+        session.commit()
+        session.expunge_all()
+        persisted_config = session.get(ScanConfig, config.id)
+        assert persisted_config is not None
+
+        # The same absent numerator must not become a synthetic zero when the
+        # collection coverage contract says hour 9 was never observed.
+        detected_with_gap = _recalculate_metric_breakdown_anomalies(
+            session,
+            persisted_config,
+            evaluation_start=base + timedelta(hours=9),
+            evaluation_end=base + timedelta(hours=10),
+            covered_buckets=all_covered - {base + timedelta(hours=9)},
+        )
+        remaining = session.execute(
+            select(MetricBreakdownAnomaly).where(
+                MetricBreakdownAnomaly.breakdown_value == "ios"
+            )
+        ).scalars().all()
+
+        assert detected_with_gap == 0
+        assert remaining == []
+
+
 def test_collect_breakdown_scope_keys_gates_immature_app_versions(
     sync_session_factory: sessionmaker[Session],
 ) -> None:

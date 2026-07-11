@@ -158,6 +158,16 @@ export interface EventMetricBreakdownSeries {
   is_other: boolean
   total_count: number
   data: EventMetricPoint[]
+  parity_anomalies: PlatformParityAnomaly[]
+}
+
+export interface PlatformParityAnomaly {
+  bucket: string
+  actual_share: number
+  expected_share: number
+  stddev: number
+  z_score: number
+  direction: 'spike' | 'drop'
 }
 
 export interface EventMetricBreakdownsResponse {

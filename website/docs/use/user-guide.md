@@ -210,10 +210,11 @@ branch instead — the same idea as a pull request for code.
    requests changes or approves.
 5. **Merge.** tripl matches events by name, so nothing is duplicated and the
    metrics, history, and alerts already attached to an event stay attached.
-   Non-conflicting edits merge automatically; if two people edited the same
-   thing, you choose which version wins. If other plan entities changed on main
-   after the branch was created, merge is blocked; recreate the branch from
-   current main and reapply its changes.
+   Non-conflicting edits on either side merge automatically, including child
+   state such as values, tags, photos/comments, overrides, and breakdown
+   settings. If both sides changed the same state differently, merge reports a
+   conflict. Older branches without a complete merge baseline must be recreated
+   from current main.
 
 If an event type has **owners**, merging a branch that touches it requires a
 sign-off from one of them.
@@ -294,7 +295,9 @@ Open a monitor (or an event's monitoring detail) to see, across tabs:
 - **Distribution** — whether a field's mix of values is drifting (reported as a
   PSI score and a band of *normal / minor / significant*).
 - **Breakdowns** *(event-level)* — splits an event's volume into one series per
-  value of a chosen column.
+  value of a chosen column. For the scan's designated platform column, share
+  anomalies are called out separately when one platform's ratio changes even
+  though total volume remains stable.
 - **By version** — appears only when the event's scan names an app-version
   column. It splits volume across recent releases, tracks adoption, and lists
   **release regressions** (what disappeared or dropped in the newest release
