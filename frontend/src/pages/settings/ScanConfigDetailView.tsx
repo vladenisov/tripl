@@ -11,6 +11,8 @@ import { scanJobsHaveActiveWork } from './scans/scanUtils'
 import type { DataSource, ScanConfig, ScanJob } from '@/types'
 import { Button } from '@/components/ui/button'
 import { Dot } from '@/components/primitives/dot'
+import { ErrorState } from '@/components/error-state'
+import { Skeleton } from '@/components/ui/skeleton'
 import { getErrorMessage } from '@/lib/utils'
 import { ScanDetail } from './ScanDetail'
 import { ScanConfigurationTab } from './scans/ScanConfigForm'
@@ -27,7 +29,13 @@ export function ScanConfigDetail({ slug, scanConfigId }: { slug: string; scanCon
   const branchId = useActiveBranchId()
   const [tab, setTab] = useState<DetailTab>('overview')
 
-  const { data: scanConfigs = [], isSuccess: scansLoaded } = useQuery({
+  const {
+    data: scanConfigs = [],
+    isSuccess: scansLoaded,
+    isError: scansError,
+    error: scansErrorObj,
+    refetch: refetchScans,
+  } = useQuery({
     queryKey: ['scans', slug],
     queryFn: () => scansApi.list(slug),
   })
@@ -60,6 +68,23 @@ export function ScanConfigDetail({ slug, scanConfigId }: { slug: string; scanCon
 
   const goBack = () => navigate(`/p/${slug}/settings/scans`)
 
+  // Loading the config list errored — surface it with a retry instead of a
+  // blank screen (tripl-2su6.9).
+  if (scansError) {
+    return (
+      <div className="space-y-4">
+        <BackLink onClick={goBack} />
+        <ErrorState
+          compact
+          title="Couldn't load this scan"
+          error={scansErrorObj}
+          onRetry={() => {
+            void refetchScans()
+          }}
+        />
+      </div>
+    )
+  }
   if (scansLoaded && !sc) {
     return (
       <div className="space-y-4">
@@ -68,7 +93,16 @@ export function ScanConfigDetail({ slug, scanConfigId }: { slug: string; scanCon
       </div>
     )
   }
-  if (!sc) return null
+  // Still loading — a skeleton, never a blank render (tripl-2su6.9).
+  if (!sc) {
+    return (
+      <div className="space-y-4" aria-busy="true" aria-label="Loading scan config">
+        <BackLink onClick={goBack} />
+        <Skeleton className="h-8 w-64" />
+        <Skeleton className="h-40 w-full" />
+      </div>
+    )
+  }
 
   const dataSource = (dataSources as DataSource[]).find(ds => ds.id === sc.data_source_id) ?? null
   const runInfo = deriveScanRunInfo(jobs)

@@ -1,8 +1,9 @@
 import { fireEvent, render, screen } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
 import { afterEach, describe, expect, it } from 'vitest'
-import type { ProjectSummary } from '@/types'
+import type { ProjectLatestScanJob, ProjectSummary } from '@/types'
 import { OnboardingChecklist } from './onboarding-checklist'
+import { countRealSources } from './onboarding-utils'
 
 function makeSummary(overrides: Partial<ProjectSummary> = {}): ProjectSummary {
   return {
@@ -21,6 +22,24 @@ function makeSummary(overrides: Partial<ProjectSummary> = {}): ProjectSummary {
     latest_scan_job: null,
     latest_signal: null,
     ...overrides,
+  }
+}
+
+// A scan job that actually ran — this is what ticks "Run a scan", not a merely
+// seeded ScanConfig (scan_count alone no longer counts).
+function executedJob(
+  status: ProjectLatestScanJob['status'] = 'completed',
+): ProjectLatestScanJob {
+  return {
+    id: 'job-1',
+    scan_config_id: 'scan-1',
+    scan_name: 'Nightly scan',
+    status,
+    started_at: '2026-07-01T00:00:00Z',
+    completed_at: status === 'completed' ? '2026-07-01T00:05:00Z' : null,
+    result_summary: null,
+    error_message: null,
+    created_at: '2026-07-01T00:05:00Z',
   }
 }
 
@@ -63,11 +82,12 @@ describe('OnboardingChecklist', () => {
   })
 
   it('auto-derives the completed count from project state', () => {
-    // plan (event types), scan, and reconciliation (coverage) are done → 3 of 5.
+    // plan (event types), scan (an EXECUTED job), and reconciliation (coverage)
+    // are done → 3 of 5.
     renderChecklist({
       summary: makeSummary({
         event_type_count: 4,
-        scan_count: 2,
+        latest_scan_job: executedJob(),
         implemented_event_count: 3,
       }),
     })
@@ -75,6 +95,35 @@ describe('OnboardingChecklist', () => {
     expect(screen.getByText('3 of 5')).toBeInTheDocument()
     // Done steps are labelled, incomplete ones are not.
     expect(screen.getAllByText('Done')).toHaveLength(3)
+  })
+
+  it('does NOT count a seeded scan config with no executed job as "Run a scan"', () => {
+    // scan_count > 0 (a seeded ScanConfig) but no job has ever run — the scan
+    // step must stay incomplete. plan + reconciliation are the only done steps.
+    renderChecklist({
+      summary: makeSummary({
+        event_type_count: 4,
+        scan_count: 3,
+        latest_scan_job: null,
+        implemented_event_count: 3,
+      }),
+    })
+
+    expect(screen.getByText('2 of 5')).toBeInTheDocument()
+  })
+
+  it('does not count a merely-queued (pending) job as an executed scan', () => {
+    renderChecklist({
+      summary: makeSummary({
+        event_type_count: 4,
+        scan_count: 1,
+        latest_scan_job: executedJob('pending'),
+        implemented_event_count: 3,
+      }),
+    })
+
+    // plan + reconciliation done; the pending job doesn't tick "Run a scan".
+    expect(screen.getByText('2 of 5')).toBeInTheDocument()
   })
 
   it('counts a connected data source toward completion', () => {
@@ -88,7 +137,7 @@ describe('OnboardingChecklist', () => {
     renderChecklist({
       summary: makeSummary({
         event_type_count: 4,
-        scan_count: 2,
+        latest_scan_job: executedJob(),
         implemented_event_count: 3,
       }),
       sourceCount: 1,
@@ -109,7 +158,7 @@ describe('OnboardingChecklist', () => {
     renderChecklist({
       summary: makeSummary({
         event_type_count: 4,
-        scan_count: 2,
+        latest_scan_job: executedJob(),
         implemented_event_count: 3,
       }),
       sourceCount: 1,
@@ -126,7 +175,7 @@ describe('OnboardingChecklist', () => {
     renderChecklist({
       summary: makeSummary({
         event_type_count: 4,
-        scan_count: 2,
+        latest_scan_job: executedJob(),
         implemented_event_count: 3,
         alert_destination_count: 1,
       }),
@@ -145,7 +194,7 @@ describe('OnboardingChecklist', () => {
         event_type_count: 12,
         active_event_count: 724,
         implemented_event_count: 673, // ~93% coverage
-        scan_count: 3,
+        latest_scan_job: executedJob(),
         // alert_destination_count stays 0 — the skipped optional step
       }),
       sourceCount: 1,
@@ -164,7 +213,7 @@ describe('OnboardingChecklist', () => {
         event_type_count: 12,
         active_event_count: 724,
         implemented_event_count: 5, // ~0.7% coverage
-        scan_count: 3,
+        latest_scan_job: executedJob(),
       }),
       sourceCount: 1,
     })
@@ -175,7 +224,11 @@ describe('OnboardingChecklist', () => {
 
   it('names the single remaining step inline in the compact bar (tripl-7l83.12)', () => {
     renderChecklist({
-      summary: makeSummary({ event_type_count: 4, scan_count: 2, implemented_event_count: 3 }),
+      summary: makeSummary({
+        event_type_count: 4,
+        latest_scan_job: executedJob(),
+        implemented_event_count: 3,
+      }),
       sourceCount: 1,
     })
 
@@ -217,5 +270,25 @@ describe('OnboardingChecklist', () => {
 
     expect(screen.queryByText('Get started')).not.toBeInTheDocument()
     expect(localStorage.getItem('tripl-onboarding-dismissed:demo')).toBe('1')
+  })
+})
+
+describe('countRealSources', () => {
+  it('excludes synthetic demo sources from the real-source count', () => {
+    const sources = [
+      { is_synthetic: true },
+      { is_synthetic: false },
+      { is_synthetic: false },
+    ]
+    // The demo's synthetic warehouse must NOT count as connecting a real source.
+    expect(countRealSources(sources)).toBe(2)
+  })
+
+  it('treats a source with no synthetic flag as real', () => {
+    expect(countRealSources([{}, { is_synthetic: false }])).toBe(2)
+  })
+
+  it('returns zero for a demo whose only source is synthetic', () => {
+    expect(countRealSources([{ is_synthetic: true }])).toBe(0)
   })
 })

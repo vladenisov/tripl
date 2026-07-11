@@ -43,6 +43,41 @@ export function jobDurationSeconds(job: ScanJob): number | null {
   return (new Date(job.completed_at).getTime() - new Date(job.started_at).getTime()) / 1000
 }
 
+/** A single "what changed" delta from a completed scan/collection. */
+export interface ScanChange {
+  label: string
+  tone: 'success' | 'info' | 'warning' | 'danger'
+}
+
+/**
+ * Summarise what a completed job actually changed (events written, metric rows,
+ * signals, alerts). Returns only the non-zero deltas, so a scan/collection that
+ * finishes can show "+N events · +N metrics · +N signals" instead of leaving the
+ * user guessing whether anything happened (tripl-2su6.9). Empty for jobs that
+ * are unfinished or produced no changes.
+ */
+export function summarizeScanChanges(job: ScanJob | null): ScanChange[] {
+  const summary = job?.result_summary
+  if (!summary) return []
+  const changes: ScanChange[] = []
+  const push = (value: number | undefined, singular: string, plural: string, tone: ScanChange['tone']) => {
+    if (value != null && value > 0) {
+      changes.push({ label: `+${value} ${value === 1 ? singular : plural}`, tone })
+    }
+  }
+  push(summary.events_created, 'event', 'events', 'success')
+  const metricRows =
+    (summary.event_metrics ?? 0) +
+    (summary.type_metrics ?? 0) +
+    (summary.breakdown_event_metrics ?? 0) +
+    (summary.breakdown_type_metrics ?? 0)
+  push(metricRows || undefined, 'metric', 'metrics', 'info')
+  push(summary.variables_created, 'variable', 'variables', 'info')
+  push(summary.signals_added, 'signal', 'signals', 'danger')
+  push(summary.alerts_queued, 'alert', 'alerts', 'warning')
+  return changes
+}
+
 // Number of consecutive most-recent runs that FAILED. `jobs` is newest-first.
 // Active (pending/running) jobs at the head are skipped so an in-flight retry
 // does not reset the count; the streak stops at the first settled non-failed run.

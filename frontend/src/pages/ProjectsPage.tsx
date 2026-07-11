@@ -1,6 +1,6 @@
 import { type ElementType, type ReactNode, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Link, useNavigate } from 'react-router-dom'
+import { Link } from 'react-router-dom'
 import { dataSourcesApi } from '@/api/dataSources'
 import { projectsApi } from '@/api/projects'
 import { useAuth } from '@/components/auth-context'
@@ -32,6 +32,8 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Skeleton } from '@/components/ui/skeleton'
 import { Textarea } from '@/components/ui/textarea'
+import { DemoProvisioningDialog } from '@/demo/DemoProvisioningDialog'
+import { useDemoProvisioning } from '@/demo/useDemoProvisioning'
 import { useConfirm } from '@/hooks/useConfirm'
 import { formatPlanCoverage, planCoverageRatio } from '@/lib/coverage'
 import { formatDate, formatDateTime } from '@/lib/datetime'
@@ -59,7 +61,6 @@ import {
 
 export default function MainPage() {
   const queryClient = useQueryClient()
-  const navigate = useNavigate()
   const { user } = useAuth()
   const [showForm, setShowForm] = useState(false)
   const [name, setName] = useState('')
@@ -159,13 +160,10 @@ export default function MainPage() {
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['projects'] }),
   })
 
-  const demoMut = useMutation({
-    mutationFn: () => projectsApi.createDemo(),
-    onSuccess: (project) => {
-      void queryClient.invalidateQueries({ queryKey: ['projects'] })
-      void navigate(`/p/${project.slug}/events`)
-    },
-  })
+  // Demo provisioning: a blocking create with staged progress, a duplicate-click
+  // guard, and success routing to the new demo's Overview welcome (not Events).
+  const provisioning = useDemoProvisioning()
+  const isProvisioningDemo = provisioning.status === 'provisioning'
 
   const handleDelete = async (project: Project) => {
     const ok = await confirm({
@@ -190,6 +188,14 @@ export default function MainPage() {
     <div className="space-y-6">
       {dialog}
 
+      <DemoProvisioningDialog
+        status={provisioning.status}
+        phaseIndex={provisioning.phaseIndex}
+        error={provisioning.error}
+        onRetry={provisioning.retry}
+        onClose={provisioning.reset}
+      />
+
       {/* Title + create actions. Stats moved into the single stat row below so
           the header no longer doubles as a stat strip (UX-10). */}
       <div className="flex flex-wrap items-start justify-between gap-4">
@@ -207,11 +213,11 @@ export default function MainPage() {
             <Button
               size="sm"
               variant="outline"
-              onClick={() => demoMut.mutate()}
-              disabled={demoMut.isPending}
+              onClick={() => provisioning.start()}
+              disabled={isProvisioningDemo}
             >
               <Sparkles className="h-3.5 w-3.5" />
-              {demoMut.isPending ? 'Generating…' : 'Generate demo project'}
+              {isProvisioningDemo ? 'Generating…' : 'Generate demo project'}
             </Button>
             <Button size="sm" onClick={() => setShowForm(true)}>
               <Plus className="h-3.5 w-3.5" />
@@ -438,11 +444,11 @@ export default function MainPage() {
                 <div className="flex gap-2">
                   <Button
                     variant="outline"
-                    onClick={() => demoMut.mutate()}
-                    disabled={demoMut.isPending}
+                    onClick={() => provisioning.start()}
+                    disabled={isProvisioningDemo}
                   >
                     <Sparkles className="h-3.5 w-3.5" />
-                    {demoMut.isPending ? 'Generating…' : 'Generate demo project'}
+                    {isProvisioningDemo ? 'Generating…' : 'Generate demo project'}
                   </Button>
                   <Button onClick={() => setShowForm(true)}>
                     <Plus className="h-3.5 w-3.5" />

@@ -4,6 +4,7 @@ import { ArrowRight, Check, ChevronDown, X } from 'lucide-react'
 import { Chip } from '@/components/primitives/chip'
 import { Dot } from '@/components/primitives/dot'
 import { Panel } from '@/components/settings/kit'
+import { hasExecutedScanJob } from '@/components/onboarding-utils'
 import type { ProjectSummary } from '@/types'
 
 /**
@@ -91,8 +92,10 @@ function buildSteps(slug: string, summary: ProjectSummary, sourceCount: number):
     {
       id: 'source',
       title: 'Connect a data source',
-      hint: 'Point tripl at the warehouse or database holding your events.',
+      hint: 'Point tripl at a real warehouse or database holding your events.',
       href: '/settings/data-sources',
+      // `sourceCount` is already the count of REAL (non-synthetic) sources — a
+      // demo's synthetic warehouse is excluded by the caller (countRealSources).
       done: sourceCount > 0,
     },
     {
@@ -100,7 +103,9 @@ function buildSteps(slug: string, summary: ProjectSummary, sourceCount: number):
       title: 'Run a scan',
       hint: 'Pull recent volume so tripl can learn the baseline.',
       href: `${base}/settings/scans`,
-      done: summary.scan_count > 0 || summary.latest_scan_job != null,
+      // A seeded ScanConfig (scan_count > 0) does NOT count — require an
+      // actually-executed job.
+      done: hasExecutedScanJob(summary),
     },
     {
       id: 'reconcile',

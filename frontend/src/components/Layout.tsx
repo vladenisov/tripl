@@ -9,6 +9,7 @@ import { CommandPaletteProvider } from '@/components/command-palette'
 import { ErrorState } from '@/components/error-state'
 import { TopBar } from '@/components/top-bar'
 import { TweaksPanelProvider } from '@/components/tweaks-panel'
+import { DemoBanner } from '@/demo/DemoBanner'
 import { ProjectEventStreamProvider } from '@/realtime/ProjectEventStreamProvider'
 import { resolveNavLocation } from '@/lib/navigation'
 
@@ -212,6 +213,10 @@ export default function Layout() {
             <div className="flex flex-1 overflow-hidden">
               <div className="relative min-w-0 flex-1 overflow-y-auto">
                 <div className="p-3 sm:p-5 lg:p-8">
+                  {/* Persistent demo marker across every surface of a demo
+                      project — synthetic/local data, recipe version, freshness,
+                      and creator/owner reset + delete controls. */}
+                  {activeProject?.is_demo && <DemoBanner project={activeProject} />}
                   {projectsQuery.isError && (
                     <div className="mb-6">
                       <ErrorState
