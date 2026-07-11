@@ -513,9 +513,33 @@ def _format_change(key: str, old: Any, new: Any) -> str:
     return f"{key}: {old!r} → {new!r}"
 
 
+def _snapshot_values_equal(old_value: Any, new_value: Any) -> bool:
+    """Value equality tolerant of snapshot-version shape drift.
+
+    v1 payloads stored a variable's ``event_value_overrides`` as a dict where
+    v2 stores a list — when both sides are empty containers they describe the
+    same (absent) content, so treat them as equal. Non-empty containers of
+    differing shapes still compare unequal (cross-shape comparison is
+    meaningless; reporting "changed" is the safe outcome).
+    """
+    if (
+        isinstance(old_value, (dict, list))
+        and isinstance(new_value, (dict, list))
+        and not old_value
+        and not new_value
+    ):
+        return True
+    return bool(old_value == new_value)
+
+
 def _field_changes_between(
     old: dict[str, Any], new: dict[str, Any], keys: Iterable[str]
 ) -> list[PlanFieldChange]:
+    # Tolerate snapshot version skew: the current snapshot builder always
+    # emits every change key, so a key absent from ``old`` can only mean an
+    # older-format payload (pre-PLAN_SNAPSHOT_VERSION bump), not an authored
+    # change. Comparing absent keys would flag every pre-existing entity as
+    # "changed" (None vs the v2 default, e.g. None vs [] / None vs False).
     return [
         PlanFieldChange(
             field=key,
@@ -523,10 +547,8 @@ def _field_changes_between(
             after=_sanitize_public_value(new.get(key)),
         )
         for key in keys
-        if old.get(key) != new.get(key)
+        if key in old and not _snapshot_values_equal(old.get(key), new.get(key))
     ]
-
-
 
 
 def _public_state(item: dict[str, Any]) -> dict[str, Any]:

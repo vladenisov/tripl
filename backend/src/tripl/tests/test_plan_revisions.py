@@ -1,7 +1,12 @@
+from typing import Any
+
 import pytest
 from httpx import AsyncClient
 
-from tripl.services.plan_revision_service import _public_snapshot_payload
+from tripl.services.plan_revision_service import (
+    _public_snapshot_payload,
+    compute_plan_diff_entries,
+)
 
 
 async def _setup_project(client: AsyncClient, slug: str = "rev-proj"):
@@ -60,6 +65,123 @@ def test_public_snapshot_redacts_internal_merge_fingerprints() -> None:
         "body_fingerprint": "<redacted>",
     }
     assert payload["events"][0]["photos"][0]["storage_key_fingerprint"] == "secret-hash"
+
+
+# --- snapshot version skew (tripl-avrs) -------------------------------------
+# Branches frozen before the PLAN_SNAPSHOT_VERSION 2 bump hold v1 base payloads
+# whose events lack source_name / owner_id / reviewed / metric_breakdown_columns /
+# field_values / meta_values / tags / photos and whose variables lack
+# excluded_from_scans and store event_value_overrides as a dict instead of a
+# list. The diff must not report those missing keys as changes.
+
+
+def _v1_event(name: str, *, description: str | None = None) -> dict[str, Any]:
+    return {
+        "id": f"v1-{name}",
+        "event_type_id": "et-1",
+        "event_type_name": "pv",
+        "name": name,
+        "description": description,
+        "order": 0,
+        "status": "draft",
+        "sunset_at": None,
+    }
+
+
+def _v2_event(name: str, *, description: str | None = None) -> dict[str, Any]:
+    return {
+        "id": f"v2-{name}",
+        "event_type_id": "et-1",
+        "event_type_name": "pv",
+        "name": name,
+        "source_name": None,
+        "description": description,
+        "order": 0,
+        "status": "draft",
+        "sunset_at": None,
+        "owner_id": None,
+        "reviewed": False,
+        "metric_breakdown_columns": [],
+        "field_values": [],
+        "meta_values": [],
+        "tags": [],
+        "photos": [],
+    }
+
+
+def _v1_variable(name: str) -> dict[str, Any]:
+    return {
+        "id": f"v1-var-{name}",
+        "name": name,
+        "source_name": None,
+        "variable_type": "string",
+        "description": None,
+        "allowed_values": [],
+        "bindings": [],
+        "event_value_overrides": {},
+    }
+
+
+def _v2_variable(name: str) -> dict[str, Any]:
+    return {
+        "id": f"v2-var-{name}",
+        "name": name,
+        "source_name": None,
+        "variable_type": "string",
+        "description": None,
+        "allowed_values": [],
+        "bindings": [],
+        "excluded_from_scans": False,
+        "event_value_overrides": [],
+    }
+
+
+def _payload(
+    version: int, events: list[dict[str, Any]], variables: list[dict[str, Any]]
+) -> dict[str, Any]:
+    return {
+        "snapshot_version": version,
+        "event_types": [],
+        "events": events,
+        "variables": variables,
+        "meta_fields": [],
+        "relations": [],
+    }
+
+
+def test_diff_tolerates_v1_base_payload_missing_v2_keys() -> None:
+    """A v1 base compared against a v2 snapshot must not flood "changed"."""
+    v1_base = _payload(
+        1,
+        events=[_v1_event("Home View"), _v1_event("Checkout", description="pay")],
+        variables=[_v1_variable("user_id")],
+    )
+    v2_snapshot = _payload(
+        2,
+        events=[
+            _v2_event("Home View"),
+            _v2_event("Checkout", description="pay"),
+            _v2_event("Brand New"),
+        ],
+        variables=[_v2_variable("user_id")],
+    )
+
+    entries = compute_plan_diff_entries(v1_base, v2_snapshot)
+
+    assert [(e.kind, e.entity_type, e.name) for e in entries] == [("added", "event", "Brand New")]
+
+
+def test_diff_from_v1_base_still_reports_genuine_changes() -> None:
+    v1_base = _payload(1, events=[_v1_event("Home View", description="old")], variables=[])
+    v2_snapshot = _payload(2, events=[_v2_event("Home View", description="new")], variables=[])
+
+    entries = compute_plan_diff_entries(v1_base, v2_snapshot)
+
+    assert len(entries) == 1
+    entry = entries[0]
+    assert (entry.kind, entry.entity_type, entry.name) == ("changed", "event", "Home View")
+    assert [fc.field for fc in entry.field_changes] == ["description"]
+    assert any("description" in change for change in entry.changes)
 
 
 @pytest.mark.asyncio
