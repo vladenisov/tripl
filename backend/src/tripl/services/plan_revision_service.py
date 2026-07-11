@@ -527,11 +527,6 @@ def _field_changes_between(
     ]
 
 
-def _changes_between(old: dict[str, Any], new: dict[str, Any], keys: Iterable[str]) -> list[str]:
-    return [
-        _format_change(fc.field, fc.before, fc.after)
-        for fc in _field_changes_between(old, new, keys)
-    ]
 
 
 def _public_state(item: dict[str, Any]) -> dict[str, Any]:
