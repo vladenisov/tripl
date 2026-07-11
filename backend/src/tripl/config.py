@@ -131,6 +131,14 @@ class Settings(BaseSettings):
     scan_row_limit_default: int = 50_000
     metrics_row_limit_default: int = 100_000
 
+    # Master rollback switch for the generated-demo feature. When false, the
+    # self-service demo creation path (``POST /projects/demo`` and the
+    # legacy/outdated upgrade path, which re-provisions) is refused with 403 —
+    # a one-flag kill switch if demo provisioning ever misbehaves in production.
+    # It gates ONLY demo provisioning: REAL project create/scan/delete and every
+    # non-demo surface are entirely unaffected in any state of this flag.
+    demo_enabled: bool = True
+
     # Demo runtime tick (``advance_demos`` beat task). When true, active demos are
     # kept fresh by appending new synthetic buckets/jobs/signals on a schedule.
     # When false the beat task is a no-op — REAL scan/metric scheduling

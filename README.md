@@ -47,8 +47,13 @@ stakeholder instead of from a tool.
 You don't need a data warehouse to explore tripl. On the projects screen click
 **Generate demo project** and tripl builds a complete, realistic project for
 you — event types, events, fields, collected metrics, a few anomalies, and some
-schema drift — all synthetic. Click around and you'll understand the product in
-a couple of minutes.
+schema drift. The data lives in a **local synthetic warehouse** (nothing leaves
+the server, nothing is sent anywhere), but the product is not faked around it:
+real scans, metric collection, anomaly detection, and reconciliation run over
+that source, and a background clock keeps it fresh. Reset, upgrade, or delete it
+any time; it never touches your real projects. See
+[The demo workspace](website/docs/use/demo-workspace.md) for exactly what is
+synthetic, what is really executed, and what is intentionally unavailable.
 
 ---
 

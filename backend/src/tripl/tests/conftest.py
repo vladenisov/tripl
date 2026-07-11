@@ -1,5 +1,8 @@
-from collections.abc import AsyncGenerator
+import smtplib
+import socket
+from collections.abc import AsyncGenerator, Iterator
 
+import httpx
 import pytest
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
@@ -56,6 +59,32 @@ async def override_get_session() -> AsyncGenerator[AsyncSession]:
 
 
 app.dependency_overrides[get_session] = override_get_session
+
+
+class NetworkAccessError(RuntimeError):
+    """Raised by the ``deny_network`` tripwire on any outbound attempt."""
+
+
+@pytest.fixture
+def deny_network(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
+    """Trip on ANY outbound network attempt (socket/httpx/smtplib).
+
+    The in-memory SQLite DB and the in-process ASGI transport never open a real
+    socket, so this only fires on genuine egress — making it the capstone guard
+    for asserting the demo stack (provisioning, runtime tick, alert dispatch,
+    metric collection over the synthetic source) is fully local. Opt-in and not
+    autouse, so it never affects tests that don't request it.
+    """
+
+    def _blocked(*_args: object, **_kwargs: object) -> object:
+        raise NetworkAccessError("outbound network attempted from a demo path")
+
+    monkeypatch.setattr(socket, "socket", _blocked)
+    monkeypatch.setattr(smtplib, "SMTP", _blocked)
+    monkeypatch.setattr(smtplib, "SMTP_SSL", _blocked)
+    monkeypatch.setattr(httpx.Client, "send", _blocked)
+    monkeypatch.setattr(httpx.AsyncClient, "send", _blocked)
+    yield
 
 
 @pytest.fixture

@@ -111,5 +111,14 @@ class ProjectResponse(BaseModel):
     demo_recipe_version: str | None = None
     demo_seeded_at: datetime | None = None
     created_by_user_id: uuid.UUID | None = None
+    # Legacy-demo classification (tripl-2su6.10). ``demo_legacy`` marks a project
+    # created by the PRE-epic demo path — is_demo=False but wired to a legacy
+    # "Demo warehouse" clickhouse source at host demo.internal — so the UI can
+    # show it as a static/upgradable demo. ``demo_outdated`` marks a first-class
+    # demo (is_demo=True) seeded by an older recipe than the current one. Both
+    # default False (a real project and a current demo are neither); the UI offers
+    # an in-place upgrade when either is true.
+    demo_legacy: bool = False
+    demo_outdated: bool = False
 
     model_config = {"from_attributes": True}

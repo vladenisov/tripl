@@ -12089,6 +12089,16 @@
             ],
             "title": "Created By User Id"
           },
+          "demo_legacy": {
+            "default": false,
+            "title": "Demo Legacy",
+            "type": "boolean"
+          },
+          "demo_outdated": {
+            "default": false,
+            "title": "Demo Outdated",
+            "type": "boolean"
+          },
           "demo_recipe_version": {
             "anyOf": [
               {
@@ -17439,6 +17449,59 @@
           }
         },
         "summary": "Reset Demo Project",
+        "tags": [
+          "projects"
+        ]
+      }
+    },
+    "/api/v1/projects/demo/{slug}/upgrade": {
+      "post": {
+        "description": "Re-provision a legacy/outdated demo under the current recipe, in place.\n\nRefuses to silently discard a user-edited demo unless ``force=true``. Gated by\nthe demo rollback switch (this path provisions). Creator or owner only.",
+        "operationId": "upgrade_demo_project_api_v1_projects_demo__slug__upgrade_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "slug",
+            "required": true,
+            "schema": {
+              "title": "Slug",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "force",
+            "required": false,
+            "schema": {
+              "default": false,
+              "title": "Force",
+              "type": "boolean"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProjectResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Upgrade Demo Project",
         "tags": [
           "projects"
         ]

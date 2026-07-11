@@ -1,6 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException
 
 from tripl.api.deps import EditorUserDep, OwnerUserDep, SessionDep, get_editor_user, get_owner_user
+from tripl.config import settings
 from tripl.models.domain_enums import UserRole
 from tripl.models.project import Project
 from tripl.models.user import User
@@ -12,7 +13,13 @@ from tripl.schemas.project import (
     ProjectResponse,
     ProjectUpdate,
 )
-from tripl.services import audit_service, demo_service, detection_reset_service, project_service
+from tripl.services import (
+    audit_service,
+    demo_legacy_service,
+    demo_service,
+    detection_reset_service,
+    project_service,
+)
 
 router = APIRouter(prefix="/projects", tags=["projects"])
 
@@ -33,6 +40,16 @@ def _require_demo_manager(user: User, project: Project) -> None:
         status_code=403,
         detail="Only the demo creator or an owner can manage this demo",
     )
+
+
+def _require_demo_enabled() -> None:
+    """Enforce the master rollback switch on demo PROVISIONING paths only.
+
+    Real project create/scan/delete never call this, so toggling the flag leaves
+    every non-demo surface untouched.
+    """
+    if not settings.demo_enabled:
+        raise HTTPException(status_code=403, detail="Demo creation is disabled")
 
 
 @router.get("", response_model=list[ProjectResponse])
@@ -58,7 +75,25 @@ async def create_project(session: SessionDep, data: ProjectCreate) -> ProjectRes
 async def create_demo_project(
     session: SessionDep, current_user: EditorUserDep
 ) -> ProjectResponse:
+    _require_demo_enabled()
     return await demo_service.create_demo_project(session, created_by=current_user.id)
+
+
+@router.post("/demo/{slug}/upgrade", response_model=ProjectResponse)
+async def upgrade_demo_project(
+    session: SessionDep, current_user: EditorUserDep, slug: str, force: bool = False
+) -> ProjectResponse:
+    """Re-provision a legacy/outdated demo under the current recipe, in place.
+
+    Refuses to silently discard a user-edited demo unless ``force=true``. Gated by
+    the demo rollback switch (this path provisions). Creator or owner only.
+    """
+    _require_demo_enabled()
+    project = await project_service.get_project_by_slug(session, slug)
+    _require_demo_manager(current_user, project)
+    return await demo_legacy_service.upgrade_demo(
+        session, slug, created_by=current_user.id, force=force
+    )
 
 
 @router.post("/demo/{slug}/reset", response_model=ProjectResponse)
