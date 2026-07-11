@@ -12,6 +12,7 @@ is re-exported here so existing callers keep importing it from ``demo_service``.
 
 from __future__ import annotations
 
+import logging
 import uuid
 from datetime import UTC, datetime
 
@@ -35,6 +36,12 @@ __all__ = [
     "create_demo_project",
     "reset_demo_project",
 ]
+
+logger = logging.getLogger(__name__)
+
+# Stable log event name so demo provisioning failures are greppable/alertable in
+# aggregated logs regardless of the underlying exception type.
+DEMO_PROVISION_FAILED_EVENT = "demo.provision.failed"
 
 
 async def create_demo_project(
@@ -90,6 +97,14 @@ async def create_demo_project(
             created_by=created_by,
         )
     except Exception as exc:
+        # Observable failure: a stable event name + the exception type (never
+        # internals) so a spike in failed demo provisioning is alertable.
+        logger.warning(
+            "%s slug=%s error=%s",
+            DEMO_PROVISION_FAILED_EVENT,
+            slug,
+            type(exc).__name__,
+        )
         await session.rollback()
         failed = await session.get(Project, project_id)
         if failed is not None:

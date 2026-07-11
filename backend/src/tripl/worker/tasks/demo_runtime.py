@@ -92,6 +92,10 @@ from tripl.worker.db import _get_sync_session
 
 logger = logging.getLogger(__name__)
 
+# Stable log event name so a per-demo tick failure is greppable/alertable in
+# aggregated logs even though the sweep swallows it to keep advancing other demos.
+DEMO_TICK_FAILED_EVENT = "demo.runtime.tick_failed"
+
 # A demo whose last explicit access (falling back to seed time) is older than this
 # is PAUSED — the tick skips it so a demo nobody is looking at stops consuming
 # worker time. The next access (``demo_last_accessed_at`` touched on GET / reset)
@@ -166,8 +170,9 @@ def advance_demos(now: datetime | None = None) -> dict[str, object]:
                 _advance_demo(session, project_id, slug, tick_now)
                 advanced += 1
             except Exception:
-                # One demo's failure must not abort the whole sweep.
-                logger.exception("advance_demos: failed to advance demo %s", slug)
+                # One demo's failure must not abort the whole sweep. Stable event
+                # name so the failure is observable in aggregated logs.
+                logger.exception("%s slug=%s", DEMO_TICK_FAILED_EVENT, slug)
                 session.rollback()
 
         logger.info(

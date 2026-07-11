@@ -62,13 +62,19 @@ project; two unrelated products are two projects.
 
 Generate the demo project and open it. You now have a realistic catalog with
 events, collected metrics, detector-produced anomalies, and schema/distribution
-drift — all synthetic.
+drift — all backed by a **local synthetic warehouse**, and kept fresh over time.
 
 :::note The demo project is not your data
-Every row in the demo is generated locally. Its data source is a placeholder
-that is never actually contacted, nothing is sent anywhere, and the numbers are
-fabricated to show off monitoring. Delete it whenever you like; it never touches
-your real projects.
+The demo's data lives in a **local synthetic warehouse** — a bounded, in-memory
+dataset that never leaves the server and is never a real connection. But the
+product is not faked around it: real scans, metric collection, anomaly detection,
+reconciliation, and a continuous runtime clock all run **over** that synthetic
+source. Alert deliveries are recorded to a **local simulated sink** — nothing is
+ever sent to Slack, Telegram, email, a webhook, Jira, or Linear. Delete or reset
+it whenever you like; it never touches your real projects.
+
+See **[The demo workspace](./demo-workspace.md)** for exactly what is synthetic,
+what is really executed, and what is intentionally unavailable.
 :::
 
 A good order to look around:
