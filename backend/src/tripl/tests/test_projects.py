@@ -894,6 +894,199 @@ async def test_project_list_counts_catalog_metric_signals_per_project(client: As
 
 
 @pytest.mark.asyncio
+async def test_project_summary_plan_counts_unchanged_by_plan_branch(client: AsyncClient) -> None:
+    """Opening a working branch must not move the plan counters (tripl-posm).
+
+    Creating a branch deep-copies every plan entity (event types, events,
+    variables) into the SAME tables under a new ``branch_id``. The summary
+    counters power the sidebar / project cards, which describe the live plan
+    (main), so branch copies must not be counted — production showed "12 event
+    types" where main had 3 (3 real x (main + 3 branches)).
+    """
+    slug = "branch-scoped-summary"
+    project_resp = await client.post(
+        "/api/v1/projects",
+        json={"name": "Branch Scoped Summary", "slug": slug},
+    )
+    assert project_resp.status_code == 201
+
+    event_type_resp = await client.post(
+        f"/api/v1/projects/{slug}/event-types",
+        json={"name": "page_view", "display_name": "Page View"},
+    )
+    assert event_type_resp.status_code == 201
+    event_type_id = event_type_resp.json()["id"]
+
+    for name, status in (
+        ("Landing Viewed", "implemented"),
+        ("Checkout Started", "in_review"),
+        ("Legacy Event", "archived"),
+    ):
+        event_resp = await client.post(
+            f"/api/v1/projects/{slug}/events",
+            json={"event_type_id": event_type_id, "name": name, "status": status},
+        )
+        assert event_resp.status_code == 201
+
+    variable_resp = await client.post(
+        f"/api/v1/projects/{slug}/variables",
+        json={"name": "user_id", "variable_type": "string"},
+    )
+    assert variable_resp.status_code == 201
+
+    plan_count_fields = (
+        "event_type_count",
+        "event_count",
+        "active_event_count",
+        "implemented_event_count",
+        "review_pending_event_count",
+        "archived_event_count",
+        "variable_count",
+    )
+
+    before = await client.get(f"/api/v1/projects/{slug}")
+    assert before.status_code == 200
+    baseline = {field: before.json()["summary"][field] for field in plan_count_fields}
+    assert baseline["event_type_count"] == 1
+    assert baseline["event_count"] == 3
+    assert baseline["variable_count"] == 1
+
+    branch_resp = await client.post(
+        f"/api/v1/projects/{slug}/branches", json={"name": "feature-x"}
+    )
+    assert branch_resp.status_code == 201
+
+    after = await client.get(f"/api/v1/projects/{slug}")
+    assert after.status_code == 200
+    assert {field: after.json()["summary"][field] for field in plan_count_fields} == baseline
+
+
+@pytest.mark.asyncio
+async def test_monitoring_signal_count_excludes_event_scope_anomalies(
+    client: AsyncClient,
+) -> None:
+    """Per-event anomalies must not inflate the badge (tripl-posm).
+
+    The AnomaliesPage fetches active signals WITHOUT event_ids, so it lists only
+    project-total and event-type scoped signals; per-event anomalies are
+    drill-down detail the page never shows. A project with thousands of events
+    (one latest anomaly each) showed "777" on the sidebar badge while the page
+    listed 3, so ``monitoring_signal_count`` must count page-visible scopes only.
+    """
+    slug = "event-scope-signal-proj"
+    project_resp = await client.post(
+        "/api/v1/projects",
+        json={"name": "Event Scope Signal", "slug": slug},
+    )
+    assert project_resp.status_code == 201
+
+    event_type_resp = await client.post(
+        f"/api/v1/projects/{slug}/event-types",
+        json={"name": "page_view", "display_name": "Page View"},
+    )
+    assert event_type_resp.status_code == 201
+    event_type_id = event_type_resp.json()["id"]
+
+    event_resp = await client.post(
+        f"/api/v1/projects/{slug}/events",
+        json={"event_type_id": event_type_id, "name": "Landing Viewed"},
+    )
+    assert event_resp.status_code == 201
+    event_id = event_resp.json()["id"]
+
+    data_source_resp = await client.post(
+        "/api/v1/data-sources",
+        json={
+            "name": "Warehouse",
+            "db_type": "clickhouse",
+            "host": "localhost",
+            "port": 8123,
+            "database_name": "analytics",
+            "username": "default",
+            "password": "",
+        },
+    )
+    assert data_source_resp.status_code == 201
+    data_source_id = data_source_resp.json()["id"]
+
+    scan_resp = await client.post(
+        f"/api/v1/projects/{slug}/scans",
+        json={
+            "data_source_id": data_source_id,
+            "name": "Production scan",
+            "base_query": "SELECT 1",
+        },
+    )
+    assert scan_resp.status_code == 201
+    scan_config_id = scan_resp.json()["id"]
+
+    async with TestSessionLocal() as session:
+        # Fresh metric buckets for BOTH scopes so classify_signal_state would keep
+        # each scope's latest anomaly open — without the event-scope bucket the
+        # event anomaly is dropped as stale and the regression would not reproduce.
+        session.add(
+            EventMetric(
+                id=uuid.uuid4(),
+                scan_config_id=uuid.UUID(scan_config_id),
+                event_id=None,
+                event_type_id=uuid.UUID(event_type_id),
+                bucket=_METRIC_BUCKET,
+                count=42,
+            )
+        )
+        # Per-event metric rows are keyed (scan_config, event, bucket) with a NULL
+        # event_type_id — uq_event_metric_config_type_bucket forbids a second row
+        # per (scan_config, event_type, bucket), so per-event rows cannot carry one.
+        session.add(
+            EventMetric(
+                id=uuid.uuid4(),
+                scan_config_id=uuid.UUID(scan_config_id),
+                event_id=uuid.UUID(event_id),
+                event_type_id=None,
+                bucket=_METRIC_BUCKET,
+                count=42,
+            )
+        )
+        # Page-visible scope: counted. scope_ref uses the bare-hex form the
+        # SQLite cast produces (see the fixture note in _seed_project_operations).
+        session.add(
+            _anomaly(
+                scan_config_id,
+                "event_type",
+                uuid.UUID(event_type_id).hex,
+                _METRIC_BUCKET,
+                event_type_id=event_type_id,
+            )
+        )
+        # Event scope: the AnomaliesPage never lists it, so it must NOT count.
+        session.add(
+            MetricAnomaly(
+                id=uuid.uuid4(),
+                scan_config_id=uuid.UUID(scan_config_id),
+                scope_type="event",
+                scope_ref=uuid.UUID(event_id).hex,
+                event_id=uuid.UUID(event_id),
+                event_type_id=uuid.UUID(event_type_id),
+                bucket=_METRIC_BUCKET,
+                actual_count=42,
+                expected_count=21,
+                stddev=3,
+                z_score=7,
+                direction="spike",
+            )
+        )
+        await session.commit()
+
+    resp = await client.get(f"/api/v1/projects/{slug}")
+    assert resp.status_code == 200
+    summary = resp.json()["summary"]
+    # Only the event-type scoped signal counts; pre-fix this was 2.
+    assert summary["monitoring_signal_count"] == 1
+    assert summary["latest_signal"]["scope_type"] == "event_type"
+    assert summary["latest_signal"]["scope_ref"] == uuid.UUID(event_type_id).hex
+
+
+@pytest.mark.asyncio
 async def test_reset_anomalies_clears_period_and_covers_metric_scope(client: AsyncClient) -> None:
     ids = await _setup_reset_project(client, "reset-anom")
     scan_config_id = ids["scan_config_id"]

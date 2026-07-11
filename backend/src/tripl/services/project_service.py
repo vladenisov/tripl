@@ -8,7 +8,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from tripl import cache
 from tripl.core.analyzers.anomaly_detector import (
-    SCOPE_EVENT,
     SCOPE_EVENT_TYPE,
     SCOPE_PROJECT_TOTAL,
 )
@@ -19,6 +18,7 @@ from tripl.models.event import Event
 from tripl.models.event_metric import EventMetric
 from tripl.models.event_type import EventType
 from tripl.models.metric_anomaly import MetricAnomaly
+from tripl.models.plan_branch import BranchKind, PlanBranch
 from tripl.models.project import Project
 from tripl.models.scan_config import ScanConfig
 from tripl.models.scan_job import ScanJob, ScanJobStatus
@@ -53,9 +53,26 @@ async def _get_project_summaries(
     if not project_ids:
         return summaries
 
+    # Plan-entity counters (event types, events, variables) must describe the
+    # LIVE plan only — the same rows the list endpoints return after
+    # ``resolve_branch_id(None)`` resolves to the main branch. These models are
+    # branch-scoped: working branches deep-copy every plan entity into the same
+    # tables under a different ``branch_id``, so counting by ``project_id``
+    # alone multiplies every counter by (1 + open branches). Non-plan models
+    # (ScanConfig, ScanJob, AlertDestination, AlertRule, MetricAnomaly,
+    # EventMetric) carry no ``branch_id`` and stay unfiltered. Batched: one
+    # IN-subquery over all projects' main branches, no per-project fan-out.
+    main_branch_ids = select(PlanBranch.id).where(
+        PlanBranch.project_id.in_(project_ids),
+        PlanBranch.kind == BranchKind.main.value,
+    )
+
     event_type_rows = await session.execute(
         select(EventType.project_id, func.count(EventType.id))
-        .where(EventType.project_id.in_(project_ids))
+        .where(
+            EventType.project_id.in_(project_ids),
+            EventType.branch_id.in_(main_branch_ids),
+        )
         .group_by(EventType.project_id)
     )
     for project_id, event_type_count in event_type_rows.all():
@@ -75,7 +92,10 @@ async def _get_project_summaries(
             func.sum(case((Event.status == "in_review", 1), else_=0)),
             func.sum(case((Event.status == "archived", 1), else_=0)),
         )
-        .where(Event.project_id.in_(project_ids))
+        .where(
+            Event.project_id.in_(project_ids),
+            Event.branch_id.in_(main_branch_ids),
+        )
         .group_by(Event.project_id)
     )
     for (
@@ -95,7 +115,10 @@ async def _get_project_summaries(
 
     variable_rows = await session.execute(
         select(Variable.project_id, func.count(Variable.id))
-        .where(Variable.project_id.in_(project_ids))
+        .where(
+            Variable.project_id.in_(project_ids),
+            Variable.branch_id.in_(main_branch_ids),
+        )
         .group_by(Variable.project_id)
     )
     for project_id, variable_count in variable_rows.all():
@@ -353,7 +376,16 @@ async def _populate_monitoring_signals(
             func.max(MetricAnomaly.bucket).label("bucket"),
         )
         .join(ScanConfig, ScanConfig.id == MetricAnomaly.scan_config_id)
-        .where(ScanConfig.project_id.in_(project_ids))
+        .where(
+            ScanConfig.project_id.in_(project_ids),
+            # The AnomaliesPage fetches get_active_signals WITHOUT event_ids, so
+            # it lists only project-total and event-type scoped signals; per-event
+            # anomalies are drill-down detail it never shows. Count the same
+            # scopes here so ``monitoring_signal_count`` (sidebar / project-card
+            # badge) equals what the page lists — with thousands of events the
+            # per-event scope alone floods the badge (tripl-posm).
+            MetricAnomaly.scope_type.in_([SCOPE_PROJECT_TOTAL, SCOPE_EVENT_TYPE]),
+        )
         .group_by(
             ScanConfig.project_id,
             MetricAnomaly.scan_config_id,
@@ -416,25 +448,12 @@ async def _populate_monitoring_signals(
         )
         .group_by(ScanConfig.project_id, EventMetric.scan_config_id, EventMetric.event_type_id)
     )
-    event_metrics = (
-        select(
-            ScanConfig.project_id.label("project_id"),
-            EventMetric.scan_config_id.label("scan_config_id"),
-            literal(SCOPE_EVENT).label("scope_type"),
-            cast(EventMetric.event_id, String).label("scope_ref"),
-            func.max(EventMetric.bucket).label("latest_metric_bucket"),
-        )
-        .join(ScanConfig, ScanConfig.id == EventMetric.scan_config_id)
-        .where(
-            ScanConfig.project_id.in_(project_ids),
-            EventMetric.event_id.is_not(None),
-        )
-        .group_by(ScanConfig.project_id, EventMetric.scan_config_id, EventMetric.event_id)
-    )
+    # No per-event branch in this union: event-scope anomalies are filtered out
+    # of ``latest_anomaly_keys`` above, so an event-scope bucket could never be
+    # looked up when classifying — it would be dead weight in every summary query.
     latest_metric_union = union_all(
         project_total_metrics,
         event_type_metrics,
-        event_metrics,
     ).subquery()
     latest_metric_rows = await session.execute(
         select(
