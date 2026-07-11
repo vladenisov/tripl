@@ -6,6 +6,7 @@ from datetime import UTC, datetime
 from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 
+from tripl import realtime
 from tripl.alert_templates import (
     ALERT_MESSAGE_FORMAT_PLAIN,
     ALERT_MESSAGE_FORMAT_TELEGRAM_MARKDOWNV2,
@@ -550,6 +551,12 @@ def send_alert_delivery(self: object, delivery_id: str) -> dict[str, object]:
                 state.last_notified_at = delivery.sent_at
                 state.last_notified_delivery_id = delivery.id
         session.commit()
+        if project is not None:
+            realtime.publish_project_event(
+                project.slug,
+                realtime.EVENT_ACTIVITY_CREATED,
+                {"delivery_id": delivery_id, "status": AlertDeliveryStatus.sent.value},
+            )
         return {"status": "sent", "delivery_id": delivery_id}
     except Exception as exc:
         logger.exception("Failed to send alert delivery %s", delivery_id)
@@ -570,6 +577,13 @@ def send_alert_delivery(self: object, delivery_id: str) -> dict[str, object]:
             delivery.status = AlertDeliveryStatus.failed.value
             delivery.error_message = str(exc)
             session.commit()
+            failed_project = session.get(Project, delivery.project_id)
+            if failed_project is not None:
+                realtime.publish_project_event(
+                    failed_project.slug,
+                    realtime.EVENT_ACTIVITY_CREATED,
+                    {"delivery_id": delivery_id, "status": AlertDeliveryStatus.failed.value},
+                )
         alert_deliveries_total.labels(status=AlertDeliveryStatus.failed.value).inc()
         return {"status": "failed", "delivery_id": delivery_id, "error": str(exc)}
     finally:

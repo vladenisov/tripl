@@ -9,6 +9,7 @@ import { CommandPaletteProvider } from '@/components/command-palette'
 import { ErrorState } from '@/components/error-state'
 import { TopBar } from '@/components/top-bar'
 import { TweaksPanelProvider } from '@/components/tweaks-panel'
+import { ProjectEventStreamProvider } from '@/realtime/ProjectEventStreamProvider'
 import { resolveNavLocation } from '@/lib/navigation'
 
 const ACTIVITY_STORAGE_KEY = 'tripl-activity-open'
@@ -168,6 +169,7 @@ export default function Layout() {
 
   return (
     <BranchProvider slug={slug ?? null}>
+    <ProjectEventStreamProvider slug={slug}>
     <TweaksPanelProvider>
       <CommandPaletteProvider>
         <div
@@ -250,6 +252,7 @@ export default function Layout() {
         </div>
       </CommandPaletteProvider>
     </TweaksPanelProvider>
+    </ProjectEventStreamProvider>
     </BranchProvider>
   )
 }

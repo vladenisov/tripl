@@ -14,7 +14,8 @@ import { runPillStatus } from "./scans/scanRunStatus"
 import { ScanCreatePage } from "./scans/ScanConfigForm"
 import { StatCard, SurfPanel } from "./scans/scanLayout"
 import { INTERVAL_LABEL, formatCount } from "./scans/scanLayoutConstants"
-import { deriveScanRunInfo, jobDurationSeconds, jobRowsScanned, type ScanRunInfo } from "./scans/scanUtils"
+import { deriveScanRunInfo, jobDurationSeconds, jobRowsScanned, scanJobsHaveActiveWork, type ScanRunInfo } from "./scans/scanUtils"
+import { useAdaptiveRefetchIntervalFn } from "@/realtime/streamContext"
 import { friendlyScanError } from "@/lib/scanError"
 import { formatRelativeTime } from "@/lib/datetime"
 
@@ -72,11 +73,15 @@ export function ScansTab({ slug }: { slug: string }) {
 
   // Per-scan jobs power the "Last run" status and the "Recent runs" feed. The
   // backend exposes jobs per scan, so we fan out one query per config.
+  const jobsRefetchInterval = useAdaptiveRefetchIntervalFn<ScanJob[]>({
+    activeMs: 10000,
+    isActive: scanJobsHaveActiveWork,
+  })
   const jobQueries = useQueries({
     queries: scanConfigs.map((sc: ScanConfig) => ({
       queryKey: ['scanJobs', slug, sc.id],
       queryFn: () => scansApi.listJobs(slug, sc.id),
-      refetchInterval: 10000,
+      refetchInterval: jobsRefetchInterval,
     })),
   })
 

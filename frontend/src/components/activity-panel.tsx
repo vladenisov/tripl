@@ -12,6 +12,7 @@ import { Link } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 import { activityApi } from '@/api/activity'
 import { Dot } from '@/components/primitives/dot'
+import { useAdaptiveRefetchInterval } from '@/realtime/streamContext'
 import type { ActivityItem, ActivityItemSeverity, ActivityItemType } from '@/types'
 
 const ACTIVITY_LIMIT = 20
@@ -35,12 +36,15 @@ function severityColor(sev: ActivityItemSeverity): string {
 }
 
 export function ActivityPanel({ open, slug }: { open: boolean; slug?: string }) {
+  // Adaptive fallback: the live stream refreshes the feed via the invalidation
+  // map, so poll only while the stream is unavailable (and never on a hidden tab).
+  const refetchInterval = useAdaptiveRefetchInterval({ activeMs: 60_000 })
   const activityQuery = useQuery({
     queryKey: ['activity', slug ?? 'workspace'],
     queryFn: () => activityApi.list({ slug, limit: ACTIVITY_LIMIT }),
     enabled: open,
     staleTime: 30_000,
-    refetchInterval: 60_000,
+    refetchInterval,
   })
 
   if (!open) return null

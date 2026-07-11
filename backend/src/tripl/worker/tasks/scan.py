@@ -9,7 +9,7 @@ from datetime import UTC, datetime
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from tripl import cache
+from tripl import cache, realtime
 from tripl.core.adapters.base import BaseAdapter, ColumnInfo
 from tripl.core.analyzers.cardinality import analyze_cardinality, analyze_cardinality_grouped
 from tripl.core.analyzers.event_generator import (
@@ -22,6 +22,7 @@ from tripl.json_paths import group_json_value_paths
 from tripl.models.data_source import DataSource, TestStatus
 from tripl.models.event import Event
 from tripl.models.event_type import EventType
+from tripl.models.project import Project
 from tripl.models.scan_config import ScanConfig
 from tripl.models.scan_job import ScanJob, ScanJobStatus
 from tripl.models.scan_preview_job import ScanPreviewJob
@@ -41,6 +42,28 @@ logger = logging.getLogger(__name__)
 _user_facing_error = user_facing_error
 
 __all__ = ["ScanError", "user_facing_error"]
+
+
+def _publish_scan_job_event(
+    session: Session, scan_config_id: str, job_id: str, status: str
+) -> None:
+    """Emit ``scan_job.updated`` on the project channel AFTER the status commit.
+
+    Best-effort + no-op when Redis is off; a realtime failure must never fail the
+    scan. The ScanConfig is already in the session identity map, so slug lookup is
+    a cheap cached read.
+    """
+    config = session.get(ScanConfig, uuid.UUID(scan_config_id))
+    if config is None:
+        return
+    project = session.get(Project, config.project_id)
+    if project is None:
+        return
+    realtime.publish_project_event(
+        project.slug,
+        realtime.EVENT_SCAN_JOB_UPDATED,
+        {"scan_config_id": scan_config_id, "job_id": job_id, "status": status},
+    )
 
 
 def _serialize_generation_result(result: GenerationResult) -> dict[str, object]:
@@ -134,6 +157,7 @@ def run_scan(self: object, scan_config_id: str, job_id: str) -> dict[str, object
         job.status = ScanJobStatus.running.value
         job.started_at = datetime.now(UTC)
         session.commit()
+        _publish_scan_job_event(session, scan_config_id, job_id, ScanJobStatus.running.value)
 
         # Build adapter and connect
         adapter = _build_adapter(ds)
@@ -255,6 +279,7 @@ def run_scan(self: object, scan_config_id: str, job_id: str) -> dict[str, object
             f"{result.events_skipped} skipped, {result.variables_created} variables created"
         )
         scan_runs_total.labels(status="completed").inc()
+        _publish_scan_job_event(session, scan_config_id, job_id, ScanJobStatus.completed.value)
         return job.result_summary
 
     except Exception as e:
@@ -267,6 +292,9 @@ def run_scan(self: object, scan_config_id: str, job_id: str) -> dict[str, object
                 job.completed_at = datetime.now(UTC)
                 job.error_message = user_facing_error(e)
                 session.commit()
+                _publish_scan_job_event(
+                    session, scan_config_id, job_id, ScanJobStatus.failed.value
+                )
         except Exception:
             logger.exception("Failed to update job status after error")
         scan_runs_total.labels(status="failed").inc()
@@ -422,6 +450,7 @@ def apply_event_groups(self: object, scan_config_id: str, job_id: str) -> dict[s
             ],
         }
         session.commit()
+        _publish_scan_job_event(session, scan_config_id, job_id, ScanJobStatus.completed.value)
         return job.result_summary
     except Exception as e:
         logger.exception(f"Apply event groups failed: {e}")
@@ -433,6 +462,9 @@ def apply_event_groups(self: object, scan_config_id: str, job_id: str) -> dict[s
                 job.completed_at = datetime.now(UTC)
                 job.error_message = user_facing_error(e)
                 session.commit()
+                _publish_scan_job_event(
+                    session, scan_config_id, job_id, ScanJobStatus.failed.value
+                )
         except Exception:
             logger.exception("Failed to update event group apply job status after error")
         raise

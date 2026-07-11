@@ -25,7 +25,7 @@ from sqlalchemy import func as sa_func
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from tripl import cache
+from tripl import cache, realtime
 from tripl.core.analyzers.cardinality import (
     _is_json_type,
     analyze_cardinality,
@@ -36,6 +36,7 @@ from tripl.core.intervals import get_interval
 from tripl.models.data_source import DataSource
 from tripl.models.event_metric import EventMetric
 from tripl.models.event_type import EventType
+from tripl.models.project import Project
 from tripl.models.scan_config import ScanConfig
 from tripl.models.scan_job import ScanJob, ScanJobStatus
 from tripl.services import app_settings_service
@@ -816,6 +817,28 @@ def collect_metrics(
         # 30–60s of staleness on a manual scan trigger).
         cache.sync_delete_prefix(cache.prefix_signals())
         cache.sync_delete_prefix(cache.prefix_projects())
+        # Push a live-update signal so subscribed clients refresh metrics/overview
+        # without waiting on the polling fallback. After-commit + best-effort
+        # (no-op when Redis is off).
+        project = session.get(Project, config.project_id)
+        if project is not None:
+            realtime.publish_project_event(
+                project.slug,
+                realtime.EVENT_METRIC_COLLECTION_UPDATED,
+                {
+                    "scan_config_id": scan_config_id,
+                    "job_id": str(job.id) if job else None,
+                    "status": ScanJobStatus.completed.value,
+                },
+            )
+            if signals_added or signals_removed or anomalies_detected or (
+                breakdown_anomalies_detected
+            ):
+                realtime.publish_project_event(
+                    project.slug,
+                    realtime.EVENT_SIGNALS_UPDATED,
+                    {"scan_config_id": scan_config_id},
+                )
         for delivery_id in delivery_ids:
             send_alert_delivery.delay(str(delivery_id))
 
@@ -832,6 +855,17 @@ def collect_metrics(
                 job.completed_at = datetime.now(UTC)
                 job.error_message = user_facing_error(exc)
                 session.commit()
+                project = session.get(Project, config.project_id)
+                if project is not None:
+                    realtime.publish_project_event(
+                        project.slug,
+                        realtime.EVENT_METRIC_COLLECTION_UPDATED,
+                        {
+                            "scan_config_id": scan_config_id,
+                            "job_id": str(job.id),
+                            "status": ScanJobStatus.failed.value,
+                        },
+                    )
             except Exception:
                 session.rollback()
         else:

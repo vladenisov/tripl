@@ -6,7 +6,9 @@ import { dataSourcesApi } from '@/api/dataSources'
 import { eventTypesApi } from '@/api/eventTypes'
 import { scansApi } from '@/api/scans'
 import { useActiveBranchId } from '@/hooks/useBranch'
-import type { DataSource, ScanConfig } from '@/types'
+import { useAdaptiveRefetchIntervalFn } from '@/realtime/streamContext'
+import { scanJobsHaveActiveWork } from './scans/scanUtils'
+import type { DataSource, ScanConfig, ScanJob } from '@/types'
 import { Button } from '@/components/ui/button'
 import { Dot } from '@/components/primitives/dot'
 import { getErrorMessage } from '@/lib/utils'
@@ -40,10 +42,14 @@ export function ScanConfigDetail({ slug, scanConfigId }: { slug: string; scanCon
 
   const sc = scanConfigs.find(s => s.id === scanConfigId)
 
+  const jobsRefetchInterval = useAdaptiveRefetchIntervalFn<ScanJob[]>({
+    activeMs: 5000,
+    isActive: scanJobsHaveActiveWork,
+  })
   const { data: jobs = [] } = useQuery({
     queryKey: ['scanJobs', slug, scanConfigId],
     queryFn: () => scansApi.listJobs(slug, scanConfigId),
-    refetchInterval: 5000,
+    refetchInterval: jobsRefetchInterval,
     enabled: !!sc,
   })
 

@@ -4,6 +4,7 @@ import { useQuery } from '@tanstack/react-query'
 import { AlertTriangle, ChevronDown } from 'lucide-react'
 
 import { metricsApi } from '@/api/metrics'
+import { useAdaptiveRefetchInterval } from '@/realtime/streamContext'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
 import { MetricsChart } from '@/components/ui/chart-lazy'
@@ -69,6 +70,7 @@ export function TabMetricsCard({
     const from = new Date(to.getTime() - rangeDays * 24 * 60 * 60 * 1000)
     return { from: from.toISOString(), to: to.toISOString() }
   }, [rangeDays])
+  const refetchInterval = useAdaptiveRefetchInterval({ activeMs: 60_000 })
 
   const { data: tabMetrics, isLoading } = useQuery({
     queryKey: [
@@ -91,7 +93,7 @@ export function TabMetricsCard({
         to: range.to,
       }),
     enabled: !!slug,
-    refetchInterval: 60000,
+    refetchInterval,
     placeholderData: (prev) => prev,
   })
 

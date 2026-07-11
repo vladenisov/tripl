@@ -10,6 +10,7 @@ import { Dot } from '@/components/primitives/dot'
 import { MiniStat, MiniStatDivider } from '@/components/primitives/mini-stat'
 import { formatRelativeTime } from '@/lib/datetime'
 import { getMonitoringPath } from '@/lib/monitoring'
+import { useAdaptiveRefetchInterval } from '@/realtime/streamContext'
 import type { MonitoringSignal } from '@/types'
 
 const ANOMALY_GRID = 'grid grid-cols-[1.7fr_1fr_72px_96px] items-center gap-3 px-4'
@@ -45,13 +46,16 @@ function signalScopeLabel(signal: MonitoringSignal, metricNames: MetricNameMap):
 
 export default function AnomaliesPage() {
   const { slug } = useParams<{ slug: string }>()
+  // Stream-aware fallback: signals.updated invalidates this key; poll only when
+  // the stream is down.
+  const refetchInterval = useAdaptiveRefetchInterval({ activeMs: 60_000 })
 
   const signalsQuery = useQuery({
     queryKey: ['anomalies', 'signals', slug],
     queryFn: () => metricsApi.getActiveSignals(slug!),
     enabled: !!slug,
     staleTime: 30_000,
-    refetchInterval: 60_000,
+    refetchInterval,
   })
 
   // Metric-scope signals only carry the definition id; the catalog list

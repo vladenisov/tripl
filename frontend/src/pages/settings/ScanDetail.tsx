@@ -18,7 +18,8 @@ import {
 } from './scans/scanLayout'
 import { RunStatusPill } from './scans/ScanConfigRow'
 import { runPillStatus } from './scans/scanRunStatus'
-import { consecutiveFailedRuns, jobDurationSeconds, jobRowsScanned } from './scans/scanUtils'
+import { consecutiveFailedRuns, jobDurationSeconds, jobRowsScanned, scanJobsHaveActiveWork } from './scans/scanUtils'
+import { useAdaptiveRefetchIntervalFn } from '@/realtime/streamContext'
 
 function clamp(value: number, min: number, max: number) {
   return Math.min(Math.max(value, min), max)
@@ -191,10 +192,14 @@ export function ScanDetail({
 
   const etName = eventTypes.find((et: EventType) => et.id === scanConfig.event_type_id)?.display_name
 
+  const jobsRefetchInterval = useAdaptiveRefetchIntervalFn<ScanJob[]>({
+    activeMs: 5000,
+    isActive: scanJobsHaveActiveWork,
+  })
   const { data: jobs = [], isLoading } = useQuery({
     queryKey: ['scanJobs', slug, scanConfig.id],
     queryFn: () => scansApi.listJobs(slug, scanConfig.id),
-    refetchInterval: 5000,
+    refetchInterval: jobsRefetchInterval,
   })
 
   const applyGroupsMut = useMutation({

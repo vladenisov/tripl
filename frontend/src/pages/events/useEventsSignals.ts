@@ -2,6 +2,7 @@ import { useMemo } from 'react'
 import { useQuery } from '@tanstack/react-query'
 
 import { metricsApi } from '@/api/metrics'
+import { useAdaptiveRefetchInterval } from '@/realtime/streamContext'
 import type { EventListItem } from '@/types'
 
 import { EMPTY_SIGNALS, mapLatestSignals, pickLatestSignal } from './utils'
@@ -29,12 +30,13 @@ export function useEventsSignals({
     () => [...eventIdsForSignals].sort().join(','),
     [eventIdsForSignals],
   )
+  const refetchInterval = useAdaptiveRefetchInterval({ activeMs: 60_000 })
 
   const tabSignalsQuery = useQuery({
     queryKey: ['activeSignals', slug, 'tabs'],
     queryFn: () => metricsApi.getActiveSignals(slug!),
     enabled: !!slug,
-    refetchInterval: 60000,
+    refetchInterval,
   })
   const tabSignals = tabSignalsQuery.data ?? EMPTY_SIGNALS
 
@@ -42,7 +44,7 @@ export function useEventsSignals({
     queryKey: ['activeSignals', slug, 'rows', eventIdsForSignalsKey],
     queryFn: () => metricsApi.getActiveSignals(slug!, eventIdsForSignals),
     enabled: !!slug && eventIdsForSignals.length > 0,
-    refetchInterval: 60000,
+    refetchInterval,
   })
   const rowSignals = rowSignalsQuery.data ?? EMPTY_SIGNALS
 

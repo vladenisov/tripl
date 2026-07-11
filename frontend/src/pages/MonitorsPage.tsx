@@ -14,18 +14,20 @@ import {
   MONITOR_STATUS_LABEL as STATUS_LABEL,
   MONITOR_STATUS_TONE as STATUS_TONE,
 } from '@/lib/statusLexicon'
+import { useAdaptiveRefetchInterval } from '@/realtime/streamContext'
 import type { MonitorSummaryItem } from '@/types'
 
 const MONITOR_GRID = 'grid grid-cols-[1.4fr_1.6fr_1fr_84px_84px] items-center gap-3 px-4'
 
 export default function MonitorsPage() {
   const { slug } = useParams<{ slug: string }>()
+  const refetchInterval = useAdaptiveRefetchInterval({ activeMs: 60_000 })
 
   const monitorsQuery = useQuery({
     queryKey: ['monitors-summary', slug],
     queryFn: () => alertingApi.getMonitorsSummary(slug!),
     enabled: !!slug,
-    refetchInterval: 60_000,
+    refetchInterval,
     staleTime: 30_000,
   })
 

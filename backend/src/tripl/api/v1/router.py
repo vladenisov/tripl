@@ -14,6 +14,7 @@ from tripl.api.v1.event_photos import router as event_photos_router
 from tripl.api.v1.event_type_owners import router as event_type_owners_router
 from tripl.api.v1.event_types import router as event_types_router
 from tripl.api.v1.events import router as events_router
+from tripl.api.v1.events_stream import router as events_stream_router
 from tripl.api.v1.fact_tables import router as fact_tables_router
 from tripl.api.v1.fields import router as fields_router
 from tripl.api.v1.meta_fields import router as meta_fields_router
@@ -49,6 +50,9 @@ router.include_router(event_type_owners_router, dependencies=protected_dependenc
 router.include_router(fields_router, dependencies=protected_dependencies)
 router.include_router(relations_router, dependencies=protected_dependencies)
 router.include_router(meta_fields_router, dependencies=protected_dependencies)
+# Registered BEFORE events_router so `/projects/{slug}/events/stream` is matched
+# by the SSE route and not captured by `/projects/{slug}/events/{event_id}`.
+router.include_router(events_stream_router, dependencies=protected_dependencies)
 router.include_router(events_router, dependencies=protected_dependencies)
 router.include_router(event_photos_router, dependencies=protected_dependencies)
 router.include_router(variables_router, dependencies=protected_dependencies)

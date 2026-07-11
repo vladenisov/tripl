@@ -8,6 +8,7 @@ import {
   MONITOR_STATUS_LABEL as STATUS_LABEL,
   MONITOR_STATUS_TONE as STATUS_TONE,
 } from '@/lib/statusLexicon'
+import { useAdaptiveRefetchInterval } from '@/realtime/streamContext'
 import type { MonitorSummaryItem } from '@/types'
 
 
@@ -33,11 +34,12 @@ function conditionOf(m: MonitorSummaryItem): string {
  * single destination), so it's a presentation layer over data we already have.
  */
 export function RoutingRulesPanel({ slug }: { slug: string }) {
+  const refetchInterval = useAdaptiveRefetchInterval({ activeMs: 60_000 })
   const query = useQuery({
     queryKey: ['monitors-summary', slug],
     queryFn: () => alertingApi.getMonitorsSummary(slug),
     enabled: !!slug,
-    refetchInterval: 60_000,
+    refetchInterval,
     staleTime: 30_000,
   })
   const summary = query.data
