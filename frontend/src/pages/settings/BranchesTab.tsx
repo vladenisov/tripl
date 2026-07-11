@@ -613,7 +613,7 @@ function ChangeRow({ entry }: { entry: PlanDiffEntry }) {
         type="button"
         onClick={() => setOpen((value) => !value)}
         aria-expanded={open}
-        aria-controls={detailId}
+        aria-controls={open ? detailId : undefined}
         className="flex w-full items-center gap-3 px-4 py-2.5 text-left transition-colors hover:bg-[var(--surface-hover)]"
       >
         <ChevronRight
