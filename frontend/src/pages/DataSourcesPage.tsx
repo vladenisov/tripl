@@ -18,6 +18,7 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { EmptyState } from '@/components/empty-state'
 import { ErrorState } from '@/components/error-state'
+import { SyntheticSourceBadge } from '@/demo/capabilityBadges'
 import { Chip } from '@/components/primitives/chip'
 import { Dot } from '@/components/primitives/dot'
 import { MiniStat, MiniStatDivider } from '@/components/primitives/mini-stat'
@@ -613,6 +614,7 @@ function DataSourceCard({
           {statusLabel}
         </Chip>
         <Chip size="xs">{ds.db_type}</Chip>
+        {ds.is_synthetic && <SyntheticSourceBadge />}
         {ds.username && <Chip size="xs">{ds.username}</Chip>}
         {ds.timeout_seconds != null && <Chip size="xs">timeout {ds.timeout_seconds}s</Chip>}
         <div className="flex-1" />

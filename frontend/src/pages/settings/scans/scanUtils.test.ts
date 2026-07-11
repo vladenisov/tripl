@@ -6,6 +6,7 @@ import {
   eligibleChunkIntervals,
   jobDurationSeconds,
   jobRowsScanned,
+  summarizeScanChanges,
 } from './scanUtils'
 
 function job(overrides: Partial<ScanJob>): ScanJob {
@@ -22,6 +23,33 @@ function job(overrides: Partial<ScanJob>): ScanJob {
     ...overrides,
   }
 }
+
+describe('summarizeScanChanges', () => {
+  it('is empty for a job with no result summary', () => {
+    expect(summarizeScanChanges(job({ result_summary: null }))).toEqual([])
+    expect(summarizeScanChanges(null)).toEqual([])
+  })
+
+  it('surfaces only the non-zero deltas of a completed run', () => {
+    const changes = summarizeScanChanges(
+      job({
+        result_summary: {
+          events_created: 12,
+          event_metrics: 3,
+          breakdown_event_metrics: 2,
+          signals_added: 1,
+          alerts_queued: 0,
+        },
+      }),
+    )
+    const labels = changes.map((change) => change.label)
+    expect(labels).toContain('+12 events')
+    expect(labels).toContain('+5 metrics')
+    expect(labels).toContain('+1 signal')
+    // A zero delta is omitted, not shown as "+0".
+    expect(labels.some((label) => label.includes('alert'))).toBe(false)
+  })
+})
 
 describe('deriveScanRunInfo', () => {
   it('returns idle when there are no jobs', () => {

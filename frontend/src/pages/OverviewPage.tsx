@@ -14,6 +14,9 @@ import { metricsApi } from '@/api/metrics'
 import { projectsApi } from '@/api/projects'
 import { ErrorState } from '@/components/error-state'
 import { OnboardingChecklist } from '@/components/onboarding-checklist'
+import { countRealSources } from '@/components/onboarding-utils'
+import { SyntheticSourceBadge } from '@/demo/capabilityBadges'
+import { DemoWelcomePanel } from '@/demo/DemoWelcomePanel'
 import { Dot } from '@/components/primitives/dot'
 import { MiniStat, MiniStatDivider } from '@/components/primitives/mini-stat'
 import { Sparkline } from '@/components/primitives/sparkline'
@@ -110,11 +113,20 @@ export default function OverviewPage() {
 
   return (
     <div className="min-w-0 space-y-8 pb-12">
+      {/* A freshly-created demo lands here (not Events): orient the user and
+          launch the tour before anything else. */}
+      {projectQuery.data?.is_demo && <DemoWelcomePanel project={projectQuery.data} />}
+
       {/* Guided first-run checklist (UX-24) — a "start here" for the core
-          Plan → Observe → Govern loop. Self-derives done-state from project
-          data, is dismissible, and auto-hides once complete. */}
+          Plan → Observe → Govern loop. Self-derives done-state from REAL project
+          data, is dismissible, and auto-hides once complete. Synthetic demo
+          sources are excluded from the "connect a source" step. */}
       {slug && (
-        <OnboardingChecklist slug={slug} summary={summary} sourceCount={sources.length} />
+        <OnboardingChecklist
+          slug={slug}
+          summary={summary}
+          sourceCount={countRealSources(sources)}
+        />
       )}
 
       {/* Header */}
@@ -535,6 +547,7 @@ function SourceRow({ source }: { source: DataSource }) {
       <Dot tone={tone} size={7} />
       <Database className="h-3.5 w-3.5 shrink-0" style={{ color: 'var(--fg-subtle)' }} />
       <span className="flex-1 truncate text-[12px] font-medium" title={source.name}>{source.name}</span>
+      {source.is_synthetic && <SyntheticSourceBadge />}
       <span className="mono shrink-0 text-[10.5px] uppercase" style={{ color: 'var(--fg-faint)' }}>
         {source.db_type}
       </span>

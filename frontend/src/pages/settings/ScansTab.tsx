@@ -8,13 +8,16 @@ import { scansApi } from "@/api/scans"
 import type { DataSource, ScanConfig, ScanJob } from "@/types"
 import { Button } from "@/components/ui/button"
 import { EmptyState } from "@/components/empty-state"
+import { ErrorState } from "@/components/error-state"
+import { Skeleton } from "@/components/ui/skeleton"
+import { Chip } from "@/components/primitives/chip"
 import { Search } from "lucide-react"
 import { RunStatusPill, ScanListRow } from "./scans/ScanConfigRow"
 import { runPillStatus } from "./scans/scanRunStatus"
 import { ScanCreatePage } from "./scans/ScanConfigForm"
 import { StatCard, SurfPanel } from "./scans/scanLayout"
 import { INTERVAL_LABEL, formatCount } from "./scans/scanLayoutConstants"
-import { deriveScanRunInfo, jobDurationSeconds, jobRowsScanned, scanJobsHaveActiveWork, type ScanRunInfo } from "./scans/scanUtils"
+import { deriveScanRunInfo, jobDurationSeconds, jobRowsScanned, scanJobsHaveActiveWork, summarizeScanChanges, type ScanChange, type ScanRunInfo } from "./scans/scanUtils"
 import { useAdaptiveRefetchIntervalFn } from "@/realtime/streamContext"
 import { friendlyScanError } from "@/lib/scanError"
 import { formatRelativeTime } from "@/lib/datetime"
@@ -31,6 +34,8 @@ interface RecentRun {
   // Current failing streak (leading consecutive failed runs for this scan).
   // Only meaningful on the collapsed streak row; 0 on every other row.
   failingStreak: number
+  // What the completed job actually changed (+N events / metrics / signals …).
+  changes: ScanChange[]
 }
 
 export function ScansTab({ slug }: { slug: string }) {
@@ -45,7 +50,13 @@ export function ScansTab({ slug }: { slug: string }) {
     queryFn: () => dataSourcesApi.list(),
   })
 
-  const { data: scanConfigs = [] } = useQuery({
+  const {
+    data: scanConfigs = [],
+    isLoading: scanConfigsLoading,
+    isError: scanConfigsError,
+    error: scanConfigsErrorObj,
+    refetch: refetchScanConfigs,
+  } = useQuery({
     queryKey: ['scans', slug],
     queryFn: () => scansApi.list(slug),
   })
@@ -122,6 +133,7 @@ export function ScansTab({ slug }: { slug: string }) {
           status: job.status,
           errorMessage: job.error_message,
           failingStreak: position === 0 ? streak : 0,
+          changes: summarizeScanChanges(job),
         })
       })
     })
@@ -195,7 +207,24 @@ export function ScansTab({ slug }: { slug: string }) {
       )}
 
       <SurfPanel title="Scan configs" subtitle={`${scanConfigs.length} configs`}>
-        {scanConfigs.length === 0 ? (
+        {scanConfigsLoading ? (
+          <div className="space-y-2 px-4 py-4" aria-busy="true" aria-label="Loading scan configs">
+            {[0, 1, 2].map((index) => (
+              <Skeleton key={index} className="h-10 w-full" />
+            ))}
+          </div>
+        ) : scanConfigsError ? (
+          <div className="p-4">
+            <ErrorState
+              compact
+              title="Couldn't load scan configs"
+              error={scanConfigsErrorObj}
+              onRetry={() => {
+                void refetchScanConfigs()
+              }}
+            />
+          </div>
+        ) : scanConfigs.length === 0 ? (
           <p className="px-4 py-7 text-center text-[12.5px]" style={{ color: 'var(--fg-subtle)' }}>
             No scan configs yet.
           </p>
@@ -246,12 +275,24 @@ export function ScansTab({ slug }: { slug: string }) {
                 >
                   <RunStatusPill status={runPillStatus(run.status)} title={friendly ?? undefined} />
                   <span className="w-[150px] shrink-0 truncate text-xs font-medium">{run.scanName}</span>
-                  <div className="flex min-w-0 flex-1 flex-col">
+                  <div className="flex min-w-0 flex-1 flex-col gap-1">
                     <span className="text-[11.5px]" style={{ color: 'var(--fg-subtle)' }}>
                       {run.startedAt ? formatRelativeTime(run.startedAt) : '—'}
                     </span>
                     {friendly && (
                       <span className="truncate text-[11px]" style={{ color: 'var(--danger)' }}>{friendly}</span>
+                    )}
+                    {/* What this completed run changed — surfaced inline so a
+                        finished scan/collection shows its impact, not just a
+                        status pill (tripl-2su6.9). */}
+                    {!isFailed && run.changes.length > 0 && (
+                      <div className="flex flex-wrap gap-1">
+                        {run.changes.map((change) => (
+                          <Chip key={change.label} tone={change.tone} size="xs">
+                            {change.label}
+                          </Chip>
+                        ))}
+                      </div>
                     )}
                   </div>
                   {isFailed ? (

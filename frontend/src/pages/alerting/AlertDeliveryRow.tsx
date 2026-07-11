@@ -5,6 +5,7 @@ import type { AlertDelivery, AlertDeliveryItem } from "@/types"
 import { alertingApi } from "@/api/alerting"
 import { getErrorMessage } from "@/lib/utils"
 import { Badge } from "@/components/ui/badge"
+import { LocalDeliveryBadge } from "@/demo/capabilityBadges"
 import { Button } from "@/components/ui/button"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 
@@ -56,7 +57,14 @@ export function AlertDeliveryRow({ slug, delivery }: { slug: string; delivery: A
     <>
       <TableRow>
         <TableCell className="text-xs">{new Date(delivery.created_at).toLocaleString()}</TableCell>
-        <TableCell><Badge variant={delivery.status === 'failed' ? 'destructive' : delivery.status === 'sent' ? 'default' : 'secondary'} className="text-[10px]">{delivery.status}</Badge></TableCell>
+        <TableCell>
+          <div className="flex flex-wrap items-center gap-1.5">
+            <Badge variant={delivery.status === 'failed' ? 'destructive' : delivery.status === 'sent' ? 'default' : 'secondary'} className="text-[10px]">{delivery.status}</Badge>
+            {(delivery.is_local || delivery.is_simulated) && (
+              <LocalDeliveryBadge simulated={delivery.is_simulated} />
+            )}
+          </div>
+        </TableCell>
         <TableCell className="text-xs">{delivery.destination_name}</TableCell>
         <TableCell className="text-xs">{delivery.rule_name}</TableCell>
         <TableCell className="text-xs">{delivery.scan_name}</TableCell>

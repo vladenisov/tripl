@@ -24,7 +24,13 @@ export const projectsApi = {
   get: (slug: string) => api.get<Project>(`/projects/${slug}`),
   create: (data: { name: string; slug: string; description?: string }) =>
     api.post<Project>('/projects', data),
+  // Demo lifecycle (tripl-2su6). Create BLOCKS ~5-8s while seeding and returns a
+  // fully-ready project (201) or 500 on failure. Reset/delete are scoped to the
+  // demo endpoints and permitted for the demo's creator or a workspace owner —
+  // distinct from the owner-only generic DELETE /projects/{slug} (`del`).
   createDemo: () => api.post<Project>('/projects/demo', {}),
+  resetDemo: (slug: string) => api.post<Project>(`/projects/demo/${slug}/reset`, {}),
+  deleteDemo: (slug: string) => api.del(`/projects/demo/${slug}`),
   update: (slug: string, data: { name?: string; slug?: string; description?: string }) =>
     api.patch<Project>(`/projects/${slug}`, data),
   del: (slug: string) => api.del(`/projects/${slug}`),

@@ -6,6 +6,7 @@ import type { DataSource, EventType, ScanConfig, ScanJob, ScanJobResultSummary }
 import { Button } from "@/components/ui/button"
 import { Card } from "@/components/ui/card"
 import { Chip } from "@/components/primitives/chip"
+import { ErrorState } from "@/components/error-state"
 import { getErrorMessage } from '@/lib/utils'
 import { friendlyScanError } from '@/lib/scanError'
 import { formatRelativeTime } from '@/lib/datetime'
@@ -196,7 +197,13 @@ export function ScanDetail({
     activeMs: 5000,
     isActive: scanJobsHaveActiveWork,
   })
-  const { data: jobs = [], isLoading } = useQuery({
+  const {
+    data: jobs = [],
+    isLoading,
+    isError: jobsError,
+    error: jobsErrorObj,
+    refetch: refetchJobs,
+  } = useQuery({
     queryKey: ['scanJobs', slug, scanConfig.id],
     queryFn: () => scansApi.listJobs(slug, scanConfig.id),
     refetchInterval: jobsRefetchInterval,
@@ -407,7 +414,21 @@ export function ScanDetail({
           </div>
         )}
         {isLoading && <p className="px-4 py-3 text-sm text-muted-foreground">Loading jobs…</p>}
-        {jobs.length === 0 && !isLoading && (
+        {/* A failed jobs fetch previously fell through to "No jobs yet" — surface
+            the error with a retry instead of a false empty (tripl-2su6.9). */}
+        {jobsError && !isLoading && (
+          <div className="p-4">
+            <ErrorState
+              compact
+              title="Couldn't load run history"
+              error={jobsErrorObj}
+              onRetry={() => {
+                void refetchJobs()
+              }}
+            />
+          </div>
+        )}
+        {jobs.length === 0 && !isLoading && !jobsError && (
           <p className="px-4 py-3 text-sm text-muted-foreground">No jobs yet. Use “Run now” to start.</p>
         )}
         {jobs.length > 0 && (

@@ -29,6 +29,14 @@ export interface ProjectSummary {
   latest_signal: ProjectLatestSignal | null
 }
 
+/**
+ * Provisioning lifecycle of a generated (demo) project. Ordinary projects are
+ * always `'ready'`; a demo is `'seeding'`/`'pending'` only transiently and a
+ * failed demo is rolled back / hidden, so the UI treats a listed demo as
+ * effectively `'ready'` unless the response says otherwise.
+ */
+export type ProjectGenerationStatus = 'ready' | 'failed' | 'seeding' | 'pending'
+
 export interface Project {
   id: string
   name: string
@@ -37,6 +45,16 @@ export interface Project {
   created_at: string
   updated_at: string
   summary: ProjectSummary
+  // Demo identity + lifecycle (tripl-2su6). Optional on the wire for
+  // backward-compatible fixtures; real responses always carry is_demo /
+  // generation_status (which default to false / 'ready').
+  is_demo?: boolean
+  generation_status?: ProjectGenerationStatus
+  generation_stage?: string | null
+  generation_error?: string | null
+  demo_recipe_version?: string | null
+  demo_seeded_at?: string | null
+  created_by_user_id?: string | null
 }
 
 export type ActivityItemType = 'anomaly' | 'scan' | 'alert' | 'event'
