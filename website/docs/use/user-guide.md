@@ -210,10 +210,11 @@ branch instead — the same idea as a pull request for code.
    requests changes or approves.
 5. **Merge.** tripl matches events by name, so nothing is duplicated and the
    metrics, history, and alerts already attached to an event stay attached.
-   Non-conflicting edits merge automatically; if two people edited the same
-   thing, you choose which version wins. If other plan entities changed on main
-   after the branch was created, merge is blocked; recreate the branch from
-   current main and reapply its changes.
+   Non-conflicting edits on either side merge automatically, including child
+   state such as values, tags, photos/comments, overrides, and breakdown
+   settings. If both sides changed the same state differently, merge reports a
+   conflict. Older branches without a complete merge baseline must be recreated
+   from current main.
 
 If an event type has **owners**, merging a branch that touches it requires a
 sign-off from one of them.

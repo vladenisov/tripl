@@ -48,8 +48,8 @@ from tripl.services.plan_branch_service import (
     ensure_main_branch_id,
 )
 from tripl.services.plan_revision_service import (
+    PLAN_SNAPSHOT_VERSION,
     build_plan_snapshot,
-    compute_plan_diff_entries,
     plan_snapshot_hash,
 )
 from tripl.services.project_branch_settings_service import read_branch_merge_policy
@@ -138,8 +138,9 @@ async def _apply_merge(
 
     Matched event_type/event rows are updated in place (id preserved) so
     runtime rows linked by id (metrics, photos, alerts) survive the merge.
-    Children (field_definitions, event_field_values, event_meta_values,
-    event_tags) are replaced wholesale with FK-remapped copies.
+    Each entity and child collection is applied only when the branch changed it
+    from the recorded base. This preserves one-sided main edits and deletions;
+    conflict detection rejects divergent edits before this function runs.
 
     ``resolutions`` maps (entity_type, name, field) -> "ours" | "theirs" and
     is honored for event_type metadata fields: "ours" keeps main's current
@@ -150,6 +151,9 @@ async def _apply_merge(
     base_et_by_name: dict[str, dict[str, Any]] = {
         e["name"]: e for e in (base_payload or {}).get("event_types", [])
     }
+    branch_snapshot_payload = await build_plan_snapshot(
+        session, project_id, branch_id=branch_id
+    )
     # --- event_types
     main_ets = list(
         (
@@ -199,6 +203,11 @@ async def _apply_merge(
                 if theirs_v != base_v:
                     setattr(m_et, field, theirs_v)
         else:
+            # The entity existed in the base but is now absent on main: that is
+            # a main-only deletion. An unchanged branch must not resurrect it.
+            # Divergent branch edits are rejected by conflict detection.
+            if name in base_et_by_name:
+                continue
             session.add(
                 EventType(
                     id=uuid.uuid4(),
@@ -212,7 +221,7 @@ async def _apply_merge(
                 )
             )
     for name, m_et in list(main_et_by_name.items()):
-        if name not in branch_et_by_name:
+        if name in base_et_by_name and name not in branch_et_by_name:
             await session.delete(m_et)
             del main_et_by_name[name]
     await session.flush()
@@ -232,37 +241,72 @@ async def _apply_merge(
     main_et_name_to_id = {et.name: et.id for et in main_ets_after}
     branch_et_id_to_name = {et.id: et.name for et in branch_ets}
 
-    # --- field_definitions: wholesale replace per main event_type, build name→id map
+    # --- field_definitions: apply only branch-side deltas from the base.
+    # Main-only additions/edits therefore survive an unrelated branch merge.
     main_field_by_key: dict[tuple[str, str], uuid.UUID] = {}
-    for et_name, m_et_id in main_et_name_to_id.items():
-        b_et = branch_et_by_name[et_name]
-        await session.execute(
-            delete(FieldDefinition).where(FieldDefinition.event_type_id == m_et_id)
-        )
-        await session.flush()
-        for b_fd in b_et.field_definitions:
-            fid = uuid.uuid4()
-            session.add(
-                FieldDefinition(
-                    id=fid,
-                    event_type_id=m_et_id,
-                    name=b_fd.name,
-                    display_name=b_fd.display_name,
-                    field_type=b_fd.field_type,
-                    is_required=b_fd.is_required,
-                    enum_options=list(b_fd.enum_options) if b_fd.enum_options else None,
-                    description=b_fd.description,
-                    order=b_fd.order,
-                    sensitivity=b_fd.sensitivity,
-                    contract_required_max_null_rate=b_fd.contract_required_max_null_rate,
-                    contract_regex=b_fd.contract_regex,
-                    contract_min_value=b_fd.contract_min_value,
-                    contract_max_value=b_fd.contract_max_value,
-                    contract_max_bad_rate=b_fd.contract_max_bad_rate or 0.0,
+    field_attrs = (
+        "display_name",
+        "field_type",
+        "is_required",
+        "enum_options",
+        "description",
+        "order",
+        "sensitivity",
+        "contract_required_max_null_rate",
+        "contract_regex",
+        "contract_min_value",
+        "contract_max_value",
+        "contract_max_bad_rate",
+    )
+    main_et_by_id = {event_type.id: event_type for event_type in main_ets_after}
+    main_fields = list(
+        (
+            await session.execute(
+                select(FieldDefinition).where(
+                    FieldDefinition.event_type_id.in_(list(main_et_by_id))
                 )
             )
-            main_field_by_key[(et_name, b_fd.name)] = fid
+        )
+        .scalars()
+        .all()
+    )
+    main_fields_by_key = {
+        (main_et_by_id[field.event_type_id].name, field.name): field for field in main_fields
+    }
+    for et_name, b_et in branch_et_by_name.items():
+        if et_name not in main_et_name_to_id:
+            continue
+        m_et_id = main_et_name_to_id[et_name]
+        base_fields = {
+            field["name"]: field
+            for field in base_et_by_name.get(et_name, {}).get("field_definitions", [])
+        }
+        branch_fields = {field.name: field for field in b_et.field_definitions}
+        for field_name, b_fd in branch_fields.items():
+            key = (et_name, field_name)
+            m_fd = main_fields_by_key.get(key)
+            base_fd = base_fields.get(field_name)
+            if m_fd is None:
+                if base_fd is not None:
+                    continue
+                m_fd = FieldDefinition(
+                    id=uuid.uuid4(), event_type_id=m_et_id, name=field_name
+                )
+                session.add(m_fd)
+                main_fields_by_key[key] = m_fd
+            for attr in field_attrs:
+                branch_value = getattr(b_fd, attr)
+                if base_fd is None or branch_value != base_fd.get(attr):
+                    if attr == "enum_options":
+                        branch_value = list(branch_value) if branch_value else None
+                    setattr(m_fd, attr, branch_value)
+        for field_name in set(base_fields) - set(branch_fields):
+            m_fd = main_fields_by_key.pop((et_name, field_name), None)
+            if m_fd is not None:
+                await session.delete(m_fd)
     await session.flush()
+
+    main_field_by_key = {key: field.id for key, field in main_fields_by_key.items()}
 
     branch_field_by_id = {
         fd.id: (branch_et_id_to_name[fd.event_type_id], fd.name)
@@ -275,18 +319,30 @@ async def _apply_merge(
     branch_mfs = await _load_for_branch(session, MetaFieldDefinition, project_id, branch_id)
     main_mf_by_name = {mf.name: mf for mf in main_mfs}
     branch_mf_by_name = {mf.name: mf for mf in branch_mfs}
+    base_mf_by_name = {mf["name"]: mf for mf in (base_payload or {}).get("meta_fields", [])}
+    meta_attrs = (
+        "display_name",
+        "field_type",
+        "is_required",
+        "enum_options",
+        "default_value",
+        "link_template",
+        "order",
+        "sensitivity",
+    )
     for name, b_mf in branch_mf_by_name.items():
         m_mf = main_mf_by_name.get(name)
         if m_mf is not None:
-            m_mf.display_name = b_mf.display_name
-            m_mf.field_type = b_mf.field_type
-            m_mf.is_required = b_mf.is_required
-            m_mf.enum_options = list(b_mf.enum_options) if b_mf.enum_options else None
-            m_mf.default_value = b_mf.default_value
-            m_mf.link_template = b_mf.link_template
-            m_mf.order = b_mf.order
-            m_mf.sensitivity = b_mf.sensitivity
+            base_mf = base_mf_by_name.get(name)
+            for attr in meta_attrs:
+                branch_value = getattr(b_mf, attr)
+                if base_mf is None or branch_value != base_mf.get(attr):
+                    if attr == "enum_options":
+                        branch_value = list(branch_value) if branch_value else None
+                    setattr(m_mf, attr, branch_value)
         else:
+            if name in base_mf_by_name:
+                continue
             session.add(
                 MetaFieldDefinition(
                     id=uuid.uuid4(),
@@ -304,7 +360,7 @@ async def _apply_merge(
                 )
             )
     for name, m_mf in list(main_mf_by_name.items()):
-        if name not in branch_mf_by_name:
+        if name in base_mf_by_name and name not in branch_mf_by_name:
             await session.delete(m_mf)
     await session.flush()
     main_mf_name_to_id = {
@@ -318,16 +374,28 @@ async def _apply_merge(
     branch_vars = await _load_for_branch(session, Variable, project_id, branch_id)
     main_var_by_name = {v.name: v for v in main_vars}
     branch_var_by_name = {v.name: v for v in branch_vars}
+    base_var_by_name = {v["name"]: v for v in (base_payload or {}).get("variables", [])}
+    variable_attrs = (
+        "source_name",
+        "variable_type",
+        "description",
+        "allowed_values",
+        "bindings",
+        "excluded_from_scans",
+    )
     for name, b_v in branch_var_by_name.items():
         m_v = main_var_by_name.get(name)
         if m_v is not None:
-            m_v.source_name = b_v.source_name
-            m_v.variable_type = b_v.variable_type
-            m_v.description = b_v.description
-            m_v.allowed_values = list(b_v.allowed_values or [])
-            m_v.bindings = list(b_v.bindings or [])
-            m_v.excluded_from_scans = b_v.excluded_from_scans
+            base_var = base_var_by_name.get(name)
+            for attr in variable_attrs:
+                branch_value = getattr(b_v, attr)
+                if base_var is None or branch_value != base_var.get(attr):
+                    if attr in ("allowed_values", "bindings"):
+                        branch_value = list(branch_value or [])
+                    setattr(m_v, attr, branch_value)
         else:
+            if name in base_var_by_name:
+                continue
             session.add(
                 Variable(
                     id=uuid.uuid4(),
@@ -343,7 +411,7 @@ async def _apply_merge(
                 )
             )
     for name, m_v in list(main_var_by_name.items()):
-        if name not in branch_var_by_name:
+        if name in base_var_by_name and name not in branch_var_by_name:
             await session.delete(m_v)
 
     # --- events: upsert by (event_type_name, name); preserve ids + remap children
@@ -390,53 +458,84 @@ async def _apply_merge(
     branch_event_by_key = {
         (branch_et_id_to_name[e.event_type_id], e.name): e for e in branch_events
     }
+    base_event_by_key = {
+        (event["event_type_name"], event["name"]): event
+        for event in (base_payload or {}).get("events", [])
+    }
+    branch_event_snapshot_by_key = {
+        (event["event_type_name"], event["name"]): event
+        for event in branch_snapshot_payload.get("events", [])
+    }
 
     for key, b_ev in branch_event_by_key.items():
         et_name, _ev_name = key
         if key in main_event_by_key:
             m_ev = main_event_by_key[key]
-            m_ev.source_name = b_ev.source_name
-            m_ev.description = b_ev.description
-            b_status = _ES(b_ev.status)
-            m_status = _ES(m_ev.status)
-            if b_status == _ES.archived:
-                m_ev.status = m_status
-            else:
-                m_ev.status = b_status if _rank(b_status) >= _rank(m_status) else m_status
-            m_ev.sunset_at = b_ev.sunset_at
-            m_ev.order = b_ev.order
-            m_ev.metric_breakdown_columns = list(b_ev.metric_breakdown_columns or [])
-            # Rebuild children
-            await session.execute(
-                delete(EventFieldValue).where(EventFieldValue.event_id == m_ev.id)
+            base_event = base_event_by_key.get(key)
+            branch_event_snapshot = branch_event_snapshot_by_key[key]
+            event_attrs = (
+                "source_name",
+                "description",
+                "sunset_at",
+                "order",
+                "owner_id",
+                "reviewed",
+                "metric_breakdown_columns",
             )
-            await session.execute(delete(EventMetaValue).where(EventMetaValue.event_id == m_ev.id))
-            await session.execute(delete(EventTag).where(EventTag.event_id == m_ev.id))
-            await session.flush()
-            for fv in b_ev.field_values:
-                bf_et, bf_name = branch_field_by_id[fv.field_definition_id]
-                session.add(
-                    EventFieldValue(
-                        id=uuid.uuid4(),
-                        event_id=m_ev.id,
-                        field_definition_id=main_field_by_key[(bf_et, bf_name)],
-                        value=fv.value,
-                        is_authored=fv.is_authored,
-                    )
+            for attr in event_attrs:
+                if base_event is None or branch_event_snapshot.get(attr) != base_event.get(attr):
+                    branch_value = getattr(b_ev, attr)
+                    if attr == "metric_breakdown_columns":
+                        branch_value = list(branch_value or [])
+                    setattr(m_ev, attr, branch_value)
+            if base_event is None or branch_event_snapshot.get("status") != base_event.get(
+                "status"
+            ):
+                b_status = _ES(b_ev.status)
+                m_status = _ES(m_ev.status)
+                if b_status != _ES.archived:
+                    m_ev.status = b_status if _rank(b_status) >= _rank(m_status) else m_status
+
+            if base_event is None or branch_event_snapshot.get("field_values") != base_event.get(
+                "field_values"
+            ):
+                await session.execute(
+                    delete(EventFieldValue).where(EventFieldValue.event_id == m_ev.id)
                 )
-            for mv in b_ev.meta_values:
-                mf_name = branch_mf_id_to_name[mv.meta_field_definition_id]
-                session.add(
-                    EventMetaValue(
-                        id=uuid.uuid4(),
-                        event_id=m_ev.id,
-                        meta_field_definition_id=main_mf_name_to_id[mf_name],
-                        value=mv.value,
+                for fv in b_ev.field_values:
+                    bf_et, bf_name = branch_field_by_id[fv.field_definition_id]
+                    session.add(
+                        EventFieldValue(
+                            id=uuid.uuid4(),
+                            event_id=m_ev.id,
+                            field_definition_id=main_field_by_key[(bf_et, bf_name)],
+                            value=fv.value,
+                            is_authored=fv.is_authored,
+                        )
                     )
+            if base_event is None or branch_event_snapshot.get("meta_values") != base_event.get(
+                "meta_values"
+            ):
+                await session.execute(
+                    delete(EventMetaValue).where(EventMetaValue.event_id == m_ev.id)
                 )
-            for tag in b_ev.tags:
-                session.add(EventTag(id=uuid.uuid4(), event_id=m_ev.id, name=tag.name))
+                for mv in b_ev.meta_values:
+                    mf_name = branch_mf_id_to_name[mv.meta_field_definition_id]
+                    session.add(
+                        EventMetaValue(
+                            id=uuid.uuid4(),
+                            event_id=m_ev.id,
+                            meta_field_definition_id=main_mf_name_to_id[mf_name],
+                            value=mv.value,
+                        )
+                    )
+            if base_event is None or branch_event_snapshot.get("tags") != base_event.get("tags"):
+                await session.execute(delete(EventTag).where(EventTag.event_id == m_ev.id))
+                for tag in b_ev.tags:
+                    session.add(EventTag(id=uuid.uuid4(), event_id=m_ev.id, name=tag.name))
         else:
+            if key in base_event_by_key or et_name not in main_et_name_to_id:
+                continue
             new_ev_id = uuid.uuid4()
             session.add(
                 Event(
@@ -452,6 +551,8 @@ async def _apply_merge(
                     sunset_at=b_ev.sunset_at,
                     last_seen_at=b_ev.last_seen_at,
                     metric_breakdown_columns=list(b_ev.metric_breakdown_columns or []),
+                    owner_id=b_ev.owner_id,
+                    reviewed=b_ev.reviewed,
                 )
             )
             for fv in b_ev.field_values:
@@ -478,14 +579,12 @@ async def _apply_merge(
             for tag in b_ev.tags:
                 session.add(EventTag(id=uuid.uuid4(), event_id=new_ev_id, name=tag.name))
     for key, m_ev in list(main_event_by_key.items()):
-        if key not in branch_event_by_key:
+        if key in base_event_by_key and key not in branch_event_by_key:
             await session.delete(m_ev)
     await session.flush()
 
-    # --- photos + comments: wholesale replace per surviving event on main.
-    # The branch is the source of truth for the design canvas, so main photos
-    # under matched/new events are dropped and re-copied from the branch with
-    # remapped event_id. storage_key/external_url is reused — no blob copies.
+    # --- photos + comments: replace only when the branch's design canvas
+    # changed from the base. storage_key/external_url is reused — no blob copies.
     # Bulk delete via session.execute(delete(...)) is intentional: it bypasses
     # the ORM session.delete() path so storage backends aren't invoked here
     # (the blob is still referenced by the freshly-inserted main row).
@@ -509,6 +608,12 @@ async def _apply_merge(
     for key, b_ev in branch_event_by_key.items():
         main_ev_id = main_event_key_to_id.get(key)
         if main_ev_id is None:
+            continue
+        base_event = base_event_by_key.get(key)
+        branch_event_snapshot = branch_event_snapshot_by_key[key]
+        if base_event is not None and branch_event_snapshot.get("photos") == base_event.get(
+            "photos"
+        ):
             continue
         await session.execute(delete(EventPhoto).where(EventPhoto.event_id == main_ev_id))
         await session.flush()
@@ -574,82 +679,136 @@ async def _apply_merge(
                 )
             await session.flush()
 
-    # --- variable event value overrides: wholesale replace on main using
-    # name-based remap (variable by name, event by (event_type_name, name)).
-    # The branch is the source of truth for documented values, mirroring the
-    # variables upsert above; overrides whose variable/event didn't survive the
-    # merge are dropped with them.
-    await session.execute(
-        delete(VariableEventValueOverride).where(
-            VariableEventValueOverride.project_id == project_id,
-            VariableEventValueOverride.branch_id == main_branch_id,
-        )
-    )
-    await session.flush()
+    # --- variable event value overrides: replace only for variables whose
+    # branch-side override map changed from the base.
     main_vars_after = await _load_for_branch(session, Variable, project_id, main_branch_id)
     main_var_name_to_id = {v.name: v.id for v in main_vars_after}
-    branch_var_id_to_name = {v.id: v.name for v in branch_vars}
     branch_event_id_to_key = {e.id: key for key, e in branch_event_by_key.items()}
     branch_overrides = await _load_for_branch(
         session, VariableEventValueOverride, project_id, branch_id
     )
+    branch_overrides_by_var: dict[uuid.UUID, list[VariableEventValueOverride]] = {}
     for override in branch_overrides:
-        override_var_name = branch_var_id_to_name.get(override.variable_id)
-        main_var_id = (
-            main_var_name_to_id.get(override_var_name) if override_var_name is not None else None
-        )
-        override_event_key = branch_event_id_to_key.get(override.event_id)
-        main_override_event_id = (
-            main_event_key_to_id.get(override_event_key) if override_event_key is not None else None
-        )
-        if main_var_id is None or main_override_event_id is None:
+        branch_overrides_by_var.setdefault(override.variable_id, []).append(override)
+    branch_var_snapshot_by_name = {
+        variable["name"]: variable for variable in branch_snapshot_payload.get("variables", [])
+    }
+    for branch_var in branch_vars:
+        name = branch_var.name
+        base_var = base_var_by_name.get(name)
+        branch_var_snapshot = branch_var_snapshot_by_name[name]
+        if base_var is not None and branch_var_snapshot.get(
+            "event_value_overrides"
+        ) == base_var.get("event_value_overrides"):
             continue
-        session.add(
-            VariableEventValueOverride(
-                id=uuid.uuid4(),
-                project_id=project_id,
-                branch_id=main_branch_id,
-                variable_id=main_var_id,
-                event_id=main_override_event_id,
-                values=list(override.values or []),
+        main_var_id = main_var_name_to_id.get(name)
+        if main_var_id is None:
+            continue
+        await session.execute(
+            delete(VariableEventValueOverride).where(
+                VariableEventValueOverride.project_id == project_id,
+                VariableEventValueOverride.branch_id == main_branch_id,
+                VariableEventValueOverride.variable_id == main_var_id,
             )
         )
+        for override in branch_overrides_by_var.get(branch_var.id, []):
+            override_event_key = branch_event_id_to_key.get(override.event_id)
+            main_override_event_id = (
+                main_event_key_to_id.get(override_event_key)
+                if override_event_key is not None
+                else None
+            )
+            if main_override_event_id is None:
+                continue
+            session.add(
+                VariableEventValueOverride(
+                    id=uuid.uuid4(),
+                    project_id=project_id,
+                    branch_id=main_branch_id,
+                    variable_id=main_var_id,
+                    event_id=main_override_event_id,
+                    values=list(override.values or []),
+                )
+            )
     await session.flush()
 
-    # --- relations: wholesale replace on main using name-based FK remap
+    # --- relations: natural-key three-way apply.
     branch_relations = await _load_for_branch(session, EventTypeRelation, project_id, branch_id)
-    await session.execute(
-        delete(EventTypeRelation).where(
-            EventTypeRelation.project_id == project_id,
-            EventTypeRelation.branch_id == main_branch_id,
-        )
-    )
-    await session.flush()
-    # Resolve names from the branch side: relations on the branch reference its
-    # own ETs/fields; translate to the matching main ids by name.
     branch_fd_id_to_key = {
         fd.id: (branch_et_id_to_name[fd.event_type_id], fd.name)
         for et in branch_ets
         for fd in et.field_definitions
     }
-    for b_rel in branch_relations:
-        src_et_name = branch_et_id_to_name[b_rel.source_event_type_id]
-        tgt_et_name = branch_et_id_to_name[b_rel.target_event_type_id]
+    main_relations = await _load_for_branch(
+        session, EventTypeRelation, project_id, main_branch_id
+    )
+    main_et_id_to_name_after = {et_id: name for name, et_id in main_et_name_to_id.items()}
+    main_fd_id_to_key = {field_id: key for key, field_id in main_field_by_key.items()}
+
+    def relation_key(
+        relation: EventTypeRelation,
+        et_names: dict[uuid.UUID, str],
+        field_keys: dict[uuid.UUID, tuple[str, str]],
+    ) -> tuple[str, str, str, str]:
+        source_field = field_keys[relation.source_field_id]
+        target_field = field_keys[relation.target_field_id]
+        return (
+            et_names[relation.source_event_type_id],
+            source_field[1],
+            et_names[relation.target_event_type_id],
+            target_field[1],
+        )
+
+    main_relation_by_key = {
+        relation_key(relation, main_et_id_to_name_after, main_fd_id_to_key): relation
+        for relation in main_relations
+        if relation.source_field_id in main_fd_id_to_key
+        and relation.target_field_id in main_fd_id_to_key
+    }
+    branch_relation_by_key = {
+        relation_key(relation, branch_et_id_to_name, branch_fd_id_to_key): relation
+        for relation in branch_relations
+    }
+    base_relation_by_key = {
+        (
+            relation["source_event_type_name"],
+            relation["source_field_name"],
+            relation["target_event_type_name"],
+            relation["target_field_name"],
+        ): relation
+        for relation in (base_payload or {}).get("relations", [])
+    }
+    for relation_key_value, b_rel in branch_relation_by_key.items():
+        src_et_name, _src_field_name, tgt_et_name, _tgt_field_name = relation_key_value
         src_fd_key = branch_fd_id_to_key[b_rel.source_field_id]
         tgt_fd_key = branch_fd_id_to_key[b_rel.target_field_id]
-        session.add(
-            EventTypeRelation(
-                id=uuid.uuid4(),
-                project_id=project_id,
-                branch_id=main_branch_id,
-                source_event_type_id=main_et_name_to_id[src_et_name],
-                target_event_type_id=main_et_name_to_id[tgt_et_name],
-                source_field_id=main_field_by_key[src_fd_key],
-                target_field_id=main_field_by_key[tgt_fd_key],
-                relation_type=b_rel.relation_type,
-                description=b_rel.description,
+        m_rel = main_relation_by_key.get(relation_key_value)
+        if m_rel is None:
+            if relation_key_value in base_relation_by_key:
+                continue
+            session.add(
+                EventTypeRelation(
+                    id=uuid.uuid4(),
+                    project_id=project_id,
+                    branch_id=main_branch_id,
+                    source_event_type_id=main_et_name_to_id[src_et_name],
+                    target_event_type_id=main_et_name_to_id[tgt_et_name],
+                    source_field_id=main_field_by_key[src_fd_key],
+                    target_field_id=main_field_by_key[tgt_fd_key],
+                    relation_type=b_rel.relation_type,
+                    description=b_rel.description,
+                )
             )
-        )
+            continue
+        base_relation = base_relation_by_key.get(relation_key_value)
+        if base_relation is None or b_rel.relation_type != base_relation.get("relation_type"):
+            m_rel.relation_type = b_rel.relation_type
+        if base_relation is None or b_rel.description != base_relation.get("description"):
+            m_rel.description = b_rel.description
+    for removed_relation_key in set(base_relation_by_key) - set(branch_relation_by_key):
+        m_rel = main_relation_by_key.get(removed_relation_key)
+        if m_rel is not None:
+            await session.delete(m_rel)
 
 
 def _touched_event_type_names(
@@ -879,32 +1038,23 @@ async def merge_branch(
 
     main_branch_id = await ensure_main_branch_id(session, project.id)
     base_payload: dict[str, Any] = {}
-    has_base_snapshot = False
     if branch.base_revision_id is not None:
         base_rev = await session.get(PlanRevision, branch.base_revision_id)
         if base_rev is not None:
             base_payload = base_rev.payload or {}
-            has_base_snapshot = True
-    main_payload = await build_plan_snapshot(session, project.id, branch_id=main_branch_id)
-    branch_payload = await build_plan_snapshot(session, project.id, branch_id=branch.id)
-
-    main_changes = compute_plan_diff_entries(base_payload, main_payload)
-    unsafe_main_changes = [
-        entry
-        for entry in main_changes
-        if not (entry.entity_type == "event_type" and entry.kind == "changed")
-    ]
-    if has_base_snapshot and unsafe_main_changes:
+    if base_payload.get("snapshot_version") != PLAN_SNAPSHOT_VERSION:
         raise HTTPException(
             status_code=409,
             detail={
-                "branch_behind_base": True,
+                "incomplete_base_snapshot": True,
                 "message": (
-                    "Main changed after this branch was created. "
-                    "Recreate the branch from current main before merging."
+                    "This branch predates the complete merge baseline. "
+                    "Recreate it from current main before merging."
                 ),
             },
         )
+    main_payload = await build_plan_snapshot(session, project.id, branch_id=main_branch_id)
+    branch_payload = await build_plan_snapshot(session, project.id, branch_id=branch.id)
 
     all_conflicts = _detect_merge_conflicts(base_payload, main_payload, branch_payload)
     field_conflicts = _field_conflicts_event_type(base_payload, main_payload, branch_payload)

@@ -50,8 +50,29 @@ _FD_CHANGE_KEYS = (
     "contract_max_value",
     "contract_max_bad_rate",
 )
-_EV_CHANGE_KEYS = ("description", "implemented", "reviewed", "archived", "order")
-_VAR_CHANGE_KEYS = ("source_name", "variable_type", "description")
+_EV_CHANGE_KEYS = (
+    "source_name",
+    "description",
+    "status",
+    "sunset_at",
+    "order",
+    "owner_id",
+    "reviewed",
+    "metric_breakdown_columns",
+    "field_values",
+    "meta_values",
+    "tags",
+    "photos",
+)
+_VAR_CHANGE_KEYS = (
+    "source_name",
+    "variable_type",
+    "description",
+    "allowed_values",
+    "bindings",
+    "excluded_from_scans",
+    "event_value_overrides",
+)
 _MF_CHANGE_KEYS = (
     "display_name",
     "field_type",
@@ -116,6 +137,17 @@ def _conflict_set(
         b = base_by.get(key)
         o = ours_by.get(key)
         t = theirs_by.get(key)
+        if b is not None and o is not None and t is not None:
+            same_field_conflict = any(
+                o.get(field) != b.get(field)
+                and t.get(field) != b.get(field)
+                and o.get(field) != t.get(field)
+                for field in change_keys
+            )
+            if same_field_conflict:
+                display = name_fn(o)
+                conflicts.append({"entity_type": entity_type, "name": display})
+            continue
         ours_changed = _entity_changed(b, o, change_keys)
         theirs_changed = _entity_changed(b, t, change_keys)
         if ours_changed and theirs_changed and not _entities_equal(o, t, change_keys):
@@ -142,10 +174,180 @@ def _event_type_add_remove_conflicts(
         # Modify-vs-modify path lives in _field_conflicts_event_type.
         if b is not None and o is not None and t is not None:
             continue
+        # A parent deletion races not only with parent metadata edits but also
+        # with additions/edits to dependent fields, events, and relations.
+        # Treat that dependency state as part of the parent for add/remove
+        # conflicts so deleting a type cannot silently discard a main-only
+        # child added after the branch was opened.
         ours_changed = _entity_changed(b, o, _ET_CHANGE_KEYS)
         theirs_changed = _entity_changed(b, t, _ET_CHANGE_KEYS)
+        if b is not None and (o is None or t is None):
+            base_deps = _event_type_dependency_state(base, name)
+            ours_changed = ours_changed or _event_type_dependency_state(ours, name) != base_deps
+            theirs_changed = (
+                theirs_changed or _event_type_dependency_state(theirs, name) != base_deps
+            )
         if ours_changed and theirs_changed and not _entities_equal(o, t, _ET_CHANGE_KEYS):
             conflicts.append({"entity_type": "event_type", "name": name})
+    return conflicts
+
+
+def _event_type_dependency_state(payload: dict[str, Any], name: str) -> dict[str, Any]:
+    event_type = next(
+        (event_type for event_type in payload.get("event_types", []) if event_type["name"] == name),
+        None,
+    )
+    state = {
+        "fields": (event_type or {}).get("field_definitions", []),
+        "events": [
+            event
+            for event in payload.get("events", [])
+            if event.get("event_type_name") == name
+        ],
+        "relations": [
+            relation
+            for relation in payload.get("relations", [])
+            if relation.get("source_event_type_name") == name
+            or relation.get("target_event_type_name") == name
+        ],
+    }
+
+    def without_ids(value: Any) -> Any:
+        if isinstance(value, dict):
+            return {
+                key: without_ids(item)
+                for key, item in value.items()
+                if key
+                not in {
+                    "id",
+                    "event_type_id",
+                    "source_event_type_id",
+                    "target_event_type_id",
+                    "source_field_id",
+                    "target_field_id",
+                }
+            }
+        if isinstance(value, list):
+            return [without_ids(item) for item in value]
+        return value
+
+    cleaned = without_ids(state)
+    assert isinstance(cleaned, dict)
+    return cleaned
+
+
+def _field_definition_dependency_state(
+    payload: dict[str, Any], event_type_name: str, field_name: str
+) -> dict[str, Any]:
+    event_values = [
+        {
+            "event_type_name": event.get("event_type_name"),
+            "event_name": event.get("name"),
+            "value": value,
+        }
+        for event in payload.get("events", [])
+        if event.get("event_type_name") == event_type_name
+        for value in event.get("field_values", [])
+        if value.get("field_name") == field_name
+    ]
+    event_values.sort(
+        key=lambda item: (
+            str(item["event_type_name"]),
+            str(item["event_name"]),
+            str(item["value"]),
+        )
+    )
+    return {
+        "event_values": event_values,
+        "relations": [
+            relation
+            for relation in payload.get("relations", [])
+            if (
+                relation.get("source_event_type_name") == event_type_name
+                and relation.get("source_field_name") == field_name
+            )
+            or (
+                relation.get("target_event_type_name") == event_type_name
+                and relation.get("target_field_name") == field_name
+            )
+        ],
+    }
+
+
+def _meta_field_dependency_state(payload: dict[str, Any], field_name: str) -> list[dict[str, Any]]:
+    values = [
+        {
+            "event_type_name": event.get("event_type_name"),
+            "event_name": event.get("name"),
+            "value": value,
+        }
+        for event in payload.get("events", [])
+        for value in event.get("meta_values", [])
+        if value.get("meta_field_name") == field_name
+    ]
+    return sorted(
+        values,
+        key=lambda item: (
+            str(item["event_type_name"]),
+            str(item["event_name"]),
+            str(item["value"]),
+        ),
+    )
+
+
+def _definition_dependency_conflicts(
+    base: dict[str, Any], ours: dict[str, Any], theirs: dict[str, Any]
+) -> list[dict[str, Any]]:
+    conflicts: list[dict[str, Any]] = []
+    base_fields = {
+        (event_type["name"], field["name"])
+        for event_type in base.get("event_types", [])
+        for field in event_type.get("field_definitions", [])
+    }
+    ours_fields = {
+        (event_type["name"], field["name"])
+        for event_type in ours.get("event_types", [])
+        for field in event_type.get("field_definitions", [])
+    }
+    theirs_fields = {
+        (event_type["name"], field["name"])
+        for event_type in theirs.get("event_types", [])
+        for field in event_type.get("field_definitions", [])
+    }
+    for event_type_name, field_name in base_fields:
+        base_state = _field_definition_dependency_state(base, event_type_name, field_name)
+        if (event_type_name, field_name) not in theirs_fields and (
+            _field_definition_dependency_state(ours, event_type_name, field_name) != base_state
+        ):
+            conflicts.append(
+                {
+                    "entity_type": "field_definition",
+                    "name": f"{event_type_name}.{field_name}",
+                }
+            )
+        if (event_type_name, field_name) not in ours_fields and (
+            _field_definition_dependency_state(theirs, event_type_name, field_name) != base_state
+        ):
+            conflicts.append(
+                {
+                    "entity_type": "field_definition",
+                    "name": f"{event_type_name}.{field_name}",
+                }
+            )
+
+    base_meta = {field["name"] for field in base.get("meta_fields", [])}
+    ours_meta = {field["name"] for field in ours.get("meta_fields", [])}
+    theirs_meta = {field["name"] for field in theirs.get("meta_fields", [])}
+    for field_name in base_meta:
+        meta_base_state = _meta_field_dependency_state(base, field_name)
+        if field_name not in theirs_meta and _meta_field_dependency_state(
+            ours, field_name
+        ) != meta_base_state:
+            conflicts.append({"entity_type": "meta_field", "name": field_name})
+        if field_name not in ours_meta and _meta_field_dependency_state(
+            theirs, field_name
+        ) != meta_base_state:
+            conflicts.append({"entity_type": "meta_field", "name": field_name})
     return conflicts
 
 
@@ -217,7 +419,15 @@ def _detect_merge_conflicts(
             change_keys=_REL_CHANGE_KEYS,
         )
     )
-    return conflicts
+    conflicts.extend(_definition_dependency_conflicts(base, ours, theirs))
+    unique: list[dict[str, Any]] = []
+    seen: set[tuple[str, str]] = set()
+    for conflict in conflicts:
+        key = (conflict["entity_type"], conflict["name"])
+        if key not in seen:
+            seen.add(key)
+            unique.append(conflict)
+    return unique
 
 
 # --- inline 3-way field conflicts (v1 covers event_type metadata only) -------
