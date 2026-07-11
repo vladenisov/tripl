@@ -1,10 +1,8 @@
 import { useEffect, useId, useMemo, useRef, useState, type KeyboardEvent } from 'react'
-import { X } from 'lucide-react'
-import { Chip } from '@/components/primitives/chip'
 import { INPUT_BASE } from '@/components/settings/input-style'
 
 /**
- * Column-name inputs backed by data-source schema suggestions. Free typing is
+ * Column-name input backed by data-source schema suggestions. Free typing is
  * always allowed — the schema cache may lag the warehouse — so the listbox only
  * assists, never restricts. Follows the accessible combobox pattern already
  * used by pages/events/VariableInput (role="combobox" + listbox options).
@@ -19,13 +17,6 @@ interface ColumnSuggestInputProps {
   placeholder?: string
   disabled?: boolean
   'aria-label'?: string
-  /**
-   * Chips mode: called with the chosen suggestion (or the free-typed draft on
-   * Enter) instead of writing it into the input via onChange.
-   */
-  onCommit?: (value: string) => void
-  /** Chips mode: Backspace pressed while the input is empty (remove last chip). */
-  onEmptyBackspace?: () => void
 }
 
 /**
@@ -41,8 +32,6 @@ export function ColumnSuggestInput({
   placeholder,
   disabled,
   'aria-label': ariaLabel,
-  onCommit,
-  onEmptyBackspace,
 }: ColumnSuggestInputProps) {
   const uid = useId()
   const listboxId = `column-listbox-${uid}`
@@ -70,8 +59,7 @@ export function ColumnSuggestInput({
   }, [open])
 
   const pick = (name: string) => {
-    if (onCommit) onCommit(name)
-    else onChange(name)
+    onChange(name)
     setOpen(false)
     setHighlight(0)
   }
@@ -83,21 +71,6 @@ export function ColumnSuggestInput({
   }
 
   const handleKeyDown = (e: KeyboardEvent<HTMLInputElement>) => {
-    if (e.key === 'Backspace' && value === '' && onEmptyBackspace) {
-      onEmptyBackspace()
-      return
-    }
-    if (e.key === 'Enter') {
-      if (expanded) {
-        e.preventDefault()
-        pick(filtered[activeIdx])
-      } else if (onCommit && value.trim()) {
-        // Chips mode: Enter commits free text even when nothing matches.
-        e.preventDefault()
-        onCommit(value)
-      }
-      return
-    }
     if (!expanded) {
       if (e.key === 'ArrowDown' && filtered.length > 0) {
         e.preventDefault()
@@ -106,7 +79,10 @@ export function ColumnSuggestInput({
       }
       return
     }
-    if (e.key === 'ArrowDown') {
+    if (e.key === 'Enter') {
+      e.preventDefault()
+      pick(filtered[activeIdx])
+    } else if (e.key === 'ArrowDown') {
       e.preventDefault()
       setHighlight(Math.min(activeIdx + 1, filtered.length - 1))
     } else if (e.key === 'ArrowUp') {
@@ -141,14 +117,6 @@ export function ColumnSuggestInput({
         onChange={e => handleChange(e.target.value)}
         onKeyDown={handleKeyDown}
         onFocus={() => setOpen(true)}
-        onBlur={() => {
-          // Chips mode: a value typed but never turned into a chip (no Enter /
-          // no suggestion pick) would otherwise be silently dropped when focus
-          // leaves — e.g. clicking "Save". Flush the draft on blur so it is not
-          // lost. Suggestion clicks use onMouseDown preventDefault, so they
-          // commit via pick() without ever blurring here.
-          if (onCommit && value.trim()) onCommit(value)
-        }}
       />
       {expanded && (
         <div
@@ -179,87 +147,6 @@ export function ColumnSuggestInput({
           ))}
         </div>
       )}
-    </div>
-  )
-}
-
-interface ColumnChipsInputProps {
-  id?: string
-  /** Chosen column names, in order. */
-  value: string[]
-  onChange: (next: string[]) => void
-  suggestions: string[]
-  placeholder?: string
-  disabled?: boolean
-}
-
-/**
- * Multi-column chip editor: chosen columns render as removable chips above a
- * {@link ColumnSuggestInput} that adds the next one. Picking a suggestion or
- * pressing Enter adds (comma-separated free text adds several); Backspace on
- * the empty input removes the last chip.
- */
-export function ColumnChipsInput({
-  id,
-  value,
-  onChange,
-  suggestions,
-  placeholder,
-  disabled,
-}: ColumnChipsInputProps) {
-  const [draft, setDraft] = useState('')
-
-  const remaining = useMemo(
-    () => suggestions.filter(name => !value.includes(name)),
-    [suggestions, value],
-  )
-
-  const addColumns = (raw: string) => {
-    const next = [...value]
-    for (const part of raw.split(',')) {
-      const name = part.trim()
-      if (name && !next.includes(name)) next.push(name)
-    }
-    if (next.length !== value.length) onChange(next)
-    setDraft('')
-  }
-
-  const removeColumn = (name: string) => {
-    onChange(value.filter(column => column !== name))
-  }
-
-  return (
-    <div>
-      {value.length > 0 && (
-        <div className="mb-[6px] flex flex-wrap gap-[6px]">
-          {value.map(name => (
-            <Chip key={name} size="md" className="mono">
-              {name}
-              <button
-                type="button"
-                aria-label={`Remove ${name}`}
-                disabled={disabled}
-                onClick={() => removeColumn(name)}
-                className="inline-flex items-center rounded-full transition-colors hover:text-[var(--fg)]"
-              >
-                <X size={11} />
-              </button>
-            </Chip>
-          ))}
-        </div>
-      )}
-      <ColumnSuggestInput
-        id={id}
-        value={draft}
-        onChange={setDraft}
-        suggestions={remaining}
-        placeholder={value.length === 0 ? placeholder : undefined}
-        disabled={disabled}
-        onCommit={addColumns}
-        onEmptyBackspace={() => {
-          if (value.length > 0) removeColumn(value[value.length - 1])
-        }}
-      />
     </div>
   )
 }

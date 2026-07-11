@@ -356,7 +356,8 @@ describe('MetricForm validation', () => {
             aggregation: 'sum',
             measure_column: 'amount',
             row_filters: ['completed'],
-            filter_sql: '(amount > 0)',
+            // Verbatim: an untouched load→save must not add parens (tripl-wumc).
+            filter_sql: 'amount > 0',
           }),
           denominator: expect.objectContaining({
             fact_table_id: 'ft-2',
@@ -588,7 +589,8 @@ describe('MetricForm validation', () => {
         composition: 'single',
         fact_table_id: 'ft-1',
         row_filters: ['completed'],
-        filter_sql: '(amount > 0)',
+        // A single SQL fragment is stored verbatim; the collector wraps it.
+        filter_sql: 'amount > 0',
       }),
     )
   })
@@ -817,7 +819,7 @@ describe('MetricForm validation', () => {
     expect(screen.queryByRole('listbox', { name: 'Column suggestions' })).toBeNull()
   })
 
-  it('adds breakdown columns and submits them in the payload', async () => {
+  it('ticks breakdown columns and submits them in the payload', async () => {
     renderForm()
 
     fireEvent.change(screen.getByLabelText('Display name', { exact: false }), {
@@ -829,13 +831,9 @@ describe('MetricForm validation', () => {
     })
     fireEvent.change(document.getElementById('metric-sql-time')!, { target: { value: 'bucket' } })
 
-    const breakdowns = document.getElementById('metric-breakdowns') as HTMLInputElement
-    fireEvent.change(breakdowns, { target: { value: 'platform' } })
-    fireEvent.keyDown(breakdowns, { key: 'Enter' })
-    fireEvent.change(breakdowns, { target: { value: 'country' } })
-    fireEvent.keyDown(breakdowns, { key: 'Enter' })
-
-    // Both added columns render as checked boxes in the picker before submitting.
+    // The picker offers the data-source schema columns as checkboxes; tick two.
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Break down by platform' }))
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Break down by country' }))
     expect(screen.getByRole('checkbox', { name: 'Break down by platform' })).toBeChecked()
     expect(screen.getByRole('checkbox', { name: 'Break down by country' })).toBeChecked()
 
@@ -848,7 +846,7 @@ describe('MetricForm validation', () => {
     )
   })
 
-  it('flushes a typed-but-not-entered breakdown column on blur so it is not lost on save', async () => {
+  it('offers no free-text add input in the breakdown picker and unticks cleanly', async () => {
     renderForm()
 
     fireEvent.change(screen.getByLabelText('Display name', { exact: false }), {
@@ -860,18 +858,35 @@ describe('MetricForm validation', () => {
     })
     fireEvent.change(document.getElementById('metric-sql-time')!, { target: { value: 'bucket' } })
 
-    // Type a breakdown column but never press Enter, then leave the field.
-    const breakdowns = document.getElementById('metric-breakdowns') as HTMLInputElement
-    fireEvent.change(breakdowns, { target: { value: 'device_type' } })
-    fireEvent.blur(breakdowns)
+    // Checkbox-only picker: the embedded add-column combobox that duplicated
+    // the checkbox list was removed (tripl-z5rq).
+    const group = document.getElementById('metric-breakdowns')!
+    expect(within(group).queryByRole('combobox')).toBeNull()
+
+    const platform = screen.getByRole('checkbox', { name: 'Break down by platform' })
+    fireEvent.click(platform)
+    expect(platform).toBeChecked()
+    fireEvent.click(platform)
+    expect(platform).not.toBeChecked()
 
     submit()
 
     await waitFor(() => expect(metricsCatalogApi.create).toHaveBeenCalledTimes(1))
     expect(metricsCatalogApi.create).toHaveBeenCalledWith(
       'demo',
-      expect.objectContaining({ breakdown_columns: ['device_type'] }),
+      expect.objectContaining({ breakdown_columns: [] }),
     )
+  })
+
+  it('renders a saved breakdown column missing from the schema as a checked box', () => {
+    // A custom column saved before the add-input was removed (or added via the
+    // API) must stay visible and removable via the options union.
+    renderForm({
+      ...EDIT_METRIC,
+      breakdown_columns: ['custom_dim'],
+    } as unknown as MetricDefinitionResponse)
+
+    expect(screen.getByRole('checkbox', { name: 'Break down by custom_dim' })).toBeChecked()
   })
 
   it('keeps column inputs plain when no data source is selected', () => {

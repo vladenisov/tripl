@@ -1,7 +1,5 @@
-import { useState } from 'react'
 import { Badge } from '@/components/ui/badge'
 import { Checkbox } from '@/components/ui/checkbox'
-import { ColumnSuggestInput } from '@/components/column-suggest'
 
 interface ColumnCheckboxPickerProps {
   id?: string
@@ -12,16 +10,19 @@ interface ColumnCheckboxPickerProps {
   onChange: (next: string[]) => void
   /** Columns shown disabled with a "reserved" badge (e.g. version/platform dims). */
   reserved?: string[]
-  addPlaceholder?: string
   disabled?: boolean
+  'aria-label'?: string
 }
 
 /**
  * Column picker mirroring the scans UI: a checkbox grid over the known columns
  * (ticking writes state immediately, so a selection can never be lost as an
- * uncommitted draft) plus a suggestion-backed "add" input for columns the schema
- * cache hasn't caught up to yet. A selected column that isn't in `columns` still
- * renders as a checked box so a saved custom column stays visible and removable.
+ * uncommitted draft). A selected column that isn't in `columns` still renders
+ * as a checked box, so a saved custom column stays visible and removable.
+ *
+ * Checkbox-only by design (tripl-z5rq): the free-text "add a column" input
+ * this grid used to embed duplicated the checkbox list in its suggestion
+ * dropdown and bypassed the reserved-columns guard, so it was removed.
  */
 export function ColumnCheckboxPicker({
   id,
@@ -29,10 +30,9 @@ export function ColumnCheckboxPicker({
   value,
   onChange,
   reserved = [],
-  addPlaceholder,
   disabled,
+  'aria-label': ariaLabel,
 }: ColumnCheckboxPickerProps) {
-  const [draft, setDraft] = useState('')
   const reservedSet = new Set(reserved)
   const known = new Set(columns)
   const options = [...columns, ...value.filter(name => !known.has(name))]
@@ -42,19 +42,9 @@ export function ColumnCheckboxPicker({
     onChange(value.includes(name) ? value.filter(column => column !== name) : [...value, name])
   }
 
-  const addColumns = (raw: string) => {
-    const next = [...value]
-    for (const part of raw.split(',')) {
-      const name = part.trim()
-      if (name && !next.includes(name)) next.push(name)
-    }
-    if (next.length !== value.length) onChange(next)
-    setDraft('')
-  }
-
   return (
-    <div className="space-y-2">
-      {options.length > 0 && (
+    <div id={id} role="group" aria-label={ariaLabel}>
+      {options.length > 0 ? (
         <div className="grid max-h-[220px] gap-1.5 overflow-y-auto sm:grid-cols-2">
           {options.map(name => {
             const isReserved = reservedSet.has(name)
@@ -80,17 +70,11 @@ export function ColumnCheckboxPicker({
             )
           })}
         </div>
+      ) : (
+        <p className="text-[12px]" style={{ color: 'var(--fg-subtle)' }}>
+          No columns available yet.
+        </p>
       )}
-      <ColumnSuggestInput
-        id={id}
-        value={draft}
-        onChange={setDraft}
-        suggestions={columns.filter(name => !value.includes(name))}
-        placeholder={addPlaceholder ?? 'Add a column…'}
-        disabled={disabled}
-        onCommit={addColumns}
-        aria-label="Add breakdown column"
-      />
     </div>
   )
 }
