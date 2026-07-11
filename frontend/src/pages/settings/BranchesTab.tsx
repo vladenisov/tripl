@@ -1,4 +1,4 @@
-import { Fragment, useId, useState, type ReactNode } from 'react'
+import { Fragment, useId, useMemo, useState, type ReactNode } from 'react'
 import { useMutation, useQueries, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   ChevronRight,
@@ -14,6 +14,7 @@ import {
 import { branchSettingsApi } from '@/api/branchSettings'
 import { ApiError } from '@/api/client'
 import { planBranchesApi } from '@/api/planBranches'
+import { usersApi } from '@/api/users'
 import { TrackerConfigDialog } from './TrackerConfigDialog'
 import { useConfirm } from '@/hooks/useConfirm'
 import { Chip, type ChipTone } from '@/components/primitives/chip'
@@ -100,10 +101,24 @@ const ENTITY_LABEL: Record<PlanDiffEntityType, string> = {
   relation: 'relation',
 }
 
-function branchSubtitle(branch: PlanBranchSummary): string {
+/** The API serialises `created_by` as a bare user id; resolve it against the
+ * project roster (GET /users is open to any authenticated user), preferring
+ * the name and falling back to the email — same convention as EventRow. */
+function useUsersById(): Map<string, string> {
+  const { data: users } = useQuery({ queryKey: ['users'], queryFn: () => usersApi.list() })
+  return useMemo(
+    () => new Map((users ?? []).map((u) => [u.id, u.name ?? u.email])),
+    [users],
+  )
+}
+
+function branchAuthor(branch: PlanBranchSummary, usersById: Map<string, string>): string {
+  return (branch.created_by ? usersById.get(branch.created_by) : undefined) ?? 'unknown'
+}
+
+function branchSubtitle(branch: PlanBranchSummary, usersById: Map<string, string>): string {
   if (branch.kind === 'main') return 'production'
-  const author = branch.created_by ?? 'unknown'
-  return `${author} · ${formatRelativeTime(branch.updated_at)}`
+  return `${branchAuthor(branch, usersById)} · ${formatRelativeTime(branch.updated_at)}`
 }
 
 function aheadCount(diff: PlanBranchDiffSummary | undefined): number {
@@ -157,6 +172,7 @@ export function BranchesTab({ slug }: { slug: string }) {
   const [createName, setCreateName] = useState('')
   const [createDescription, setCreateDescription] = useState('')
   const [activeBranchId, setActiveBranchId] = useState<string | null>(null)
+  const usersById = useUsersById()
 
   const { data, isLoading } = useQuery({
     queryKey: ['planBranches', slug],
@@ -245,6 +261,7 @@ export function BranchesTab({ slug }: { slug: string }) {
               defaultCount={defaultCount}
               selectedId={selected?.id ?? null}
               countsByBranch={countsByBranch}
+              usersById={usersById}
               onSelect={(branch) => setActiveBranchId(branch.id)}
             />
             <BranchDetail
@@ -281,6 +298,7 @@ interface BranchListProps {
   defaultCount: number
   selectedId: string | null
   countsByBranch: Map<string, { ahead: number; behind: number }>
+  usersById: Map<string, string>
   onSelect: (branch: PlanBranchSummary) => void
 }
 
@@ -289,6 +307,7 @@ function BranchList({
   defaultCount,
   selectedId,
   countsByBranch,
+  usersById,
   onSelect,
 }: BranchListProps) {
   return (
@@ -321,7 +340,7 @@ function BranchList({
                   {branch.name}
                 </div>
                 <div className="mt-0.5 text-[10.5px]" style={{ color: 'var(--fg-subtle)' }}>
-                  {branchSubtitle(branch)}
+                  {branchSubtitle(branch, usersById)}
                 </div>
               </div>
               {!isMain && (
@@ -387,6 +406,7 @@ interface FeatureBranchDetailProps {
 
 function FeatureBranchDetail({ slug, branch, diff, confirm }: FeatureBranchDetailProps) {
   const qc = useQueryClient()
+  const usersById = useUsersById()
 
   // Approvals live on the detail response; the required quota on the project's
   // merge policy. Together they drive the "Approvals n/N" chip.
@@ -472,7 +492,7 @@ function FeatureBranchDetail({ slug, branch, diff, confirm }: FeatureBranchDetai
     <div className="flex flex-col gap-3">
       <Panel
         title={branch.name}
-        subtitle={`Opened by ${branch.created_by ?? 'unknown'} · updated ${formatRelativeTime(branch.updated_at)}`}
+        subtitle={`Opened by ${branchAuthor(branch, usersById)} · updated ${formatRelativeTime(branch.updated_at)}`}
         right={
           <div className="flex items-center gap-1.5">
             {requiredApprovals > 0 && branch.status !== 'merged' ? (

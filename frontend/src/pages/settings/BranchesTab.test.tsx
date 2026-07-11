@@ -1,10 +1,11 @@
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { branchSettingsApi } from '@/api/branchSettings'
 import { ApiError } from '@/api/client'
 import { planBranchesApi } from '@/api/planBranches'
-import type { PlanBranchSummary, ProjectBranchSettings } from '@/types'
+import { usersApi } from '@/api/users'
+import type { PlanBranchSummary, ProjectBranchSettings, UserListItem } from '@/types'
 import { BranchesTab } from './BranchesTab'
 
 vi.mock('@/api/planBranches', () => ({
@@ -29,6 +30,31 @@ vi.mock('@/api/branchSettings', () => ({
     update: vi.fn(),
   },
 }))
+
+vi.mock('@/api/users', () => ({
+  usersApi: {
+    list: vi.fn(),
+    updateRole: vi.fn(),
+  },
+}))
+
+function makeUser(overrides: Partial<UserListItem>): UserListItem {
+  return {
+    id: 'u-1',
+    email: 'user@example.com',
+    name: null,
+    role: 'editor',
+    created_at: '2026-01-01T00:00:00Z',
+    ...overrides,
+  }
+}
+
+// created_by arrives from the API as a bare user id; the tab resolves it
+// against this roster (name, falling back to email).
+const USERS = [
+  makeUser({ id: 'u-maya', name: 'Maya R.', email: 'maya@example.com' }),
+  makeUser({ id: 'u-priya', name: 'Priya S.', email: 'priya@example.com' }),
+]
 
 function makeSettings(overrides: Partial<ProjectBranchSettings>): ProjectBranchSettings {
   return {
@@ -66,7 +92,7 @@ const FEATURE = makeBranch({
   name: 'checkout-v2',
   kind: 'working',
   status: 'approved',
-  created_by: 'Maya R.',
+  created_by: 'u-maya',
 })
 
 function renderTab() {
@@ -77,6 +103,10 @@ function renderTab() {
     </QueryClientProvider>,
   )
 }
+
+beforeEach(() => {
+  vi.mocked(usersApi.list).mockResolvedValue(USERS)
+})
 
 afterEach(() => {
   vi.clearAllMocks()
@@ -98,6 +128,60 @@ describe('BranchesTab', () => {
     // "main" appears in the list row and the detail header.
     expect(screen.getAllByText('main').length).toBeGreaterThan(0)
     expect(screen.getByText('production')).toBeInTheDocument()
+  })
+
+  it('resolves the creator id to the user name in the list row and detail header', async () => {
+    vi.mocked(planBranchesApi.list).mockResolvedValue({ items: [MAIN, FEATURE], total: 2 })
+    vi.mocked(planBranchesApi.getConflicts).mockResolvedValue({ entities: [], unresolved_count: 0 })
+    vi.mocked(planBranchesApi.listComments).mockResolvedValue([])
+    vi.mocked(planBranchesApi.diff).mockResolvedValue({
+      behind_base: false,
+      summary: { added: 0, removed: 0, changed: 0 },
+      entries: [],
+    })
+
+    renderTab()
+
+    // List row subtitle shows the resolved name, never the raw user id.
+    expect(await screen.findByText(/Maya R\. ·/)).toBeInTheDocument()
+
+    fireEvent.click(await screen.findByText('checkout-v2'))
+    expect(await screen.findByText(/Opened by Maya R\. ·/)).toBeInTheDocument()
+    expect(screen.queryByText(/u-maya/)).not.toBeInTheDocument()
+  })
+
+  it('falls back to the user email when the creator has no name', async () => {
+    vi.mocked(usersApi.list).mockResolvedValue([
+      makeUser({ id: 'u-mail', email: 'dev@example.com', name: null }),
+    ])
+    const feature = makeBranch({
+      id: 'feat-3',
+      name: 'email-only',
+      kind: 'working',
+      status: 'draft',
+      created_by: 'u-mail',
+    })
+    vi.mocked(planBranchesApi.list).mockResolvedValue({ items: [MAIN, feature], total: 2 })
+
+    renderTab()
+
+    expect(await screen.findByText(/dev@example\.com ·/)).toBeInTheDocument()
+  })
+
+  it("shows 'unknown' when the creator is missing from the roster", async () => {
+    const feature = makeBranch({
+      id: 'feat-4',
+      name: 'orphaned',
+      kind: 'working',
+      status: 'draft',
+      created_by: 'u-gone',
+    })
+    vi.mocked(planBranchesApi.list).mockResolvedValue({ items: [MAIN, feature], total: 2 })
+
+    renderTab()
+
+    expect(await screen.findByText(/unknown ·/)).toBeInTheDocument()
+    expect(screen.queryByText(/u-gone/)).not.toBeInTheDocument()
   })
 
   it('shows the default-branch empty state when main is selected', async () => {
@@ -239,7 +323,7 @@ describe('BranchesTab', () => {
       name: 'gdpr-audit',
       kind: 'working',
       status: 'draft',
-      created_by: 'Priya S.',
+      created_by: 'u-priya',
     })
     vi.mocked(planBranchesApi.list).mockResolvedValue({ items: [MAIN, draftFeature], total: 2 })
     vi.mocked(planBranchesApi.getConflicts).mockResolvedValue({ entities: [], unresolved_count: 0 })
