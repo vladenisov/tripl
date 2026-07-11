@@ -38,16 +38,19 @@ async def build_warehouse(session: AsyncSession, ctx: DemoContext) -> None:
 
 
 async def _build_data_source(session: AsyncSession, ctx: DemoContext) -> None:
-    # Scoped to this demo project so it is cleaned up with the project instead of
-    # leaking a workspace-global orphan. host=demo.internal, never queried.
+    # A local synthetic warehouse: db_type="synthetic" resolves to the in-memory
+    # SyntheticAdapter, which serves a bounded deterministic dataset with NO
+    # network/filesystem access. Scoped to this demo project so it is cleaned up
+    # with the project instead of leaking a workspace-global orphan. host/port/
+    # credentials are placeholders — the adapter never opens a connection.
     data_source = DataSource(
         project_id=ctx.project_id,
         name=demo_data_source_name(ctx.slug),
-        db_type="clickhouse",
-        host="demo.internal",
-        port=8123,
-        database_name="analytics",
-        username="demo",
+        db_type="synthetic",
+        host="synthetic",
+        port=0,
+        database_name="synthetic",
+        username="",
         password_encrypted="",
     )
     session.add(data_source)
@@ -60,7 +63,9 @@ async def _build_scan_config(session: AsyncSession, ctx: DemoContext) -> None:
         data_source_id=ctx.data_source_id,
         project_id=ctx.project_id,
         name="Demo scan",
-        base_query="SELECT 1 -- demo",
+        # Selects the synthetic ``events`` table so the normal preview/scan paths
+        # run against the in-memory dataset served by the SyntheticAdapter.
+        base_query="SELECT * FROM events",
         time_column="event_time",  # required for _get_default_scan_config_id
         interval="1h",
         anomaly_detection_enabled=True,

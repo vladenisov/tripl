@@ -1,12 +1,16 @@
+import uuid
+
 import pytest
 from httpx import AsyncClient
 
+from tripl.models.data_source import DataSource
 from tripl.schemas.data_source_schema import (
     ColumnSchema,
     DataSourceSchemaResponse,
     TableSchema,
 )
 from tripl.services import datasource_schema_service, datasource_service
+from tripl.tests.conftest import TestSessionLocal
 
 
 class TestDataSourcesCRUD:
@@ -328,6 +332,100 @@ class TestDataSourceSchema:
             "/api/v1/data-sources/00000000-0000-0000-0000-000000000000/schema"
         )
         assert resp.status_code == 401
+
+
+class TestSyntheticGuards:
+    """Synthetic sources are demo-only: never user-created, never edited into a
+    real warehouse, and always labelled as synthetic in the API."""
+
+    async def _seed_synthetic(self, name: str) -> uuid.UUID:
+        ds_id = uuid.uuid4()
+        async with TestSessionLocal() as session:
+            session.add(
+                DataSource(
+                    id=ds_id,
+                    project_id=None,
+                    name=name,
+                    db_type="synthetic",
+                    host="synthetic",
+                    port=0,
+                    database_name="synthetic",
+                )
+            )
+            await session.commit()
+        return ds_id
+
+    async def test_create_rejects_synthetic_db_type(self, client: AsyncClient):
+        resp = await client.post(
+            "/api/v1/data-sources",
+            json={
+                "name": "Sneaky synthetic",
+                "db_type": "synthetic",
+                "host": "localhost",
+                "database_name": "d",
+            },
+        )
+        assert resp.status_code == 422
+
+    async def test_real_source_is_labelled_not_synthetic(self, client: AsyncClient):
+        resp = await client.post(
+            "/api/v1/data-sources",
+            json={
+                "name": "Real CH",
+                "db_type": "clickhouse",
+                "host": "localhost",
+                "database_name": "d",
+            },
+        )
+        assert resp.status_code == 201
+        assert resp.json()["is_synthetic"] is False
+
+    async def test_synthetic_source_is_labelled_synthetic(self, client: AsyncClient):
+        ds_id = await self._seed_synthetic("Demo warehouse label")
+        resp = await client.get(f"/api/v1/data-sources/{ds_id}")
+        assert resp.status_code == 200
+        assert resp.json()["is_synthetic"] is True
+        assert resp.json()["db_type"] == "synthetic"
+
+    async def test_synthetic_cannot_be_edited_into_real_type(self, client: AsyncClient):
+        ds_id = await self._seed_synthetic("Demo warehouse type")
+        resp = await client.patch(
+            f"/api/v1/data-sources/{ds_id}", json={"db_type": "clickhouse"}
+        )
+        assert resp.status_code == 422
+
+    async def test_synthetic_cannot_be_pointed_at_real_host(self, client: AsyncClient):
+        ds_id = await self._seed_synthetic("Demo warehouse host")
+        resp = await client.patch(
+            f"/api/v1/data-sources/{ds_id}",
+            json={"host": "real.example.com", "password": "hunter2"},
+        )
+        assert resp.status_code == 422
+
+    async def test_synthetic_rename_is_allowed(self, client: AsyncClient):
+        ds_id = await self._seed_synthetic("Demo warehouse rename")
+        resp = await client.patch(
+            f"/api/v1/data-sources/{ds_id}", json={"name": "Demo warehouse renamed"}
+        )
+        assert resp.status_code == 200
+        assert resp.json()["name"] == "Demo warehouse renamed"
+        assert resp.json()["is_synthetic"] is True
+
+    async def test_real_source_cannot_be_converted_to_synthetic(self, client: AsyncClient):
+        create = await client.post(
+            "/api/v1/data-sources",
+            json={
+                "name": "Convert me",
+                "db_type": "clickhouse",
+                "host": "localhost",
+                "database_name": "d",
+            },
+        )
+        ds_id = create.json()["id"]
+        resp = await client.patch(
+            f"/api/v1/data-sources/{ds_id}", json={"db_type": "synthetic"}
+        )
+        assert resp.status_code == 422
 
 
 class TestConnectionErrorSanitization:

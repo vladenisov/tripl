@@ -1,4 +1,7 @@
-export type DbType = 'clickhouse' | 'postgres' | 'bigquery'
+// 'synthetic' is a local, in-memory demo warehouse. It is a valid db_type on the
+// wire (demo sources report it) but is intentionally NOT user-selectable, so it
+// is excluded from DB_TYPE_OPTIONS below.
+export type DbType = 'clickhouse' | 'postgres' | 'bigquery' | 'synthetic'
 
 export const DB_TYPE_OPTIONS: { value: DbType; label: string; defaultPort: number }[] = [
   { value: 'clickhouse', label: 'ClickHouse', defaultPort: 8123 },
@@ -20,6 +23,7 @@ export interface DataSource {
   id: string
   name: string
   db_type: DbType
+  is_synthetic: boolean
   host: string
   port: number
   database_name: string

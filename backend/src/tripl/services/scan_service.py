@@ -6,7 +6,7 @@ from fastapi import HTTPException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from tripl.models.data_source import DataSource
+from tripl.models.data_source import DataSource, DBType
 from tripl.models.scan_config import ScanConfig
 from tripl.models.scan_job import ScanJob, ScanJobStatus
 from tripl.models.scan_preview_job import ScanPreviewJob
@@ -23,11 +23,26 @@ from tripl.services.project_lookup import get_project_id_by_slug
 logger = logging.getLogger(__name__)
 
 
-async def _verify_data_source(session: AsyncSession, ds_id: uuid.UUID) -> DataSource:
+async def _verify_data_source(
+    session: AsyncSession, ds_id: uuid.UUID, project_id: uuid.UUID | None = None
+) -> DataSource:
     result = await session.execute(select(DataSource).where(DataSource.id == ds_id))
     ds = result.scalar_one_or_none()
     if ds is None:
         raise HTTPException(status_code=404, detail="Data source not found")
+    # A synthetic (local demo) source belongs to exactly one demo project and must
+    # never be selected by any other project — that is how an ordinary project is
+    # kept from pointing a scan/preview at demo data. Identity is db_type +
+    # project ownership, never slug/host/name.
+    if (
+        ds.db_type == DBType.synthetic
+        and project_id is not None
+        and ds.project_id != project_id
+    ):
+        raise HTTPException(
+            status_code=422,
+            detail="Synthetic data sources belong to their demo project and cannot be selected here.",
+        )
     return ds
 
 
@@ -56,7 +71,7 @@ async def create_scan_config(
     session: AsyncSession, slug: str, data: ScanConfigCreate
 ) -> ScanConfig:
     project_id = await get_project_id_by_slug(session, slug)
-    await _verify_data_source(session, data.data_source_id)
+    await _verify_data_source(session, data.data_source_id, project_id)
 
     existing = await session.execute(
         select(ScanConfig).where(
@@ -161,7 +176,7 @@ async def trigger_preview(
     work runs in the worker; the client polls ``get_preview_job`` for the result.
     """
     project_id = await get_project_id_by_slug(session, slug)
-    await _verify_data_source(session, data.data_source_id)
+    await _verify_data_source(session, data.data_source_id, project_id)
 
     job = ScanPreviewJob(
         project_id=project_id,
