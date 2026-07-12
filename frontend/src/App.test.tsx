@@ -4,6 +4,17 @@ import { BrowserRouter } from 'react-router-dom'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import App from './App'
 
+// App routes its pages through `lazy(() => import(...))`, so the first render of a
+// route pays to transform and evaluate that page's whole dependency tree — seconds
+// of it on a busy machine, and all of it inside whatever `findBy*` timeout the
+// assertion happens to have (tripl-gk3l). Importing the pages this file asserts
+// text against warms Vite's module cache during collection, so the lazy routes
+// resolve from memory instead of racing a timer. The routes stay lazy in the app;
+// only the test stops paying the import cost in the middle of an assertion.
+import './pages/ProjectsPage'
+import './pages/AuthPage'
+import './pages/NotFoundPage'
+
 function jsonResponse(data: unknown, status = 200) {
   return new Response(JSON.stringify(data), {
     status,

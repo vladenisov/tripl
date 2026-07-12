@@ -69,5 +69,11 @@ export default defineConfig({
     environment: 'jsdom',
     globals: true,
     setupFiles: './src/test-setup.ts',
+    // Vitest's 5000ms default caps the whole test, including time Testing Library
+    // spends inside `findBy*`/`waitFor` — so it has to stay comfortably above the
+    // 5000ms `asyncUtilTimeout` set in test-setup.ts, or a slow wait dies as an
+    // unhelpful "Test timed out" instead of surfacing what the DOM actually held.
+    // Headroom for a loaded machine, not licence for genuinely slow tests.
+    testTimeout: 15000,
   },
 })
