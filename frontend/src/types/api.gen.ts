@@ -321,29 +321,6 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/v1/projects/demo/{slug}/upgrade": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /**
-         * Upgrade Demo Project
-         * @description Re-provision a legacy/outdated demo under the current recipe, in place.
-         *
-         *     Refuses to silently discard a user-edited demo unless ``force=true``. Gated by
-         *     the demo rollback switch (this path provisions). Creator or owner only.
-         */
-        post: operations["upgrade_demo_project_api_v1_projects_demo__slug__upgrade_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/api/v1/projects/{slug}": {
         parameters: {
             query?: never;
@@ -7146,16 +7123,6 @@ export interface components {
             created_at: string;
             /** Created By User Id */
             created_by_user_id?: string | null;
-            /**
-             * Demo Legacy
-             * @default false
-             */
-            demo_legacy: boolean;
-            /**
-             * Demo Outdated
-             * @default false
-             */
-            demo_outdated: boolean;
             /** Demo Recipe Version */
             demo_recipe_version?: string | null;
             /** Demo Seeded At */
@@ -9380,39 +9347,6 @@ export interface operations {
     reset_demo_project_api_v1_projects_demo__slug__reset_post: {
         parameters: {
             query?: never;
-            header?: never;
-            path: {
-                slug: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ProjectResponse"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    upgrade_demo_project_api_v1_projects_demo__slug__upgrade_post: {
-        parameters: {
-            query?: {
-                force?: boolean;
-            };
             header?: never;
             path: {
                 slug: string;

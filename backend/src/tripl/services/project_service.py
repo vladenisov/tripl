@@ -33,7 +33,7 @@ from tripl.schemas.project import (
     ProjectSummary,
     ProjectUpdate,
 )
-from tripl.services import demo_legacy_service, plan_branch_service
+from tripl.services import plan_branch_service
 from tripl.services.metrics_insights_service import (
     _count_active_metric_signals_by_project,
     incident_parent_keys,
@@ -534,9 +534,6 @@ async def _serialize_project(session: AsyncSession, project: Project) -> Project
     summary = (await _get_project_summaries(session, [project.id]))[project.id]
     response = ProjectResponse.model_validate(project)
     response.summary = summary
-    response.demo_legacy, response.demo_outdated = (
-        await demo_legacy_service.classification_flags(session, project)
-    )
     return response
 
 
@@ -572,14 +569,6 @@ async def list_projects(session: AsyncSession) -> list[ProjectResponse]:
     projects = list(result.scalars().all())
     summaries = await _get_project_summaries(session, [project.id for project in projects])
     responses = _serialize_projects(projects, summaries)
-    # Legacy/outdated classification for the list badge. ``demo_outdated`` is a pure
-    # column check; ``demo_legacy`` needs a single batched source probe (no N+1).
-    legacy_ids = await demo_legacy_service.legacy_project_ids(
-        session, [project.id for project in projects]
-    )
-    for response, project in zip(responses, projects, strict=True):
-        response.demo_outdated = demo_legacy_service.is_outdated_demo(project)
-        response.demo_legacy = (not project.is_demo) and project.id in legacy_ids
     await cache.set_json(
         cache.key_projects_list(),
         [response.model_dump(mode="json") for response in responses],

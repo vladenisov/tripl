@@ -71,14 +71,12 @@ synthetic source:
   clean failure with nothing half‑built left behind. Progress and any failure are
   shown in the creation dialog.
 - **Reset** — re‑seed the demo in place under the same URL, preserving ownership.
-- **Upgrade** — a demo seeded by an older recipe (or a *legacy* demo from before
-  this workspace existed) can be re‑provisioned to the current recipe in place.
-  An upgrade refuses to silently discard a demo you have edited unless you
-  confirm.
+  Reset re‑runs the current recipe, so it is also how you refresh a demo built
+  from an older one.
 - **Delete** — removes the demo and its owned synthetic warehouse and leaves every
   real workspace source untouched. The creator or an owner can delete it.
 - **Recipe version.** Each demo records the recipe version it was built from, shown
-  on the demo banner, so an outdated demo is easy to spot and upgrade.
+  on the demo banner.
 
 Demo creation can be turned off entirely for a deployment with the `demo_enabled`
 flag; toggling it never affects real projects.
