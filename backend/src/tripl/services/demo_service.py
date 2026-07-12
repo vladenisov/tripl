@@ -39,9 +39,33 @@ __all__ = [
 
 logger = logging.getLogger(__name__)
 
-# Stable log event name so demo provisioning failures are greppable/alertable in
-# aggregated logs regardless of the underlying exception type.
+# Stable log event names so demo provisioning/reset failures are greppable and
+# alertable in aggregated logs regardless of the underlying exception type.
 DEMO_PROVISION_FAILED_EVENT = "demo.provision.failed"
+DEMO_RESET_FAILED_EVENT = "demo.reset.failed"
+
+
+def _demo_clock() -> datetime:
+    """The demo's seed instant, floored to the hour so series land on buckets."""
+    return datetime.now(tz=UTC).replace(minute=0, second=0, microsecond=0)
+
+
+def _new_demo_project(*, slug: str, created_by: uuid.UUID | None) -> Project:
+    """The demo's Project row, shared by create and reset so they cannot drift."""
+    return Project(
+        name="Demo Project",
+        slug=slug,
+        description=(
+            "A pre-populated demo workspace. "
+            "Explore events, metrics, signals, and distribution drift "
+            "without connecting a warehouse."
+        ),
+        is_demo=True,
+        demo_recipe_version=DEMO_RECIPE_VERSION,
+        generation_status=ProjectGenerationStatus.seeding.value,
+        generation_stage="init",
+        created_by_user_id=created_by,
+    )
 
 
 async def create_demo_project(
@@ -59,26 +83,13 @@ async def create_demo_project(
     surfaces as a real workspace. ``created_by`` records provenance so the
     creator can manage their own demo; ``slug`` lets ``reset`` re-seed in place.
     """
-    now = datetime.now(tz=UTC).replace(minute=0, second=0, microsecond=0)
+    now = _demo_clock()
     if slug is None:
         # Unique slug so repeated create calls never collide.
         slug = f"demo-{uuid.uuid4().hex[:6]}"
 
     # Phase 1: durable hidden shell, committed first as the provisioning marker.
-    project = Project(
-        name="Demo Project",
-        slug=slug,
-        description=(
-            "A pre-populated demo workspace. "
-            "Explore events, metrics, signals, and distribution drift "
-            "without connecting a warehouse."
-        ),
-        is_demo=True,
-        demo_recipe_version=DEMO_RECIPE_VERSION,
-        generation_status=ProjectGenerationStatus.seeding.value,
-        generation_stage="init",
-        created_by_user_id=created_by,
-    )
+    project = _new_demo_project(slug=slug, created_by=created_by)
     session.add(project)
     await session.flush()
     project_id = project.id
@@ -130,18 +141,61 @@ async def create_demo_project(
 async def reset_demo_project(
     session: AsyncSession, slug: str, *, created_by: uuid.UUID | None = None
 ) -> ProjectResponse:
-    """Restore a demo to its freshly-seeded state under the same slug.
+    """Restore a demo to its freshly-seeded state under the same slug, atomically.
 
-    Delete removes the demo and its owned synthetic warehouse; recreate re-seeds
-    under the same slug so the demo URL stays stable across a reset. The original
-    creator is preserved so ownership-based management still applies afterwards.
+    The old demo and its replacement live in ONE transaction: the existing rows
+    are dropped, a fresh demo is seeded under the same slug, and only then is
+    anything committed. If seeding fails the rollback puts the original demo back
+    exactly as it was, so a transient error can never trade a working demo for a
+    hidden failed shell (tripl-2su6.13).
+
+    Re-seeding in place — rather than seeding a replacement elsewhere and swapping
+    it in — is deliberate: the seed derives the synthetic warehouse's name and the
+    search documents from the slug, so content seeded under a temporary slug would
+    carry that temporary slug. The original creator is preserved so ownership-based
+    management still applies afterwards.
     """
     project = await project_service.get_project_by_slug(session, slug)
     if not project.is_demo:
         raise HTTPException(status_code=400, detail="Only demo projects can be reset")
     creator = project.created_by_user_id or created_by
-    await project_service.delete_project(session, slug)
-    return await create_demo_project(session, created_by=creator, slug=slug)
+    now = _demo_clock()
+
+    try:
+        await project_service.purge_project_rows(session, project)
+        replacement = _new_demo_project(slug=slug, created_by=creator)
+        session.add(replacement)
+        await session.flush()
+        branch_id = await plan_branch_service.ensure_main_branch_id(session, replacement.id)
+        await _seed_demo_content(
+            session,
+            project_id=replacement.id,
+            branch_id=branch_id,
+            slug=slug,
+            now=now,
+            created_by=creator,
+        )
+        replacement.generation_status = ProjectGenerationStatus.ready.value
+        replacement.generation_stage = None
+        replacement.generation_error = None
+        replacement.demo_seeded_at = now
+        await session.commit()
+    except Exception as exc:
+        logger.warning(
+            "%s slug=%s error=%s",
+            DEMO_RESET_FAILED_EVENT,
+            slug,
+            type(exc).__name__,
+        )
+        await session.rollback()
+        raise HTTPException(
+            status_code=500,
+            detail="Demo reset failed. Your existing demo workspace was left unchanged.",
+        ) from exc
+
+    await cache.delete_prefix(cache.prefix_projects())
+    await cache.delete_prefix(cache.prefix_data_sources())
+    return await project_service.get_project(session, slug)
 
 
 def _safe_generation_error(exc: Exception) -> str:

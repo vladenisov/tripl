@@ -12,6 +12,7 @@ from httpx import AsyncClient
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from tripl.config import settings
 from tripl.models.data_source import DataSource, DBType
 from tripl.models.event_type import EventType
 from tripl.models.project import Project
@@ -34,6 +35,12 @@ async def test_demo_has_explicit_identity(client: AsyncClient) -> None:
     assert data["generation_status"] == "ready"
     assert data["demo_recipe_version"] == demo_service.DEMO_RECIPE_VERSION
     assert data["demo_seeded_at"] is not None
+    # Freshness has to come from the runtime tick, not the seed time — the latter
+    # is floored to the hour (the tick anchors its bucket grid to it), so it would
+    # report a brand-new demo as up to an hour stale. Exposed, and null until the
+    # first tick (tripl-2su6.17).
+    assert "demo_last_tick_at" in data
+    assert data["demo_last_tick_at"] is None
     # Provenance: the owner who created it is recorded.
     assert data["created_by_user_id"] is not None
 
@@ -147,6 +154,77 @@ async def test_reset_reprovisions_in_place(client: AsyncClient) -> None:
     items = events_resp.json()
     items = items["items"] if isinstance(items, dict) else items
     assert len(items) > 0
+
+
+@pytest.mark.asyncio
+async def test_failed_reset_leaves_the_existing_demo_untouched(
+    client: AsyncClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A reset that dies mid-seed must not cost the user their working demo.
+
+    Reset used to delete the old demo in its own commit and only then seed the
+    replacement, so any transient seeding error left the user with nothing — the
+    working demo gone, a hidden failed shell in its place. Drop and re-seed now
+    share one transaction, so the rollback restores the original exactly
+    (tripl-2su6.13).
+    """
+    created = await client.post("/api/v1/projects/demo")
+    slug = created.json()["slug"]
+
+    before = await client.get(f"/api/v1/projects/{slug}/events")
+    before_body = before.json()
+    before_items = before_body["items"] if isinstance(before_body, dict) else before_body
+    assert before_items, "the demo should be populated before the reset"
+
+    async def _boom(*args: object, **kwargs: object) -> None:
+        raise RuntimeError("injected reset seed failure")
+
+    monkeypatch.setattr(demo_service, "_seed_demo_content", _boom)
+
+    reset = await client.post(f"/api/v1/projects/demo/{slug}/reset")
+    assert reset.status_code == 500
+
+    # The original demo survived: same slug, still ready, still populated.
+    project = await client.get(f"/api/v1/projects/{slug}")
+    assert project.status_code == 200
+    assert project.json()["generation_status"] == "ready"
+
+    after = await client.get(f"/api/v1/projects/{slug}/events")
+    after_body = after.json()
+    after_items = after_body["items"] if isinstance(after_body, dict) else after_body
+    assert len(after_items) == len(before_items)
+
+    # ...and the failed attempt left no second, hidden demo shell behind.
+    async with TestSessionLocal() as session:
+        demos = (
+            await session.execute(select(Project).where(Project.is_demo.is_(True)))
+        ).scalars().all()
+        assert len(demos) == 1
+        assert demos[0].slug == slug
+
+
+@pytest.mark.asyncio
+async def test_kill_switch_gates_reset_as_well_as_create(
+    client: AsyncClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """DEMO_ENABLED=false must stop reset too, and still allow delete.
+
+    Reset re-provisions a demo from scratch, so leaving it ungated meant the
+    documented kill switch could be flipped off while a full re-seed stayed one
+    click away (tripl-2su6.16). Delete stays available on purpose, so a workspace
+    is never stuck with a demo it cannot remove.
+    """
+    created = await client.post("/api/v1/projects/demo")
+    slug = created.json()["slug"]
+
+    monkeypatch.setattr(settings, "demo_enabled", False)
+
+    # Provisioning is off: neither a new demo nor a re-seed of the existing one.
+    assert (await client.post("/api/v1/projects/demo")).status_code == 403
+    assert (await client.post(f"/api/v1/projects/demo/{slug}/reset")).status_code == 403
+
+    # ...but the existing demo can still be removed.
+    assert (await client.delete(f"/api/v1/projects/demo/{slug}")).status_code == 204
 
 
 @pytest.mark.asyncio

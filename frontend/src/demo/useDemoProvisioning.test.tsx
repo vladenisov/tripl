@@ -36,13 +36,14 @@ function makeProject(slug = 'demo-1'): Project {
   }
 }
 
-function Harness() {
-  const provisioning = useDemoProvisioning()
+function Harness({ timeoutMs }: { timeoutMs?: number }) {
+  const provisioning = useDemoProvisioning({ timeoutMs })
   const location = useLocation()
   return (
     <div>
       <span data-testid="status">{provisioning.status}</span>
       <span data-testid="path">{location.pathname}</span>
+      <span data-testid="timed-out">{String(provisioning.timedOut)}</span>
       {provisioning.error ? (
         <span data-testid="error">{(provisioning.error as Error).message}</span>
       ) : null}
@@ -52,18 +53,21 @@ function Harness() {
       <button type="button" onClick={() => provisioning.retry()}>
         retry
       </button>
+      <button type="button" onClick={() => provisioning.cancel()}>
+        cancel
+      </button>
     </div>
   )
 }
 
-function renderHarness() {
+function renderHarness(timeoutMs?: number) {
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
   })
   return render(
     <QueryClientProvider client={queryClient}>
       <MemoryRouter initialEntries={['/workspace']}>
-        <Harness />
+        <Harness timeoutMs={timeoutMs} />
       </MemoryRouter>
     </QueryClientProvider>,
   )
@@ -71,6 +75,56 @@ function renderHarness() {
 
 afterEach(() => {
   vi.restoreAllMocks()
+})
+
+/** A create that only ever settles when its AbortSignal fires. */
+function stallUntilAborted() {
+  const captured: { signal?: AbortSignal } = {}
+  vi.spyOn(projectsApi, 'createDemo').mockImplementation(
+    (signal?: AbortSignal) =>
+      new Promise<Project>((_resolve, reject) => {
+        captured.signal = signal
+        signal?.addEventListener('abort', () => {
+          reject(new ApiError('Request to the backend timed out.', 408))
+        })
+      }),
+  )
+  return captured
+}
+
+describe('useDemoProvisioning — a stalled create is escapable (tripl-2su6.15)', () => {
+  it('cancel aborts the request and drops back to idle, not to an error', async () => {
+    const captured = stallUntilAborted()
+
+    renderHarness()
+    fireEvent.click(screen.getByText('start'))
+    await waitFor(() => expect(screen.getByTestId('status')).toHaveTextContent('provisioning'))
+    expect(captured.signal?.aborted).toBe(false)
+
+    fireEvent.click(screen.getByText('cancel'))
+
+    // The request is actually aborted (not just ignored)…
+    await waitFor(() => expect(captured.signal?.aborted).toBe(true))
+    // …and a user-initiated cancel is not a failure: the dialog closes (idle)
+    // rather than showing the error the aborted request produces.
+    await waitFor(() => expect(screen.getByTestId('status')).toHaveTextContent('idle'))
+  })
+
+  it('aborts a create that hangs past the timeout', async () => {
+    const captured = stallUntilAborted()
+
+    // A short real timeout rather than a fake clock: react-query batches its
+    // state notifications behind a timer of its own, and freezing that clock
+    // deadlocks waitFor.
+    renderHarness(20)
+    fireEvent.click(screen.getByText('start'))
+
+    // Without a bound this request would hang forever, and the dialog with it.
+    await waitFor(() => expect(captured.signal?.aborted).toBe(true))
+    await waitFor(() => expect(screen.getByTestId('status')).toHaveTextContent('error'))
+    // Reported as a timeout, so the dialog can avoid claiming a rollback.
+    expect(screen.getByTestId('timed-out')).toHaveTextContent('true')
+  })
 })
 
 describe('useDemoProvisioning', () => {

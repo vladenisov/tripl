@@ -28,7 +28,9 @@ export const projectsApi = {
   // fully-ready project (201) or 500 on failure. Reset/delete are scoped to the
   // demo endpoints and permitted for the demo's creator or a workspace owner —
   // distinct from the owner-only generic DELETE /projects/{slug} (`del`).
-  createDemo: () => api.post<Project>('/projects/demo', {}),
+  // Seeding a demo is the one long, blocking POST in the app — the caller passes
+  // a signal so it can be timed out or cancelled instead of hanging forever.
+  createDemo: (signal?: AbortSignal) => api.post<Project>('/projects/demo', {}, signal),
   resetDemo: (slug: string) => api.post<Project>(`/projects/demo/${slug}/reset`, {}),
   deleteDemo: (slug: string) => api.del(`/projects/demo/${slug}`),
   update: (slug: string, data: { name?: string; slug?: string; description?: string }) =>

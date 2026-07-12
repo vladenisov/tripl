@@ -53,7 +53,12 @@ export interface Project {
   generation_stage?: string | null
   generation_error?: string | null
   demo_recipe_version?: string | null
+  // Seed time, floored to the hour (the runtime tick anchors its bucket grid to
+  // it), so it is NOT a freshness stamp — a demo seeded at 10:59 carries 10:00.
   demo_seeded_at?: string | null
+  // When the runtime tick last advanced this demo's data; null until the first
+  // tick. The only honest freshness signal we have (tripl-2su6.17).
+  demo_last_tick_at?: string | null
   created_by_user_id?: string | null
 }
 

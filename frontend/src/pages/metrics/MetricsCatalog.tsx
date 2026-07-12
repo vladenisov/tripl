@@ -1,5 +1,5 @@
 import { useMemo, useState, type ReactNode } from 'react'
-import { Link, useNavigate } from 'react-router-dom'
+import { Link, useNavigate, useSearchParams } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { DndContext, closestCenter, type DragEndEvent } from '@dnd-kit/core'
 import {
@@ -47,6 +47,7 @@ import { formatMetricValue } from '@/lib/metricFormat'
 import { getMetricMonitoringPath } from '@/lib/monitoring'
 import { getErrorMessage } from '@/lib/utils'
 import {
+  METRIC_KINDS,
   METRIC_KIND_LABEL,
   METRIC_STATUS_LABEL,
   METRIC_STATUSES,
@@ -323,7 +324,27 @@ export function MetricsCatalog({ slug }: { slug?: string }) {
   const qc = useQueryClient()
   const [searchInput, setSearchInput] = useState('')
   const [statusFilter, setStatusFilter] = useState<'' | MetricStatus>('')
-  const [kindFilter, setKindFilter] = useState<'' | MetricKind>('')
+  // The kind filter lives in the URL rather than in component state so each kind
+  // is deep-linkable: the demo's "metric building blocks" (Fact / SQL / Event
+  // composition) each need a link that opens the catalog already narrowed to that
+  // kind, instead of all landing on the same unfiltered page (tripl-2su6.19).
+  // Unknown values fall back to "no filter" rather than querying a bogus kind.
+  const [searchParams, setSearchParams] = useSearchParams()
+  const kindParam = searchParams.get('kind')
+  const kindFilter: '' | MetricKind = METRIC_KINDS.includes(kindParam as MetricKind)
+    ? (kindParam as MetricKind)
+    : ''
+  const setKindFilter = (next: '' | MetricKind) => {
+    setSearchParams(
+      (previous) => {
+        const params = new URLSearchParams(previous)
+        if (next) params.set('kind', next)
+        else params.delete('kind')
+        return params
+      },
+      { replace: true },
+    )
+  }
   // Client-side derived filter driven by the operational stat cells; layered on
   // top of the server-side status/kind/search filters (tripl-nxk2.10).
   const [signalFilter, setSignalFilter] = useState<SignalFilter | null>(null)
@@ -904,7 +925,7 @@ function MetricRowMenu({ metric, slug, existingNames }: MetricRowMenuProps) {
 
   // Watch the queued run's persisted last_collection_status until it settles so
   // the user sees "collected" or the failure reason, not silence (tripl-4mju).
-  const collectWatcher = useMetricCollectionWatcher(slug, (_metricId, status) => {
+  const collectWatcher = useMetricCollectionWatcher((_metricId, status) => {
     if (status !== 'success') return
     void qc.invalidateQueries({ queryKey: ['metrics-catalog', slug] })
   })
@@ -912,7 +933,9 @@ function MetricRowMenu({ metric, slug, existingNames }: MetricRowMenuProps) {
     mutationFn: () => metricsCatalogApi.collect(slug, metric.id),
     onSuccess: () => {
       toast.success('Collection started — you will be notified when it finishes.')
-      collectWatcher.watch(metric.id, metric.display_name)
+      // The slug travels with the watch: leaving the project mid-run must not
+      // repoint the poll at another project's metric id (tripl-htvg).
+      collectWatcher.watch({ slug, metricId: metric.id, displayName: metric.display_name })
     },
     onError: () => toast.error('Could not start collection.'),
   })

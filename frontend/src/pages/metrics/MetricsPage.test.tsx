@@ -157,9 +157,10 @@ function EditRouteProbe() {
   return <div data-testid="edit-route">{metricId}</div>
 }
 
-function renderMetrics(tab: MetricsTab = 'catalog') {
+function renderMetrics(tab: MetricsTab = 'catalog', pathOverride?: string) {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
-  const path = tab === 'fact-tables' ? '/p/demo/metrics/fact-tables' : '/p/demo/metrics'
+  const path =
+    pathOverride ?? (tab === 'fact-tables' ? '/p/demo/metrics/fact-tables' : '/p/demo/metrics')
   return render(
     <QueryClientProvider client={queryClient}>
       <MemoryRouter initialEntries={[path]}>
@@ -192,6 +193,34 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.restoreAllMocks()
+})
+
+describe('MetricsPage — the kind filter is deep-linkable (tripl-2su6.19)', () => {
+  it('opens the catalog already filtered when ?kind= is present', async () => {
+    // The demo's metric building blocks link straight to a kind. That only
+    // discovers anything if the catalog honours the param — it used to keep the
+    // filter in component state, so every block landed on the same unfiltered page.
+    mockList({ items: [], total: 0, active_count: 0, draft_count: 0, archived_count: 0 })
+    renderMetrics('catalog', '/p/demo/metrics?kind=fact')
+
+    await waitFor(() =>
+      expect(metricsCatalogApi.list).toHaveBeenCalledWith(
+        'demo',
+        expect.objectContaining({ kind: 'fact' }),
+      ),
+    )
+  })
+
+  it('ignores an unknown kind rather than querying it', async () => {
+    mockList({ items: [], total: 0, active_count: 0, draft_count: 0, archived_count: 0 })
+    renderMetrics('catalog', '/p/demo/metrics?kind=not-a-kind')
+
+    await waitFor(() => expect(metricsCatalogApi.list).toHaveBeenCalled())
+    expect(metricsCatalogApi.list).toHaveBeenCalledWith(
+      'demo',
+      expect.objectContaining({ kind: undefined }),
+    )
+  })
 })
 
 describe('MetricsPage', () => {

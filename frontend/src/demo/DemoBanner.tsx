@@ -16,6 +16,7 @@ import { projectsApi } from '@/api/projects'
 import { useAuth } from '@/components/auth-context'
 import { Chip } from '@/components/primitives/chip'
 import { Button } from '@/components/ui/button'
+import { useBranchContext } from '@/hooks/useBranch'
 import { useConfirm } from '@/hooks/useConfirm'
 import { formatRelativeTime } from '@/lib/datetime'
 import { getErrorMessage } from '@/lib/utils'
@@ -32,6 +33,7 @@ export function DemoBanner({ project }: { project: Project }) {
   const { user } = useAuth()
   const queryClient = useQueryClient()
   const navigate = useNavigate()
+  const { setBranchId } = useBranchContext()
   const { confirm, dialog } = useConfirm()
   const [limitsOpen, setLimitsOpen] = useState(false)
 
@@ -42,14 +44,26 @@ export function DemoBanner({ project }: { project: Project }) {
   const resetMut = useMutation({
     mutationFn: () => projectsApi.resetDemo(project.slug),
     onSuccess: () => {
-      // A re-seed rewrites data across every surface — refresh everything.
-      void queryClient.invalidateQueries()
+      // A re-seed rewrites every entity with a NEW id, so anything still holding
+      // an old one now points at a deleted row (tripl-2su6.14):
+      //   - the branch id persisted in localStorage would make every
+      //     branch-aware query fail with "Branch not found", so drop it;
+      //   - the banner is mounted on every surface, so a reset can be triggered
+      //     from a metric/event/scan detail page whose URL carries a now-dead
+      //     id — leave for the overview rather than render a 404.
+      setBranchId(null)
+      void navigate(`/p/${project.slug}/overview`)
+      // Every cached row describes a deleted entity now — drop them outright
+      // rather than merely marking them stale.
+      queryClient.removeQueries()
     },
   })
 
   const deleteMut = useMutation({
     mutationFn: () => projectsApi.deleteDemo(project.slug),
     onSuccess: () => {
+      // The project is gone; leave no branch selection behind pointing into it.
+      setBranchId(null)
       void queryClient.invalidateQueries({ queryKey: ['projects'] })
       void navigate('/workspace')
     },
@@ -78,8 +92,13 @@ export function DemoBanner({ project }: { project: Project }) {
     if (ok) deleteMut.mutate()
   }
 
-  const seededLabel = project.demo_seeded_at
-    ? `refreshed ${formatRelativeTime(project.demo_seeded_at)}`
+  // demo_seeded_at is floored to the hour — the runtime tick anchors its bucket
+  // grid to it — so using it as a freshness stamp made a demo created at 10:59
+  // read "refreshed 59m ago" the instant it appeared, and runtime ticks never
+  // moved it. demo_last_tick_at is when the data was actually last advanced;
+  // until the first tick there is nothing to claim, so say so (tripl-2su6.17).
+  const freshnessLabel = project.demo_last_tick_at
+    ? `updated ${formatRelativeTime(project.demo_last_tick_at)}`
     : 'freshly seeded'
 
   const mutationError = resetMut.error ?? deleteMut.error
@@ -99,7 +118,7 @@ export function DemoBanner({ project }: { project: Project }) {
           </Chip>
         )}
         <span className="text-[11.5px]" style={{ color: 'var(--fg-muted)' }}>
-          {seededLabel}
+          {freshnessLabel}
         </span>
 
         <button

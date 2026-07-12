@@ -52,7 +52,7 @@ export interface ScanChange {
 /**
  * Summarise what a completed job actually changed (events written, metric rows,
  * signals, alerts). Returns only the non-zero deltas, so a scan/collection that
- * finishes can show "+N events · +N metrics · +N signals" instead of leaving the
+ * finishes can show "+N events · +N metric points · +N signals" instead of leaving the
  * user guessing whether anything happened (tripl-2su6.9). Empty for jobs that
  * are unfinished or produced no changes.
  */
@@ -66,12 +66,15 @@ export function summarizeScanChanges(job: ScanJob | null): ScanChange[] {
     }
   }
   push(summary.events_created, 'event', 'events', 'success')
+  // These are time-series ROWS collected, not metric definitions created. Calling
+  // them "metrics" made an ordinary scan read as "+2000 metrics" — as though it
+  // had just defined two thousand metrics (tripl-2gtk).
   const metricRows =
     (summary.event_metrics ?? 0) +
     (summary.type_metrics ?? 0) +
     (summary.breakdown_event_metrics ?? 0) +
     (summary.breakdown_type_metrics ?? 0)
-  push(metricRows || undefined, 'metric', 'metrics', 'info')
+  push(metricRows || undefined, 'metric point', 'metric points', 'info')
   push(summary.variables_created, 'variable', 'variables', 'info')
   push(summary.signals_added, 'signal', 'signals', 'danger')
   push(summary.alerts_queued, 'alert', 'alerts', 'warning')

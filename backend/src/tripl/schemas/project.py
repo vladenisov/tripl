@@ -109,7 +109,13 @@ class ProjectResponse(BaseModel):
     generation_stage: str | None = None
     generation_error: str | None = None
     demo_recipe_version: str | None = None
+    # When the demo was seeded. Floored to the hour, because the runtime tick
+    # anchors its bucket grid to it — so it is NOT a usable "freshness" stamp:
+    # a demo seeded at 10:59 carries 10:00. Use demo_last_tick_at for that.
     demo_seeded_at: datetime | None = None
+    # When the runtime tick last advanced this demo's data. NULL until the first
+    # tick. This is the only honest freshness signal the UI has (tripl-2su6.17).
+    demo_last_tick_at: datetime | None = None
     created_by_user_id: uuid.UUID | None = None
 
     model_config = {"from_attributes": True}
