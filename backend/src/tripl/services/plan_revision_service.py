@@ -533,13 +533,24 @@ def _snapshot_values_equal(old_value: Any, new_value: Any) -> bool:
 
 
 def _field_changes_between(
-    old: dict[str, Any], new: dict[str, Any], keys: Iterable[str]
+    old: dict[str, Any],
+    new: dict[str, Any],
+    keys: Iterable[str],
+    *,
+    old_is_current_version: bool,
 ) -> list[PlanFieldChange]:
-    # Tolerate snapshot version skew: the current snapshot builder always
-    # emits every change key, so a key absent from ``old`` can only mean an
-    # older-format payload (pre-PLAN_SNAPSHOT_VERSION bump), not an authored
-    # change. Comparing absent keys would flag every pre-existing entity as
-    # "changed" (None vs the v2 default, e.g. None vs [] / None vs False).
+    # Snapshot-version skew is tolerated ONLY when ``old`` predates the current
+    # PLAN_SNAPSHOT_VERSION. A pre-bump (v1) payload legitimately lacks keys the
+    # v2 serializer added; comparing those absent keys would flag every
+    # pre-existing entity as "changed" (None vs the v2 default, e.g. None vs [] /
+    # None vs False), so we skip keys missing from an older ``old``.
+    #
+    # When ``old`` IS the current version, the invariant is that
+    # ``build_plan_snapshot`` emits every change key. A key missing from a
+    # current-version ``old`` is therefore NOT version skew — it is a genuine
+    # divergence (e.g. a future conditionally-omitting serializer path). We must
+    # NOT silently drop it: treat the absent key as a real change so the diff
+    # surfaces instead of being lost (tripl-2d3d).
     return [
         PlanFieldChange(
             field=key,
@@ -547,7 +558,8 @@ def _field_changes_between(
             after=_sanitize_public_value(new.get(key)),
         )
         for key in keys
-        if key in old and not _snapshot_values_equal(old.get(key), new.get(key))
+        if (old_is_current_version or key in old)
+        and not _snapshot_values_equal(old.get(key), new.get(key))
     ]
 
 
@@ -577,6 +589,7 @@ def _diff_set(
     name_of: Callable[[dict[str, Any]], str],
     parent_of: Callable[[dict[str, Any]], str] | None = None,
     change_keys: Iterable[str],
+    old_is_current_version: bool,
 ) -> list[PlanDiffEntry]:
     old_by_key = {key_of(item): item for item in old_items}
     new_by_key = {key_of(item): item for item in new_items}
@@ -608,7 +621,12 @@ def _diff_set(
         old_item = old_by_key.get(key)
         if old_item is None:
             continue
-        field_changes = _field_changes_between(old_item, new_item, change_keys)
+        field_changes = _field_changes_between(
+            old_item,
+            new_item,
+            change_keys,
+            old_is_current_version=old_is_current_version,
+        )
         if field_changes:
             entries.append(
                 PlanDiffEntry(
@@ -630,6 +648,13 @@ def compute_plan_diff_entries(
 ) -> list[PlanDiffEntry]:
     entries: list[PlanDiffEntry] = []
 
+    # Only the OLD payload's version governs skip-absent-key tolerance: a v1
+    # (pre-bump) base legitimately lacks keys the v2 serializer added, but a
+    # current-version base is expected to carry every change key, so a missing
+    # key there is a genuine diff — not skew — and must not be dropped
+    # (tripl-2d3d). Absent/unknown snapshot_version is treated as older (tolerant).
+    old_is_current_version = old_payload.get("snapshot_version") == PLAN_SNAPSHOT_VERSION
+
     entries.extend(
         _diff_set(
             entity_type="event_type",
@@ -638,6 +663,7 @@ def compute_plan_diff_entries(
             key_of=lambda item: item["name"],
             name_of=lambda item: item["name"],
             change_keys=_EVENT_TYPE_CHANGE_KEYS,
+            old_is_current_version=old_is_current_version,
         )
     )
 
@@ -660,6 +686,7 @@ def compute_plan_diff_entries(
             name_of=lambda item: item["name"],
             parent_of=lambda item: item["_event_type_name"],
             change_keys=_FIELD_DEFINITION_CHANGE_KEYS,
+            old_is_current_version=old_is_current_version,
         )
     )
 
@@ -672,6 +699,7 @@ def compute_plan_diff_entries(
             name_of=lambda item: item["name"],
             parent_of=lambda item: item["event_type_name"],
             change_keys=_EVENT_CHANGE_KEYS,
+            old_is_current_version=old_is_current_version,
         )
     )
 
@@ -683,6 +711,7 @@ def compute_plan_diff_entries(
             key_of=lambda item: item["name"],
             name_of=lambda item: item["name"],
             change_keys=_VARIABLE_CHANGE_KEYS,
+            old_is_current_version=old_is_current_version,
         )
     )
 
@@ -694,6 +723,7 @@ def compute_plan_diff_entries(
             key_of=lambda item: item["name"],
             name_of=lambda item: item["name"],
             change_keys=_META_FIELD_CHANGE_KEYS,
+            old_is_current_version=old_is_current_version,
         )
     )
 
@@ -713,6 +743,7 @@ def compute_plan_diff_entries(
                 f" → {item['target_event_type_name']}.{item['target_field_name']}"
             ),
             change_keys=_RELATION_CHANGE_KEYS,
+            old_is_current_version=old_is_current_version,
         )
     )
 
