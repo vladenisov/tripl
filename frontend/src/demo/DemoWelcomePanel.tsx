@@ -8,11 +8,12 @@
  */
 
 import { useState } from 'react'
-import { Link } from 'react-router-dom'
-import { ArrowRight, Compass, Sparkles, X } from 'lucide-react'
+import { Link, useNavigate } from 'react-router-dom'
+import { ArrowRight, Compass, Play, Sparkles, X } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import type { Project } from '@/types'
 import { DemoDataBadge } from './capabilityBadges'
+import { useDemoScenario, useDemoScenarioActions } from './demoScenarioContext'
 import { ProductTour } from './ProductTour'
 import { buildMetricBuildingBlocks } from './tourSteps'
 
@@ -33,10 +34,19 @@ function readDismissed(slug: string): boolean {
 export function DemoWelcomePanel({ project }: { project: Project }) {
   const [tourOpen, setTourOpen] = useState(false)
   const [, setTick] = useState(0)
+  const navigate = useNavigate()
+  const { available, steps } = useDemoScenario()
+  const { restart } = useDemoScenarioActions()
 
   if (readDismissed(project.slug)) return null
 
   const blocks = buildMetricBuildingBlocks(project.slug)
+
+  /** Start the chain from the top and drop the user on the first step's surface. */
+  function startScenario(): void {
+    restart()
+    navigate(steps[0].to)
+  }
 
   function dismiss(): void {
     try {
@@ -77,7 +87,13 @@ export function DemoWelcomePanel({ project }: { project: Project }) {
       </p>
 
       <div className="mt-3 flex flex-wrap gap-2">
-        <Button size="sm" onClick={() => setTourOpen(true)}>
+        {available && (
+          <Button size="sm" onClick={startScenario}>
+            <Play className="h-3.5 w-3.5" />
+            Run the scenario
+          </Button>
+        )}
+        <Button size="sm" variant={available ? 'outline' : 'default'} onClick={() => setTourOpen(true)}>
           <Compass className="h-3.5 w-3.5" />
           Take the tour
         </Button>

@@ -22,6 +22,12 @@ import {
 } from './scenarioModel'
 
 export interface DemoScenarioValue {
+  /**
+   * There is a ready demo project to coach at all. Distinguishes "the scenario
+   * is finished or dismissed" (still a demo — offer to restart it) from "there
+   * is no scenario here" (a real project, or no provider).
+   */
+  available: boolean
   /** False for non-demo projects, a demo still seeding, and a finished or dismissed run. */
   active: boolean
   state: ScenarioState
@@ -48,6 +54,7 @@ const INERT_SLUG = ''
 const inertState = initialScenarioState()
 
 export const INERT_SCENARIO: DemoScenarioValue = {
+  available: false,
   active: false,
   state: inertState,
   step: activeScenarioStep(INERT_SLUG, inertState),
@@ -73,4 +80,26 @@ export function useDemoScenario(): DemoScenarioValue {
 
 export function useDemoScenarioActions(): DemoScenarioActions {
   return useContext(DemoScenarioActionsContext)
+}
+
+/** The artifacts the scenario is bound to, or nulls when there is no scenario. */
+export interface ScenarioArtifacts {
+  scanConfigId: string | null
+  scanJobId: string | null
+  metricId: string | null
+}
+
+/**
+ * The ids a surface needs to point a coach mark at the *right* row: the run the
+ * scenario is watching, not any of the runs the demo's tick keeps producing.
+ * Deliberately narrow — pages get artifact ids, never the step machine.
+ */
+export function useScenarioArtifacts(): ScenarioArtifacts {
+  const { active, state } = useDemoScenario()
+  if (!active) return { scanConfigId: null, scanJobId: null, metricId: null }
+  return {
+    scanConfigId: state.scan?.scanConfigId ?? null,
+    scanJobId: state.scan?.scanJobId ?? null,
+    metricId: state.metric?.metricId ?? null,
+  }
 }

@@ -118,12 +118,16 @@ export function isScenarioWatching(state: ScenarioState): boolean {
  */
 export function scenarioReducer(state: ScenarioState, event: ScenarioEvent): ScenarioState {
   if (event.type === 'restart') return initialScenarioState()
+
+  // Dismissal is the one thing a finished scenario still accepts: the victory
+  // lap has to be putawayable, or the strip becomes permanent chrome.
+  if (event.type === 'dismiss') {
+    return state.status === 'dismissed' ? state : { ...state, status: 'dismissed' }
+  }
+
   if (state.status !== 'active') return state
 
   switch (event.type) {
-    case 'dismiss':
-      return { ...state, status: 'dismissed' }
-
     case 'scanRunStarted':
       // A second run before the first lands replaces the artifact: the user is
       // watching the run they just fired, not the one they abandoned.

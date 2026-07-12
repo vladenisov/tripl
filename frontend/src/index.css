@@ -375,6 +375,12 @@
 @keyframes pulse-dot { 0%, 100% { opacity: 1; transform: scale(1); } 50% { opacity: 0.5; transform: scale(1.25); } }
 .pulse-dot { animation: pulse-dot 1.8s ease-in-out infinite; }
 
+/* The pulse says "still running". Reduced motion means it must say so without
+   moving: the dot stays, the animation goes (tripl-2su6.21.6). */
+@media (prefers-reduced-motion: reduce) {
+  .pulse-dot { animation: none; }
+}
+
 /* ── Scrollbar ─────────────────────────────────────────────────────────── */
 
 @layer base {

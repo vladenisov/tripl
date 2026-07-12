@@ -159,6 +159,11 @@ describe('scenarioReducer — dismiss, restart and inertness', () => {
     expect(scenarioReducer(dismissed, { type: 'restart' })).toEqual(initialScenarioState())
   })
 
+  it('lets a completed scenario be put away, so the success strip is not permanent', () => {
+    const completed: ScenarioState = { v: 1, status: 'completed', step: 'see-chart' }
+    expect(scenarioReducer(completed, { type: 'dismiss' }).status).toBe('dismissed')
+  })
+
   it('restart from a completed scenario starts a clean chain', () => {
     const completed: ScenarioState = { v: 1, status: 'completed', step: 'see-chart' }
     expect(scenarioReducer(completed, { type: 'restart' })).toEqual({

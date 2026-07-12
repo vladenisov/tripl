@@ -107,7 +107,12 @@ function ActiveStrip({ step, index, hint, isWatching, onDismiss }: ActiveStripPr
   )
 }
 
-function CompletedStrip({ onRestart }: { onRestart: () => void }) {
+interface CompletedStripProps {
+  onRestart: () => void
+  onDismiss: () => void
+}
+
+function CompletedStrip({ onRestart, onDismiss }: CompletedStripProps) {
   return (
     <section aria-label={REGION_LABEL} className={SHELL_CLASS} style={SHELL_STYLE}>
       <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
@@ -118,16 +123,22 @@ function CompletedStrip({ onRestart }: { onRestart: () => void }) {
             Scan, collect, chart — end to end, on real workers.
           </span>
         </p>
-        <Button
-          type="button"
-          variant="outline"
-          size="xs"
-          className="ml-auto"
-          onClick={onRestart}
-        >
-          <RotateCcw className="h-3 w-3" />
-          Restart the scenario
-        </Button>
+        <div className="ml-auto flex items-center gap-1.5">
+          <Button type="button" variant="outline" size="xs" onClick={onRestart}>
+            <RotateCcw className="h-3 w-3" />
+            Restart the scenario
+          </Button>
+          <Button
+            type="button"
+            variant="ghost"
+            size="xs"
+            onClick={onDismiss}
+            style={{ color: 'var(--fg-subtle)' }}
+          >
+            <X className="h-3 w-3" />
+            Dismiss
+          </Button>
+        </div>
       </div>
     </section>
   )
@@ -159,7 +170,9 @@ export function DemoScenarioStrip() {
     )
   }
 
-  if (state.status === 'completed') return <CompletedStrip onRestart={restart} />
+  if (state.status === 'completed') {
+    return <CompletedStrip onRestart={restart} onDismiss={dismiss} />
+  }
 
   return null
 }

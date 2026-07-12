@@ -2,7 +2,15 @@ import { fireEvent, render, screen, waitFor, within } from '@testing-library/rea
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
-import type { EventMetricPoint } from '@/types'
+import type { EventMetricPoint, Project } from '@/types'
+import { DemoScenarioProvider } from '@/demo/DemoScenarioProvider'
+import {
+  buildScenarioSteps,
+  initialScenarioState,
+  readScenarioState,
+  writeScenarioState,
+  type ScenarioState,
+} from '@/demo/scenarioModel'
 import MonitoringDetailPage from './MonitoringDetailPage'
 
 vi.mock('@/components/ui/chart-lazy', () => ({
@@ -955,6 +963,16 @@ describe('MonitoringDetailPage catalog-metric drilldown', () => {
           ...breakdownsOverrides,
         })
       }
+      // Manual "Collect now" — the POST the scenario's collect step hangs on.
+      if (url.endsWith('/api/v1/projects/demo/metrics/metric-1/collect')) {
+        return mockJsonResponse({
+          metric_id: 'metric-1',
+          status: 'queued',
+          window_from: null,
+          window_to: null,
+          task_id: 'task-1',
+        })
+      }
       if (url.endsWith('/api/v1/projects/demo/metrics/metric-1')) {
         return mockJsonResponse(metricDefinitionResponse(interval, definitionOverrides))
       }
@@ -1210,5 +1228,95 @@ describe('MonitoringDetailPage catalog-metric drilldown', () => {
 
     expect(screen.queryByRole('heading', { name: 'Definition' })).not.toBeInTheDocument()
     expect(screen.queryByText('Show SQL')).not.toBeInTheDocument()
+  })
+
+  /**
+   * The coached demo scenario (tripl-2su6.21.5). Rendered inside the REAL
+   * provider: the persisted state is the only honest witness that the collect
+   * the USER fired — not one of the demo tick's own — bound the scenario.
+   */
+  describe('coached demo scenario', () => {
+    const SLUG = 'demo'
+    const POLL_MS = 10
+    const STEPS = buildScenarioSteps(SLUG, initialScenarioState())
+    const COLLECT_INSTRUCTION = STEPS[2].instruction
+
+    function demoProject(overrides: Partial<Project> = {}): Project {
+      return {
+        id: 'p-1',
+        name: 'Demo',
+        slug: SLUG,
+        created_at: '2026-07-01T00:00:00Z',
+        updated_at: '2026-07-01T00:00:00Z',
+        is_demo: true,
+        generation_status: 'ready',
+        ...overrides,
+      } as Project
+    }
+
+    function collectMetricState(): ScenarioState {
+      return {
+        v: 1,
+        status: 'active',
+        step: 'collect-metric',
+        scan: { scanConfigId: 'sc-1', scanJobId: 'job-1', startedAt: Date.now() },
+      }
+    }
+
+    function renderWithScenario(project: Project) {
+      const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+      return render(
+        <QueryClientProvider client={queryClient}>
+          <MemoryRouter initialEntries={['/p/demo/monitoring/metric/metric-1']}>
+            <DemoScenarioProvider project={project} pollIntervalMs={POLL_MS}>
+              <Routes>
+                <Route path="/p/:slug/monitoring/:scope/:id" element={<MonitoringDetailPage />} />
+              </Routes>
+            </DemoScenarioProvider>
+          </MemoryRouter>
+        </QueryClientProvider>,
+      )
+    }
+
+    const callouts = () => document.querySelectorAll('[data-slot="popover-content"]')
+    const collectButton = () => screen.findByRole('button', { name: /Collect now/ })
+
+    afterEach(() => {
+      window.localStorage.clear()
+    })
+
+    it('binds the scenario to this metric when the collect is accepted', async () => {
+      writeScenarioState(SLUG, collectMetricState())
+      // The definition never settles, so the step stays put for the assertion.
+      installMetricDetailFetch('1d')
+      renderWithScenario(demoProject())
+
+      fireEvent.click(await collectButton())
+
+      await waitFor(() => expect(readScenarioState(SLUG).metric?.metricId).toBe('metric-1'))
+    })
+
+    it('marks Collect now while the collect step is the active one', async () => {
+      writeScenarioState(SLUG, collectMetricState())
+      installMetricDetailFetch('1d')
+      renderWithScenario(demoProject())
+
+      await collectButton()
+      await waitFor(() => expect(screen.getAllByText(COLLECT_INSTRUCTION)).toHaveLength(1))
+    })
+
+    it('leaves a project that is not a demo untouched', async () => {
+      writeScenarioState(SLUG, collectMetricState())
+      installMetricDetailFetch('1d')
+      renderWithScenario(demoProject({ is_demo: false }))
+
+      fireEvent.click(await collectButton())
+
+      // The collect still runs; the notify is inert and no mark is mounted.
+      await waitFor(() => expect(screen.getByText('Collecting…')).toBeInTheDocument())
+      expect(readScenarioState(SLUG).metric).toBeUndefined()
+      expect(callouts()).toHaveLength(0)
+      expect(screen.queryByText(COLLECT_INSTRUCTION)).not.toBeInTheDocument()
+    })
   })
 })

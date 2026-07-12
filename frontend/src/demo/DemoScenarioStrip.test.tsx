@@ -189,6 +189,15 @@ describe('DemoScenarioStrip — dismissal and completion', () => {
     expect(screen.getByText('Step 1 of 4')).toBeInTheDocument()
     expect(readScenarioState(SLUG).status).toBe('active')
   })
+
+  it('lets the victory lap be put away, so it is not permanent chrome', () => {
+    renderStrip({ v: 1, status: 'completed', step: 'see-chart', metric: metricArtifact() })
+
+    fireEvent.click(screen.getByRole('button', { name: /Dismiss/ }))
+
+    expect(strip()).toBeNull()
+    expect(readScenarioState(SLUG).status).toBe('dismissed')
+  })
 })
 
 describe('DemoScenarioStrip — projects with no scenario', () => {

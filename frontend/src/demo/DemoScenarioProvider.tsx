@@ -229,6 +229,7 @@ export function DemoScenarioProvider({
   const value = useMemo<DemoScenarioValue>(() => {
     if (!isDemoReady || !slug) return INERT_SCENARIO
     return {
+      available: true,
       active: state.status === 'active',
       state,
       step: activeScenarioStep(slug, state),

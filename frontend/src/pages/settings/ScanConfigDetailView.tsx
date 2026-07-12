@@ -5,6 +5,8 @@ import { Play, Sliders } from 'lucide-react'
 import { dataSourcesApi } from '@/api/dataSources'
 import { eventTypesApi } from '@/api/eventTypes'
 import { scansApi } from '@/api/scans'
+import { useDemoScenarioActions } from '@/demo/demoScenarioContext'
+import { ScenarioCoachMark } from '@/demo/ScenarioCoachMark'
 import { useActiveBranchId } from '@/hooks/useBranch'
 import { useAdaptiveRefetchIntervalFn } from '@/realtime/streamContext'
 import { scanJobsHaveActiveWork } from './scans/scanUtils'
@@ -27,6 +29,7 @@ export function ScanConfigDetail({ slug, scanConfigId }: { slug: string; scanCon
   const navigate = useNavigate()
   const qc = useQueryClient()
   const branchId = useActiveBranchId()
+  const { notifyScanRunStarted } = useDemoScenarioActions()
   const [tab, setTab] = useState<DetailTab>('overview')
 
   const {
@@ -63,7 +66,13 @@ export function ScanConfigDetail({ slug, scanConfigId }: { slug: string; scanCon
 
   const runMut = useMutation({
     mutationFn: () => scansApi.run(slug, scanConfigId),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['scanJobs', slug, scanConfigId] }),
+    onSuccess: (job) => {
+      // The demo's runtime tick manufactures scan jobs continuously, so only the
+      // job *this* POST returned can advance the coached scenario. Inert outside
+      // a demo project (tripl-2su6.21.5).
+      notifyScanRunStarted(job)
+      qc.invalidateQueries({ queryKey: ['scanJobs', slug, scanConfigId] })
+    },
   })
 
   const goBack = () => navigate(`/p/${slug}/settings/scans`)
@@ -128,10 +137,12 @@ export function ScanConfigDetail({ slug, scanConfigId }: { slug: string; scanCon
             Ingests from <span style={{ color: 'var(--fg-muted)' }}>{dataSource?.name ?? 'Unknown source'}</span>
           </p>
         </div>
-        <Button variant="secondary" size="sm" disabled={runMut.isPending} onClick={() => runMut.mutate()}>
-          <Play className="size-3" />
-          {runMut.isPending ? 'Starting…' : 'Run now'}
-        </Button>
+        <ScenarioCoachMark step="run-scan" side="bottom" align="end">
+          <Button variant="secondary" size="sm" disabled={runMut.isPending} onClick={() => runMut.mutate()}>
+            <Play className="size-3" />
+            {runMut.isPending ? 'Starting…' : 'Run now'}
+          </Button>
+        </ScenarioCoachMark>
         <Button
           variant={tab === 'configuration' ? 'default' : 'outline'}
           size="sm"
