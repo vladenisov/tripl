@@ -93,9 +93,13 @@ export function FactTableForm({ slug, factTable, dataSources, onClose }: FactTab
   const [identifierColumns, setIdentifierColumns] = useState<string[]>(
     factTable?.identifier_columns ?? [],
   )
-  const [identifierCandidates, setIdentifierCandidates] = useState<string[]>(
-    factTable?.identifier_columns ?? [],
-  )
+  // The backend's *suggested* identifiers for this session. There are no
+  // suggestions until a preview runs, so this starts empty even when editing:
+  // the saved `identifier_columns` are the user's picks, NOT prior suggestions.
+  // Seeding this from `identifier_columns` (tripl-4qfr) made the first preview of
+  // an edit session treat saved manual picks as stale suggestions and silently
+  // uncheck the ones the tightened count_distinct heuristic no longer returns.
+  const [identifierCandidates, setIdentifierCandidates] = useState<string[]>([])
   const [rowFilters, setRowFilters] = useState<RowFilterDraft[]>(() =>
     (factTable?.row_filters ?? []).map(filter => ({ ...filter, id: crypto.randomUUID() })),
   )
@@ -125,12 +129,13 @@ export function FactTableForm({ slug, factTable, dataSources, onClose }: FactTab
     onSuccess: res => {
       setColumns(res.columns)
       // Re-derive the selection from the fresh suggestions while preserving the
-      // user's manual overrides relative to the previous suggestion set:
-      // columns the user checked beyond the old suggestions stay checked (if
-      // they still exist), columns the user unchecked stay unchecked. For an
-      // existing fact table the seeded "suggestions" are its saved
-      // identifier_columns, so an untouched (possibly stale) selection is
-      // simply replaced by the backend's current candidates.
+      // user's manual picks relative to the previous suggestion set: columns the
+      // user checked beyond the old suggestions stay checked (if they still
+      // exist), columns the user unchecked in this session stay unchecked. On the
+      // first preview of an edit session the previous suggestion set is empty, so
+      // every saved `identifier_column` counts as a manual pick and is UNION-ed
+      // with the new candidates — a preview may ADD newly-suggested columns but
+      // never silently DROPS a saved pick (tripl-4qfr).
       const existingNames = new Set(res.columns.map(column => column.name))
       setIdentifierColumns(current => {
         const manuallyAdded = current.filter(
