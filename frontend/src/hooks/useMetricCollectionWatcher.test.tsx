@@ -33,9 +33,14 @@ function Harness({
 }: {
   onSettled?: (metricId: string, status: 'success' | 'error') => void
 }) {
-  const watcher = useMetricCollectionWatcher('demo', onSettled, { pollIntervalMs: 10 })
+  const watcher = useMetricCollectionWatcher(onSettled, { pollIntervalMs: 10 })
   return (
-    <button type="button" onClick={() => watcher.watch('m-1', 'Checkout errors')}>
+    <button
+      type="button"
+      onClick={() =>
+        watcher.watch({ slug: 'demo', metricId: 'm-1', displayName: 'Checkout errors' })
+      }
+    >
       {watcher.isWatching ? 'watching' : 'idle'}
     </button>
   )
@@ -57,18 +62,19 @@ function renderHarness(onSettled?: (metricId: string, status: 'success' | 'error
 // collect-start so a completion can invalidate the metric it actually collected
 // — even after an `:id`-only navigation that does NOT remount the page
 // (tripl-0s3d).
+type NavRoute = { slug: string; scope: string; scopeId: string }
+
 function NavHarness({
   route,
   onInvalidate,
 }: {
-  route: { scope: string; scopeId: string }
-  onInvalidate: (scope: string, scopeId: string) => void
+  route: NavRoute
+  onInvalidate: (slug: string, scope: string, scopeId: string) => void
 }) {
-  const watcher = useMetricCollectionWatcher<{ scope: string; scopeId: string }>(
-    'demo',
+  const watcher = useMetricCollectionWatcher<NavRoute>(
     (_metricId, status, context) => {
       if (status !== 'success' || !context) return
-      onInvalidate(context.scope, context.scopeId)
+      onInvalidate(context.slug, context.scope, context.scopeId)
     },
     { pollIntervalMs: 10 },
   )
@@ -77,9 +83,11 @@ function NavHarness({
     <button
       type="button"
       onClick={() =>
-        watcher.watch(route.scopeId, `Metric ${route.scopeId}`, {
-          scope: route.scope,
-          scopeId: route.scopeId,
+        watcher.watch({
+          slug: route.slug,
+          metricId: route.scopeId,
+          displayName: `Metric ${route.scopeId}`,
+          context: route,
         })
       }
     >
@@ -89,20 +97,20 @@ function NavHarness({
 }
 
 function renderNavHarness(
-  route: { scope: string; scopeId: string },
-  onInvalidate: (scope: string, scopeId: string) => void,
+  route: NavRoute,
+  onInvalidate: (slug: string, scope: string, scopeId: string) => void,
 ) {
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false } },
   })
-  const ui = (nextRoute: { scope: string; scopeId: string }) => (
+  const ui = (nextRoute: NavRoute) => (
     <QueryClientProvider client={queryClient}>
       <NavHarness route={nextRoute} onInvalidate={onInvalidate} />
     </QueryClientProvider>
   )
   const view = render(ui(route))
-  // Simulates navigating to another metric without unmounting the page.
-  const navigateTo = (nextRoute: { scope: string; scopeId: string }) => view.rerender(ui(nextRoute))
+  // Simulates navigating to another metric (or project) without unmounting.
+  const navigateTo = (nextRoute: NavRoute) => view.rerender(ui(nextRoute))
   return { ...view, navigateTo }
 }
 
@@ -189,7 +197,10 @@ describe('useMetricCollectionWatcher', () => {
     // The watch stays in flight (never leaves "running") across the navigation.
     vi.mocked(metricsCatalogApi.get).mockResolvedValue(definitionWith('running'))
     const onInvalidate = vi.fn()
-    const { navigateTo } = renderNavHarness({ scope: 'metric', scopeId: 'A' }, onInvalidate)
+    const { navigateTo } = renderNavHarness(
+      { slug: 'demo', scope: 'metric', scopeId: 'A' },
+      onInvalidate,
+    )
 
     // Start collecting metric A.
     fireEvent.click(screen.getByRole('button'))
@@ -197,7 +208,7 @@ describe('useMetricCollectionWatcher', () => {
     expect(screen.getByRole('button')).toHaveTextContent('collecting')
 
     // Navigate to metric B while A is still collecting — same page, no remount.
-    navigateTo({ scope: 'metric', scopeId: 'B' })
+    navigateTo({ slug: 'demo', scope: 'metric', scopeId: 'B' })
 
     // B must NOT inherit A's in-flight watch state.
     expect(screen.getByRole('button')).toHaveTextContent('idle')
@@ -206,21 +217,47 @@ describe('useMetricCollectionWatcher', () => {
   it("invalidates the metric captured at collect-start, not the one navigated to (tripl-0s3d)", async () => {
     vi.mocked(metricsCatalogApi.get).mockResolvedValue(definitionWith('running'))
     const onInvalidate = vi.fn()
-    const { navigateTo } = renderNavHarness({ scope: 'metric', scopeId: 'A' }, onInvalidate)
+    const { navigateTo } = renderNavHarness(
+      { slug: 'demo', scope: 'metric', scopeId: 'A' },
+      onInvalidate,
+    )
 
     // Start collecting metric A (captures { scope: 'metric', scopeId: 'A' }).
     fireEvent.click(screen.getByRole('button'))
     await waitFor(() => expect(metricsCatalogApi.get).toHaveBeenCalledWith('demo', 'A'))
 
     // Navigate to metric B while A's collection is still running.
-    navigateTo({ scope: 'metric', scopeId: 'B' })
+    navigateTo({ slug: 'demo', scope: 'metric', scopeId: 'B' })
 
     // A's run now settles successfully.
     vi.mocked(metricsCatalogApi.get).mockResolvedValue(definitionWith('success'))
 
     await waitFor(() => expect(onInvalidate).toHaveBeenCalled())
     // Completion invalidates A's captured scope — never the navigated-to B.
-    expect(onInvalidate).toHaveBeenCalledWith('metric', 'A')
-    expect(onInvalidate).not.toHaveBeenCalledWith('metric', 'B')
+    expect(onInvalidate).toHaveBeenCalledWith('demo', 'metric', 'A')
+    expect(onInvalidate).not.toHaveBeenCalledWith('demo', 'metric', 'B')
+  })
+
+  it('keeps polling the originating project after a cross-project move (tripl-htvg)', async () => {
+    vi.mocked(metricsCatalogApi.get).mockResolvedValue(definitionWith('running'))
+    const onInvalidate = vi.fn()
+    const { navigateTo } = renderNavHarness(
+      { slug: 'project-a', scope: 'metric', scopeId: 'A' },
+      onInvalidate,
+    )
+
+    fireEvent.click(screen.getByRole('button'))
+    await waitFor(() => expect(metricsCatalogApi.get).toHaveBeenCalledWith('project-a', 'A'))
+
+    // Leave for another project entirely while A is still collecting. The poll
+    // used to read the slug live, so it started asking project-b for metric A —
+    // an id that does not exist there.
+    navigateTo({ slug: 'project-b', scope: 'metric', scopeId: 'B' })
+    vi.mocked(metricsCatalogApi.get).mockResolvedValue(definitionWith('success'))
+
+    await waitFor(() => expect(onInvalidate).toHaveBeenCalled())
+    expect(metricsCatalogApi.get).not.toHaveBeenCalledWith('project-b', 'A')
+    // The settle invalidates the project the collect was fired against.
+    expect(onInvalidate).toHaveBeenCalledWith('project-a', 'metric', 'A')
   })
 })

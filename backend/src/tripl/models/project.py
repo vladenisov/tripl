@@ -34,9 +34,7 @@ class Project(UUIDMixin, TimestampMixin, Base):
     )
     # Which demo scenario recipe produced this workspace, so a reset or a
     # future migration can tell what shape to expect. NULL for real projects.
-    demo_recipe_version: Mapped[str | None] = mapped_column(
-        String(32), nullable=True, default=None
-    )
+    demo_recipe_version: Mapped[str | None] = mapped_column(String(32), nullable=True, default=None)
     # Provisioning state machine. Real projects are ``ready`` from creation;
     # demos flow seeding -> ready / failed. Non-``ready`` demos are hidden from
     # normal project lists so a partial/failed demo never looks real.

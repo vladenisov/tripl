@@ -3681,9 +3681,7 @@ async def test_retry_failed_delivery_resets_and_re_enqueues(
     enqueued: list[str] = []
     monkeypatch.setattr(send_alert_delivery, "delay", lambda did: enqueued.append(did))
 
-    resp = await client.post(
-        f"/api/v1/projects/alert-retry/alert-deliveries/{delivery_id}/retry"
-    )
+    resp = await client.post(f"/api/v1/projects/alert-retry/alert-deliveries/{delivery_id}/retry")
     assert resp.status_code == 200
     body = resp.json()
     assert body["status"] == "pending"
@@ -3803,20 +3801,14 @@ async def test_monitor_detail_mute_and_unmute(client: AsyncClient) -> None:
     summary_resp = await client.get("/api/v1/projects/monitor-detail/monitors-summary")
     assert summary_resp.status_code == 200
     summary_monitor = next(
-        monitor
-        for monitor in summary_resp.json()["monitors"]
-        if monitor["rule_id"] == rule_id
+        monitor for monitor in summary_resp.json()["monitors"] if monitor["rule_id"] == rule_id
     )
     assert summary_monitor["muted"] is True
 
-    unmute_resp = await client.post(
-        f"/api/v1/projects/monitor-detail/monitors/{rule_id}/unmute"
-    )
+    unmute_resp = await client.post(f"/api/v1/projects/monitor-detail/monitors/{rule_id}/unmute")
     assert unmute_resp.status_code == 200
     assert unmute_resp.json()["muted"] is False
     assert unmute_resp.json()["muted_until"] is None
 
-    missing_resp = await client.get(
-        f"/api/v1/projects/monitor-detail/monitors/{uuid.uuid4()}"
-    )
+    missing_resp = await client.get(f"/api/v1/projects/monitor-detail/monitors/{uuid.uuid4()}")
     assert missing_resp.status_code == 404

@@ -128,9 +128,7 @@ def test_multi_aggregate_conditional_filter_folds_into_case() -> None:
     # avg/min/max) over CASE WHEN already return NULL, so they stay unwrapped.
     assert "NULLIF(count(CASE WHEN `amount` > 10 THEN 1 END), 0) AS `k_cnt_f`" in sql
     assert "sum(CASE WHEN `event_name` = 'buy' THEN `amount` END) AS `k_sum_f`" in sql
-    assert (
-        "NULLIF(count(DISTINCT IF(`amount` > 0, `user_id`, NULL)), 0) AS `k_dist_f`"
-    ) in sql
+    assert ("NULLIF(count(DISTINCT IF(`amount` > 0, `user_id`, NULL)), 0) AS `k_dist_f`") in sql
 
 
 @pytest.mark.parametrize(

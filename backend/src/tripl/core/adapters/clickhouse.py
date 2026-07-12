@@ -955,16 +955,12 @@ class ClickHouseAdapter(BaseAdapter):
             f"LIMIT {int(limit)}"
         )
 
-        logger.info(
-            "CH bucketed multi-aggregate breakdown query for %s: %s", breakdown, sql
-        )
+        logger.info("CH bucketed multi-aggregate breakdown query for %s: %s", breakdown, sql)
         t0 = time.monotonic()
         result = self._client.query(sql)
         elapsed = time.monotonic() - t0
         n_rows = len(result.result_rows)
-        logger.info(
-            "CH bucketed multi-aggregate breakdown done in %.2fs, %s rows", elapsed, n_rows
-        )
+        logger.info("CH bucketed multi-aggregate breakdown done in %.2fs, %s rows", elapsed, n_rows)
 
         return col_names, result.result_rows
 

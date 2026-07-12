@@ -192,7 +192,9 @@ export default function MainPage() {
         status={provisioning.status}
         phaseIndex={provisioning.phaseIndex}
         error={provisioning.error}
+        timedOut={provisioning.timedOut}
         onRetry={provisioning.retry}
+        onCancel={provisioning.cancel}
         onClose={provisioning.reset}
       />
 

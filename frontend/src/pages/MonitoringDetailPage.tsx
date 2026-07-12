@@ -71,6 +71,14 @@ import { toast } from 'sonner'
 import { useConfirm } from '@/hooks/useConfirm'
 import { useMetricCollectionWatcher } from '@/hooks/useMetricCollectionWatcher'
 
+/**
+ * Everything a manual collect needs, captured when the button is pressed and
+ * carried through the mutation and the watch. Nothing downstream re-reads the
+ * route, so navigating mid-run cannot repoint the run at another metric or
+ * another project (tripl-htvg).
+ */
+type CollectTarget = { slug: string; scope: string; scopeId: string; displayName: string }
+
 // Stable empty reference so `metaFieldsQuery.data ?? EMPTY_META_FIELDS`
 // doesn't mint a new array each render and bust the memoized lookup map.
 const EMPTY_META_FIELDS: MetaFieldDefinition[] = []
@@ -627,35 +635,40 @@ export default function MonitoringDetailPage() {
   // the watcher polls the persisted last_collection_status until the run
   // settles, toasts success or the persisted failure reason (tripl-4mju), and
   // refreshes the series/definition once data landed.
-  const collectWatcher = useMetricCollectionWatcher<{ scope: string; scopeId: string }>(
-    slug,
-    (metricId, status, context) => {
-      if (status !== 'success') return
-      // Invalidate the metric this run was actually collecting — its scope/scopeId
-      // captured at collect-start — not whatever the page navigated to mid-watch
-      // (tripl-0s3d). The metricDefinition key already uses the settled metricId.
-      if (context) {
-        void queryClient.invalidateQueries({
-          queryKey: ['monitoringMetrics', slug, context.scope, context.scopeId],
-        })
-      }
-      void queryClient.invalidateQueries({ queryKey: ['metricDefinition', slug, metricId] })
-    },
-  )
+  const collectWatcher = useMetricCollectionWatcher<CollectTarget>((metricId, status, context) => {
+    if (status !== 'success' || !context) return
+    // Invalidate the metric this run was actually collecting — its slug/scope/
+    // scopeId captured at collect-start — not whatever the page navigated to
+    // mid-watch (tripl-0s3d, tripl-htvg). The live `slug` used here before
+    // pointed the invalidation at the wrong project after a cross-project move.
+    void queryClient.invalidateQueries({
+      queryKey: ['monitoringMetrics', context.slug, context.scope, context.scopeId],
+    })
+    void queryClient.invalidateQueries({ queryKey: ['metricDefinition', context.slug, metricId] })
+  })
   const collectMut = useMutation({
-    mutationFn: () => metricsCatalogApi.collect(slug!, scopeId),
-    onSuccess: () => {
+    // The target travels WITH the mutation instead of being re-read in onSuccess.
+    // react-query refreshes the observer's options every render, so onSuccess saw
+    // the CURRENT scopeId: firing a collect for metric A and navigating to B
+    // before the POST resolved attached the watcher to B (tripl-htvg).
+    mutationFn: (target: CollectTarget) => metricsCatalogApi.collect(target.slug, target.scopeId),
+    onSuccess: (_data, target) => {
       toast.success('Collection started — you will be notified when it finishes.')
-      collectWatcher.watch(scopeId, metricDefinition?.display_name ?? 'This metric', {
-        scope,
-        scopeId,
+      collectWatcher.watch({
+        slug: target.slug,
+        metricId: target.scopeId,
+        displayName: target.displayName,
+        context: target,
       })
     },
     onError: () => toast.error('Could not start collection.'),
   })
-  // Key the spinner to the watched metric so an in-flight watch on metric A does
-  // not read as "collecting" once the page navigates to metric B (tripl-0s3d).
-  const isCollecting = collectMut.isPending || collectWatcher.watchingMetricId === scopeId
+  // Key the spinner to the metric actually being collected — both while the POST
+  // is in flight and while the watch polls — so a run on metric A does not read
+  // as "collecting" once the page navigates to metric B (tripl-0s3d, tripl-htvg).
+  const isCollecting =
+    (collectMut.isPending && collectMut.variables?.scopeId === scopeId) ||
+    collectWatcher.watchingMetricId === scopeId
 
   const { confirm: confirmDelete, dialog: deleteDialog } = useConfirm()
   const deleteMetric = async (): Promise<void> => {
@@ -804,7 +817,14 @@ export default function MonitoringDetailPage() {
                 <Button
                   variant="outline"
                   size="sm"
-                  onClick={() => collectMut.mutate()}
+                  onClick={() =>
+                    collectMut.mutate({
+                      slug: slug!,
+                      scope,
+                      scopeId,
+                      displayName: metricDefinition?.display_name ?? 'This metric',
+                    })
+                  }
                   disabled={isCollecting}
                   title="Backfill a recent window now so the chart populates without waiting for the scheduler."
                 >

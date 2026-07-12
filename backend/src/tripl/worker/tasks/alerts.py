@@ -228,6 +228,22 @@ def send_alert_delivery(self: object, delivery_id: str) -> dict[str, object]:
         if destination is None or rule is None or scan_config is None:
             raise ValueError(f"AlertDelivery {delivery_id} is missing related objects")
 
+        # A demo project is strictly zero-egress (tripl-2su6.12): the only
+        # sendable destination it may have is the local ``demo_sink``. The API
+        # refuses to create or enable an external destination on a demo project,
+        # but every dispatch path (scan dispatch, manual retry, stale-pending
+        # re-dispatch) funnels through this task, so the guard that actually
+        # stops the send lives here — it also covers rows written before that API
+        # guard existed. It runs before rendering, so the AI round-trip below
+        # cannot fire either.
+        is_demo_project = project is not None and project.is_demo
+        if is_demo_project and destination.type != AlertDestinationType.demo_sink:
+            raise ValueError(
+                "External alert delivery is disabled for demo projects: destination "
+                f"{destination.name!r} ({destination.type}) is not a local demo sink. "
+                "Nothing was sent."
+            )
+
         # Built once and reused across re-renders (e.g. the MarkdownV2→plain
         # fallback) so the warehouse/DB queries behind sparkline + top-movers
         # don't run a second time when something is already failing.
@@ -249,7 +265,10 @@ def send_alert_delivery(self: object, delivery_id: str) -> dict[str, object]:
         # template rendering so custom templates stay untouched; the Telegram
         # plain-format fallback below re-appends the same cached string.
         ai_explanation: str | None = None
-        if rule.ai_explanation_enabled:
+        # The AI explanation is an outbound LLM call, so it is off for demo
+        # projects for the same zero-egress reason as the send guard above — a
+        # demo_sink delivery must stay fully local end to end.
+        if rule.ai_explanation_enabled and not is_demo_project:
             ai_explanation = _build_ai_explanation(
                 delivery,
                 scan_name=scan_config.name,

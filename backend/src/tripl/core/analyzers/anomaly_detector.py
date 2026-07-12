@@ -548,9 +548,7 @@ def detect_anomalies(
 
     is_count_shaped = fill_gaps
     counts = [point.count for point in expanded]
-    stddev_absolute_floor = (
-        1.0 if is_count_shaped else _fractional_stddev_floor(counts)
-    )
+    stddev_absolute_floor = 1.0 if is_count_shaped else _fractional_stddev_floor(counts)
     # Poisson-aware floor (~sqrt(N)) applies to the count-shaped ROLLING path
     # only (tripl-dmch.17): that path fits a flat/degenerate baseline whose
     # stddev collapses to ~0, so a fixed 1.0 floor turns Poisson jitter (e.g.

@@ -17,17 +17,27 @@ const WATCH_TIMEOUT_MS = 5 * 60_000
 const STATUS_RUNNING = 'running'
 const STATUS_ERROR = 'error'
 
-interface WatchTarget<TContext> {
+export interface MetricWatchRequest<TContext> {
+  /**
+   * The project the collect was fired against. Captured with the watch rather
+   * than read live from the route: otherwise navigating to another project
+   * mid-watch repointed the poll at `project-B/metric-A`, a metric that does not
+   * exist there (tripl-htvg).
+   */
+  slug: string
   metricId: string
   displayName: string
-  startedAt: number
   /**
    * Caller-supplied ids/state captured at collect-start (e.g. the route's
    * scope/scopeId). Threaded back to `onSettled` on completion so the settle
    * always acts on the metric it was actually collecting — never whatever the
    * page has since navigated to mid-watch (tripl-0s3d).
    */
-  context: TContext | undefined
+  context?: TContext
+}
+
+interface WatchTarget<TContext> extends MetricWatchRequest<TContext> {
+  startedAt: number
 }
 
 export interface MetricCollectionWatcherOptions {
@@ -37,10 +47,11 @@ export interface MetricCollectionWatcherOptions {
 
 export interface MetricCollectionWatcher<TContext = void> {
   /**
-   * Start watching a metric whose manual collect was just accepted (202).
-   * `context` is captured now and handed back verbatim to `onSettled`.
+   * Start watching a metric whose manual collect was just accepted (202). The
+   * whole request — project slug included — is captured now and handed back
+   * verbatim to `onSettled`.
    */
-  watch: (metricId: string, displayName: string, context?: TContext) => void
+  watch: (request: MetricWatchRequest<TContext>) => void
   /** True while a watched collection is still running. */
   isWatching: boolean
   /**
@@ -64,7 +75,6 @@ export interface MetricCollectionWatcher<TContext = void> {
  * series / list queries.
  */
 export function useMetricCollectionWatcher<TContext = void>(
-  slug: string | undefined,
   onSettled?: (
     metricId: string,
     status: 'success' | 'error',
@@ -113,9 +123,11 @@ export function useMetricCollectionWatcher<TContext = void>(
 
   useQuery({
     // `startedAt` keys each watch to a fresh cache entry so a previous run's
-    // terminal status never short-circuits a new watch with stale data.
-    queryKey: ['metric-collect-watch', slug, target?.metricId, target?.startedAt],
-    enabled: Boolean(slug && target),
+    // terminal status never short-circuits a new watch with stale data. The slug
+    // comes from the target, not the route, so the poll follows the collect it
+    // started rather than the page the user has since walked to.
+    queryKey: ['metric-collect-watch', target?.slug, target?.metricId, target?.startedAt],
+    enabled: Boolean(target),
     refetchInterval: options?.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS,
     // The one-off watch entry is useless once the run settles.
     gcTime: 0,
@@ -124,8 +136,8 @@ export function useMetricCollectionWatcher<TContext = void>(
     // an effect): each fetch inspects the persisted status and settles the watch
     // as soon as it leaves "running".
     queryFn: async () => {
-      if (!slug || !target) return null
-      const definition = await metricsCatalogApi.get(slug, target.metricId)
+      if (!target) return null
+      const definition = await metricsCatalogApi.get(target.slug, target.metricId)
       const status = definition.last_collection_status
       if (status === STATUS_RUNNING || status === null) {
         if (Date.now() - target.startedAt >= WATCH_TIMEOUT_MS) settle(target, null)
@@ -137,8 +149,7 @@ export function useMetricCollectionWatcher<TContext = void>(
   })
 
   return {
-    watch: (metricId, displayName, context) =>
-      setTarget({ metricId, displayName, startedAt: Date.now(), context }),
+    watch: (request) => setTarget({ ...request, startedAt: Date.now() }),
     isWatching: target !== null,
     watchingMetricId: target?.metricId ?? null,
   }

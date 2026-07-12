@@ -236,9 +236,7 @@ def _run_tick(
 
 def _max_bucket(session: Session, scan_config_id: uuid.UUID) -> datetime | None:
     return session.execute(
-        select(func.max(EventMetric.bucket)).where(
-            EventMetric.scan_config_id == scan_config_id
-        )
+        select(func.max(EventMetric.bucket)).where(EventMetric.scan_config_id == scan_config_id)
     ).scalar()
 
 
@@ -305,9 +303,11 @@ def test_two_ticks_append_new_buckets_and_stay_fresh(
         assert _naive(tick2) - newest2 <= timedelta(hours=3)
         # A NEW completed scan job each tick (real execution, not a rewrite).
         assert _scan_job_count(session, seeded.scan_config_id) == 2
-        jobs = session.execute(
-            select(ScanJob).where(ScanJob.scan_config_id == seeded.scan_config_id)
-        ).scalars().all()
+        jobs = (
+            session.execute(select(ScanJob).where(ScanJob.scan_config_id == seeded.scan_config_id))
+            .scalars()
+            .all()
+        )
         assert all(j.status == ScanJobStatus.completed.value for j in jobs)
         assert all((j.result_summary or {}).get("demo_runtime_tick") for j in jobs)
 
@@ -315,9 +315,9 @@ def test_two_ticks_append_new_buckets_and_stay_fresh(
 def _scan_job_count(session: Session, scan_config_id: uuid.UUID) -> int:
     return int(
         session.execute(
-            select(func.count()).select_from(ScanJob).where(
-                ScanJob.scan_config_id == scan_config_id
-            )
+            select(func.count())
+            .select_from(ScanJob)
+            .where(ScanJob.scan_config_id == scan_config_id)
         ).scalar()
         or 0
     )
@@ -339,14 +339,12 @@ def test_tick_appends_coverage_and_conversion_values(
 
     with factory() as session:
         coverage = session.execute(
-            select(func.count()).select_from(CoverageMetric).where(
-                CoverageMetric.scan_config_id == seeded.scan_config_id
-            )
+            select(func.count())
+            .select_from(CoverageMetric)
+            .where(CoverageMetric.scan_config_id == seeded.scan_config_id)
         ).scalar()
         assert coverage and coverage >= 1, "coverage rows appended for new buckets"
-        conv_values = session.execute(
-            select(func.count()).select_from(MetricValue)
-        ).scalar()
+        conv_values = session.execute(select(func.count()).select_from(MetricValue)).scalar()
         assert conv_values and conv_values > 48, "conversion values appended for new buckets"
 
 
@@ -366,17 +364,17 @@ def test_concurrent_ticks_same_clock_are_idempotent(
     _run_tick(factory, monkeypatch, tick)
     with factory() as session:
         rows_after_first = session.execute(
-            select(func.count()).select_from(EventMetric).where(
-                EventMetric.scan_config_id == seeded.scan_config_id
-            )
+            select(func.count())
+            .select_from(EventMetric)
+            .where(EventMetric.scan_config_id == seeded.scan_config_id)
         ).scalar()
 
     _run_tick(factory, monkeypatch, tick)
     with factory() as session:
         rows_after_second = session.execute(
-            select(func.count()).select_from(EventMetric).where(
-                EventMetric.scan_config_id == seeded.scan_config_id
-            )
+            select(func.count())
+            .select_from(EventMetric)
+            .where(EventMetric.scan_config_id == seeded.scan_config_id)
         ).scalar()
         # ONE logical result: the second run added nothing.
         assert rows_after_second == rows_after_first
@@ -402,12 +400,16 @@ def test_partial_write_is_savepoint_safe(
     seed_now = _floor(datetime.now(UTC)) - timedelta(days=1)
     with factory() as session:
         seeded = _seed_demo(session, seed_now=seed_now, history_hours=48)
-        roster_event_id = session.execute(
-            select(EventMetric.event_id).where(
-                EventMetric.scan_config_id == seeded.scan_config_id,
-                EventMetric.event_id.isnot(None),
+        roster_event_id = (
+            session.execute(
+                select(EventMetric.event_id).where(
+                    EventMetric.scan_config_id == seeded.scan_config_id,
+                    EventMetric.event_id.isnot(None),
+                )
             )
-        ).scalars().first()
+            .scalars()
+            .first()
+        )
         # A bucket that WILL be new at tick time (2h after seed), pre-populated
         # with only a per-EVENT row (the pre-check looks for per-TYPE rows, so it
         # won't skip this bucket — the per-event insert collides instead).
@@ -430,7 +432,9 @@ def test_partial_write_is_savepoint_safe(
     with factory() as session:
         # The collided bucket was skipped: no per-type row was written for it.
         per_type = session.execute(
-            select(func.count()).select_from(EventMetric).where(
+            select(func.count())
+            .select_from(EventMetric)
+            .where(
                 EventMetric.scan_config_id == seeded.scan_config_id,
                 EventMetric.event_type_id.isnot(None),
                 EventMetric.bucket == collide_bucket,
@@ -439,7 +443,9 @@ def test_partial_write_is_savepoint_safe(
         assert per_type == 0
         # The pre-existing per-event row is intact and not duplicated.
         collided = session.execute(
-            select(func.count()).select_from(EventMetric).where(
+            select(func.count())
+            .select_from(EventMetric)
+            .where(
                 EventMetric.scan_config_id == seeded.scan_config_id,
                 EventMetric.event_id == roster_event_id,
                 EventMetric.bucket == collide_bucket,
@@ -534,9 +540,7 @@ def test_paused_demo_is_skipped_and_resumes_on_access(
 # ── Feature flag off ─────────────────────────────────────────────────────────
 
 
-def test_flag_off_is_noop(
-    factory: sessionmaker[Session], monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_flag_off_is_noop(factory: sessionmaker[Session], monkeypatch: pytest.MonkeyPatch) -> None:
     seed_now = _floor(datetime.now(UTC)) - timedelta(days=1)
     with factory() as session:
         seeded = _seed_demo(session, seed_now=seed_now, history_hours=48)

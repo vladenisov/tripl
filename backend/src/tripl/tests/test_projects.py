@@ -702,8 +702,14 @@ async def _setup_reset_project(client: AsyncClient, slug: str) -> dict[str, str]
     }
 
 
-def _anomaly(scan_config_id: str | None, scope_type: str, scope_ref: str, bucket: datetime,
-             *, event_type_id: str | None = None) -> MetricAnomaly:
+def _anomaly(
+    scan_config_id: str | None,
+    scope_type: str,
+    scope_ref: str,
+    bucket: datetime,
+    *,
+    event_type_id: str | None = None,
+) -> MetricAnomaly:
     return MetricAnomaly(
         id=uuid.uuid4(),
         scan_config_id=uuid.UUID(scan_config_id) if scan_config_id else None,
@@ -720,8 +726,9 @@ def _anomaly(scan_config_id: str | None, scope_type: str, scope_ref: str, bucket
     )
 
 
-def _breakdown(scan_config_id: str, event_type_id: str, bucket: datetime,
-               breakdown_value: str) -> MetricBreakdownAnomaly:
+def _breakdown(
+    scan_config_id: str, event_type_id: str, bucket: datetime, breakdown_value: str
+) -> MetricBreakdownAnomaly:
     return MetricBreakdownAnomaly(
         id=uuid.uuid4(),
         scan_config_id=uuid.UUID(scan_config_id),
@@ -851,9 +858,7 @@ async def test_project_list_counts_catalog_metric_signals_per_project(client: As
     slugs = ["batch-metric-a", "batch-metric-b"]
     async with TestSessionLocal() as session:
         for slug in slugs:
-            project_resp = await client.post(
-                "/api/v1/projects", json={"name": slug, "slug": slug}
-            )
+            project_resp = await client.post("/api/v1/projects", json={"name": slug, "slug": slug})
             assert project_resp.status_code == 201
             project_id = uuid.UUID(project_resp.json()["id"])
             metric_definition_id = uuid.uuid4()
@@ -951,9 +956,7 @@ async def test_project_summary_plan_counts_unchanged_by_plan_branch(client: Asyn
     assert baseline["event_count"] == 3
     assert baseline["variable_count"] == 1
 
-    branch_resp = await client.post(
-        f"/api/v1/projects/{slug}/branches", json={"name": "feature-x"}
-    )
+    branch_resp = await client.post(f"/api/v1/projects/{slug}/branches", json={"name": "feature-x"})
     assert branch_resp.status_code == 201
 
     after = await client.get(f"/api/v1/projects/{slug}")
@@ -1097,10 +1100,12 @@ async def test_reset_anomalies_clears_period_and_covers_metric_scope(client: Asy
     regression_id = uuid.uuid4()
     async with TestSessionLocal() as session:
         # In-period event-scope anomaly (deleted) + out-of-period one (kept).
-        anomaly_in = _anomaly(scan_config_id, "event_type", event_type_id, _IN_PERIOD,
-                              event_type_id=event_type_id)
-        anomaly_out = _anomaly(scan_config_id, "event_type", event_type_id, _OUT_OF_PERIOD,
-                              event_type_id=event_type_id)
+        anomaly_in = _anomaly(
+            scan_config_id, "event_type", event_type_id, _IN_PERIOD, event_type_id=event_type_id
+        )
+        anomaly_out = _anomaly(
+            scan_config_id, "event_type", event_type_id, _OUT_OF_PERIOD, event_type_id=event_type_id
+        )
         # Project-global metric-scope anomaly: NULL scan_config_id, keyed by the
         # metric definition id. Must be covered by the dual scoping branch.
         anomaly_metric = _anomaly(None, "metric", metric_definition_id, _IN_PERIOD)
@@ -1155,8 +1160,8 @@ async def test_reset_anomalies_clears_period_and_covers_metric_scope(client: Asy
         remaining_anomalies = (await session.execute(select(MetricAnomaly))).scalars().all()
         assert {a.id for a in remaining_anomalies} == {kept_anomaly_id}
         remaining_breakdowns = (
-            await session.execute(select(MetricBreakdownAnomaly))
-        ).scalars().all()
+            (await session.execute(select(MetricBreakdownAnomaly))).scalars().all()
+        )
         assert {b.id for b in remaining_breakdowns} == {kept_breakdown_id}
         # Regression guard: values + release regressions are untouched.
         event_metrics = (await session.execute(select(EventMetric))).scalars().all()

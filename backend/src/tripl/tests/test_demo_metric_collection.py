@@ -186,9 +186,7 @@ def _seed_demo(session: Session) -> _Seeded:
 
     numerator_event_id = uuid.uuid4()
     denominator_event_id = uuid.uuid4()
-    _seed_conversion_event_metrics(
-        session, scan_config, numerator_event_id, denominator_event_id
-    )
+    _seed_conversion_event_metrics(session, scan_config, numerator_event_id, denominator_event_id)
 
     metric_ids = _seed_metric_definitions(
         session,
@@ -356,9 +354,7 @@ def _seed_metric_definitions(
 
 def _metric_values(session: Session, metric_id: uuid.UUID) -> list[MetricValue]:
     return list(
-        session.execute(
-            select(MetricValue).where(MetricValue.metric_definition_id == metric_id)
-        )
+        session.execute(select(MetricValue).where(MetricValue.metric_definition_id == metric_id))
         .scalars()
         .all()
     )

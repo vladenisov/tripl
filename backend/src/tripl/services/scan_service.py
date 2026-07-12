@@ -34,16 +34,11 @@ async def _verify_data_source(
     # never be selected by any other project — that is how an ordinary project is
     # kept from pointing a scan/preview at demo data. Identity is db_type +
     # project ownership, never slug/host/name.
-    if (
-        ds.db_type == DBType.synthetic
-        and project_id is not None
-        and ds.project_id != project_id
-    ):
+    if ds.db_type == DBType.synthetic and project_id is not None and ds.project_id != project_id:
         raise HTTPException(
             status_code=422,
             detail=(
-                "Synthetic data sources belong to their demo project "
-                "and cannot be selected here."
+                "Synthetic data sources belong to their demo project and cannot be selected here."
             ),
         )
     return ds
@@ -118,9 +113,7 @@ async def update_scan_config(
             or [],
             event_type_column=update_dict.get("event_type_column", config.event_type_column),
             time_column=update_dict.get("time_column", config.time_column),
-            app_version_column=update_dict.get(
-                "app_version_column", config.app_version_column
-            ),
+            app_version_column=update_dict.get("app_version_column", config.app_version_column),
             platform_column=update_dict.get("platform_column", config.platform_column),
         )
         check_replay_chunk_against_interval(

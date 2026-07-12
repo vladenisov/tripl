@@ -22,9 +22,7 @@ async def list_users(
     offset: int = Query(0, ge=0),
 ) -> list[User]:
     del current_user  # any authenticated user can see the roster
-    rows = await session.scalars(
-        select(User).order_by(User.created_at).limit(limit).offset(offset)
-    )
+    rows = await session.scalars(select(User).order_by(User.created_at).limit(limit).offset(offset))
     return list(rows)
 
 

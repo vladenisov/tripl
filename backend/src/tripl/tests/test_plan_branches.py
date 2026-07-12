@@ -921,9 +921,7 @@ async def test_merge_preserves_main_only_event_edit(client: AsyncClient) -> None
 
     merged = await _approve_and_merge(client, "merge-behind-change", branch_id)
     assert merged.status_code == 200, merged.text
-    event = (
-        await client.get("/api/v1/projects/merge-behind-change/events")
-    ).json()["items"][0]
+    event = (await client.get("/api/v1/projects/merge-behind-change/events")).json()["items"][0]
     assert event["description"] == "edited on main"
 
 
@@ -987,9 +985,7 @@ async def test_merge_preserves_main_only_event_tag_during_unrelated_branch_edit(
 
     async with TestSessionLocal() as session:
         tags = (
-            (
-                await session.execute(select(EventTag).where(EventTag.event_id == main_event_id))
-            )
+            (await session.execute(select(EventTag).where(EventTag.event_id == main_event_id)))
             .scalars()
             .all()
         )
@@ -1006,11 +1002,7 @@ async def test_branch_tag_change_invalidates_approval_hash(client: AsyncClient) 
 
     async with TestSessionLocal() as session:
         branch_event = (
-            (
-                await session.execute(
-                    select(Event).where(Event.branch_id == uuid.UUID(branch_id))
-                )
-            )
+            (await session.execute(select(Event).where(Event.branch_id == uuid.UUID(branch_id))))
             .scalars()
             .one()
         )
@@ -1100,9 +1092,7 @@ async def test_snapshot_v2_captures_all_merge_relevant_event_child_state(
     assert event_state["field_values"] == [
         {"field_name": "name", "value": "${variant}", "is_authored": True}
     ]
-    assert event_state["meta_values"] == [
-        {"meta_field_name": "owner_team", "value": "growth"}
-    ]
+    assert event_state["meta_values"] == [{"meta_field_name": "owner_team", "value": "growth"}]
     assert event_state["tags"] == ["critical"]
     comment_state = event_state["photos"][0]["comments"][0]
     assert comment_state["user_fingerprint"] is None
@@ -1135,11 +1125,7 @@ async def test_parent_delete_conflicts_with_main_child_addition(client: AsyncCli
             .one()
         )
         branch_event = (
-            (
-                await session.execute(
-                    select(Event).where(Event.branch_id == uuid.UUID(branch_id))
-                )
-            )
+            (await session.execute(select(Event).where(Event.branch_id == uuid.UUID(branch_id))))
             .scalars()
             .one()
         )
@@ -1149,9 +1135,7 @@ async def test_parent_delete_conflicts_with_main_child_addition(client: AsyncCli
 
     merged = await _approve_and_merge(client, slug, branch_id)
     assert merged.status_code == 409
-    assert merged.json()["detail"]["conflicts"] == [
-        {"entity_type": "event_type", "name": "track"}
-    ]
+    assert merged.json()["detail"]["conflicts"] == [{"entity_type": "event_type", "name": "track"}]
 
 
 @pytest.mark.asyncio
@@ -1162,11 +1146,7 @@ async def test_field_delete_conflicts_with_main_dependent_value(client: AsyncCli
 
     async with TestSessionLocal() as session:
         main_event = (
-            (
-                await session.execute(
-                    select(Event).where(Event.branch_id != uuid.UUID(branch_id))
-                )
-            )
+            (await session.execute(select(Event).where(Event.branch_id != uuid.UUID(branch_id))))
             .scalars()
             .one()
         )
@@ -1193,9 +1173,7 @@ async def test_field_delete_conflicts_with_main_dependent_value(client: AsyncCli
         branch_field = (
             (
                 await session.execute(
-                    select(FieldDefinition).where(
-                        FieldDefinition.event_type_id == branch_type.id
-                    )
+                    select(FieldDefinition).where(FieldDefinition.event_type_id == branch_type.id)
                 )
             )
             .scalars()
@@ -1237,9 +1215,7 @@ async def test_field_delete_conflicts_with_main_dependent_relation(client: Async
             for field in (
                 (
                     await session.execute(
-                        select(FieldDefinition).where(
-                            FieldDefinition.event_type_id == main_type.id
-                        )
+                        select(FieldDefinition).where(FieldDefinition.event_type_id == main_type.id)
                     )
                 )
                 .scalars()
@@ -1304,11 +1280,7 @@ async def test_meta_field_delete_conflicts_with_main_dependent_value(client: Asy
 
     async with TestSessionLocal() as session:
         main_event = (
-            (
-                await session.execute(
-                    select(Event).where(Event.branch_id != uuid.UUID(branch_id))
-                )
-            )
+            (await session.execute(select(Event).where(Event.branch_id != uuid.UUID(branch_id))))
             .scalars()
             .one()
         )
@@ -1375,13 +1347,12 @@ async def test_snapshot_override_keys_include_event_type_for_duplicate_names(
         assert branch is not None and branch.base_revision_id is not None
         base = await session.get(PlanRevision, branch.base_revision_id)
         assert base is not None
-        branch_snapshot = await build_plan_snapshot(
-            session, branch.project_id, branch_id=branch.id
-        )
+        branch_snapshot = await build_plan_snapshot(session, branch.project_id, branch_id=branch.id)
 
-    assert [
-        (event["event_type_name"], event["name"]) for event in branch_snapshot["events"]
-    ] == [("screen", "purchase:success"), ("track", "purchase:success")]
+    assert [(event["event_type_name"], event["name"]) for event in branch_snapshot["events"]] == [
+        ("screen", "purchase:success"),
+        ("track", "purchase:success"),
+    ]
     base_overrides = base.payload["variables"][0]["event_value_overrides"]
     branch_overrides = branch_snapshot["variables"][0]["event_value_overrides"]
     assert branch_overrides == base_overrides

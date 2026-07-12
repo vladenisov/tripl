@@ -4137,11 +4137,15 @@ def test_platform_share_shift_creates_distinct_parity_anomaly(
             evaluation_end=base + timedelta(hours=10),
         )
 
-        rows = session.execute(
-            select(MetricBreakdownAnomaly).where(
-                MetricBreakdownAnomaly.breakdown_value == "ios"
+        rows = (
+            session.execute(
+                select(MetricBreakdownAnomaly).where(
+                    MetricBreakdownAnomaly.breakdown_value == "ios"
+                )
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
 
         assert detected == 2
         assert {row.kind for row in rows} == {"volume", "parity"}
@@ -4202,11 +4206,15 @@ def test_platform_disappearance_creates_parity_drop_only_when_bucket_is_covered(
             evaluation_end=base + timedelta(hours=10),
             covered_buckets=all_covered,
         )
-        rows = session.execute(
-            select(MetricBreakdownAnomaly).where(
-                MetricBreakdownAnomaly.breakdown_value == "ios"
+        rows = (
+            session.execute(
+                select(MetricBreakdownAnomaly).where(
+                    MetricBreakdownAnomaly.breakdown_value == "ios"
+                )
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
 
         assert detected == 2
         parity = next(row for row in rows if row.kind == "parity")
@@ -4226,11 +4234,15 @@ def test_platform_disappearance_creates_parity_drop_only_when_bucket_is_covered(
             evaluation_end=base + timedelta(hours=10),
             covered_buckets=all_covered - {base + timedelta(hours=9)},
         )
-        remaining = session.execute(
-            select(MetricBreakdownAnomaly).where(
-                MetricBreakdownAnomaly.breakdown_value == "ios"
+        remaining = (
+            session.execute(
+                select(MetricBreakdownAnomaly).where(
+                    MetricBreakdownAnomaly.breakdown_value == "ios"
+                )
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
 
         assert detected_with_gap == 0
         assert remaining == []

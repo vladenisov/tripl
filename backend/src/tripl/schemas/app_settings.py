@@ -146,6 +146,7 @@ class AiSettingsUpdate(BaseModel):
         if parsed.scheme not in ("http", "https") or not parsed.netloc:
             raise ValueError("ai_base_url must be a valid http(s) URL")
         return trimmed
+
     ai_timeout_seconds: int | None = Field(default=None, ge=1)
     ai_max_output_tokens: int | None = Field(default=None, ge=1)
     describe_system_prompt: str | None = Field(default=None, min_length=1)

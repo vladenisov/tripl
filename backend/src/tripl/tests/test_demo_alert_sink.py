@@ -20,6 +20,7 @@ import pytest
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import sessionmaker
 
+from tripl.crypto import encrypt_value
 from tripl.models import Base
 from tripl.models.alert_delivery import AlertDelivery, AlertDeliveryStatus
 from tripl.models.alert_delivery_item import AlertDeliveryItem
@@ -42,17 +43,23 @@ class NetworkAccessError(RuntimeError):
     """Raised by the test's network tripwire on any outbound attempt."""
 
 
-def _install_network_guard(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Make ANY outbound network use raise.
+def _install_network_guard(monkeypatch: pytest.MonkeyPatch) -> list[str]:
+    """Make ANY outbound network use raise; return the list of attempts made.
 
     Patches the low-level ``socket.socket`` (which urllib — the alert send
     transport — is built on) plus the higher-level ``httpx`` client sends and
     ``smtplib.SMTP``/``SMTP_SSL`` (the email channel). In-memory sqlite and the
     ASGI in-process transport never open a real socket, so this only trips on a
     genuine outbound send.
+
+    The returned list records every attempt, which lets a caller tell "refused
+    before dialling" apart from "dialled, and the tripwire stopped it" — the
+    difference between a real guard and a delivery that merely happened to fail.
     """
+    attempts: list[str] = []
 
     def _blocked(*_args: object, **_kwargs: object) -> object:
+        attempts.append("outbound")
         raise NetworkAccessError("outbound network attempted from a demo alert path")
 
     monkeypatch.setattr(socket, "socket", _blocked)
@@ -60,13 +67,22 @@ def _install_network_guard(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(smtplib, "SMTP_SSL", _blocked)
     monkeypatch.setattr(httpx.Client, "send", _blocked)
     monkeypatch.setattr(httpx.AsyncClient, "send", _blocked)
+    return attempts
 
 
-def _seed_demo_sink_delivery(session, *, status: str) -> str:
-    """Seed a demo project's demo_sink destination + rule + one pending delivery.
+def _seed_demo_sink_delivery(
+    session,
+    *,
+    status: str,
+    destination_type: str = AlertDestinationType.demo_sink.value,
+    webhook_url: str | None = None,
+) -> str:
+    """Seed a demo project's destination + rule + one pending delivery.
 
     Mirrors the ORM shapes the live dispatch pipeline writes, so the worker task
-    renders + records against a realistic row set. Returns the delivery id.
+    renders + records against a realistic row set. Defaults to the local
+    ``demo_sink``; pass ``destination_type``/``webhook_url`` to seed the row a
+    demo must never be able to send through. Returns the delivery id.
     """
     project = Project(
         id=uuid.uuid4(),
@@ -98,9 +114,10 @@ def _seed_demo_sink_delivery(session, *, status: str) -> str:
     destination = AlertDestination(
         id=uuid.uuid4(),
         project_id=project.id,
-        type=AlertDestinationType.demo_sink.value,
+        type=destination_type,
         name="Local demo sink (no external delivery)",
         enabled=True,
+        webhook_url_encrypted=encrypt_value(webhook_url) if webhook_url else None,
     )
     rule = AlertRule(
         id=uuid.uuid4(),
@@ -115,7 +132,7 @@ def _seed_demo_sink_delivery(session, *, status: str) -> str:
         scan_config_id=scan_config.id,
         destination_id=destination.id,
         rule_id=rule.id,
-        channel=AlertDestinationType.demo_sink.value,
+        channel=destination_type,
         status=status,
         matched_count=1,
         payload_snapshot={"preview": "one alert"},
@@ -347,3 +364,128 @@ async def test_demo_sink_creation_is_demo_only_and_credential_free(client) -> No
         },
     )
     assert resp.status_code == 422
+
+
+def test_demo_project_never_delivers_to_an_external_destination(tmp_path, monkeypatch) -> None:
+    """Dispatch REFUSES an external destination on a demo project, before dialling.
+
+    Defence in depth for the zero-egress promise. The API now refuses to create
+    or enable an external destination on a demo project, but a row can still
+    exist (the seeded disabled Slack example, a database written before that
+    guard, direct SQL), and every dispatch path — scan dispatch, manual retry,
+    stale-pending re-dispatch — funnels through this one task. So the task itself
+    must refuse.
+
+    The webhook is a REAL encrypted, validation-passing Slack URL: without the
+    guard the task would decrypt it, validate it and POST, so ``attempts`` would
+    be non-empty. Asserting the delivery merely ``failed`` would prove nothing —
+    the tripwire fails it either way. Asserting nothing was ever dialled is what
+    pins the guard.
+    """
+    attempts = _install_network_guard(monkeypatch)
+
+    engine = create_engine(f"sqlite:///{tmp_path / 'demo_external.db'}")
+    Base.metadata.create_all(engine)
+    factory = sessionmaker(engine, expire_on_commit=False)
+
+    with factory() as session:
+        delivery_id = _seed_demo_sink_delivery(
+            session,
+            status="pending",
+            destination_type=AlertDestinationType.slack.value,
+            webhook_url="https://hooks.slack.com/services/T000/B000/xxxxxxxx",
+        )
+
+    monkeypatch.setitem(
+        alerts_task.send_alert_delivery.run.__globals__,
+        "_get_sync_session",
+        factory,
+    )
+
+    result = alerts_task.send_alert_delivery.run(delivery_id)
+
+    assert result["status"] == "failed"
+    assert attempts == [], "a demo project must not even attempt an outbound alert"
+
+    with factory() as session:
+        delivery = session.get(AlertDelivery, uuid.UUID(delivery_id))
+        assert delivery is not None
+        assert delivery.status == AlertDeliveryStatus.failed.value
+        # Refused by the demo guard, not by a network error / bad credential.
+        assert "disabled for demo projects" in (delivery.error_message or "")
+
+    Base.metadata.drop_all(engine)
+    engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_demo_project_rejects_external_destinations_via_api(client) -> None:
+    """A demo project may not gain, enable or credential an external destination.
+
+    Covers the configuration route into the egress bug: a demo user opening
+    Alerting and wiring up Slack/Telegram/webhook/email/Jira/Linear, or simply
+    switching on the disabled Slack example the demo ships as an illustration.
+    """
+    async with TestSessionLocal() as session:
+        demo = await create_demo_project(session)
+    demo_slug = demo.slug
+
+    # Every external channel is refused at create time.
+    for payload in (
+        {
+            "type": "slack",
+            "name": "Real Slack",
+            "webhook_url": "https://hooks.slack.com/services/T/B/x",
+        },
+        {"type": "webhook", "name": "Real webhook", "target_url": "https://example.com/hook"},
+        {"type": "telegram", "name": "Real TG", "bot_token": "123:abc", "chat_id": "42"},
+        {"type": "email", "name": "Real email", "email_recipients": "ops@example.com"},
+    ):
+        resp = await client.post(
+            f"/api/v1/projects/{demo_slug}/alert-destinations",
+            json=payload,
+        )
+        assert resp.status_code == 422, f"{payload['type']} must be refused on a demo project"
+        assert "cannot send external alerts" in resp.json()["detail"]
+
+    # The seeded disabled Slack example stays disabled and credential-free.
+    resp = await client.get(f"/api/v1/projects/{demo_slug}/alert-destinations")
+    assert resp.status_code == 200
+    example = next(d for d in resp.json() if d["type"] == "slack")
+    assert example["enabled"] is False
+
+    resp = await client.patch(
+        f"/api/v1/projects/{demo_slug}/alert-destinations/{example['id']}",
+        json={"enabled": True},
+    )
+    assert resp.status_code == 422
+
+    resp = await client.patch(
+        f"/api/v1/projects/{demo_slug}/alert-destinations/{example['id']}",
+        json={"webhook_url": "https://hooks.slack.com/services/T000/B000/xxxxxxxx"},
+    )
+    assert resp.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_demo_rule_cannot_arm_the_ai_explanation(client) -> None:
+    """Arming a demo rule's AI explanation is refused, not silently ignored.
+
+    Building the explanation is an outbound LLM call, so the worker skips it for
+    demo projects; the API refuses the toggle so it cannot look armed while doing
+    nothing.
+    """
+    async with TestSessionLocal() as session:
+        demo = await create_demo_project(session)
+        slug = demo.slug
+        destinations = await alerting_service.list_destinations(session, slug)
+
+    sink = next(d for d in destinations if d.type == AlertDestinationType.demo_sink)
+    rule = sink.rules[0]
+
+    resp = await client.patch(
+        f"/api/v1/projects/{slug}/alert-destinations/{sink.id}/rules/{rule.id}",
+        json={"ai_explanation_enabled": True},
+    )
+    assert resp.status_code == 422
+    assert "AI explanations are disabled for demo projects" in resp.json()["detail"]

@@ -32,8 +32,7 @@ def _canonical(schema: object) -> str:
 
 def test_openapi_snapshot_matches_live_schema() -> None:
     assert _OPENAPI_SNAPSHOT.exists(), (
-        f"Missing OpenAPI snapshot at {_OPENAPI_SNAPSHOT}. Regenerate it:\n"
-        f"{_REGENERATE_HINT}"
+        f"Missing OpenAPI snapshot at {_OPENAPI_SNAPSHOT}. Regenerate it:\n{_REGENERATE_HINT}"
     )
 
     # The snapshot is written with ``print(...) > openapi.json``, which appends

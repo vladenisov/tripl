@@ -12089,6 +12089,18 @@
             ],
             "title": "Created By User Id"
           },
+          "demo_last_tick_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Demo Last Tick At"
+          },
           "demo_recipe_version": {
             "anyOf": [
               {

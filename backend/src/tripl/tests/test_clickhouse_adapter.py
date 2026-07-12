@@ -95,9 +95,7 @@ def test_multi_aggregate_emits_one_column_per_spec() -> None:
         ch_interval="1 day",
         specs=[
             AggregateSpec(key="k_count", aggregation=MetricAggregation.count),
-            AggregateSpec(
-                key="k_sum", aggregation=MetricAggregation.sum, column="event_name"
-            ),
+            AggregateSpec(key="k_sum", aggregation=MetricAggregation.sum, column="event_name"),
             AggregateSpec(
                 key="k_distinct",
                 aggregation=MetricAggregation.count_distinct,
@@ -157,8 +155,7 @@ def test_multi_aggregate_conditional_filter_uses_if_variants() -> None:
     # matching the filter reads as NULL (absent), matching the per-metric path
     # rather than ClickHouse's -If numeric default (0) or type extreme / NaN.
     assert (
-        "if(countIf(event_name = 'signup') = 0, NULL, "
-        "countIf(event_name = 'signup')) AS `k_cf`"
+        "if(countIf(event_name = 'signup') = 0, NULL, countIf(event_name = 'signup')) AS `k_cf`"
     ) in sql
     assert (
         "if(countIf(event_name = 'signup') = 0, NULL, "
@@ -180,9 +177,7 @@ def test_multi_aggregate_breakdown_shape_and_other_folding() -> None:
         breakdown_column="event_name",
         specs=[
             AggregateSpec(key="k_count", aggregation=MetricAggregation.count),
-            AggregateSpec(
-                key="k_sum", aggregation=MetricAggregation.sum, column="event_name"
-            ),
+            AggregateSpec(key="k_sum", aggregation=MetricAggregation.sum, column="event_name"),
         ],
         time_from=_FROM,
         time_to=_TO,

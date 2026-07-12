@@ -65,6 +65,7 @@ function makeDestination(overrides: Record<string, unknown> = {}) {
     linear_team_id: null,
     linear_state_id: null,
     linear_label_ids: null,
+    is_local: false,
     rules: [],
     created_at: '2026-06-13T10:00:00Z',
     updated_at: '2026-06-13T10:00:00Z',
@@ -75,9 +76,13 @@ function makeDestination(overrides: Record<string, unknown> = {}) {
 // Empty-state payloads for every endpoint the tab (and RoutingRulesPanel) hits,
 // so the component renders without firing real network requests. Pass
 // `destinations` to exercise the populated / partially-configured layouts.
-function mockAlertingFetch(destinations: unknown[] = []) {
+function mockAlertingFetch(destinations: unknown[] = [], { isDemo = false } = {}) {
   return vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
     const url = String(input)
+    // The tab reads the project to know whether it is a zero-egress demo.
+    if (/\/projects\/[^/]+$/.test(url)) {
+      return jsonResponse({ id: 'proj-1', slug: 'demo', name: 'Demo', is_demo: isDemo })
+    }
     if (url.includes('/alert-destinations')) return jsonResponse(destinations)
     if (url.includes('/alert-deliveries')) return jsonResponse({ items: [], total: 0 })
     if (url.includes('/alert-inbox')) return jsonResponse({ items: [], total: 0 })
@@ -158,6 +163,60 @@ describe('ProjectAlertingTab — guided setup (tripl-7l83.14)', () => {
     expect(screen.getByText('Signals route to destinations via rules.')).toBeInTheDocument()
     expect(screen.getByText('Audit')).toBeInTheDocument()
     expect(screen.queryByText('Set up alerting')).toBeNull()
+  })
+})
+
+describe('ProjectAlertingTab — demo workspaces are zero-egress (tripl-2su6.12)', () => {
+  it('offers no external channel to add, and says why', async () => {
+    mockAlertingFetch([makeDestination({ rules: [makeRule()] })], { isDemo: true })
+    renderTab()
+
+    expect(await screen.findByText(/never sent to Slack/i)).toBeInTheDocument()
+
+    // The API refuses every external destination on a demo project, so the tab
+    // must not offer one — a button here would only walk into a rejection.
+    for (const label of ['Slack', 'Telegram', 'Webhook', 'Email', 'Jira', 'Linear']) {
+      expect(screen.queryByRole('button', { name: label })).toBeNull()
+    }
+    expect(screen.queryByText('Add another channel')).toBeNull()
+  })
+
+  it('renders the local sink card, badged as sending nothing (tripl-2su6.20)', async () => {
+    // The sink is not one of the six addable channels, so it used to fall through
+    // the per-channel grouping entirely: a demo's Destinations panel showed only
+    // the disabled Slack example, while the destination that actually receives
+    // the seeded deliveries was invisible — even though its rules did appear
+    // under Routing rules.
+    mockAlertingFetch(
+      [
+        makeDestination({
+          id: 'dest-sink',
+          type: 'demo_sink',
+          name: 'Local demo sink',
+          is_local: true,
+          webhook_set: false,
+          rules: [makeRule({ destination_id: 'dest-sink' })],
+        }),
+        makeDestination({ enabled: false, name: 'Slack (disabled example)' }),
+      ],
+      { isDemo: true },
+    )
+    renderTab()
+
+    expect(await screen.findByText('Local demo sink')).toBeInTheDocument()
+    expect(screen.getByText('Local sink')).toBeInTheDocument()
+    expect(screen.getByText(/nothing is sent/i)).toBeInTheDocument()
+  })
+
+  it('still offers every channel on a real project', async () => {
+    mockAlertingFetch([makeDestination({ rules: [makeRule()] })], { isDemo: false })
+    renderTab()
+
+    expect(await screen.findByText('Add another channel')).toBeInTheDocument()
+    for (const label of ['Slack', 'Telegram', 'Webhook', 'Email', 'Jira', 'Linear']) {
+      expect(screen.getByRole('button', { name: label })).toBeInTheDocument()
+    }
+    expect(screen.queryByText(/never sent to Slack/i)).toBeNull()
   })
 })
 

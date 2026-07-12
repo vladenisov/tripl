@@ -116,9 +116,7 @@ async def _build_event_metrics(session: AsyncSession, ctx: DemoContext) -> None:
                     count=count,
                 )
             )
-            type_bucket_counts[(et_id, bucket)] = (
-                type_bucket_counts.get((et_id, bucket), 0) + count
-            )
+            type_bucket_counts[(et_id, bucket)] = type_bucket_counts.get((et_id, bucket), 0) + count
             if is_spike:
                 home_series[bucket] = count
     await session.flush()

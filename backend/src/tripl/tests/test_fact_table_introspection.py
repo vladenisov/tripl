@@ -166,9 +166,7 @@ class _FakeAdapter:
         self.closed = True
 
 
-def _install_fake_adapter(
-    monkeypatch: pytest.MonkeyPatch, adapter: _FakeAdapter
-) -> None:
+def _install_fake_adapter(monkeypatch: pytest.MonkeyPatch, adapter: _FakeAdapter) -> None:
     from tripl.core.adapters import registry as registry_module
 
     monkeypatch.setattr(registry_module, "build_adapter", lambda ds: adapter)
@@ -510,9 +508,7 @@ async def test_introspect_coerces_non_finite_floats(
         ColumnInfo(name="ninf_v", type_name="Float64"),
         ColumnInfo(name="ok_v", type_name="Float64"),
     ]
-    rows: list[tuple[object, ...]] = [
-        (float("nan"), float("inf"), float("-inf"), 1.5)
-    ]
+    rows: list[tuple[object, ...]] = [(float("nan"), float("inf"), float("-inf"), 1.5)]
     adapter = _FakeAdapter(columns, [c.name for c in columns], rows)
     _install_fake_adapter(monkeypatch, adapter)
 
@@ -523,9 +519,7 @@ async def test_introspect_coerces_non_finite_floats(
         sql="SELECT nan_v, inf_v, ninf_v, ok_v FROM metrics",
     )
 
-    assert result.sample_rows == [
-        {"nan_v": None, "inf_v": None, "ninf_v": None, "ok_v": 1.5}
-    ]
+    assert result.sample_rows == [{"nan_v": None, "inf_v": None, "ninf_v": None, "ok_v": 1.5}]
     # Strict JSON: no NaN/Infinity tokens (allow_nan=False raises if any slip through).
     json.dumps(result.sample_rows, allow_nan=False)
 

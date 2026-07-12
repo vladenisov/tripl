@@ -93,9 +93,7 @@ class TestCrudLifecycle:
         await _bind_data_source_to_project(project["id"], data_source["id"])
 
         # Create
-        created = await _create_fact_table(
-            client, slug, "orders", data_source_id=data_source["id"]
-        )
+        created = await _create_fact_table(client, slug, "orders", data_source_id=data_source["id"])
         assert created["name"] == "orders"
         assert created["display_name"] == "ORDERS"
         assert created["data_source_id"] == data_source["id"]
@@ -195,9 +193,7 @@ class TestDataSourceScoping:
 
 
 class TestConflictsAndValidation:
-    async def test_reject_explicit_null_order_on_update(
-        self, client: AsyncClient, project: dict
-    ):
+    async def test_reject_explicit_null_order_on_update(self, client: AsyncClient, project: dict):
         # ``order`` maps to a NOT NULL column; an explicit null must be rejected
         # at the schema boundary (422), not surface as a DB-level 500.
         created = await _create_fact_table(client, project["slug"], "ordered")
@@ -305,9 +301,7 @@ class TestPreview:
     ):
         # The introspection service is a sibling slice; skip cleanly until it
         # lands, then run with a monkeypatched, warehouse-free stand-in.
-        introspection_mod = pytest.importorskip(
-            "tripl.services.fact_table_introspection_service"
-        )
+        introspection_mod = pytest.importorskip("tripl.services.fact_table_introspection_service")
 
         canned = SimpleNamespace(
             columns=[

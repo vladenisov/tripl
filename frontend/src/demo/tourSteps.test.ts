@@ -40,22 +40,32 @@ describe('buildTourSteps', () => {
 describe('buildMetricBuildingBlocks', () => {
   const blocks = buildMetricBuildingBlocks('acme')
 
-  it('makes the four metric kinds and fact tables directly discoverable', () => {
+  it('covers event volume, the three catalog kinds and fact tables', () => {
     const labels = blocks.map((block) => block.label)
-    // Four metric kinds…
     expect(labels).toEqual(
       expect.arrayContaining(['Event volume', 'Fact', 'SQL', 'Event composition']),
     )
-    // …plus fact tables.
     expect(labels).toContain('Fact tables')
   })
 
-  it('links fact tables to the fact-tables surface and metric kinds to the catalog', () => {
+  it('deep-links every block to the surface that actually shows it (tripl-2su6.19)', () => {
+    // Every block used to point at a bare /p/acme/metrics, so the links existed
+    // but discovered nothing: four of the five landed on the same unfiltered page.
     const byId = new Map(blocks.map((block) => [block.id, block.to]))
+
+    // The three real MetricKind values open the catalog already filtered.
+    expect(byId.get('fact')).toBe('/p/acme/metrics?kind=fact')
+    expect(byId.get('sql')).toBe('/p/acme/metrics?kind=sql')
+    expect(byId.get('event_composition')).toBe('/p/acme/metrics?kind=event_composition')
+
+    // Event volume is not a catalog kind at all — it is the per-event series a
+    // scan collects, which lives on the Events catalog.
+    expect(byId.get('event-count')).toBe('/p/acme/events')
+
     expect(byId.get('fact-tables')).toBe('/p/acme/metrics/fact-tables')
-    expect(byId.get('fact')).toBe('/p/acme/metrics')
-    expect(byId.get('sql')).toBe('/p/acme/metrics')
-    expect(byId.get('event_composition')).toBe('/p/acme/metrics')
-    expect(byId.get('event-count')).toBe('/p/acme/metrics')
+
+    // No two blocks share a destination any more.
+    const destinations = blocks.map((block) => block.to)
+    expect(new Set(destinations).size).toBe(destinations.length)
   })
 })

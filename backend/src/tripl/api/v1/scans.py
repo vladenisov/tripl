@@ -84,9 +84,7 @@ async def get_scan_preview_job(
 
 
 @router.get("/{scan_id}", response_model=ScanConfigResponse)
-async def get_scan_config(
-    session: SessionDep, slug: str, scan_id: uuid.UUID
-) -> ScanConfig:
+async def get_scan_config(session: SessionDep, slug: str, scan_id: uuid.UUID) -> ScanConfig:
     return await scan_service.get_scan_config(session, slug, scan_id)
 
 
@@ -196,9 +194,7 @@ async def replay_scan_metrics(
 
 
 @router.get("/{scan_id}/jobs", response_model=list[ScanJobResponse])
-async def list_scan_jobs(
-    session: SessionDep, slug: str, scan_id: uuid.UUID
-) -> list[ScanJob]:
+async def list_scan_jobs(session: SessionDep, slug: str, scan_id: uuid.UUID) -> list[ScanJob]:
     return await scan_service.list_scan_jobs(session, slug, scan_id)
 
 

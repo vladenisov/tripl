@@ -7123,6 +7123,8 @@ export interface components {
             created_at: string;
             /** Created By User Id */
             created_by_user_id?: string | null;
+            /** Demo Last Tick At */
+            demo_last_tick_at?: string | null;
             /** Demo Recipe Version */
             demo_recipe_version?: string | null;
             /** Demo Seeded At */

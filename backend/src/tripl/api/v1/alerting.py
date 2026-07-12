@@ -269,9 +269,7 @@ async def retry_alert_delivery(
 
 
 @router.get("/monitors/{rule_id}", response_model=MonitorDetailResponse)
-async def get_monitor(
-    session: SessionDep, slug: str, rule_id: uuid.UUID
-) -> MonitorDetailResponse:
+async def get_monitor(session: SessionDep, slug: str, rule_id: uuid.UUID) -> MonitorDetailResponse:
     return await alerting_service.get_monitor(session, slug, rule_id)
 
 

@@ -18,6 +18,7 @@ SCRYPT_P = 1
 SCRYPT_SALT_BYTES = 16
 SESSION_TOKEN_BYTES = 32
 
+
 # OpenSSL caps scrypt memory at ~32MB when maxmem is left at its default (0),
 # which rejects N=2**16 (needs ~64MB: 128 * N * r * p). Grant the exact
 # requirement plus headroom so the hardened parameters actually run instead of
@@ -72,7 +73,7 @@ def verify_password(password: str, stored_hash: str) -> bool:
             maxmem=_scrypt_maxmem(n_int, r_int, p_int),
             dklen=len(expected_hash),
         )
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         return False
 
     return hmac.compare_digest(actual_hash, expected_hash)
@@ -87,7 +88,7 @@ def password_hash_needs_rehash(stored_hash: str) -> bool:
     """
     try:
         algorithm, n_value, _r, _p, _salt, _hash = stored_hash.split("$")
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         return False
     if algorithm != "scrypt":
         return False
