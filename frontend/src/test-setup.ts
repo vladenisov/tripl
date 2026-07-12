@@ -1,4 +1,5 @@
 import '@testing-library/jest-dom'
+import { configure } from '@testing-library/react'
 import { expect } from 'vitest'
 import * as axeMatchers from 'vitest-axe/matchers'
 import type { AxeMatchers } from 'vitest-axe/matchers'
@@ -6,6 +7,14 @@ import type { AxeMatchers } from 'vitest-axe/matchers'
 // vitest-axe@0.1.0 ships an empty `extend-expect` entry, so register the
 // axe matchers manually. This makes `expect(...).toHaveNoViolations()` work.
 expect.extend(axeMatchers)
+
+// Testing Library's 1000ms default for `findBy*`/`waitFor` is too tight for the
+// route-level tests: resolving a lazy route chunk and settling its first render
+// can exceed it whenever the machine is busy (a loaded CI runner, or a backend
+// suite competing for CPU locally), which shows up as flakes that never reproduce
+// in isolation. The headroom only costs wall-clock on an assertion that was going
+// to fail anyway.
+configure({ asyncUtilTimeout: 5000 })
 
 // The package's `extend-expect` type augmentation has a broken runtime import,
 // so declare the matcher types against vitest's `Assertion` interface here.
