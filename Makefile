@@ -20,14 +20,24 @@ help: ## Show this help
 		$(MAKEFILE_LIST)
 
 ##@ Setup
-.PHONY: install install-be install-fe
-install: install-be install-fe ## Install backend + frontend dependencies
+.PHONY: install install-be install-fe install-hooks
+install: install-be install-fe install-hooks ## Install backend + frontend deps and the git hooks
 
-install-be: ## Install backend deps (uv sync)
-	cd $(BACKEND) && uv sync
+# --extra dev is required: uv does NOT install optional-dependency extras by
+# default, so a bare `uv sync` leaves a fresh clone with no ruff, no mypy, no
+# pytest and no pre-commit — none of the tooling the gates below rely on.
+install-be: ## Install backend deps incl. dev extras (uv sync --extra dev)
+	cd $(BACKEND) && uv sync --extra dev
 
 install-fe: ## Install frontend deps (pnpm install)
 	cd $(FRONTEND) && pnpm install
+
+# Run from the repo root: pre-commit reads /.pre-commit-config.yaml from the
+# working directory, while the tools it runs come from the backend environment.
+# This writes .git/hooks/pre-commit only — the beads post-commit/post-checkout
+# hooks are left alone.
+install-hooks: ## Install the git pre-commit hook (ruff format + check on staged backend files)
+	uv run --project $(BACKEND) --extra dev pre-commit install
 
 ##@ Dev
 .PHONY: dev dev-fe

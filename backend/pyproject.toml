@@ -32,6 +32,12 @@ dev = [
     "aiosqlite>=0.22.1",
     "ruff>=0.15.20",
     "mypy>=2.1.0",
+    # Drives the git pre-commit hooks (see /.pre-commit-config.yaml). It lives in
+    # the dev extra so `uv sync --extra dev` — what `make install-be` and CI
+    # already run — is enough to get it; `make install-hooks` then wires it into
+    # .git/hooks. Extras are opt-in, so the production image (`uv sync --frozen
+    # --no-dev`, no --extra) never sees it.
+    "pre-commit>=4.4.0",
 ]
 
 [build-system]
