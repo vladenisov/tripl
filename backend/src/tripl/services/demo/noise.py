@@ -122,6 +122,4 @@ def shares_to_counts(shares: dict[str, float], total: int) -> dict[str, int]:
 def drift_span_progress(days_before_now: float) -> float:
     """Fraction into the drift ramp for a bucket ``days_before_now`` old. The mix
     only starts drifting ``DEMO_DRIFT_SPAN_DAYS`` before now."""
-    return min(
-        max((DEMO_DRIFT_SPAN_DAYS - days_before_now) / DEMO_DRIFT_SPAN_DAYS, 0.0), 1.0
-    )
+    return min(max((DEMO_DRIFT_SPAN_DAYS - days_before_now) / DEMO_DRIFT_SPAN_DAYS, 0.0), 1.0)

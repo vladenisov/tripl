@@ -5,6 +5,7 @@ import { ClipboardList, Globe, Mail, Send, Ticket, Trash2, Webhook, type LucideI
 import { alertingApi } from '@/api/alerting'
 import { eventTypesApi } from '@/api/eventTypes'
 import { eventsApi } from '@/api/events'
+import { projectsApi } from '@/api/projects'
 import { scansApi } from '@/api/scans'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -64,6 +65,10 @@ export default function ProjectAlertingTab({ slug }: { slug: string }) {
     queryKey: ['alertDestinations', slug],
     queryFn: () => alertingApi.listDestinations(slug),
   })
+  const { data: project } = useQuery({
+    queryKey: ['project', slug],
+    queryFn: () => projectsApi.get(slug),
+  })
   const { data: eventTypes = [] } = useQuery({
     queryKey: ['eventTypes', slug],
     queryFn: () => eventTypesApi.list(slug),
@@ -95,6 +100,16 @@ export default function ProjectAlertingTab({ slug }: { slug: string }) {
   })
 
   const events = eventsResp?.items ?? []
+  // A demo's local sink has no entry in CHANNEL_META (it is not a channel anyone
+  // can add), so it fell straight through the per-channel grouping below and its
+  // card was never rendered: a demo's Destinations panel showed only the
+  // permanently-disabled Slack example, while the sink that actually receives the
+  // seeded deliveries stayed invisible — even though its rules did appear under
+  // Routing rules. It gets its own group (tripl-2su6.20).
+  const localSinks = useMemo(
+    () => destinations.filter((destination) => destination.type === 'demo_sink'),
+    [destinations],
+  )
   const groupedDestinations = useMemo(() => ({
     slack: destinations.filter(destination => destination.type === 'slack'),
     telegram: destinations.filter(destination => destination.type === 'telegram'),
@@ -252,6 +267,10 @@ export default function ProjectAlertingTab({ slug }: { slug: string }) {
   // hidden until a rule exists, so it never shows an empty group before the
   // first rule can produce one.
   const showGuidedSetup = !hasDestinations && !hasRules && !hasDeliveries
+  // A demo workspace is zero-egress: the API accepts no destination but the local
+  // demo sink, so offering the channel buttons would only walk the user into a
+  // rejection. Say why instead (tripl-2su6.12).
+  const isDemo = project?.is_demo === true
   // One source of truth for the channel buttons so the zero-state CTA and the
   // populated-state "add another" row stay in sync.
   const channelButtons = CHANNEL_META.map(({ channel, label, Icon }) => (
@@ -260,6 +279,12 @@ export default function ProjectAlertingTab({ slug }: { slug: string }) {
       {label}
     </Button>
   ))
+  const demoChannelNotice = (
+    <p className="text-xs text-muted-foreground">
+      This demo is local-only: alerts render to a built-in sink and are never sent to Slack,
+      Telegram, a webhook, email, Jira or Linear. Create a real project to connect a channel.
+    </p>
+  )
 
   return (
     <div className="space-y-6">
@@ -308,12 +333,39 @@ export default function ProjectAlertingTab({ slug }: { slug: string }) {
               <p className="mt-1 max-w-sm text-sm text-muted-foreground">
                 Create a Slack webhook, Telegram bot, or generic webhook destination, then attach rules to it.
               </p>
-              <div className="mt-4 flex flex-col items-center gap-2">
-                <span className="text-xs font-medium text-muted-foreground">Add a channel</span>
-                <div className="flex flex-wrap items-center justify-center gap-2">
-                  {channelButtons}
+              {isDemo ? (
+                <div className="mt-4 max-w-sm">{demoChannelNotice}</div>
+              ) : (
+                <div className="mt-4 flex flex-col items-center gap-2">
+                  <span className="text-xs font-medium text-muted-foreground">Add a channel</span>
+                  <div className="flex flex-wrap items-center justify-center gap-2">
+                    {channelButtons}
+                  </div>
                 </div>
+              )}
+            </div>
+          )}
+
+          {localSinks.length > 0 && (
+            <div className="space-y-3">
+              <div className="flex items-center gap-2">
+                <h4 className="text-sm font-medium">Local sink</h4>
+                <Badge variant="outline" className="text-[10px]">
+                  {localSinks.length}
+                </Badge>
               </div>
+              {/* No delete affordance: the sink is part of the demo scenario and
+                  owns its seeded rules and deliveries. Reset re-creates it. */}
+              {localSinks.map((destination) => (
+                <DestinationCard
+                  key={destination.id}
+                  slug={slug}
+                  destination={destination}
+                  eventTypes={eventTypes}
+                  events={events}
+                  onEditDestination={openEdit}
+                />
+              ))}
             </div>
           )}
 
@@ -358,8 +410,14 @@ export default function ProjectAlertingTab({ slug }: { slug: string }) {
               the EmptyState above, so this "add another" row is for the populated view. */}
           {hasDestinations && (
             <div className="flex flex-wrap items-center gap-2 rounded-lg border border-dashed p-3">
-              <span className="text-xs font-medium text-muted-foreground">Add another channel</span>
-              {channelButtons}
+              {isDemo ? (
+                demoChannelNotice
+              ) : (
+                <>
+                  <span className="text-xs font-medium text-muted-foreground">Add another channel</span>
+                  {channelButtons}
+                </>
+              )}
             </div>
           )}
         </div>

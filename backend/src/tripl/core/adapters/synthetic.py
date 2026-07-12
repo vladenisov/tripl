@@ -333,9 +333,7 @@ class SyntheticAdapter(BaseAdapter):
         reg = [self._validate_column(table, column) for column in regular_columns]
         if time_column is not None:
             self._validate_column(table, time_column)
-        windowed = self._windowed_rows(
-            self._rows_for_table(table), time_column, time_from, time_to
-        )
+        windowed = self._windowed_rows(self._rows_for_table(table), time_column, time_from, time_to)
         counts: dict[tuple[object, ...], int] = {}
         for row in windowed:
             key = tuple(row.get(column) for column in reg)
@@ -362,9 +360,7 @@ class SyntheticAdapter(BaseAdapter):
         table = self._table_for_query(base_query)
         reg = [self._validate_column(table, column) for column in regular_columns]
         self._validate_column(table, time_column)
-        groups = self._bucket_groups(
-            table, time_column, ch_interval, reg, time_from, time_to
-        )
+        groups = self._bucket_groups(table, time_column, ch_interval, reg, time_from, time_to)
         out: list[tuple[object, ...]] = []
         for (bucket, *values), members in self._sorted_items(groups):
             out.append((bucket, *values, len(members)))
@@ -389,9 +385,7 @@ class SyntheticAdapter(BaseAdapter):
         reg = [self._validate_column(table, column) for column in regular_columns]
         self._validate_column(table, time_column)
         breakdown = self._validate_column(table, breakdown_column)
-        windowed = self._windowed_rows(
-            self._rows_for_table(table), time_column, time_from, time_to
-        )
+        windowed = self._windowed_rows(self._rows_for_table(table), time_column, time_from, time_to)
         top = self._top_values(windowed, breakdown, values_limit)
         groups: dict[tuple[object, ...], list[dict[str, object]]] = {}
         for row in windowed:
@@ -426,9 +420,7 @@ class SyntheticAdapter(BaseAdapter):
         reg = [self._validate_column(table, column) for column in regular_columns]
         self._validate_column(table, time_column)
         breakdowns = [self._validate_column(table, column) for column in breakdown_columns]
-        windowed = self._windowed_rows(
-            self._rows_for_table(table), time_column, time_from, time_to
-        )
+        windowed = self._windowed_rows(self._rows_for_table(table), time_column, time_from, time_to)
         out: list[tuple[object, ...]] = []
         for breakdown in breakdowns:
             top = self._top_values(windowed, breakdown, values_limit)
@@ -465,9 +457,7 @@ class SyntheticAdapter(BaseAdapter):
         reg = [self._validate_column(table, column) for column in regular_columns]
         self._validate_column(table, time_column)
         measure = self._validate_measure(table, agg_fn, measure_column)
-        groups = self._bucket_groups(
-            table, time_column, ch_interval, reg, time_from, time_to
-        )
+        groups = self._bucket_groups(table, time_column, ch_interval, reg, time_from, time_to)
         out: list[tuple[object, ...]] = []
         for (bucket, *values), members in self._sorted_items(groups):
             out.append((bucket, *values, self._aggregate(members, agg_fn, measure)))
@@ -495,9 +485,7 @@ class SyntheticAdapter(BaseAdapter):
         self._validate_column(table, time_column)
         breakdown = self._validate_column(table, breakdown_column)
         measure = self._validate_measure(table, agg_fn, measure_column)
-        windowed = self._windowed_rows(
-            self._rows_for_table(table), time_column, time_from, time_to
-        )
+        windowed = self._windowed_rows(self._rows_for_table(table), time_column, time_from, time_to)
         top = self._top_values(windowed, breakdown, values_limit)
         groups: dict[tuple[object, ...], list[dict[str, object]]] = {}
         for row in windowed:
@@ -525,9 +513,7 @@ class SyntheticAdapter(BaseAdapter):
     ) -> tuple[list[str], list[tuple[object, ...]]]:
         table = self._table_for_query(base_query)
         self._validate_column(table, time_column)
-        windowed = self._windowed_rows(
-            self._rows_for_table(table), time_column, time_from, time_to
-        )
+        windowed = self._windowed_rows(self._rows_for_table(table), time_column, time_from, time_to)
         buckets: dict[datetime, list[dict[str, object]]] = {}
         for row in windowed:
             buckets.setdefault(self._bucket_start(row[time_column], ch_interval), []).append(row)
@@ -554,9 +540,7 @@ class SyntheticAdapter(BaseAdapter):
         table = self._table_for_query(base_query)
         self._validate_column(table, time_column)
         breakdown = self._validate_column(table, breakdown_column)
-        windowed = self._windowed_rows(
-            self._rows_for_table(table), time_column, time_from, time_to
-        )
+        windowed = self._windowed_rows(self._rows_for_table(table), time_column, time_from, time_to)
         top = self._top_values(windowed, breakdown, values_limit)
         groups: dict[tuple[datetime, str, int], list[dict[str, object]]] = {}
         for row in windowed:
@@ -655,9 +639,7 @@ class SyntheticAdapter(BaseAdapter):
         time_from: datetime,
         time_to: datetime,
     ) -> dict[tuple[object, ...], list[dict[str, object]]]:
-        windowed = self._windowed_rows(
-            self._rows_for_table(table), time_column, time_from, time_to
-        )
+        windowed = self._windowed_rows(self._rows_for_table(table), time_column, time_from, time_to)
         groups: dict[tuple[object, ...], list[dict[str, object]]] = {}
         for row in windowed:
             bucket = self._bucket_start(row[time_column], ch_interval)

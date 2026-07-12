@@ -30,6 +30,10 @@ x-backend-environment: &backend-environment
   LOG_JSON: ${LOG_JSON:-false}
   REQUEST_ID_HEADER: ${REQUEST_ID_HEADER:-X-Request-ID}
   PROMETHEUS_METRICS_ENABLED: ${PROMETHEUS_METRICS_ENABLED:-false}
+  # Demo kill switches: DEMO_ENABLED gates provisioning (create + reset),
+  # DEMO_RUNTIME_ENABLED gates the background freshness tick (tripl-2su6.16).
+  DEMO_ENABLED: ${DEMO_ENABLED:-true}
+  DEMO_RUNTIME_ENABLED: ${DEMO_RUNTIME_ENABLED:-true}
   SEARCH_EMBEDDINGS_ENABLED: ${SEARCH_EMBEDDINGS_ENABLED:-false}
   SEARCH_EMBEDDING_PROVIDER: ${SEARCH_EMBEDDING_PROVIDER:-openai}
   SEARCH_EMBEDDING_MODEL: ${SEARCH_EMBEDDING_MODEL:-text-embedding-3-small}

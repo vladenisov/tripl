@@ -111,9 +111,7 @@ async def test_demo_populates_every_advertised_surface(client: AsyncClient) -> N
     covered.add("fact_tables")
     # Distribution drift is seeded on the screen_view event type's platform mix.
     drifts = _items(
-        await get(
-            f"/distribution-drifts?scope_type=event_type&scope_ref={screen_view['id']}"
-        )
+        await get(f"/distribution-drifts?scope_type=event_type&scope_ref={screen_view['id']}")
     )
     assert drifts
     covered.add("distribution_drifts")

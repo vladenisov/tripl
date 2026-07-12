@@ -131,6 +131,11 @@ export function DestinationCard({
                 <Badge variant={destination.enabled ? 'default' : 'secondary'} className="text-[10px]">
                   {destination.enabled ? 'enabled' : 'disabled'}
                 </Badge>
+                {destination.is_local && (
+                  <Badge variant="outline" className="text-[10px]">
+                    local · nothing is sent
+                  </Badge>
+                )}
                 {destination.type === 'slack' && destination.webhook_set && (
                   <Badge variant="outline" className="text-[10px]">webhook set</Badge>
                 )}

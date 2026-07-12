@@ -228,11 +228,7 @@ async def _populate_firing_monitor_counts(
     rule_ids = [rule_id for _project_id, rule_id in rule_rows]
     states_by_rule: dict[uuid.UUID, list[AlertRuleState]] = defaultdict(list)
     states = (
-        (
-            await session.execute(
-                select(AlertRuleState).where(AlertRuleState.rule_id.in_(rule_ids))
-            )
-        )
+        (await session.execute(select(AlertRuleState).where(AlertRuleState.rule_id.in_(rule_ids))))
         .scalars()
         .all()
     )
@@ -658,15 +654,32 @@ def demo_data_source_name(slug: str) -> str:
     return f"Demo warehouse {slug}"
 
 
-async def delete_project(session: AsyncSession, slug: str) -> None:
-    project = await get_project_by_slug(session, slug)
-    # Remove data sources OWNED by this project (a demo's synthetic warehouse)
-    # before deleting the project, so nothing leaks a workspace-wide orphan.
-    # Real, workspace-global sources carry project_id IS NULL and are untouched.
-    # On Postgres the FK cascade would also remove them, but doing it explicitly
-    # keeps behaviour correct under SQLite (tests) where FK cascades are off.
+async def purge_project_rows(session: AsyncSession, project: Project) -> None:
+    """Delete a project and the data sources it owns, WITHOUT committing.
+
+    Split out of :func:`delete_project` so demo reset can drop the old demo and
+    seed its replacement inside a single transaction: if seeding fails, the
+    rollback puts the old demo back untouched (tripl-2su6.13).
+
+    Data sources OWNED by this project (a demo's synthetic warehouse) go first,
+    so nothing leaks a workspace-wide orphan. Real, workspace-global sources carry
+    project_id IS NULL and are untouched. On Postgres the FK cascade would also
+    remove them, but doing it explicitly keeps behaviour correct under SQLite
+    (tests), where FK cascades are off.
+
+    The flush matters: it forces the DELETE out before any later INSERT, so a
+    caller re-creating a project under the same (unique) slug within this same
+    transaction cannot trip the unique constraint on SQLAlchemy's insert-before-
+    delete unit-of-work ordering.
+    """
     await session.execute(delete(DataSource).where(DataSource.project_id == project.id))
     await session.delete(project)
+    await session.flush()
+
+
+async def delete_project(session: AsyncSession, slug: str) -> None:
+    project = await get_project_by_slug(session, slug)
+    await purge_project_rows(session, project)
     await session.commit()
     await cache.delete_prefix(cache.prefix_projects())
     await cache.delete_prefix(cache.prefix_data_sources())

@@ -292,9 +292,7 @@ def run_scan(self: object, scan_config_id: str, job_id: str) -> dict[str, object
                 job.completed_at = datetime.now(UTC)
                 job.error_message = user_facing_error(e)
                 session.commit()
-                _publish_scan_job_event(
-                    session, scan_config_id, job_id, ScanJobStatus.failed.value
-                )
+                _publish_scan_job_event(session, scan_config_id, job_id, ScanJobStatus.failed.value)
         except Exception:
             logger.exception("Failed to update job status after error")
         scan_runs_total.labels(status="failed").inc()
@@ -462,9 +460,7 @@ def apply_event_groups(self: object, scan_config_id: str, job_id: str) -> dict[s
                 job.completed_at = datetime.now(UTC)
                 job.error_message = user_facing_error(e)
                 session.commit()
-                _publish_scan_job_event(
-                    session, scan_config_id, job_id, ScanJobStatus.failed.value
-                )
+                _publish_scan_job_event(session, scan_config_id, job_id, ScanJobStatus.failed.value)
         except Exception:
             logger.exception("Failed to update event group apply job status after error")
         raise

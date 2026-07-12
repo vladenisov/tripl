@@ -19,9 +19,15 @@ export interface TourStep {
 
 /**
  * The metric building blocks a newcomer must be able to reach directly from the
- * welcome flow: the four metric kinds tripl computes plus fact tables. Each is a
- * deep link so they are individually discoverable (acceptance: "Fact tables and
- * the four metric kinds must be directly discoverable").
+ * welcome flow. Each is a REAL deep link — the three catalog kinds
+ * (fact / sql / event_composition) open the catalog already filtered to that
+ * kind, event volume opens the Events catalog where the per-event series lives,
+ * and fact tables open their own tab. They previously all pointed at a bare
+ * /metrics, so the links existed but discovered nothing (tripl-2su6.19).
+ *
+ * Note "the four metric kinds" in the original acceptance is a miscount: the
+ * backend MetricKind enum has three members. Event volume is a scan-collected
+ * per-event series, not a MetricDefinition kind.
  */
 export interface MetricBuildingBlock {
   id: string
@@ -34,28 +40,33 @@ export function buildMetricBuildingBlocks(slug: string): MetricBuildingBlock[] {
   const metrics = `/p/${slug}/metrics`
   return [
     {
+      // Event volume is NOT a catalog metric kind — MetricKind is only
+      // fact/sql/event_composition. It is the per-event volume series a scan
+      // collects, and it lives on the Events catalog, so that is where this
+      // block points. Sending it to /metrics (as it used to) dropped the user on
+      // a page that does not contain the thing being described.
       id: 'event-count',
       label: 'Event volume',
-      blurb: 'How often each event fires over time.',
-      to: metrics,
+      blurb: 'How often each event fires over time — collected per event by a scan.',
+      to: `/p/${slug}/events`,
     },
     {
       id: 'fact',
       label: 'Fact',
       blurb: 'Aggregate a numeric column from a fact table.',
-      to: metrics,
+      to: `${metrics}?kind=fact`,
     },
     {
       id: 'sql',
       label: 'SQL',
       blurb: 'A metric defined by a custom SQL query.',
-      to: metrics,
+      to: `${metrics}?kind=sql`,
     },
     {
       id: 'event_composition',
       label: 'Event composition',
       blurb: 'Ratios and per-user metrics composed from events.',
-      to: metrics,
+      to: `${metrics}?kind=event_composition`,
     },
     {
       id: 'fact-tables',

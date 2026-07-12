@@ -114,9 +114,7 @@ def publish_project_event(slug: str, event_type: str, payload: dict[str, Any]) -
         logger.warning("realtime publish %s/%s failed: %s", slug, event_type, exc)
 
 
-async def async_publish_project_event(
-    slug: str, event_type: str, payload: dict[str, Any]
-) -> None:
+async def async_publish_project_event(slug: str, event_type: str, payload: dict[str, Any]) -> None:
     """Async variant of :func:`publish_project_event` (FastAPI request path)."""
     client = cache.get_async_client()
     if client is None:
@@ -151,7 +149,7 @@ async def replay_buffered_events(slug: str, after_id: int | None) -> list[dict[s
     for raw in raw_items:  # newest → oldest (LPUSH order)
         try:
             envelope = json.loads(raw)
-        except (ValueError, TypeError):
+        except ValueError, TypeError:
             continue
         if isinstance(envelope, dict) and int(envelope.get("id", 0)) > after_id:
             events.append(envelope)
@@ -177,7 +175,7 @@ async def redis_message_iterator(slug: str) -> AsyncIterator[dict[str, Any]]:
             data = message.get("data")
             try:
                 envelope = json.loads(data)
-            except (ValueError, TypeError):
+            except ValueError, TypeError:
                 continue
             if isinstance(envelope, dict):
                 yield envelope
@@ -247,9 +245,7 @@ async def sse_response_stream(
         if is_disconnected is not None and await is_disconnected():
             return
         try:
-            envelope = await asyncio.wait_for(
-                iterator.__anext__(), timeout=heartbeat_seconds
-            )
+            envelope = await asyncio.wait_for(iterator.__anext__(), timeout=heartbeat_seconds)
         except TimeoutError:
             yield format_sse_comment("heartbeat")
             continue

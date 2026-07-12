@@ -32,9 +32,7 @@ async def test_kpi_series_days_in_range_ok(client: AsyncClient):
 @pytest.mark.asyncio
 async def test_top_events_window_hours_over_ceiling_rejected(client: AsyncClient):
     await _create_project(client, "bounds-topwin")
-    resp = await client.get(
-        "/api/v1/projects/bounds-topwin/overview/top-events?window_hours=99999"
-    )
+    resp = await client.get("/api/v1/projects/bounds-topwin/overview/top-events?window_hours=99999")
     assert resp.status_code == 422
 
 

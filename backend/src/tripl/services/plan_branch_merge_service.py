@@ -151,9 +151,7 @@ async def _apply_merge(
     base_et_by_name: dict[str, dict[str, Any]] = {
         e["name"]: e for e in (base_payload or {}).get("event_types", [])
     }
-    branch_snapshot_payload = await build_plan_snapshot(
-        session, project_id, branch_id=branch_id
-    )
+    branch_snapshot_payload = await build_plan_snapshot(session, project_id, branch_id=branch_id)
     # --- event_types
     main_ets = list(
         (
@@ -289,9 +287,7 @@ async def _apply_merge(
             if m_fd is None:
                 if base_fd is not None:
                     continue
-                m_fd = FieldDefinition(
-                    id=uuid.uuid4(), event_type_id=m_et_id, name=field_name
-                )
+                m_fd = FieldDefinition(id=uuid.uuid4(), event_type_id=m_et_id, name=field_name)
                 session.add(m_fd)
                 main_fields_by_key[key] = m_fd
             for attr in field_attrs:
@@ -739,9 +735,7 @@ async def _apply_merge(
         for et in branch_ets
         for fd in et.field_definitions
     }
-    main_relations = await _load_for_branch(
-        session, EventTypeRelation, project_id, main_branch_id
-    )
+    main_relations = await _load_for_branch(session, EventTypeRelation, project_id, main_branch_id)
     main_et_id_to_name_after = {et_id: name for name, et_id in main_et_name_to_id.items()}
     main_fd_id_to_key = {field_id: key for key, field_id in main_field_by_key.items()}
 

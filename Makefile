@@ -20,14 +20,29 @@ help: ## Show this help
 		$(MAKEFILE_LIST)
 
 ##@ Setup
-.PHONY: install install-be install-fe
-install: install-be install-fe ## Install backend + frontend dependencies
+.PHONY: install install-be install-fe install-hooks
+install: install-be install-fe install-hooks ## Install backend + frontend deps and the git hooks
 
-install-be: ## Install backend deps (uv sync)
-	cd $(BACKEND) && uv sync
+# --extra dev is required: uv does NOT install optional-dependency extras by
+# default, so a bare `uv sync` leaves a fresh clone with no ruff, no mypy, no
+# pytest and no pre-commit — none of the tooling the gates below rely on.
+install-be: ## Install backend deps incl. dev extras (uv sync --extra dev)
+	cd $(BACKEND) && uv sync --extra dev
 
 install-fe: ## Install frontend deps (pnpm install)
 	cd $(FRONTEND) && pnpm install
+
+# beads owns the hooks: it points core.hooksPath at .beads/hooks, which git then
+# uses INSTEAD of .git/hooks. That path is an absolute, machine-specific value in
+# .git/config, so a clone (or a moved working copy) can end up pointing at a
+# directory that does not exist — at which point NO hook runs at all, beads' own
+# sync included. Re-running the installer repairs it.
+#
+# The ruff format + check step lives in .beads/hooks/pre-commit, outside beads'
+# section markers (which beads preserves across upgrades). That file is versioned,
+# so this target is the only per-clone step needed to get the hook.
+install-hooks: ## Point git at the versioned hooks (beads sync + ruff format on staged backend files)
+	bd hooks install --beads
 
 ##@ Dev
 .PHONY: dev dev-fe

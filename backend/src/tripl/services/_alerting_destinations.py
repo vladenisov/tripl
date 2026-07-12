@@ -208,10 +208,12 @@ def destination_to_response(destination: AlertDestination) -> AlertDestinationRe
     )
 
 
-# Credential / channel-config fields on AlertDestinationUpdate. A ``demo_sink``
-# is a local sink and must never gain any of these (that would turn it into a
-# real external channel), so an update touching them is rejected.
-_DEMO_SINK_FORBIDDEN_UPDATE_FIELDS = (
+# Credential / channel-config fields on AlertDestinationUpdate — the fields that
+# make a destination able to reach the outside world. Two rules reject an update
+# that touches them: a ``demo_sink`` must never gain any of them (that would turn
+# the local sink into a real external channel), and neither must any destination
+# on a demo project, which is zero-egress by construction.
+_EXTERNAL_CHANNEL_UPDATE_FIELDS = (
     "webhook_url",
     "bot_token",
     "chat_id",
@@ -231,6 +233,23 @@ _DEMO_SINK_FORBIDDEN_UPDATE_FIELDS = (
     "linear_state_id",
     "linear_label_ids",
 )
+
+
+def _reject_demo_ai_explanation(*, is_demo: bool, ai_explanation_enabled: bool | None) -> None:
+    """Refuse to arm a rule's AI explanation on a demo project.
+
+    Building the explanation is an outbound LLM call, which a zero-egress demo
+    must never make. The worker skips it for demo projects regardless, so without
+    this the toggle would just silently do nothing (tripl-2su6.12).
+    """
+    if is_demo and ai_explanation_enabled:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "AI explanations are disabled for demo projects: generating one "
+                "would send demo data to an external model."
+            ),
+        )
 
 
 async def replace_rule_filters(
@@ -279,6 +298,21 @@ async def create_destination(
         raise HTTPException(
             status_code=422,
             detail="A demo_sink destination can only be created on a demo project",
+        )
+    # ...and the mirror of that rule: a demo project is zero-egress, so the local
+    # sink is the ONLY destination it may gain. Without this a demo user could add
+    # a real Slack/webhook/Jira destination and the next collection would send a
+    # genuine outbound message built from synthetic data (tripl-2su6.12). The
+    # permanently-disabled Slack example a demo ships with is written by the seed
+    # builder, not through this API.
+    if project.is_demo and data.type != AlertDestinationType.demo_sink:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "Demo projects cannot send external alerts. Only a local demo_sink "
+                "destination is allowed — create a real project to connect Slack, "
+                "Telegram, a webhook, email, Jira or Linear."
+            ),
         )
     destination = AlertDestination(
         project_id=project.id,
@@ -347,15 +381,30 @@ async def update_destination(
     # ``type`` field on AlertDestinationUpdate — so a demo_sink can never become
     # slack/webhook/... and a real destination can never become a demo_sink.)
     if destination.type == AlertDestinationType.demo_sink:
-        forbidden = [
-            field for field in _DEMO_SINK_FORBIDDEN_UPDATE_FIELDS if field in update_dict
-        ]
+        forbidden = [field for field in _EXTERNAL_CHANNEL_UPDATE_FIELDS if field in update_dict]
         if forbidden:
             raise HTTPException(
                 status_code=422,
                 detail=(
                     "A demo_sink destination is a local sink and cannot be given "
                     "credentials or converted into an external channel"
+                ),
+            )
+    # The other half of the demo zero-egress rule. A demo ships one external
+    # destination — a permanently disabled Slack example — purely to SHOW what a
+    # real channel looks like. Renaming it is fine; enabling it or handing it a
+    # webhook/token/recipient is not, because the next collection would then send
+    # a real message from synthetic data (tripl-2su6.12).
+    if project.is_demo and destination.type != AlertDestinationType.demo_sink:
+        forbidden = [field for field in _EXTERNAL_CHANNEL_UPDATE_FIELDS if field in update_dict]
+        if update_dict.get("enabled") is True:
+            forbidden.append("enabled")
+        if forbidden:
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    "Demo projects cannot send external alerts. This destination is a "
+                    "disabled example: it cannot be enabled or given credentials."
                 ),
             )
     if "name" in update_dict:
@@ -451,6 +500,10 @@ async def create_rule(
     data: AlertRuleCreate,
 ) -> AlertRuleResponse:
     project = await _get_project(session, slug)
+    _reject_demo_ai_explanation(
+        is_demo=project.is_demo,
+        ai_explanation_enabled=data.ai_explanation_enabled,
+    )
     destination = await get_destination(
         session,
         project_id=project.id,
@@ -526,6 +579,10 @@ async def update_rule(
         rule_id=rule_id,
     )
     update_dict = data.model_dump(exclude_unset=True)
+    _reject_demo_ai_explanation(
+        is_demo=project.is_demo,
+        ai_explanation_enabled=update_dict.get("ai_explanation_enabled"),
+    )
 
     filters_payload = data.filters if "filters" in update_dict else None
     update_dict.pop("filters", None)

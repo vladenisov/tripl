@@ -1,10 +1,20 @@
 /**
  * Capability-aware product tour (tripl-2su6.9).
  *
- * A concise stepper through the core surfaces. The current step deep-links to
- * the real surface; a footer index lists every surface plus the metric building
- * blocks (the four metric kinds + fact tables) so they are directly reachable
- * from the welcome flow, not buried behind step-by-step paging.
+ * A stepper through the core surfaces. Each step deep-links to the REAL surface,
+ * so following the tour necessarily closes the dialog — which means progress has
+ * to survive that, or the tour is unfollowable. It used to reset to step one on
+ * every close, so opening a step's surface and coming back put you straight back
+ * at the beginning: a link list wearing a stepper's clothes (tripl-2su6.18).
+ *
+ * Now: opening a step's surface ADVANCES the tour (visiting is progress, not
+ * abandonment), the position is persisted per project, and a plain dismissal
+ * keeps your place. Finishing — or opening the last step's surface — resets it,
+ * so a completed tour starts fresh next time.
+ *
+ * A footer index still lists every surface plus the metric building blocks so
+ * they stay directly reachable without paging; using it leaves the stepper's
+ * position alone.
  */
 
 import { useState } from 'react'
@@ -21,6 +31,31 @@ import {
 } from '@/components/ui/dialog'
 import { buildMetricBuildingBlocks, buildTourSteps } from './tourSteps'
 
+const STORAGE_PREFIX = 'tripl-tour:'
+
+/** Persisted step, clamped to the current tour's length; 0 on anything unusable. */
+function readStoredStep(slug: string, stepCount: number): number {
+  if (typeof window === 'undefined') return 0
+  try {
+    const raw = window.localStorage.getItem(`${STORAGE_PREFIX}${slug}`)
+    if (raw === null) return 0
+    const parsed = Number.parseInt(raw, 10)
+    if (!Number.isInteger(parsed) || parsed < 0 || parsed >= stepCount) return 0
+    return parsed
+  } catch {
+    return 0
+  }
+}
+
+function writeStoredStep(slug: string, step: number): void {
+  if (typeof window === 'undefined') return
+  try {
+    window.localStorage.setItem(`${STORAGE_PREFIX}${slug}`, String(step))
+  } catch {
+    /* ignore — a tour that cannot remember its place still works */
+  }
+}
+
 interface ProductTourProps {
   slug: string
   open: boolean
@@ -30,18 +65,40 @@ interface ProductTourProps {
 export function ProductTour({ slug, open, onOpenChange }: ProductTourProps) {
   const steps = buildTourSteps(slug)
   const blocks = buildMetricBuildingBlocks(slug)
-  const [index, setIndex] = useState(0)
+  const [index, setIndexState] = useState(() => readStoredStep(slug, steps.length))
   const step = steps[Math.min(index, steps.length - 1)]
   const isFirst = index === 0
   const isLast = index === steps.length - 1
 
-  const close = () => {
+  const goTo = (next: number) => {
+    const clamped = Math.min(Math.max(0, next), steps.length - 1)
+    setIndexState(clamped)
+    writeStoredStep(slug, clamped)
+  }
+
+  /** Dismiss without losing your place (Escape, the X, the footer index). */
+  const dismiss = () => onOpenChange(false)
+
+  /** The tour is done: close, and start from the top next time. */
+  const finish = () => {
+    goTo(0)
     onOpenChange(false)
-    setIndex(0)
+  }
+
+  /**
+   * Opening the step's surface IS the step being done, so the tour advances and
+   * the dialog steps aside. Come back and it is waiting on the next one.
+   */
+  const openStepSurface = () => {
+    if (isLast) finish()
+    else {
+      goTo(index + 1)
+      onOpenChange(false)
+    }
   }
 
   return (
-    <Dialog open={open} onOpenChange={(next) => (next ? onOpenChange(true) : close())}>
+    <Dialog open={open} onOpenChange={(next) => (next ? onOpenChange(true) : dismiss())}>
       <DialogContent className="max-w-lg">
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
@@ -66,7 +123,7 @@ export function ProductTour({ slug, open, onOpenChange }: ProductTourProps) {
           <p className="mt-2 text-[12.5px] leading-[1.5]" style={{ color: 'var(--fg-subtle)' }}>
             {step.blurb}
           </p>
-          <Button asChild size="sm" className="mt-3" onClick={close}>
+          <Button asChild size="sm" className="mt-3" onClick={openStepSurface}>
             <Link to={step.to}>
               Open {step.title}
               <ArrowRight className="h-3.5 w-3.5" />
@@ -79,18 +136,18 @@ export function ProductTour({ slug, open, onOpenChange }: ProductTourProps) {
             type="button"
             variant="outline"
             size="sm"
-            onClick={() => setIndex((i) => Math.max(0, i - 1))}
+            onClick={() => goTo(index - 1)}
             disabled={isFirst}
           >
             <ArrowLeft className="h-3.5 w-3.5" />
             Back
           </Button>
           {isLast ? (
-            <Button type="button" size="sm" onClick={close}>
+            <Button type="button" size="sm" onClick={finish}>
               Finish
             </Button>
           ) : (
-            <Button type="button" size="sm" onClick={() => setIndex((i) => Math.min(steps.length - 1, i + 1))}>
+            <Button type="button" size="sm" onClick={() => goTo(index + 1)}>
               Next
               <ArrowRight className="h-3.5 w-3.5" />
             </Button>
@@ -108,7 +165,7 @@ export function ProductTour({ slug, open, onOpenChange }: ProductTourProps) {
               <Link
                 key={s.id}
                 to={s.to}
-                onClick={close}
+                onClick={dismiss}
                 className="rounded-full px-2.5 py-1 text-[11px] font-medium no-underline transition-colors hover:bg-[var(--surface-hover)]"
                 style={{ background: 'var(--surface)', color: 'var(--fg-muted)', border: '1px solid var(--border-subtle)' }}
               >
@@ -124,7 +181,7 @@ export function ProductTour({ slug, open, onOpenChange }: ProductTourProps) {
               <Link
                 key={b.id}
                 to={b.to}
-                onClick={close}
+                onClick={dismiss}
                 title={b.blurb}
                 className="rounded-full px-2.5 py-1 text-[11px] font-medium no-underline transition-colors hover:bg-[var(--surface-hover)]"
                 style={{ background: 'var(--accent-soft)', color: 'var(--accent)' }}

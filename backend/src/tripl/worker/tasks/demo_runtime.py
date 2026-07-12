@@ -227,9 +227,7 @@ def _advance_demo(session: Session, project_id: uuid.UUID, slug: str, now: datet
     new_buckets = _pending_buckets(session, scan_config_id, now)
     written = 0
     if roster and new_buckets:
-        written = _append_buckets(
-            session, scan_config_id, roster, new_buckets, grid_start, now
-        )
+        written = _append_buckets(session, scan_config_id, roster, new_buckets, grid_start, now)
 
     if written:
         _record_scan_job(session, scan_config_id, now, written, roster)
@@ -282,14 +280,10 @@ def _load_series_roster(
     return roster
 
 
-def _pending_buckets(
-    session: Session, scan_config_id: uuid.UUID, now: datetime
-) -> list[datetime]:
+def _pending_buckets(session: Session, scan_config_id: uuid.UUID, now: datetime) -> list[datetime]:
     """Hourly buckets to append: ``(last_populated, latest_complete]``, retention-bounded."""
     last_bucket = session.execute(
-        select(sa_func.max(EventMetric.bucket)).where(
-            EventMetric.scan_config_id == scan_config_id
-        )
+        select(sa_func.max(EventMetric.bucket)).where(EventMetric.scan_config_id == scan_config_id)
     ).scalar()
     if last_bucket is None:
         return []
@@ -518,9 +512,7 @@ def _recompute_anomalies(
     """
     try:
         anomaly_settings = session.execute(
-            select(ProjectAnomalySettings).where(
-                ProjectAnomalySettings.project_id == project_id
-            )
+            select(ProjectAnomalySettings).where(ProjectAnomalySettings.project_id == project_id)
         ).scalar_one_or_none()
         if anomaly_settings is None or not anomaly_settings.anomaly_detection_enabled:
             return
@@ -604,9 +596,7 @@ def _upsert_scope_anomalies(
     eval_end: datetime,
 ) -> None:
     """Delete-window-then-insert the detector's anomalies for one scope."""
-    points = [
-        SeriesPoint(bucket=bucket, count=count) for bucket, count in sorted(series.items())
-    ]
+    points = [SeriesPoint(bucket=bucket, count=count) for bucket, count in sorted(series.items())]
     detected = detect_anomalies(
         points,
         interval=_HOUR,
@@ -681,14 +671,16 @@ def _prune_retention(
         )
     )
     session.execute(
-        delete(ScanJob).where(
-            ScanJob.scan_config_id == scan_config_id, ScanJob.created_at < cutoff
-        )
+        delete(ScanJob).where(ScanJob.scan_config_id == scan_config_id, ScanJob.created_at < cutoff)
     )
     # Catalog metric values for THIS project (both scan-scoped and NULL-scoped).
-    metric_ids = session.execute(
-        select(MetricDefinition.id).where(MetricDefinition.project_id == project_id)
-    ).scalars().all()
+    metric_ids = (
+        session.execute(
+            select(MetricDefinition.id).where(MetricDefinition.project_id == project_id)
+        )
+        .scalars()
+        .all()
+    )
     if metric_ids:
         session.execute(
             delete(MetricValue).where(
@@ -711,6 +703,4 @@ def _emit_status(slug: str) -> None:
     realtime.publish_project_event(
         slug, realtime.EVENT_METRIC_COLLECTION_UPDATED, {"source": "demo_runtime"}
     )
-    realtime.publish_project_event(
-        slug, realtime.EVENT_SIGNALS_UPDATED, {"source": "demo_runtime"}
-    )
+    realtime.publish_project_event(slug, realtime.EVENT_SIGNALS_UPDATED, {"source": "demo_runtime"})

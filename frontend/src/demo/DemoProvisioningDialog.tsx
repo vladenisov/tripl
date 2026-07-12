@@ -27,7 +27,9 @@ interface DemoProvisioningDialogProps {
   status: ProvisioningStatus
   phaseIndex: number
   error: unknown
+  timedOut: boolean
   onRetry: () => void
+  onCancel: () => void
   onClose: () => void
 }
 
@@ -35,7 +37,9 @@ export function DemoProvisioningDialog({
   status,
   phaseIndex,
   error,
+  timedOut,
   onRetry,
+  onCancel,
   onClose,
 }: DemoProvisioningDialogProps) {
   const open = status === 'provisioning' || status === 'error' || status === 'success'
@@ -52,18 +56,27 @@ export function DemoProvisioningDialog({
     <Dialog
       open={open}
       onOpenChange={(next) => {
-        // Block dismissal while a create is blocking; otherwise close cleanly.
-        if (!next && !isProvisioning) onClose()
+        if (next) return
+        // A create in flight is abandonable, not un-dismissable: a stalled
+        // connection used to leave a page reload as the only way out
+        // (tripl-2su6.15). Escape / the close button / an outside click cancel
+        // the request; anything else just closes.
+        if (isProvisioning) onCancel()
+        else onClose()
       }}
     >
-      <DialogContent showCloseButton={!isProvisioning} className="max-w-md">
+      <DialogContent className="max-w-md">
         <DialogHeader>
           <DialogTitle>
             {isError ? 'Demo generation failed' : 'Generating demo workspace'}
           </DialogTitle>
           <DialogDescription>
             {isError
-              ? 'Nothing was left behind — the partial demo was rolled back. You can try again.'
+              ? timedOut
+                ? // Honesty: a timeout aborts OUR request; the server may well be
+                  // seeding still. Promising a rollback here would be a lie.
+                  'The request took too long and was stopped. The demo may still be finishing on the server — check your projects list before creating another.'
+                : 'Nothing was left behind — the partial demo was rolled back. You can try again.'
               : 'Seeding a fully-populated workspace with synthetic data. This takes a few seconds.'}
           </DialogDescription>
         </DialogHeader>
@@ -118,8 +131,8 @@ export function DemoProvisioningDialog({
               </Button>
             </>
           ) : (
-            <Button type="button" variant="outline" disabled>
-              Generating…
+            <Button type="button" variant="outline" onClick={onCancel} disabled={!isProvisioning}>
+              Cancel
             </Button>
           )}
         </DialogFooter>

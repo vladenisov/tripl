@@ -57,8 +57,7 @@ def _sanitize_public_value(value: Any, *, key: str | None = None) -> Any:
         return None if value is None else "<redacted>"
     if isinstance(value, dict):
         return {
-            item_key: _sanitize_public_value(item, key=item_key)
-            for item_key, item in value.items()
+            item_key: _sanitize_public_value(item, key=item_key) for item_key, item in value.items()
         }
     if isinstance(value, list):
         return [_sanitize_public_value(item) for item in value]
@@ -236,8 +235,7 @@ async def build_plan_snapshot(
         .all()
     )
     event_key_by_id = {
-        ev.id: (event_type_name_by_id.get(ev.event_type_id, ""), ev.name)
-        for ev in events_rows
+        ev.id: (event_type_name_by_id.get(ev.event_type_id, ""), ev.name) for ev in events_rows
     }
     override_rows = (
         (
@@ -320,9 +318,7 @@ async def build_plan_snapshot(
     comments_by_photo: dict[uuid.UUID, list[EventPhotoComment]] = {}
     if event_ids:
         photo_rows = list(
-            (
-                await session.execute(select(EventPhoto).where(EventPhoto.event_id.in_(event_ids)))
-            )
+            (await session.execute(select(EventPhoto).where(EventPhoto.event_id.in_(event_ids))))
             .scalars()
             .all()
         )
@@ -368,9 +364,7 @@ async def build_plan_snapshot(
     def serialize_photos(event_id: uuid.UUID) -> list[dict[str, Any]]:
         serialized = [
             {
-                "uploaded_by_user_fingerprint": _snapshot_fingerprint(
-                    photo.uploaded_by_user_id
-                ),
+                "uploaded_by_user_fingerprint": _snapshot_fingerprint(photo.uploaded_by_user_id),
                 "original_filename": photo.original_filename,
                 "content_type": photo.content_type,
                 "size_bytes": photo.size_bytes,

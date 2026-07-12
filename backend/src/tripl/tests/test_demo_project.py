@@ -26,8 +26,10 @@ async def _scan_config_id_for_project(
     session: AsyncSession, project_id: uuid.UUID
 ) -> uuid.UUID | None:
     return (
-        await session.execute(select(ScanConfig.id).where(ScanConfig.project_id == project_id))
-    ).scalars().first()
+        (await session.execute(select(ScanConfig.id).where(ScanConfig.project_id == project_id)))
+        .scalars()
+        .first()
+    )
 
 
 @pytest.mark.asyncio
@@ -127,9 +129,7 @@ async def test_demo_fact_table_preview_serves_synthetic_orders(client: AsyncClie
 
     fact_tables = (await client.get(f"/api/v1/projects/{slug}/fact-tables")).json()["items"]
     fact_table_id = fact_tables[0]["id"]
-    detail = (
-        await client.get(f"/api/v1/projects/{slug}/fact-tables/{fact_table_id}")
-    ).json()
+    detail = (await client.get(f"/api/v1/projects/{slug}/fact-tables/{fact_table_id}")).json()
 
     # Preview (used by the create/edit "Preview columns" surface AND schema
     # refresh) over the fact table's own SQL / data source.
@@ -233,10 +233,14 @@ async def test_demo_project_anomalies_match_seeded_series(client: AsyncClient) -
         assert scan_config_id is not None
 
         all_anomalies = (
-            await session.execute(
-                select(MetricAnomaly).where(MetricAnomaly.scan_config_id == scan_config_id)
+            (
+                await session.execute(
+                    select(MetricAnomaly).where(MetricAnomaly.scan_config_id == scan_config_id)
+                )
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
 
         # Post-Wave-1 tuning, the seeded series is shaped to yield a SMALL number of
         # genuine anomalies (one visible spike per scope), not hundreds.
@@ -263,13 +267,17 @@ async def test_demo_project_anomalies_match_seeded_series(client: AsyncClient) -
             # expected_count is drawn from the same series (a phase median), so it
             # sits within the series' observed range, and a spike overshoots it.
             series_counts = (
-                await session.execute(
-                    select(EventMetric.count).where(
-                        EventMetric.scan_config_id == scan_config_id,
-                        EventMetric.event_id == anomaly.event_id,
+                (
+                    await session.execute(
+                        select(EventMetric.count).where(
+                            EventMetric.scan_config_id == scan_config_id,
+                            EventMetric.event_id == anomaly.event_id,
+                        )
                     )
                 )
-            ).scalars().all()
+                .scalars()
+                .all()
+            )
             assert min(series_counts) <= anomaly.expected_count <= max(series_counts)
             assert anomaly.direction == "spike"
             assert anomaly.actual_count > anomaly.expected_count
@@ -287,12 +295,16 @@ async def test_demo_project_distribution_drift_is_real_psi(client: AsyncClient) 
         project_id = await _project_id_for_slug(session, slug)
         scan_config_id = await _scan_config_id_for_project(session, project_id)
         drifts = (
-            await session.execute(
-                select(DistributionDrift)
-                .where(DistributionDrift.scan_config_id == scan_config_id)
-                .order_by(DistributionDrift.bucket)
+            (
+                await session.execute(
+                    select(DistributionDrift)
+                    .where(DistributionDrift.scan_config_id == scan_config_id)
+                    .order_by(DistributionDrift.bucket)
+                )
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
 
     assert len(drifts) >= 3, "expected a distribution-drift ladder"
 

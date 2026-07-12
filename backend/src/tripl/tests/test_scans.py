@@ -278,9 +278,7 @@ class TestScanConfigsCRUD:
         # Don't actually run the worker; we only need a pending job to cancel.
         monkeypatch.setattr(scan_tasks.run_scan, "delay", lambda *a, **k: None)
 
-        run_resp = await client.post(
-            f"/api/v1/projects/{project['slug']}/scans/{scan_id}/run"
-        )
+        run_resp = await client.post(f"/api/v1/projects/{project['slug']}/scans/{scan_id}/run")
         assert run_resp.status_code == 201
         job_id = run_resp.json()["id"]
         assert run_resp.json()["status"] == "pending"
@@ -1260,9 +1258,7 @@ class TestScanConfigsCRUD:
         finally:
             engine.dispose()
 
-    def test_worker_test_connection_sanitizes_probe_failure(
-        self, tmp_path, monkeypatch
-    ) -> None:
+    def test_worker_test_connection_sanitizes_probe_failure(self, tmp_path, monkeypatch) -> None:
         engine = create_engine(f"sqlite:///{tmp_path / 'test_conn_fail.db'}")
         try:
             Base.metadata.create_all(engine)
@@ -1287,8 +1283,7 @@ class TestScanConfigsCRUD:
             class RefusingAdapter:
                 def test_connection(self) -> bool:
                     raise ConnectionError(
-                        "clickhouse-connect: Connection refused to "
-                        "warehouse.internal:8123"
+                        "clickhouse-connect: Connection refused to warehouse.internal:8123"
                     )
 
                 def close(self) -> None:
@@ -1374,9 +1369,7 @@ class TestFailedScanRuns:
 
         monkeypatch.setattr(scan_tasks.run_scan, "delay", boom)
 
-        run_resp = await client.post(
-            f"/api/v1/projects/{project['slug']}/scans/{scan_id}/run"
-        )
+        run_resp = await client.post(f"/api/v1/projects/{project['slug']}/scans/{scan_id}/run")
         assert run_resp.status_code == 201
         body = run_resp.json()
         assert body["status"] == "failed"
@@ -1402,9 +1395,7 @@ class TestFailedScanRuns:
             )
             await session.commit()
 
-        jobs_resp = await client.get(
-            f"/api/v1/projects/{project['slug']}/scans/{scan_id}/jobs"
-        )
+        jobs_resp = await client.get(f"/api/v1/projects/{project['slug']}/scans/{scan_id}/jobs")
         assert jobs_resp.status_code == 200
         jobs = jobs_resp.json()
         assert len(jobs) == 1
@@ -1457,9 +1448,7 @@ class TestFailedScanRuns:
             )
             await session.commit()
 
-        jobs_resp = await client.get(
-            f"/api/v1/projects/{project['slug']}/scans/{scan_id}/jobs"
-        )
+        jobs_resp = await client.get(f"/api/v1/projects/{project['slug']}/scans/{scan_id}/jobs")
         assert jobs_resp.status_code == 200
         jobs = jobs_resp.json()
         # Newest-first ordering is the contract the settings page relies on to
@@ -1493,9 +1482,7 @@ class TestFailedScanRuns:
         monkeypatch.setattr(scan_tasks.run_scan, "delay", fake_delay)
 
         # "Run again" on the settings page reuses this manual-scan trigger.
-        run_resp = await client.post(
-            f"/api/v1/projects/{project['slug']}/scans/{scan_id}/run"
-        )
+        run_resp = await client.post(f"/api/v1/projects/{project['slug']}/scans/{scan_id}/run")
         assert run_resp.status_code == 201
         body = run_resp.json()
         assert body["status"] == "pending"

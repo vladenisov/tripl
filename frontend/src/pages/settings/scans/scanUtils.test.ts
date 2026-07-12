@@ -44,7 +44,8 @@ describe('summarizeScanChanges', () => {
     )
     const labels = changes.map((change) => change.label)
     expect(labels).toContain('+12 events')
-    expect(labels).toContain('+5 metrics')
+    // Time-series rows collected — NOT metric definitions created (tripl-2gtk).
+    expect(labels).toContain('+5 metric points')
     expect(labels).toContain('+1 signal')
     // A zero delta is omitted, not shown as "+0".
     expect(labels.some((label) => label.includes('alert'))).toBe(false)

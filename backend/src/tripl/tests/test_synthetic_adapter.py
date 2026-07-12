@@ -87,12 +87,18 @@ def test_preview_rows_returns_scan_rows_within_window() -> None:
 def test_preview_time_window_is_a_strict_subset() -> None:
     adapter = _adapter()
     _, wide = adapter.get_preview_rows(
-        "SELECT * FROM events", limit=100000, time_column="event_time",
-        time_from=FULL_FROM, time_to=FULL_TO,
+        "SELECT * FROM events",
+        limit=100000,
+        time_column="event_time",
+        time_from=FULL_FROM,
+        time_to=FULL_TO,
     )
     _, narrow = adapter.get_preview_rows(
-        "SELECT * FROM events", limit=100000, time_column="event_time",
-        time_from=ANCHOR - timedelta(days=2), time_to=ANCHOR,
+        "SELECT * FROM events",
+        limit=100000,
+        time_column="event_time",
+        time_from=ANCHOR - timedelta(days=2),
+        time_to=ANCHOR,
     )
     assert 0 < len(narrow) < len(wide)
 
@@ -124,9 +130,7 @@ def test_active_sessions_sql_metric_computes_distinct_sessions_per_day() -> None
 
     # Independently verify the newest day's distinct-session count.
     newest = max(ts for ts, _ in rows)
-    expected = len(
-        {r["session_id"] for r in adapter._events if _day(r["event_time"]) == newest}
-    )
+    expected = len({r["session_id"] for r in adapter._events if _day(r["event_time"]) == newest})
     assert dict(rows)[newest] == expected
 
 
@@ -169,8 +173,16 @@ def test_bucketed_breakdown_counts_topn_folds_other() -> None:
     adapter = _adapter()
     tf, tt = ANCHOR - timedelta(days=5), ANCHOR
     _cols, _json, rows = adapter.get_time_bucketed_breakdown_counts(
-        "SELECT * FROM events", "event_time", "1 DAY", "platform", [], [], None,
-        tf, tt, values_limit=2,
+        "SELECT * FROM events",
+        "event_time",
+        "1 DAY",
+        "platform",
+        [],
+        [],
+        None,
+        tf,
+        tt,
+        values_limit=2,
     )
     # Row layout: (_bucket, breakdown_value, is_other, count).
     non_other = {r[1] for r in rows if r[2] == 0}
@@ -184,8 +196,15 @@ def test_bucketed_breakdown_counts_multi_covers_each_column() -> None:
     adapter = _adapter()
     tf, tt = ANCHOR - timedelta(days=3), ANCHOR
     _cols, _json, rows = adapter.get_time_bucketed_breakdown_counts_multi(
-        "SELECT * FROM events", "event_time", "1 DAY",
-        ["platform", "event_type"], [], [], None, tf, tt,
+        "SELECT * FROM events",
+        "event_time",
+        "1 DAY",
+        ["platform", "event_type"],
+        [],
+        [],
+        None,
+        tf,
+        tt,
     )
     # Row layout: (_bucket, breakdown_column, breakdown_value, is_other, count).
     assert {r[1] for r in rows} == {"platform", "event_type"}
@@ -237,8 +256,16 @@ def test_bucketed_aggregate_count_avg_and_count_distinct() -> None:
         assert value == pytest.approx(sum(day_orders) / len(day_orders))
 
     _c, _j, distinct_rows = adapter.get_time_bucketed_aggregate(
-        "SELECT * FROM orders", "created_at", "1 DAY", MA.count_distinct, "user_id",
-        [], [], None, tf, tt,
+        "SELECT * FROM orders",
+        "created_at",
+        "1 DAY",
+        MA.count_distinct,
+        "user_id",
+        [],
+        [],
+        None,
+        tf,
+        tt,
     )
     for bucket, value in distinct_rows:
         day_users = {r["user_id"] for r in orders if _day(r["created_at"]) == bucket}
@@ -249,8 +276,18 @@ def test_aggregate_breakdown_folds_other_and_sums() -> None:
     adapter = _adapter()
     tf, tt = ANCHOR - timedelta(days=8), ANCHOR
     _c, _j, rows = adapter.get_time_bucketed_aggregate_breakdown(
-        "SELECT * FROM orders", "created_at", "1 DAY", MA.sum, "amount", "country",
-        [], [], None, tf, tt, values_limit=3,
+        "SELECT * FROM orders",
+        "created_at",
+        "1 DAY",
+        MA.sum,
+        "amount",
+        "country",
+        [],
+        [],
+        None,
+        tf,
+        tt,
+        values_limit=3,
     )
     # Row layout: (_bucket, breakdown_value, is_other, aggregate_value).
     assert all(r[2] in (0, 1) for r in rows)
@@ -343,15 +380,21 @@ def test_unsupported_filter_sql_raises_capability_error() -> None:
 def test_row_limit_and_time_window_are_honoured() -> None:
     adapter = _adapter()
     _cols, rows = adapter.get_preview_rows(
-        "SELECT * FROM orders", limit=3, time_column="created_at",
-        time_from=FULL_FROM, time_to=FULL_TO,
+        "SELECT * FROM orders",
+        limit=3,
+        time_column="created_at",
+        time_from=FULL_FROM,
+        time_to=FULL_TO,
     )
     assert len(rows) == 3
 
     # A window before any data yields nothing (no fabrication).
     _cols, empty = adapter.get_preview_rows(
-        "SELECT * FROM events", limit=100, time_column="event_time",
-        time_from=ANCHOR - timedelta(days=400), time_to=ANCHOR - timedelta(days=390),
+        "SELECT * FROM events",
+        limit=100,
+        time_column="event_time",
+        time_from=ANCHOR - timedelta(days=400),
+        time_to=ANCHOR - timedelta(days=390),
     )
     assert empty == []
 
@@ -376,14 +419,29 @@ def test_isolation_between_two_synthetic_sources() -> None:
     # Two demo projects -> two sources with distinct seeds -> independent datasets.
     a, b = _adapter(seed=101), _adapter(seed=202)
     assert a._orders != b._orders
-    _c, rows_a = a.get_preview_rows("SELECT * FROM orders", limit=100000, time_column="created_at",
-                                    time_from=FULL_FROM, time_to=FULL_TO)
-    _c, rows_b = b.get_preview_rows("SELECT * FROM orders", limit=100000, time_column="created_at",
-                                    time_from=FULL_FROM, time_to=FULL_TO)
+    _c, rows_a = a.get_preview_rows(
+        "SELECT * FROM orders",
+        limit=100000,
+        time_column="created_at",
+        time_from=FULL_FROM,
+        time_to=FULL_TO,
+    )
+    _c, rows_b = b.get_preview_rows(
+        "SELECT * FROM orders",
+        limit=100000,
+        time_column="created_at",
+        time_from=FULL_FROM,
+        time_to=FULL_TO,
+    )
     assert rows_a != rows_b
     # Each source stays internally consistent (re-query is stable).
-    _c, rows_a2 = a.get_preview_rows("SELECT * FROM orders", limit=100000, time_column="created_at",
-                                     time_from=FULL_FROM, time_to=FULL_TO)
+    _c, rows_a2 = a.get_preview_rows(
+        "SELECT * FROM orders",
+        limit=100000,
+        time_column="created_at",
+        time_from=FULL_FROM,
+        time_to=FULL_TO,
+    )
     assert rows_a == rows_a2
 
 

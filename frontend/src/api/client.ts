@@ -125,10 +125,14 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 
 export const api = {
   get: <T>(path: string) => request<T>(path),
-  post: <T>(path: string, data?: unknown) =>
+  // `signal` lets a caller time out or cancel a long POST (demo provisioning).
+  // An aborted fetch surfaces as ApiError(408) — see the AbortError branch in
+  // request().
+  post: <T>(path: string, data?: unknown, signal?: AbortSignal) =>
     request<T>(path, {
       method: 'POST',
       ...(data === undefined ? {} : { body: JSON.stringify(data) }),
+      ...(signal === undefined ? {} : { signal }),
     }),
   put: <T>(path: string, data: unknown) =>
     request<T>(path, { method: 'PUT', body: JSON.stringify(data) }),

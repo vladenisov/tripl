@@ -42,8 +42,6 @@ def _run_schema_introspection(ds: DataSource) -> DataSourceSchemaResponse:
     )
 
 
-async def get_schema_tables(
-    session: AsyncSession, ds_id: uuid.UUID
-) -> DataSourceSchemaResponse:
+async def get_schema_tables(session: AsyncSession, ds_id: uuid.UUID) -> DataSourceSchemaResponse:
     ds = await _fetch_data_source(session, ds_id)
     return await asyncio.to_thread(_run_schema_introspection, ds)

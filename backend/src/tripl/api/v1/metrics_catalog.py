@@ -211,9 +211,7 @@ async def collect_metric_now(
     bounded recent window so the chart is not empty. Returns 202 once queued;
     the warehouse query runs in the worker. Unknown metric -> 404.
     """
-    result = await metric_definition_service.trigger_metric_collection(
-        session, slug, metric_id
-    )
+    result = await metric_definition_service.trigger_metric_collection(session, slug, metric_id)
     await audit_service.record(
         session,
         user=current_user,

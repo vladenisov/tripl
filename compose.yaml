@@ -43,6 +43,13 @@ x-app-environment: &app-environment
   # edge here, so rate_limit_trust_forwarded_for stays at its False default —
   # set it (and uvicorn --forwarded-allow-ips) true only behind a trusted proxy.
   LOG_JSON: ${LOG_JSON:-true}
+  # Demo kill switches. Without these two lines a value set in .env never reaches
+  # the container, so the documented rollback switch does nothing (tripl-2su6.16).
+  # DEMO_ENABLED gates demo provisioning (create + reset); DEMO_RUNTIME_ENABLED
+  # gates the background tick that keeps a demo fresh. Neither touches real
+  # projects.
+  DEMO_ENABLED: ${DEMO_ENABLED:-true}
+  DEMO_RUNTIME_ENABLED: ${DEMO_RUNTIME_ENABLED:-true}
 
 services:
   postgres:

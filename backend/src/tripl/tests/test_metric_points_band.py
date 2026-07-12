@@ -130,9 +130,7 @@ def test_drop_immature_version_anomalies_removes_non_active_versions() -> None:
     anomalies = {
         ("1.0.0", False): [_version_anomaly("1.0.0")],
         ("2.0.0", False): [_version_anomaly("2.0.0")],
-        (APP_VERSION_OTHER_LABEL, True): [
-            _version_anomaly(APP_VERSION_OTHER_LABEL, is_other=True)
-        ],
+        (APP_VERSION_OTHER_LABEL, True): [_version_anomaly(APP_VERSION_OTHER_LABEL, is_other=True)],
     }
     filtered = _drop_immature_version_anomalies(anomalies, active)
     assert ("1.0.0", False) in filtered

@@ -40,14 +40,16 @@ async def test_provisioning_rollback_leaves_nothing_visible(
     assert await _slugs_in_list(client) == set()
     async with TestSessionLocal() as session:
         demos = (
-            await session.execute(select(Project).where(Project.is_demo.is_(True)))
-        ).scalars().all()
+            (await session.execute(select(Project).where(Project.is_demo.is_(True))))
+            .scalars()
+            .all()
+        )
         assert len(demos) == 1 and demos[0].generation_status == "failed"
         event_types = (
-            await session.execute(
-                select(EventType).where(EventType.project_id == demos[0].id)
-            )
-        ).scalars().all()
+            (await session.execute(select(EventType).where(EventType.project_id == demos[0].id)))
+            .scalars()
+            .all()
+        )
         assert event_types == []
 
 
@@ -77,10 +79,10 @@ async def test_delete_cleans_owned_source_and_spares_real(client: AsyncClient) -
         ).scalar_one_or_none() is None
         assert (await session.get(DataSource, real_id)) is not None
         synthetic = (
-            await session.execute(
-                select(DataSource).where(DataSource.db_type == "synthetic")
-            )
-        ).scalars().all()
+            (await session.execute(select(DataSource).where(DataSource.db_type == "synthetic")))
+            .scalars()
+            .all()
+        )
         assert synthetic == []
 
 

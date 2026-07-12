@@ -62,9 +62,7 @@ async def get_data_source_stats(
 
 
 @router.get("/{ds_id}/schema", response_model=DataSourceSchemaResponse)
-async def get_data_source_schema(
-    session: SessionDep, ds_id: uuid.UUID
-) -> DataSourceSchemaResponse:
+async def get_data_source_schema(session: SessionDep, ds_id: uuid.UUID) -> DataSourceSchemaResponse:
     return await datasource_schema_service.get_schema_tables(session, ds_id)
 
 

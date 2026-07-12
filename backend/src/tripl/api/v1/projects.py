@@ -44,11 +44,13 @@ def _require_demo_manager(user: User, project: Project) -> None:
 def _require_demo_enabled() -> None:
     """Enforce the master rollback switch on demo PROVISIONING paths only.
 
-    Real project create/scan/delete never call this, so toggling the flag leaves
-    every non-demo surface untouched.
+    Both create and reset call this: a reset re-seeds a demo from scratch, so it
+    provisions one too. Demo DELETE does not, so a workspace can always remove a
+    demo it already has. Real project create/scan/delete never call this, so
+    toggling the flag leaves every non-demo surface untouched.
     """
     if not settings.demo_enabled:
-        raise HTTPException(status_code=403, detail="Demo creation is disabled")
+        raise HTTPException(status_code=403, detail="Demo provisioning is disabled")
 
 
 @router.get("", response_model=list[ProjectResponse])
@@ -71,9 +73,7 @@ async def create_project(session: SessionDep, data: ProjectCreate) -> ProjectRes
     response_model=ProjectResponse,
     status_code=201,
 )
-async def create_demo_project(
-    session: SessionDep, current_user: EditorUserDep
-) -> ProjectResponse:
+async def create_demo_project(session: SessionDep, current_user: EditorUserDep) -> ProjectResponse:
     _require_demo_enabled()
     return await demo_service.create_demo_project(session, created_by=current_user.id)
 
@@ -83,6 +83,11 @@ async def reset_demo_project(
     session: SessionDep, current_user: EditorUserDep, slug: str
 ) -> ProjectResponse:
     """Re-seed a demo in place. Restricted to the demo's creator or an owner."""
+    # Reset re-provisions the demo from scratch, so it IS a provisioning path and
+    # the kill switch has to gate it too — otherwise flipping the switch off still
+    # left a full re-seed one click away (tripl-2su6.16). Delete deliberately
+    # stays ungated, so a workspace can never be stuck with a demo it can't remove.
+    _require_demo_enabled()
     project = await project_service.get_project_by_slug(session, slug)
     if not project.is_demo:
         raise HTTPException(status_code=404, detail="Demo project not found")
@@ -91,9 +96,7 @@ async def reset_demo_project(
 
 
 @router.delete("/demo/{slug}", status_code=204)
-async def delete_demo_project(
-    session: SessionDep, current_user: EditorUserDep, slug: str
-) -> None:
+async def delete_demo_project(session: SessionDep, current_user: EditorUserDep, slug: str) -> None:
     """Delete a demo and its owned synthetic warehouse. Creator or owner only."""
     project = await project_service.get_project_by_slug(session, slug)
     if not project.is_demo:

@@ -128,7 +128,7 @@ def _covered_buckets_from_scan_jobs(
         try:
             window_from = _parse_task_datetime(raw_from)
             window_to = _parse_task_datetime(raw_to)
-        except (ValueError, TypeError):
+        except ValueError, TypeError:
             continue
         if window_from < window_to:
             windows.append((window_from, window_to))
@@ -831,8 +831,11 @@ def collect_metrics(
                     "status": ScanJobStatus.completed.value,
                 },
             )
-            if signals_added or signals_removed or anomalies_detected or (
-                breakdown_anomalies_detected
+            if (
+                signals_added
+                or signals_removed
+                or anomalies_detected
+                or (breakdown_anomalies_detected)
             ):
                 realtime.publish_project_event(
                     project.slug,
@@ -855,9 +858,7 @@ def collect_metrics(
                 job.completed_at = datetime.now(UTC)
                 job.error_message = user_facing_error(exc)
                 session.commit()
-                project = (
-                    session.get(Project, config.project_id) if config is not None else None
-                )
+                project = session.get(Project, config.project_id) if config is not None else None
                 if project is not None:
                     realtime.publish_project_event(
                         project.slug,
