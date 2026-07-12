@@ -109,13 +109,16 @@ function wrapper({ children }: { children: ReactNode }) {
   return createElement(QueryClientProvider, { client: queryClient }, children)
 }
 
-function renderForm(metric: MetricDefinitionResponse | null = null) {
+function renderForm(
+  metric: MetricDefinitionResponse | null = null,
+  dataSources: DataSource[] = DATA_SOURCES,
+) {
   const onClose = vi.fn()
   render(
     createElement(MetricForm, {
       slug: 'demo',
       metric,
-      dataSources: DATA_SOURCES,
+      dataSources,
       events: EVENTS,
       onClose,
     }),
@@ -979,5 +982,98 @@ describe('MetricForm templates', () => {
     expect(screen.queryByRole('button', { name: 'Start from scratch' })).toBeNull()
     // The form renders directly.
     expect(screen.getByRole('heading', { name: 'Edit metric' })).toBeInTheDocument()
+  })
+})
+
+describe('MetricForm starter SQL follows the selected warehouse', () => {
+  // One source per engine: the starter query is dialect-specific, so which one is
+  // selected decides which SQL can even run.
+  const MULTI_DB_SOURCES = [
+    { id: 'ds-ch', name: 'ClickHouse', db_type: 'clickhouse' },
+    { id: 'ds-pg', name: 'Postgres', db_type: 'postgres' },
+    { id: 'ds-bq', name: 'BigQuery', db_type: 'bigquery' },
+  ] as unknown as DataSource[]
+
+  const sqlEditor = () => screen.getByLabelText('Metric SQL') as HTMLTextAreaElement
+  const pickSource = (id: string) =>
+    fireEvent.change(document.getElementById('metric-sql-data-source')!, { target: { value: id } })
+  const pickDauTemplate = () =>
+    fireEvent.click(screen.getByRole('button', { name: /Daily active users/ }))
+
+  it('renders the template for the source selected AFTER the template was picked', () => {
+    renderForm(null, MULTI_DB_SOURCES)
+    pickDauTemplate()
+
+    pickSource('ds-bq')
+
+    // GoogleSQL has no date_trunc('day', ts) — the form must not hand the user a
+    // starter query that cannot run on the warehouse they just chose.
+    expect(sqlEditor().value).toContain("TIMESTAMP_TRUNC(created_at, DAY, 'UTC')")
+    expect(sqlEditor().value).not.toMatch(/date_trunc/i)
+  })
+
+  it('re-renders the template when the data source changes engine', () => {
+    renderForm(null, MULTI_DB_SOURCES)
+    pickDauTemplate()
+
+    pickSource('ds-pg')
+    expect(sqlEditor().value).toContain('date_bin(')
+
+    pickSource('ds-ch')
+    expect(sqlEditor().value).toContain('toStartOfInterval(')
+    expect(sqlEditor().value).not.toContain('date_bin(')
+
+    pickSource('ds-bq')
+    expect(sqlEditor().value).toContain('TIMESTAMP_TRUNC(')
+    expect(sqlEditor().value).not.toContain('toStartOfInterval(')
+  })
+
+  it('NEVER clobbers SQL the user has edited', () => {
+    renderForm(null, MULTI_DB_SOURCES)
+    pickDauTemplate()
+    pickSource('ds-pg')
+
+    const edited = 'SELECT bucket, count(*) AS value FROM my_own_table GROUP BY 1'
+    fireEvent.change(sqlEditor(), { target: { value: edited } })
+
+    // Switching the warehouse must leave the user's own query completely alone,
+    // even though it is now (probably) wrong for the new engine — silently
+    // rewriting someone's SQL is far worse than letting preview flag it.
+    pickSource('ds-bq')
+    expect(sqlEditor().value).toBe(edited)
+
+    pickSource('ds-ch')
+    expect(sqlEditor().value).toBe(edited)
+  })
+
+  it('leaves hand-written SQL alone when no template was ever picked', () => {
+    renderForm(null, MULTI_DB_SOURCES)
+    fireEvent.click(screen.getByRole('button', { name: 'Start from scratch' }))
+
+    const handWritten = "SELECT date_trunc('day', ts) AS bucket, 1 AS value FROM t"
+    fireEvent.change(sqlEditor(), { target: { value: handWritten } })
+
+    pickSource('ds-bq')
+    expect(sqlEditor().value).toBe(handWritten)
+  })
+
+  it('keeps re-rendering after the user switches back and forth without editing', () => {
+    renderForm(null, MULTI_DB_SOURCES)
+    pickDauTemplate()
+
+    pickSource('ds-bq')
+    pickSource('ds-pg')
+    pickSource('ds-bq')
+
+    // Still pristine template output, so still valid for the current engine.
+    expect(sqlEditor().value).toContain("TIMESTAMP_TRUNC(created_at, DAY, 'UTC')")
+  })
+
+  it('renders the hourly event-volume template for the selected engine', () => {
+    renderForm(null, MULTI_DB_SOURCES)
+    fireEvent.click(screen.getByRole('button', { name: /Event volume/ }))
+
+    pickSource('ds-bq')
+    expect(sqlEditor().value).toContain("TIMESTAMP_TRUNC(created_at, HOUR, 'UTC')")
   })
 })

@@ -1,8 +1,13 @@
 from __future__ import annotations
 
 import logging
+import math
+import os
 import re
+import shutil
+import tempfile
 import time
+from dataclasses import dataclass
 from datetime import datetime
 from typing import override
 
@@ -12,6 +17,8 @@ from tripl.core.adapters.base import (
     AggregateSpec,
     BaseAdapter,
     ColumnInfo,
+    FieldContractExpectation,
+    FieldContractViolation,
     SchemaColumn,
     SchemaTable,
 )
@@ -70,6 +77,198 @@ def _format_server_version(version: int) -> str:
     return f"{version // 10000}.{version % 10000}"
 
 
+# --- connection settings -----------------------------------------------------
+
+#: The connection parameters this adapter understands. Anything else is REJECTED
+#: rather than swallowed by ``**kwargs``: a typo'd or inapplicable option that is
+#: silently dropped looks configured but isn't, which for a TLS option means the
+#: operator believes the link is encrypted when it is not.
+_SUPPORTED_PARAMS = (
+    "timeout_seconds",
+    "sslmode",
+    "sslrootcert",
+    "sslcert",
+    "sslkey",
+    "search_path",
+)
+
+#: libpq's TLS modes, weakest first. A closed allowlist: an unrecognized value is
+#: rejected, never passed through to libpq (which would fall back to its own
+#: default) and never dropped (which would silently downgrade the connection).
+_SSL_MODES = ("disable", "allow", "prefer", "require", "verify-ca", "verify-full")
+
+#: Modes that check the server certificate against a CA, and so need one.
+_SSL_VERIFYING_MODES = frozenset({"verify-ca", "verify-full"})
+
+#: Default when the data source does not pin a mode. A remote host gets ``require``,
+#: not libpq's ``prefer``: ``prefer`` negotiates TLS if the server offers it and
+#: silently falls back to PLAINTEXT if it doesn't, so it guarantees nothing and a
+#: stripped connection is indistinguishable from a healthy one. ``require`` fails
+#: loudly instead; an operator whose server genuinely has no TLS can still ask for
+#: ``prefer``/``disable`` explicitly, which is a decision on the record rather than
+#: a default nobody chose. localhost keeps ``prefer`` — dev and docker Postgres
+#: usually have no certificate at all, and the traffic never leaves the machine.
+_DEFAULT_REMOTE_SSLMODE = "require"
+_DEFAULT_LOCAL_SSLMODE = "prefer"
+
+#: We are handed certificate/key PEM *content* (it lives in an encrypted DB column),
+#: while libpq only takes filesystem paths. Anything without a PEM header is a
+#: mistake worth shouting about — most likely a path, which we must not silently
+#: treat as a certificate.
+_PEM_HEADER = "-----BEGIN"
+
+#: libpq's key-file permission check: a private key readable by group or other is
+#: REFUSED outright ("private key file has group or world access"). The temp dir is
+#: 0700 and every file in it 0600, so the check passes and the key is never exposed
+#: to another user on the host.
+_TLS_DIR_MODE = 0o700
+_TLS_FILE_MODE = 0o600
+
+
+@dataclass(frozen=True)
+class _TlsFiles:
+    """Materialized TLS material: a private temp dir and the libpq paths into it."""
+
+    directory: str | None
+    paths: dict[str, str]
+
+
+def _resolve_sslmode(host: str, sslmode: str | None) -> str:
+    if sslmode is None:
+        return _DEFAULT_LOCAL_SSLMODE if _is_local_host(host) else _DEFAULT_REMOTE_SSLMODE
+    if sslmode not in _SSL_MODES:
+        msg = f"Unsupported sslmode: {sslmode!r}. Supported modes are: {', '.join(_SSL_MODES)}."
+        raise ValueError(msg)
+    return sslmode
+
+
+def _tls_pem_material(
+    *,
+    sslmode: str,
+    sslrootcert: str | None,
+    sslcert: str | None,
+    sslkey: str | None,
+) -> dict[str, str]:
+    """Validate the TLS inputs and return the PEMs to materialize, by libpq name.
+
+    Rejects the combinations libpq would either ignore or die on much later:
+    certificate material handed to a connection that will never negotiate TLS, a
+    verifying mode with no CA to verify against, and half of a client-certificate
+    pair. All three are "inapplicable parameters", and silently accepting any of
+    them means the connection is not what the configuration says it is.
+    """
+    pems = {"sslrootcert": sslrootcert, "sslcert": sslcert, "sslkey": sslkey}
+    provided = {name: pem for name, pem in pems.items() if pem}
+
+    if sslmode == "disable" and provided:
+        msg = (
+            f"sslmode=disable never negotiates TLS, so {', '.join(sorted(provided))} "
+            "cannot be applied. Remove the certificate material or raise sslmode."
+        )
+        raise ValueError(msg)
+    if sslmode in _SSL_VERIFYING_MODES and not sslrootcert:
+        msg = f"sslmode={sslmode} verifies the server certificate but no sslrootcert was given."
+        raise ValueError(msg)
+    if bool(sslcert) != bool(sslkey):
+        msg = "Client certificate authentication needs both sslcert and sslkey, not one of them."
+        raise ValueError(msg)
+    for name, pem in provided.items():
+        if _PEM_HEADER not in pem:
+            # Never echo the value: sslkey is a private key.
+            msg = f"{name} must be PEM content (a '{_PEM_HEADER}...' block), not a file path."
+            raise ValueError(msg)
+    return provided
+
+
+def _materialize_tls_files(pems: dict[str, str]) -> _TlsFiles:
+    """Write PEM content to a private 0600 temp file per entry, for libpq to read.
+
+    The directory is created 0700 and the files 0600 *explicitly* (``os.open``'s
+    mode is masked by the process umask, so it is not on its own a guarantee).
+    Callers own the cleanup: :meth:`PostgresAdapter.close` removes the directory,
+    and a failed connect removes it too, so a private key never outlives the
+    connection it was created for.
+    """
+    if not pems:
+        return _TlsFiles(None, {})
+    directory = tempfile.mkdtemp(prefix="tripl-pg-tls-")
+    os.chmod(directory, _TLS_DIR_MODE)
+    paths: dict[str, str] = {}
+    try:
+        for name, pem in pems.items():
+            path = os.path.join(directory, f"{name}.pem")
+            handle = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, _TLS_FILE_MODE)
+            with os.fdopen(handle, "w") as file:
+                file.write(pem if pem.endswith("\n") else pem + "\n")
+            os.chmod(path, _TLS_FILE_MODE)
+            paths[name] = path
+    except OSError:
+        shutil.rmtree(directory, ignore_errors=True)
+        raise
+    return _TlsFiles(directory, paths)
+
+
+#: A schema name in a ``search_path``. Deliberately the same shape as
+#: ``schemas.data_source._SEARCH_PATH_RE``, which validates the value on the way IN:
+#: a legal Postgres identifier may contain ``$`` after the first character, and the
+#: two layers must accept exactly the same set or a config the API took would be
+#: rejected at connect time. A leading ``$`` is still out, so ``$user`` cannot slip
+#: through either.
+_SEARCH_PATH_PART_RE = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_$]*$")
+
+
+def _validated_search_path(search_path: str) -> str:
+    """Check a ``search_path`` is a plain identifier list before it is interpolated.
+
+    ``search_path`` is a list of *identifiers*, not a literal, so it cannot be bound
+    as a parameter and has to be interpolated into the libpq startup options — which
+    makes it an injection vector unless it is checked. Only bare identifiers are
+    allowed (no quoting, no ``$user``, no whitespace), which is also what keeps the
+    space-separated ``options`` string unambiguous.
+    """
+    parts = [part.strip() for part in search_path.split(",")]
+    if not parts or any(not part for part in parts):
+        msg = f"Invalid search_path: {search_path!r}"
+        raise ValueError(msg)
+    invalid = [part for part in parts if not _SEARCH_PATH_PART_RE.match(part)]
+    if invalid:
+        msg = (
+            f"Invalid search_path schema name(s): {', '.join(repr(part) for part in invalid)}. "
+            "search_path takes a comma-separated list of plain identifiers."
+        )
+        raise ValueError(msg)
+    return ",".join(parts)
+
+
+# --- field contracts ---------------------------------------------------------
+
+#: A finite decimal or scientific-notation number, and nothing else. Guards the
+#: ``::double precision`` cast in the range-contract SQL: Postgres RAISES on a bad
+#: cast (``invalid input syntax for type double precision``) rather than yielding
+#: NULL the way ClickHouse's ``toFloat64OrNull`` does, and one malformed value in
+#: one row would abort the whole contract query. The CASE only casts what already
+#: matched, so a malformed value falls out as NULL — i.e. as BAD — instead.
+_FINITE_NUMBER_RE = r"^[+-]?([0-9]+\.?[0-9]*|\.[0-9]+)([eE][+-]?[0-9]+)?$"
+
+#: The non-finite spellings ``float()`` and ``toFloat64OrNull`` both accept, matched
+#: case-insensitively (``~*``). They are handled apart from the cast because
+#: PostgreSQL orders NaN as GREATER THAN every other float, while Python and
+#: ClickHouse make every NaN comparison false — so a NaN routed through the cast
+#: would report as "above max" on Postgres and as "in range" everywhere else.
+#: Keeping NaN out of the comparison entirely is what makes the three agree.
+_POSITIVE_INF_RE = r"^[+]?inf(inity)?$"
+_NEGATIVE_INF_RE = r"^[-]inf(inity)?$"
+_NAN_RE = r"^[+-]?nan$"
+
+
+def _float_literal(value: float) -> str:
+    number = float(value)
+    if not math.isfinite(number):
+        msg = f"Contract bound must be a finite number, got {value!r}"
+        raise ValueError(msg)
+    return repr(number)
+
+
 def _jsonb_object(value_sql: str) -> str:
     """Coerce a json/jsonb expression to a jsonb *object*, or an empty object.
 
@@ -112,12 +311,39 @@ class PostgresAdapter(BaseAdapter):
       - GROUPING SETS     → same syntax (Postgres supports it natively)
       - multiIf           → CASE WHEN / THEN
       - LIMIT n BY col    → ROW_NUMBER() OVER (PARTITION BY ...) wrapper
+      - countIf/anyIf     → count(*) / min(...) FILTER (WHERE ...)
+      - toFloat64OrNull   → a regex-guarded ::double precision cast (Postgres RAISES
+                            on a bad cast where ClickHouse returns NULL)
 
     Everything is UTC: the session timezone is pinned on connect and every window
     bound is an explicit-offset TIMESTAMPTZ literal, so neither a non-UTC server
     nor a non-UTC role can shift a window or a bucket. See
     :mod:`tripl.core.bucketing` for the contract.
+
+    **Known dialect divergence — regex contracts.** ``regex_violation`` compiles the
+    stored pattern with Postgres's ``~`` operator, which is POSIX ARE, while the
+    Python fallback uses ``re.search`` and ClickHouse uses RE2. All three are
+    unanchored partial matches, and all three agree on ordinary patterns (literals,
+    character classes, anchors, ``|``, quantifiers, ``\\d``/``\\w``/``\\s``). They do
+    NOT agree on everything, and we do not pretend otherwise:
+
+    * ``\\b`` is a word boundary in Python; in POSIX ARE it is a BACKSPACE character
+      (the word-boundary escape is ``\\y``). A ``\\b``-anchored pattern therefore
+      matches nothing here and flags every row as bad.
+    * ``$`` in Python also matches just before a trailing newline; in POSIX ARE it
+      only matches at the very end of the string.
+    * Python-only syntax (``(?P<name>...)``, lookbehind spelt ``(?<=...)``) is not
+      valid ARE, and an invalid pattern makes the *statement* fail — one bad regex
+      takes down the whole contract query rather than just its own expectation.
+
+    A contract that sticks to portable regex syntax gets identical answers from all
+    three warehouses; that is what the conformance gate pins.
     """
+
+    #: Set only when TLS material had to be written to disk. A class-level default
+    #: keeps ``close()`` safe on an adapter built with ``object.__new__`` (the unit
+    #: tests do that to exercise SQL generation without a server).
+    _tls_dir: str | None = None
 
     def __init__(
         self,
@@ -127,8 +353,25 @@ class PostgresAdapter(BaseAdapter):
         username: str = "",
         password: str = "",
         timeout_seconds: int | None = None,
+        sslmode: str | None = None,
+        sslrootcert: str | None = None,
+        sslcert: str | None = None,
+        sslkey: str | None = None,
+        search_path: str | None = None,
         **kwargs: object,
     ) -> None:
+        # An unknown connection parameter is a hard error, not something **kwargs
+        # quietly eats. The alternative — accepting `sslmod=verify-full` and
+        # connecting in plaintext anyway — is the failure mode this guard exists
+        # to prevent (tripl-64n8.7: "rejected, not ignored").
+        if kwargs:
+            unknown = ", ".join(sorted(kwargs))
+            msg = (
+                f"Unsupported PostgreSQL connection parameter(s): {unknown}. "
+                f"Supported: {', '.join(_SUPPORTED_PARAMS)}."
+            )
+            raise ValueError(msg)
+
         # connect_timeout bounds the TCP/handshake; statement_timeout (set
         # server-side via libpq options) caps every query so a runaway
         # base_query is cancelled by Postgres long before Celery's hard limit
@@ -143,27 +386,60 @@ class PostgresAdapter(BaseAdapter):
         option_parts = ["-c timezone=UTC"]
         if connect_timeout is not None:
             option_parts.append(f"-c statement_timeout={connect_timeout * 1000}")
+        if search_path is not None:
+            # Validated to a bare identifier list, so it can neither inject SQL nor
+            # smuggle whitespace into the space-separated options string.
+            option_parts.append(f"-c search_path={_validated_search_path(search_path)}")
         options = " ".join(option_parts)
-        # Default to TLS for non-local hosts; localhost connections (dev,
-        # docker) often have no TLS configured, so don't force it there.
-        sslmode = None if _is_local_host(host) else "prefer"
 
-        self._conn = psycopg.connect(
-            host=host,
-            port=port,
-            dbname=database,
-            user=username or "postgres",
-            password=password or "",
-            autocommit=True,
-            connect_timeout=connect_timeout,
-            options=options,
-            sslmode=sslmode,
+        mode = _resolve_sslmode(host, sslmode)
+        tls = _materialize_tls_files(
+            _tls_pem_material(
+                sslmode=mode,
+                sslrootcert=sslrootcert,
+                sslcert=sslcert,
+                sslkey=sslkey,
+            )
         )
+        self._tls_dir = tls.directory
+
+        try:
+            self._conn = psycopg.connect(
+                host=host,
+                port=port,
+                dbname=database,
+                user=username or "postgres",
+                password=password or "",
+                autocommit=True,
+                connect_timeout=connect_timeout,
+                options=options,
+                sslmode=mode,
+                # libpq reads the certificate material from disk; a None is dropped
+                # from the conninfo rather than sent as an empty path.
+                sslrootcert=tls.paths.get("sslrootcert"),
+                sslcert=tls.paths.get("sslcert"),
+                sslkey=tls.paths.get("sslkey"),
+            )
+        except BaseException:
+            # A refused connection must not leave a private key on disk.
+            self._remove_tls_files()
+            raise
         self._allowed_columns: set[str] = set()
         self._type_names: dict[int, str] = {}
 
+    def _remove_tls_files(self) -> None:
+        if self._tls_dir is None:
+            return
+        shutil.rmtree(self._tls_dir, ignore_errors=True)
+        self._tls_dir = None
+
     def close(self) -> None:
-        self._conn.close()
+        try:
+            self._conn.close()
+        finally:
+            # The certificate and key files exist only for this connection's
+            # lifetime; the key in particular must not be left behind.
+            self._remove_tls_files()
 
     def test_connection(self) -> bool:
         """Probe the server and refuse one too old to bucket time correctly.
@@ -453,6 +729,219 @@ class PostgresAdapter(BaseAdapter):
             samples_by_column[c] = column_samples
 
         return samples_by_column
+
+    def _contract_where_clause(
+        self,
+        time_column: str | None,
+        time_from: datetime | None,
+        time_to: datetime | None,
+        group_column: str | None,
+        group_value: str | None,
+    ) -> str:
+        """The scan window plus the optional event-type filter, as one WHERE clause."""
+        conditions: list[str] = []
+        if time_column is not None and time_from is not None and time_to is not None:
+            conditions.append(self._time_window_condition(time_column, time_from, time_to))
+        if group_column is not None:
+            # COALESCE(col::text, '') = 'value' — the same NULL-as-empty-string
+            # comparison ClickHouse makes with ifNull(toString(col), '').
+            expected = self._quote_string(group_value or "")
+            conditions.append(f"{self._string_value_expression(group_column)} = {expected}")
+        if not conditions:
+            return ""
+        return " WHERE " + " AND ".join(conditions)
+
+    def _contract_bad_condition(self, expectation: FieldContractExpectation) -> str | None:
+        """The predicate that makes one row BAD, or ``None`` if the contract is a no-op.
+
+        Mirrors ``ClickHouseAdapter._contract_select_sql`` clause for clause, because
+        the two must agree on every row of every fixture:
+
+        * ``required_null_violation`` — a NULL *is* the violation.
+        * everything else — a NULL row is neither bad nor counted; it is skipped.
+        * ``range_violation`` — a value that does not parse as a number is BAD, the
+          same verdict ``float(text)`` raising gives the Python fallback and
+          ``toFloat64OrNull`` returning NULL gives ClickHouse.
+
+        An expectation with nothing to check (an enum with no options, a regex with
+        no pattern, a range with neither bound) yields ``None`` and is dropped, so it
+        cannot manufacture a violation out of a contract that says nothing.
+        """
+        quoted = _quote_ident(self._validate_column(expectation.field_name))
+        value_expr = f"COALESCE({quoted}::text, '')"
+        present = f"{quoted} IS NOT NULL"
+
+        if expectation.drift_type == "required_null_violation":
+            return f"{quoted} IS NULL"
+        if expectation.drift_type == "enum_violation":
+            if not expectation.enum_options:
+                return None
+            options = ", ".join(self._quote_string(option) for option in expectation.enum_options)
+            return f"{present} AND {value_expr} NOT IN ({options})"
+        if expectation.drift_type == "regex_violation":
+            if not expectation.regex:
+                return None
+            # `~` is an unanchored POSIX match, so it accepts exactly what the
+            # fallback's re.search accepts — for the patterns the two dialects
+            # share. POSIX ARE is NOT Python `re`: see the class docstring.
+            pattern = self._quote_string(expectation.regex)
+            return f"{present} AND NOT ({value_expr} ~ {pattern})"
+        if expectation.drift_type == "range_violation":
+            if expectation.min_value is None and expectation.max_value is None:
+                return None
+            # Cast only what already looks like a number (see _FINITE_NUMBER_RE):
+            # a bare `::double precision` on 'twelve' RAISES and takes the whole
+            # contract query down with it. Anything unparseable stays NULL here.
+            numeric_expr = (
+                f"CASE WHEN {value_expr} ~ '{_FINITE_NUMBER_RE}' "
+                f"THEN {value_expr}::double precision "
+                f"WHEN {value_expr} ~* '{_POSITIVE_INF_RE}' THEN 'Infinity'::double precision "
+                f"WHEN {value_expr} ~* '{_NEGATIVE_INF_RE}' THEN '-Infinity'::double precision "
+                "END"
+            )
+            bounds: list[str] = []
+            if expectation.min_value is not None:
+                bounds.append(f">= {_float_literal(expectation.min_value)}")
+            if expectation.max_value is not None:
+                bounds.append(f"<= {_float_literal(expectation.max_value)}")
+            in_range = " AND ".join(f"({numeric_expr}) {bound}" for bound in bounds)
+            # COALESCE(..., TRUE) is what turns "did not parse" into BAD: an
+            # unparseable value leaves the comparison NULL, and NULL would
+            # otherwise be dropped by the aggregate FILTER rather than counted.
+            # NaN is excluded first — Postgres sorts NaN above every float, while
+            # Python and ClickHouse make every NaN comparison false, so letting it
+            # reach the comparison is the one way these three disagree.
+            return (
+                f"{present} AND NOT ({value_expr} ~* '{_NAN_RE}') "
+                f"AND COALESCE(NOT ({in_range}), TRUE)"
+            )
+        return None
+
+    def _contract_select_sql(
+        self,
+        expectation: FieldContractExpectation,
+        *,
+        base_query: str,
+        where_clause: str,
+        index: int,
+    ) -> str | None:
+        bad_condition = self._contract_bad_condition(expectation)
+        if bad_condition is None:
+            return None
+
+        quoted = _quote_ident(self._validate_column(expectation.field_name))
+        value_expr = f"COALESCE({quoted}::text, '')"
+        is_required = expectation.drift_type == "required_null_violation"
+        # required_null counts NULLs in the denominator (a NULL is the thing being
+        # measured); every other drift type measures only the non-null population.
+        total_expr = "count(*)" if is_required else f"count(*) FILTER (WHERE {quoted} IS NOT NULL)"
+        # One sample value, like ClickHouse's anyIf — min() rather than an arbitrary
+        # pick so the sample is deterministic, and because it needs O(1) memory even
+        # when millions of rows are bad (array_agg would materialize all of them).
+        sample_source = "'<NULL>'::text" if is_required else value_expr
+        sample_expr = f"min({sample_source}) FILTER (WHERE {bad_condition})"
+
+        threshold = max(0.0, min(1.0, expectation.threshold))
+        rate_expr = "bad_count::double precision / total_count"
+        return (
+            "SELECT "
+            f"{self._quote_string(expectation.field_name)}::text AS field_name, "
+            f"{self._quote_string(expectation.drift_type)}::text AS drift_type, "
+            "bad_count, "
+            "total_count, "
+            f"{threshold:.12g}::double precision AS threshold, "
+            f"{rate_expr} AS bad_rate, "
+            "sample_value, "
+            f"{int(index)} AS _ord "
+            "FROM ("
+            "SELECT "
+            f"count(*) FILTER (WHERE {bad_condition}) AS bad_count, "
+            f"{total_expr} AS total_count, "
+            f"{sample_expr} AS sample_value "
+            f"FROM ({base_query}) AS _src{where_clause}"
+            f") AS _contract_{int(index)} "
+            "WHERE total_count > 0 "
+            "AND bad_count > 0 "
+            f"AND {rate_expr} > {threshold:.12g}"
+        )
+
+    @override
+    def validate_field_contracts(
+        self,
+        base_query: str,
+        expectations: list[FieldContractExpectation],
+        *,
+        time_column: str | None = None,
+        time_from: datetime | None = None,
+        time_to: datetime | None = None,
+        group_column: str | None = None,
+        group_value: str | None = None,
+        limit: int = 50000,
+    ) -> list[FieldContractViolation]:
+        """Evaluate every field contract warehouse-side, over the FULL window.
+
+        Replaces BaseAdapter's fallback, which pulled ``limit`` (50,000) rows back
+        and counted them in Python: a violation that first appears at row 50,001 was
+        invisible to it, and the ``bad_rate`` it reported described the sample rather
+        than the data. Here the counting happens in Postgres over every row the
+        window selects, so both numbers are exact whatever the table's size.
+
+        One query for all expectations: each contributes a UNION ALL branch that
+        already applies its own threshold, so only actual violations travel back.
+        ``ORDER BY _ord`` keeps them in the order the caller listed them.
+        """
+        if not expectations:
+            return []
+
+        where_clause = self._contract_where_clause(
+            time_column,
+            time_from,
+            time_to,
+            group_column,
+            group_value,
+        )
+        selects = [
+            sql
+            for index, expectation in enumerate(expectations)
+            if (
+                sql := self._contract_select_sql(
+                    expectation,
+                    base_query=base_query,
+                    where_clause=where_clause,
+                    index=index,
+                )
+            )
+            is not None
+        ]
+        if not selects:
+            return []
+
+        sql = (
+            "SELECT field_name, drift_type, bad_count, total_count, threshold, "
+            "bad_rate, sample_value FROM ("
+            + " UNION ALL ".join(selects)
+            + f") AS _contracts ORDER BY _ord LIMIT {int(limit)}"
+        )
+        logger.debug("PG field contract query: %s", _truncate_sql(sql))
+        t0 = time.monotonic()
+        with self._conn.cursor() as cur:
+            cur.execute(sql)
+            rows = cur.fetchall()
+        elapsed = time.monotonic() - t0
+        logger.info("PG field contracts done in %.2fs, %s violations", elapsed, len(rows))
+
+        return [
+            FieldContractViolation(
+                field_name=str(row[0]),
+                drift_type=str(row[1]),
+                bad_count=int(row[2]),
+                total_count=int(row[3]),
+                threshold=float(row[4]),
+                bad_rate=float(row[5]),
+                sample_value=None if row[6] is None else str(row[6]),
+            )
+            for row in rows
+        ]
 
     def get_full_breakdown(
         self,

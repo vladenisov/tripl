@@ -3279,6 +3279,52 @@
         "title": "AuthUserResponse",
         "type": "object"
       },
+      "BigQuerySettings": {
+        "additionalProperties": false,
+        "description": "Typed BigQuery execution controls (location, cost guard, dataset scope).",
+        "properties": {
+          "dataset_allowlist": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Dataset Allowlist"
+          },
+          "location": {
+            "anyOf": [
+              {
+                "maxLength": 40,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Location"
+          },
+          "maximum_bytes_billed": {
+            "anyOf": [
+              {
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Maximum Bytes Billed"
+          }
+        },
+        "title": "BigQuerySettings",
+        "type": "object"
+      },
       "Body_upload_event_photo_api_v1_projects__slug__events__event_id__photos_post": {
         "properties": {
           "file": {
@@ -3747,6 +3793,13 @@
         "title": "ChartAnnotationScopeType",
         "type": "string"
       },
+      "ClickHouseSettings": {
+        "additionalProperties": false,
+        "description": "ClickHouse has no extra connection settings.\n\nIts two knobs \u2014 ``timeout_seconds`` and ``json_path_discovery`` \u2014 are\nfirst-class columns on the data source, not connection settings.",
+        "properties": {},
+        "title": "ClickHouseSettings",
+        "type": "object"
+      },
       "ColumnSchema": {
         "properties": {
           "data_type": {
@@ -3845,6 +3898,106 @@
         "title": "ConflictField",
         "type": "object"
       },
+      "ConnectionSettingsResponse": {
+        "description": "Read side of the connection settings: the union, flattened, secrets removed.\n\nApplicability is enforced on write, so the response can be one flat object;\nonly the fields that apply to the source's ``db_type`` are ever populated.",
+        "properties": {
+          "dataset_allowlist": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Dataset Allowlist"
+          },
+          "location": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Location"
+          },
+          "maximum_bytes_billed": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Maximum Bytes Billed"
+          },
+          "search_path": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Search Path"
+          },
+          "sslcert": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sslcert"
+          },
+          "sslkey_set": {
+            "default": false,
+            "title": "Sslkey Set",
+            "type": "boolean"
+          },
+          "sslmode": {
+            "anyOf": [
+              {
+                "enum": [
+                  "disable",
+                  "allow",
+                  "prefer",
+                  "require",
+                  "verify-ca",
+                  "verify-full"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sslmode"
+          },
+          "sslrootcert": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sslrootcert"
+          }
+        },
+        "title": "ConnectionSettingsResponse",
+        "type": "object"
+      },
       "CoverageBucket": {
         "properties": {
           "bucket": {
@@ -3929,6 +4082,26 @@
       },
       "DataSourceCreate": {
         "properties": {
+          "connection_settings": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ClickHouseSettings"
+              },
+              {
+                "$ref": "#/components/schemas/PostgresSettings"
+              },
+              {
+                "$ref": "#/components/schemas/BigQuerySettings"
+              },
+              {
+                "$ref": "#/components/schemas/SyntheticSettings"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Connection Settings"
+          },
           "database_name": {
             "maxLength": 255,
             "minLength": 1,
@@ -3937,18 +4110,6 @@
           },
           "db_type": {
             "$ref": "#/components/schemas/DBType"
-          },
-          "extra_params": {
-            "anyOf": [
-              {
-                "additionalProperties": true,
-                "type": "object"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Extra Params"
           },
           "host": {
             "maxLength": 500,
@@ -4018,6 +4179,9 @@
       },
       "DataSourceResponse": {
         "properties": {
+          "connection_settings": {
+            "$ref": "#/components/schemas/ConnectionSettingsResponse"
+          },
           "created_at": {
             "format": "date-time",
             "title": "Created At",
@@ -4029,18 +4193,6 @@
           },
           "db_type": {
             "$ref": "#/components/schemas/DBType"
-          },
-          "extra_params": {
-            "anyOf": [
-              {
-                "additionalProperties": true,
-                "type": "object"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Extra Params"
           },
           "host": {
             "title": "Host",
@@ -4146,7 +4298,7 @@
           "database_name",
           "username",
           "password_set",
-          "extra_params",
+          "connection_settings",
           "last_test_at",
           "last_test_status",
           "last_test_message",
@@ -4253,6 +4405,26 @@
       },
       "DataSourceUpdate": {
         "properties": {
+          "connection_settings": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ClickHouseSettings"
+              },
+              {
+                "$ref": "#/components/schemas/PostgresSettings"
+              },
+              {
+                "$ref": "#/components/schemas/BigQuerySettings"
+              },
+              {
+                "$ref": "#/components/schemas/SyntheticSettings"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Connection Settings"
+          },
           "database_name": {
             "anyOf": [
               {
@@ -4275,18 +4447,6 @@
                 "type": "null"
               }
             ]
-          },
-          "extra_params": {
-            "anyOf": [
-              {
-                "additionalProperties": true,
-                "type": "object"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Extra Params"
           },
           "host": {
             "anyOf": [
@@ -11605,6 +11765,83 @@
         "title": "PlatformPresenceRow",
         "type": "object"
       },
+      "PostgresSettings": {
+        "additionalProperties": false,
+        "description": "Typed allowlist of safe PostgreSQL connection options.",
+        "properties": {
+          "search_path": {
+            "anyOf": [
+              {
+                "maxLength": 255,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Search Path"
+          },
+          "sslcert": {
+            "anyOf": [
+              {
+                "maxLength": 64000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sslcert"
+          },
+          "sslkey": {
+            "anyOf": [
+              {
+                "format": "password",
+                "maxLength": 64000,
+                "type": "string",
+                "writeOnly": true
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sslkey"
+          },
+          "sslmode": {
+            "anyOf": [
+              {
+                "enum": [
+                  "disable",
+                  "allow",
+                  "prefer",
+                  "require",
+                  "verify-ca",
+                  "verify-full"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sslmode"
+          },
+          "sslrootcert": {
+            "anyOf": [
+              {
+                "maxLength": 64000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sslrootcert"
+          }
+        },
+        "title": "PostgresSettings",
+        "type": "object"
+      },
       "ProjectAnomalySettingsResponse": {
         "properties": {
           "anomaly_detection_enabled": {
@@ -15569,6 +15806,13 @@
           }
         },
         "title": "StorageSettingsUpdate",
+        "type": "object"
+      },
+      "SyntheticSettings": {
+        "additionalProperties": false,
+        "description": "The synthetic (demo) warehouse is in-memory: it has nothing to configure.",
+        "properties": {},
+        "title": "SyntheticSettings",
         "type": "object"
       },
       "SystemSettings": {

@@ -49,7 +49,13 @@ import {
 import type { FactTable, FactTableColumn } from '@/types/factTables'
 import { FactFilterEditor } from './FactFilterEditor'
 import { filtersFromConfig, filtersToPayload, type FactFilter } from './factFilters'
-import { METRIC_TEMPLATES, type MetricTemplate } from './metricTemplates'
+import {
+  METRIC_TEMPLATES,
+  isPristineStarterSql,
+  starterSql,
+  type MetricTemplate,
+  type SqlTemplateId,
+} from './metricTemplates'
 
 // The single fact operand shape sent to the backend (numerator / denominator /
 // the implicit single operand) — derived from the generated create schema so it
@@ -588,6 +594,10 @@ export function MetricForm({ slug, metric, dataSources, events, onClose }: Metri
 
   // SQL
   const [metricSql, setMetricSql] = useState(configString('metric_sql'))
+  // Which starter scaffold seeded the SQL, if any. Non-null only while the SQL is
+  // still template output; it is what lets a data-source switch re-render the
+  // query for the newly-selected warehouse (see the effect below).
+  const [sqlTemplateId, setSqlTemplateId] = useState<SqlTemplateId | null>(null)
   const [sqlTimeColumn, setSqlTimeColumn] = useState(configString('time_column'))
   const [sqlValueColumn, setSqlValueColumn] = useState(configString('value_column'))
   // Last SQL dry-run result. Transient client state: any edit to an input the
@@ -691,6 +701,7 @@ export function MetricForm({ slug, metric, dataSources, events, onClose }: Metri
     [dataSources, dataSourceId],
   )
   const { data: sqlSchemaData } = useDataSourceSchema(dataSourceId || undefined)
+  const selectedDbType = selectedDataSource?.db_type
 
   // Unique column names across every table of the selected data source, in
   // schema order — feeds the column-name comboboxes (time/value column,
@@ -950,8 +961,27 @@ export function MetricForm({ slug, metric, dataSources, events, onClose }: Metri
     setPreview(null)
     previewMut.reset()
   }
+  /**
+   * Selecting a warehouse re-renders starter SQL for it.
+   *
+   * The starter query is dialect-specific — `toStartOfInterval` on ClickHouse,
+   * `date_bin` on PostgreSQL, `TIMESTAMP_TRUNC` on BigQuery — so SQL seeded before a
+   * source was picked (or picked for a *different* source) simply cannot run on this
+   * one. Regenerating here, in the handler for the only event that changes the source,
+   * keeps the causality explicit; an effect reacting to `db_type` would say the same
+   * thing less directly (and trips `react-hooks/set-state-in-effect`).
+   *
+   * It regenerates ONLY while the SQL is still pristine template output.
+   * `isPristineStarterSql` goes false the moment the user edits a single character, so
+   * a hand-written query is NEVER silently clobbered — being handed a stale-dialect
+   * starter is a small annoyance; losing your own SQL is not.
+   */
   const onDataSourceChange = (value: string) => {
     setDataSourceId(value)
+    const nextDbType = dataSources.find(ds => ds.id === value)?.db_type
+    if (sqlTemplateId !== null && isPristineStarterSql(sqlTemplateId, metricSql)) {
+      setMetricSql(starterSql(sqlTemplateId, nextDbType))
+    }
     resetPreview()
   }
   const onMetricSqlChange = (value: string) => {
@@ -1040,7 +1070,12 @@ export function MetricForm({ slug, metric, dataSources, events, onClose }: Metri
       const aggregation = seed.aggregation
       setNumeratorOp(prev => ({ ...prev, aggregation }))
     }
-    if (seed.metricSql !== undefined) setMetricSql(seed.metricSql)
+    if (seed.sqlTemplate !== undefined) {
+      // Render for whatever source is selected right now (usually none, on the
+      // create screen); the effect above re-renders it as soon as one is picked.
+      setSqlTemplateId(seed.sqlTemplate)
+      setMetricSql(starterSql(seed.sqlTemplate, selectedDbType))
+    }
     if (seed.sqlTimeColumn !== undefined) setSqlTimeColumn(seed.sqlTimeColumn)
     setShowTemplates(false)
   }

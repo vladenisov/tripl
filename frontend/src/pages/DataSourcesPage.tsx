@@ -16,6 +16,13 @@ import {
 } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
+import { ConnectionSettingsFields } from '@/components/data-sources/connection-settings-fields'
+import {
+  EMPTY_CONNECTION_SETTINGS_FORM,
+  buildConnectionSettings,
+  connectionSettingsToForm,
+  type ConnectionSettingsForm,
+} from '@/components/data-sources/connection-settings'
 import { EmptyState } from '@/components/empty-state'
 import { ErrorState } from '@/components/error-state'
 import { SyntheticSourceBadge } from '@/demo/capabilityBadges'
@@ -49,6 +56,13 @@ const JSON_PATH_DISCOVERY_OPTIONS: { value: JsonPathDiscovery; label: string }[]
 const JSON_PATH_DISCOVERY_HELP =
   'Dynamic lists only the important typed JSON sub-paths (faster). ' +
   'All lists every path including rarely-used ones (slower, exhaustive).'
+
+// Every warehouse honours the timeout — including BigQuery, which used to get no
+// deadline at all. The field is therefore shown for all of them; the placeholder
+// stands for the server-side default (300s).
+const TIMEOUT_HELP =
+  'Connect and query budget. A query that outruns it is cancelled instead of holding a worker. ' +
+  'Empty means the 300s default.'
 
 // A successful connection test older than this is no longer a trustworthy
 // "healthy" signal — connections can silently break between manual checks, so
@@ -94,6 +108,9 @@ function ConnectionsTab({ openDsId }: { openDsId?: string }) {
   const [password, setPassword] = useState('')
   const [timeoutSeconds, setTimeoutSeconds] = useState('')
   const [jsonPathDiscovery, setJsonPathDiscovery] = useState<JsonPathDiscovery>('dynamic')
+  const [settings, setSettings] = useState<ConnectionSettingsForm>(EMPTY_CONNECTION_SETTINGS_FORM)
+  const patchSettings = (patch: Partial<ConnectionSettingsForm>) =>
+    setSettings((prev) => ({ ...prev, ...patch }))
 
   const [editName, setEditName] = useState('')
   const [editHost, setEditHost] = useState('')
@@ -103,6 +120,11 @@ function ConnectionsTab({ openDsId }: { openDsId?: string }) {
   const [editPassword, setEditPassword] = useState('')
   const [editTimeoutSeconds, setEditTimeoutSeconds] = useState('')
   const [editJsonPathDiscovery, setEditJsonPathDiscovery] = useState<JsonPathDiscovery>('dynamic')
+  const [editSettings, setEditSettings] = useState<ConnectionSettingsForm>(
+    EMPTY_CONNECTION_SETTINGS_FORM,
+  )
+  const patchEditSettings = (patch: Partial<ConnectionSettingsForm>) =>
+    setEditSettings((prev) => ({ ...prev, ...patch }))
 
   const [testingId, setTestingId] = useState<string | null>(null)
   const canManageDataSources = user?.role === 'owner'
@@ -114,17 +136,17 @@ function ConnectionsTab({ openDsId }: { openDsId?: string }) {
   const dataSources = dataSourcesQuery.data ?? EMPTY_DATA_SOURCES
 
   const createMut = useMutation({
-    mutationFn: () =>
-      dataSourcesApi.create({
+    mutationFn: () => {
+      const connectionSettings = buildConnectionSettings(dbType, settings)
+      return dataSourcesApi.create({
         name, db_type: dbType, host, port,
         database_name: databaseName, username, password,
-        ...(dbType === 'clickhouse'
-          ? {
-              timeout_seconds: parseTimeoutSeconds(timeoutSeconds),
-              json_path_discovery: jsonPathDiscovery,
-            }
-          : {}),
-      }),
+        // Every warehouse honours the timeout, so it is always sent.
+        timeout_seconds: parseTimeoutSeconds(timeoutSeconds),
+        ...(dbType === 'clickhouse' ? { json_path_discovery: jsonPathDiscovery } : {}),
+        ...(connectionSettings ? { connection_settings: connectionSettings } : {}),
+      })
+    },
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['dataSources'] })
       resetForm()
@@ -132,18 +154,20 @@ function ConnectionsTab({ openDsId }: { openDsId?: string }) {
   })
 
   const updateMut = useMutation({
-    mutationFn: (id: string) =>
-      dataSourcesApi.update(id, {
+    mutationFn: (id: string) => {
+      const editDbType = editingDs?.db_type
+      const connectionSettings = editDbType
+        ? buildConnectionSettings(editDbType, editSettings)
+        : undefined
+      return dataSourcesApi.update(id, {
         name: editName, host: editHost, port: editPort,
         database_name: editDatabaseName, username: editUsername,
         ...(editPassword ? { password: editPassword } : {}),
-        ...(editingDs?.db_type === 'clickhouse'
-          ? {
-              timeout_seconds: parseTimeoutSeconds(editTimeoutSeconds),
-              json_path_discovery: editJsonPathDiscovery,
-            }
-          : {}),
-      }),
+        timeout_seconds: parseTimeoutSeconds(editTimeoutSeconds),
+        ...(editDbType === 'clickhouse' ? { json_path_discovery: editJsonPathDiscovery } : {}),
+        ...(connectionSettings ? { connection_settings: connectionSettings } : {}),
+      })
+    },
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['dataSources'] })
       closeEdit()
@@ -204,6 +228,7 @@ function ConnectionsTab({ openDsId }: { openDsId?: string }) {
     setEditPassword('')
     setEditTimeoutSeconds(ds.timeout_seconds == null ? '' : String(ds.timeout_seconds))
     setEditJsonPathDiscovery(ds.json_path_discovery ?? 'dynamic')
+    setEditSettings(connectionSettingsToForm(ds.connection_settings))
   }, [])
 
   const startEdit = useCallback((ds: DataSource) => {
@@ -248,6 +273,7 @@ function ConnectionsTab({ openDsId }: { openDsId?: string }) {
     setPassword('')
     setTimeoutSeconds('')
     setJsonPathDiscovery('dynamic')
+    setSettings(EMPTY_CONNECTION_SETTINGS_FORM)
   }
 
   const healthyCount = dataSources.filter(
@@ -356,7 +382,7 @@ function ConnectionsTab({ openDsId }: { openDsId?: string }) {
                       <Input id="ds-database" value={databaseName} onChange={(e) => setDatabaseName(e.target.value)} required placeholder="default" />
                     </div>
                   </div>
-                  <div className={dbType === 'clickhouse' ? 'grid grid-cols-3 gap-3' : 'grid grid-cols-2 gap-3'}>
+                  <div className="grid grid-cols-2 gap-3">
                     <div className="grid gap-2">
                       <Label htmlFor="ds-username">Username</Label>
                       <Input id="ds-username" value={username} onChange={(e) => setUsername(e.target.value)} placeholder="default" />
@@ -365,41 +391,49 @@ function ConnectionsTab({ openDsId }: { openDsId?: string }) {
                       <Label htmlFor="ds-password">Password</Label>
                       <Input id="ds-password" type="password" value={password} onChange={(e) => setPassword(e.target.value)} placeholder="••••••••" />
                     </div>
-                    {dbType === 'clickhouse' && (
-                      <div className="grid gap-2">
-                        <Label htmlFor="ds-timeout">Timeout, s</Label>
-                        <Input
-                          id="ds-timeout"
-                          type="number"
-                          min={1}
-                          step={1}
-                          value={timeoutSeconds}
-                          onChange={(e) => setTimeoutSeconds(e.target.value)}
-                          placeholder="Default"
-                        />
-                      </div>
-                    )}
                   </div>
-                  {dbType === 'clickhouse' && (
-                    <div className="grid gap-2">
-                      <Label htmlFor="ds-json-path-discovery">JSON path discovery</Label>
-                      <select
-                        id="ds-json-path-discovery"
-                        value={jsonPathDiscovery}
-                        onChange={(e) => setJsonPathDiscovery(e.target.value as JsonPathDiscovery)}
-                        className="flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-                      >
-                        {JSON_PATH_DISCOVERY_OPTIONS.map((opt) => (
-                          <option key={opt.value} value={opt.value}>
-                            {opt.label}
-                          </option>
-                        ))}
-                      </select>
-                      <p className="text-xs text-muted-foreground">{JSON_PATH_DISCOVERY_HELP}</p>
-                    </div>
-                  )}
                 </>
               )}
+              {/* Applies to every warehouse — BigQuery included. */}
+              <div className="grid grid-cols-2 gap-3">
+                <div className="grid gap-2">
+                  <Label htmlFor="ds-timeout">Timeout, s</Label>
+                  <Input
+                    id="ds-timeout"
+                    type="number"
+                    min={1}
+                    step={1}
+                    value={timeoutSeconds}
+                    onChange={(e) => setTimeoutSeconds(e.target.value)}
+                    placeholder="Default"
+                  />
+                  <p className="text-xs text-muted-foreground">{TIMEOUT_HELP}</p>
+                </div>
+              </div>
+              {dbType === 'clickhouse' && (
+                <div className="grid gap-2">
+                  <Label htmlFor="ds-json-path-discovery">JSON path discovery</Label>
+                  <select
+                    id="ds-json-path-discovery"
+                    value={jsonPathDiscovery}
+                    onChange={(e) => setJsonPathDiscovery(e.target.value as JsonPathDiscovery)}
+                    className="flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                  >
+                    {JSON_PATH_DISCOVERY_OPTIONS.map((opt) => (
+                      <option key={opt.value} value={opt.value}>
+                        {opt.label}
+                      </option>
+                    ))}
+                  </select>
+                  <p className="text-xs text-muted-foreground">{JSON_PATH_DISCOVERY_HELP}</p>
+                </div>
+              )}
+              <ConnectionSettingsFields
+                idPrefix="ds"
+                dbType={dbType}
+                value={settings}
+                onChange={patchSettings}
+              />
               {createMut.isError && (
                 <p className="text-sm text-destructive">{getErrorMessage(createMut.error)}</p>
               )}
@@ -438,7 +472,7 @@ function ConnectionsTab({ openDsId }: { openDsId?: string }) {
                   <Input id="edit-ds-database" value={editDatabaseName} onChange={(e) => setEditDatabaseName(e.target.value)} />
                 </div>
               </div>
-              <div className={editingDs?.db_type === 'clickhouse' ? 'grid grid-cols-3 gap-3' : 'grid grid-cols-2 gap-3'}>
+              <div className="grid grid-cols-3 gap-3">
                 <div className="grid gap-2">
                   <Label htmlFor="edit-ds-username">Username</Label>
                   <Input id="edit-ds-username" value={editUsername} onChange={(e) => setEditUsername(e.target.value)} />
@@ -447,20 +481,19 @@ function ConnectionsTab({ openDsId }: { openDsId?: string }) {
                   <Label htmlFor="edit-ds-password">Password</Label>
                   <Input id="edit-ds-password" type="password" value={editPassword} onChange={(e) => setEditPassword(e.target.value)} placeholder="Leave empty to keep" />
                 </div>
-                {editingDs?.db_type === 'clickhouse' && (
-                  <div className="grid gap-2">
-                    <Label htmlFor="edit-ds-timeout">Timeout, s</Label>
-                    <Input
-                      id="edit-ds-timeout"
-                      type="number"
-                      min={1}
-                      step={1}
-                      value={editTimeoutSeconds}
-                      onChange={(e) => setEditTimeoutSeconds(e.target.value)}
-                      placeholder="Default"
-                    />
-                  </div>
-                )}
+                {/* Applies to every warehouse — BigQuery included. */}
+                <div className="grid gap-2">
+                  <Label htmlFor="edit-ds-timeout">Timeout, s</Label>
+                  <Input
+                    id="edit-ds-timeout"
+                    type="number"
+                    min={1}
+                    step={1}
+                    value={editTimeoutSeconds}
+                    onChange={(e) => setEditTimeoutSeconds(e.target.value)}
+                    placeholder="Default"
+                  />
+                </div>
               </div>
               {editingDs?.db_type === 'clickhouse' && (
                 <div className="grid gap-2">
@@ -479,6 +512,15 @@ function ConnectionsTab({ openDsId }: { openDsId?: string }) {
                   </select>
                   <p className="text-xs text-muted-foreground">{JSON_PATH_DISCOVERY_HELP}</p>
                 </div>
+              )}
+              {editingDs && (
+                <ConnectionSettingsFields
+                  idPrefix="edit-ds"
+                  dbType={editingDs.db_type}
+                  value={editSettings}
+                  onChange={patchEditSettings}
+                  sslkeySet={editingDs.connection_settings?.sslkey_set ?? false}
+                />
               )}
               {updateMut.isError && (
                 <p className="text-sm text-destructive">{getErrorMessage(updateMut.error)}</p>

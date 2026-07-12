@@ -3862,6 +3862,18 @@ export interface components {
              */
             updated_at: string;
         };
+        /**
+         * BigQuerySettings
+         * @description Typed BigQuery execution controls (location, cost guard, dataset scope).
+         */
+        BigQuerySettings: {
+            /** Dataset Allowlist */
+            dataset_allowlist?: string[] | null;
+            /** Location */
+            location?: string | null;
+            /** Maximum Bytes Billed */
+            maximum_bytes_billed?: number | null;
+        };
         /** Body_upload_event_photo_api_v1_projects__slug__events__event_id__photos_post */
         Body_upload_event_photo_api_v1_projects__slug__events__event_id__photos_post: {
             /** File */
@@ -4057,6 +4069,14 @@ export interface components {
          * @enum {string}
          */
         ChartAnnotationScopeType: "project_total" | "event_type" | "event" | "metric";
+        /**
+         * ClickHouseSettings
+         * @description ClickHouse has no extra connection settings.
+         *
+         *     Its two knobs — ``timeout_seconds`` and ``json_path_discovery`` — are
+         *     first-class columns on the data source, not connection settings.
+         */
+        ClickHouseSettings: Record<string, never>;
         /** ColumnSchema */
         ColumnSchema: {
             /** Data Type */
@@ -4092,6 +4112,34 @@ export interface components {
             ours: unknown | null;
             /** Theirs */
             theirs: unknown | null;
+        };
+        /**
+         * ConnectionSettingsResponse
+         * @description Read side of the connection settings: the union, flattened, secrets removed.
+         *
+         *     Applicability is enforced on write, so the response can be one flat object;
+         *     only the fields that apply to the source's ``db_type`` are ever populated.
+         */
+        ConnectionSettingsResponse: {
+            /** Dataset Allowlist */
+            dataset_allowlist?: string[] | null;
+            /** Location */
+            location?: string | null;
+            /** Maximum Bytes Billed */
+            maximum_bytes_billed?: number | null;
+            /** Search Path */
+            search_path?: string | null;
+            /** Sslcert */
+            sslcert?: string | null;
+            /**
+             * Sslkey Set
+             * @default false
+             */
+            sslkey_set: boolean;
+            /** Sslmode */
+            sslmode?: ("disable" | "allow" | "prefer" | "require" | "verify-ca" | "verify-full") | null;
+            /** Sslrootcert */
+            sslrootcert?: string | null;
         };
         /** CoverageBucket */
         CoverageBucket: {
@@ -4129,13 +4177,11 @@ export interface components {
         DBType: "clickhouse" | "postgres" | "bigquery" | "synthetic";
         /** DataSourceCreate */
         DataSourceCreate: {
+            /** Connection Settings */
+            connection_settings?: components["schemas"]["ClickHouseSettings"] | components["schemas"]["PostgresSettings"] | components["schemas"]["BigQuerySettings"] | components["schemas"]["SyntheticSettings"] | null;
             /** Database Name */
             database_name: string;
             db_type: components["schemas"]["DBType"];
-            /** Extra Params */
-            extra_params?: {
-                [key: string]: unknown;
-            } | null;
             /** Host */
             host: string;
             /** Json Path Discovery */
@@ -4162,6 +4208,7 @@ export interface components {
         };
         /** DataSourceResponse */
         DataSourceResponse: {
+            connection_settings: components["schemas"]["ConnectionSettingsResponse"];
             /**
              * Created At
              * Format: date-time
@@ -4170,10 +4217,6 @@ export interface components {
             /** Database Name */
             database_name: string;
             db_type: components["schemas"]["DBType"];
-            /** Extra Params */
-            extra_params: {
-                [key: string]: unknown;
-            } | null;
             /** Host */
             host: string;
             /**
@@ -4250,13 +4293,11 @@ export interface components {
         };
         /** DataSourceUpdate */
         DataSourceUpdate: {
+            /** Connection Settings */
+            connection_settings?: components["schemas"]["ClickHouseSettings"] | components["schemas"]["PostgresSettings"] | components["schemas"]["BigQuerySettings"] | components["schemas"]["SyntheticSettings"] | null;
             /** Database Name */
             database_name?: string | null;
             db_type?: components["schemas"]["DBType"] | null;
-            /** Extra Params */
-            extra_params?: {
-                [key: string]: unknown;
-            } | null;
             /** Host */
             host?: string | null;
             /** Json Path Discovery */
@@ -6940,6 +6981,22 @@ export interface components {
             /** Present Platforms */
             present_platforms: string[];
         };
+        /**
+         * PostgresSettings
+         * @description Typed allowlist of safe PostgreSQL connection options.
+         */
+        PostgresSettings: {
+            /** Search Path */
+            search_path?: string | null;
+            /** Sslcert */
+            sslcert?: string | null;
+            /** Sslkey */
+            sslkey?: string | null;
+            /** Sslmode */
+            sslmode?: ("disable" | "allow" | "prefer" | "require" | "verify-ca" | "verify-full") | null;
+            /** Sslrootcert */
+            sslrootcert?: string | null;
+        };
         /** ProjectAnomalySettingsResponse */
         ProjectAnomalySettingsResponse: {
             /** Anomaly Detection Enabled */
@@ -8332,6 +8389,11 @@ export interface components {
             /** Photo Storage Backend */
             photo_storage_backend?: string | null;
         };
+        /**
+         * SyntheticSettings
+         * @description The synthetic (demo) warehouse is in-memory: it has nothing to configure.
+         */
+        SyntheticSettings: Record<string, never>;
         /** SystemSettings */
         SystemSettings: {
             /** Database Url Configured */

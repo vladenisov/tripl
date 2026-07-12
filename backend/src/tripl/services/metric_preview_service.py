@@ -17,7 +17,12 @@ from fastapi import HTTPException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from tripl.core.adapters.measure_validator import validate_identifier, validate_select_sql
+from tripl.core.adapters.measure_validator import (
+    dialect_for_db_type,
+    lint_dialect_sql,
+    validate_identifier,
+    validate_select_sql,
+)
 from tripl.core.intervals import get_interval
 from tripl.models.data_source import DataSource
 from tripl.schemas.metric_definition import (
@@ -124,8 +129,19 @@ async def preview_sql_metric(
         safe_sql = validate_select_sql(
             data.sql, value_column=value_column, time_column=data.time_column
         )
+        dialect = dialect_for_db_type(ds.db_type)
     except ValueError as exc:
         return _error_response(str(exc))
+
+    # Dialect gate, AFTER the read-only gate and never instead of it. Free-text SQL
+    # is explicitly dialect-specific: a query written against ClickHouse cannot run
+    # on the BigQuery source the user just pointed it at, and without this the first
+    # sign of that is a driver stack trace from inside a Celery worker — the query
+    # having been saved and scheduled long before. Catching it here turns it into a
+    # sentence naming the function and the form to use instead.
+    mismatch = lint_dialect_sql(safe_sql, dialect)
+    if mismatch is not None:
+        return _error_response(mismatch)
 
     delta = get_interval(data.interval.value).delta
     time_to = datetime.now(UTC)

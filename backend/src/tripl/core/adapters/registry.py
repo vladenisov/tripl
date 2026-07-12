@@ -1,10 +1,20 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from typing import Any
 
 from tripl.core.adapters.base import BaseAdapter
 from tripl.crypto import decrypt_value
 from tripl.models.data_source import DataSource
+from tripl.schemas.data_source import (
+    DEFAULT_BIGQUERY_MAXIMUM_BYTES_BILLED,
+    DEFAULT_POSTGRES_SSLMODE,
+    DEFAULT_TIMEOUT_SECONDS,
+    SSLKEY_STORAGE_KEY,
+    BigQuerySettings,
+    ClickHouseSettings,
+    PostgresSettings,
+)
 
 AdapterFactory = Callable[[DataSource, str], BaseAdapter]
 
@@ -13,7 +23,7 @@ _REGISTRY: dict[str, AdapterFactory] = {}
 # Fallback connect/query budget when a data source leaves timeout_seconds unset.
 # Comfortably under Celery's 55/60-min hard limit so a runaway query is cut off
 # by the adapter long before the worker is SIGKILLed.
-_DEFAULT_TIMEOUT_SECONDS = 300
+_DEFAULT_TIMEOUT_SECONDS = DEFAULT_TIMEOUT_SECONDS
 
 
 def _effective_timeout_seconds(ds: DataSource) -> int:
@@ -21,6 +31,29 @@ def _effective_timeout_seconds(ds: DataSource) -> int:
     if timeout is None or timeout <= 0:
         return _DEFAULT_TIMEOUT_SECONDS
     return timeout
+
+
+def _stored_settings(ds: DataSource) -> dict[str, Any]:
+    """The raw connection settings stored for this source, minus the secret.
+
+    Each factory below validates this against its own settings model, so a
+    setting that does not belong to the warehouse fails the adapter build loudly
+    (surfacing as a connection error) instead of being silently ignored — which
+    is exactly what PostgreSQL's stored ``extra_params`` used to do.
+    """
+    raw = dict(ds.extra_params) if isinstance(ds.extra_params, dict) else {}
+    raw.pop(SSLKEY_STORAGE_KEY, None)  # storage-only key; not part of the model
+    return raw
+
+
+def _stored_sslkey(ds: DataSource) -> str | None:
+    """Decrypt the PostgreSQL client private key, if one is stored."""
+    if not isinstance(ds.extra_params, dict):
+        return None
+    ciphertext = ds.extra_params.get(SSLKEY_STORAGE_KEY)
+    if not isinstance(ciphertext, str) or not ciphertext:
+        return None
+    return decrypt_value(ciphertext) or None
 
 
 def register_adapter(db_type: str, factory: AdapterFactory) -> None:
@@ -43,6 +76,7 @@ def build_adapter(ds: DataSource) -> BaseAdapter:
 def _build_clickhouse(ds: DataSource, password: str) -> BaseAdapter:
     from tripl.core.adapters.clickhouse import ClickHouseAdapter
 
+    ClickHouseSettings.model_validate(_stored_settings(ds))  # no CH-specific settings today
     timeout = _effective_timeout_seconds(ds)
     # connect_timeout bounds the TCP/handshake; send_receive_timeout bounds the
     # query so a runaway base_query can't run until Celery's hard limit.
@@ -65,6 +99,8 @@ def _build_clickhouse(ds: DataSource, password: str) -> BaseAdapter:
 def _build_postgres(ds: DataSource, password: str) -> BaseAdapter:
     from tripl.core.adapters.postgres import PostgresAdapter
 
+    settings = PostgresSettings.model_validate(_stored_settings(ds))
+
     return PostgresAdapter(
         host=ds.host,
         port=ds.port,
@@ -72,24 +108,37 @@ def _build_postgres(ds: DataSource, password: str) -> BaseAdapter:
         username=ds.username,
         password=password,
         timeout_seconds=_effective_timeout_seconds(ds),
+        # Server-side default: libpq's own "prefer". An operator who needs real
+        # TLS enforcement stores require/verify-ca/verify-full.
+        sslmode=settings.sslmode or DEFAULT_POSTGRES_SSLMODE,
+        sslrootcert=settings.sslrootcert,
+        sslcert=settings.sslcert,
+        sslkey=_stored_sslkey(ds),
+        search_path=settings.search_path,
     )
 
 
 def _build_bigquery(ds: DataSource, password: str) -> BaseAdapter:
     from tripl.core.adapters.bigquery import BigQueryAdapter
 
-    location: str | None = None
-    if isinstance(ds.extra_params, dict):
-        loc = ds.extra_params.get("location")
-        if isinstance(loc, str):
-            location = loc
+    settings = BigQuerySettings.model_validate(_stored_settings(ds))
+
     return BigQueryAdapter(
         host=ds.host,
         port=ds.port,
         database=ds.database_name,
         username=ds.username,
         password=password,
-        location=location,
+        location=settings.location,
+        # BigQuery used to get no deadline at all: a stuck job could hold a worker
+        # until Celery's hard limit. It now shares the data source's budget.
+        timeout_seconds=_effective_timeout_seconds(ds),
+        # Cost guard — a query whose dry-run estimate exceeds this is refused by
+        # BigQuery before it runs.
+        maximum_bytes_billed=(
+            settings.maximum_bytes_billed or DEFAULT_BIGQUERY_MAXIMUM_BYTES_BILLED
+        ),
+        dataset_allowlist=settings.dataset_allowlist,
     )
 
 

@@ -151,8 +151,12 @@ def test_postgres_localhost_skips_tls_and_uses_default_timeout(
 
     build_adapter(ds)
 
-    # Local hosts skip TLS (no cert configured in dev/docker).
-    assert captured["sslmode"] is None
+    # Local hosts do not force TLS: dev/docker Postgres has no certificate, and the
+    # traffic never leaves the machine. `prefer` is libpq's own default (use TLS if
+    # the server offers it, plaintext otherwise) — the adapter now passes it
+    # EXPLICITLY rather than leaving it unset, because an sslmode it merely ignored
+    # is the bug tripl-64n8.7 closes.
+    assert captured["sslmode"] == "prefer"
     assert captured["connect_timeout"] == _DEFAULT_TIMEOUT_SECONDS
     assert captured["options"] == (
         f"-c timezone=UTC -c statement_timeout={_DEFAULT_TIMEOUT_SECONDS * 1000}"

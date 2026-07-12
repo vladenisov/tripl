@@ -1,19 +1,29 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime
+
 import pytest
 
 from tripl.core.adapters.measure_validator import (
+    SqlDialect,
     build_aggregate_sql,
     coerce_aggregation,
+    dialect_for_db_type,
+    lint_dialect_sql,
+    parse_utc_timestamp,
+    quote_identifier,
     quote_sql_literal,
     quote_sql_string_literal,
+    quote_timestamp_literal,
     requires_measure,
+    time_kind_of,
     validate_identifier,
     validate_measure_column,
     validate_select_sql,
     validate_select_sql_safety,
     validate_sql_fragment,
 )
+from tripl.core.warehouse_types import TimeKind
 from tripl.models.domain_enums import MetricAggregation
 
 _ALLOWED = {"time", "event_name", "amount", "user_id"}
@@ -318,35 +328,305 @@ def test_validate_sql_fragment_rejects_injection(bad: str, match: str) -> None:
 # --- quote_sql_literal -------------------------------------------------------
 
 
+@pytest.mark.parametrize("dialect", list(SqlDialect))
 @pytest.mark.parametrize(
     ("value", "expected"),
     [
         ("trial", "'trial'"),
-        ("O'Reilly", "'O''Reilly'"),
         ("3", "3"),
         ("-2.5", "-2.5"),
         ("true", "TRUE"),
         (False, "FALSE"),
         (4, "4"),
         (1.25, "1.25"),
-        ("x'; DROP TABLE users --", "'x''; DROP TABLE users --'"),
     ],
 )
 def test_quote_sql_literal_renders_safe_literals(
-    value: str | int | float | bool, expected: str
+    value: str | int | float | bool, expected: str, dialect: SqlDialect
 ) -> None:
-    assert quote_sql_literal(value) == expected
+    """Numeric / boolean / quote-free literals are spelled the same everywhere."""
+    assert quote_sql_literal(value, dialect) == expected
 
 
-def test_quote_sql_literal_rejects_invalid_values() -> None:
+@pytest.mark.parametrize(
+    ("dialect", "expected"),
+    [
+        # PostgreSQL: DOUBLE the quote. A backslash is a literal backslash under
+        # standard_conforming_strings, so the backslash form is an unterminated string.
+        (SqlDialect.postgres, "'O''Reilly'"),
+        # BigQuery: NO '' escape exists. 'O''Reilly' is read as two adjacent string
+        # literals ("concatenated string literals must be separated by whitespace")
+        # -- verified against ZetaSQL. GoogleSQL escapes with a backslash.
+        (SqlDialect.bigquery, "'O\\'Reilly'"),
+        # ClickHouse accepts both; it gets the backslash form its adapter already uses.
+        (SqlDialect.clickhouse, "'O\\'Reilly'"),
+    ],
+)
+def test_quote_sql_literal_escapes_apostrophes_per_dialect(
+    dialect: SqlDialect, expected: str
+) -> None:
+    assert quote_sql_literal("O'Reilly", dialect) == expected
+
+
+@pytest.mark.parametrize("dialect", list(SqlDialect))
+def test_quote_sql_literal_keeps_injection_inside_the_string(dialect: SqlDialect) -> None:
+    """A value can only ever add PAIRED quotes, so it cannot end the literal early."""
+    rendered = quote_sql_literal("x'; DROP TABLE users --", dialect)
+    assert rendered.startswith("'")
+    assert rendered.endswith("'")
+    # The payload survives as DATA, its quote escaped rather than closing the literal:
+    # exactly one escaped quote, and no bare one left over.
+    body = rendered[1:-1]
+    escaped = "''" if dialect is SqlDialect.postgres else "\\'"
+    assert body.count(escaped) == 1
+    assert body.replace(escaped, "").count("'") == 0
+
+
+@pytest.mark.parametrize("dialect", list(SqlDialect))
+def test_quote_sql_literal_rejects_invalid_values(dialect: SqlDialect) -> None:
     with pytest.raises(ValueError, match="empty"):
-        quote_sql_literal("   ")
+        quote_sql_literal("   ", dialect)
     with pytest.raises(ValueError, match="finite"):
-        quote_sql_literal(float("nan"))
+        quote_sql_literal(float("nan"), dialect)
 
 
-def test_quote_sql_string_literal_keeps_numeric_text_quoted() -> None:
-    assert quote_sql_string_literal("3") == "'3'"
+@pytest.mark.parametrize("dialect", list(SqlDialect))
+def test_quote_sql_string_literal_keeps_numeric_text_quoted(dialect: SqlDialect) -> None:
+    assert quote_sql_string_literal("3", dialect) == "'3'"
+
+
+@pytest.mark.parametrize("dialect", [SqlDialect.bigquery, SqlDialect.clickhouse])
+def test_quote_sql_string_literal_doubles_backslash_first(dialect: SqlDialect) -> None:
+    """Backslash is escaped BEFORE the quote, so a trailing one cannot escape the close."""
+    assert quote_sql_string_literal("a\\", dialect) == "'a\\\\'"
+    assert quote_sql_string_literal("a\\'b", dialect) == "'a\\\\\\'b'"
+
+
+def test_quote_sql_string_literal_leaves_backslash_alone_on_postgres() -> None:
+    """Under standard_conforming_strings a backslash is DATA, not an escape."""
+    assert quote_sql_string_literal("a\\b", SqlDialect.postgres) == "'a\\b'"
+
+
+@pytest.mark.parametrize("dialect", [SqlDialect.bigquery, SqlDialect.clickhouse])
+def test_quote_sql_string_literal_escapes_newlines(dialect: SqlDialect) -> None:
+    """A raw newline in a single-quoted BigQuery literal is an "Unclosed string literal"."""
+    assert quote_sql_string_literal("a\nb", dialect) == "'a\\nb'"
+
+
+# --- dialect_for_db_type -----------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("db_type", "expected"),
+    [
+        ("clickhouse", SqlDialect.clickhouse),
+        ("postgres", SqlDialect.postgres),
+        ("bigquery", SqlDialect.bigquery),
+        # The synthetic demo warehouse mimics ClickHouse semantics.
+        ("synthetic", SqlDialect.clickhouse),
+    ],
+)
+def test_dialect_for_db_type_maps_every_supported_source(
+    db_type: str, expected: SqlDialect
+) -> None:
+    assert dialect_for_db_type(db_type) == expected
+
+
+def test_dialect_for_db_type_rejects_unknown() -> None:
+    with pytest.raises(ValueError, match="Unsupported warehouse db_type"):
+        dialect_for_db_type("duckdb")
+
+
+# --- quote_identifier --------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("dialect", "expected"),
+    [
+        (SqlDialect.clickhouse, "`order`"),
+        (SqlDialect.bigquery, "`order`"),
+        (SqlDialect.postgres, '"order"'),
+    ],
+)
+def test_quote_identifier_quotes_reserved_word_per_dialect(
+    dialect: SqlDialect, expected: str
+) -> None:
+    assert quote_identifier("order", dialect) == expected
+
+
+@pytest.mark.parametrize(
+    ("dialect", "expected"),
+    [
+        (SqlDialect.clickhouse, "`t`.`col`"),
+        (SqlDialect.bigquery, "`t`.`col`"),
+        (SqlDialect.postgres, '"t"."col"'),
+    ],
+)
+def test_quote_identifier_quotes_each_dot_part(dialect: SqlDialect, expected: str) -> None:
+    """A single-quoted "t.col" is read as ONE odd column name and fails on all three."""
+    assert quote_identifier("t.col", dialect) == expected
+
+
+@pytest.mark.parametrize("dialect", list(SqlDialect))
+@pytest.mark.parametrize("bad", ["a..b", "a.", "1abc", "col name", "col`x", 'col"x', "col;--"])
+def test_quote_identifier_rejects_unsafe_names(bad: str, dialect: SqlDialect) -> None:
+    """The allowlist runs FIRST, so the quote character can never be broken out of."""
+    with pytest.raises(ValueError):
+        quote_identifier(bad, dialect)
+
+
+# --- parse_utc_timestamp / quote_timestamp_literal ---------------------------
+
+
+@pytest.mark.parametrize(
+    "text",
+    ["2026-01-01", "2026-01-01 00:00:00", "2026-01-01T00:00:00", "2026-01-01T00:00:00Z"],
+)
+def test_parse_utc_timestamp_accepts_iso_forms(text: str) -> None:
+    parsed = parse_utc_timestamp(text)
+    assert parsed is not None
+    assert parsed.tzinfo is not None
+    assert parsed.year == 2026
+
+
+@pytest.mark.parametrize("text", ["trial", "2026", "12-34", "", "not a date"])
+def test_parse_utc_timestamp_returns_none_for_non_timestamps(text: str) -> None:
+    """A non-timestamp falls back to the plain string literal, never a guess."""
+    assert parse_utc_timestamp(text) is None
+
+
+def test_parse_utc_timestamp_normalizes_offset_to_utc() -> None:
+    parsed = parse_utc_timestamp("2026-01-01T05:30:00+03:00")
+    assert parsed is not None
+    assert parsed.hour == 2
+    assert parsed.minute == 30
+
+
+@pytest.mark.parametrize(
+    ("dialect", "kind", "expected"),
+    [
+        (
+            SqlDialect.clickhouse,
+            TimeKind.timestamp,
+            "parseDateTime64BestEffort('2026-01-01 00:00:00.000000+00:00', 6, 'UTC')",
+        ),
+        (
+            SqlDialect.postgres,
+            TimeKind.timestamp,
+            "TIMESTAMPTZ '2026-01-01 00:00:00.000000+00:00'",
+        ),
+        (SqlDialect.bigquery, TimeKind.timestamp, "TIMESTAMP '2026-01-01 00:00:00.000000+00:00'"),
+        # BigQuery DATETIME is a zone-less wall clock and REJECTS an offset
+        # ("Invalid DATETIME literal"), so its literal must not carry one.
+        (SqlDialect.bigquery, TimeKind.datetime, "DATETIME '2026-01-01 00:00:00.000000'"),
+        (SqlDialect.bigquery, TimeKind.date, "DATE '2026-01-01'"),
+    ],
+)
+def test_quote_timestamp_literal_pins_utc_per_dialect(
+    dialect: SqlDialect, kind: TimeKind, expected: str
+) -> None:
+    moment = datetime(2026, 1, 1, tzinfo=UTC)
+    assert quote_timestamp_literal(moment, dialect, kind=kind) == expected
+
+
+# --- time_kind_of ------------------------------------------------------------
+
+
+def test_time_kind_of_reads_the_introspected_type() -> None:
+    types = {"ts": "timestamp", "amount": "Float64"}
+    assert time_kind_of("ts", types) is TimeKind.timestamp
+    assert time_kind_of("amount", types) is TimeKind.unsupported
+
+
+@pytest.mark.parametrize("types", [None, {}, {"other": "timestamp"}])
+def test_time_kind_of_unknown_column_is_unsupported(types: dict[str, str] | None) -> None:
+    """Unknown type -> do NOT retype the literal; fall back to the plain string."""
+    assert time_kind_of("ts", types) is TimeKind.unsupported
+
+
+# --- lint_dialect_sql --------------------------------------------------------
+
+
+def test_lint_flags_date_trunc_string_form_on_bigquery() -> None:
+    message = lint_dialect_sql(
+        "SELECT date_trunc('day', created_at) AS bucket FROM events", SqlDialect.bigquery
+    )
+    assert message is not None
+    assert "TIMESTAMP_TRUNC" in message
+
+
+@pytest.mark.parametrize("dialect", [SqlDialect.clickhouse, SqlDialect.postgres])
+def test_lint_accepts_date_trunc_string_form_where_it_exists(dialect: SqlDialect) -> None:
+    """date_trunc('day', ts) is REAL on ClickHouse and PostgreSQL: never flag it."""
+    assert lint_dialect_sql("SELECT date_trunc('day', created_at) FROM events", dialect) is None
+
+
+def test_lint_accepts_bigquery_native_date_trunc() -> None:
+    """GoogleSQL's own DATE_TRUNC(date_expr, part) must not be mistaken for the bug."""
+    assert lint_dialect_sql("SELECT DATE_TRUNC(day_col, MONTH) FROM t", SqlDialect.bigquery) is None
+
+
+def test_lint_does_not_flag_countif_on_bigquery() -> None:
+    """GoogleSQL is case-INSENSITIVE, so countIf resolves to the real COUNTIF."""
+    assert lint_dialect_sql("SELECT countIf(ok) FROM t", SqlDialect.bigquery) is None
+
+
+@pytest.mark.parametrize(
+    ("sql", "dialect", "needle"),
+    [
+        ("SELECT toStartOfInterval(ts, INTERVAL 1 DAY) FROM t", SqlDialect.postgres, "date_bin"),
+        ("SELECT toStartOfInterval(ts, INTERVAL 1 DAY) FROM t", SqlDialect.bigquery, "BigQuery"),
+        ("SELECT date_bin(INTERVAL '1 day', ts, now()) FROM t", SqlDialect.bigquery, "BigQuery"),
+        (
+            "SELECT date_bin(INTERVAL '1 day', ts, now()) FROM t",
+            SqlDialect.clickhouse,
+            "ClickHouse",
+        ),
+        ("SELECT TIMESTAMP_TRUNC(ts, DAY) FROM t", SqlDialect.postgres, "PostgreSQL"),
+        ("SELECT TIMESTAMP_TRUNC(ts, DAY) FROM t", SqlDialect.clickhouse, "ClickHouse"),
+        ("SELECT countIf(ok) FROM t", SqlDialect.postgres, "FILTER"),
+        ("SELECT `status` FROM t", SqlDialect.postgres, "double quotes"),
+    ],
+)
+def test_lint_flags_cross_dialect_functions(sql: str, dialect: SqlDialect, needle: str) -> None:
+    message = lint_dialect_sql(sql, dialect)
+    assert message is not None
+    assert needle in message
+
+
+@pytest.mark.parametrize(
+    ("sql", "dialect"),
+    [
+        (
+            "SELECT toStartOfInterval(created_at, INTERVAL 1 DAY, 'UTC') AS bucket, "
+            "count(*) AS value FROM events GROUP BY 1 ORDER BY 1",
+            SqlDialect.clickhouse,
+        ),
+        (
+            "SELECT date_bin(INTERVAL '1 day', created_at, "
+            "TIMESTAMPTZ '1970-01-01 00:00:00+00:00') AS bucket, count(*) AS value "
+            "FROM events GROUP BY 1 ORDER BY 1",
+            SqlDialect.postgres,
+        ),
+        (
+            "SELECT TIMESTAMP_TRUNC(created_at, DAY, 'UTC') AS bucket, count(*) AS value "
+            "FROM events GROUP BY 1 ORDER BY 1",
+            SqlDialect.bigquery,
+        ),
+    ],
+)
+def test_lint_passes_each_dialects_own_starter_template(sql: str, dialect: SqlDialect) -> None:
+    """The exact SQL the frontend starter templates emit, per warehouse."""
+    assert lint_dialect_sql(sql, dialect) is None
+
+
+def test_lint_is_not_a_security_control() -> None:
+    """The read-only gate is unchanged, and the lint only ever ADDS a rejection."""
+    with pytest.raises(ValueError):
+        validate_select_sql_safety("SELECT 1; DROP TABLE users")
+    with pytest.raises(ValueError):
+        validate_select_sql_safety("INSERT INTO t VALUES (1)")
+    assert lint_dialect_sql("SELECT 1", SqlDialect.bigquery) is None
 
 
 # --- validate_select_sql_safety ---------------------------------------------

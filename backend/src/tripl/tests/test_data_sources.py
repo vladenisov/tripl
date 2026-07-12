@@ -1,9 +1,23 @@
+import json
 import uuid
 
 import pytest
+from cryptography.fernet import Fernet
 from httpx import AsyncClient
+from sqlalchemy import select
 
+from tripl import config, crypto
+from tripl.core.adapters import bigquery as bigquery_module
+from tripl.core.adapters import postgres as postgres_module
+from tripl.core.adapters.registry import build_adapter
+from tripl.crypto import decrypt_value, encrypt_value
+from tripl.models.audit_log import AuditLog
 from tripl.models.data_source import DataSource
+from tripl.schemas.data_source import (
+    DEFAULT_BIGQUERY_MAXIMUM_BYTES_BILLED,
+    DEFAULT_POSTGRES_SSLMODE,
+    DEFAULT_TIMEOUT_SECONDS,
+)
 from tripl.schemas.data_source_schema import (
     ColumnSchema,
     DataSourceSchemaResponse,
@@ -420,6 +434,345 @@ class TestSyntheticGuards:
         ds_id = create.json()["id"]
         resp = await client.patch(f"/api/v1/data-sources/{ds_id}", json={"db_type": "synthetic"})
         assert resp.status_code == 422
+
+
+CLIENT_KEY_PEM = "-----BEGIN PRIVATE KEY-----\nMIIBOgIBAAJBAK\n-----END PRIVATE KEY-----\n"
+CA_CERT_PEM = "-----BEGIN CERTIFICATE-----\nMIIDdzCCAl+gAwIBAg\n-----END CERTIFICATE-----\n"
+
+
+@pytest.fixture
+def encryption_key(monkeypatch: pytest.MonkeyPatch):
+    """Run a test with a real Fernet key configured.
+
+    The suite otherwise runs with an empty ENCRYPTION_KEY (dev/test passthrough),
+    which would hide whether a secret is actually encrypted at rest.
+    """
+    monkeypatch.setattr(config.settings, "encryption_key", Fernet.generate_key().decode())
+    crypto._fernet.cache_clear()
+    yield
+    crypto._fernet.cache_clear()
+
+
+async def _create(client: AsyncClient, **overrides: object) -> dict:
+    payload: dict[str, object] = {
+        "name": f"ds-{uuid.uuid4()}",
+        "db_type": "clickhouse",
+        "host": "localhost",
+        "database_name": "analytics",
+    }
+    payload.update(overrides)
+    return await client.post("/api/v1/data-sources", json=payload)  # type: ignore[return-value]
+
+
+class TestConnectionSettings:
+    """Typed per-warehouse settings: they round-trip, and anything that does not
+    apply to the warehouse is rejected rather than silently stored and ignored."""
+
+    async def test_bigquery_settings_round_trip(self, client: AsyncClient):
+        create = await _create(
+            client,
+            db_type="bigquery",
+            host="gcp-project",
+            database_name="analytics",
+            timeout_seconds=90,
+            connection_settings={
+                "location": "EU",
+                "maximum_bytes_billed": 5_000_000,
+                "dataset_allowlist": ["analytics", "marts"],
+            },
+        )
+        assert create.status_code == 201, create.text
+        body = create.json()
+        assert body["timeout_seconds"] == 90
+        assert body["connection_settings"]["location"] == "EU"
+        assert body["connection_settings"]["maximum_bytes_billed"] == 5_000_000
+        assert body["connection_settings"]["dataset_allowlist"] == ["analytics", "marts"]
+
+        got = await client.get(f"/api/v1/data-sources/{body['id']}")
+        assert got.json()["connection_settings"]["location"] == "EU"
+
+        updated = await client.patch(
+            f"/api/v1/data-sources/{body['id']}",
+            json={"connection_settings": {"location": "us-east1"}},
+        )
+        assert updated.status_code == 200
+        settings = updated.json()["connection_settings"]
+        assert settings["location"] == "us-east1"
+        # A PATCH replaces the settings wholesale: an omitted field is cleared.
+        assert settings["maximum_bytes_billed"] is None
+        assert settings["dataset_allowlist"] is None
+
+    async def test_postgres_settings_round_trip(self, client: AsyncClient):
+        create = await _create(
+            client,
+            db_type="postgres",
+            port=5432,
+            connection_settings={
+                "sslmode": "verify-full",
+                "sslrootcert": CA_CERT_PEM,
+                "search_path": "public, analytics",
+            },
+        )
+        assert create.status_code == 201, create.text
+        settings = create.json()["connection_settings"]
+        assert settings["sslmode"] == "verify-full"
+        assert settings["sslrootcert"].startswith("-----BEGIN CERTIFICATE-----")
+        assert settings["search_path"] == "public, analytics"
+        assert settings["sslkey_set"] is False
+
+    async def test_defaults_are_unset_and_depend_on_db_type(self, client: AsyncClient):
+        """No settings sent → nothing stored; the server-side default applies at
+        adapter build (sslmode=prefer for Postgres, a 100 GiB cost guard for
+        BigQuery), which is why the response carries nulls, not another db_type's
+        fields."""
+        create = await _create(client, db_type="postgres", port=5432)
+        settings = create.json()["connection_settings"]
+        assert settings["sslmode"] is None
+        assert settings["location"] is None
+        assert settings["sslkey_set"] is False
+
+    @pytest.mark.parametrize(
+        ("db_type", "host", "settings", "expected"),
+        [
+            # A BigQuery setting on a PostgreSQL source.
+            ("postgres", "db.example.com", {"location": "EU"}, "postgres"),
+            # A PostgreSQL setting on a BigQuery source.
+            ("bigquery", "gcp-project", {"sslmode": "require"}, "bigquery"),
+            # ClickHouse has no connection settings at all.
+            ("clickhouse", "localhost", {"location": "EU"}, "clickhouse"),
+        ],
+    )
+    async def test_inapplicable_settings_are_rejected_not_ignored(
+        self,
+        client: AsyncClient,
+        db_type: str,
+        host: str,
+        settings: dict,
+        expected: str,
+    ):
+        resp = await _create(client, db_type=db_type, host=host, connection_settings=settings)
+        assert resp.status_code == 422, resp.text
+        detail = str(resp.json()["detail"])
+        assert "not a connection setting" in detail
+        assert expected in detail
+
+    async def test_unknown_setting_is_rejected(self, client: AsyncClient):
+        resp = await _create(
+            client,
+            db_type="postgres",
+            host="db.example.com",
+            connection_settings={"sslmode": "require", "sneaky_option": "on"},
+        )
+        assert resp.status_code == 422
+
+    async def test_update_rejects_inapplicable_setting(self, client: AsyncClient):
+        create = await _create(client, db_type="postgres", host="db.example.com", port=5432)
+        ds_id = create.json()["id"]
+        resp = await client.patch(
+            f"/api/v1/data-sources/{ds_id}",
+            json={"connection_settings": {"dataset_allowlist": ["analytics"]}},
+        )
+        assert resp.status_code == 422
+        assert "not a connection setting" in str(resp.json()["detail"])
+
+    @pytest.mark.parametrize(
+        "settings",
+        [
+            {"sslmode": "totally-secure"},
+            # Certificates are PEM content, never a path on the server.
+            {"sslrootcert": "/etc/ssl/certs/ca.pem"},
+            {"sslkey": "/etc/ssl/private/client.key"},
+            # search_path is interpolated into SET search_path.
+            {"search_path": "public; DROP TABLE users"},
+        ],
+    )
+    async def test_malformed_postgres_settings_are_rejected(
+        self, client: AsyncClient, settings: dict
+    ):
+        resp = await _create(
+            client, db_type="postgres", host="db.example.com", connection_settings=settings
+        )
+        assert resp.status_code == 422, resp.text
+
+    @pytest.mark.parametrize(
+        "settings",
+        [
+            {"location": "not a region!"},
+            {"maximum_bytes_billed": 0},
+            {"dataset_allowlist": ["good", "bad-dataset!"]},
+        ],
+    )
+    async def test_malformed_bigquery_settings_are_rejected(
+        self, client: AsyncClient, settings: dict
+    ):
+        resp = await _create(
+            client, db_type="bigquery", host="gcp-project", connection_settings=settings
+        )
+        assert resp.status_code == 422, resp.text
+
+    async def test_private_key_is_encrypted_and_never_returned(
+        self, client: AsyncClient, encryption_key: None
+    ):
+        create = await _create(
+            client,
+            db_type="postgres",
+            host="db.example.com",
+            port=5432,
+            connection_settings={
+                "sslmode": "verify-full",
+                "sslrootcert": CA_CERT_PEM,
+                "sslcert": CA_CERT_PEM,
+                "sslkey": CLIENT_KEY_PEM,
+            },
+        )
+        assert create.status_code == 201, create.text
+        ds_id = create.json()["id"]
+
+        # The response says a key is stored — and never carries the key itself.
+        assert create.json()["connection_settings"]["sslkey_set"] is True
+        assert "sslkey" not in create.json()["connection_settings"]
+        for body in (create.text, (await client.get(f"/api/v1/data-sources/{ds_id}")).text):
+            assert "BEGIN PRIVATE KEY" not in body
+        listed = await client.get("/api/v1/data-sources")
+        assert "BEGIN PRIVATE KEY" not in listed.text
+
+        # At rest it is Fernet-encrypted under the same scheme as the password,
+        # and the plaintext never reaches the audit log.
+        async with TestSessionLocal() as session:
+            ds = await session.get(DataSource, uuid.UUID(ds_id))
+            assert ds is not None
+            stored = ds.extra_params or {}
+            assert "sslkey" not in stored
+            assert stored["sslkey_encrypted"] != CLIENT_KEY_PEM
+            assert decrypt_value(stored["sslkey_encrypted"]) == CLIENT_KEY_PEM
+            # Public certs are stored as-is — only the private key is a secret.
+            assert stored["sslrootcert"] == CA_CERT_PEM.strip()
+
+            entries = await session.execute(
+                select(AuditLog).where(AuditLog.action == "data_source.create")
+            )
+            for entry in entries.scalars().all():
+                assert "BEGIN PRIVATE KEY" not in json.dumps(entry.payload)
+
+    async def test_private_key_is_kept_when_omitted_and_cleared_when_blank(
+        self, client: AsyncClient
+    ):
+        create = await _create(
+            client,
+            db_type="postgres",
+            host="db.example.com",
+            port=5432,
+            connection_settings={"sslmode": "require", "sslkey": CLIENT_KEY_PEM},
+        )
+        ds_id = create.json()["id"]
+
+        # Omitted, like an omitted password: the stored key survives the update.
+        kept = await client.patch(
+            f"/api/v1/data-sources/{ds_id}",
+            json={"connection_settings": {"sslmode": "verify-ca", "sslrootcert": CA_CERT_PEM}},
+        )
+        assert kept.status_code == 200
+        assert kept.json()["connection_settings"]["sslkey_set"] is True
+
+        cleared = await client.patch(
+            f"/api/v1/data-sources/{ds_id}",
+            json={"connection_settings": {"sslmode": "require", "sslkey": ""}},
+        )
+        assert cleared.status_code == 200
+        assert cleared.json()["connection_settings"]["sslkey_set"] is False
+
+
+class TestAdapterSettingsWiring:
+    """The registry must hand the typed settings to the adapter — the whole point
+    of storing them. BigQuery in particular used to get no timeout at all."""
+
+    def _data_source(self, **overrides: object) -> DataSource:
+        fields: dict[str, object] = {
+            "id": uuid.uuid4(),
+            "name": "wiring",
+            "db_type": "bigquery",
+            "host": "gcp-project",
+            "port": 0,
+            "database_name": "analytics",
+            "username": "",
+            "password_encrypted": "",
+            "timeout_seconds": None,
+            "json_path_discovery": None,
+            "extra_params": None,
+        }
+        fields.update(overrides)
+        return DataSource(**fields)
+
+    def test_bigquery_gets_timeout_location_and_cost_guard(self, monkeypatch: pytest.MonkeyPatch):
+        captured: dict[str, object] = {}
+
+        def fake_adapter(**kwargs: object) -> object:
+            captured.update(kwargs)
+            return object()
+
+        monkeypatch.setattr(bigquery_module, "BigQueryAdapter", fake_adapter)
+        ds = self._data_source(
+            timeout_seconds=42,
+            extra_params={"location": "EU", "dataset_allowlist": ["analytics"]},
+        )
+
+        build_adapter(ds)
+
+        assert captured["timeout_seconds"] == 42
+        assert captured["location"] == "EU"
+        assert captured["dataset_allowlist"] == ["analytics"]
+        # Unset → the server-side BigQuery default cost guard, not "unlimited".
+        assert captured["maximum_bytes_billed"] == DEFAULT_BIGQUERY_MAXIMUM_BYTES_BILLED
+
+    def test_bigquery_timeout_falls_back_to_the_default(self, monkeypatch: pytest.MonkeyPatch):
+        captured: dict[str, object] = {}
+        monkeypatch.setattr(
+            bigquery_module, "BigQueryAdapter", lambda **kwargs: captured.update(kwargs) or object()
+        )
+
+        build_adapter(self._data_source(extra_params={"maximum_bytes_billed": 123}))
+
+        assert captured["timeout_seconds"] == DEFAULT_TIMEOUT_SECONDS
+        assert captured["maximum_bytes_billed"] == 123
+
+    def test_postgres_gets_tls_settings_with_the_decrypted_key(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        captured: dict[str, object] = {}
+        monkeypatch.setattr(
+            postgres_module, "PostgresAdapter", lambda **kwargs: captured.update(kwargs) or object()
+        )
+        ds = self._data_source(
+            db_type="postgres",
+            host="db.example.com",
+            port=5432,
+            extra_params={
+                "sslmode": "verify-full",
+                "sslrootcert": CA_CERT_PEM,
+                "search_path": "public",
+                "sslkey_encrypted": encrypt_value(CLIENT_KEY_PEM),
+            },
+        )
+
+        build_adapter(ds)
+
+        assert captured["sslmode"] == "verify-full"
+        assert captured["sslrootcert"] == CA_CERT_PEM.strip()
+        assert captured["search_path"] == "public"
+        # The adapter needs the key material itself; the column never holds it.
+        assert captured["sslkey"] == CLIENT_KEY_PEM
+
+    def test_postgres_sslmode_defaults_to_prefer(self, monkeypatch: pytest.MonkeyPatch):
+        captured: dict[str, object] = {}
+        monkeypatch.setattr(
+            postgres_module, "PostgresAdapter", lambda **kwargs: captured.update(kwargs) or object()
+        )
+
+        build_adapter(self._data_source(db_type="postgres", host="db.example.com", port=5432))
+
+        assert captured["sslmode"] == DEFAULT_POSTGRES_SSLMODE
+        assert captured["sslkey"] is None
+        assert captured["timeout_seconds"] == DEFAULT_TIMEOUT_SECONDS
 
 
 class TestConnectionErrorSanitization:
