@@ -77,7 +77,16 @@ See **[The demo workspace](./demo-workspace.md)** for exactly what is synthetic,
 what is really executed, and what is intentionally unavailable.
 :::
 
-A good order to look around:
+**Start with the scenario.** The welcome panel offers **Run the scenario**, which
+coaches you through the product's core loop end to end — run a scan, watch it land,
+collect a metric, see the chart move. A strip under the demo banner tracks where you
+are and links to the next action, and a callout points at the button that performs
+it. It advances on **your** actions only: the demo's background clock is running
+scans and collections of its own, and those never tick it forward. Dismiss or
+restart it whenever you like. (Prefer to read first? **Take the tour** walks the
+same surfaces without asking you to do anything.)
+
+Then a good order to look around:
 
 - **Plan → Events** — browse the catalog. Open an event to see its fields,
   values, tags, status, and recent change history.

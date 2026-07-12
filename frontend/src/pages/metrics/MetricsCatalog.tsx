@@ -34,6 +34,8 @@ import {
 } from '@/components/ui/dropdown-menu'
 import { EmptyState } from '@/components/empty-state'
 import { ErrorState } from '@/components/error-state'
+import { ScenarioCoachMark } from '@/demo/ScenarioCoachMark'
+import { useDemoScenarioActions, useScenarioArtifacts } from '@/demo/demoScenarioContext'
 import { Panel } from '@/components/settings/kit'
 import { Chip, type ChipTone } from '@/components/primitives/chip'
 import { Dot } from '@/components/primitives/dot'
@@ -397,6 +399,12 @@ export function MetricsCatalog({ slug }: { slug?: string }) {
     if (signalFilter === 'stale') return metrics.filter(m => isStaleMetric(m, nowMs))
     return metrics
   }, [metrics, signalFilter, nowMs])
+  // The coached demo scenario (tripl-2su6.21) points at ONE row, not every row:
+  // the collect step reads as an example ("pick a metric"), so N callouts would
+  // be noise. Both ids are null outside a demo scenario, and the mark itself is
+  // an early return, so nothing below changes for a real project.
+  const scenarioMetricId = useScenarioArtifacts().metricId
+  const coachTargetId = visibleMetrics[0]?.id ?? null
   const hasFilters = !!statusFilter || !!kindFilter || !!search || !!signalFilter
   // Loaded with no metrics AND no active filters — the true "nothing here yet"
   // state, distinct from loading, error, and "filters matched nothing".
@@ -707,6 +715,8 @@ export function MetricsCatalog({ slug }: { slug?: string }) {
                             existingNames={existingNames}
                             isSelected={selectedIds.has(metric.id)}
                             onToggleSelected={() => toggleSelected(metric.id)}
+                            isCoachTarget={metric.id === coachTargetId}
+                            isScenarioMetric={metric.id === scenarioMetricId}
                           />
                         ))}
                       </div>
@@ -728,6 +738,10 @@ interface MetricRowProps {
   existingNames: ReadonlySet<string>
   isSelected: boolean
   onToggleSelected: () => void
+  /** The single row the demo scenario's collect step points at. */
+  isCoachTarget: boolean
+  /** This row is the metric the demo scenario is tracking to its chart. */
+  isScenarioMetric: boolean
 }
 
 function MetricRow({
@@ -737,6 +751,8 @@ function MetricRow({
   existingNames,
   isSelected,
   onToggleSelected,
+  isCoachTarget,
+  isScenarioMetric,
 }: MetricRowProps) {
   const navigate = useNavigate()
   const href = slug ? getMetricMonitoringPath(slug, metric.id) : undefined
@@ -831,14 +847,19 @@ function MetricRow({
           />
         )}
         {href ? (
-          <Link
-            to={href}
-            onClick={event => event.stopPropagation()}
-            className="truncate text-[12.5px] font-medium no-underline hover:underline"
-            style={{ color: 'var(--fg)' }}
-          >
-            {metric.display_name}
-          </Link>
+          // The scenario completes see-chart the moment the chart route opens, so
+          // a mark on the chart itself would never be read: it points here, at the
+          // link to the metric the user just collected.
+          <ScenarioCoachMark step="see-chart" when={isScenarioMetric} align="start">
+            <Link
+              to={href}
+              onClick={event => event.stopPropagation()}
+              className="truncate text-[12.5px] font-medium no-underline hover:underline"
+              style={{ color: 'var(--fg)' }}
+            >
+              {metric.display_name}
+            </Link>
+          </ScenarioCoachMark>
         ) : (
           <span className="truncate text-[12.5px] font-medium">{metric.display_name}</span>
         )}
@@ -873,7 +894,12 @@ function MetricRow({
       </span>
       <span role="cell" className="flex justify-end">
         {slug ? (
-          <MetricRowMenu metric={metric} slug={slug} existingNames={existingNames} />
+          <MetricRowMenu
+            metric={metric}
+            slug={slug}
+            existingNames={existingNames}
+            isCoachTarget={isCoachTarget}
+          />
         ) : null}
       </span>
     </div>
@@ -884,6 +910,7 @@ interface MetricRowMenuProps {
   metric: MetricDefinitionListItem
   slug: string
   existingNames: ReadonlySet<string>
+  isCoachTarget: boolean
 }
 
 /**
@@ -894,9 +921,10 @@ interface MetricRowMenuProps {
  * checkbox); the menu content is portaled, so item clicks never bubble to the
  * row either.
  */
-function MetricRowMenu({ metric, slug, existingNames }: MetricRowMenuProps) {
+function MetricRowMenu({ metric, slug, existingNames, isCoachTarget }: MetricRowMenuProps) {
   const qc = useQueryClient()
   const navigate = useNavigate()
+  const { notifyMetricCollectStarted } = useDemoScenarioActions()
   const isArchived = metric.status === 'archived'
 
   const duplicateMut = useMutation({
@@ -936,6 +964,9 @@ function MetricRowMenu({ metric, slug, existingNames }: MetricRowMenuProps) {
       // The slug travels with the watch: leaving the project mid-run must not
       // repoint the poll at another project's metric id (tripl-htvg).
       collectWatcher.watch({ slug, metricId: metric.id, displayName: metric.display_name })
+      // Only a collect the USER started advances the scenario — the demo's tick
+      // manufactures collections of its own (tripl-2su6.21). Inert elsewhere.
+      notifyMetricCollectStarted(metric.id)
     },
     onError: () => toast.error('Could not start collection.'),
   })
@@ -945,17 +976,22 @@ function MetricRowMenu({ metric, slug, existingNames }: MetricRowMenuProps) {
 
   return (
     <DropdownMenu>
-      <DropdownMenuTrigger asChild>
-        <button
-          type="button"
-          aria-label={`Actions for ${metric.display_name}`}
-          className="flex items-center justify-center rounded p-0.5 hover:bg-[var(--surface-hover)]"
-          style={{ color: 'var(--fg-faint)' }}
-          onClick={event => event.stopPropagation()}
-        >
-          <MoreVertical className="h-3.5 w-3.5" />
-        </button>
-      </DropdownMenuTrigger>
+      {/* One row carries the collect mark, so the coaching reads as an example
+          rather than a per-row instruction. Anchoring the trigger (not the menu)
+          keeps the mark visible while the menu is still closed. */}
+      <ScenarioCoachMark step="collect-metric" when={isCoachTarget} align="end">
+        <DropdownMenuTrigger asChild>
+          <button
+            type="button"
+            aria-label={`Actions for ${metric.display_name}`}
+            className="flex items-center justify-center rounded p-0.5 hover:bg-[var(--surface-hover)]"
+            style={{ color: 'var(--fg-faint)' }}
+            onClick={event => event.stopPropagation()}
+          >
+            <MoreVertical className="h-3.5 w-3.5" />
+          </button>
+        </DropdownMenuTrigger>
+      </ScenarioCoachMark>
       {/* The portaled content still bubbles clicks through the REACT tree (portal
           synthetic events), so without this stop the row's navigate-on-click fires
           for every item selection and unmounts the row mid-action (tripl-4mju). */}

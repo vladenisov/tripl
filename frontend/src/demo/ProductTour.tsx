@@ -18,10 +18,11 @@
  */
 
 import { useState } from 'react'
-import { Link } from 'react-router-dom'
-import { ArrowLeft, ArrowRight, Compass } from 'lucide-react'
+import { Link, useNavigate } from 'react-router-dom'
+import { ArrowLeft, ArrowRight, Compass, Play } from 'lucide-react'
 import { Chip } from '@/components/primitives/chip'
 import { Button } from '@/components/ui/button'
+import { useDemoScenario, useDemoScenarioActions } from './demoScenarioContext'
 import {
   Dialog,
   DialogContent,
@@ -65,6 +66,9 @@ interface ProductTourProps {
 export function ProductTour({ slug, open, onOpenChange }: ProductTourProps) {
   const steps = buildTourSteps(slug)
   const blocks = buildMetricBuildingBlocks(slug)
+  const navigate = useNavigate()
+  const { available: scenarioAvailable, steps: scenarioSteps } = useDemoScenario()
+  const { restart: restartScenario } = useDemoScenarioActions()
   const [index, setIndexState] = useState(() => readStoredStep(slug, steps.length))
   const step = steps[Math.min(index, steps.length - 1)]
   const isFirst = index === 0
@@ -95,6 +99,16 @@ export function ProductTour({ slug, open, onOpenChange }: ProductTourProps) {
       goTo(index + 1)
       onOpenChange(false)
     }
+  }
+
+  /**
+   * The tour shows the surfaces; the scenario makes one thing happen on them.
+   * Starting it hands the user over to the strip, which coaches from here on.
+   */
+  const startScenario = () => {
+    restartScenario()
+    onOpenChange(false)
+    navigate(scenarioSteps[0].to)
   }
 
   return (
@@ -153,6 +167,24 @@ export function ProductTour({ slug, open, onOpenChange }: ProductTourProps) {
             </Button>
           )}
         </div>
+
+        {/* Reading about a surface is not the same as making it do something.
+            This hands off to the coached scenario, which runs a scan, watches it
+            land, collects a metric and moves the chart. */}
+        {scenarioAvailable && (
+          <div
+            className="flex flex-wrap items-center justify-between gap-2 rounded-lg border p-3"
+            style={{ background: 'var(--accent-soft)', borderColor: 'var(--border-subtle)' }}
+          >
+            <p className="text-[12px]" style={{ color: 'var(--fg-muted)' }}>
+              Rather do it than read it?
+            </p>
+            <Button type="button" size="sm" onClick={startScenario}>
+              <Play className="h-3.5 w-3.5" />
+              Try it hands-on
+            </Button>
+          </div>
+        )}
 
         {/* Direct index — every surface + the metric building blocks are one
             click away, regardless of the stepper position. */}

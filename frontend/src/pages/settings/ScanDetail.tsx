@@ -2,6 +2,8 @@ import { Fragment, useState } from "react"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { Ban, ChevronDown, GitMerge, RotateCcw, XCircle } from "lucide-react"
 import { scansApi } from "@/api/scans"
+import { useDemoScenarioActions, useScenarioArtifacts } from "@/demo/demoScenarioContext"
+import { ScenarioCoachMark } from "@/demo/ScenarioCoachMark"
 import type { DataSource, EventType, ScanConfig, ScanJob, ScanJobResultSummary } from "@/types"
 import { Button } from "@/components/ui/button"
 import { Card } from "@/components/ui/card"
@@ -185,6 +187,9 @@ export function ScanDetail({
   dataSource?: DataSource | null
 }) {
   const qc = useQueryClient()
+  const { notifyScanRunStarted } = useDemoScenarioActions()
+  // Null for every non-demo project — no row is ever the scenario's row.
+  const { scanJobId } = useScenarioArtifacts()
   const [expandedJobId, setExpandedJobId] = useState<string | null>(null)
   // Leading identical failed runs collapse behind one expander; the streak
   // banner already summarizes them (tripl-7l83.4).
@@ -228,7 +233,12 @@ export function ScanDetail({
 
   const retryMut = useMutation({
     mutationFn: () => scansApi.run(slug, scanConfig.id),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['scanJobs', slug, scanConfig.id] }),
+    onSuccess: (job) => {
+      // Bind the coached scenario to the job this retry created — the demo tick's
+      // own jobs prove nothing about what the user did (tripl-2su6.21.5).
+      notifyScanRunStarted(job)
+      qc.invalidateQueries({ queryKey: ['scanJobs', slug, scanConfig.id] })
+    },
   })
 
   const lastJob = jobs[0] ?? null
@@ -261,6 +271,7 @@ export function ScanDetail({
     <JobRow
       key={job.id}
       job={job}
+      watched={job.id === scanJobId}
       expanded={expandedJobId === job.id}
       onToggle={() => setExpandedJobId(expandedJobId === job.id ? null : job.id)}
       onCancel={() => cancelMut.mutate(job.id)}
@@ -473,6 +484,7 @@ export function ScanDetail({
 
 function JobRow({
   job,
+  watched,
   expanded,
   onToggle,
   onCancel,
@@ -481,6 +493,8 @@ function JobRow({
   retryPending,
 }: {
   job: ScanJob
+  /** This is the run the coached demo scenario is following — at most one row. */
+  watched: boolean
   expanded: boolean
   onToggle: () => void
   onCancel: () => void
@@ -501,61 +515,65 @@ function JobRow({
 
   return (
     <Fragment>
-      <tr className="border-t" style={{ borderColor: 'var(--border-subtle)' }}>
-        <td className="px-4 py-2.5 text-xs" style={{ color: 'var(--fg-muted)' }}>
-          {job.started_at ? formatRelativeTime(job.started_at) : '—'}
-        </td>
-        <td className="mono px-4 py-2.5 text-right text-[11.5px]" style={{ color: 'var(--fg-subtle)' }}>{duration}</td>
-        <td className="mono tnum px-4 py-2.5 text-right text-[11.5px]">{rows == null ? '—' : rows.toLocaleString()}</td>
-        <td className="mono tnum px-4 py-2.5 text-right text-[11.5px]" style={{ color: 'var(--fg-muted)' }}>
-          {events == null ? '—' : events.toLocaleString()}
-        </td>
-        <td className="px-4 py-2.5">
-          <RunStatusPill status={runPillStatus(job.status)} title={failedMessage ?? undefined} />
-        </td>
-        <td className="px-2">
-          <div className="flex items-center justify-end gap-1">
-            {isActive && (
-              <Button
-                variant="ghost"
-                size="icon"
-                className="size-6 text-muted-foreground hover:text-[var(--danger)]"
-                title="Stop job"
-                aria-label="Stop job"
-                disabled={cancelPending}
-                onClick={onCancel}
-              >
-                <Ban className="size-3" aria-hidden="true" />
-              </Button>
-            )}
-            {job.status === 'failed' && (
-              <Button
-                variant="ghost"
-                size="icon"
-                className="size-6 text-muted-foreground hover:text-[var(--accent)]"
-                title="Retry scan"
-                aria-label="Retry scan"
-                disabled={retryPending}
-                onClick={onRetry}
-              >
-                <RotateCcw className="size-3" aria-hidden="true" />
-              </Button>
-            )}
-            {(job.result_summary || job.error_message) && (
-              <Button
-                variant="ghost"
-                size="icon"
-                className="size-6"
-                aria-label={expanded ? 'Collapse job details' : 'Expand job details'}
-                aria-expanded={expanded}
-                onClick={onToggle}
-              >
-                <ChevronDown className={`size-3 transition-transform ${expanded ? 'rotate-180' : ''}`} aria-hidden="true" />
-              </Button>
-            )}
-          </div>
-        </td>
-      </tr>
+      {/* The mark anchors onto the <tr> itself: the Popover root renders no DOM
+          and the content is portalled, so nothing invalid lands in <tbody>. */}
+      <ScenarioCoachMark step="watch-scan" when={watched} side="top" align="start">
+        <tr className="border-t" style={{ borderColor: 'var(--border-subtle)' }}>
+          <td className="px-4 py-2.5 text-xs" style={{ color: 'var(--fg-muted)' }}>
+            {job.started_at ? formatRelativeTime(job.started_at) : '—'}
+          </td>
+          <td className="mono px-4 py-2.5 text-right text-[11.5px]" style={{ color: 'var(--fg-subtle)' }}>{duration}</td>
+          <td className="mono tnum px-4 py-2.5 text-right text-[11.5px]">{rows == null ? '—' : rows.toLocaleString()}</td>
+          <td className="mono tnum px-4 py-2.5 text-right text-[11.5px]" style={{ color: 'var(--fg-muted)' }}>
+            {events == null ? '—' : events.toLocaleString()}
+          </td>
+          <td className="px-4 py-2.5">
+            <RunStatusPill status={runPillStatus(job.status)} title={failedMessage ?? undefined} />
+          </td>
+          <td className="px-2">
+            <div className="flex items-center justify-end gap-1">
+              {isActive && (
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="size-6 text-muted-foreground hover:text-[var(--danger)]"
+                  title="Stop job"
+                  aria-label="Stop job"
+                  disabled={cancelPending}
+                  onClick={onCancel}
+                >
+                  <Ban className="size-3" aria-hidden="true" />
+                </Button>
+              )}
+              {job.status === 'failed' && (
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="size-6 text-muted-foreground hover:text-[var(--accent)]"
+                  title="Retry scan"
+                  aria-label="Retry scan"
+                  disabled={retryPending}
+                  onClick={onRetry}
+                >
+                  <RotateCcw className="size-3" aria-hidden="true" />
+                </Button>
+              )}
+              {(job.result_summary || job.error_message) && (
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="size-6"
+                  aria-label={expanded ? 'Collapse job details' : 'Expand job details'}
+                  aria-expanded={expanded}
+                  onClick={onToggle}
+                >
+                  <ChevronDown className={`size-3 transition-transform ${expanded ? 'rotate-180' : ''}`} aria-hidden="true" />
+                </Button>
+              )}
+            </div>
+          </td>
+        </tr>
+      </ScenarioCoachMark>
       {job.result_summary && (
         <tr>
           <td colSpan={6} className="p-0">
