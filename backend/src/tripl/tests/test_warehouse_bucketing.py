@@ -422,6 +422,7 @@ def _bigquery(time_type: str = "TIMESTAMP") -> BigQueryAdapter:
     adapter._allowed_columns = {_COL}
     adapter._column_types = {_COL: time_type}
     adapter._struct_paths = {}
+    adapter._repeated_columns = set()
     return adapter
 
 

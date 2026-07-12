@@ -160,6 +160,10 @@ def _bq(time_type: str = "TIMESTAMP") -> tuple[BigQueryAdapter, _BQClient]:
     # otherwise land at `client.sql[0]` ahead of the query under test.
     adapter._column_types = {"time": time_type, "event_name": "STRING", "amount": "FLOAT64"}
     adapter._struct_paths = {}
+    # BigQuery reports an ARRAY<STRING> column as field_type STRING + mode=REPEATED, so
+    # array-ness lives only in the mode and the adapter has to remember it: a repeated
+    # column can be neither GROUPed BY nor CAST to STRING. None here.
+    adapter._repeated_columns = set()
     return adapter, client
 
 

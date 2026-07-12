@@ -66,6 +66,7 @@ def _bq(time_type: str = "TIMESTAMP") -> tuple[BigQueryAdapter, _BQClient]:
     # its own `LIMIT 0` schema probe ahead of the query under test at `client.sql[0]`.
     adapter._column_types = {"time": time_type, "event_name": "STRING", "amount": "FLOAT64"}
     adapter._struct_paths = {}
+    adapter._repeated_columns = set()
     return adapter, client
 
 

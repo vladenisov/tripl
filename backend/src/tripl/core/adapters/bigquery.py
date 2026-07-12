@@ -82,6 +82,41 @@ _JSON_PATH_MAX_DEPTH = 20
 _REPEATED_MODE = "REPEATED"
 
 
+def _decode_grouped_array(value: object) -> object:
+    """Turn a ``TO_JSON_STRING(...)`` grouped value back into the list it stands for.
+
+    GoogleSQL flatly refuses to ``GROUP BY`` an ARRAY ("Grouping by expressions of type
+    ARRAY is not allowed"), and refuses a constant array just as hard ("Cannot GROUP BY
+    literal values"). Every array-valued grouped column — a JSON/STRUCT column's
+    leaf-path array, and a REPEATED scalar column — is therefore grouped by its JSON
+    *string* rendering, which is a scalar STRING and groups fine.
+
+    That is a SQL-level trick, and it must not leak into the row contract. ``BaseAdapter``
+    documents the json-paths column as an ARRAY of paths, and
+    ``core.analyzers.cardinality._process_breakdown`` branches on
+    ``isinstance(paths, (list, tuple))``: handed the raw ``'["a","b"]'`` string it would
+    read the whole blob as ONE path and silently corrupt every cardinality count. So the
+    string is decoded back to a list here, on the way out, before any caller sees it.
+    """
+    if value is None:
+        return None
+    if isinstance(value, (list, tuple)):
+        # Already an array — a fake/mock client, or a column the warehouse handed back
+        # natively. Normalize to a list and leave it alone.
+        return list(value)
+    if not isinstance(value, str):
+        msg = (
+            "BigQuery: expected a JSON string for an array-valued grouped column, "
+            f"got {type(value).__name__}"
+        )
+        raise ValueError(msg)
+    try:
+        return json.loads(value)
+    except json.JSONDecodeError as exc:
+        msg = f"BigQuery: could not decode array-valued grouped column {value!r}: {exc}"
+        raise ValueError(msg) from exc
+
+
 def _walk_struct_fields(
     fields: object,
     prefix: str,
@@ -186,6 +221,11 @@ class BigQueryAdapter(BaseAdapter):
         # STRUCT's paths come from the schema, not the data, so they are captured
         # alongside the types instead of being enumerated by a query.
         self._struct_paths: dict[str, dict[str, bool]] = {}
+        # Columns declared mode=REPEATED. BigQuery does not give an array its own
+        # *type* — an ARRAY<STRING> column reports field_type STRING — so array-ness
+        # is only visible in the mode, and it has to be remembered: a repeated column
+        # is an ARRAY value, which GoogleSQL can neither GROUP BY nor CAST to STRING.
+        self._repeated_columns: set[str] = set()
 
     def close(self) -> None:
         self._client.close()  # type: ignore[no-untyped-call]
@@ -338,7 +378,138 @@ class BigQueryAdapter(BaseAdapter):
         return f"JSON_QUERY(`{col}`, '{json_path}')"
 
     def _string_value_expression(self, column: str) -> str:
-        return f"IFNULL(CAST(`{self._validate_column(column)}` AS STRING), '')"
+        """The scalar STRING rendering of a column, used for breakdown values.
+
+        A REPEATED column is rejected outright. ``CAST(<array> AS STRING)`` is not a
+        legal GoogleSQL cast, so a breakdown on an array column would compile to SQL
+        that only fails once a worker runs it. Fail loudly here instead, while the
+        caller is still choosing the breakdown column.
+        """
+        col = self._validate_column(column)
+        if col in self._repeated_columns:
+            msg = (
+                f"BigQuery: column {col!r} is REPEATED (an ARRAY) and cannot be a "
+                "breakdown column — GoogleSQL cannot cast an ARRAY to a single STRING "
+                "value, nor group by one. Choose a scalar column."
+            )
+            raise ValueError(msg)
+        return f"IFNULL(CAST(`{col}` AS STRING), '')"
+
+    def _regular_column_sql(self, column: str) -> tuple[str, str]:
+        """``(select_sql, group_sql)`` for a plain (non-nested) column.
+
+        A REPEATED scalar column (``ARRAY<STRING> tags``) carries no distinct *type* —
+        it reports field_type STRING — so it is classified as a plain scalar and used to
+        be selected and grouped by directly. That is ``GROUP BY <array>``, which
+        GoogleSQL rejects, so such a column is grouped by its ``TO_JSON_STRING``
+        rendering and decoded back to a list on the way out.
+
+        This is a real dialect divergence, not a workaround: ClickHouse *can* group by
+        an ``Array(String)`` and returns the group key as a list. BigQuery cannot, so the
+        array is round-tripped through its JSON text to get a groupable scalar. The
+        observable result is deliberately the same on both warehouses — one group per
+        distinct array value (order-sensitive on both), surfaced to callers as a
+        ``list``.
+        """
+        col = self._validate_column(column)
+        if col not in self._repeated_columns:
+            return f"`{col}`", f"`{col}`"
+        group_sql = f"TO_JSON_STRING(`{col}`)"
+        return f"{group_sql} AS `{col}`", group_sql
+
+    def _nested_source(
+        self,
+        base_query: str,
+        where_clause: str,
+        json_cols: list[str],
+        json_value_paths: dict[str, list[str]],
+    ) -> tuple[str, dict[str, str], list[str]]:
+        """The FROM source, with every nested column pre-materialized under an alias.
+
+        A JSON column's leaf-path expression is a *correlated subquery* over the column
+        (``(SELECT ARRAY_AGG(...) FROM UNNEST(JSON_KEYS(col, ...)) ...)``). GoogleSQL will
+        not accept that in a GROUP BY as covering the column it reads: ZetaSQL rejects the
+        SELECT-list copy with "UNNEST expression references column <col> which is neither
+        grouped nor aggregated" *even when the identical expression is spelled out in the
+        GROUP BY*. Grouping by the expression is simply not the same as grouping by the
+        column it correlates on.
+
+        So the nested columns are computed ONCE in a prepared subquery and the outer query
+        groups by the resulting alias, which is a plain scalar STRING and groups fine. This
+        is the same shape ``get_time_bucketed_breakdown_counts_multi`` already uses for its
+        GROUPING SETS, and it is why that path was the only nested one that survived.
+
+        With no nested columns there is nothing to materialize and the source stays the
+        bare ``(base_query) AS _src`` it has always been.
+
+        Returns ``(from_sql, alias_by_output_name, json_value_names)``. The WHERE clause is
+        placed by this method — callers must not re-append it.
+        """
+        prepared: list[str] = []
+        alias_by_name: dict[str, str] = {}
+        json_value_names: list[str] = []
+        for index, c in enumerate(json_cols):
+            alias = f"__np_{index}"
+            prepared.append(f"{self._json_paths_expression(c)} AS `{alias}`")
+            alias_by_name[c] = alias
+        for c in json_cols:
+            for path in json_value_paths.get(c, []):
+                full_path = f"{c}.{path}"
+                alias = f"__nv_{len(json_value_names)}"
+                prepared.append(
+                    f"TO_JSON_STRING({self._json_path_expression(c, path)}) AS `{alias}`"
+                )
+                alias_by_name[full_path] = alias
+                json_value_names.append(full_path)
+
+        if not prepared:
+            return f"({base_query}) AS _src{where_clause}", alias_by_name, json_value_names
+
+        # `SELECT *` keeps every original column visible to the outer query — the time
+        # column it buckets, the measure it aggregates, the breakdown column it folds.
+        inner = f"SELECT *, {', '.join(prepared)} FROM ({base_query}) AS _src{where_clause}"
+        return f"({inner}) AS _prepared", alias_by_name, json_value_names
+
+    def _nested_select_group(
+        self,
+        names: list[str],
+        alias_by_name: dict[str, str],
+    ) -> tuple[list[str], list[str]]:
+        """(select_parts, group_parts) reading pre-materialized nested columns by alias."""
+        select_parts = [f"`{alias_by_name[name]}` AS `{name}`" for name in names]
+        group_parts = [f"`{alias_by_name[name]}`" for name in names]
+        return select_parts, group_parts
+
+    def _decode_rows(
+        self,
+        rows: list[tuple[object, ...]],
+        *,
+        offset: int,
+        reg_cols: list[str],
+        json_cols: list[str],
+    ) -> list[tuple[object, ...]]:
+        """Decode every array-valued grouped column in ``rows`` back into a list.
+
+        ``offset`` is how many leading positional columns (``_bucket``,
+        ``_breakdown_value`` …) precede the regular columns in the row layout; the
+        regular columns then run for ``len(reg_cols)``, and the json/struct path columns
+        immediately after them. Both groups were grouped as JSON strings (see
+        ``_regular_column_sql`` / ``_json_paths_expression``) and must be handed back as
+        lists so the documented row contract holds.
+        """
+        array_indexes = {
+            offset + index for index, c in enumerate(reg_cols) if c in self._repeated_columns
+        }
+        array_indexes |= {offset + len(reg_cols) + index for index in range(len(json_cols))}
+        if not array_indexes:
+            return rows
+        return [
+            tuple(
+                _decode_grouped_array(value) if index in array_indexes else value
+                for index, value in enumerate(row)
+            )
+            for row in rows
+        ]
 
     def _quote_string(self, value: str) -> str:
         return "'" + value.replace("\\", "\\\\").replace("'", "\\'") + "'"
@@ -364,7 +535,7 @@ class BigQueryAdapter(BaseAdapter):
         upper = self._time_literal(kind, time_to)
         return f" WHERE `{tc}` >= {lower} AND `{tc}` < {upper}"
 
-    def _json_paths_expression(self, column: str) -> str:
+    def _json_paths_array_expression(self, column: str) -> str:
         """The sorted ARRAY<STRING> of nested leaf paths held by a nested column.
 
         Mirrors ClickHouse's ``arraySort(JSONAllPaths(col))``, whose elements are the
@@ -376,6 +547,9 @@ class BigQueryAdapter(BaseAdapter):
         A STRUCT column has no data-dependent shape: its paths are declared by the
         schema and identical for every row, so they are emitted as an array literal
         rather than computed per row.
+
+        This is the ARRAY form. It is NOT groupable — see ``_json_paths_expression``,
+        which is what every caller actually selects and groups by.
         """
         col = self._validate_column(column)
         if self._complex_kind(col) is ComplexKind.struct:
@@ -391,25 +565,47 @@ class BigQueryAdapter(BaseAdapter):
             f"WHERE STARTS_WITH(_child, CONCAT(_path, '.'))))"
         )
 
+    def _json_paths_expression(self, column: str) -> str:
+        """The leaf-path set of a nested column, as a GROUP-BY-able scalar STRING.
+
+        Every caller puts this in both the SELECT list and the GROUP BY, and GoogleSQL
+        rejects an ARRAY in a GROUP BY outright — the computed JSON form with
+        ("Grouping by expressions of type ARRAY is not allowed") and the constant STRUCT
+        form just as hard ("Cannot GROUP BY literal values"). Both were verified against
+        ZetaSQL. So the array is rendered to its JSON text, which is a scalar and groups
+        fine, and the *paths semantics are unchanged*: still the sorted set of dotted
+        nested leaf paths, one group per distinct path-set.
+
+        The JSON string is an implementation detail of the SQL, not of the row contract:
+        ``_decode_rows`` turns it back into the ``list[str]`` that ``BaseAdapter``
+        documents and that the cardinality analyzer requires.
+        """
+        return f"TO_JSON_STRING({self._json_paths_array_expression(column)})"
+
     def get_columns(self, base_query: str) -> list[ColumnInfo]:
         job = self._client.query(f"SELECT * FROM ({base_query}) AS _src LIMIT 0")
         schema = job.result().schema
         columns: list[ColumnInfo] = []
         struct_paths: dict[str, dict[str, bool]] = {}
+        repeated: set[str] = set()
         for field in schema:
             type_name = str(field.field_type)
+            mode = str(field.mode).upper()
             columns.append(
                 ColumnInfo(
                     name=field.name,
                     type_name=type_name,
-                    is_nullable=str(field.mode).upper() != "REQUIRED",
+                    is_nullable=mode != "REQUIRED",
                 )
             )
+            if mode == _REPEATED_MODE:
+                repeated.add(str(field.name))
             if classify_complex(type_name) is ComplexKind.struct:
                 struct_paths[str(field.name)] = _declared_struct_paths(field)
         self._allowed_columns = {c.name for c in columns}
         self._column_types = {c.name: c.type_name for c in columns}
         self._struct_paths = struct_paths
+        self._repeated_columns = repeated
         return columns
 
     def _ensure_column_types(self, base_query: str) -> None:
@@ -524,31 +720,28 @@ class BigQueryAdapter(BaseAdapter):
         reg_cols = [self._validate_column(c) for c in regular_columns]
         json_cols = [self._validate_column(c) for c in json_columns]
         json_value_paths = json_value_paths or {}
-        json_value_names: list[str] = []
+
+        where_clause = self._time_window_where_clause(time_column, time_from, time_to)
+        from_sql, alias_by_name, json_value_names = self._nested_source(
+            base_query, where_clause, json_cols, json_value_paths
+        )
 
         select_parts: list[str] = []
         group_parts: list[str] = []
         for c in reg_cols:
-            select_parts.append(f"`{c}`")
-            group_parts.append(f"`{c}`")
-        for c in json_cols:
-            expr = self._json_paths_expression(c)
-            select_parts.append(f"{expr} AS `{c}`")
-            group_parts.append(expr)
-        for c in json_cols:
-            for path in json_value_paths.get(c, []):
-                full_path = f"{c}.{path}"
-                value_expr = f"TO_JSON_STRING({self._json_path_expression(c, path)})"
-                select_parts.append(f"{value_expr} AS `{full_path}`")
-                group_parts.append(value_expr)
-                json_value_names.append(full_path)
+            select_sql, group_sql = self._regular_column_sql(c)
+            select_parts.append(select_sql)
+            group_parts.append(group_sql)
+        for names in (json_cols, json_value_names):
+            nested_select, nested_group = self._nested_select_group(names, alias_by_name)
+            select_parts.extend(nested_select)
+            group_parts.extend(nested_group)
         select_parts.append("COUNT(*) AS _cnt")
 
         group_by = ", ".join(group_parts) if group_parts else "()"
-        where_clause = self._time_window_where_clause(time_column, time_from, time_to)
         sql = (
             f"SELECT {', '.join(select_parts)} "
-            f"FROM ({base_query}) AS _src{where_clause} "
+            f"FROM {from_sql} "
             f"GROUP BY {group_by} "
             f"ORDER BY _cnt DESC "
             f"LIMIT {int(limit)}"
@@ -561,7 +754,8 @@ class BigQueryAdapter(BaseAdapter):
         elapsed = time.monotonic() - t0
         logger.info("BQ breakdown done in %.2fs, %s rows", elapsed, len(rows))
 
-        return reg_cols, json_cols, json_value_names, rows
+        decoded = self._decode_rows(rows, offset=0, reg_cols=reg_cols, json_cols=json_cols)
+        return reg_cols, json_cols, json_value_names, decoded
 
     def get_time_bucketed_counts(
         self,
@@ -582,31 +776,30 @@ class BigQueryAdapter(BaseAdapter):
         json_cols = [self._validate_column(c) for c in json_columns]
         json_value_paths = json_value_paths or {}
 
+        from_sql, alias_by_name, json_value_names = self._nested_source(
+            base_query, where_clause, json_cols, json_value_paths
+        )
+
         select_parts: list[str] = [f"{bucket_expr} AS _bucket"]
         group_parts: list[str] = ["_bucket"]
         col_names: list[str] = []
-        json_value_names: list[str] = []
         for c in reg_cols:
-            select_parts.append(f"`{c}`")
-            group_parts.append(f"`{c}`")
+            select_sql, group_sql = self._regular_column_sql(c)
+            select_parts.append(select_sql)
+            group_parts.append(group_sql)
             col_names.append(c)
-        for c in json_cols:
-            expr = self._json_paths_expression(c)
-            select_parts.append(f"{expr} AS `{c}`")
-            group_parts.append(expr)
-            col_names.append(c)
-        for c in json_cols:
-            for path in json_value_paths.get(c, []):
-                full_path = f"{c}.{path}"
-                value_expr = f"TO_JSON_STRING({self._json_path_expression(c, path)})"
-                select_parts.append(f"{value_expr} AS `{full_path}`")
-                group_parts.append(value_expr)
-                json_value_names.append(full_path)
+        nested_select, nested_group = self._nested_select_group(json_cols, alias_by_name)
+        select_parts.extend(nested_select)
+        group_parts.extend(nested_group)
+        col_names.extend(json_cols)
+        value_select, value_group = self._nested_select_group(json_value_names, alias_by_name)
+        select_parts.extend(value_select)
+        group_parts.extend(value_group)
         select_parts.append("COUNT(*) AS _cnt")
 
         sql = (
             f"SELECT {', '.join(select_parts)} "
-            f"FROM ({base_query}) AS _src{where_clause} "
+            f"FROM {from_sql} "
             f"GROUP BY {', '.join(group_parts)} "
             f"ORDER BY _bucket "
             f"LIMIT {int(limit)}"
@@ -618,7 +811,8 @@ class BigQueryAdapter(BaseAdapter):
         elapsed = time.monotonic() - t0
         logger.info("BQ bucketed done in %.2fs, %s rows", elapsed, len(rows))
 
-        return col_names, json_value_names, rows
+        decoded = self._decode_rows(rows, offset=1, reg_cols=reg_cols, json_cols=json_cols)
+        return col_names, json_value_names, decoded
 
     def _aggregate_value_sql(self, agg_fn: MetricAggregation, measure_column: str | None) -> str:
         """Validate + escape the measure and build the safe aggregate fragment."""
@@ -691,31 +885,30 @@ class BigQueryAdapter(BaseAdapter):
         json_value_paths = json_value_paths or {}
         value_sql = self._aggregate_value_sql(agg_fn, measure_column)
 
+        from_sql, alias_by_name, json_value_names = self._nested_source(
+            base_query, where_clause, json_cols, json_value_paths
+        )
+
         select_parts: list[str] = [f"{bucket_expr} AS _bucket"]
         group_parts: list[str] = ["_bucket"]
         col_names: list[str] = []
-        json_value_names: list[str] = []
         for c in reg_cols:
-            select_parts.append(f"`{c}`")
-            group_parts.append(f"`{c}`")
+            select_sql, group_sql = self._regular_column_sql(c)
+            select_parts.append(select_sql)
+            group_parts.append(group_sql)
             col_names.append(c)
-        for c in json_cols:
-            expr = self._json_paths_expression(c)
-            select_parts.append(f"{expr} AS `{c}`")
-            group_parts.append(expr)
-            col_names.append(c)
-        for c in json_cols:
-            for path in json_value_paths.get(c, []):
-                full_path = f"{c}.{path}"
-                value_expr = f"TO_JSON_STRING({self._json_path_expression(c, path)})"
-                select_parts.append(f"{value_expr} AS `{full_path}`")
-                group_parts.append(value_expr)
-                json_value_names.append(full_path)
+        nested_select, nested_group = self._nested_select_group(json_cols, alias_by_name)
+        select_parts.extend(nested_select)
+        group_parts.extend(nested_group)
+        col_names.extend(json_cols)
+        value_select, value_group = self._nested_select_group(json_value_names, alias_by_name)
+        select_parts.extend(value_select)
+        group_parts.extend(value_group)
         select_parts.append(f"{value_sql} AS _value")
 
         sql = (
             f"SELECT {', '.join(select_parts)} "
-            f"FROM ({base_query}) AS _src{where_clause} "
+            f"FROM {from_sql} "
             f"GROUP BY {', '.join(group_parts)} "
             f"ORDER BY _bucket "
             f"LIMIT {int(limit)}"
@@ -727,7 +920,8 @@ class BigQueryAdapter(BaseAdapter):
         elapsed = time.monotonic() - t0
         logger.info("BQ bucketed aggregate done in %.2fs, %s rows", elapsed, len(rows))
 
-        return col_names, json_value_names, rows
+        decoded = self._decode_rows(rows, offset=1, reg_cols=reg_cols, json_cols=json_cols)
+        return col_names, json_value_names, decoded
 
     def _breakdown_value_exprs(
         self,
@@ -797,6 +991,9 @@ class BigQueryAdapter(BaseAdapter):
             time_to,
             values_limit,
         )
+        from_sql, alias_by_name, json_value_names = self._nested_source(
+            base_query, where_clause, json_cols, json_value_paths
+        )
 
         select_parts: list[str] = [
             f"{bucket_expr} AS _bucket",
@@ -805,28 +1002,23 @@ class BigQueryAdapter(BaseAdapter):
         ]
         group_parts: list[str] = ["_bucket", "_breakdown_value", "_is_other"]
         col_names: list[str] = []
-        json_value_names: list[str] = []
         for c in reg_cols:
-            select_parts.append(f"`{c}`")
-            group_parts.append(f"`{c}`")
+            select_sql, group_sql = self._regular_column_sql(c)
+            select_parts.append(select_sql)
+            group_parts.append(group_sql)
             col_names.append(c)
-        for c in json_cols:
-            expr = self._json_paths_expression(c)
-            select_parts.append(f"{expr} AS `{c}`")
-            group_parts.append(expr)
-            col_names.append(c)
-        for c in json_cols:
-            for path in json_value_paths.get(c, []):
-                full_path = f"{c}.{path}"
-                value_expr = f"TO_JSON_STRING({self._json_path_expression(c, path)})"
-                select_parts.append(f"{value_expr} AS `{full_path}`")
-                group_parts.append(value_expr)
-                json_value_names.append(full_path)
+        nested_select, nested_group = self._nested_select_group(json_cols, alias_by_name)
+        select_parts.extend(nested_select)
+        group_parts.extend(nested_group)
+        col_names.extend(json_cols)
+        value_select, value_group = self._nested_select_group(json_value_names, alias_by_name)
+        select_parts.extend(value_select)
+        group_parts.extend(value_group)
         select_parts.append(f"{value_sql} AS _value")
 
         sql = (
             f"SELECT {', '.join(select_parts)} "
-            f"FROM ({base_query}) AS _src{where_clause} "
+            f"FROM {from_sql} "
             f"GROUP BY {', '.join(group_parts)} "
             f"ORDER BY _bucket, _breakdown_value "
             f"LIMIT {int(limit)}"
@@ -838,7 +1030,8 @@ class BigQueryAdapter(BaseAdapter):
         elapsed = time.monotonic() - t0
         logger.info("BQ bucketed aggregate breakdown done in %.2fs, %s rows", elapsed, len(rows))
 
-        return col_names, json_value_names, rows
+        decoded = self._decode_rows(rows, offset=3, reg_cols=reg_cols, json_cols=json_cols)
+        return col_names, json_value_names, decoded
 
     def get_time_bucketed_multi_aggregate(
         self,
@@ -1067,7 +1260,11 @@ class BigQueryAdapter(BaseAdapter):
         col_names: list[str] = []
         json_value_names: list[str] = []
         for c in reg_cols:
-            prepared_parts.append(f"`{c}` AS `{c}`")
+            # The outer GROUPING SETS groups by the prepared *alias*, so the alias must
+            # already carry a groupable scalar — a REPEATED column is rendered to its
+            # JSON text here, exactly as in the flat paths.
+            _, group_sql = self._regular_column_sql(c)
+            prepared_parts.append(f"{group_sql} AS `{c}`")
             col_names.append(c)
         for c in json_cols:
             prepared_parts.append(f"{self._json_paths_expression(c)} AS `{c}`")
@@ -1154,4 +1351,6 @@ class BigQueryAdapter(BaseAdapter):
         elapsed = time.monotonic() - t0
         logger.info("BQ bucketed breakdown done in %.2fs, %s rows", elapsed, len(rows))
 
-        return col_names, json_value_names, rows
+        # Row layout leads with _bucket, _breakdown_column, _breakdown_value, _is_other.
+        decoded = self._decode_rows(rows, offset=4, reg_cols=reg_cols, json_cols=json_cols)
+        return col_names, json_value_names, decoded
