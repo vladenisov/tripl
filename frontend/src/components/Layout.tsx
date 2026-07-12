@@ -11,6 +11,7 @@ import { TopBar } from '@/components/top-bar'
 import { TweaksPanelProvider } from '@/components/tweaks-panel'
 import { DemoBanner } from '@/demo/DemoBanner'
 import { DemoScenarioProvider } from '@/demo/DemoScenarioProvider'
+import { DemoScenarioStrip } from '@/demo/DemoScenarioStrip'
 import { ProjectEventStreamProvider } from '@/realtime/ProjectEventStreamProvider'
 import { resolveNavLocation } from '@/lib/navigation'
 
@@ -222,6 +223,9 @@ export default function Layout() {
                       project — synthetic/local data, recipe version, freshness,
                       and creator/owner reset + delete controls. */}
                   {activeProject?.is_demo && <DemoBanner project={activeProject} />}
+                  {/* The coached scenario. Gated with the banner, but it decides
+                      for itself whether there is anything left to coach. */}
+                  {activeProject?.is_demo && <DemoScenarioStrip />}
                   {projectsQuery.isError && (
                     <div className="mb-6">
                       <ErrorState
