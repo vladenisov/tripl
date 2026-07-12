@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import uuid
 from collections import defaultdict
+from collections.abc import Iterable
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, Protocol
 
 from fastapi import HTTPException
 from sqlalchemy import func, literal, select, union_all
@@ -323,33 +324,69 @@ async def _count_active_metric_signals_by_project(
     return dict(counts)
 
 
+IncidentKey = tuple[uuid.UUID | None, datetime, str]
+
+
+class _IncidentSignal(Protocol):
+    """The signal shape the incident-dedup rule reads (duck-typed).
+
+    Satisfied by both ``MetricSignalResponse`` (the AnomaliesPage list) and
+    ``MetricAnomaly``/``ProjectLatestSignal`` (the sidebar count), so one rule
+    can serve both call sites.
+    """
+
+    scope_type: str
+    scan_config_id: uuid.UUID | None
+    bucket: datetime
+    direction: str
+
+
+def incident_parent_keys(signals: Iterable[_IncidentSignal]) -> set[IncidentKey]:
+    """The ``(scan_config_id, bucket, direction)`` keys a project_total scope owns.
+
+    A real spike/drop on the project total trips its child ``event_type``/``event``
+    scopes on the SAME scan, bucket and direction — one incident, many rows. These
+    keys mark that incident so the child rows can be folded into the single
+    project_total signal. Shared by the AnomaliesPage list
+    (``_deduplicate_into_incidents``) and the sidebar badge count
+    (``project_service._populate_monitoring_signals``) so they cannot drift.
+    """
+    return {
+        (signal.scan_config_id, signal.bucket, signal.direction)
+        for signal in signals
+        if signal.scope_type == SCOPE_PROJECT_TOTAL
+    }
+
+
+def is_incident_child(signal: _IncidentSignal, parent_keys: set[IncidentKey]) -> bool:
+    """True when ``signal`` is a child scope collapsed under a project_total parent.
+
+    A ``project_total`` row is never its own child. A non-project_total row is a
+    child only when a project_total signal shares its
+    ``(scan_config_id, bucket, direction)``. ``metric``-scope signals carry a NULL
+    ``scan_config_id`` and never match a parent, so they always pass through.
+    """
+    if signal.scope_type == SCOPE_PROJECT_TOTAL:
+        return False
+    return (signal.scan_config_id, signal.bucket, signal.direction) in parent_keys
+
+
 def _deduplicate_into_incidents(
     signals: list[MetricSignalResponse],
 ) -> list[MetricSignalResponse]:
     """Collapse one incident's cross-scope fan-out into a single active signal.
 
-    A real spike/drop on the project total trips the child ``event_type`` and
-    ``event`` scopes on the SAME scan, bucket and direction — one incident, but
-    3+ stacked signals. Keep the parent ``project_total`` row and suppress the
-    child rows that share its ``(scan_config_id, bucket, direction)``. The
+    Keep the parent ``project_total`` row and suppress the child ``event_type``/
+    ``event`` rows that share its ``(scan_config_id, bucket, direction)``. The
     per-scope anomaly rows stay in the DB for drill-down; they are just not
-    surfaced here as separate active signals. ``metric``-scope signals carry a
-    NULL ``scan_config_id`` and are never children of a project total, so they
-    always pass through.
+    surfaced here as separate active signals. The dedup rule lives in
+    ``incident_parent_keys``/``is_incident_child`` so the sidebar badge count
+    (``project_service._populate_monitoring_signals``) applies exactly the same rule.
     """
-    parent_incidents = {
-        (signal.scan_config_id, signal.bucket, signal.direction)
-        for signal in signals
-        if signal.scope_type == SCOPE_PROJECT_TOTAL
-    }
-    if not parent_incidents:
+    parent_keys = incident_parent_keys(signals)
+    if not parent_keys:
         return signals
-    return [
-        signal
-        for signal in signals
-        if signal.scope_type == SCOPE_PROJECT_TOTAL
-        or (signal.scan_config_id, signal.bucket, signal.direction) not in parent_incidents
-    ]
+    return [signal for signal in signals if not is_incident_child(signal, parent_keys)]
 
 
 async def get_active_signals(

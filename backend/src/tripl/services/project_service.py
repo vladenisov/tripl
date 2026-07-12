@@ -34,7 +34,11 @@ from tripl.schemas.project import (
     ProjectUpdate,
 )
 from tripl.services import demo_legacy_service, plan_branch_service
-from tripl.services.metrics_insights_service import _count_active_metric_signals_by_project
+from tripl.services.metrics_insights_service import (
+    _count_active_metric_signals_by_project,
+    incident_parent_keys,
+    is_incident_child,
+)
 from tripl.services.monitoring_utils import (
     classify_signal_state,
     scan_interval_to_timedelta,
@@ -478,6 +482,7 @@ async def _populate_monitoring_signals(
     }
 
     now = datetime.now(UTC)
+    active_signals: list[tuple[uuid.UUID, ProjectLatestSignal]] = []
     for project_id, scan_name, scan_interval, anomaly in anomaly_rows:
         latest_metric_bucket = latest_metric_buckets.get(
             (project_id, anomaly.scan_config_id, anomaly.scope_type, anomaly.scope_ref)
@@ -508,6 +513,17 @@ async def _populate_monitoring_signals(
             z_score=anomaly.z_score,
             direction=anomaly.direction,
         )
+        active_signals.append((project_id, signal))
+
+    # Collapse each incident's project_total + event_type fan-out into one signal,
+    # applying the exact rule the AnomaliesPage uses
+    # (metrics_insights_service._deduplicate_into_incidents) so the badge count and
+    # ``latest_signal`` match the page list. scan_config_id is project-unique, so
+    # a single batch-wide parent-key set never collapses across projects.
+    parent_keys = incident_parent_keys(signal for _project_id, signal in active_signals)
+    for project_id, signal in active_signals:
+        if is_incident_child(signal, parent_keys):
+            continue
         summary = summaries[project_id]
         summary.monitoring_signal_count += 1
         if summary.latest_signal is None or signal.bucket > summary.latest_signal.bucket:
