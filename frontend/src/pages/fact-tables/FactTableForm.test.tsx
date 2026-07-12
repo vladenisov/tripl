@@ -185,18 +185,19 @@ describe('FactTableForm', () => {
     )
   })
 
-  it('re-detect replaces a stale identifier selection but preserves manual overrides', async () => {
+  it('preview keeps saved identifier picks and only adds new suggestions (tripl-4qfr)', async () => {
     const columns = [
       { name: 'paid', type: 'string' },
-      { name: 'valid', type: 'string' },
       { name: 'android', type: 'string' },
       { name: 'country', type: 'string' },
       { name: 'user_id', type: 'string' },
       { name: 'created_at', type: 'timestamp' },
     ]
+    // The tightened count_distinct heuristic now suggests only user_id + country
+    // and no longer suggests the previously-saved picks paid / android.
     vi.mocked(factTablesApi.preview).mockResolvedValue({
       columns,
-      identifier_candidates: ['user_id'],
+      identifier_candidates: ['user_id', 'country'],
       sample_rows: [],
     })
 
@@ -211,47 +212,53 @@ describe('FactTableForm', () => {
       data_source_id: 'ds-1',
       timestamp_column: 'created_at',
       columns,
-      // Saved under the old "every string column is an identifier" suggestion
-      // rule (tripl-8pc0): ordinary columns are checked as identifiers.
-      identifier_columns: ['paid', 'valid', 'android', 'country', 'user_id'],
+      // Manual picks saved in an earlier session, including paid / android which
+      // the current (stricter) heuristic no longer suggests.
+      identifier_columns: ['paid', 'android', 'user_id'],
       row_filters: [],
-      sql: 'SELECT paid, valid, android, country, user_id, created_at FROM events',
+      sql: 'SELECT paid, android, country, user_id, created_at FROM events',
       created_at: '2026-06-01T00:00:00Z',
       updated_at: '2026-06-20T00:00:00Z',
     } as unknown as FactTable
 
     renderForm(existing)
 
-    // The stale saved selection renders checked.
+    // Saved picks render checked.
     expect(screen.getByLabelText('Use paid as an identifier column')).toBeChecked()
+    expect(screen.getByLabelText('Use android as an identifier column')).toBeChecked()
 
-    // Explicit re-detect: the backend's tightened candidates replace the stale
-    // untouched selection.
+    // First preview of the edit session: it must NOT silently uncheck saved picks
+    // the heuristic dropped, but it DOES surface the newly-suggested column.
     fireEvent.click(screen.getByRole('button', { name: /Preview columns/ }))
     await waitFor(() =>
-      expect(screen.getByLabelText('Use paid as an identifier column')).not.toBeChecked(),
+      expect(screen.getByLabelText('Use country as an identifier column')).toBeChecked(),
     )
-    expect(screen.getByLabelText('Use android as an identifier column')).not.toBeChecked()
+    expect(screen.getByLabelText('Use paid as an identifier column')).toBeChecked()
+    expect(screen.getByLabelText('Use android as an identifier column')).toBeChecked()
     expect(screen.getByLabelText('Use user_id as an identifier column')).toBeChecked()
 
-    // Manual overrides: add country, remove the suggested user_id...
-    fireEvent.click(screen.getByLabelText('Use country as an identifier column'))
+    // In-session manual removal still persists across a re-preview: uncheck
+    // user_id, then re-preview and confirm it stays unchecked while the saved
+    // picks remain.
     fireEvent.click(screen.getByLabelText('Use user_id as an identifier column'))
 
-    // ...then re-preview: both overrides survive the refresh.
     fireEvent.click(screen.getByRole('button', { name: /Preview columns/ }))
     await waitFor(() => expect(factTablesApi.preview).toHaveBeenCalledTimes(2))
     await waitFor(() =>
       expect(screen.getByRole('button', { name: /Preview columns/ })).toBeEnabled(),
     )
-    expect(screen.getByLabelText('Use country as an identifier column')).toBeChecked()
     expect(screen.getByLabelText('Use user_id as an identifier column')).not.toBeChecked()
+    expect(screen.getByLabelText('Use paid as an identifier column')).toBeChecked()
+    expect(screen.getByLabelText('Use country as an identifier column')).toBeChecked()
 
     submit()
 
     await waitFor(() => expect(factTablesApi.update).toHaveBeenCalledTimes(1))
     const [, , payload] = vi.mocked(factTablesApi.update).mock.calls[0]
-    expect(payload).toMatchObject({ identifier_columns: ['country'] })
+    const identifiers = (payload as { identifier_columns: string[] }).identifier_columns
+    expect(identifiers).toEqual(expect.arrayContaining(['paid', 'android', 'country']))
+    expect(identifiers).not.toContain('user_id')
+    expect(identifiers).toHaveLength(3)
   })
 
   it('renders the internal name read-only when editing and omits it from the update', async () => {
