@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 
 from tripl.core.adapters.base import BaseAdapter, ColumnInfo
+from tripl.core.warehouse_types import is_complex_type
 
 logger = logging.getLogger(__name__)
 
@@ -32,11 +33,10 @@ class BreakdownAnalysis:
     row_limit_reached: bool = False
 
 
-_JSON_TYPE_MARKERS = ("JSON", "Object(", "Tuple(", "Map(")
-
-
 def _is_json_type(type_name: str) -> bool:
-    return any(marker in type_name for marker in _JSON_TYPE_MARKERS)
+    # Delegates to the shared classifier: the old case-sensitive "JSON" substring
+    # match silently missed PostgreSQL's lowercase json/jsonb and BigQuery RECORD.
+    return is_complex_type(type_name)
 
 
 def _process_breakdown(

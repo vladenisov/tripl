@@ -19,6 +19,8 @@ from tripl.core.adapters.measure_validator import (
     coerce_aggregation,
     validate_measure_column,
 )
+from tripl.core.bucketing import EPOCH, WEEK_ORIGIN, format_utc_literal
+from tripl.core.intervals import IntervalUnit, get_interval
 from tripl.models.domain_enums import MetricAggregation
 
 logger = logging.getLogger(__name__)
@@ -46,7 +48,6 @@ def _truncate_sql(sql: str) -> str:
 
 _IDENTIFIER_RE = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_.]*$")
 _IDENTIFIER_PART_RE = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*$")
-_INTERVAL_RE = re.compile(r"^\d+\s+(second|minute|hour|day|week|month)s?$", re.IGNORECASE)
 
 
 def _quote_ident(name: str) -> str:
@@ -200,11 +201,25 @@ class PostgresAdapter(BaseAdapter):
             raise ValueError(msg)
         return column
 
-    def _validate_interval(self, ch_interval: str) -> str:
-        if not _INTERVAL_RE.match(ch_interval.strip()):
-            msg = f"Unsupported interval: {ch_interval!r}"
-            raise ValueError(msg)
-        return ch_interval.strip()
+    def _bucket_expression(self, time_column: str, interval_code: str) -> str:
+        """Translate an interval code into PostgreSQL bucket SQL.
+
+        Must agree with ``tripl.core.bucketing.floor_to_bucket``. ``date_bin``
+        measures from whatever origin it is handed, so the origin is what encodes
+        the contract: sub-week intervals bin from the epoch, and a week bins from
+        ``WEEK_ORIGIN`` (the first Monday) rather than from the epoch itself, which
+        was a Thursday. The origin literal carries an explicit ``+00:00`` offset so
+        a session running in a non-UTC ``TimeZone`` cannot slide the grid.
+        """
+        spec = get_interval(interval_code)
+        col = _quote_ident(self._validate_column(time_column))
+        if spec.unit is IntervalUnit.week:
+            origin = format_utc_literal(WEEK_ORIGIN)
+            return f"date_bin(INTERVAL '{7 * spec.count} days', {col}, TIMESTAMPTZ '{origin}')"
+        origin = format_utc_literal(EPOCH)
+        return (
+            f"date_bin(INTERVAL '{spec.count} {spec.unit.value}s', {col}, TIMESTAMPTZ '{origin}')"
+        )
 
     def _json_path_expression(self, column: str, path: str) -> str:
         parts = [part for part in path.split(".") if part]
@@ -308,7 +323,7 @@ class PostgresAdapter(BaseAdapter):
         self,
         base_query: str,
         time_column: str,
-        ch_interval: str,
+        interval: str,
         regular_columns: list[str],
         json_columns: list[str],
         json_value_paths: dict[str, list[str]] | None,
@@ -317,12 +332,12 @@ class PostgresAdapter(BaseAdapter):
         limit: int = 100000,
     ) -> tuple[list[str], list[str], list[tuple[object, ...]]]:
         tc = self._validate_column(time_column)
-        interval = self._validate_interval(ch_interval)
+
         reg_cols = [self._validate_column(c) for c in regular_columns]
         json_cols = [self._validate_column(c) for c in json_columns]
         json_value_paths = json_value_paths or {}
 
-        bucket_expr = f"date_bin(INTERVAL '{interval}', {_quote_ident(tc)}, TIMESTAMP 'epoch')"
+        bucket_expr = self._bucket_expression(tc, interval)
         select_parts: list[str] = [f"{bucket_expr} AS _bucket"]
         group_parts: list[str] = ["_bucket"]
         col_names: list[str] = []
@@ -379,7 +394,7 @@ class PostgresAdapter(BaseAdapter):
         self,
         base_query: str,
         time_column: str,
-        ch_interval: str,
+        interval: str,
         agg_fn: MetricAggregation,
         measure_column: str | None,
         regular_columns: list[str],
@@ -390,13 +405,13 @@ class PostgresAdapter(BaseAdapter):
         limit: int = 100000,
     ) -> tuple[list[str], list[str], list[tuple[object, ...]]]:
         tc = self._validate_column(time_column)
-        interval = self._validate_interval(ch_interval)
+
         reg_cols = [self._validate_column(c) for c in regular_columns]
         json_cols = [self._validate_column(c) for c in json_columns]
         json_value_paths = json_value_paths or {}
         value_sql = self._aggregate_value_sql(agg_fn, measure_column)
 
-        bucket_expr = f"date_bin(INTERVAL '{interval}', {_quote_ident(tc)}, TIMESTAMP 'epoch')"
+        bucket_expr = self._bucket_expression(tc, interval)
         select_parts: list[str] = [f"{bucket_expr} AS _bucket"]
         group_parts: list[str] = ["_bucket"]
         col_names: list[str] = []
@@ -474,7 +489,7 @@ class PostgresAdapter(BaseAdapter):
         self,
         base_query: str,
         time_column: str,
-        ch_interval: str,
+        interval: str,
         agg_fn: MetricAggregation,
         measure_column: str | None,
         breakdown_column: str,
@@ -487,7 +502,7 @@ class PostgresAdapter(BaseAdapter):
         limit: int = 100000,
     ) -> tuple[list[str], list[str], list[tuple[object, ...]]]:
         tc = self._validate_column(time_column)
-        interval = self._validate_interval(ch_interval)
+
         reg_cols = [self._validate_column(c) for c in regular_columns]
         json_cols = [self._validate_column(c) for c in json_columns]
         breakdown = self._validate_column(breakdown_column)
@@ -508,7 +523,7 @@ class PostgresAdapter(BaseAdapter):
             values_limit,
         )
 
-        bucket_expr = f"date_bin(INTERVAL '{interval}', {_quote_ident(tc)}, TIMESTAMP 'epoch')"
+        bucket_expr = self._bucket_expression(tc, interval)
         select_parts: list[str] = [
             f"{bucket_expr} AS _bucket",
             f"{breakdown_expr} AS _breakdown_value",
@@ -593,7 +608,7 @@ class PostgresAdapter(BaseAdapter):
         self,
         base_query: str,
         time_column: str,
-        ch_interval: str,
+        interval: str,
         specs: list[AggregateSpec],
         time_from: datetime,
         time_to: datetime,
@@ -601,9 +616,8 @@ class PostgresAdapter(BaseAdapter):
         limit: int = 100000,
     ) -> tuple[list[str], list[tuple[object, ...]]]:
         tc = self._validate_column(time_column)
-        interval = self._validate_interval(ch_interval)
 
-        bucket_expr = f"date_bin(INTERVAL '{interval}', {_quote_ident(tc)}, TIMESTAMP 'epoch')"
+        bucket_expr = self._bucket_expression(tc, interval)
         select_parts: list[str] = [f"{bucket_expr} AS _bucket"]
         col_names: list[str] = ["bucket"]
         for spec in specs:
@@ -635,7 +649,7 @@ class PostgresAdapter(BaseAdapter):
         self,
         base_query: str,
         time_column: str,
-        ch_interval: str,
+        interval: str,
         breakdown_column: str,
         specs: list[AggregateSpec],
         time_from: datetime,
@@ -645,7 +659,7 @@ class PostgresAdapter(BaseAdapter):
         limit: int = 100000,
     ) -> tuple[list[str], list[tuple[object, ...]]]:
         tc = self._validate_column(time_column)
-        interval = self._validate_interval(ch_interval)
+
         breakdown = self._validate_column(breakdown_column)
 
         raw_expr = self._string_value_expression(breakdown)
@@ -659,7 +673,7 @@ class PostgresAdapter(BaseAdapter):
             values_limit,
         )
 
-        bucket_expr = f"date_bin(INTERVAL '{interval}', {_quote_ident(tc)}, TIMESTAMP 'epoch')"
+        bucket_expr = self._bucket_expression(tc, interval)
         select_parts: list[str] = [
             f"{bucket_expr} AS _bucket",
             f"{breakdown_expr} AS _breakdown_value",
@@ -701,7 +715,7 @@ class PostgresAdapter(BaseAdapter):
         self,
         base_query: str,
         time_column: str,
-        ch_interval: str,
+        interval: str,
         breakdown_column: str,
         regular_columns: list[str],
         json_columns: list[str],
@@ -714,7 +728,7 @@ class PostgresAdapter(BaseAdapter):
         col_names, json_value_names, rows = self.get_time_bucketed_breakdown_counts_multi(
             base_query,
             time_column,
-            ch_interval,
+            interval,
             [breakdown_column],
             regular_columns,
             json_columns,
@@ -788,7 +802,7 @@ class PostgresAdapter(BaseAdapter):
         self,
         base_query: str,
         time_column: str,
-        ch_interval: str,
+        interval: str,
         breakdown_columns: list[str],
         regular_columns: list[str],
         json_columns: list[str],
@@ -802,7 +816,7 @@ class PostgresAdapter(BaseAdapter):
             return [], [], []
 
         tc = self._validate_column(time_column)
-        interval = self._validate_interval(ch_interval)
+
         reg_cols = [self._validate_column(c) for c in regular_columns]
         json_cols = [self._validate_column(c) for c in json_columns]
         breakdown_cols = [self._validate_column(c) for c in breakdown_columns]
@@ -824,7 +838,7 @@ class PostgresAdapter(BaseAdapter):
                 top_count,
             )
 
-        bucket_expr = f"date_bin(INTERVAL '{interval}', {_quote_ident(tc)}, TIMESTAMP 'epoch')"
+        bucket_expr = self._bucket_expression(tc, interval)
         prepared_parts: list[str] = [f"{bucket_expr} AS _bucket"]
         col_names: list[str] = []
         json_value_names: list[str] = []

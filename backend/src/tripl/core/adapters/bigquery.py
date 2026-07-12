@@ -22,6 +22,8 @@ from tripl.core.adapters.measure_validator import (
     coerce_aggregation,
     validate_measure_column,
 )
+from tripl.core.intervals import IntervalUnit, get_interval
+from tripl.core.warehouse_types import TimeKind, classify_time
 from tripl.models.domain_enums import MetricAggregation
 
 logger = logging.getLogger(__name__)
@@ -47,9 +49,17 @@ _SCHEMA_ROW_LIMIT = 50000
 # the worker thread forever. Scoped to schema introspection only.
 _SCHEMA_QUERY_TIMEOUT_SECONDS = 30
 
-# TIMESTAMP_BIN accepts MICROSECOND..DAY. Week is normalized to 7 DAY.
-# Month is not BIN-able (variable width) so we route it to TIMESTAMP_TRUNC.
-_BIN_UNITS = {"second", "minute", "hour", "day"}
+# GoogleSQL keeps TIMESTAMP/DATETIME/DATE in separate type families, each with its
+# own bucket + trunc functions. Applying the wrong family's function to a column is
+# a hard query error, so the family is selected from the column's declared type.
+_BUCKET_FN_PREFIX = {
+    TimeKind.timestamp: "TIMESTAMP",
+    TimeKind.datetime: "DATETIME",
+    TimeKind.date: "DATE",
+}
+
+# Intervals finer than a day cannot be expressed against a DATE column.
+_SUB_DAY_UNITS = (IntervalUnit.minute, IntervalUnit.hour)
 
 
 class BigQueryAdapter(BaseAdapter):
@@ -102,6 +112,10 @@ class BigQueryAdapter(BaseAdapter):
         self._project = host
         self._dataset = database
         self._allowed_columns: set[str] = set()
+        # Declared type per column, captured during get_columns. The bucket and
+        # time-window SQL are type-directed (TIMESTAMP vs DATETIME vs DATE), so the
+        # adapter has to remember what the warehouse actually said.
+        self._column_types: dict[str, str] = {}
 
     def close(self) -> None:
         self._client.close()  # type: ignore[no-untyped-call]
@@ -120,33 +134,36 @@ class BigQueryAdapter(BaseAdapter):
             raise ValueError(msg)
         return column
 
-    def _validate_interval(self, ch_interval: str) -> tuple[int, str]:
-        m = _INTERVAL_RE.match(ch_interval.strip())
-        if not m:
-            msg = f"Unsupported interval: {ch_interval!r}"
-            raise ValueError(msg)
-        count = int(m.group(1))
-        unit = m.group(2).lower()
-        if unit == "week":
-            return count * 7, "day"
-        return count, unit
+    def _bucket_expression(self, time_column: str, interval_code: str) -> str:
+        """Translate an interval code into GoogleSQL bucket SQL.
 
-    def _bucket_expression(self, time_column: str, ch_interval: str) -> str:
-        count, unit = self._validate_interval(ch_interval)
-        tc = self._validate_column(time_column)
-        col = f"`{tc}`"
-        if unit == "month":
-            if count != 1:
-                msg = "BigQuery: only '1 month' is supported for month bucketing"
-                raise ValueError(msg)
-            return f"TIMESTAMP_TRUNC({col}, MONTH)"
-        if unit in _BIN_UNITS:
-            return (
-                f"TIMESTAMP_BIN(INTERVAL {count} {unit.upper()}, {col}, "
-                "TIMESTAMP '1970-01-01 00:00:00+00')"
+        Must agree with ``tripl.core.bucketing.floor_to_bucket``.
+
+        The bucket function is chosen by the column's *declared* type, not assumed:
+        GoogleSQL keeps TIMESTAMP (an instant) and DATETIME (a zone-less wall
+        clock) in separate type families and rejects a TIMESTAMP_* function applied
+        to a DATETIME column. DATE has no time-of-day, so a sub-day interval on a
+        DATE column is a configuration error rather than something to silently round.
+
+        Weeks use ``*_TRUNC(..., WEEK(MONDAY))``: a 7-day ``*_BUCKET`` bins off the
+        epoch, which was a Thursday, and the contract says weeks start on Monday.
+        """
+        spec = get_interval(interval_code)
+        kind = self._time_kind(time_column)
+        col = f"`{self._validate_column(time_column)}`"
+        prefix = _BUCKET_FN_PREFIX[kind]
+
+        if spec.unit is IntervalUnit.week:
+            return f"{prefix}_TRUNC({col}, WEEK(MONDAY))"
+        if kind is TimeKind.date and spec.unit in _SUB_DAY_UNITS:
+            msg = (
+                f"BigQuery: time column {time_column!r} is a DATE, which has no "
+                f"time-of-day, so it cannot be bucketed at {interval_code!r}. "
+                "Use the 1d or 1w interval, or a TIMESTAMP/DATETIME column."
             )
-        msg = f"Unsupported interval unit: {unit}"
-        raise ValueError(msg)
+            raise ValueError(msg)
+        # TIMESTAMP_BUCKET / DATETIME_BUCKET, origin = epoch, matching the contract.
+        return f"{prefix}_BUCKET({col}, INTERVAL {spec.count} {spec.unit.value.upper()})"
 
     def _json_path_expression(self, column: str, path: str) -> str:
         parts = [part for part in path.split(".") if part]
@@ -196,7 +213,28 @@ class BigQueryAdapter(BaseAdapter):
                 )
             )
         self._allowed_columns = {c.name for c in columns}
+        self._column_types = {c.name: c.type_name for c in columns}
         return columns
+
+    def _time_kind(self, time_column: str) -> TimeKind:
+        """Resolve the declared time-type family of a configured time column.
+
+        Falls back to TIMESTAMP when the column's type was never introspected —
+        callers that reach the bucket path without a preceding ``get_columns`` are
+        exercising the pre-existing TIMESTAMP-only behavior.
+        """
+        type_name = self._column_types.get(time_column)
+        if type_name is None:
+            return TimeKind.timestamp
+        kind = classify_time(type_name)
+        if kind is TimeKind.unsupported:
+            msg = (
+                f"BigQuery: time column {time_column!r} has type {type_name}, which "
+                "carries no date and cannot be used as a time column. "
+                "Use a TIMESTAMP, DATETIME or DATE column."
+            )
+            raise ValueError(msg)
+        return kind
 
     def get_schema_tables(self) -> list[SchemaTable]:
         # Unlike ClickHouse/Postgres, this stays scoped to the connection's
@@ -311,7 +349,7 @@ class BigQueryAdapter(BaseAdapter):
         self,
         base_query: str,
         time_column: str,
-        ch_interval: str,
+        interval: str,
         regular_columns: list[str],
         json_columns: list[str],
         json_value_paths: dict[str, list[str]] | None,
@@ -320,7 +358,7 @@ class BigQueryAdapter(BaseAdapter):
         limit: int = 100000,
     ) -> tuple[list[str], list[str], list[tuple[object, ...]]]:
         tc = self._validate_column(time_column)
-        bucket_expr = self._bucket_expression(time_column, ch_interval)
+        bucket_expr = self._bucket_expression(time_column, interval)
         reg_cols = [self._validate_column(c) for c in regular_columns]
         json_cols = [self._validate_column(c) for c in json_columns]
         json_value_paths = json_value_paths or {}
@@ -419,7 +457,7 @@ class BigQueryAdapter(BaseAdapter):
         self,
         base_query: str,
         time_column: str,
-        ch_interval: str,
+        interval: str,
         agg_fn: MetricAggregation,
         measure_column: str | None,
         regular_columns: list[str],
@@ -430,7 +468,7 @@ class BigQueryAdapter(BaseAdapter):
         limit: int = 100000,
     ) -> tuple[list[str], list[str], list[tuple[object, ...]]]:
         tc = self._validate_column(time_column)
-        bucket_expr = self._bucket_expression(time_column, ch_interval)
+        bucket_expr = self._bucket_expression(time_column, interval)
         reg_cols = [self._validate_column(c) for c in regular_columns]
         json_cols = [self._validate_column(c) for c in json_columns]
         json_value_paths = json_value_paths or {}
@@ -511,7 +549,7 @@ class BigQueryAdapter(BaseAdapter):
         self,
         base_query: str,
         time_column: str,
-        ch_interval: str,
+        interval: str,
         agg_fn: MetricAggregation,
         measure_column: str | None,
         breakdown_column: str,
@@ -524,7 +562,7 @@ class BigQueryAdapter(BaseAdapter):
         limit: int = 100000,
     ) -> tuple[list[str], list[str], list[tuple[object, ...]]]:
         tc = self._validate_column(time_column)
-        bucket_expr = self._bucket_expression(time_column, ch_interval)
+        bucket_expr = self._bucket_expression(time_column, interval)
         reg_cols = [self._validate_column(c) for c in regular_columns]
         json_cols = [self._validate_column(c) for c in json_columns]
         breakdown = self._validate_column(breakdown_column)
@@ -594,7 +632,7 @@ class BigQueryAdapter(BaseAdapter):
         self,
         base_query: str,
         time_column: str,
-        ch_interval: str,
+        interval: str,
         specs: list[AggregateSpec],
         time_from: datetime,
         time_to: datetime,
@@ -602,7 +640,7 @@ class BigQueryAdapter(BaseAdapter):
         limit: int = 100000,
     ) -> tuple[list[str], list[tuple[object, ...]]]:
         tc = self._validate_column(time_column)
-        bucket_expr = self._bucket_expression(time_column, ch_interval)
+        bucket_expr = self._bucket_expression(time_column, interval)
         if not specs:
             return ["bucket"], []
 
@@ -636,7 +674,7 @@ class BigQueryAdapter(BaseAdapter):
         self,
         base_query: str,
         time_column: str,
-        ch_interval: str,
+        interval: str,
         breakdown_column: str,
         specs: list[AggregateSpec],
         time_from: datetime,
@@ -646,7 +684,7 @@ class BigQueryAdapter(BaseAdapter):
         limit: int = 100000,
     ) -> tuple[list[str], list[tuple[object, ...]]]:
         tc = self._validate_column(time_column)
-        bucket_expr = self._bucket_expression(time_column, ch_interval)
+        bucket_expr = self._bucket_expression(time_column, interval)
         breakdown = self._validate_column(breakdown_column)
         if not specs:
             return ["bucket", "breakdown_value", "is_other"], []
@@ -698,7 +736,7 @@ class BigQueryAdapter(BaseAdapter):
         self,
         base_query: str,
         time_column: str,
-        ch_interval: str,
+        interval: str,
         breakdown_column: str,
         regular_columns: list[str],
         json_columns: list[str],
@@ -711,7 +749,7 @@ class BigQueryAdapter(BaseAdapter):
         col_names, json_value_names, rows = self.get_time_bucketed_breakdown_counts_multi(
             base_query,
             time_column,
-            ch_interval,
+            interval,
             [breakdown_column],
             regular_columns,
             json_columns,
@@ -782,7 +820,7 @@ class BigQueryAdapter(BaseAdapter):
         self,
         base_query: str,
         time_column: str,
-        ch_interval: str,
+        interval: str,
         breakdown_columns: list[str],
         regular_columns: list[str],
         json_columns: list[str],
@@ -796,7 +834,7 @@ class BigQueryAdapter(BaseAdapter):
             return [], [], []
 
         tc = self._validate_column(time_column)
-        bucket_expr = self._bucket_expression(time_column, ch_interval)
+        bucket_expr = self._bucket_expression(time_column, interval)
         reg_cols = [self._validate_column(c) for c in regular_columns]
         json_cols = [self._validate_column(c) for c in json_columns]
         breakdown_cols = [self._validate_column(c) for c in breakdown_columns]

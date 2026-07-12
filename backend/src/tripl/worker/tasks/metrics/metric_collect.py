@@ -603,7 +603,7 @@ def _aggregate_fact_window(
     *,
     fact_table: FactTable,
     operand: _FactOperand,
-    ch_interval: str,
+    interval_code: str,
     delta: timedelta,
     chunk_from: datetime,
     chunk_to: datetime,
@@ -634,7 +634,7 @@ def _aggregate_fact_window(
     _cols, _json_value_names, rows = adapter.get_time_bucketed_aggregate(
         base_query,
         fact_table.timestamp_column,
-        ch_interval,
+        interval_code,
         operand.aggregation,
         measure,
         [],
@@ -717,7 +717,7 @@ def _collect_fact_breakdown_rows(
     definition: MetricDefinition,
     base_query: str,
     time_column: str,
-    ch_interval: str,
+    interval_code: str,
     agg: MetricAggregation,
     measure_column: str | None,
     chunk_from: datetime,
@@ -739,7 +739,7 @@ def _collect_fact_breakdown_rows(
         _cols, _json_value_names, rows = adapter.get_time_bucketed_aggregate_breakdown(
             base_query,
             time_column,
-            ch_interval,
+            interval_code,
             agg,
             measure_column,
             column,
@@ -783,7 +783,7 @@ def _collect_fact_ratio_breakdown_rows(
     fact_table: FactTable,
     numerator_op: _FactOperand,
     denominator_op: _FactOperand,
-    ch_interval: str,
+    interval_code: str,
     delta: timedelta,
     chunk_from: datetime,
     chunk_to: datetime,
@@ -821,7 +821,7 @@ def _collect_fact_ratio_breakdown_rows(
         col_names, rows = adapter.get_time_bucketed_multi_aggregate_breakdown(
             fact_table.sql,
             fact_table.timestamp_column,
-            ch_interval,
+            interval_code,
             column,
             registry.specs,
             chunk_from,
@@ -933,7 +933,7 @@ def _collect_fact_single(
     if ds is None:
         msg = "DataSource for fact metric not found"
         raise ScanError(msg)
-    ch_interval = interval_spec.ch_interval
+    interval_code = interval_spec.code
 
     adapter = _build_adapter(ds)
     total_values = 0
@@ -951,7 +951,7 @@ def _collect_fact_single(
                 adapter,
                 fact_table=fact_table,
                 operand=operand,
-                ch_interval=ch_interval,
+                interval_code=interval_code,
                 delta=delta,
                 chunk_from=chunk_from,
                 chunk_to=chunk_to,
@@ -975,7 +975,7 @@ def _collect_fact_single(
                 definition=definition,
                 base_query=base_query,
                 time_column=fact_table.timestamp_column,
-                ch_interval=ch_interval,
+                interval_code=interval_code,
                 agg=operand.aggregation,
                 measure_column=measure,
                 chunk_from=chunk_from,
@@ -1032,7 +1032,7 @@ def _collect_fact_ratio(
             "to use the same fact table"
         )
         raise ScanError(msg)
-    ch_interval = interval_spec.ch_interval
+    interval_code = interval_spec.code
 
     numerator_adapter = _build_adapter(numerator_ds)
     total_values = 0
@@ -1053,7 +1053,7 @@ def _collect_fact_ratio(
                     numerator_adapter,
                     fact_table=numerator_ft,
                     operand=numerator_op,
-                    ch_interval=ch_interval,
+                    interval_code=interval_code,
                     delta=delta,
                     chunk_from=chunk_from,
                     chunk_to=chunk_to,
@@ -1062,7 +1062,7 @@ def _collect_fact_ratio(
                     denominator_adapter,
                     fact_table=denominator_ft,
                     operand=denominator_op,
-                    ch_interval=ch_interval,
+                    interval_code=interval_code,
                     delta=delta,
                     chunk_from=chunk_from,
                     chunk_to=chunk_to,
@@ -1093,7 +1093,7 @@ def _collect_fact_ratio(
                         fact_table=numerator_ft,
                         numerator_op=numerator_op,
                         denominator_op=denominator_op,
-                        ch_interval=ch_interval,
+                        interval_code=interval_code,
                         delta=delta,
                         chunk_from=chunk_from,
                         chunk_to=chunk_to,
@@ -1697,7 +1697,7 @@ def _run_fact_interval_group(
     manual backfill window) replaces each metric's resume window when set.
     """
     delta = interval_spec.delta
-    ch_interval = interval_spec.ch_interval
+    interval_code = interval_spec.code
     context = _FactBatchContext(session=session)
 
     totals = {"metrics": 0, "collected": 0, "errors": 0, "values": 0, "breakdown_values": 0}
@@ -1779,7 +1779,7 @@ def _run_fact_interval_group(
                     col_names, rows = adapter.get_time_bucketed_multi_aggregate(
                         fact_table.sql,
                         fact_table.timestamp_column,
-                        ch_interval,
+                        interval_code,
                         registry.specs,
                         chunk_from,
                         chunk_to,
@@ -1806,7 +1806,7 @@ def _run_fact_interval_group(
                     col_names, rows = adapter.get_time_bucketed_multi_aggregate_breakdown(
                         fact_table.sql,
                         fact_table.timestamp_column,
-                        ch_interval,
+                        interval_code,
                         column,
                         registry.specs,
                         chunk_from,
@@ -2018,7 +2018,7 @@ def _collect_distinct_user_series(
         _cols, _json_value_names, rows = adapter.get_time_bucketed_aggregate(
             scan_config.base_query,
             scan_config.time_column,
-            interval_spec.ch_interval,
+            interval_spec.code,
             MetricAggregation.count_distinct,
             user_id_column,
             [],
@@ -2248,7 +2248,7 @@ def _run_fact_metrics_batch(
     Metrics dispatched together usually share one interval (the scheduler groups
     by interval before dispatch), but grouping here as well keeps the collector
     correct if a caller mixes intervals: each interval has its own bucket grid /
-    ``ch_interval``, so it gets its own set of shared scans. ``window_override``
+    ``interval_code``, so it gets its own set of shared scans. ``window_override``
     (a manual backfill window) is forwarded to every group.
     """
     totals = {"metrics": 0, "collected": 0, "errors": 0, "values": 0, "breakdown_values": 0}

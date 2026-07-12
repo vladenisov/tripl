@@ -22,6 +22,7 @@ from tripl.core.adapters.measure_validator import (
     coerce_aggregation,
     validate_measure_column,
 )
+from tripl.core.intervals import IntervalUnit, get_interval
 from tripl.models.domain_enums import MetricAggregation
 
 # Hard cap on rows pulled from the catalog so a warehouse with thousands of
@@ -41,10 +42,6 @@ logger = logging.getLogger(__name__)
 
 _IDENTIFIER_RE = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_.]*$")
 _IDENTIFIER_PART_RE = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*$")
-# Mirrors PostgresAdapter._INTERVAL_RE: a positive integer and a supported unit.
-# The bucketed-aggregate paths interpolate the interval into SQL with no bound
-# parameters, so the value must be allowlisted before it reaches the string.
-_INTERVAL_RE = re.compile(r"^\d+\s+(second|minute|hour|day|week|month)s?$", re.IGNORECASE)
 
 # JSON path *discovery* (preview) enumeration functions. "dynamic" lists only the
 # important typed subcolumn paths (fast); "all" lists every path incl. shared-data
@@ -262,11 +259,23 @@ class ClickHouseAdapter(BaseAdapter):
             raise ValueError(msg)
         return column
 
-    def _validate_interval(self, ch_interval: str) -> str:
-        if not _INTERVAL_RE.match(ch_interval.strip()):
-            msg = f"Unsupported interval: {ch_interval!r}"
-            raise ValueError(msg)
-        return ch_interval.strip()
+    def _bucket_expression(self, time_column: str, interval_code: str) -> str:
+        """Translate an interval code into ClickHouse bucket SQL.
+
+        Must agree with ``tripl.core.bucketing.floor_to_bucket``. Two things the
+        dialect default would otherwise get wrong:
+
+        * ``toStartOfInterval`` buckets in the *column's* timezone, so a DateTime
+          column declared in a non-UTC zone would shift every bucket. The explicit
+          ``'UTC'`` argument pins it.
+        * A 1-week ``toStartOfInterval`` bins off the epoch, which was a Thursday.
+          ``toMonday`` is the Monday-origin form the contract requires.
+        """
+        spec = get_interval(interval_code)
+        col = f"`{self._validate_column(time_column)}`"
+        if spec.unit is IntervalUnit.week:
+            return f"toDateTime(toMonday({col}, 'UTC'), 'UTC')"
+        return f"toStartOfInterval({col}, INTERVAL {spec.count} {spec.unit.value.upper()}, 'UTC')"
 
     def _json_path_expression(self, column: str, path: str) -> str:
         parts = [part for part in path.split(".") if part]
@@ -562,7 +571,7 @@ class ClickHouseAdapter(BaseAdapter):
         self,
         base_query: str,
         time_column: str,
-        ch_interval: str,
+        interval: str,
         regular_columns: list[str],
         json_columns: list[str],
         json_value_paths: dict[str, list[str]] | None,
@@ -576,12 +585,12 @@ class ClickHouseAdapter(BaseAdapter):
         Row layout: (_bucket, col1_val, ..., json_paths1, ..., count).
         """
         tc = self._validate_column(time_column)
-        interval = self._validate_interval(ch_interval)
+        bucket_sql = self._bucket_expression(tc, interval)
         reg_cols = [self._validate_column(c) for c in regular_columns]
         json_cols = [self._validate_column(c) for c in json_columns]
         json_value_paths = json_value_paths or {}
 
-        select_parts = [f"toStartOfInterval(`{tc}`, INTERVAL {interval}) AS _bucket"]
+        select_parts = [f"{bucket_sql} AS _bucket"]
         col_names: list[str] = []
         json_value_names: list[str] = []
         for c in reg_cols:
@@ -632,7 +641,7 @@ class ClickHouseAdapter(BaseAdapter):
         self,
         base_query: str,
         time_column: str,
-        ch_interval: str,
+        interval: str,
         agg_fn: MetricAggregation,
         measure_column: str | None,
         regular_columns: list[str],
@@ -648,13 +657,13 @@ class ClickHouseAdapter(BaseAdapter):
         Row layout: (_bucket, col1_val, ..., json_paths1, ..., aggregate_value).
         """
         tc = self._validate_column(time_column)
-        interval = self._validate_interval(ch_interval)
+        bucket_sql = self._bucket_expression(tc, interval)
         reg_cols = [self._validate_column(c) for c in regular_columns]
         json_cols = [self._validate_column(c) for c in json_columns]
         json_value_paths = json_value_paths or {}
         value_sql = self._aggregate_value_sql(agg_fn, measure_column)
 
-        select_parts = [f"toStartOfInterval(`{tc}`, INTERVAL {interval}) AS _bucket"]
+        select_parts = [f"{bucket_sql} AS _bucket"]
         col_names: list[str] = []
         json_value_names: list[str] = []
         for c in reg_cols:
@@ -696,7 +705,7 @@ class ClickHouseAdapter(BaseAdapter):
         self,
         base_query: str,
         time_column: str,
-        ch_interval: str,
+        interval: str,
         agg_fn: MetricAggregation,
         measure_column: str | None,
         breakdown_column: str,
@@ -714,7 +723,7 @@ class ClickHouseAdapter(BaseAdapter):
         Row layout: (_bucket, _breakdown_value, _is_other, col1_val, ..., aggregate_value).
         """
         tc = self._validate_column(time_column)
-        interval = self._validate_interval(ch_interval)
+        bucket_sql = self._bucket_expression(tc, interval)
         reg_cols = [self._validate_column(c) for c in regular_columns]
         json_cols = [self._validate_column(c) for c in json_columns]
         breakdown = self._validate_column(breakdown_column)
@@ -735,7 +744,7 @@ class ClickHouseAdapter(BaseAdapter):
             values_limit,
         )
 
-        select_parts = [f"toStartOfInterval(`{tc}`, INTERVAL {interval}) AS _bucket"]
+        select_parts = [f"{bucket_sql} AS _bucket"]
         select_parts.append(f"{breakdown_expr} AS _breakdown_value")
         select_parts.append(f"{is_other_expr} AS _is_other")
         col_names: list[str] = []
@@ -858,7 +867,7 @@ class ClickHouseAdapter(BaseAdapter):
         self,
         base_query: str,
         time_column: str,
-        ch_interval: str,
+        interval: str,
         specs: list[AggregateSpec],
         time_from: datetime,
         time_to: datetime,
@@ -872,9 +881,9 @@ class ClickHouseAdapter(BaseAdapter):
         spec aliased by ``spec.key``.
         """
         tc = self._validate_column(time_column)
-        interval = self._validate_interval(ch_interval)
+        bucket_sql = self._bucket_expression(tc, interval)
 
-        select_parts = [f"toStartOfInterval(`{tc}`, INTERVAL {interval}) AS _bucket"]
+        select_parts = [f"{bucket_sql} AS _bucket"]
         col_names: list[str] = ["bucket"]
         for spec in specs:
             select_parts.append(f"{self._spec_aggregate_sql(spec)} AS `{spec.key}`")
@@ -904,7 +913,7 @@ class ClickHouseAdapter(BaseAdapter):
         self,
         base_query: str,
         time_column: str,
-        ch_interval: str,
+        interval: str,
         breakdown_column: str,
         specs: list[AggregateSpec],
         time_from: datetime,
@@ -920,7 +929,7 @@ class ClickHouseAdapter(BaseAdapter):
         column per spec.
         """
         tc = self._validate_column(time_column)
-        interval = self._validate_interval(ch_interval)
+        bucket_sql = self._bucket_expression(tc, interval)
         breakdown = self._validate_column(breakdown_column)
 
         raw_expr = self._string_value_expression(breakdown)
@@ -935,7 +944,7 @@ class ClickHouseAdapter(BaseAdapter):
         )
 
         select_parts = [
-            f"toStartOfInterval(`{tc}`, INTERVAL {interval}) AS _bucket",
+            f"{bucket_sql} AS _bucket",
             f"{breakdown_expr} AS _breakdown_value",
             f"{is_other_expr} AS _is_other",
         ]
@@ -968,7 +977,7 @@ class ClickHouseAdapter(BaseAdapter):
         self,
         base_query: str,
         time_column: str,
-        ch_interval: str,
+        interval: str,
         breakdown_column: str,
         regular_columns: list[str],
         json_columns: list[str],
@@ -981,7 +990,7 @@ class ClickHouseAdapter(BaseAdapter):
         col_names, json_value_names, rows = self.get_time_bucketed_breakdown_counts_multi(
             base_query,
             time_column,
-            ch_interval,
+            interval,
             [breakdown_column],
             regular_columns,
             json_columns,
@@ -997,7 +1006,7 @@ class ClickHouseAdapter(BaseAdapter):
         self,
         base_query: str,
         time_column: str,
-        ch_interval: str,
+        interval: str,
         breakdown_columns: list[str],
         regular_columns: list[str],
         json_columns: list[str],
@@ -1016,7 +1025,7 @@ class ClickHouseAdapter(BaseAdapter):
             return [], [], []
 
         tc = self._validate_column(time_column)
-        interval = self._validate_interval(ch_interval)
+        bucket_sql = self._bucket_expression(tc, interval)
         reg_cols = [self._validate_column(c) for c in regular_columns]
         json_cols = [self._validate_column(c) for c in json_columns]
         breakdown_cols = [self._validate_column(c) for c in breakdown_columns]
@@ -1038,7 +1047,7 @@ class ClickHouseAdapter(BaseAdapter):
                 top_count,
             )
 
-        prepared_parts = [f"toStartOfInterval(`{tc}`, INTERVAL {interval}) AS _bucket"]
+        prepared_parts = [f"{bucket_sql} AS _bucket"]
         col_names: list[str] = []
         json_value_names: list[str] = []
         for c in reg_cols:

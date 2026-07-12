@@ -348,7 +348,7 @@ class SyntheticAdapter(BaseAdapter):
         self,
         base_query: str,
         time_column: str,
-        ch_interval: str,
+        interval: str,
         regular_columns: list[str],
         json_columns: list[str],
         json_value_paths: dict[str, list[str]] | None,
@@ -360,7 +360,7 @@ class SyntheticAdapter(BaseAdapter):
         table = self._table_for_query(base_query)
         reg = [self._validate_column(table, column) for column in regular_columns]
         self._validate_column(table, time_column)
-        groups = self._bucket_groups(table, time_column, ch_interval, reg, time_from, time_to)
+        groups = self._bucket_groups(table, time_column, interval, reg, time_from, time_to)
         out: list[tuple[object, ...]] = []
         for (bucket, *values), members in self._sorted_items(groups):
             out.append((bucket, *values, len(members)))
@@ -370,7 +370,7 @@ class SyntheticAdapter(BaseAdapter):
         self,
         base_query: str,
         time_column: str,
-        ch_interval: str,
+        interval: str,
         breakdown_column: str,
         regular_columns: list[str],
         json_columns: list[str],
@@ -389,7 +389,7 @@ class SyntheticAdapter(BaseAdapter):
         top = self._top_values(windowed, breakdown, values_limit)
         groups: dict[tuple[object, ...], list[dict[str, object]]] = {}
         for row in windowed:
-            bucket = self._bucket_start(row[time_column], ch_interval)
+            bucket = self._bucket_start(row[time_column], interval)
             value, is_other = self._fold(top, _bval(row.get(breakdown)))
             key = (bucket, value, is_other, *tuple(row.get(column) for column in reg))
             groups.setdefault(key, []).append(row)
@@ -403,7 +403,7 @@ class SyntheticAdapter(BaseAdapter):
         self,
         base_query: str,
         time_column: str,
-        ch_interval: str,
+        interval: str,
         breakdown_columns: list[str],
         regular_columns: list[str],
         json_columns: list[str],
@@ -426,7 +426,7 @@ class SyntheticAdapter(BaseAdapter):
             top = self._top_values(windowed, breakdown, values_limit)
             groups: dict[tuple[object, ...], list[dict[str, object]]] = {}
             for row in windowed:
-                bucket = self._bucket_start(row[time_column], ch_interval)
+                bucket = self._bucket_start(row[time_column], interval)
                 value, is_other = self._fold(top, _bval(row.get(breakdown)))
                 key = (bucket, value, is_other, *tuple(row.get(column) for column in reg))
                 groups.setdefault(key, []).append(row)
@@ -442,7 +442,7 @@ class SyntheticAdapter(BaseAdapter):
         self,
         base_query: str,
         time_column: str,
-        ch_interval: str,
+        interval: str,
         agg_fn: MetricAggregation,
         measure_column: str | None,
         regular_columns: list[str],
@@ -457,7 +457,7 @@ class SyntheticAdapter(BaseAdapter):
         reg = [self._validate_column(table, column) for column in regular_columns]
         self._validate_column(table, time_column)
         measure = self._validate_measure(table, agg_fn, measure_column)
-        groups = self._bucket_groups(table, time_column, ch_interval, reg, time_from, time_to)
+        groups = self._bucket_groups(table, time_column, interval, reg, time_from, time_to)
         out: list[tuple[object, ...]] = []
         for (bucket, *values), members in self._sorted_items(groups):
             out.append((bucket, *values, self._aggregate(members, agg_fn, measure)))
@@ -467,7 +467,7 @@ class SyntheticAdapter(BaseAdapter):
         self,
         base_query: str,
         time_column: str,
-        ch_interval: str,
+        interval: str,
         agg_fn: MetricAggregation,
         measure_column: str | None,
         breakdown_column: str,
@@ -489,7 +489,7 @@ class SyntheticAdapter(BaseAdapter):
         top = self._top_values(windowed, breakdown, values_limit)
         groups: dict[tuple[object, ...], list[dict[str, object]]] = {}
         for row in windowed:
-            bucket = self._bucket_start(row[time_column], ch_interval)
+            bucket = self._bucket_start(row[time_column], interval)
             value, is_other = self._fold(top, _bval(row.get(breakdown)))
             key = (bucket, value, is_other, *tuple(row.get(column) for column in reg))
             groups.setdefault(key, []).append(row)
@@ -504,7 +504,7 @@ class SyntheticAdapter(BaseAdapter):
         self,
         base_query: str,
         time_column: str,
-        ch_interval: str,
+        interval: str,
         specs: list[AggregateSpec],
         time_from: datetime,
         time_to: datetime,
@@ -516,7 +516,7 @@ class SyntheticAdapter(BaseAdapter):
         windowed = self._windowed_rows(self._rows_for_table(table), time_column, time_from, time_to)
         buckets: dict[datetime, list[dict[str, object]]] = {}
         for row in windowed:
-            buckets.setdefault(self._bucket_start(row[time_column], ch_interval), []).append(row)
+            buckets.setdefault(self._bucket_start(row[time_column], interval), []).append(row)
         column_names = ["bucket", *[spec.key for spec in specs]]
         out: list[tuple[object, ...]] = []
         for bucket in sorted(buckets):
@@ -528,7 +528,7 @@ class SyntheticAdapter(BaseAdapter):
         self,
         base_query: str,
         time_column: str,
-        ch_interval: str,
+        interval: str,
         breakdown_column: str,
         specs: list[AggregateSpec],
         time_from: datetime,
@@ -544,7 +544,7 @@ class SyntheticAdapter(BaseAdapter):
         top = self._top_values(windowed, breakdown, values_limit)
         groups: dict[tuple[datetime, str, int], list[dict[str, object]]] = {}
         for row in windowed:
-            bucket = self._bucket_start(row[time_column], ch_interval)
+            bucket = self._bucket_start(row[time_column], interval)
             value, is_other = self._fold(top, _bval(row.get(breakdown)))
             groups.setdefault((bucket, value, is_other), []).append(row)
         column_names = ["bucket", "breakdown_value", "is_other", *[spec.key for spec in specs]]
@@ -634,7 +634,7 @@ class SyntheticAdapter(BaseAdapter):
         self,
         table: str,
         time_column: str,
-        ch_interval: str,
+        interval: str,
         regular_columns: list[str],
         time_from: datetime,
         time_to: datetime,
@@ -642,7 +642,7 @@ class SyntheticAdapter(BaseAdapter):
         windowed = self._windowed_rows(self._rows_for_table(table), time_column, time_from, time_to)
         groups: dict[tuple[object, ...], list[dict[str, object]]] = {}
         for row in windowed:
-            bucket = self._bucket_start(row[time_column], ch_interval)
+            bucket = self._bucket_start(row[time_column], interval)
             key = (bucket, *tuple(row.get(column) for column in regular_columns))
             groups.setdefault(key, []).append(row)
         return groups
@@ -725,12 +725,12 @@ class SyntheticAdapter(BaseAdapter):
 
     # -- interval bucketing ------------------------------------------------
 
-    def _bucket_start(self, value: object, ch_interval: str) -> datetime:
+    def _bucket_start(self, value: object, interval: str) -> datetime:
         if not isinstance(value, datetime):
             msg = f"Cannot bucket non-datetime value: {value!r}"
             raise ValueError(msg)
         moment = _ensure_utc(value)
-        count, unit = self._parse_interval(ch_interval)
+        count, unit = self._parse_interval(interval)
         if unit == "month":
             month_index = moment.year * 12 + (moment.month - 1)
             floored = (month_index // count) * count
@@ -742,10 +742,10 @@ class SyntheticAdapter(BaseAdapter):
         floored_seconds = math.floor(elapsed / step) * step
         return origin + timedelta(seconds=floored_seconds)
 
-    def _parse_interval(self, ch_interval: str) -> tuple[int, str]:
-        match = _INTERVAL_RE.match(ch_interval.strip())
+    def _parse_interval(self, interval: str) -> tuple[int, str]:
+        match = _INTERVAL_RE.match(interval.strip())
         if match is None:
-            msg = f"Unsupported interval: {ch_interval!r}"
+            msg = f"Unsupported interval: {interval!r}"
             raise ValueError(msg)
         return int(match.group(1)), match.group(2).lower()
 
