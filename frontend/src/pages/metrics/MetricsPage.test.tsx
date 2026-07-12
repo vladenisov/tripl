@@ -200,7 +200,7 @@ describe('MetricsPage — the kind filter is deep-linkable (tripl-2su6.19)', () 
     // The demo's metric building blocks link straight to a kind. That only
     // discovers anything if the catalog honours the param — it used to keep the
     // filter in component state, so every block landed on the same unfiltered page.
-    mockList({ items: [], total: 0, active_count: 0, draft_count: 0, archived_count: 0 })
+    mockList({ items: [], total: 0 })
     renderMetrics('catalog', '/p/demo/metrics?kind=fact')
 
     await waitFor(() =>
@@ -212,7 +212,7 @@ describe('MetricsPage — the kind filter is deep-linkable (tripl-2su6.19)', () 
   })
 
   it('ignores an unknown kind rather than querying it', async () => {
-    mockList({ items: [], total: 0, active_count: 0, draft_count: 0, archived_count: 0 })
+    mockList({ items: [], total: 0 })
     renderMetrics('catalog', '/p/demo/metrics?kind=not-a-kind')
 
     await waitFor(() => expect(metricsCatalogApi.list).toHaveBeenCalled())
