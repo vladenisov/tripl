@@ -313,7 +313,7 @@ def _build_adapter_derived_values(
             MetricValue(
                 metric_definition_id=sql_metric.id,
                 scan_config_id=None,
-                bucket=row[ts_index],  # type: ignore[arg-type]
+                bucket=row[ts_index],
                 value=float(row[value_index]),  # type: ignore[arg-type]
             )
         )

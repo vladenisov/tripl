@@ -184,7 +184,7 @@ async def redis_message_iterator(slug: str) -> AsyncIterator[dict[str, Any]]:
     finally:
         try:
             await pubsub.unsubscribe(channel(slug))
-            await pubsub.aclose()
+            await pubsub.aclose()  # type: ignore[no-untyped-call]
         except Exception:  # noqa: BLE001
             pass
 

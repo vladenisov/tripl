@@ -10,7 +10,7 @@ warehouse series, every signal is reproducible for a given ``(clock, seed)``.
 from __future__ import annotations
 
 import uuid
-from datetime import timedelta
+from datetime import datetime, timedelta
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -68,7 +68,7 @@ async def _build_anomalies(session: AsyncSession, ctx: DemoContext) -> None:
     spike_event_id = ctx.event_ids[SPIKE_EVENT_NAME]
 
     def seed_scope_anomalies(
-        series: dict,
+        series: dict[datetime, int],
         *,
         scope_type: str,
         scope_ref: str,
@@ -126,7 +126,7 @@ async def _build_anomalies(session: AsyncSession, ctx: DemoContext) -> None:
 
     # Project-total scope: sum of every type aggregate per bucket (scope_ref is the
     # scan_config_id, per metrics_service).
-    project_total_series: dict = {}
+    project_total_series: dict[datetime, int] = {}
     for (_et_id, bucket), count in ctx.type_bucket_counts.items():
         project_total_series[bucket] = project_total_series.get(bucket, 0) + count
     seed_scope_anomalies(

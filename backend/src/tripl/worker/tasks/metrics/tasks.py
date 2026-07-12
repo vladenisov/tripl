@@ -855,7 +855,9 @@ def collect_metrics(
                 job.completed_at = datetime.now(UTC)
                 job.error_message = user_facing_error(exc)
                 session.commit()
-                project = session.get(Project, config.project_id)
+                project = (
+                    session.get(Project, config.project_id) if config is not None else None
+                )
                 if project is not None:
                     realtime.publish_project_event(
                         project.slug,

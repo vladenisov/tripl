@@ -30,7 +30,7 @@ import uuid
 from datetime import UTC, datetime, timedelta
 
 from fastapi import HTTPException
-from sqlalchemy import delete, func, or_, select
+from sqlalchemy import ColumnElement, delete, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from tripl import cache
@@ -73,7 +73,7 @@ def _recipe_int(value: str | None) -> int:
         return -1
 
 
-def _legacy_source_conditions() -> tuple[object, ...]:
+def _legacy_source_conditions() -> tuple[ColumnElement[bool], ...]:
     """The strict-conjunction column predicates identifying a legacy demo source."""
     return (
         DataSource.name.like(LEGACY_SOURCE_NAME_LIKE),
