@@ -859,7 +859,15 @@ def test_structured_conditions_share_batched_filter_identity(
         )
         def_id = metric.id
 
-    combined = "(amount > 0) AND (country = 'US') AND (amount > 3)"
+    # The structured condition's column is now QUOTED for the source's dialect
+    # (ClickHouse here, so backticks). Free-text fragments — the row filter and
+    # filter_sql — are passed through verbatim, as they always were.
+    #
+    # This is not cosmetic: an unquoted reserved column name like `order` is a syntax
+    # error on PostgreSQL and BigQuery, while ClickHouse happens to accept it. An
+    # unquoted compiler therefore ships green against ClickHouse and explodes on the
+    # other two — precisely the class of bug this epic exists to remove.
+    combined = "(amount > 0) AND (country = 'US') AND (`amount` > 3)"
     adapter = _BatchAdapter(
         spec_values={(sql, MetricAggregation.count, None, combined): {B10: 5.0}}
     )
