@@ -39,8 +39,140 @@ jobs:
       - name: Mypy
         run: uv run mypy
 
+      # The conformance gates need real warehouses, so they run in their own job
+      # (below) rather than skipping noisily here.
       - name: Pytest
-        run: uv run pytest -q
+        run: uv run pytest -q -m "not conformance"
+
+  conformance:
+    # Executable warehouse gates. Every other adapter test asserts generated SQL
+    # STRINGS against FAKE clients, and a fake client accepts any string — which is
+    # how BigQuery shipped TIMESTAMP_BIN (not a GoogleSQL function) and a
+    # GROUP BY <ARRAY> (rejected outright by GoogleSQL) with a green suite. This job
+    # EXECUTES the SQL on PostgreSQL and ClickHouse, and ANALYZES it with the real
+    # ZetaSQL analyzer that ships inside the credential-free BigQuery emulator.
+    name: Warehouse conformance (postgres + clickhouse + BigQuery analyzer)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    services:
+      # Images are pinned by digest, not just tag: a gate whose warehouse can change
+      # underneath it is not a gate. The digests are multi-arch indexes.
+      postgres:
+        image: postgres:18@sha256:22c89fe0d0f507606260237fd55e51f6137f58b2d5bcf6152242b96d9fe8f9a4
+        env:
+          POSTGRES_USER: tripl
+          POSTGRES_PASSWORD: tripl
+          POSTGRES_DB: tripl_conformance
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U tripl -d tripl_conformance"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 24
+      clickhouse:
+        # No --health-cmd: the image's shell tooling is not something this gate should
+        # depend on. The explicit wait step below polls /ping instead, which is both
+        # more honest and easier to debug when it fails.
+        image: clickhouse/clickhouse-server:25.8@sha256:a9d328123ff8a61bf6b16448528b577d59deb85758172e13b09054b0727f8adf
+        ports:
+          - 8123:8123
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v8.2.0
+        with:
+          enable-cache: true
+
+      - name: Install dependencies
+        run: uv sync --extra dev
+
+      - name: Start the BigQuery emulator
+        # A service container needs a health check to be useful, and this image has
+        # no health tooling — so it is started here and polled below. It needs NO GCP
+        # credentials: it embeds Google's real ZetaSQL analyzer, which is what makes
+        # it authoritative on whether the generated GoogleSQL is VALID.
+        run: |
+          docker run -d --name bqemu -p 9050:9050 \
+            ghcr.io/goccy/bigquery-emulator:latest@sha256:f4e428d265a93dc5ce36c294e1c584c7c9b384117d47ab8ddbb63d8d50b7f393 \
+            --project=tripl-test --dataset=wh
+
+      - name: Wait for the warehouses
+        # Bounded and explicit. If a warehouse never comes up, this step fails HERE
+        # with a clear message, instead of letting the suite skip its way to green.
+        run: |
+          for i in $(seq 1 60); do
+            # A raw TCP probe, not pg_isready: the wait must not depend on which
+            # client tools happen to be on the runner image. Postgres already has a
+            # container-side health check, so this is belt-and-braces anyway.
+            pg=$( (echo > /dev/tcp/localhost/5432) >/dev/null 2>&1 && echo ok || echo no)
+            ch=$(curl -sf http://localhost:8123/ping >/dev/null 2>&1 && echo ok || echo no)
+            bq=$(curl -sf -X POST http://localhost:9050/bigquery/v2/projects/tripl-test/queries \
+                   -H 'Content-Type: application/json' \
+                   -d '{"query":"SELECT 1 AS x","useLegacySql":false}' >/dev/null 2>&1 && echo ok || echo no)
+            echo "attempt $i: postgres=$pg clickhouse=$ch bigquery-emulator=$bq"
+            if [ "$pg" = ok ] && [ "$ch" = ok ] && [ "$bq" = ok ]; then exit 0; fi
+            sleep 2
+          done
+          echo "::error::a conformance warehouse never became reachable"
+          docker logs bqemu 2>&1 | tail -50 || true
+          exit 1
+
+      - name: Conformance gates
+        env:
+          # Turns "warehouse unreachable" from a graceful local SKIP into a hard CI
+          # FAILURE. A conformance gate that skips reports green while testing
+          # nothing, which is worse than having no gate at all.
+          TRIPL_CONFORMANCE_REQUIRED: "1"
+          TRIPL_CONF_PG_HOST: localhost
+          TRIPL_CONF_PG_PORT: "5432"
+          TRIPL_CONF_PG_DB: tripl_conformance
+          TRIPL_CONF_PG_USER: tripl
+          TRIPL_CONF_PG_PASSWORD: tripl
+          TRIPL_CONF_CH_HOST: localhost
+          TRIPL_CONF_CH_PORT: "8123"
+          TRIPL_CONF_BQ_EMULATOR_URL: http://localhost:9050
+          TRIPL_CONF_BQ_PROJECT: tripl-test
+        run: |
+          uv run pytest -q -m conformance \
+            --junitxml=conformance.xml \
+            src/tripl/tests/conformance
+
+      - name: Prove the conformance gates actually ran
+        # The belt to TRIPL_CONFORMANCE_REQUIRED's braces. A broken container, a
+        # mis-typed marker or a collection error would otherwise turn this whole job
+        # into a no-op that reports green. Zero tests run, or any test skipped, is a
+        # failure here — the gate is only a gate if it is proven to have executed.
+        if: always()
+        run: |
+          python3 - <<'PY'
+          import sys, xml.etree.ElementTree as ET
+          try:
+              root = ET.parse("conformance.xml").getroot()
+          except (OSError, ET.ParseError) as exc:
+              sys.exit(f"::error::no conformance JUnit report: {exc}. The gates did not run.")
+          suites = root.iter("testsuite")
+          tests = errors = failures = skipped = 0
+          for suite in suites:
+              tests += int(suite.get("tests", 0))
+              errors += int(suite.get("errors", 0))
+              failures += int(suite.get("failures", 0))
+              skipped += int(suite.get("skipped", 0))
+          print(f"conformance: {tests} collected, {failures} failed, {errors} errored, {skipped} skipped")
+          if tests == 0:
+              sys.exit("::error::0 conformance tests ran. A gate that collects nothing is a no-op reporting green.")
+          if skipped:
+              sys.exit(f"::error::{skipped} conformance test(s) SKIPPED in CI. A warehouse was unreachable; the gate tested nothing.")
+          if failures or errors:
+              sys.exit(f"::error::{failures} failed / {errors} errored conformance test(s).")
+          PY
+
+      - name: Emulator logs (on failure)
+        if: failure()
+        run: docker logs bqemu 2>&1 | tail -100 || true
 
   frontend:
     name: Frontend (lint + build + test)
