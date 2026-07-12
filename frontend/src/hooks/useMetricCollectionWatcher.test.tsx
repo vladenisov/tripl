@@ -52,6 +52,60 @@ function renderHarness(onSettled?: (metricId: string, status: 'success' | 'error
   )
 }
 
+// Mirrors MonitoringDetailPage: the spinner is keyed to the *watched* metric
+// (not a raw `isWatching`), and the watch captures the current route's ids at
+// collect-start so a completion can invalidate the metric it actually collected
+// — even after an `:id`-only navigation that does NOT remount the page
+// (tripl-0s3d).
+function NavHarness({
+  route,
+  onInvalidate,
+}: {
+  route: { scope: string; scopeId: string }
+  onInvalidate: (scope: string, scopeId: string) => void
+}) {
+  const watcher = useMetricCollectionWatcher<{ scope: string; scopeId: string }>(
+    'demo',
+    (_metricId, status, context) => {
+      if (status !== 'success' || !context) return
+      onInvalidate(context.scope, context.scopeId)
+    },
+    { pollIntervalMs: 10 },
+  )
+  const isCollecting = watcher.watchingMetricId === route.scopeId
+  return (
+    <button
+      type="button"
+      onClick={() =>
+        watcher.watch(route.scopeId, `Metric ${route.scopeId}`, {
+          scope: route.scope,
+          scopeId: route.scopeId,
+        })
+      }
+    >
+      {isCollecting ? 'collecting' : 'idle'}
+    </button>
+  )
+}
+
+function renderNavHarness(
+  route: { scope: string; scopeId: string },
+  onInvalidate: (scope: string, scopeId: string) => void,
+) {
+  const queryClient = new QueryClient({
+    defaultOptions: { queries: { retry: false } },
+  })
+  const ui = (nextRoute: { scope: string; scopeId: string }) => (
+    <QueryClientProvider client={queryClient}>
+      <NavHarness route={nextRoute} onInvalidate={onInvalidate} />
+    </QueryClientProvider>
+  )
+  const view = render(ui(route))
+  // Simulates navigating to another metric without unmounting the page.
+  const navigateTo = (nextRoute: { scope: string; scopeId: string }) => view.rerender(ui(nextRoute))
+  return { ...view, navigateTo }
+}
+
 beforeEach(() => {
   vi.clearAllMocks()
 })
@@ -77,7 +131,8 @@ describe('useMetricCollectionWatcher', () => {
       ),
     )
     expect(metricsCatalogApi.get).toHaveBeenCalledWith('demo', 'm-1')
-    expect(onSettled).toHaveBeenCalledWith('m-1', 'success')
+    // No context captured by this harness, so the third arg is undefined.
+    expect(onSettled).toHaveBeenCalledWith('m-1', 'success', undefined)
     // The watch stops once terminal.
     expect(screen.getByRole('button')).toHaveTextContent('idle')
     expect(toast.error).not.toHaveBeenCalled()
@@ -95,7 +150,7 @@ describe('useMetricCollectionWatcher', () => {
     await waitFor(() =>
       expect(toast.error).toHaveBeenCalledWith('Collection failed: warehouse query timed out'),
     )
-    expect(onSettled).toHaveBeenCalledWith('m-1', 'error')
+    expect(onSettled).toHaveBeenCalledWith('m-1', 'error', undefined)
     expect(screen.getByRole('button')).toHaveTextContent('idle')
     expect(toast.success).not.toHaveBeenCalled()
   })
@@ -127,6 +182,45 @@ describe('useMetricCollectionWatcher', () => {
     // The 10ms poll interval re-fetches until the terminal status lands.
     await waitFor(() => expect(toast.success).toHaveBeenCalled())
     expect(vi.mocked(metricsCatalogApi.get).mock.calls.length).toBeGreaterThanOrEqual(3)
-    expect(onSettled).toHaveBeenCalledWith('m-1', 'success')
+    expect(onSettled).toHaveBeenCalledWith('m-1', 'success', undefined)
+  })
+
+  it('does not show a metric navigated to mid-watch as collecting (tripl-0s3d)', async () => {
+    // The watch stays in flight (never leaves "running") across the navigation.
+    vi.mocked(metricsCatalogApi.get).mockResolvedValue(definitionWith('running'))
+    const onInvalidate = vi.fn()
+    const { navigateTo } = renderNavHarness({ scope: 'metric', scopeId: 'A' }, onInvalidate)
+
+    // Start collecting metric A.
+    fireEvent.click(screen.getByRole('button'))
+    await waitFor(() => expect(metricsCatalogApi.get).toHaveBeenCalledWith('demo', 'A'))
+    expect(screen.getByRole('button')).toHaveTextContent('collecting')
+
+    // Navigate to metric B while A is still collecting — same page, no remount.
+    navigateTo({ scope: 'metric', scopeId: 'B' })
+
+    // B must NOT inherit A's in-flight watch state.
+    expect(screen.getByRole('button')).toHaveTextContent('idle')
+  })
+
+  it("invalidates the metric captured at collect-start, not the one navigated to (tripl-0s3d)", async () => {
+    vi.mocked(metricsCatalogApi.get).mockResolvedValue(definitionWith('running'))
+    const onInvalidate = vi.fn()
+    const { navigateTo } = renderNavHarness({ scope: 'metric', scopeId: 'A' }, onInvalidate)
+
+    // Start collecting metric A (captures { scope: 'metric', scopeId: 'A' }).
+    fireEvent.click(screen.getByRole('button'))
+    await waitFor(() => expect(metricsCatalogApi.get).toHaveBeenCalledWith('demo', 'A'))
+
+    // Navigate to metric B while A's collection is still running.
+    navigateTo({ scope: 'metric', scopeId: 'B' })
+
+    // A's run now settles successfully.
+    vi.mocked(metricsCatalogApi.get).mockResolvedValue(definitionWith('success'))
+
+    await waitFor(() => expect(onInvalidate).toHaveBeenCalled())
+    // Completion invalidates A's captured scope — never the navigated-to B.
+    expect(onInvalidate).toHaveBeenCalledWith('metric', 'A')
+    expect(onInvalidate).not.toHaveBeenCalledWith('metric', 'B')
   })
 })

@@ -17,10 +17,17 @@ const WATCH_TIMEOUT_MS = 5 * 60_000
 const STATUS_RUNNING = 'running'
 const STATUS_ERROR = 'error'
 
-interface WatchTarget {
+interface WatchTarget<TContext> {
   metricId: string
   displayName: string
   startedAt: number
+  /**
+   * Caller-supplied ids/state captured at collect-start (e.g. the route's
+   * scope/scopeId). Threaded back to `onSettled` on completion so the settle
+   * always acts on the metric it was actually collecting — never whatever the
+   * page has since navigated to mid-watch (tripl-0s3d).
+   */
+  context: TContext | undefined
 }
 
 export interface MetricCollectionWatcherOptions {
@@ -28,11 +35,20 @@ export interface MetricCollectionWatcherOptions {
   pollIntervalMs?: number
 }
 
-export interface MetricCollectionWatcher {
-  /** Start watching a metric whose manual collect was just accepted (202). */
-  watch: (metricId: string, displayName: string) => void
+export interface MetricCollectionWatcher<TContext = void> {
+  /**
+   * Start watching a metric whose manual collect was just accepted (202).
+   * `context` is captured now and handed back verbatim to `onSettled`.
+   */
+  watch: (metricId: string, displayName: string, context?: TContext) => void
   /** True while a watched collection is still running. */
   isWatching: boolean
+  /**
+   * The metric currently being watched, or `null`. Callers key their own
+   * "collecting" UI to this so an in-flight watch on metric A does not render as
+   * "collecting" after the page navigates to metric B (tripl-0s3d).
+   */
+  watchingMetricId: string | null
 }
 
 /**
@@ -47,12 +63,16 @@ export interface MetricCollectionWatcher {
  * persisted failure reason, and calls `onSettled` so the caller can refresh its
  * series / list queries.
  */
-export function useMetricCollectionWatcher(
+export function useMetricCollectionWatcher<TContext = void>(
   slug: string | undefined,
-  onSettled?: (metricId: string, status: 'success' | 'error') => void,
+  onSettled?: (
+    metricId: string,
+    status: 'success' | 'error',
+    context: TContext | undefined,
+  ) => void,
   options?: MetricCollectionWatcherOptions,
-): MetricCollectionWatcher {
-  const [target, setTarget] = useState<WatchTarget | null>(null)
+): MetricCollectionWatcher<TContext> {
+  const [target, setTarget] = useState<WatchTarget<TContext> | null>(null)
 
   // Latest-callback ref so callers can pass inline closures without the poll
   // resubscribing on every render.
@@ -65,7 +85,7 @@ export function useMetricCollectionWatcher(
   const reportedRef = useRef<number | null>(null)
 
   const settle = (
-    watched: WatchTarget,
+    watched: WatchTarget<TContext>,
     definition: MetricDefinitionResponse | null,
   ): void => {
     if (reportedRef.current === watched.startedAt) return
@@ -84,11 +104,11 @@ export function useMetricCollectionWatcher(
           ? `Collection failed: ${definition.last_collection_error}`
           : 'Collection failed.',
       )
-      onSettledRef.current?.(watched.metricId, 'error')
+      onSettledRef.current?.(watched.metricId, 'error', watched.context)
       return
     }
     toast.success(`"${watched.displayName}" collected — the chart is up to date.`)
-    onSettledRef.current?.(watched.metricId, 'success')
+    onSettledRef.current?.(watched.metricId, 'success', watched.context)
   }
 
   useQuery({
@@ -117,8 +137,9 @@ export function useMetricCollectionWatcher(
   })
 
   return {
-    watch: (metricId, displayName) =>
-      setTarget({ metricId, displayName, startedAt: Date.now() }),
+    watch: (metricId, displayName, context) =>
+      setTarget({ metricId, displayName, startedAt: Date.now(), context }),
     isWatching: target !== null,
+    watchingMetricId: target?.metricId ?? null,
   }
 }

@@ -627,22 +627,35 @@ export default function MonitoringDetailPage() {
   // the watcher polls the persisted last_collection_status until the run
   // settles, toasts success or the persisted failure reason (tripl-4mju), and
   // refreshes the series/definition once data landed.
-  const collectWatcher = useMetricCollectionWatcher(slug, (metricId, status) => {
-    if (status !== 'success') return
-    void queryClient.invalidateQueries({
-      queryKey: ['monitoringMetrics', slug, scope, scopeId],
-    })
-    void queryClient.invalidateQueries({ queryKey: ['metricDefinition', slug, metricId] })
-  })
+  const collectWatcher = useMetricCollectionWatcher<{ scope: string; scopeId: string }>(
+    slug,
+    (metricId, status, context) => {
+      if (status !== 'success') return
+      // Invalidate the metric this run was actually collecting — its scope/scopeId
+      // captured at collect-start — not whatever the page navigated to mid-watch
+      // (tripl-0s3d). The metricDefinition key already uses the settled metricId.
+      if (context) {
+        void queryClient.invalidateQueries({
+          queryKey: ['monitoringMetrics', slug, context.scope, context.scopeId],
+        })
+      }
+      void queryClient.invalidateQueries({ queryKey: ['metricDefinition', slug, metricId] })
+    },
+  )
   const collectMut = useMutation({
     mutationFn: () => metricsCatalogApi.collect(slug!, scopeId),
     onSuccess: () => {
       toast.success('Collection started — you will be notified when it finishes.')
-      collectWatcher.watch(scopeId, metricDefinition?.display_name ?? 'This metric')
+      collectWatcher.watch(scopeId, metricDefinition?.display_name ?? 'This metric', {
+        scope,
+        scopeId,
+      })
     },
     onError: () => toast.error('Could not start collection.'),
   })
-  const isCollecting = collectMut.isPending || collectWatcher.isWatching
+  // Key the spinner to the watched metric so an in-flight watch on metric A does
+  // not read as "collecting" once the page navigates to metric B (tripl-0s3d).
+  const isCollecting = collectMut.isPending || collectWatcher.watchingMetricId === scopeId
 
   const { confirm: confirmDelete, dialog: deleteDialog } = useConfirm()
   const deleteMetric = async (): Promise<void> => {
