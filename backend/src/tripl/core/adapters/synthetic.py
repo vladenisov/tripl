@@ -401,8 +401,8 @@ class SyntheticAdapter(BaseAdapter):
             groups.setdefault(key, []).append(row)
         out: list[tuple[object, ...]] = []
         for key, members in self._sorted_breakdown_items(groups):
-            bucket, value, is_other, *values = key
-            out.append((bucket, value, is_other, *values, len(members)))
+            k_bucket, k_value, k_is_other, *k_values = key
+            out.append((k_bucket, k_value, k_is_other, *k_values, len(members)))
         return reg, [], out[: max(int(limit), 0)]
 
     def get_time_bucketed_breakdown_counts_multi(
@@ -439,8 +439,8 @@ class SyntheticAdapter(BaseAdapter):
                 key = (bucket, value, is_other, *tuple(row.get(column) for column in reg))
                 groups.setdefault(key, []).append(row)
             for key, members in self._sorted_breakdown_items(groups):
-                bucket, value, is_other, *values = key
-                out.append((bucket, breakdown, value, is_other, *values, len(members)))
+                k_bucket, k_value, k_is_other, *k_values = key
+                out.append((k_bucket, breakdown, k_value, k_is_other, *k_values, len(members)))
         out.sort(key=lambda row: (row[0], row[1], row[2]))
         return reg, [], out[: max(int(limit), 0)]
 
@@ -507,9 +507,9 @@ class SyntheticAdapter(BaseAdapter):
             groups.setdefault(key, []).append(row)
         out: list[tuple[object, ...]] = []
         for key, members in self._sorted_breakdown_items(groups):
-            bucket, value, is_other, *values = key
+            k_bucket, k_value, k_is_other, *k_values = key
             aggregate = self._aggregate(members, agg_fn, measure)
-            out.append((bucket, value, is_other, *values, aggregate))
+            out.append((k_bucket, k_value, k_is_other, *k_values, aggregate))
         return reg, [], out[: max(int(limit), 0)]
 
     def get_time_bucketed_multi_aggregate(

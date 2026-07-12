@@ -332,13 +332,19 @@ class _IncidentSignal(Protocol):
 
     Satisfied by both ``MetricSignalResponse`` (the AnomaliesPage list) and
     ``MetricAnomaly``/``ProjectLatestSignal`` (the sidebar count), so one rule
-    can serve both call sites.
+    can serve both call sites. Members are read-only ``@property`` so they are
+    covariant — the concrete types use StrEnum ``scope_type``/``direction`` and a
+    non-optional ``scan_config_id``, all subtypes of the shapes below.
     """
 
-    scope_type: str
-    scan_config_id: uuid.UUID | None
-    bucket: datetime
-    direction: str
+    @property
+    def scope_type(self) -> str: ...
+    @property
+    def scan_config_id(self) -> uuid.UUID | None: ...
+    @property
+    def bucket(self) -> datetime: ...
+    @property
+    def direction(self) -> str: ...
 
 
 def incident_parent_keys(signals: Iterable[_IncidentSignal]) -> set[IncidentKey]:
