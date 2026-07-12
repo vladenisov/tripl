@@ -10,6 +10,7 @@ import { ErrorState } from '@/components/error-state'
 import { TopBar } from '@/components/top-bar'
 import { TweaksPanelProvider } from '@/components/tweaks-panel'
 import { DemoBanner } from '@/demo/DemoBanner'
+import { DemoScenarioProvider } from '@/demo/DemoScenarioProvider'
 import { ProjectEventStreamProvider } from '@/realtime/ProjectEventStreamProvider'
 import { resolveNavLocation } from '@/lib/navigation'
 
@@ -171,6 +172,10 @@ export default function Layout() {
   return (
     <BranchProvider slug={slug ?? null}>
     <ProjectEventStreamProvider slug={slug}>
+    {/* Holds the coached demo scenario across navigations: the scan the user
+        started keeps being watched while they walk to the metrics catalog.
+        Inert for every non-demo project. */}
+    <DemoScenarioProvider project={activeProject}>
     <TweaksPanelProvider>
       <CommandPaletteProvider>
         <div
@@ -257,6 +262,7 @@ export default function Layout() {
         </div>
       </CommandPaletteProvider>
     </TweaksPanelProvider>
+    </DemoScenarioProvider>
     </ProjectEventStreamProvider>
     </BranchProvider>
   )
