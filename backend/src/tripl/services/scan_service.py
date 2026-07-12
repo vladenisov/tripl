@@ -41,7 +41,10 @@ async def _verify_data_source(
     ):
         raise HTTPException(
             status_code=422,
-            detail="Synthetic data sources belong to their demo project and cannot be selected here.",
+            detail=(
+                "Synthetic data sources belong to their demo project "
+                "and cannot be selected here."
+            ),
         )
     return ds
 
