@@ -108,17 +108,27 @@ tooling above. `make install` does this for you, and installs the git hooks.
 
 ### Formatting is enforced, not suggested
 
-`ruff format` runs automatically on staged backend files through a git pre-commit
-hook. Install it once per clone:
+`ruff format` runs automatically on staged backend files through the git
+pre-commit hook. Point git at the versioned hooks once per clone:
 
 ```bash
-make install-hooks   # or: uv run --project backend --extra dev pre-commit install
+make install-hooks   # bd hooks install --beads
 ```
 
 The hook rewrites the files in place and then fails the commit, so you can see
 what changed and `git add` it — formatting is applied for you, but nothing is
-committed behind your back. CI runs `ruff format --check` too, so a `--no-verify`
-commit still gets caught at the PR.
+committed behind your back. CI runs `ruff format --check src/` too, so a
+`--no-verify` commit still gets caught at the PR.
+
+The hook itself lives in [`.beads/hooks/pre-commit`](.beads/hooks/pre-commit),
+below beads' own section markers (beads preserves anything outside them). It is a
+versioned file, so `make install-hooks` is the only setup step — it just points
+`core.hooksPath` at `.beads/hooks`.
+
+That path is stored in `.git/config` as an absolute, machine-specific value, so a
+clone or a moved working copy can end up pointing at a directory that no longer
+exists. When that happens **no hook runs at all** — beads' own sync included, and
+silently. `bd hooks list` tells you; `make install-hooks` repairs it.
 
 Notes:
 

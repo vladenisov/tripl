@@ -32,12 +32,17 @@ install-be: ## Install backend deps incl. dev extras (uv sync --extra dev)
 install-fe: ## Install frontend deps (pnpm install)
 	cd $(FRONTEND) && pnpm install
 
-# Run from the repo root: pre-commit reads /.pre-commit-config.yaml from the
-# working directory, while the tools it runs come from the backend environment.
-# This writes .git/hooks/pre-commit only — the beads post-commit/post-checkout
-# hooks are left alone.
-install-hooks: ## Install the git pre-commit hook (ruff format + check on staged backend files)
-	uv run --project $(BACKEND) --extra dev pre-commit install
+# beads owns the hooks: it points core.hooksPath at .beads/hooks, which git then
+# uses INSTEAD of .git/hooks. That path is an absolute, machine-specific value in
+# .git/config, so a clone (or a moved working copy) can end up pointing at a
+# directory that does not exist — at which point NO hook runs at all, beads' own
+# sync included. Re-running the installer repairs it.
+#
+# The ruff format + check step lives in .beads/hooks/pre-commit, outside beads'
+# section markers (which beads preserves across upgrades). That file is versioned,
+# so this target is the only per-clone step needed to get the hook.
+install-hooks: ## Point git at the versioned hooks (beads sync + ruff format on staged backend files)
+	bd hooks install --beads
 
 ##@ Dev
 .PHONY: dev dev-fe

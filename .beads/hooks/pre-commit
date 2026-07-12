@@ -22,3 +22,38 @@ if command -v bd >/dev/null 2>&1; then
   if [ $_bd_exit -ne 0 ]; then exit $_bd_exit; fi
 fi
 # --- END BEADS INTEGRATION v1.0.4 ---
+
+# --- BEGIN RUFF FORMAT (tripl) ---
+# Deliberately OUTSIDE the beads markers: `bd hooks install` preserves user content
+# outside its own section, so this survives beads upgrades. The file is versioned,
+# so every clone picks the hook up as soon as `make install-hooks` points
+# core.hooksPath here — no per-developer setup beyond that.
+#
+# Formatting is a gate, not a suggestion: CI runs `ruff format --check src/`. Here
+# we format the staged backend Python in place and then FAIL the commit, so the
+# rewrite is reviewed and staged deliberately instead of being slipped in.
+_staged_py=$(git diff --cached --name-only --diff-filter=ACMR -- backend | grep -E '\.py$')
+if [ -n "$_staged_py" ]; then
+  if ! command -v uv >/dev/null 2>&1; then
+    echo >&2 "ruff: uv not found — skipping the format check (CI still enforces it)"
+  else
+    # --extra dev: ruff lives in the dev extra, and a bare `uv run` resolves only
+    # the default dependencies.
+    _ruff="uv run --project backend --extra dev ruff"
+    # --force-exclude: the files are passed explicitly, and without it ruff ignores
+    # the `extend-exclude` in backend/pyproject.toml and reformats alembic/versions.
+    if ! printf '%s\n' "$_staged_py" | tr '\n' '\0' |
+      xargs -0 $_ruff format --check --force-exclude >/dev/null 2>&1; then
+      printf '%s\n' "$_staged_py" | tr '\n' '\0' | xargs -0 $_ruff format --force-exclude
+      echo >&2 ""
+      echo >&2 "ruff format rewrote staged files. Review them, 'git add' them, and commit again."
+      exit 1
+    fi
+    if ! printf '%s\n' "$_staged_py" | tr '\n' '\0' | xargs -0 $_ruff check --force-exclude; then
+      echo >&2 ""
+      echo >&2 "ruff check failed on staged files. Fix the findings and commit again."
+      exit 1
+    fi
+  fi
+fi
+# --- END RUFF FORMAT (tripl) ---
