@@ -22,11 +22,21 @@ double-counting a boundary row.
 bucket boundary on a natural clock boundary.
 
 **Week buckets start on Monday**, anchored at :data:`WEEK_ORIGIN`
-(1970-01-05T00:00:00Z, the first Monday of the epoch). This is the one place the
-warehouses disagree by default — a naive 7-day epoch bin lands on a *Thursday*,
-because 1970-01-01 was a Thursday. Each adapter therefore has to say "Monday"
-explicitly (``toMonday`` / ``TIMESTAMP_TRUNC(..., WEEK(MONDAY))`` / ``date_bin``
-off :data:`WEEK_ORIGIN`) instead of taking the dialect default.
+(1970-01-05T00:00:00Z, the first Monday of the epoch).
+
+The dialects do *not* agree here by default, and they disagree in different ways,
+so each adapter states "Monday" explicitly rather than trusting its default:
+
+* A plain 7-day bin measured from the epoch starts weeks on a **Thursday**, because
+  1970-01-01 was a Thursday. That is what PostgreSQL's ``date_bin`` and BigQuery's
+  ``*_BUCKET`` do if handed the epoch as the origin, so those two adapters pass
+  :data:`WEEK_ORIGIN` / use ``*_TRUNC(..., WEEK(MONDAY))`` instead.
+* ClickHouse's ``toStartOfInterval(col, INTERVAL 1 WEEK)`` is the exception: it is
+  *already* Monday-aligned on :data:`WEEK_ORIGIN`, verified against a live server.
+  It nonetheless returns a ``Date`` rather than a ``DateTime``, so a 1w bucket would
+  come back as ``datetime.date`` while every other interval yields
+  ``datetime.datetime``. The adapter uses ``toDateTime(toMonday(...))`` to keep the
+  bucket type consistent across all five intervals, not to fix the origin.
 
 There is no DST hazard anywhere in here *because* the contract is UTC-only: UTC
 has no DST transitions, so a fixed-width bin never straddles a clock change.

@@ -118,7 +118,11 @@ def test_postgres_wires_timeout_and_tls(monkeypatch: pytest.MonkeyPatch) -> None
     build_adapter(ds)
 
     assert captured["connect_timeout"] == 90
-    assert captured["options"] == "-c statement_timeout=90000"
+    # The session timezone is pinned to UTC through the same libpq `options` channel as
+    # statement_timeout. It is not cosmetic: an offset-less timestamp column is compared
+    # and binned in the *session* timezone, so a server whose TimeZone is Europe/Berlin
+    # would shift every window bound and bucket edge (see tripl.core.bucketing).
+    assert captured["options"] == "-c timezone=UTC -c statement_timeout=90000"
     assert captured["sslmode"] == "prefer"
     assert captured["autocommit"] is True
 
@@ -150,4 +154,6 @@ def test_postgres_localhost_skips_tls_and_uses_default_timeout(
     # Local hosts skip TLS (no cert configured in dev/docker).
     assert captured["sslmode"] is None
     assert captured["connect_timeout"] == _DEFAULT_TIMEOUT_SECONDS
-    assert captured["options"] == f"-c statement_timeout={_DEFAULT_TIMEOUT_SECONDS * 1000}"
+    assert captured["options"] == (
+        f"-c timezone=UTC -c statement_timeout={_DEFAULT_TIMEOUT_SECONDS * 1000}"
+    )

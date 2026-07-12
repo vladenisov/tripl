@@ -4,6 +4,7 @@ import logging
 import re
 import time
 from datetime import datetime
+from typing import override
 
 import psycopg
 
@@ -46,6 +47,11 @@ def _truncate_sql(sql: str) -> str:
     return sql[:_SQL_LOG_MAX_CHARS] + ("..." if len(sql) > _SQL_LOG_MAX_CHARS else "")
 
 
+# date_bin() — which every bucket expression depends on — was added in PostgreSQL
+# 14. libpq reports the server version as MMmmmm (140005 == 14.5), so this is the
+# integer floor of a supported server.
+_MIN_SERVER_VERSION = 140000
+
 _IDENTIFIER_RE = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_.]*$")
 _IDENTIFIER_PART_RE = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*$")
 
@@ -59,16 +65,58 @@ def _is_local_host(host: str) -> bool:
     return host in {"localhost", "127.0.0.1", "::1", ""}
 
 
+def _format_server_version(version: int) -> str:
+    """Render libpq's packed server version (140005) as a human "14.5"."""
+    return f"{version // 10000}.{version % 10000}"
+
+
+def _jsonb_object(value_sql: str) -> str:
+    """Coerce a json/jsonb expression to a jsonb *object*, or an empty object.
+
+    ``json`` has to be cast to ``jsonb`` before any of the jsonb operators work,
+    and a SQL NULL, a JSON scalar or a JSON array at the root has no keys to walk
+    — all three collapse to ``{}`` so the path walk yields no rows instead of
+    erroring or returning NULL.
+    """
+    return (
+        f"CASE WHEN jsonb_typeof({value_sql}::jsonb) = 'object' "
+        f"THEN {value_sql}::jsonb ELSE '{{}}'::jsonb END"
+    )
+
+
+#: Recursive descent over a jsonb document, emitting one row per *leaf*: a dotted
+#: path and the jsonb value at it. Objects are the only thing recursed into, so an
+#: array or a JSON ``null`` is a leaf at its own path (never indexed or dropped),
+#: which is what ClickHouse's ``JSONAllPaths`` reports for the same document.
+#: The caller supplies the seed relation as ``{seed}`` (any relation with a single
+#: jsonb-object column ``_doc``).
+_JSON_LEAF_WALK = (
+    "_walk(_path, _value) AS ("
+    "SELECT _kv.key, _kv.value FROM {seed} AS _seed, LATERAL jsonb_each(_seed._doc) AS _kv "
+    "UNION ALL "
+    "SELECT _walk._path || '.' || _kv.key, _kv.value "
+    "FROM _walk, LATERAL jsonb_each(_walk._value) AS _kv "
+    "WHERE jsonb_typeof(_walk._value) = 'object'"
+    ")"
+)
+
+
 class PostgresAdapter(BaseAdapter):
     """Postgres-backed warehouse adapter mirroring the ClickHouse semantics.
 
     Maps ClickHouse-specific features to standard SQL:
-      - toStartOfInterval → date_bin
-      - JSONAllPaths      → jsonb_object_keys (top-level keys only — nested
-                            paths are surfaced as you drill in via json_value_paths)
+      - toStartOfInterval → date_bin (PostgreSQL >= 14; see test_connection)
+      - JSONAllPaths      → a recursive jsonb_each walk (_JSON_LEAF_WALK) that
+                            enumerates full nested leaf paths ("user.address.city"),
+                            not just the top-level keys jsonb_object_keys returns
       - GROUPING SETS     → same syntax (Postgres supports it natively)
       - multiIf           → CASE WHEN / THEN
       - LIMIT n BY col    → ROW_NUMBER() OVER (PARTITION BY ...) wrapper
+
+    Everything is UTC: the session timezone is pinned on connect and every window
+    bound is an explicit-offset TIMESTAMPTZ literal, so neither a non-UTC server
+    nor a non-UTC role can shift a window or a bucket. See
+    :mod:`tripl.core.bucketing` for the contract.
     """
 
     def __init__(
@@ -86,11 +134,16 @@ class PostgresAdapter(BaseAdapter):
         # base_query is cancelled by Postgres long before Celery's hard limit
         # SIGKILLs the worker. statement_timeout is in milliseconds.
         connect_timeout = timeout_seconds if timeout_seconds and timeout_seconds > 0 else None
-        options = (
-            f"-c statement_timeout={connect_timeout * 1000}"
-            if connect_timeout is not None
-            else None
-        )
+        # timezone=UTC pins the *session*, not just our literals: an offset-less
+        # timestamp column is compared and binned in the session timezone, so a
+        # server or role whose TimeZone is, say, Europe/Berlin would otherwise
+        # shift every window bound and every bucket edge by its UTC offset. Set
+        # through the same libpq `options` channel as statement_timeout so there
+        # is exactly one mechanism, applied before the first query runs.
+        option_parts = ["-c timezone=UTC"]
+        if connect_timeout is not None:
+            option_parts.append(f"-c statement_timeout={connect_timeout * 1000}")
+        options = " ".join(option_parts)
         # Default to TLS for non-local hosts; localhost connections (dev,
         # docker) often have no TLS configured, so don't force it there.
         sslmode = None if _is_local_host(host) else "prefer"
@@ -113,6 +166,23 @@ class PostgresAdapter(BaseAdapter):
         self._conn.close()
 
     def test_connection(self) -> bool:
+        """Probe the server and refuse one too old to bucket time correctly.
+
+        Every time-bucketed query goes through ``date_bin``, which only exists on
+        PostgreSQL 14+. Without this check an older server fails much later, deep
+        inside a scan or a metric collection, as an opaque "function date_bin(...)
+        does not exist". The version comes from the libpq handshake, so the guard
+        costs no extra round trip.
+        """
+        server_version = self._conn.info.server_version
+        if server_version < _MIN_SERVER_VERSION:
+            minimum = _MIN_SERVER_VERSION // 10000
+            msg = (
+                f"PostgreSQL {_format_server_version(server_version)} is too old for tripl: "
+                f"every time-bucket query uses date_bin(), which was added in PostgreSQL "
+                f"{minimum}. Upgrade the server to {minimum} or newer."
+            )
+            raise ValueError(msg)
         with self._conn.cursor() as cur:
             cur.execute("SELECT 1")
             row = cur.fetchone()
@@ -242,28 +312,147 @@ class PostgresAdapter(BaseAdapter):
     def _quote_string(self, value: str) -> str:
         return "'" + value.replace("'", "''") + "'"
 
+    def _time_window_condition(
+        self,
+        time_column: str,
+        time_from: datetime,
+        time_to: datetime,
+    ) -> str:
+        """The half-open ``time_from <= t < time_to`` predicate, in UTC.
+
+        The one place a window bound is rendered. Bounds go through
+        ``format_utc_literal`` and are emitted as ``TIMESTAMPTZ`` with an explicit
+        ``+00:00``: an offset-less literal (what ``strftime`` used to produce) is
+        read in the *session* timezone, silently sliding the whole window on a
+        non-UTC server. A ``timestamp``-typed column is promoted to timestamptz for
+        the comparison using the session timezone, which __init__ pins to UTC, so
+        naive and aware columns agree.
+        """
+        quoted = _quote_ident(self._validate_column(time_column))
+        return (
+            f"{quoted} >= TIMESTAMPTZ '{format_utc_literal(time_from)}' "
+            f"AND {quoted} < TIMESTAMPTZ '{format_utc_literal(time_to)}'"
+        )
+
     def _time_window_where_clause(
         self,
         time_column: str | None,
         time_from: datetime | None,
         time_to: datetime | None,
     ) -> str:
+        """The optional-window variant: a leading-space WHERE clause, or ``""``."""
         if time_column is None or time_from is None or time_to is None:
             return ""
-        tc = self._validate_column(time_column)
-        t_from = time_from.strftime("%Y-%m-%d %H:%M:%S")
-        t_to = time_to.strftime("%Y-%m-%d %H:%M:%S")
-        quoted = _quote_ident(tc)
-        return f" WHERE {quoted} >= '{t_from}' AND {quoted} < '{t_to}'"
+        return f" WHERE {self._time_window_condition(time_column, time_from, time_to)}"
 
     def _json_paths_expression(self, column: str) -> str:
-        # Top-level JSONB keys, sorted, returned as a text[] for parity with
-        # ClickHouse's `arraySort(JSONAllPaths(col))` output shape.
+        """Sorted text[] of the document's nested leaf paths, for one row.
+
+        Parity with ClickHouse's ``arraySort(JSONAllPaths(col))``: full dotted leaf
+        paths ("user.address.city"), not the top-level keys ``jsonb_object_keys``
+        returns. Semantics, made explicit because the three warehouses have to
+        agree on them:
+
+        * **Objects** are recursed into and are *not* themselves paths; only leaves
+          are emitted. An empty object is therefore not a path (it has no leaf) —
+          the same thing ``json_paths.flatten_json_paths`` does locally.
+        * **Arrays are leaves.** The array lands at its own path and is never
+          indexed into, so ``{"tags": ["a"]}`` yields ``tags``, not ``tags.0``.
+        * **JSON nulls are leaves.** ``{"a": null}`` yields ``a``: the key exists in
+          the document, so it stays discoverable rather than vanishing.
+        * A **SQL NULL** column, or a JSON scalar/array at the *root*, has no keys
+          and yields ``ARRAY[]::text[]`` — an empty array, never NULL, so it groups
+          as a value like any other.
+        """
         c = _quote_ident(self._validate_column(column))
+        seed = f"(SELECT {_jsonb_object(c)} AS _doc)"
         return (
-            f"(SELECT COALESCE(array_agg(k ORDER BY k), ARRAY[]::text[]) "
-            f"FROM (SELECT DISTINCT jsonb_object_keys({c}::jsonb) AS k) AS _keys)"
+            "(SELECT COALESCE(array_agg(DISTINCT _leaf._path ORDER BY _leaf._path), "
+            "ARRAY[]::text[]) FROM ("
+            f"WITH RECURSIVE {_JSON_LEAF_WALK.format(seed=seed)} "
+            "SELECT _path FROM _walk WHERE jsonb_typeof(_value) <> 'object'"
+            ") AS _leaf(_path))"
         )
+
+    @override
+    def get_json_path_samples(
+        self,
+        base_query: str,
+        json_columns: list[str],
+        *,
+        time_column: str | None = None,
+        time_from: datetime | None = None,
+        time_to: datetime | None = None,
+        path_limit: int = 1000,
+        sample_limit: int = 3,
+        sample_row_limit: int = 1000,
+    ) -> dict[str, dict[str, list[object]]]:
+        """Discover nested JSON paths (and samples) warehouse-side, not row-side.
+
+        Replaces BaseAdapter's fallback, which pulled whole rows back and flattened
+        them in Python. One query per JSON column walks the document server-side,
+        so the UI sees path candidates from a much wider row sample at a fraction of
+        the transfer. The walk is bounded by ``sample_row_limit`` source rows
+        (recursion aside, a GROUP BY would otherwise scan the whole source), by
+        ``path_limit`` distinct paths and by ``sample_limit`` values per path.
+
+        Samples come back as JSON text (``"foo"``, ``42``, ``{"a":1}``), matching
+        ClickHouse's ``toJSONString`` output, which the shared
+        ``decode_json_path_value`` helper parses. Paths whose keys the extraction
+        expression cannot address are skipped visibly (logged), not silently
+        emitted and then broken at scan time.
+        """
+        if not json_columns or path_limit <= 0 or sample_limit <= 0 or sample_row_limit <= 0:
+            return {column: {} for column in json_columns}
+
+        where_clause = self._time_window_where_clause(time_column, time_from, time_to)
+        samples_by_column: dict[str, dict[str, list[object]]] = {}
+
+        for column in json_columns:
+            c = self._validate_column(column)
+            seed = (
+                f"(SELECT {_jsonb_object(_quote_ident(c))} AS _doc "
+                f"FROM ({base_query}) AS _src{where_clause} LIMIT {int(sample_row_limit)})"
+            )
+            # A JSON null renders as the text 'null'; it is ordered last so it only
+            # occupies a sample slot for a path that has nothing else to show.
+            sql = (
+                f"WITH RECURSIVE {_JSON_LEAF_WALK.format(seed=seed)}, "
+                "_leaf AS ("
+                "SELECT DISTINCT _path, _value::text AS _text FROM _walk "
+                "WHERE jsonb_typeof(_value) <> 'object'"
+                "), _ranked AS ("
+                "SELECT _path, _text, "
+                "DENSE_RANK() OVER (ORDER BY _path) AS _prank, "
+                "ROW_NUMBER() OVER (PARTITION BY _path ORDER BY (_text = 'null'), _text) AS _vrank "
+                "FROM _leaf"
+                ") "
+                "SELECT _path, _text FROM _ranked "
+                f"WHERE _prank <= {int(path_limit)} AND _vrank <= {int(sample_limit)} "
+                "ORDER BY _path, _vrank"
+            )
+            logger.debug("PG JSON path discovery query: %s", _truncate_sql(sql))
+            with self._conn.cursor() as cur:
+                cur.execute(sql)
+                rows = cur.fetchall()
+
+            column_samples: dict[str, list[object]] = {}
+            for raw_path, raw_text in rows:
+                path = str(raw_path)
+                try:
+                    self._json_path_expression(c, path)
+                except ValueError:
+                    logger.info("Skipping unsupported JSON path %s.%s", c, path)
+                    continue
+                # The path is registered even when its only value is a JSON null,
+                # so a null-valued key is still discoverable (with no samples).
+                samples = column_samples.setdefault(path, [])
+                if raw_text is None or raw_text == "null":
+                    continue
+                samples.append(raw_text)
+            samples_by_column[c] = column_samples
+
+        return samples_by_column
 
     def get_full_breakdown(
         self,
@@ -360,12 +549,11 @@ class PostgresAdapter(BaseAdapter):
                 json_value_names.append(full_path)
         select_parts.append("count(*) AS _cnt")
 
-        t_from = time_from.strftime("%Y-%m-%d %H:%M:%S")
-        t_to = time_to.strftime("%Y-%m-%d %H:%M:%S")
+        window = self._time_window_condition(tc, time_from, time_to)
         sql = (
             f"SELECT {', '.join(select_parts)} "
             f"FROM ({base_query}) AS _src "
-            f"WHERE {_quote_ident(tc)} >= '{t_from}' AND {_quote_ident(tc)} < '{t_to}' "
+            f"WHERE {window} "
             f"GROUP BY {', '.join(group_parts)} "
             f"ORDER BY _bucket "
             f"LIMIT {int(limit)}"
@@ -434,12 +622,11 @@ class PostgresAdapter(BaseAdapter):
                 json_value_names.append(full_path)
         select_parts.append(f"{value_sql} AS _value")
 
-        t_from = time_from.strftime("%Y-%m-%d %H:%M:%S")
-        t_to = time_to.strftime("%Y-%m-%d %H:%M:%S")
+        window = self._time_window_condition(tc, time_from, time_to)
         sql = (
             f"SELECT {', '.join(select_parts)} "
             f"FROM ({base_query}) AS _src "
-            f"WHERE {_quote_ident(tc)} >= '{t_from}' AND {_quote_ident(tc)} < '{t_to}' "
+            f"WHERE {window} "
             f"GROUP BY {', '.join(group_parts)} "
             f"ORDER BY _bucket "
             f"LIMIT {int(limit)}"
@@ -550,12 +737,11 @@ class PostgresAdapter(BaseAdapter):
                 json_value_names.append(full_path)
         select_parts.append(f"{value_sql} AS _value")
 
-        t_from = time_from.strftime("%Y-%m-%d %H:%M:%S")
-        t_to = time_to.strftime("%Y-%m-%d %H:%M:%S")
+        window = self._time_window_condition(tc, time_from, time_to)
         sql = (
             f"SELECT {', '.join(select_parts)} "
             f"FROM ({base_query}) AS _src "
-            f"WHERE {_quote_ident(tc)} >= '{t_from}' AND {_quote_ident(tc)} < '{t_to}' "
+            f"WHERE {window} "
             f"GROUP BY {', '.join(group_parts)} "
             f"ORDER BY _bucket, _breakdown_value "
             f"LIMIT {int(limit)}"
@@ -624,12 +810,11 @@ class PostgresAdapter(BaseAdapter):
             select_parts.append(f"{self._spec_aggregate_sql(spec)} AS {_quote_ident(spec.key)}")
             col_names.append(spec.key)
 
-        t_from = time_from.strftime("%Y-%m-%d %H:%M:%S")
-        t_to = time_to.strftime("%Y-%m-%d %H:%M:%S")
+        window = self._time_window_condition(tc, time_from, time_to)
         sql = (
             f"SELECT {', '.join(select_parts)} "
             f"FROM ({base_query}) AS _src "
-            f"WHERE {_quote_ident(tc)} >= '{t_from}' AND {_quote_ident(tc)} < '{t_to}' "
+            f"WHERE {window} "
             f"GROUP BY _bucket "
             f"ORDER BY _bucket "
             f"LIMIT {int(limit)}"
@@ -684,12 +869,11 @@ class PostgresAdapter(BaseAdapter):
             select_parts.append(f"{self._spec_aggregate_sql(spec)} AS {_quote_ident(spec.key)}")
             col_names.append(spec.key)
 
-        t_from = time_from.strftime("%Y-%m-%d %H:%M:%S")
-        t_to = time_to.strftime("%Y-%m-%d %H:%M:%S")
+        window = self._time_window_condition(tc, time_from, time_to)
         sql = (
             f"SELECT {', '.join(select_parts)} "
             f"FROM ({base_query}) AS _src "
-            f"WHERE {_quote_ident(tc)} >= '{t_from}' AND {_quote_ident(tc)} < '{t_to}' "
+            f"WHERE {window} "
             f"GROUP BY _bucket, _breakdown_value, _is_other "
             f"ORDER BY _bucket, _breakdown_value "
             f"LIMIT {int(limit)}"
@@ -754,8 +938,7 @@ class PostgresAdapter(BaseAdapter):
 
         tc = self._validate_column(time_column)
         cols = [self._validate_column(c) for c in breakdown_columns]
-        t_from = time_from.strftime("%Y-%m-%d %H:%M:%S")
-        t_to = time_to.strftime("%Y-%m-%d %H:%M:%S")
+        window = self._time_window_condition(tc, time_from, time_to)
 
         prepared = [
             f'{self._string_value_expression(c)} AS "__bd_raw_{i}"' for i, c in enumerate(cols)
@@ -783,7 +966,7 @@ class PostgresAdapter(BaseAdapter):
             "FROM ("
             f"SELECT {', '.join(prepared)} "
             f"FROM ({base_query}) AS _src "
-            f"WHERE {_quote_ident(tc)} >= '{t_from}' AND {_quote_ident(tc)} < '{t_to}'"
+            f"WHERE {window}"
             ") AS _prepared "
             f"GROUP BY GROUPING SETS ({grouping_sets})"
             ") AS _scored"
@@ -911,14 +1094,13 @@ class PostgresAdapter(BaseAdapter):
             "count(*) AS _cnt",
         ]
 
-        t_from = time_from.strftime("%Y-%m-%d %H:%M:%S")
-        t_to = time_to.strftime("%Y-%m-%d %H:%M:%S")
+        window = self._time_window_condition(tc, time_from, time_to)
         sql = (
             f"SELECT {', '.join(select_parts)} "
             "FROM ("
             f"SELECT {', '.join(prepared_parts)} "
             f"FROM ({base_query}) AS _src "
-            f"WHERE {_quote_ident(tc)} >= '{t_from}' AND {_quote_ident(tc)} < '{t_to}'"
+            f"WHERE {window}"
             ") AS _prepared "
             f"GROUP BY GROUPING SETS ({', '.join(grouping_sets)}) "
             "ORDER BY _bucket, _breakdown_column, _breakdown_value "

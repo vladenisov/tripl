@@ -6,6 +6,14 @@ from tripl.core.adapters.base import AggregateSpec
 from tripl.core.adapters.clickhouse import ClickHouseAdapter
 from tripl.models.domain_enums import MetricAggregation
 
+# Window bounds are rendered by `bucketing.format_utc_literal` and parsed with an
+# explicit UTC result zone, so an offset-less literal can no longer be reinterpreted
+# in the column's timezone.
+_WINDOW = (
+    "WHERE `time` >= parseDateTime64BestEffort('2026-04-01 00:00:00.000000+00:00', 6, 'UTC') "
+    "AND `time` < parseDateTime64BestEffort('2026-04-02 00:00:00.000000+00:00', 6, 'UTC')"
+)
+
 
 class FakeQueryResult:
     column_names = ["event_name"]
@@ -41,11 +49,9 @@ def test_clickhouse_preview_rows_applies_time_window() -> None:
         time_to=datetime(2026, 4, 2, 0, 0),
     )
 
-    assert (
-        "FROM (SELECT time, event_name FROM events) AS _src "
-        "WHERE `time` >= '2026-04-01 00:00:00' AND `time` < '2026-04-02 00:00:00' "
-        "LIMIT 5"
-    ) in client.sql[0]
+    assert (f"FROM (SELECT time, event_name FROM events) AS _src {_WINDOW} LIMIT 5") in client.sql[
+        0
+    ]
 
 
 def test_clickhouse_full_breakdown_applies_time_window() -> None:
@@ -62,9 +68,7 @@ def test_clickhouse_full_breakdown_applies_time_window() -> None:
     )
 
     assert (
-        "FROM (SELECT time, event_name FROM events) AS _src "
-        "WHERE `time` >= '2026-04-01 00:00:00' AND `time` < '2026-04-02 00:00:00' "
-        "GROUP BY ALL"
+        f"FROM (SELECT time, event_name FROM events) AS _src {_WINDOW} GROUP BY ALL"
     ) in client.sql[0]
 
 
@@ -92,7 +96,7 @@ def test_multi_aggregate_emits_one_column_per_spec() -> None:
     col_names, _rows = adapter.get_time_bucketed_multi_aggregate(
         "SELECT time, event_name FROM events",
         time_column="time",
-        ch_interval="1 day",
+        interval="1d",
         specs=[
             AggregateSpec(key="k_count", aggregation=MetricAggregation.count),
             AggregateSpec(key="k_sum", aggregation=MetricAggregation.sum, column="event_name"),
@@ -108,13 +112,12 @@ def test_multi_aggregate_emits_one_column_per_spec() -> None:
 
     sql = client.sql[0]
     # One scan, bucket + one aliased aggregate column per spec.
-    assert "toStartOfInterval(`time`, INTERVAL 1 day) AS _bucket" in sql
+    assert "toStartOfInterval(`time`, INTERVAL 1 DAY, 'UTC') AS _bucket" in sql
     assert "count(*) AS `k_count`" in sql
     assert "sum(`event_name`) AS `k_sum`" in sql
     assert "count(DISTINCT `event_name`) AS `k_distinct`" in sql
     assert (
-        "FROM (SELECT time, event_name FROM events) AS _src "
-        "WHERE `time` >= '2026-04-01 00:00:00' AND `time` < '2026-04-02 00:00:00' "
+        f"FROM (SELECT time, event_name FROM events) AS _src {_WINDOW} "
         "GROUP BY _bucket ORDER BY _bucket"
     ) in sql
     assert col_names == ["bucket", "k_count", "k_sum", "k_distinct"]
@@ -126,7 +129,7 @@ def test_multi_aggregate_conditional_filter_uses_if_variants() -> None:
     adapter.get_time_bucketed_multi_aggregate(
         "SELECT time, event_name FROM events",
         time_column="time",
-        ch_interval="1 hour",
+        interval="1h",
         specs=[
             AggregateSpec(
                 key="k_cf",
@@ -173,7 +176,7 @@ def test_multi_aggregate_breakdown_shape_and_other_folding() -> None:
     col_names, _rows = adapter.get_time_bucketed_multi_aggregate_breakdown(
         "SELECT time, event_name FROM events",
         time_column="time",
-        ch_interval="1 day",
+        interval="1d",
         breakdown_column="event_name",
         specs=[
             AggregateSpec(key="k_count", aggregation=MetricAggregation.count),
@@ -186,7 +189,7 @@ def test_multi_aggregate_breakdown_shape_and_other_folding() -> None:
 
     # values_limit set => a top-values query runs first, then the breakdown query.
     breakdown_sql = client.sql[-1]
-    assert "toStartOfInterval(`time`, INTERVAL 1 day) AS _bucket" in breakdown_sql
+    assert "toStartOfInterval(`time`, INTERVAL 1 DAY, 'UTC') AS _bucket" in breakdown_sql
     assert "AS _breakdown_value" in breakdown_sql
     assert "AS _is_other" in breakdown_sql
     assert "count(*) AS `k_count`" in breakdown_sql
@@ -204,7 +207,7 @@ def test_multi_aggregate_breakdown_no_limit_skips_other_folding() -> None:
     adapter.get_time_bucketed_multi_aggregate_breakdown(
         "SELECT time, event_name FROM events",
         time_column="time",
-        ch_interval="1 day",
+        interval="1d",
         breakdown_column="event_name",
         specs=[AggregateSpec(key="k_count", aggregation=MetricAggregation.count)],
         time_from=_FROM,

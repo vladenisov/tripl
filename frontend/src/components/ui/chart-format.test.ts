@@ -1,5 +1,69 @@
-import { describe, expect, it } from 'vitest'
-import { axisWidthForValues, formatCount } from './chart-format'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import { axisWidthForValues, formatCount, formatTick, formatTooltipLabel } from './chart-format'
+
+/**
+ * Axis and tooltip labels name a UTC bucket start, so they must render in UTC.
+ * Rendered in the viewer's local zone, a Monday week bucket prints as "Week of
+ * Jun 7" (Sunday) west of Greenwich and a day bucket prints under the wrong
+ * date — the axis would then disagree with the bucket the server computed
+ * (tripl-64n8.2). Node re-reads `process.env.TZ` on every Date operation, so
+ * stubbing it swings the host zone under the formatter.
+ */
+describe('bucket labels render in UTC', () => {
+  const ZONES = ['UTC', 'Pacific/Kiritimati', 'America/Anchorage']
+
+  afterEach(() => {
+    vi.unstubAllEnvs()
+  })
+
+  function inZone<T>(timeZone: string, run: () => T): T {
+    vi.stubEnv('TZ', timeZone)
+    try {
+      return run()
+    } finally {
+      vi.unstubAllEnvs()
+    }
+  }
+
+  // Monday 2026-06-08 at UTC midnight: Sunday the 7th in Anchorage, and already
+  // Monday afternoon of the 8th... in Kiritimati it is 14:00 on the 8th.
+  const MONDAY = '2026-06-08T00:00:00.000Z'
+
+  it('labels the week bucket by its Monday in every zone', () => {
+    for (const timeZone of ZONES) {
+      expect(inZone(timeZone, () => formatTooltipLabel(MONDAY, 'week')))
+        .toBe('Week of Jun 8, 2026')
+      expect(inZone(timeZone, () => formatTick(MONDAY, 'week'))).toBe('Jun 8')
+    }
+  })
+
+  it('labels a day bucket by its UTC date in every zone', () => {
+    for (const timeZone of ZONES) {
+      expect(inZone(timeZone, () => formatTooltipLabel(MONDAY, 'day'))).toBe('Jun 8, 2026')
+      expect(inZone(timeZone, () => formatTick(MONDAY, 'day'))).toBe('Jun 8')
+    }
+  })
+
+  it('labels an hour bucket by its UTC hour in every zone', () => {
+    // 23:00 UTC is the next local day east of Greenwich and the same local day
+    // (14:00) west of it — the label must not drift either way.
+    const lateHour = '2026-06-07T23:00:00.000Z'
+    for (const timeZone of ZONES) {
+      expect(inZone(timeZone, () => formatTooltipLabel(lateHour, 'hour')))
+        .toBe('Jun 7, 11:00 PM')
+      expect(inZone(timeZone, () => formatTick(lateHour, 'hour'))).toBe('Jun 7, 11 PM')
+    }
+  })
+
+  it('labels a month bucket by its UTC month in every zone', () => {
+    // The first instant of July UTC is still June 30 in Anchorage.
+    const july = '2026-07-01T00:00:00.000Z'
+    for (const timeZone of ZONES) {
+      expect(inZone(timeZone, () => formatTooltipLabel(july, 'month'))).toBe('July 2026')
+      expect(inZone(timeZone, () => formatTick(july, 'month'))).toBe('Jul 2026')
+    }
+  })
+})
 
 describe('formatCount', () => {
   it('renders 6-digit values compactly so labels stay short', () => {

@@ -95,7 +95,11 @@ Locally, all of the above (except the warehouses) run under Docker Compose:
 
 - **Celery** app with a **RabbitMQ** broker.
 - **Warehouse adapters** (`core/adapters`) provide a common interface over
-  **ClickHouse**, **BigQuery**, and **PostgreSQL** source databases.
+  **ClickHouse**, **BigQuery**, and **PostgreSQL** source databases. A common
+  interface is not the same as identical behavior: see the
+  **[warehouse capability matrix](warehouse-parity.md)** for what each warehouse
+  actually supports, which paths are sampled rather than exact, and the UTC /
+  Monday-week bucket contract every adapter must honor.
 - **Analyzers** (`core/analyzers`) hold the scan, anomaly, and drift logic.
   (Both live in the shared `core` kernel — see the Backend section — so the
   request path can reuse them without importing the worker package.)
