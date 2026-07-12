@@ -22,6 +22,7 @@ from tripl.core.adapters.base import (
     SchemaColumn,
     SchemaTable,
 )
+from tripl.core.adapters.errors import WarehouseCapabilityError
 from tripl.core.adapters.measure_validator import (
     build_aggregate_sql,
     coerce_aggregation,
@@ -138,7 +139,7 @@ def _resolve_sslmode(host: str, sslmode: str | None) -> str:
         return _DEFAULT_LOCAL_SSLMODE if _is_local_host(host) else _DEFAULT_REMOTE_SSLMODE
     if sslmode not in _SSL_MODES:
         msg = f"Unsupported sslmode: {sslmode!r}. Supported modes are: {', '.join(_SSL_MODES)}."
-        raise ValueError(msg)
+        raise WarehouseCapabilityError(msg)
     return sslmode
 
 
@@ -165,18 +166,18 @@ def _tls_pem_material(
             f"sslmode=disable never negotiates TLS, so {', '.join(sorted(provided))} "
             "cannot be applied. Remove the certificate material or raise sslmode."
         )
-        raise ValueError(msg)
+        raise WarehouseCapabilityError(msg)
     if sslmode in _SSL_VERIFYING_MODES and not sslrootcert:
         msg = f"sslmode={sslmode} verifies the server certificate but no sslrootcert was given."
-        raise ValueError(msg)
+        raise WarehouseCapabilityError(msg)
     if bool(sslcert) != bool(sslkey):
         msg = "Client certificate authentication needs both sslcert and sslkey, not one of them."
-        raise ValueError(msg)
+        raise WarehouseCapabilityError(msg)
     for name, pem in provided.items():
         if _PEM_HEADER not in pem:
             # Never echo the value: sslkey is a private key.
             msg = f"{name} must be PEM content (a '{_PEM_HEADER}...' block), not a file path."
-            raise ValueError(msg)
+            raise WarehouseCapabilityError(msg)
     return provided
 
 
@@ -229,14 +230,14 @@ def _validated_search_path(search_path: str) -> str:
     parts = [part.strip() for part in search_path.split(",")]
     if not parts or any(not part for part in parts):
         msg = f"Invalid search_path: {search_path!r}"
-        raise ValueError(msg)
+        raise WarehouseCapabilityError(msg)
     invalid = [part for part in parts if not _SEARCH_PATH_PART_RE.match(part)]
     if invalid:
         msg = (
             f"Invalid search_path schema name(s): {', '.join(repr(part) for part in invalid)}. "
             "search_path takes a comma-separated list of plain identifiers."
         )
-        raise ValueError(msg)
+        raise WarehouseCapabilityError(msg)
     return ",".join(parts)
 
 
@@ -458,7 +459,7 @@ class PostgresAdapter(BaseAdapter):
                 f"every time-bucket query uses date_bin(), which was added in PostgreSQL "
                 f"{minimum}. Upgrade the server to {minimum} or newer."
             )
-            raise ValueError(msg)
+            raise WarehouseCapabilityError(msg)
         with self._conn.cursor() as cur:
             cur.execute("SELECT 1")
             row = cur.fetchone()

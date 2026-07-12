@@ -11,6 +11,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from tripl import cache
+from tripl.core.adapters.errors import WarehouseCapabilityError
 from tripl.crypto import encrypt_value
 from tripl.models.data_source import DataSource, DBType, TestStatus
 from tripl.schemas.data_source import (
@@ -270,6 +271,13 @@ def _friendly_test_error(exc: Exception) -> str:
 
     Never echoes host/port/driver/credential internals — those go to logs only.
     """
+    # A capability error is a message tripl authored about a configuration the
+    # operator can act on ("PostgreSQL 13 is too old: date_bin() needs 14"). It holds
+    # no host, port or credential, and generalizing it away leaves the operator
+    # re-checking settings that are all, in fact, correct. Surface it verbatim.
+    if isinstance(exc, WarehouseCapabilityError):
+        return f"Connection test failed: {exc}"
+
     text = str(exc).lower()
     if any(hint in text for hint in _TIMEOUT_HINTS):
         return "Connection test failed: the data source did not respond in time."

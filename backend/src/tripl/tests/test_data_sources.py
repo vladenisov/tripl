@@ -9,6 +9,7 @@ from sqlalchemy import select
 from tripl import config, crypto
 from tripl.core.adapters import bigquery as bigquery_module
 from tripl.core.adapters import postgres as postgres_module
+from tripl.core.adapters.errors import WarehouseCapabilityError
 from tripl.core.adapters.postgres import _resolve_sslmode
 from tripl.core.adapters.registry import build_adapter
 from tripl.crypto import decrypt_value, encrypt_value
@@ -813,3 +814,38 @@ class TestConnectionErrorSanitization:
         assert not any(ch.isdigit() for ch in msg)
         for leak in ("ch.internal", "db.internal", "errno", "admin", "httpsconnectionpool"):
             assert leak not in lowered
+
+    def test_a_capability_error_reaches_the_user_verbatim(self):
+        """Masking a driver string is right; masking OUR message is not.
+
+        The PostgreSQL version guard tells the operator exactly what is wrong and how
+        to fix it. Collapsed into the generic "check the connection settings", it sends
+        them to re-check settings that are all correct. Note this message legitimately
+        contains digits (version numbers), which is why it cannot be distinguished from
+        a leaky driver string by pattern-matching — it needs its own type.
+        """
+        exc = WarehouseCapabilityError(
+            "PostgreSQL 13.23 is too old for tripl: every time-bucket query uses "
+            "date_bin(), which was added in PostgreSQL 14. Upgrade the server to 14 "
+            "or newer."
+        )
+
+        msg = datasource_service._friendly_test_error(exc)
+
+        assert "13.23 is too old" in msg
+        assert "date_bin()" in msg
+        assert "Upgrade the server to 14" in msg
+        # Still nothing sensitive: the message is authored by tripl, not the driver.
+        for leak in ("host", "port", "password", "user"):
+            assert leak not in msg.lower()
+
+    def test_an_unknown_sslmode_is_explained_rather_than_generalized(self):
+        exc = WarehouseCapabilityError(
+            "Unsupported sslmode: 'verify'. Supported modes are: disable, allow, "
+            "prefer, require, verify-ca, verify-full."
+        )
+
+        msg = datasource_service._friendly_test_error(exc)
+
+        assert "Unsupported sslmode: 'verify'" in msg
+        assert "verify-full" in msg
