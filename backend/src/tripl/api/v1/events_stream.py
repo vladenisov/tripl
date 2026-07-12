@@ -48,7 +48,7 @@ def _parse_last_event_id(request: Request) -> int | None:
         return None
     try:
         return int(raw)
-    except (ValueError, TypeError):
+    except ValueError, TypeError:
         return None
 
 

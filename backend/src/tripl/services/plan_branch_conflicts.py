@@ -200,9 +200,7 @@ def _event_type_dependency_state(payload: dict[str, Any], name: str) -> dict[str
     state = {
         "fields": (event_type or {}).get("field_definitions", []),
         "events": [
-            event
-            for event in payload.get("events", [])
-            if event.get("event_type_name") == name
+            event for event in payload.get("events", []) if event.get("event_type_name") == name
         ],
         "relations": [
             relation
@@ -340,13 +338,15 @@ def _definition_dependency_conflicts(
     theirs_meta = {field["name"] for field in theirs.get("meta_fields", [])}
     for field_name in base_meta:
         meta_base_state = _meta_field_dependency_state(base, field_name)
-        if field_name not in theirs_meta and _meta_field_dependency_state(
-            ours, field_name
-        ) != meta_base_state:
+        if (
+            field_name not in theirs_meta
+            and _meta_field_dependency_state(ours, field_name) != meta_base_state
+        ):
             conflicts.append({"entity_type": "meta_field", "name": field_name})
-        if field_name not in ours_meta and _meta_field_dependency_state(
-            theirs, field_name
-        ) != meta_base_state:
+        if (
+            field_name not in ours_meta
+            and _meta_field_dependency_state(theirs, field_name) != meta_base_state
+        ):
             conflicts.append({"entity_type": "meta_field", "name": field_name})
     return conflicts
 

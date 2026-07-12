@@ -244,9 +244,7 @@ def _max_event_metric_bucket(
         condition = EventMetric.event_type_id == event_type_id
     else:
         return None
-    return session.execute(
-        select(sa_func.max(EventMetric.bucket)).where(condition)
-    ).scalar()
+    return session.execute(select(sa_func.max(EventMetric.bucket)).where(condition)).scalar()
 
 
 def _event_composition_due(session: Session, definition: MetricDefinition) -> bool:

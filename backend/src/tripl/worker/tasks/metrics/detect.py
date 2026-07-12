@@ -336,8 +336,7 @@ def _load_platform_ratio_points(
             count=breakdown_by_bucket.get(point.bucket, 0) / point.count,
         )
         for point in total_points
-        if point.count > 0
-        and (covered_buckets is None or point.bucket in covered_buckets)
+        if point.count > 0 and (covered_buckets is None or point.bucket in covered_buckets)
     ]
 
 

@@ -31,9 +31,7 @@ def _build_static_headers() -> list[tuple[bytes, bytes]]:
         # No camera, microphone, geolocation, payment APIs.
         (b"permissions-policy", b"camera=(), microphone=(), geolocation=(), payment=()"),
     ]
-    csp = settings.content_security_policy or (
-        _DEFAULT_SPA_CSP if settings.serve_frontend else ""
-    )
+    csp = settings.content_security_policy or (_DEFAULT_SPA_CSP if settings.serve_frontend else "")
     if csp:
         headers.append((b"content-security-policy", csp.encode()))
     if settings.hsts_enabled:

@@ -53,8 +53,10 @@ async def test_demo_data_source_is_scoped_to_project(client: AsyncClient) -> Non
     async with TestSessionLocal() as session:
         project = await _project_for_slug(session, slug)
         sources = (
-            await session.execute(select(DataSource).where(DataSource.project_id == project.id))
-        ).scalars().all()
+            (await session.execute(select(DataSource).where(DataSource.project_id == project.id)))
+            .scalars()
+            .all()
+        )
 
     # Exactly one synthetic warehouse, owned by (scoped to) this demo project.
     assert len(sources) == 1
@@ -94,8 +96,14 @@ async def test_delete_removes_owned_source_and_spares_real_ones(client: AsyncCli
         real = await session.get(DataSource, real_source_id)
         assert real is not None  # real workspace source untouched
         leaked = (
-            await session.execute(select(DataSource).where(DataSource.name.like("Demo warehouse%")))
-        ).scalars().all()
+            (
+                await session.execute(
+                    select(DataSource).where(DataSource.name.like("Demo warehouse%"))
+                )
+            )
+            .scalars()
+            .all()
+        )
         assert leaked == []  # no orphaned synthetic warehouse
 
 
@@ -119,17 +127,19 @@ async def test_injected_seed_failure_leaves_no_visible_demo(
     # ...its partial seed rolled back (no event types), and it is marked failed.
     async with TestSessionLocal() as session:
         demos = (
-            await session.execute(select(Project).where(Project.is_demo.is_(True)))
-        ).scalars().all()
+            (await session.execute(select(Project).where(Project.is_demo.is_(True))))
+            .scalars()
+            .all()
+        )
         assert len(demos) == 1
         failed = demos[0]
         assert failed.generation_status == "failed"
         assert failed.generation_error  # safe, non-empty summary
         event_types = (
-            await session.execute(
-                select(EventType).where(EventType.project_id == failed.id)
-            )
-        ).scalars().all()
+            (await session.execute(select(EventType).where(EventType.project_id == failed.id)))
+            .scalars()
+            .all()
+        )
         assert event_types == []
 
 
@@ -197,8 +207,10 @@ async def test_failed_reset_leaves_the_existing_demo_untouched(
     # ...and the failed attempt left no second, hidden demo shell behind.
     async with TestSessionLocal() as session:
         demos = (
-            await session.execute(select(Project).where(Project.is_demo.is_(True)))
-        ).scalars().all()
+            (await session.execute(select(Project).where(Project.is_demo.is_(True))))
+            .scalars()
+            .all()
+        )
         assert len(demos) == 1
         assert demos[0].slug == slug
 

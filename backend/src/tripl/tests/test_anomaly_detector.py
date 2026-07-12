@@ -616,13 +616,10 @@ def test_trend_shift_collapses_sustained_shift_to_single_anomaly() -> None:
     hours = 24 * days
     shift_start = 24 * 23  # last 5 days run 30% hot
     counts = [
-        _daily_pattern_count(hour) * (1.30 if hour >= shift_start else 1.0)
-        for hour in range(hours)
+        _daily_pattern_count(hour) * (1.30 if hour >= shift_start else 1.0) for hour in range(hours)
     ]
     points = [SeriesPoint(bucket=_bucket(hour), count=counts[hour]) for hour in range(hours)]
-    expanded = expand_series(
-        points, interval=timedelta(hours=1), end_exclusive=_bucket(hours)
-    )
+    expanded = expand_series(points, interval=timedelta(hours=1), end_exclusive=_bucket(hours))
     components = _fit_components([point.count for point in expanded], interval=timedelta(hours=1))
     assert components is not None
 
@@ -674,8 +671,7 @@ def test_trend_shift_direction_matches_actual_vs_expected() -> None:
     # intended; this test only needs one real trend row to check direction.
     shift_start = 24 * 21  # last 7 days run 30% cold
     counts = [
-        _daily_pattern_count(hour) * (0.70 if hour >= shift_start else 1.0)
-        for hour in range(hours)
+        _daily_pattern_count(hour) * (0.70 if hour >= shift_start else 1.0) for hour in range(hours)
     ]
     points = [SeriesPoint(bucket=_bucket(hour), count=counts[hour]) for hour in range(hours)]
     expanded = expand_series(points, interval=timedelta(hours=1), end_exclusive=_bucket(hours))

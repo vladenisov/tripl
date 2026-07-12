@@ -228,11 +228,7 @@ async def _populate_firing_monitor_counts(
     rule_ids = [rule_id for _project_id, rule_id in rule_rows]
     states_by_rule: dict[uuid.UUID, list[AlertRuleState]] = defaultdict(list)
     states = (
-        (
-            await session.execute(
-                select(AlertRuleState).where(AlertRuleState.rule_id.in_(rule_ids))
-            )
-        )
+        (await session.execute(select(AlertRuleState).where(AlertRuleState.rule_id.in_(rule_ids))))
         .scalars()
         .all()
     )

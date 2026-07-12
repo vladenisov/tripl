@@ -427,9 +427,7 @@ async def get_active_signals(
     # to the default 24h window and prematurely closes a still-open daily signal.
     # Load the intervals for this batch's scan_configs in one query.
     scan_config_ids = {
-        anomaly.scan_config_id
-        for anomaly in latest_anomalies
-        if anomaly.scan_config_id is not None
+        anomaly.scan_config_id for anomaly in latest_anomalies if anomaly.scan_config_id is not None
     }
     interval_map: dict[uuid.UUID, str | None] = {}
     if scan_config_ids:

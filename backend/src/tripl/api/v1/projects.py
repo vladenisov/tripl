@@ -73,9 +73,7 @@ async def create_project(session: SessionDep, data: ProjectCreate) -> ProjectRes
     response_model=ProjectResponse,
     status_code=201,
 )
-async def create_demo_project(
-    session: SessionDep, current_user: EditorUserDep
-) -> ProjectResponse:
+async def create_demo_project(session: SessionDep, current_user: EditorUserDep) -> ProjectResponse:
     _require_demo_enabled()
     return await demo_service.create_demo_project(session, created_by=current_user.id)
 
@@ -98,9 +96,7 @@ async def reset_demo_project(
 
 
 @router.delete("/demo/{slug}", status_code=204)
-async def delete_demo_project(
-    session: SessionDep, current_user: EditorUserDep, slug: str
-) -> None:
+async def delete_demo_project(session: SessionDep, current_user: EditorUserDep, slug: str) -> None:
     """Delete a demo and its owned synthetic warehouse. Creator or owner only."""
     project = await project_service.get_project_by_slug(session, slug)
     if not project.is_demo:

@@ -1800,13 +1800,31 @@ async def test_data_source_stats_aggregates_recent_metrics(client: AsyncClient):
         session.add_all([data_source, scan_config])
         session.add_all(
             [
-                EventMetric(id=uuid.uuid4(), scan_config_id=scan_config.id, event_id=ev1,
-                            event_type_id=None, bucket=recent, count=100),
-                EventMetric(id=uuid.uuid4(), scan_config_id=scan_config.id, event_id=ev2,
-                            event_type_id=None, bucket=recent, count=50),
+                EventMetric(
+                    id=uuid.uuid4(),
+                    scan_config_id=scan_config.id,
+                    event_id=ev1,
+                    event_type_id=None,
+                    bucket=recent,
+                    count=100,
+                ),
+                EventMetric(
+                    id=uuid.uuid4(),
+                    scan_config_id=scan_config.id,
+                    event_id=ev2,
+                    event_type_id=None,
+                    bucket=recent,
+                    count=50,
+                ),
                 # Outside the window — excluded.
-                EventMetric(id=uuid.uuid4(), scan_config_id=scan_config.id, event_id=ev1,
-                            event_type_id=None, bucket=old, count=9999),
+                EventMetric(
+                    id=uuid.uuid4(),
+                    scan_config_id=scan_config.id,
+                    event_id=ev1,
+                    event_type_id=None,
+                    bucket=old,
+                    count=9999,
+                ),
             ]
         )
         await session.commit()

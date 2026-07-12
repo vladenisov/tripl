@@ -102,9 +102,7 @@ async def test_new_examples_are_api_visible(client: AsyncClient) -> None:
     assert types_resp.status_code == 200
     types_by_name = {t["name"]: t for t in types_resp.json()}
     screen_view_id = types_by_name["screen_view"]["id"]
-    owners_resp = await client.get(
-        f"/api/v1/projects/{slug}/event-types/{screen_view_id}/owners"
-    )
+    owners_resp = await client.get(f"/api/v1/projects/{slug}/event-types/{screen_view_id}/owners")
     assert owners_resp.status_code == 200
     owners = owners_resp.json()
     assert len(owners) == 1, owners
@@ -131,9 +129,7 @@ async def test_new_examples_are_api_visible(client: AsyncClient) -> None:
     feature = next(b for b in branch_items if b["name"] == "feature/checkout-funnel")
     assert feature["kind"] == "working"
 
-    comments_resp = await client.get(
-        f"/api/v1/projects/{slug}/branches/{feature['id']}/comments"
-    )
+    comments_resp = await client.get(f"/api/v1/projects/{slug}/branches/{feature['id']}/comments")
     assert comments_resp.status_code == 200
     comments = comments_resp.json()
     assert len(comments) >= 1, comments
@@ -209,9 +205,7 @@ async def _event_metric_shape(
     return {(name_by_id[event_id], bucket): count for event_id, bucket, count in rows}
 
 
-async def _anomaly_shape(
-    session: AsyncSession, project_id: uuid.UUID
-) -> list[tuple]:
+async def _anomaly_shape(session: AsyncSession, project_id: uuid.UUID) -> list[tuple]:
     """Anomaly shape without project-local ids (scope_ref/event ids excluded)."""
     scan_config_id = await _scan_config_id(session, project_id)
     rows = (
@@ -304,30 +298,42 @@ async def test_plan_builder_seeds_schema_in_isolation() -> None:
         await session.commit()
 
         event_types = (
-            await session.execute(select(EventType).where(EventType.project_id == project_id))
-        ).scalars().all()
+            (await session.execute(select(EventType).where(EventType.project_id == project_id)))
+            .scalars()
+            .all()
+        )
         assert len(event_types) == 3
 
         events = (
-            await session.execute(select(Event).where(Event.project_id == project_id))
-        ).scalars().all()
+            (await session.execute(select(Event).where(Event.project_id == project_id)))
+            .scalars()
+            .all()
+        )
         assert len(events) == len(plan_builder.event_specs(_FIXED_NOW))
 
         relations = (
-            await session.execute(
-                select(EventTypeRelation).where(EventTypeRelation.project_id == project_id)
+            (
+                await session.execute(
+                    select(EventTypeRelation).where(EventTypeRelation.project_id == project_id)
+                )
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
         assert len(relations) == 1
 
         # created_by is None => the owner example is intentionally skipped.
         owners = (
-            await session.execute(
-                select(EventTypeOwner).where(
-                    EventTypeOwner.event_type_id.in_([et.id for et in event_types])
+            (
+                await session.execute(
+                    select(EventTypeOwner).where(
+                        EventTypeOwner.event_type_id.in_([et.id for et in event_types])
+                    )
                 )
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
         assert owners == []
 
         # ctx is populated with stable semantic references for downstream builders.

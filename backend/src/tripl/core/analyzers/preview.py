@@ -213,8 +213,7 @@ def _get_json_path_samples(
             time_to=time_to,
         )
         fallback_rows = [
-            {name: value for name, value in zip(column_names, row, strict=False)}
-            for row in rows
+            {name: value for name, value in zip(column_names, row, strict=False)} for row in rows
         ]
         return _collect_json_path_samples_from_rows(fallback_rows, json_column_names)
 

@@ -322,9 +322,7 @@ class TestDataSourceSchema:
         }
 
     async def test_schema_unknown_id_returns_404(self, client: AsyncClient):
-        resp = await client.get(
-            "/api/v1/data-sources/00000000-0000-0000-0000-000000000000/schema"
-        )
+        resp = await client.get("/api/v1/data-sources/00000000-0000-0000-0000-000000000000/schema")
         assert resp.status_code == 404
 
     async def test_schema_requires_auth(self, anon_client: AsyncClient):
@@ -389,9 +387,7 @@ class TestSyntheticGuards:
 
     async def test_synthetic_cannot_be_edited_into_real_type(self, client: AsyncClient):
         ds_id = await self._seed_synthetic("Demo warehouse type")
-        resp = await client.patch(
-            f"/api/v1/data-sources/{ds_id}", json={"db_type": "clickhouse"}
-        )
+        resp = await client.patch(f"/api/v1/data-sources/{ds_id}", json={"db_type": "clickhouse"})
         assert resp.status_code == 422
 
     async def test_synthetic_cannot_be_pointed_at_real_host(self, client: AsyncClient):
@@ -422,9 +418,7 @@ class TestSyntheticGuards:
             },
         )
         ds_id = create.json()["id"]
-        resp = await client.patch(
-            f"/api/v1/data-sources/{ds_id}", json={"db_type": "synthetic"}
-        )
+        resp = await client.patch(f"/api/v1/data-sources/{ds_id}", json={"db_type": "synthetic"})
         assert resp.status_code == 422
 
 

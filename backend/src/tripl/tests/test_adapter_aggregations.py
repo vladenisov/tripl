@@ -304,9 +304,7 @@ def test_postgres_multi_aggregate_select_shape() -> None:
         [
             AggregateSpec(key="c", aggregation=MetricAggregation.count),
             AggregateSpec(key="s", aggregation=MetricAggregation.sum, column="amount"),
-            AggregateSpec(
-                key="d", aggregation=MetricAggregation.count_distinct, column="user_id"
-            ),
+            AggregateSpec(key="d", aggregation=MetricAggregation.count_distinct, column="user_id"),
         ],
         time_from=_FROM,
         time_to=_TO,
@@ -345,7 +343,7 @@ def test_postgres_multi_aggregate_conditional_filter() -> None:
     assert col_names == ["bucket", "paid", "total"]
     sql = conn.sql[0]
     # Filtered spec becomes a FILTER (WHERE ...) conditional; unfiltered stays plain.
-    assert "sum(\"amount\") FILTER (WHERE event_name = 'purchase') AS \"paid\"" in sql
+    assert 'sum("amount") FILTER (WHERE event_name = \'purchase\') AS "paid"' in sql
     assert 'sum("amount") AS "total"' in sql
 
 

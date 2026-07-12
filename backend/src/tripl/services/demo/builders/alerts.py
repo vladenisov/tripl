@@ -352,9 +352,7 @@ async def _build_firings(
     if event_type_ids:
         for et_id, display_name in (
             await session.execute(
-                select(EventType.id, EventType.display_name).where(
-                    EventType.id.in_(event_type_ids)
-                )
+                select(EventType.id, EventType.display_name).where(EventType.id.in_(event_type_ids))
             )
         ).all():
             event_type_names[et_id] = display_name
