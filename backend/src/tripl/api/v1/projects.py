@@ -15,7 +15,6 @@ from tripl.schemas.project import (
 )
 from tripl.services import (
     audit_service,
-    demo_legacy_service,
     demo_service,
     detection_reset_service,
     project_service,
@@ -77,23 +76,6 @@ async def create_demo_project(
 ) -> ProjectResponse:
     _require_demo_enabled()
     return await demo_service.create_demo_project(session, created_by=current_user.id)
-
-
-@router.post("/demo/{slug}/upgrade", response_model=ProjectResponse)
-async def upgrade_demo_project(
-    session: SessionDep, current_user: EditorUserDep, slug: str, force: bool = False
-) -> ProjectResponse:
-    """Re-provision a legacy/outdated demo under the current recipe, in place.
-
-    Refuses to silently discard a user-edited demo unless ``force=true``. Gated by
-    the demo rollback switch (this path provisions). Creator or owner only.
-    """
-    _require_demo_enabled()
-    project = await project_service.get_project_by_slug(session, slug)
-    _require_demo_manager(current_user, project)
-    return await demo_legacy_service.upgrade_demo(
-        session, slug, created_by=current_user.id, force=force
-    )
 
 
 @router.post("/demo/{slug}/reset", response_model=ProjectResponse)
