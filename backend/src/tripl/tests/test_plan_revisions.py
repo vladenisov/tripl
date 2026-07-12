@@ -184,6 +184,57 @@ def test_diff_from_v1_base_still_reports_genuine_changes() -> None:
     assert any("description" in change for change in entry.changes)
 
 
+# --- version-anchored skip-absent-key tolerance (tripl-2d3d) ----------------
+# The skip-absent-key tolerance must be anchored to the OLD payload's
+# snapshot_version. A current-version base is expected to carry every change
+# key, so a missing key is a genuine divergence and must surface; only a
+# pre-bump (v1) base may legitimately omit v2 keys and stay tolerated.
+
+
+def test_current_version_base_missing_change_key_surfaces_diff() -> None:
+    """A current-version base missing a change key is a real diff, not skew.
+
+    Simulates a future conditionally-omitting serializer path: the v2 base omits
+    the ``tags`` change key while the new snapshot carries a real value. Because
+    the base IS the current version, the missing key must NOT be silently
+    dropped — the diff has to surface (tripl-2d3d).
+    """
+    old_event = _v2_event("Home View")
+    del old_event["tags"]  # current-version snapshot missing a change key
+    new_event = _v2_event("Home View")
+    new_event["tags"] = ["urgent"]
+
+    v2_base = _payload(2, events=[old_event], variables=[])
+    v2_snapshot = _payload(2, events=[new_event], variables=[])
+
+    entries = compute_plan_diff_entries(v2_base, v2_snapshot)
+
+    assert len(entries) == 1
+    entry = entries[0]
+    assert (entry.kind, entry.entity_type, entry.name) == ("changed", "event", "Home View")
+    assert "tags" in [fc.field for fc in entry.field_changes]
+
+
+def test_old_version_base_missing_change_key_still_tolerated() -> None:
+    """Backward tolerance preserved: the SAME structural omission under a v1
+    base is still skipped, so no phantom "changed" entry appears (tripl-2d3d).
+
+    Only ``snapshot_version`` differs from the test above — proving the outcome
+    is governed by the OLD payload's version, not by the missing key alone.
+    """
+    old_event = _v2_event("Home View")
+    del old_event["tags"]
+    new_event = _v2_event("Home View")
+    new_event["tags"] = ["urgent"]
+
+    v1_base = _payload(1, events=[old_event], variables=[])
+    v2_snapshot = _payload(2, events=[new_event], variables=[])
+
+    entries = compute_plan_diff_entries(v1_base, v2_snapshot)
+
+    assert entries == []
+
+
 @pytest.mark.asyncio
 async def test_create_revision_captures_full_plan_snapshot(client: AsyncClient) -> None:
     et_id, _field_id, _event_id = await _setup_project(client, "rev-snap")
