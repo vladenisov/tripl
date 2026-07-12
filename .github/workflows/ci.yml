@@ -79,6 +79,15 @@ jobs:
         image: clickhouse/clickhouse-server:25.8@sha256:a9d328123ff8a61bf6b16448528b577d59deb85758172e13b09054b0727f8adf
         ports:
           - 8123:8123
+        env:
+          # Required, not cosmetic: with neither CLICKHOUSE_USER nor
+          # CLICKHOUSE_PASSWORD set, the image's entrypoint *disables network
+          # access for the `default` user* ("disabling network access for user
+          # 'default'"), so every connection is rejected with code 194. Give the
+          # gate a real user, exactly as the postgres service above does.
+          CLICKHOUSE_USER: tripl
+          CLICKHOUSE_PASSWORD: tripl
+          CLICKHOUSE_DB: tripl_conformance
     steps:
       - uses: actions/checkout@v7
 
@@ -105,11 +114,15 @@ jobs:
         # with a clear message, instead of letting the suite skip its way to green.
         run: |
           for i in $(seq 1 60); do
-            # A raw TCP probe, not pg_isready: the wait must not depend on which
-            # client tools happen to be on the runner image. Postgres already has a
-            # container-side health check, so this is belt-and-braces anyway.
-            pg=$( (echo > /dev/tcp/localhost/5432) >/dev/null 2>&1 && echo ok || echo no)
-            ch=$(curl -sf http://localhost:8123/ping >/dev/null 2>&1 && echo ok || echo no)
+            # Every probe AUTHENTICATES and runs a real query. Liveness is not
+            # readiness: a raw TCP connect to Postgres, and ClickHouse's /ping,
+            # both answer happily on a server that will then reject every login.
+            # That is not hypothetical — the ClickHouse image disables network
+            # access for `default` unless credentials are set, so /ping said "ok"
+            # while the suite died on `code: 194 Authentication failed`. A probe
+            # that can pass while the thing it guards is unusable is not a probe.
+            pg=$(uv run python -c "import psycopg; psycopg.connect(host='localhost', port=5432, dbname='tripl_conformance', user='tripl', password='tripl', connect_timeout=3).execute('SELECT 1')" >/dev/null 2>&1 && echo ok || echo no)
+            ch=$(curl -sf 'http://localhost:8123/?user=tripl&password=tripl&query=SELECT%201' >/dev/null 2>&1 && echo ok || echo no)
             bq=$(curl -sf -X POST http://localhost:9050/bigquery/v2/projects/tripl-test/queries \
                    -H 'Content-Type: application/json' \
                    -d '{"query":"SELECT 1 AS x","useLegacySql":false}' >/dev/null 2>&1 && echo ok || echo no)
@@ -134,6 +147,9 @@ jobs:
           TRIPL_CONF_PG_PASSWORD: tripl
           TRIPL_CONF_CH_HOST: localhost
           TRIPL_CONF_CH_PORT: "8123"
+          TRIPL_CONF_CH_DB: tripl_conformance
+          TRIPL_CONF_CH_USER: tripl
+          TRIPL_CONF_CH_PASSWORD: tripl
           TRIPL_CONF_BQ_EMULATOR_URL: http://localhost:9050
           TRIPL_CONF_BQ_PROJECT: tripl-test
         run: |
