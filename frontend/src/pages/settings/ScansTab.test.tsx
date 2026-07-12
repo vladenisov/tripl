@@ -1,11 +1,23 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { MemoryRouter } from 'react-router-dom'
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { DemoScenarioProvider } from '@/demo/DemoScenarioProvider'
+import {
+  buildScenarioSteps,
+  initialScenarioState,
+  readScenarioState,
+  writeScenarioState,
+} from '@/demo/scenarioModel'
+import type { Project } from '@/types'
 import { ScansTab } from './ScansTab'
 
 const navigateMock = vi.fn()
 
-vi.mock('react-router-dom', () => ({
+// Only useNavigate is stubbed: the scenario provider needs the real router
+// (useLocation, MemoryRouter) to know which surface the user is standing on.
+vi.mock('react-router-dom', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('react-router-dom')>()),
   useNavigate: () => navigateMock,
 }))
 
@@ -158,6 +170,7 @@ function renderTab() {
 afterEach(() => {
   vi.restoreAllMocks()
   navigateMock.mockReset()
+  window.localStorage.clear()
 })
 
 describe('ScansTab', () => {
@@ -274,5 +287,115 @@ describe('ScansTab', () => {
     await waitFor(() => expect(screen.getByText('Main events scan')).toBeInTheDocument())
     expect(screen.queryByText('New scan config')).not.toBeInTheDocument()
     expect(navigateMock).not.toHaveBeenCalled()
+  })
+})
+
+describe('ScansTab — coached demo scenario', () => {
+  const SLUG = 'demo'
+  const WATCH_SCAN_INSTRUCTION = buildScenarioSteps(SLUG, initialScenarioState())[1].instruction
+
+  function demoProject(overrides: Partial<Project> = {}): Project {
+    return {
+      id: 'p-1',
+      name: 'Demo',
+      slug: SLUG,
+      created_at: '2026-07-01T00:00:00Z',
+      updated_at: '2026-07-01T00:00:00Z',
+      is_demo: true,
+      generation_status: 'ready',
+      ...overrides,
+    } as Project
+  }
+
+  const completedJob = (id: string, ts: string) => ({
+    id,
+    scan_config_id: 'scan-1',
+    status: 'completed',
+    started_at: ts,
+    completed_at: ts,
+    result_summary: { events_created: 3 },
+    error_message: null,
+    created_at: ts,
+    updated_at: ts,
+  })
+
+  /** Feed rows plus the scenario's own by-id watch of the job it is following. */
+  function setupDemoFetch(jobs: unknown[], runCalls: string[] = []) {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const url = String(input)
+      if (url.includes('/data-sources/') && url.includes('/schema')) return mockJsonResponse({ tables: [] })
+      if (url.endsWith('/api/v1/data-sources')) return mockJsonResponse([dataSource])
+      if (url.endsWith('/api/v1/projects/demo/scans')) return mockJsonResponse([scanConfig])
+      if (url.includes('/scans/scan-1/run')) {
+        runCalls.push((init?.method ?? 'GET').toUpperCase())
+        return mockJsonResponse(completedJob('job-new', '2026-02-01T00:00:00Z'))
+      }
+      if (url.includes('/scans/scan-1/jobs/')) {
+        return mockJsonResponse({ ...completedJob('job-new', '2026-02-01T00:00:00Z'), status: 'running' })
+      }
+      if (url.includes('/scans/scan-1/jobs')) return mockJsonResponse(jobs)
+      if (url.includes('/eventTypes') || url.includes('/event-types')) return mockJsonResponse([])
+      throw new Error(`Unhandled fetch: ${url}`)
+    })
+  }
+
+  function renderInScenario(project: Project) {
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    return render(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter initialEntries={[`/p/${SLUG}/settings/scans`]}>
+          <DemoScenarioProvider project={project} pollIntervalMs={10}>
+            <ScansTab slug={SLUG} />
+          </DemoScenarioProvider>
+        </MemoryRouter>
+      </QueryClientProvider>,
+    )
+  }
+
+  it('binds the scenario to the ScanJob "Run again" created', async () => {
+    const runCalls: string[] = []
+    setupDemoFetch([failedJob('job-f1', '2026-01-01T00:00:00Z')], runCalls)
+    renderInScenario(demoProject())
+
+    fireEvent.click(await screen.findByRole('button', { name: /Run again/i }))
+
+    await waitFor(() => expect(readScenarioState(SLUG).step).toBe('watch-scan'))
+    expect(runCalls[0]).toBe('POST')
+    // The artifact is the job the POST returned, never a job already in the feed.
+    expect(readScenarioState(SLUG).scan).toMatchObject({
+      scanConfigId: 'scan-1',
+      scanJobId: 'job-new',
+    })
+  })
+
+  it('marks only the recent-run row of the job the scenario is watching', async () => {
+    setupDemoFetch([
+      completedJob('job-b', '2026-01-02T00:00:00Z'),
+      completedJob('job-a', '2026-01-01T00:00:00Z'),
+    ])
+    writeScenarioState(SLUG, {
+      v: 1,
+      status: 'active',
+      step: 'watch-scan',
+      scan: { scanConfigId: 'scan-1', scanJobId: 'job-b', startedAt: Date.now() },
+    })
+    renderInScenario(demoProject())
+
+    // Both runs render; only the user's own run is coached — the demo's tick
+    // produces the rest, and marking them all would coach nothing.
+    await waitFor(() => expect(screen.getByRole('note')).toHaveTextContent(WATCH_SCAN_INSTRUCTION))
+    expect(screen.getAllByRole('note')).toHaveLength(1)
+    expect(screen.getAllByText('Main events scan').length).toBeGreaterThanOrEqual(2)
+  })
+
+  it('leaves a non-demo project untouched: no coach mark, no scenario', async () => {
+    setupDemoFetch([failedJob('job-f1', '2026-01-01T00:00:00Z')])
+    renderInScenario(demoProject({ is_demo: false }))
+
+    fireEvent.click(await screen.findByRole('button', { name: /Run again/i }))
+
+    await waitFor(() => expect(screen.getByText('Recent runs')).toBeInTheDocument())
+    expect(screen.queryByRole('note')).not.toBeInTheDocument()
+    expect(window.localStorage.getItem(`tripl-demo-scenario:${SLUG}`)).toBeNull()
   })
 })

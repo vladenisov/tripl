@@ -70,6 +70,8 @@ import {
 import { toast } from 'sonner'
 import { useConfirm } from '@/hooks/useConfirm'
 import { useMetricCollectionWatcher } from '@/hooks/useMetricCollectionWatcher'
+import { ScenarioCoachMark } from '@/demo/ScenarioCoachMark'
+import { useDemoScenarioActions } from '@/demo/demoScenarioContext'
 
 /**
  * Everything a manual collect needs, captured when the button is pressed and
@@ -630,6 +632,7 @@ export default function MonitoringDetailPage() {
       void queryClient.invalidateQueries({ queryKey: annotationsKey })
     },
   })
+  const { notifyMetricCollectStarted } = useDemoScenarioActions()
   // Manual "collect now": backfill a recent window for this metric so its chart
   // populates without waiting for the scheduler. Collection runs in the worker;
   // the watcher polls the persisted last_collection_status until the run
@@ -660,6 +663,10 @@ export default function MonitoringDetailPage() {
         displayName: target.displayName,
         context: target,
       })
+      // The scenario binds to the metric the USER collected — the demo's tick
+      // runs collections of its own, so only this path counts (tripl-2su6.21).
+      // Inert outside a ready demo project.
+      notifyMetricCollectStarted(target.scopeId)
     },
     onError: () => toast.error('Could not start collection.'),
   })
@@ -814,27 +821,31 @@ export default function MonitoringDetailPage() {
                   <Pencil className="mr-2 h-4 w-4" />
                   Edit
                 </Button>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={() =>
-                    collectMut.mutate({
-                      slug: slug!,
-                      scope,
-                      scopeId,
-                      displayName: metricDefinition?.display_name ?? 'This metric',
-                    })
-                  }
-                  disabled={isCollecting}
-                  title="Backfill a recent window now so the chart populates without waiting for the scheduler."
-                >
-                  {isCollecting ? (
-                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                  ) : (
-                    <RefreshCw className="mr-2 h-4 w-4" />
-                  )}
-                  {isCollecting ? 'Collecting…' : 'Collect now'}
-                </Button>
+                {/* No see-chart mark on this page: the scenario completes that step
+                    on arrival here, so a mark would never be read. */}
+                <ScenarioCoachMark step="collect-metric">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() =>
+                      collectMut.mutate({
+                        slug: slug!,
+                        scope,
+                        scopeId,
+                        displayName: metricDefinition?.display_name ?? 'This metric',
+                      })
+                    }
+                    disabled={isCollecting}
+                    title="Backfill a recent window now so the chart populates without waiting for the scheduler."
+                  >
+                    {isCollecting ? (
+                      <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                    ) : (
+                      <RefreshCw className="mr-2 h-4 w-4" />
+                    )}
+                    {isCollecting ? 'Collecting…' : 'Collect now'}
+                  </Button>
+                </ScenarioCoachMark>
                 <Button
                   variant="ghost"
                   size="sm"

@@ -5,6 +5,8 @@ import { Plus, RotateCw } from "lucide-react"
 import { dataSourcesApi } from "@/api/dataSources"
 import { eventTypesApi } from "@/api/eventTypes"
 import { scansApi } from "@/api/scans"
+import { useDemoScenarioActions, useScenarioArtifacts } from "@/demo/demoScenarioContext"
+import { ScenarioCoachMark } from "@/demo/ScenarioCoachMark"
 import type { DataSource, ScanConfig, ScanJob } from "@/types"
 import { Button } from "@/components/ui/button"
 import { EmptyState } from "@/components/empty-state"
@@ -40,6 +42,9 @@ interface RecentRun {
 
 export function ScansTab({ slug }: { slug: string }) {
   const navigate = useNavigate()
+  const { notifyScanRunStarted } = useDemoScenarioActions()
+  // Null for every non-demo project — no run row is ever the scenario's row.
+  const { scanJobId } = useScenarioArtifacts()
   const [view, setView] = useState<'list' | 'new'>('list')
   // Captured once at mount so the 24h window stays stable across re-renders
   // (keeps the rows-scanned KPI pure rather than reading the wall clock in render).
@@ -160,7 +165,10 @@ export function ScansTab({ slug }: { slug: string }) {
   const queryClient = useQueryClient()
   const runAgain = useMutation({
     mutationFn: (scanId: string) => scansApi.run(slug, scanId),
-    onSuccess: (_job, scanId) => {
+    onSuccess: (job, scanId) => {
+      // Only the job this POST returned can advance the coached demo scenario:
+      // the demo's tick creates scan jobs on its own (tripl-2su6.21.5).
+      notifyScanRunStarted(job)
       void queryClient.invalidateQueries({ queryKey: ['scanJobs', slug, scanId] })
     },
   })
@@ -268,64 +276,72 @@ export function ScansTab({ slug }: { slug: string }) {
               const isFailed = run.status === 'failed'
               const friendly = isFailed ? friendlyScanError(run.errorMessage).message : null
               return (
-                <div
+                <ScenarioCoachMark
                   key={run.jobId}
-                  className="flex items-center gap-3 border-t px-4 py-2.5 first:border-t-0"
-                  style={{ borderColor: 'var(--border-subtle)' }}
+                  step="watch-scan"
+                  // Exactly one row: the run the user's own action started.
+                  when={run.jobId === scanJobId}
+                  side="top"
+                  align="start"
                 >
-                  <RunStatusPill status={runPillStatus(run.status)} title={friendly ?? undefined} />
-                  <span className="w-[150px] shrink-0 truncate text-xs font-medium">{run.scanName}</span>
-                  <div className="flex min-w-0 flex-1 flex-col gap-1">
-                    <span className="text-[11.5px]" style={{ color: 'var(--fg-subtle)' }}>
-                      {run.startedAt ? formatRelativeTime(run.startedAt) : '—'}
-                    </span>
-                    {friendly && (
-                      <span className="truncate text-[11px]" style={{ color: 'var(--danger)' }}>{friendly}</span>
-                    )}
-                    {/* What this completed run changed — surfaced inline so a
-                        finished scan/collection shows its impact, not just a
-                        status pill (tripl-2su6.9). */}
-                    {!isFailed && run.changes.length > 0 && (
-                      <div className="flex flex-wrap gap-1">
-                        {run.changes.map((change) => (
-                          <Chip key={change.label} tone={change.tone} size="xs">
-                            {change.label}
-                          </Chip>
-                        ))}
+                  <div
+                    className="flex items-center gap-3 border-t px-4 py-2.5 first:border-t-0"
+                    style={{ borderColor: 'var(--border-subtle)' }}
+                  >
+                    <RunStatusPill status={runPillStatus(run.status)} title={friendly ?? undefined} />
+                    <span className="w-[150px] shrink-0 truncate text-xs font-medium">{run.scanName}</span>
+                    <div className="flex min-w-0 flex-1 flex-col gap-1">
+                      <span className="text-[11.5px]" style={{ color: 'var(--fg-subtle)' }}>
+                        {run.startedAt ? formatRelativeTime(run.startedAt) : '—'}
+                      </span>
+                      {friendly && (
+                        <span className="truncate text-[11px]" style={{ color: 'var(--danger)' }}>{friendly}</span>
+                      )}
+                      {/* What this completed run changed — surfaced inline so a
+                          finished scan/collection shows its impact, not just a
+                          status pill (tripl-2su6.9). */}
+                      {!isFailed && run.changes.length > 0 && (
+                        <div className="flex flex-wrap gap-1">
+                          {run.changes.map((change) => (
+                            <Chip key={change.label} tone={change.tone} size="xs">
+                              {change.label}
+                            </Chip>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                    {isFailed ? (
+                      <div className="flex shrink-0 items-center gap-2">
+                        {run.failingStreak > 1 && (
+                          <span
+                            className="whitespace-nowrap rounded border px-1.5 py-0.5 text-[10.5px] font-semibold"
+                            style={{ color: 'var(--danger)', borderColor: 'var(--danger)' }}
+                          >
+                            failed last {run.failingStreak} runs
+                          </span>
+                        )}
+                        <Button
+                          size="xs"
+                          variant="outline"
+                          disabled={runAgain.isPending}
+                          onClick={() => runAgain.mutate(run.scanId)}
+                        >
+                          <RotateCw className="size-3" aria-hidden="true" />
+                          Run again
+                        </Button>
                       </div>
+                    ) : (
+                      <>
+                        <span className="mono text-[11px]" style={{ color: 'var(--fg-subtle)' }}>
+                          {run.rows == null ? '—' : `${formatCount(run.rows)} rows`}
+                        </span>
+                        <span className="mono w-[52px] text-right text-[11px]" style={{ color: 'var(--fg-faint)' }}>
+                          {run.durationSec == null ? '—' : `${run.durationSec.toFixed(1)}s`}
+                        </span>
+                      </>
                     )}
                   </div>
-                  {isFailed ? (
-                    <div className="flex shrink-0 items-center gap-2">
-                      {run.failingStreak > 1 && (
-                        <span
-                          className="whitespace-nowrap rounded border px-1.5 py-0.5 text-[10.5px] font-semibold"
-                          style={{ color: 'var(--danger)', borderColor: 'var(--danger)' }}
-                        >
-                          failed last {run.failingStreak} runs
-                        </span>
-                      )}
-                      <Button
-                        size="xs"
-                        variant="outline"
-                        disabled={runAgain.isPending}
-                        onClick={() => runAgain.mutate(run.scanId)}
-                      >
-                        <RotateCw className="size-3" aria-hidden="true" />
-                        Run again
-                      </Button>
-                    </div>
-                  ) : (
-                    <>
-                      <span className="mono text-[11px]" style={{ color: 'var(--fg-subtle)' }}>
-                        {run.rows == null ? '—' : `${formatCount(run.rows)} rows`}
-                      </span>
-                      <span className="mono w-[52px] text-right text-[11px]" style={{ color: 'var(--fg-faint)' }}>
-                        {run.durationSec == null ? '—' : `${run.durationSec.toFixed(1)}s`}
-                      </span>
-                    </>
-                  )}
-                </div>
+                </ScenarioCoachMark>
               )
             })}
           </div>

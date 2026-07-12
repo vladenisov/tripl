@@ -65,6 +65,38 @@ synthetic source:
 - **Attaching the synthetic source to a real project**, or converting it into a
   real connection.
 
+## Finding your way around
+
+The demo offers two guides, and they do different jobs.
+
+- **The product tour** (*Take the tour* on the welcome panel) walks the surfaces:
+  Events, Scans, Live activity, Metrics and fact tables, Monitors, Anomalies,
+  Coverage, Reconciliation, Branches and the alert preview. Opening a step's
+  surface advances the tour and it remembers where you were, so it can be followed
+  across navigations instead of restarting every time.
+- **The coached scenario** (*Run the scenario* on the welcome panel, or *Try it
+  hands-on* from the tour) makes one thing happen end to end:
+
+  1. **Run a scan** — from any scan's *Run now*.
+  2. **Watch it land** — the run completes and shows what it changed.
+  3. **Collect a metric** — from *Collect now* on any metric.
+  4. **See the chart move** — open that metric and find the point your collection
+     added.
+
+  A strip below the demo banner tracks which step you are on and links to where the
+  next action lives; a small callout points at the button that performs it. Both are
+  demo-only and never appear in a real project.
+
+  The scenario follows **your** actions, not the demo's. The runtime clock is
+  producing real scans and collections of its own in the background, so a step
+  advances only when the job or collection **you** started settles — a background
+  run never ticks it forward. A run that fails, or that a reset wipes out, sends you
+  back to the action with an explanation rather than leaving you waiting. Progress
+  is remembered per project, so reloading mid-scan resumes the watch.
+
+  Dismiss it at any point — including after finishing — and restart it whenever you
+  like from the welcome panel.
+
 ## Lifecycle
 
 - **Create** — provisioning is atomic: you either get a fully‑ready demo or a

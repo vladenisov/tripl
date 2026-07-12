@@ -1,7 +1,15 @@
-import { fireEvent, render, screen } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { MemoryRouter } from 'react-router-dom'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import type { ScanConfig } from '@/types'
+import { DemoScenarioProvider } from '@/demo/DemoScenarioProvider'
+import {
+  buildScenarioSteps,
+  initialScenarioState,
+  readScenarioState,
+  writeScenarioState,
+} from '@/demo/scenarioModel'
+import type { Project, ScanConfig } from '@/types'
 import { ScanDetail } from './ScanDetail'
 
 function mockJsonResponse(body: unknown) {
@@ -43,6 +51,7 @@ const scanConfig: ScanConfig = {
 
 afterEach(() => {
   vi.restoreAllMocks()
+  window.localStorage.clear()
 })
 
 describe('ScanDetail', () => {
@@ -304,5 +313,123 @@ describe('ScanDetail', () => {
     fireEvent.click(expander)
     expect(screen.getByRole('button', { name: /Hide 4 repeated failed runs/ })).toBeInTheDocument()
     expect(screen.getAllByRole('button', { name: 'Retry scan' })).toHaveLength(4)
+  })
+})
+
+describe('ScanDetail — coached demo scenario', () => {
+  const SLUG = 'demo'
+  const WATCH_SCAN_INSTRUCTION = buildScenarioSteps(SLUG, initialScenarioState())[1].instruction
+
+  function demoProject(overrides: Partial<Project> = {}): Project {
+    return {
+      id: 'p-1',
+      name: 'Demo',
+      slug: SLUG,
+      created_at: '2026-07-01T00:00:00Z',
+      updated_at: '2026-07-01T00:00:00Z',
+      is_demo: true,
+      generation_status: 'ready',
+      ...overrides,
+    } as Project
+  }
+
+  const job = (id: string, status: string, errorMessage: string | null = null) => ({
+    id,
+    scan_config_id: 'scan-1',
+    status,
+    started_at: '2026-02-01T00:00:00Z',
+    completed_at: status === 'completed' ? '2026-02-01T00:01:00Z' : null,
+    result_summary: null,
+    error_message: errorMessage,
+    created_at: '2026-02-01T00:00:00Z',
+    updated_at: '2026-02-01T00:00:00Z',
+  })
+
+  // The feed carries a job the demo's own runtime tick produced alongside the
+  // user's — a mark on the tick's row would be a false positive.
+  function setupFetch(runCalls: string[] = []) {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const url = String(input)
+      if (url.endsWith('/platform-presence')) {
+        return mockJsonResponse({ scan_config_id: 'scan-1', platform_column: null, platforms: [], items: [] })
+      }
+      if (url.endsWith('/scans/scan-1/run')) {
+        runCalls.push((init?.method ?? 'GET').toUpperCase())
+        return mockJsonResponse(job('job-new', 'pending'))
+      }
+      // The scenario's own watch polls the one job by id.
+      if (url.includes('/scans/scan-1/jobs/')) return mockJsonResponse(job('job-new', 'running'))
+      if (url.endsWith('/scans/scan-1/jobs')) {
+        return mockJsonResponse([job('job-fail', 'failed', 'Read timed out.'), job('job-tick', 'completed')])
+      }
+      throw new Error(`Unhandled fetch: ${url}`)
+    })
+  }
+
+  function renderInScenario(project: Project) {
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    return render(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter initialEntries={[`/p/${SLUG}/settings/scans/scan-1`]}>
+          <DemoScenarioProvider project={project} pollIntervalMs={10}>
+            <ScanDetail slug={SLUG} scanConfig={scanConfig} eventTypes={[]} branchId={null} />
+          </DemoScenarioProvider>
+        </MemoryRouter>
+      </QueryClientProvider>,
+    )
+  }
+
+  it('binds the scenario to the ScanJob the retry POST returned', async () => {
+    const runCalls: string[] = []
+    setupFetch(runCalls)
+    renderInScenario(demoProject())
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Retry scan' }))
+
+    await waitFor(() => expect(readScenarioState(SLUG).step).toBe('watch-scan'))
+    expect(runCalls[0]).toBe('POST')
+    expect(readScenarioState(SLUG).scan).toMatchObject({
+      scanConfigId: 'scan-1',
+      scanJobId: 'job-new',
+    })
+  })
+
+  it('marks the row of the watched job, and no row when the watched job is not in the feed', async () => {
+    setupFetch()
+    writeScenarioState(SLUG, {
+      v: 1,
+      status: 'active',
+      step: 'watch-scan',
+      scan: { scanConfigId: 'scan-1', scanJobId: 'job-tick', startedAt: Date.now() },
+    })
+    const marked = renderInScenario(demoProject())
+
+    // Exactly one of the two feed rows is coached — the watched one.
+    await waitFor(() => expect(screen.getByRole('note')).toHaveTextContent(WATCH_SCAN_INSTRUCTION))
+    expect(screen.getAllByRole('note')).toHaveLength(1)
+    marked.unmount()
+
+    // A job the feed does not carry marks nothing at all.
+    writeScenarioState(SLUG, {
+      v: 1,
+      status: 'active',
+      step: 'watch-scan',
+      scan: { scanConfigId: 'scan-1', scanJobId: 'job-elsewhere', startedAt: Date.now() },
+    })
+    renderInScenario(demoProject())
+
+    expect(await screen.findByText('Recent jobs')).toBeInTheDocument()
+    expect(screen.queryByRole('note')).not.toBeInTheDocument()
+  })
+
+  it('leaves a non-demo project untouched: no coach mark, no scenario', async () => {
+    setupFetch()
+    renderInScenario(demoProject({ is_demo: false }))
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Retry scan' }))
+
+    await waitFor(() => expect(screen.getByText('Recent jobs')).toBeInTheDocument())
+    expect(screen.queryByRole('note')).not.toBeInTheDocument()
+    expect(window.localStorage.getItem(`tripl-demo-scenario:${SLUG}`)).toBeNull()
   })
 })
