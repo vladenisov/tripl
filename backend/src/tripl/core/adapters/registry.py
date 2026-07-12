@@ -8,7 +8,6 @@ from tripl.crypto import decrypt_value
 from tripl.models.data_source import DataSource
 from tripl.schemas.data_source import (
     DEFAULT_BIGQUERY_MAXIMUM_BYTES_BILLED,
-    DEFAULT_POSTGRES_SSLMODE,
     DEFAULT_TIMEOUT_SECONDS,
     SSLKEY_STORAGE_KEY,
     BigQuerySettings,
@@ -108,9 +107,12 @@ def _build_postgres(ds: DataSource, password: str) -> BaseAdapter:
         username=ds.username,
         password=password,
         timeout_seconds=_effective_timeout_seconds(ds),
-        # Server-side default: libpq's own "prefer". An operator who needs real
-        # TLS enforcement stores require/verify-ca/verify-full.
-        sslmode=settings.sslmode or DEFAULT_POSTGRES_SSLMODE,
+        # Pass None through when the source pins no mode: the default is *host-aware*
+        # (remote -> `require`, localhost -> `prefer`), and only the adapter knows the
+        # host. Substituting a static default here made PostgresAdapter's `require`
+        # branch unreachable, so every remote warehouse silently fell back to `prefer`
+        # — which negotiates TLS if offered and quietly accepts PLAINTEXT if not.
+        sslmode=settings.sslmode,
         sslrootcert=settings.sslrootcert,
         sslcert=settings.sslcert,
         sslkey=_stored_sslkey(ds),

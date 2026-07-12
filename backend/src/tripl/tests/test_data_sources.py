@@ -9,13 +9,13 @@ from sqlalchemy import select
 from tripl import config, crypto
 from tripl.core.adapters import bigquery as bigquery_module
 from tripl.core.adapters import postgres as postgres_module
+from tripl.core.adapters.postgres import _resolve_sslmode
 from tripl.core.adapters.registry import build_adapter
 from tripl.crypto import decrypt_value, encrypt_value
 from tripl.models.audit_log import AuditLog
 from tripl.models.data_source import DataSource
 from tripl.schemas.data_source import (
     DEFAULT_BIGQUERY_MAXIMUM_BYTES_BILLED,
-    DEFAULT_POSTGRES_SSLMODE,
     DEFAULT_TIMEOUT_SECONDS,
 )
 from tripl.schemas.data_source_schema import (
@@ -762,7 +762,14 @@ class TestAdapterSettingsWiring:
         # The adapter needs the key material itself; the column never holds it.
         assert captured["sslkey"] == CLIENT_KEY_PEM
 
-    def test_postgres_sslmode_defaults_to_prefer(self, monkeypatch: pytest.MonkeyPatch):
+    def test_unpinned_sslmode_reaches_the_adapter_as_none(self, monkeypatch: pytest.MonkeyPatch):
+        """The registry must NOT substitute a static TLS default.
+
+        The default is host-aware — remote gets ``require``, localhost gets ``prefer``
+        — and only the adapter knows the host. The registry used to fill in a static
+        ``"prefer"`` here, which made the adapter's ``require`` branch unreachable and
+        silently left every *remote* warehouse tolerating a plaintext connection.
+        """
         captured: dict[str, object] = {}
         monkeypatch.setattr(
             postgres_module, "PostgresAdapter", lambda **kwargs: captured.update(kwargs) or object()
@@ -770,9 +777,20 @@ class TestAdapterSettingsWiring:
 
         build_adapter(self._data_source(db_type="postgres", host="db.example.com", port=5432))
 
-        assert captured["sslmode"] == DEFAULT_POSTGRES_SSLMODE
+        assert captured["sslmode"] is None
         assert captured["sslkey"] is None
         assert captured["timeout_seconds"] == DEFAULT_TIMEOUT_SECONDS
+
+    def test_a_remote_host_defaults_to_require_and_localhost_to_prefer(self):
+        """``prefer`` accepts plaintext when the server offers no TLS, so it guarantees
+        nothing: a stripped connection is indistinguishable from a healthy one. A remote
+        warehouse must fail loudly instead. Localhost keeps ``prefer`` — dev/docker
+        Postgres usually has no certificate and the traffic never leaves the machine.
+        """
+        assert _resolve_sslmode("db.example.com", None) == "require"
+        assert _resolve_sslmode("localhost", None) == "prefer"
+        # An explicit choice is always honored, including a deliberate downgrade.
+        assert _resolve_sslmode("db.example.com", "disable") == "disable"
 
 
 class TestConnectionErrorSanitization:

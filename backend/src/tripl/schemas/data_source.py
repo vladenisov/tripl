@@ -69,7 +69,6 @@ SSLKEY_STORAGE_KEY = "sslkey_encrypted"
 # needs a cost ceiling, a PostgreSQL source needs a TLS posture, and neither is
 # meaningful for the other.
 DEFAULT_TIMEOUT_SECONDS = 300
-DEFAULT_POSTGRES_SSLMODE: PostgresSslMode = "prefer"
 # ~100 GiB. A single scan/metric query that would bill more than this is refused
 # by BigQuery before it runs, so a stray cross join cannot quietly burn a budget.
 DEFAULT_BIGQUERY_MAXIMUM_BYTES_BILLED = 100 * 1024**3

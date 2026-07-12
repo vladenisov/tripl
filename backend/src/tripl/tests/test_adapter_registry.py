@@ -123,7 +123,12 @@ def test_postgres_wires_timeout_and_tls(monkeypatch: pytest.MonkeyPatch) -> None
     # and binned in the *session* timezone, so a server whose TimeZone is Europe/Berlin
     # would shift every window bound and bucket edge (see tripl.core.bucketing).
     assert captured["options"] == "-c timezone=UTC -c statement_timeout=90000"
-    assert captured["sslmode"] == "prefer"
+    # A REMOTE host that pins no mode gets `require`, not `prefer`. `prefer` negotiates
+    # TLS when the server offers it and silently accepts PLAINTEXT when it doesn't, so a
+    # stripped connection is indistinguishable from a healthy one. The registry used to
+    # substitute a static `prefer` before the adapter could apply this host-aware
+    # default, which left every remote warehouse tolerating plaintext.
+    assert captured["sslmode"] == "require"
     assert captured["autocommit"] is True
 
 
