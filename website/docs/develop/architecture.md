@@ -144,6 +144,11 @@ Locally, all of the above (except the warehouses) run under Docker Compose:
 - **Release regression** — activation-gated comparison of the newest stable app
   version with the previous release, inert unless a scan names an app-version
   column.
+- **App-version series retention** is a project-level read-time policy. Scans
+  and catalog metrics select their source column, all raw version buckets stay
+  stored verbatim, and `Project.app_version_keep_releases` decides which latest
+  releases remain explicit versus fold into `Other`. Changing it therefore
+  affects event and catalog-metric views immediately without replaying data.
 - **Correlation-aware grouping** collapses signals that share an underlying
   cause so one root problem yields one alert, not many.
 - **Metric anomalies** run the same detector at a dedicated **metric scope**.

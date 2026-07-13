@@ -1171,7 +1171,6 @@ describe('ProjectSettingsPage', () => {
         metric_breakdown_values_limit: 2,
         distribution_drift_fields: [],
         app_version_column: null,
-        app_version_keep_releases: null,
         app_version_prerelease_pattern: null,
         app_version_active_share_min: null,
         platform_column: null,
@@ -1328,9 +1327,7 @@ describe('ProjectSettingsPage', () => {
     fireEvent.change(screen.getByLabelText('App Version Column (optional)'), {
       target: { value: 'app_version' },
     })
-    fireEvent.change(screen.getByLabelText('Releases to keep'), {
-      target: { value: '5' },
-    })
+    expect(screen.queryByLabelText('Releases to keep')).not.toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: 'Create scan' }))
 
     await waitFor(() => {
@@ -1338,9 +1335,9 @@ describe('ProjectSettingsPage', () => {
         expect.objectContaining({
           name: 'Versioned scan',
           app_version_column: 'app_version',
-          app_version_keep_releases: 5,
         }),
       )
+      expect(postBodies[0]).not.toHaveProperty('app_version_keep_releases')
     })
   })
 

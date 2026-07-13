@@ -52,7 +52,7 @@ export function ScanBadges({
   if (sc.metric_breakdown_columns.length) items.push(`Breakdowns ${sc.metric_breakdown_columns.length}`)
   if (sc.distribution_drift_fields.length) items.push(`Distribution ${sc.distribution_drift_fields.length}`)
   if (sc.app_version_column) {
-    items.push(`Version ${sc.app_version_column}${sc.app_version_keep_releases ? ` · keep ${sc.app_version_keep_releases}` : ''}`)
+    items.push(`Version ${sc.app_version_column}`)
   }
   if (sc.event_group_rules.length) items.push(`Groups ${sc.event_group_rules.length}`)
 

@@ -3,7 +3,7 @@ from collections import defaultdict
 from datetime import UTC, datetime
 
 from fastapi import HTTPException
-from sqlalchemy import String, case, cast, delete, func, literal, or_, select, union_all
+from sqlalchemy import String, case, cast, delete, func, literal, or_, select, union_all, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from tripl import cache
@@ -643,6 +643,19 @@ async def update_project(session: AsyncSession, slug: str, data: ProjectUpdate) 
             raise HTTPException(status_code=409, detail="Project with this slug already exists")
     for key, value in update_data.items():
         setattr(project, key, value)
+    # Keep the legacy per-scan field synchronized during the rolling-deploy
+    # compatibility window. New runtime reads use Project exclusively, while an
+    # older worker/API container still sees the same policy on versioned scans.
+    keep_releases = update_data.get("app_version_keep_releases")
+    if keep_releases is not None:
+        await session.execute(
+            update(ScanConfig)
+            .where(
+                ScanConfig.project_id == project.id,
+                ScanConfig.app_version_column.is_not(None),
+            )
+            .values(app_version_keep_releases=keep_releases)
+        )
     await session.commit()
     await session.refresh(project)
     await cache.delete_prefix(cache.prefix_projects())

@@ -715,6 +715,85 @@
         }
       }
     },
+    "/api/v1/projects/demo/{slug}/reset": {
+      "post": {
+        "tags": [
+          "projects"
+        ],
+        "summary": "Reset Demo Project",
+        "description": "Re-seed a demo in place. Restricted to the demo's creator or an owner.",
+        "operationId": "reset_demo_project_api_v1_projects_demo__slug__reset_post",
+        "parameters": [
+          {
+            "name": "slug",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Slug"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProjectResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/projects/demo/{slug}": {
+      "delete": {
+        "tags": [
+          "projects"
+        ],
+        "summary": "Delete Demo Project",
+        "description": "Delete a demo and its owned synthetic warehouse. Creator or owner only.",
+        "operationId": "delete_demo_project_api_v1_projects_demo__slug__delete",
+        "parameters": [
+          {
+            "name": "slug",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Slug"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/projects/{slug}": {
       "get": {
         "tags": [
@@ -8685,6 +8764,59 @@
         }
       }
     },
+    "/api/v1/projects/{slug}/metrics/fact-preview": {
+      "post": {
+        "tags": [
+          "metrics-catalog"
+        ],
+        "summary": "Preview Fact Operand",
+        "description": "Stateless dry-run of ONE fact operand's row filter (editor-gated).\n\nThe body is the operand a save would send. Its filters are compiled by the\nworker's own resolver for the fact table's data-source dialect and the\nresulting query is executed with a 1-row cap over a bounded recent window;\nnothing is persisted. Expected user mistakes \u2014 an unknown named filter, SQL\nthe warehouse rejects, a measure column the filtered query does not project \u2014\nreturn 200 with ``error`` set so the filter editor can render them inline.\nAn unknown project or fact table is a 404.",
+        "operationId": "preview_fact_operand_api_v1_projects__slug__metrics_fact_preview_post",
+        "parameters": [
+          {
+            "name": "slug",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Slug"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FactOperand"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FactOperandPreviewResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/projects/{slug}/metrics/reorder": {
       "patch": {
         "tags": [
@@ -10395,6 +10527,68 @@
             }
           }
         ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlanBranchDiff"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/projects/{slug}/branches/{branch_id}/revert": {
+      "post": {
+        "tags": [
+          "plan-branches"
+        ],
+        "summary": "Revert Branch Change",
+        "operationId": "revert_branch_change_api_v1_projects__slug__branches__branch_id__revert_post",
+        "parameters": [
+          {
+            "name": "slug",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Slug"
+            }
+          },
+          {
+            "name": "branch_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Branch Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BranchRevertRequest"
+              }
+            }
+          }
+        },
         "responses": {
           "200": {
             "description": "Successful Response",
@@ -12200,6 +12394,16 @@
             ],
             "title": "Error Message"
           },
+          "is_local": {
+            "type": "boolean",
+            "title": "Is Local",
+            "default": false
+          },
+          "is_simulated": {
+            "type": "boolean",
+            "title": "Is Simulated",
+            "default": false
+          },
           "created_at": {
             "type": "string",
             "format": "date-time",
@@ -12518,6 +12722,16 @@
               }
             ],
             "title": "Error Message"
+          },
+          "is_local": {
+            "type": "boolean",
+            "title": "Is Local",
+            "default": false
+          },
+          "is_simulated": {
+            "type": "boolean",
+            "title": "Is Simulated",
+            "default": false
           },
           "created_at": {
             "type": "string",
@@ -12968,6 +13182,11 @@
             ],
             "title": "Linear Label Ids"
           },
+          "is_local": {
+            "type": "boolean",
+            "title": "Is Local",
+            "default": false
+          },
           "rules": {
             "items": {
               "$ref": "#/components/schemas/AlertRuleResponse"
@@ -13024,7 +13243,8 @@
           "webhook",
           "email",
           "jira",
-          "linear"
+          "linear",
+          "demo_sink"
         ],
         "title": "AlertDestinationType"
       },
@@ -14853,6 +15073,52 @@
         ],
         "title": "AuthUserResponse"
       },
+      "BigQuerySettings": {
+        "properties": {
+          "location": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 40
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Location"
+          },
+          "maximum_bytes_billed": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 1.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Maximum Bytes Billed"
+          },
+          "dataset_allowlist": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Dataset Allowlist"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "BigQuerySettings",
+        "description": "Typed BigQuery execution controls (location, cost guard, dataset scope)."
+      },
       "Body_upload_event_photo_api_v1_projects__slug__events__event_id__photos_post": {
         "properties": {
           "file": {
@@ -15010,6 +15276,55 @@
           "working"
         ],
         "title": "BranchKind"
+      },
+      "BranchRevertRequest": {
+        "properties": {
+          "entity_type": {
+            "type": "string",
+            "enum": [
+              "event_type",
+              "field_definition",
+              "event",
+              "variable",
+              "meta_field",
+              "relation"
+            ],
+            "title": "Entity Type"
+          },
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "parent": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Parent"
+          },
+          "field": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Field"
+          }
+        },
+        "type": "object",
+        "required": [
+          "entity_type",
+          "name"
+        ],
+        "title": "BranchRevertRequest",
+        "description": "Undo one entry of the branch's diff.\n\nThe entry is addressed the way the diff names it \u2014 entity type, natural name\nand parent \u2014 rather than by id, so the request describes a *change* rather\nthan a row. ``field`` narrows the revert to one changed field; omitted, the\nwhole entity goes back to its base state."
       },
       "BranchReviewerCreate": {
         "properties": {
@@ -15321,6 +15636,13 @@
         ],
         "title": "ChartAnnotationScopeType"
       },
+      "ClickHouseSettings": {
+        "properties": {},
+        "additionalProperties": false,
+        "type": "object",
+        "title": "ClickHouseSettings",
+        "description": "ClickHouse has no extra connection settings.\n\nIts two knobs \u2014 ``timeout_seconds`` and ``json_path_discovery`` \u2014 are\nfirst-class columns on the data source, not connection settings."
+      },
       "ColumnSchema": {
         "properties": {
           "name": {
@@ -15419,6 +15741,106 @@
         "title": "ConflictField",
         "description": "A single field that diverged on both sides of the merge.\n\n``base`` is the value when the branch was created; ``ours`` is main's\ncurrent value; ``theirs`` is the branch's current value. The reviewer\npicks ``choice`` to drive the merge for this field; ``None`` means\nunresolved (merge stays blocked)."
       },
+      "ConnectionSettingsResponse": {
+        "properties": {
+          "location": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Location"
+          },
+          "maximum_bytes_billed": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Maximum Bytes Billed"
+          },
+          "dataset_allowlist": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Dataset Allowlist"
+          },
+          "sslmode": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "disable",
+                  "allow",
+                  "prefer",
+                  "require",
+                  "verify-ca",
+                  "verify-full"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sslmode"
+          },
+          "sslrootcert": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sslrootcert"
+          },
+          "sslcert": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sslcert"
+          },
+          "search_path": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Search Path"
+          },
+          "sslkey_set": {
+            "type": "boolean",
+            "title": "Sslkey Set",
+            "default": false
+          }
+        },
+        "type": "object",
+        "title": "ConnectionSettingsResponse",
+        "description": "Read side of the connection settings: the union, flattened, secrets removed.\n\nApplicability is enforced on write, so the response can be one flat object;\nonly the fields that apply to the source's ``db_type`` are ever populated."
+      },
       "CoverageBucket": {
         "properties": {
           "bucket": {
@@ -15496,7 +15918,8 @@
         "enum": [
           "clickhouse",
           "postgres",
-          "bigquery"
+          "bigquery",
+          "synthetic"
         ],
         "title": "DBType"
       },
@@ -15567,17 +15990,25 @@
             ],
             "title": "Json Path Discovery"
           },
-          "extra_params": {
+          "connection_settings": {
             "anyOf": [
               {
-                "additionalProperties": true,
-                "type": "object"
+                "$ref": "#/components/schemas/ClickHouseSettings"
+              },
+              {
+                "$ref": "#/components/schemas/PostgresSettings"
+              },
+              {
+                "$ref": "#/components/schemas/BigQuerySettings"
+              },
+              {
+                "$ref": "#/components/schemas/SyntheticSettings"
               },
               {
                 "type": "null"
               }
             ],
-            "title": "Extra Params"
+            "title": "Connection Settings"
           }
         },
         "type": "object",
@@ -15602,6 +16033,10 @@
           },
           "db_type": {
             "$ref": "#/components/schemas/DBType"
+          },
+          "is_synthetic": {
+            "type": "boolean",
+            "title": "Is Synthetic"
           },
           "host": {
             "type": "string",
@@ -15649,17 +16084,8 @@
             ],
             "title": "Json Path Discovery"
           },
-          "extra_params": {
-            "anyOf": [
-              {
-                "additionalProperties": true,
-                "type": "object"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Extra Params"
+          "connection_settings": {
+            "$ref": "#/components/schemas/ConnectionSettingsResponse"
           },
           "last_test_at": {
             "anyOf": [
@@ -15710,12 +16136,13 @@
           "id",
           "name",
           "db_type",
+          "is_synthetic",
           "host",
           "port",
           "database_name",
           "username",
           "password_set",
-          "extra_params",
+          "connection_settings",
           "last_test_at",
           "last_test_status",
           "last_test_message",
@@ -15932,17 +16359,25 @@
             ],
             "title": "Json Path Discovery"
           },
-          "extra_params": {
+          "connection_settings": {
             "anyOf": [
               {
-                "additionalProperties": true,
-                "type": "object"
+                "$ref": "#/components/schemas/ClickHouseSettings"
+              },
+              {
+                "$ref": "#/components/schemas/PostgresSettings"
+              },
+              {
+                "$ref": "#/components/schemas/BigQuerySettings"
+              },
+              {
+                "$ref": "#/components/schemas/SyntheticSettings"
               },
               {
                 "type": "null"
               }
             ],
-            "title": "Extra Params"
+            "title": "Connection Settings"
           }
         },
         "type": "object",
@@ -19190,6 +19625,36 @@
         ],
         "title": "FactOperand",
         "description": "One fact-table aggregation operand (a single metric, or one ratio side).\n\nReferences a ``FactTable`` by id and aggregates one of its introspected\ncolumns. ``measure_column`` / ``distinct_column`` reach warehouse SQL\nunparameterised, so they are identifier-validated here; their membership in\nthe referenced fact table's columns is checked in the service (it needs the\nDB).\n\nRow filtering combines three inputs, ANDed together at collection time:\n``row_filters`` is a list of NAMES of that fact table's stored row filters\n(each resolved to its SQL fragment; membership checked in the service), and\n``filter_sql`` is a free-text boolean WHERE fragment (SQL-safety-validated\nhere). ``conditions`` is a list of visual column/operator/value conditions.\nThe legacy single ``row_filter`` name is still accepted on input and folded\ninto the effective named-filter set; new writes use ``row_filters`` +\n``filter_sql`` + ``conditions``."
+      },
+      "FactOperandPreviewResponse": {
+        "properties": {
+          "columns": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Columns"
+          },
+          "row_count": {
+            "type": "integer",
+            "title": "Row Count",
+            "default": 0
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          }
+        },
+        "type": "object",
+        "title": "FactOperandPreviewResponse",
+        "description": "Dry-run outcome for ONE fact operand's compiled row filter.\n\nThe request body is the operand itself (:class:`FactOperand`) \u2014 the same\npayload a save sends \u2014 so the preview compiles from the identical config the\nworker will later read. ``columns`` / ``row_count`` describe the filtered\nfact query the operand aggregates (probed with a 1-row cap); expected user\nmistakes \u2014 an unknown named filter, a filter the warehouse rejects, a measure\ncolumn the filtered query does not project \u2014 come back with ``error`` set on\na 200 (see ``metric_preview_service.preview_fact_operand``), not a 5xx."
       },
       "FactTableColumnSchema": {
         "properties": {
@@ -22854,6 +23319,17 @@
             ],
             "title": "Parent"
           },
+          "entity_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Entity Id"
+          },
           "changes": {
             "items": {
               "type": "string"
@@ -22912,6 +23388,13 @@
           },
           "after": {
             "title": "After"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/PlanValueChange"
+            },
+            "type": "array",
+            "title": "Items"
           }
         },
         "type": "object",
@@ -23065,6 +23548,36 @@
         "title": "PlanRevisionSummary",
         "description": "List-view of a revision \u2014 payload omitted to keep responses small."
       },
+      "PlanValueChange": {
+        "properties": {
+          "key": {
+            "type": "string",
+            "title": "Key"
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "added",
+              "removed",
+              "changed"
+            ],
+            "title": "Kind"
+          },
+          "before": {
+            "title": "Before"
+          },
+          "after": {
+            "title": "After"
+          }
+        },
+        "type": "object",
+        "required": [
+          "key",
+          "kind"
+        ],
+        "title": "PlanValueChange",
+        "description": "One member of a collection-valued field that moved.\n\n``key`` is the member's natural identifier \u2014 the field name behind an event\nfield value, the tag itself, the event an override targets. ``before``/\n``after`` carry that member's value with the key stripped out, so a reviewer\nreads \"currency: USD \u2192 EUR\" instead of two JSON dumps of the whole\ncollection."
+      },
       "PlatformParityAnomaly": {
         "properties": {
           "bucket": {
@@ -23172,6 +23685,83 @@
         ],
         "title": "PlatformPresenceRow",
         "description": "One event and the platform values it has stored breakdown data for."
+      },
+      "PostgresSettings": {
+        "properties": {
+          "sslmode": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "disable",
+                  "allow",
+                  "prefer",
+                  "require",
+                  "verify-ca",
+                  "verify-full"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sslmode"
+          },
+          "sslrootcert": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 64000
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sslrootcert"
+          },
+          "sslcert": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 64000
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sslcert"
+          },
+          "sslkey": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 64000,
+                "format": "password",
+                "writeOnly": true
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sslkey"
+          },
+          "search_path": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 255
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Search Path"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "PostgresSettings",
+        "description": "Typed allowlist of safe PostgreSQL connection options."
       },
       "ProjectAnomalySettingsResponse": {
         "properties": {
@@ -23469,6 +24059,13 @@
             "type": "string",
             "title": "Description",
             "default": ""
+          },
+          "app_version_keep_releases": {
+            "type": "integer",
+            "maximum": 100.0,
+            "minimum": 1.0,
+            "title": "App Version Keep Releases",
+            "default": 10
           }
         },
         "type": "object",
@@ -23477,6 +24074,17 @@
           "slug"
         ],
         "title": "ProjectCreate"
+      },
+      "ProjectGenerationStatus": {
+        "type": "string",
+        "enum": [
+          "pending",
+          "seeding",
+          "ready",
+          "failed"
+        ],
+        "title": "ProjectGenerationStatus",
+        "description": "Provisioning lifecycle for generated (demo) projects.\n\nOrdinary projects are created ``ready`` in a single step. Demo projects move\n``seeding`` -> ``ready`` on success or ``seeding`` -> ``failed`` when\nprovisioning raises; non-``ready`` demos are hidden from normal project lists\nso a partially built or failed demo never surfaces as a real workspace."
       },
       "ProjectLatestScanJob": {
         "properties": {
@@ -23646,6 +24254,13 @@
             "type": "string",
             "title": "Description"
           },
+          "app_version_keep_releases": {
+            "type": "integer",
+            "maximum": 100.0,
+            "minimum": 1.0,
+            "title": "App Version Keep Releases",
+            "default": 10
+          },
           "created_at": {
             "type": "string",
             "format": "date-time",
@@ -23658,6 +24273,84 @@
           },
           "summary": {
             "$ref": "#/components/schemas/ProjectSummary"
+          },
+          "is_demo": {
+            "type": "boolean",
+            "title": "Is Demo",
+            "default": false
+          },
+          "generation_status": {
+            "$ref": "#/components/schemas/ProjectGenerationStatus",
+            "default": "ready"
+          },
+          "generation_stage": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Generation Stage"
+          },
+          "generation_error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Generation Error"
+          },
+          "demo_recipe_version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Demo Recipe Version"
+          },
+          "demo_seeded_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Demo Seeded At"
+          },
+          "demo_last_tick_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Demo Last Tick At"
+          },
+          "created_by_user_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Created By User Id"
           }
         },
         "type": "object",
@@ -23966,6 +24659,12 @@
               }
             ],
             "title": "Description"
+          },
+          "app_version_keep_releases": {
+            "type": "integer",
+            "maximum": 100.0,
+            "minimum": 1.0,
+            "title": "App Version Keep Releases"
           }
         },
         "type": "object",
@@ -24593,7 +25292,9 @@
                 "type": "null"
               }
             ],
-            "title": "App Version Keep Releases"
+            "title": "App Version Keep Releases",
+            "description": "Deprecated compatibility mirror of Project.app_version_keep_releases; caller values are ignored.",
+            "deprecated": true
           },
           "app_version_prerelease_pattern": {
             "anyOf": [
@@ -24893,7 +25594,9 @@
                 "type": "null"
               }
             ],
-            "title": "App Version Keep Releases"
+            "title": "App Version Keep Releases",
+            "description": "Deprecated compatibility mirror of Project.app_version_keep_releases.",
+            "deprecated": true
           },
           "app_version_prerelease_pattern": {
             "anyOf": [
@@ -25201,7 +25904,9 @@
                 "type": "null"
               }
             ],
-            "title": "App Version Keep Releases"
+            "title": "App Version Keep Releases",
+            "description": "Deprecated compatibility mirror of Project.app_version_keep_releases; caller values are ignored.",
+            "deprecated": true
           },
           "app_version_prerelease_pattern": {
             "anyOf": [
@@ -27049,6 +27754,13 @@
         },
         "type": "object",
         "title": "StorageSettingsUpdate"
+      },
+      "SyntheticSettings": {
+        "properties": {},
+        "additionalProperties": false,
+        "type": "object",
+        "title": "SyntheticSettings",
+        "description": "The synthetic (demo) warehouse is in-memory: it has nothing to configure."
       },
       "SystemSettings": {
         "properties": {

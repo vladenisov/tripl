@@ -110,6 +110,11 @@ class TestScanConfigsCRUD:
     async def test_create_scan_config_with_app_version(
         self, client: AsyncClient, project: dict, data_source: dict, event_type: dict
     ):
+        policy_resp = await client.patch(
+            f"/api/v1/projects/{project['slug']}",
+            json={"app_version_keep_releases": 3},
+        )
+        assert policy_resp.status_code == 200
         resp = await client.post(
             f"/api/v1/projects/{project['slug']}/scans",
             json={
@@ -124,7 +129,24 @@ class TestScanConfigsCRUD:
         assert resp.status_code == 201
         data = resp.json()
         assert data["app_version_column"] == "app_version"
-        assert data["app_version_keep_releases"] == 5
+        # The legacy field remains on the wire for rolling-deploy compatibility,
+        # but it is mirrored from the project and cannot override project policy.
+        assert data["app_version_keep_releases"] == 3
+
+        scan_override = await client.patch(
+            f"/api/v1/projects/{project['slug']}/scans/{data['id']}",
+            json={"app_version_keep_releases": 7},
+        )
+        assert scan_override.status_code == 200
+        assert scan_override.json()["app_version_keep_releases"] == 3
+
+        project_update = await client.patch(
+            f"/api/v1/projects/{project['slug']}",
+            json={"app_version_keep_releases": 4},
+        )
+        assert project_update.status_code == 200
+        refreshed = await client.get(f"/api/v1/projects/{project['slug']}/scans/{data['id']}")
+        assert refreshed.json()["app_version_keep_releases"] == 4
 
     async def test_create_scan_config_rejects_app_version_as_breakdown(
         self, client: AsyncClient, project: dict, data_source: dict, event_type: dict

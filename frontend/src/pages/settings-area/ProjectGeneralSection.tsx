@@ -58,6 +58,7 @@ const RESET_PERIODS: { value: string; label: string; days: number | null }[] = [
 ]
 
 const DAY_MS = 24 * 60 * 60 * 1000
+const MAX_APP_VERSION_KEEP_RELEASES = 100
 
 // Query prefixes refreshed after a reset so the cleared state is reflected
 // everywhere the deleted detections (and their derived signals) surface.
@@ -179,12 +180,14 @@ function ProjectGeneralBody({ slug }: { slug: string }) {
   const [name, setName] = useState('')
   const [slugDraft, setSlugDraft] = useState('')
   const [description, setDescription] = useState('')
+  const [appVersionKeepReleases, setAppVersionKeepReleases] = useState('')
   const [hydratedFor, setHydratedFor] = useState<string | null>(null)
 
   if (projectQuery.data && hydratedFor !== projectQuery.data.id) {
     setName(projectQuery.data.name)
     setSlugDraft(projectQuery.data.slug)
     setDescription(projectQuery.data.description ?? '')
+    setAppVersionKeepReleases(String(projectQuery.data.app_version_keep_releases))
     setHydratedFor(projectQuery.data.id)
   }
 
@@ -205,6 +208,16 @@ function ProjectGeneralBody({ slug }: { slug: string }) {
   const reindexMut = useMutation({
     mutationFn: () => searchApi.reindex(slug),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['commandPaletteSearch'] }),
+  })
+  const versionPolicyMut = useMutation({
+    mutationFn: () =>
+      projectsApi.update(slug, {
+        app_version_keep_releases: Number(appVersionKeepReleases),
+      }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['projects'] })
+      qc.invalidateQueries({ queryKey: ['project'] })
+    },
   })
   const deleteMut = useMutation({
     mutationFn: () => projectsApi.del(slug),
@@ -271,6 +284,13 @@ function ProjectGeneralBody({ slug }: { slug: string }) {
     description === (projectQuery.data.description ?? '')
   const canEdit = user?.role === 'owner' || user?.role === 'editor'
   const canDelete = user?.role === 'owner'
+  const appVersionKeepReleasesNumber = Number(appVersionKeepReleases)
+  const versionPolicyInvalid =
+    !Number.isInteger(appVersionKeepReleasesNumber) ||
+    appVersionKeepReleasesNumber < 1 ||
+    appVersionKeepReleasesNumber > MAX_APP_VERSION_KEEP_RELEASES
+  const versionPolicyPristine =
+    appVersionKeepReleasesNumber === projectQuery.data?.app_version_keep_releases
 
   return (
     <div>
@@ -351,6 +371,50 @@ function ProjectGeneralBody({ slug }: { slug: string }) {
             </Field>
             <Field label="Description" htmlFor="proj-desc" last>
               <TextArea id="proj-desc" value={description} onChange={setDescription} rows={2} disabled={!canEdit} />
+            </Field>
+          </SCard>
+
+          <SCard
+            title="Version monitoring"
+            description="One release-retention policy for event monitoring and catalog metrics."
+            footer={
+              <>
+                <span className="flex-1 text-[12px]" style={{ color: 'var(--fg-subtle)' }}>
+                  {versionPolicyMut.isError ? getErrorMessage(versionPolicyMut.error) : ''}
+                </span>
+                <Button
+                  size="sm"
+                  onClick={() => versionPolicyMut.mutate()}
+                  disabled={
+                    !canEdit ||
+                    versionPolicyMut.isPending ||
+                    versionPolicyInvalid ||
+                    versionPolicyPristine
+                  }
+                >
+                  <Save className="h-3 w-3" />
+                  {versionPolicyMut.isPending ? 'Saving…' : 'Save'}
+                </Button>
+              </>
+            }
+          >
+            <Field
+              label="Releases to keep"
+              hint={
+                versionPolicyInvalid
+                  ? `Enter a whole number from 1 to ${MAX_APP_VERSION_KEEP_RELEASES}.`
+                  : 'Older releases are combined into Other across every app-version chart in this project.'
+              }
+              htmlFor="app-version-keep-releases"
+              last
+            >
+              <TextInput
+                id="app-version-keep-releases"
+                type="number"
+                value={appVersionKeepReleases}
+                onChange={setAppVersionKeepReleases}
+                disabled={!canEdit}
+              />
             </Field>
           </SCard>
 

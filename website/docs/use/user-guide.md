@@ -376,6 +376,11 @@ Open a monitor (or an event's monitoring detail) to see, across tabs:
   versus the previous one). Scans without a version column simply don't show
   this tab.
 
+Choose how many releases remain visible under **Settings → Project → General →
+Version monitoring**. The same value applies immediately, without recollecting
+data, to event charts, adoption/project totals, and catalog metric version
+charts. Older releases are combined into **Other**.
+
 **Schema drift** — a new field appearing, a relied-upon field vanishing, or a
 field carrying new values — surfaces in the catalog alongside your events.
 

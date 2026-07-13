@@ -23,6 +23,9 @@ _NUMERIC_IDENTIFIER_RE = re.compile(r"^(0|[1-9]\d*)$")
 # Retention is applied at READ time over the full requested window so the kept
 # set stays stable regardless of how collection was chunked.
 DEFAULT_APP_VERSION_KEEP_RELEASES = 10
+# Bound project configuration so accidental or hostile inputs cannot request an
+# impractically large number of chart series or overflow the database integer.
+MAX_APP_VERSION_KEEP_RELEASES = 100
 # Display label for releases outside the retained window.
 APP_VERSION_OTHER_LABEL = "Other"
 

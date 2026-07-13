@@ -870,6 +870,11 @@ async def test_get_app_version_series_retention_is_window_stable(
     # must fold into "Other" consistently — even in buckets where the newer
     # version is absent — instead of flipping between its own series and "Other".
     setup = await _setup_metrics_project(client, "version-stable")
+    policy_resp = await client.patch(
+        "/api/v1/projects/version-stable",
+        json={"app_version_keep_releases": 1},
+    )
+    assert policy_resp.status_code == 200
 
     event_resp = await client.post(
         "/api/v1/projects/version-stable/events",
@@ -902,7 +907,9 @@ async def test_get_app_version_series_retention_is_window_stable(
             base_query="SELECT time, event_name, app_version FROM events",
             time_column="time",
             app_version_column="app_version",
-            app_version_keep_releases=1,
+            # Deliberately conflicts with the project policy: runtime retention
+            # must no longer depend on the legacy per-scan value.
+            app_version_keep_releases=5,
             cardinality_threshold=100,
             interval="1h",
         )
@@ -938,7 +945,7 @@ async def test_get_app_version_series_retention_is_window_stable(
     assert resp.status_code == 200
     body = resp.json()
     assert body["latest_version"] == "2.0.0"
-    # keep_releases=1 → only the latest (2.0.0) stays explicit; 1.0.0 folds into
+    # Project keep_releases=1 → only the latest (2.0.0) stays explicit; 1.0.0 folds into
     # "Other" in BOTH buckets, including the one where 2.0.0 is absent.
     assert [item["version"] for item in body["versions"]] == ["2.0.0", "Other"]
     series_by_version = {series["version"]: series for series in body["series"]}

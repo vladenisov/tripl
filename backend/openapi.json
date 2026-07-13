@@ -12248,6 +12248,13 @@
       },
       "ProjectCreate": {
         "properties": {
+          "app_version_keep_releases": {
+            "default": 10,
+            "maximum": 100.0,
+            "minimum": 1.0,
+            "title": "App Version Keep Releases",
+            "type": "integer"
+          },
           "description": {
             "default": "",
             "title": "Description",
@@ -12436,6 +12443,13 @@
       },
       "ProjectResponse": {
         "properties": {
+          "app_version_keep_releases": {
+            "default": 10,
+            "maximum": 100.0,
+            "minimum": 1.0,
+            "title": "App Version Keep Releases",
+            "type": "integer"
+          },
           "created_at": {
             "format": "date-time",
             "title": "Created At",
@@ -12814,6 +12828,12 @@
       },
       "ProjectUpdate": {
         "properties": {
+          "app_version_keep_releases": {
+            "maximum": 100.0,
+            "minimum": 1.0,
+            "title": "App Version Keep Releases",
+            "type": "integer"
+          },
           "description": {
             "anyOf": [
               {
@@ -13328,6 +13348,8 @@
                 "type": "null"
               }
             ],
+            "deprecated": true,
+            "description": "Deprecated compatibility mirror of Project.app_version_keep_releases; caller values are ignored.",
             "title": "App Version Keep Releases"
           },
           "app_version_prerelease_pattern": {
@@ -13625,6 +13647,8 @@
                 "type": "null"
               }
             ],
+            "deprecated": true,
+            "description": "Deprecated compatibility mirror of Project.app_version_keep_releases.",
             "title": "App Version Keep Releases"
           },
           "app_version_prerelease_pattern": {
@@ -13893,6 +13917,8 @@
                 "type": "null"
               }
             ],
+            "deprecated": true,
+            "description": "Deprecated compatibility mirror of Project.app_version_keep_releases; caller values are ignored.",
             "title": "App Version Keep Releases"
           },
           "app_version_prerelease_pattern": {

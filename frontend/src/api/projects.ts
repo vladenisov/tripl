@@ -33,7 +33,12 @@ export const projectsApi = {
   createDemo: (signal?: AbortSignal) => api.post<Project>('/projects/demo', {}, signal),
   resetDemo: (slug: string) => api.post<Project>(`/projects/demo/${slug}/reset`, {}),
   deleteDemo: (slug: string) => api.del(`/projects/demo/${slug}`),
-  update: (slug: string, data: { name?: string; slug?: string; description?: string }) =>
+  update: (slug: string, data: {
+    name?: string
+    slug?: string
+    description?: string
+    app_version_keep_releases?: number
+  }) =>
     api.patch<Project>(`/projects/${slug}`, data),
   del: (slug: string) => api.del(`/projects/${slug}`),
   // Owner-only danger-zone resets: clear a whole category of detections across

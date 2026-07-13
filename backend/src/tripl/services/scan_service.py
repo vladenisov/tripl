@@ -7,6 +7,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from tripl.models.data_source import DataSource, DBType
+from tripl.models.project import Project
 from tripl.models.scan_config import ScanConfig
 from tripl.models.scan_job import ScanJob, ScanJobStatus
 from tripl.models.scan_preview_job import ScanPreviewJob
@@ -81,10 +82,16 @@ async def create_scan_config(
     if existing.scalar_one_or_none():
         raise HTTPException(status_code=409, detail="Scan config with this name already exists")
 
-    config = ScanConfig(
-        project_id=project_id,
-        **data.model_dump(),
+    payload = data.model_dump()
+    project_keep_releases = (
+        await session.execute(
+            select(Project.app_version_keep_releases).where(Project.id == project_id)
+        )
+    ).scalar_one()
+    payload["app_version_keep_releases"] = (
+        project_keep_releases if payload.get("app_version_column") else None
     )
+    config = ScanConfig(project_id=project_id, **payload)
     session.add(config)
     await session.commit()
     await session.refresh(config)
@@ -99,6 +106,15 @@ async def update_scan_config(
 ) -> ScanConfig:
     config = await get_scan_config(session, slug, scan_id)
     update_dict = data.model_dump(exclude_unset=True)
+    project_keep_releases = (
+        await session.execute(
+            select(Project.app_version_keep_releases).where(Project.id == config.project_id)
+        )
+    ).scalar_one()
+    resulting_app_version_column = update_dict.get("app_version_column", config.app_version_column)
+    update_dict["app_version_keep_releases"] = (
+        project_keep_releases if resulting_app_version_column else None
+    )
     # PATCH semantics: merge the partial payload onto the live config first so
     # cross-field checks see the post-update state, not just the diff.
     try:

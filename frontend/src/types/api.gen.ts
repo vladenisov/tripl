@@ -7208,6 +7208,11 @@ export interface components {
         /** ProjectCreate */
         ProjectCreate: {
             /**
+             * App Version Keep Releases
+             * @default 10
+             */
+            app_version_keep_releases: number;
+            /**
              * Description
              * @default
              */
@@ -7290,6 +7295,11 @@ export interface components {
         };
         /** ProjectResponse */
         ProjectResponse: {
+            /**
+             * App Version Keep Releases
+             * @default 10
+             */
+            app_version_keep_releases: number;
             /**
              * Created At
              * Format: date-time
@@ -7454,6 +7464,8 @@ export interface components {
         };
         /** ProjectUpdate */
         ProjectUpdate: {
+            /** App Version Keep Releases */
+            app_version_keep_releases?: number;
             /** Description */
             description?: string | null;
             /** Name */
@@ -7665,7 +7677,11 @@ export interface components {
             app_version_active_share_min?: number | null;
             /** App Version Column */
             app_version_column?: string | null;
-            /** App Version Keep Releases */
+            /**
+             * App Version Keep Releases
+             * @deprecated
+             * @description Deprecated compatibility mirror of Project.app_version_keep_releases; caller values are ignored.
+             */
             app_version_keep_releases?: number | null;
             /** App Version Prerelease Pattern */
             app_version_prerelease_pattern?: string | null;
@@ -7744,7 +7760,11 @@ export interface components {
             app_version_active_share_min: number | null;
             /** App Version Column */
             app_version_column: string | null;
-            /** App Version Keep Releases */
+            /**
+             * App Version Keep Releases
+             * @deprecated
+             * @description Deprecated compatibility mirror of Project.app_version_keep_releases.
+             */
             app_version_keep_releases: number | null;
             /** App Version Prerelease Pattern */
             app_version_prerelease_pattern: string | null;
@@ -7814,7 +7834,11 @@ export interface components {
             app_version_active_share_min?: number | null;
             /** App Version Column */
             app_version_column?: string | null;
-            /** App Version Keep Releases */
+            /**
+             * App Version Keep Releases
+             * @deprecated
+             * @description Deprecated compatibility mirror of Project.app_version_keep_releases; caller values are ignored.
+             */
             app_version_keep_releases?: number | null;
             /** App Version Prerelease Pattern */
             app_version_prerelease_pattern?: string | null;
