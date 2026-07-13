@@ -62,7 +62,7 @@ jobs:
           # semver releases only.
 
       - name: Build & push (linux/amd64, linux/arm64)
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: .
           file: ./Dockerfile
