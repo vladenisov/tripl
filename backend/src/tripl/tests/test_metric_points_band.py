@@ -1,4 +1,4 @@
-"""Unit tests for the metrics-serving band + immature-version anomaly filter.
+"""Unit tests for the metrics-serving anomaly band.
 
 Covers the read-time serving pieces added for tripl-dmch (Lane B4 / .4):
 
@@ -7,10 +7,6 @@ Covers the read-time serving pieces added for tripl-dmch (Lane B4 / .4):
   ``expected ± sigma_threshold * effective_stddev`` matches the detector's flag
   decision — and falls back to the raw stddev when the effective column is
   absent (pre-migration rows / hand-built objects);
-* anomalies on immature (non-activation-gated) app-version values are dropped
-  before serving, so an anomaly-only dev/tester build cannot surface markers or
-  sneak into the version key union as "latest".
-
 These exercise the pure helpers directly (no DB), mirroring the style of
 ``test_version_activation.py``.
 """
@@ -18,11 +14,8 @@ These exercise the pure helpers directly (no DB), mirroring the style of
 from datetime import datetime
 from types import SimpleNamespace
 
-from tripl.semver import APP_VERSION_OTHER_LABEL
 from tripl.services.metrics_service import (
-    _active_versions_from_metric_rows,
     _build_metric_points,
-    _drop_immature_version_anomalies,
     _served_detector_kind,
     _served_stddev,
 )
@@ -107,47 +100,3 @@ def test_build_metric_points_normal_buckets_have_no_band_fields() -> None:
     assert normal.is_anomaly is False
     assert normal.stddev is None
     assert normal.detector_kind is None
-
-
-def _version_anomaly(version: str, *, is_other: bool = False) -> SimpleNamespace:
-    return _anomaly(breakdown_value=version, is_other=is_other)
-
-
-def test_active_versions_from_metric_rows_gates_on_volume_and_share() -> None:
-    metric_rows = {
-        # Mature: 5 buckets * 1000 = 5000 events, ~100% share -> active.
-        ("1.0.0", False): [(d, 1000) for d in DAYS],
-        # Immature dev build: tiny volume, never clears the activation gate.
-        ("2.0.0", False): [(DAYS[0], 10)],
-    }
-    active = _active_versions_from_metric_rows(metric_rows)
-    assert "1.0.0" in active
-    assert "2.0.0" not in active
-
-
-def test_drop_immature_version_anomalies_removes_non_active_versions() -> None:
-    active = {"1.0.0"}
-    anomalies = {
-        ("1.0.0", False): [_version_anomaly("1.0.0")],
-        ("2.0.0", False): [_version_anomaly("2.0.0")],
-        (APP_VERSION_OTHER_LABEL, True): [_version_anomaly(APP_VERSION_OTHER_LABEL, is_other=True)],
-    }
-    filtered = _drop_immature_version_anomalies(anomalies, active)
-    assert ("1.0.0", False) in filtered
-    # Immature version anomalies are not served.
-    assert ("2.0.0", False) not in filtered
-    # The rolled-up "Other" bucket is always retained.
-    assert (APP_VERSION_OTHER_LABEL, True) in filtered
-
-
-def test_immature_anomaly_only_version_is_dropped_end_to_end() -> None:
-    # An immature version present ONLY in anomalies (no metric rows) is removed,
-    # so it can never enter the version key union or be picked as "latest".
-    metric_rows = {("1.0.0", False): [(d, 1000) for d in DAYS]}
-    anomalies = {
-        ("1.0.0", False): [_version_anomaly("1.0.0")],
-        ("9.9.9", False): [_version_anomaly("9.9.9")],
-    }
-    active = _active_versions_from_metric_rows(metric_rows)
-    filtered = _drop_immature_version_anomalies(anomalies, active)
-    assert set(filtered) == {("1.0.0", False)}

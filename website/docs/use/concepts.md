@@ -225,6 +225,13 @@ share of traffic, and compares the new release against the previous one over the
 window where both are live. That catches "we shipped 2.4 and
 `checkout_completed` stopped firing" without crying wolf during the rollout.
 
+Per-version lines are observational rollout views, not stable cohorts for the
+generic breakdown detector. Their expected ramp-up and decline do not produce
+regular anomaly markers or appear as movers in unrelated volume alerts. Other
+breakdowns — such as country, platform, or plan — keep their normal anomaly
+monitoring; release-specific problems use the dedicated regression detector
+above.
+
 The column is **optional**: scans without one (a web stream, say) behave exactly
 as before — no per-version series, no regressions, nothing extra to see.
 

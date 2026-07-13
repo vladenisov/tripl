@@ -16,6 +16,7 @@ from sqlalchemy.orm import Session
 from tripl.models.domain_enums import MetricBreakdownAnomalyKind, MetricScopeType
 from tripl.models.event_metric import EventMetric
 from tripl.models.metric_breakdown_anomaly import MetricBreakdownAnomaly
+from tripl.models.scan_config import ScanConfig
 
 SCOPE_PROJECT_TOTAL = MetricScopeType.project_total.value
 SCOPE_EVENT_TYPE = MetricScopeType.event_type.value
@@ -81,19 +82,20 @@ def load_top_movers(
     limit: int = TOP_MOVERS_LIMIT,
 ) -> list[MetricBreakdownAnomaly]:
     """Return the breakdown anomalies that moved hardest at this scope+bucket."""
+    app_version_column = session.execute(
+        select(ScanConfig.app_version_column).where(ScanConfig.id == scan_config_id)
+    ).scalar_one_or_none()
+    query = select(MetricBreakdownAnomaly).where(
+        MetricBreakdownAnomaly.scan_config_id == scan_config_id,
+        MetricBreakdownAnomaly.scope_type == scope_type,
+        MetricBreakdownAnomaly.scope_ref == scope_ref,
+        MetricBreakdownAnomaly.bucket == bucket,
+        MetricBreakdownAnomaly.kind == MetricBreakdownAnomalyKind.volume,
+    )
+    if app_version_column:
+        query = query.where(MetricBreakdownAnomaly.breakdown_column != app_version_column)
     return list(
-        session.execute(
-            select(MetricBreakdownAnomaly)
-            .where(
-                MetricBreakdownAnomaly.scan_config_id == scan_config_id,
-                MetricBreakdownAnomaly.scope_type == scope_type,
-                MetricBreakdownAnomaly.scope_ref == scope_ref,
-                MetricBreakdownAnomaly.bucket == bucket,
-                MetricBreakdownAnomaly.kind == MetricBreakdownAnomalyKind.volume,
-            )
-            .order_by(desc(func.abs(MetricBreakdownAnomaly.z_score)))
-            .limit(limit)
-        )
+        session.execute(query.order_by(desc(func.abs(MetricBreakdownAnomaly.z_score))).limit(limit))
         .scalars()
         .all()
     )

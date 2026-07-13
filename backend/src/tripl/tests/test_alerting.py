@@ -2205,8 +2205,9 @@ async def test_send_alert_delivery_attaches_top_movers_and_sparkline(
             data_source_id=ds.id,
             project_id=project.id,
             name="sc",
-            base_query="SELECT 1",
+            base_query="SELECT t, app_version FROM events",
             time_column="t",
+            app_version_column="app_version",
             cardinality_threshold=100,
             interval="1h",
         )
@@ -2287,6 +2288,27 @@ async def test_send_alert_delivery_attaches_top_movers_and_sparkline(
                 direction="drop",
             )
         )
+        # Legacy version markers must not leak into movers after this behavior
+        # changes; version lifecycle is handled by release regressions instead.
+        session.add(
+            MetricBreakdownAnomaly(
+                id=uuid.uuid4(),
+                scan_config_id=scan.id,
+                scope_type="event",
+                scope_ref=str(event_id),
+                event_id=event_id,
+                event_type_id=None,
+                bucket=bucket,
+                breakdown_column="app_version",
+                breakdown_value="2.10.0",
+                is_other=False,
+                actual_count=1,
+                expected_count=100.0,
+                stddev=1.0,
+                z_score=-30.0,
+                direction="drop",
+            )
+        )
         session.add_all([project, ds, scan, destination, rule, delivery, item])
         session.commit()
         delivery_id = str(delivery.id)
@@ -2314,6 +2336,7 @@ async def test_send_alert_delivery_attaches_top_movers_and_sparkline(
     text = sent_bodies[0]["text"]
     assert isinstance(text, str)
     assert "movers: country=RU" in text
+    assert "app_version" not in text
     assert "trend: " in text  # Sparkline rendered after `trend: ` label.
 
     Base.metadata.drop_all(engine)
