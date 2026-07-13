@@ -20,13 +20,18 @@ import os
 import urllib.error
 import urllib.request
 from collections.abc import Callable, Iterator
+from dataclasses import dataclass
 from typing import NoReturn
 
 import pytest
+from sqlalchemy import create_engine, text
+from sqlalchemy.orm import Session, sessionmaker
 
+from tripl.core.adapters.base import BaseAdapter
 from tripl.core.adapters.clickhouse import ClickHouseAdapter
 from tripl.core.adapters.postgres import PostgresAdapter
-from tripl.tests.conformance.dataset import ROWS, FixtureRow
+from tripl.models import Base
+from tripl.tests.conformance.dataset import PIPELINE_ROWS, ROWS, FixtureRow, PipelineRow
 
 # Connection settings. The defaults match the CI service containers. Locally they
 # point at a database name (`tripl_conformance`) that the dev stack does not have,
@@ -48,6 +53,20 @@ _BQ_PROJECT = os.environ.get("TRIPL_CONF_BQ_PROJECT", "tripl-test")
 #: The table both executing warehouses seed. Distinctive enough that it cannot be
 #: confused with anything a developer actually has.
 TABLE = "tripl_conformance_events"
+
+#: The pipeline gate's source table (``dataset.PIPELINE_ROWS``). Same two warehouses,
+#: same seeding path, a different shape: a ten-bucket series instead of a nine-row
+#: window trap.
+PIPELINE_TABLE = "tripl_conformance_pipeline"
+
+#: What the pipeline's ScanConfig scans. ``user_id`` is projected because the
+#: ``per_distinct_user`` composition runs a ``count_distinct`` over this very query;
+#: it has no FieldDefinition, so event generation skips it and the event identity
+#: stays ``event_name=<value>``.
+PIPELINE_EVENTS_QUERY = f"SELECT ts, event_name, user_id FROM {PIPELINE_TABLE}"
+
+#: What the pipeline's FactTable selects.
+PIPELINE_FACTS_QUERY = f"SELECT ts, event_name, user_id, amount, platform FROM {PIPELINE_TABLE}"
 
 #: The non-UTC zone the PostgreSQL gate pins the *role* to, to prove the adapter's
 #: session pin and explicit-offset literals survive a hostile server default.
@@ -286,3 +305,150 @@ def bq_analyze() -> Callable[[str], str | None]:
     if probe is not None:
         unavailable(f"bigquery-emulator at {_BQ_EMULATOR_URL} rejected SELECT 1: {probe}")
     return _analysis_error
+
+
+# --- the pipeline gate: source tables, warehouses, and a REAL app database ----
+
+
+@dataclass(frozen=True)
+class PipelineWarehouse:
+    """One executing warehouse, as the metrics pipeline sees it.
+
+    ``new_adapter`` is a FACTORY, not an adapter: the worker builds an adapter per
+    task and ``close()``s it in a ``finally``, so handing every call the same
+    long-lived instance would leave the second task talking to a closed connection.
+    """
+
+    db_type: str
+    new_adapter: Callable[[], BaseAdapter]
+    events_query: str
+    facts_query: str
+
+
+def _seed_postgres_pipeline(adapter: PostgresAdapter) -> None:
+    conn = adapter._conn  # noqa: SLF001 — seed through the adapter's own connection
+    with conn.cursor() as cur:
+        cur.execute(f"DROP TABLE IF EXISTS {PIPELINE_TABLE}")
+        cur.execute(
+            f"CREATE TABLE {PIPELINE_TABLE} ("
+            "ts timestamptz NOT NULL, "
+            "event_name text NOT NULL, "
+            "user_id text NOT NULL, "
+            "amount double precision, "
+            "platform text NOT NULL"
+            ")"
+        )
+        cur.executemany(
+            f"INSERT INTO {PIPELINE_TABLE} (ts, event_name, user_id, amount, platform) "
+            "VALUES (%s, %s, %s, %s, %s)",
+            [
+                (row.ts, row.event_name, row.user_id, row.amount, row.platform)
+                for row in PIPELINE_ROWS
+            ],
+        )
+
+
+def _seed_clickhouse_pipeline(adapter: ClickHouseAdapter) -> None:
+    client = adapter._client  # noqa: SLF001
+    client.command(f"DROP TABLE IF EXISTS {PIPELINE_TABLE}")
+    client.command(
+        f"CREATE TABLE {PIPELINE_TABLE} ("
+        # Declared in Tokyo, exactly like the scan fixture: the pipeline's windows
+        # and buckets have to survive a non-UTC column too, not just the adapter's
+        # unit-level calls.
+        f"ts DateTime64(6, '{CH_COLUMN_TZ}'), "
+        "event_name String, "
+        "user_id String, "
+        "amount Nullable(Float64), "
+        "platform String"
+        ") ENGINE = MergeTree ORDER BY ts"
+    )
+
+    def _row_literal(row: PipelineRow) -> str:
+        ts = row.ts.strftime("%Y-%m-%d %H:%M:%S.%f+00:00")
+        amount = "NULL" if row.amount is None else repr(row.amount)
+        return (
+            f"(parseDateTime64BestEffort('{ts}', 6, 'UTC'), '{row.event_name}', "
+            f"'{row.user_id}', {amount}, '{row.platform}')"
+        )
+
+    values = ", ".join(_row_literal(row) for row in PIPELINE_ROWS)
+    client.command(f"INSERT INTO {PIPELINE_TABLE} VALUES {values}")
+
+
+@pytest.fixture(scope="session")
+def pg_pipeline() -> Iterator[PipelineWarehouse]:
+    """PostgreSQL, seeded with the pipeline series."""
+    try:
+        seeder = _pg_adapter()
+        seeder.test_connection()
+        _seed_postgres_pipeline(seeder)
+    except Exception as exc:  # noqa: BLE001
+        unavailable(f"postgres at {_PG_HOST}:{_PG_PORT}/{_PG_DB}: {exc}")
+    try:
+        yield PipelineWarehouse(
+            db_type="postgres",
+            new_adapter=_pg_adapter,
+            events_query=PIPELINE_EVENTS_QUERY,
+            facts_query=PIPELINE_FACTS_QUERY,
+        )
+    finally:
+        seeder.close()
+
+
+@pytest.fixture(scope="session")
+def ch_pipeline() -> Iterator[PipelineWarehouse]:
+    """ClickHouse, seeded with the pipeline series on a Tokyo-declared time column."""
+    try:
+        seeder = _ch_adapter()
+        seeder.test_connection()
+        _seed_clickhouse_pipeline(seeder)
+    except Exception as exc:  # noqa: BLE001
+        unavailable(f"clickhouse at {_CH_HOST}:{_CH_PORT}: {exc}")
+    try:
+        yield PipelineWarehouse(
+            db_type="clickhouse",
+            new_adapter=_ch_adapter,
+            events_query=PIPELINE_EVENTS_QUERY,
+            facts_query=PIPELINE_FACTS_QUERY,
+        )
+    finally:
+        seeder.close()
+
+
+#: The pipeline gate's APPLICATION database — the one the worker writes
+#: events/event_metrics/metric_values/anomalies into. It is a REAL PostgreSQL (the
+#: same container the warehouse gate uses, a different set of tables), NOT the SQLite
+#: file the rest of the worker tests use, for two load-bearing reasons:
+#:
+#: * SQLite has no timezone. It hands every ``DateTime(timezone=True)`` column back
+#:   NAIVE, while a warehouse adapter returns AWARE buckets. Code that aligns a
+#:   stored series against a fresh warehouse series (``per_distinct_user``) would
+#:   then compare naive to aware, match nothing, and report a silent zero — a
+#:   failure invented entirely by the fixture. On real PostgreSQL both sides are
+#:   aware and the comparison is the one production makes.
+#: * The UPSERTs are dialect-branched (``_upsert_metric_values_rows`` and friends
+#:   pick ``sqlite_insert`` or ``pg_insert`` off ``session.bind``). Every existing
+#:   test drives the SQLite branch; production runs the PostgreSQL one. This gate
+#:   executes the branch that ships, named constraints and all.
+_APP_DB_URL = f"postgresql+psycopg://{_PG_USER}:{_PG_PASSWORD}@{_PG_HOST}:{_PG_PORT}/{_PG_DB}"
+
+
+@pytest.fixture(scope="session")
+def app_db() -> Iterator[sessionmaker[Session]]:
+    """The worker's own database: real PostgreSQL, schema created and dropped here."""
+    try:
+        engine = create_engine(_APP_DB_URL)
+        with engine.connect() as conn:
+            conn.execute(text("SELECT 1"))
+    except Exception as exc:  # noqa: BLE001
+        unavailable(f"app database at {_PG_HOST}:{_PG_PORT}/{_PG_DB}: {exc}")
+    # The ORM tables only. The warehouse fixture tables above are not part of
+    # ``Base.metadata``, so create_all/drop_all cannot touch them.
+    Base.metadata.drop_all(engine)
+    Base.metadata.create_all(engine)
+    try:
+        yield sessionmaker(engine, expire_on_commit=False)
+    finally:
+        Base.metadata.drop_all(engine)
+        engine.dispose()

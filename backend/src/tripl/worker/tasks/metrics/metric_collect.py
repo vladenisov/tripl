@@ -2170,7 +2170,14 @@ def _collect_distinct_user_series(
         )
     finally:
         adapter.close()
-    return {cast(datetime, row[0]): _coerce_value(row[-1]) for row in rows}
+    # Launder the bucket cell exactly like every sibling collection path does
+    # (_aggregate_fact_window, _index_multi_aggregate). A bare cast() was a lie: the
+    # adapters disagree on tz-awareness — ClickHouse hands back a NAIVE datetime while
+    # PostgreSQL returns the same instant as aware — so the naive key met the aware
+    # bucket read back from event_metrics, and every per_distinct_user metric on a
+    # ClickHouse source died with "can't compare offset-naive and offset-aware
+    # datetimes". _coerce_bucket stamps UTC and floors to the interval (tripl-ju0d).
+    return {_coerce_bucket(row[0], interval_spec.delta): _coerce_value(row[-1]) for row in rows}
 
 
 def _collect_event_composition(

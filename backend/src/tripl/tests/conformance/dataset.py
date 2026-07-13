@@ -9,6 +9,13 @@ window returns the SAME NUMBER OF ROWS as the correct one, but a DIFFERENT SET o
 rows — the exact shape of the bug this suite exists to catch. A gate that only
 compared counts would have passed against the broken code.
 
+This file holds TWO rowsets. ``ROWS`` (below) is the scan/bucket trap the adapter
+gates run on. ``PIPELINE_ROWS`` (further down) is the time SERIES the pipeline gate
+runs on — scan, event generation, event metrics, fact metrics and drift need a
+baseline plus a spike, which nine rows cannot carry. Both are seeded into both
+executing warehouses from the same place, and both derive every expectation from
+``floor_to_bucket``, so neither can drift from the product's own bucketing.
+
 Concretely, the correct window is ``[2026-04-02T00:00Z, 2026-04-09T00:00Z)`` and
 selects ids 1-7 (seven rows). Reading the window bounds as ``Asia/Kolkata``
 wall-clock (UTC+05:30) — which is what an offset-less SQL literal does on a
@@ -20,8 +27,9 @@ timezone assertion here compares row MEMBERSHIP, never row count.
 from __future__ import annotations
 
 import re
+from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 from tripl.core.adapters.base import FieldContractExpectation
 from tripl.core.bucketing import floor_to_bucket
@@ -253,6 +261,218 @@ def expected_contract_violations() -> dict[tuple[str, str], tuple[int, int]]:
         if bad:
             violations[(field, drift)] = (bad, total)
     return violations
+
+
+# ── the pipeline fixture ──────────────────────────────────────────────────────
+#
+# A SECOND rowset in the same file, for the same reason the first one exists: the
+# metrics pipeline (scan -> event generation -> event metrics -> catalog metrics ->
+# anomalies) is driven by the SAME warehouse-agnostic expectations on every engine,
+# so a divergence between PostgreSQL and ClickHouse is a real divergence.
+#
+# It is shaped differently from ``ROWS`` on purpose. ``ROWS`` is a nine-row trap for
+# window/bucket bugs, deliberately too small to carry a baseline. The pipeline needs
+# a SERIES: enough flat history for the anomaly detector to have an opinion, plus one
+# unmistakable spike. Ten 1h buckets, ~250 rows.
+
+#: The interval the whole pipeline gate runs on.
+PIPELINE_INTERVAL = "1h"
+
+#: Bucket count and the index of the spike bucket (the last one).
+PIPELINE_BUCKET_COUNT = 10
+PIPELINE_SPIKE_INDEX = 9
+
+#: The first bucket. Anchored to a RECENT wall-clock hour, not a fixed date, because
+#: the worker's own window resolution (``_resolve_collection_window`` /
+#: ``_resolve_value_window``) reaches back from ``now`` — a fixture pinned to 2026-04
+#: would fall outside the window the production code chooses and collect nothing.
+#: Twelve hours back leaves the whole series comfortably inside the default 30-bucket
+#: lookback while staying strictly BELOW the latest complete boundary.
+PIPELINE_ANCHOR = floor_to_bucket(datetime.now(UTC), PIPELINE_INTERVAL) - timedelta(hours=12)
+
+#: The half-open window the gate collects. Half-open, so the spike bucket (which
+#: STARTS at anchor+9h) is included and nothing beyond it is.
+PIPELINE_FROM = PIPELINE_ANCHOR
+PIPELINE_TO = PIPELINE_ANCHOR + timedelta(hours=PIPELINE_BUCKET_COUNT)
+
+# Baseline volume is 12, not 2: ``ProjectAnomalySettings.min_expected_count`` defaults
+# to 10, and a baseline below it is filtered out of anomaly detection entirely. A
+# fixture that spiked 2 -> 20 would detect NOTHING and the drift assertions would be
+# vacuously green. So the series is sized to clear the product's own default gate.
+BASELINE_CLICKS = 12
+SPIKE_CLICKS = 120
+CLICK_AMOUNT = 1.0
+BASELINE_BUY_AMOUNT = 10.0
+SPIKE_BUY_AMOUNT = 100.0
+
+
+@dataclass(frozen=True)
+class PipelineRow:
+    ts: datetime
+    event_name: str
+    user_id: str
+    #: NULL on every ``view`` row. SUM/AVG must SKIP it, COUNT(*) must not — and a
+    #: breakdown group must never end up with an all-NULL measure (see the module
+    #: note in test_pipeline_conformance.py).
+    amount: float | None
+    platform: str
+
+
+def _build_pipeline_rows() -> tuple[PipelineRow, ...]:
+    rows: list[PipelineRow] = []
+    for index in range(PIPELINE_BUCKET_COUNT):
+        bucket = PIPELINE_ANCHOR + timedelta(hours=index)
+        is_spike = index == PIPELINE_SPIKE_INDEX
+        clicks = SPIKE_CLICKS if is_spike else BASELINE_CLICKS
+        for k in range(clicks):
+            rows.append(
+                PipelineRow(
+                    # k=0 lands EXACTLY on the bucket boundary: a half-open bucket
+                    # must claim it. 20s apart keeps 120 spike rows inside the hour.
+                    ts=bucket + timedelta(seconds=20 * k),
+                    event_name="click",
+                    user_id=f"u{k % 2 + 1}",
+                    amount=CLICK_AMOUNT,
+                    platform="ios",
+                )
+            )
+        rows.append(
+            PipelineRow(
+                # The LAST microsecond of the bucket. It must floor into THIS bucket,
+                # not the next one — the off-by-one that a count-only assertion misses.
+                ts=bucket + timedelta(hours=1, microseconds=-1),
+                event_name="view",
+                user_id="u3",
+                amount=None,
+                platform="ios",
+            )
+        )
+        if index > 0:
+            # Bucket 0 has NO buy row, so the ratio metric's denominator is ZERO
+            # there. That bucket must come back ABSENT — never 0, never inf, never
+            # a NaN. Divide-by-zero is the exact defect class this epic already
+            # shipped once on BigQuery.
+            rows.append(
+                PipelineRow(
+                    ts=bucket + timedelta(minutes=30),
+                    event_name="buy",
+                    user_id="u1",
+                    amount=SPIKE_BUY_AMOUNT if is_spike else BASELINE_BUY_AMOUNT,
+                    platform="web",
+                )
+            )
+    return tuple(rows)
+
+
+PIPELINE_ROWS: tuple[PipelineRow, ...] = _build_pipeline_rows()
+
+#: Event identities the scan generates from the pipeline rows. The scan's base query
+#: projects ``event_name`` (the only column with a FieldDefinition), and the default
+#: event-name format is ``col=value``, so these are the three names.
+PIPELINE_EVENT_NAMES = frozenset({"event_name=click", "event_name=view", "event_name=buy"})
+
+
+def pipeline_buckets() -> list[datetime]:
+    """Every bucket the fixture occupies, per ``floor_to_bucket`` — sorted."""
+    return sorted({floor_to_bucket(row.ts, PIPELINE_INTERVAL) for row in PIPELINE_ROWS})
+
+
+def pipeline_spike_bucket() -> datetime:
+    return PIPELINE_ANCHOR + timedelta(hours=PIPELINE_SPIKE_INDEX)
+
+
+def _fold(
+    predicate: Callable[[PipelineRow], bool] = lambda _row: True,
+) -> dict[datetime, list[PipelineRow]]:
+    grouped: dict[datetime, list[PipelineRow]] = {}
+    for row in PIPELINE_ROWS:
+        if not predicate(row):
+            continue
+        grouped.setdefault(floor_to_bucket(row.ts, PIPELINE_INTERVAL), []).append(row)
+    return grouped
+
+
+def pipeline_event_counts() -> dict[str, dict[datetime, float]]:
+    """``{event identity: {bucket: count}}`` — what ``event_metrics`` must hold."""
+    counts: dict[str, dict[datetime, float]] = {}
+    for bucket, rows in _fold().items():
+        for row in rows:
+            identity = f"event_name={row.event_name}"
+            series = counts.setdefault(identity, {})
+            series[bucket] = series.get(bucket, 0.0) + 1.0
+    return counts
+
+
+def pipeline_row_counts() -> dict[datetime, float]:
+    """Per-bucket ``count(*)`` over the fact rowset."""
+    return {bucket: float(len(rows)) for bucket, rows in _fold().items()}
+
+
+def pipeline_amount_sums() -> dict[datetime, float]:
+    """Per-bucket ``sum(amount)`` with SQL's NULL-skipping semantics."""
+    return {
+        bucket: sum(row.amount for row in rows if row.amount is not None)
+        for bucket, rows in _fold().items()
+    }
+
+
+def pipeline_buy_counts() -> dict[datetime, float]:
+    """Per-bucket ``count(*) WHERE event_name = 'buy'``. Bucket 0 is ABSENT (zero)."""
+    return {
+        bucket: float(len(rows)) for bucket, rows in _fold(lambda r: r.event_name == "buy").items()
+    }
+
+
+def pipeline_count_ratio() -> dict[datetime, float]:
+    """``count(*) / count(*) WHERE buy`` per bucket, with the divide-by-zero bucket DROPPED.
+
+    Mirrors ``evaluate_composition`` + the NOT-NULL row builder: a zero (or absent)
+    denominator yields ``None``, which is never written — so bucket 0, which has no
+    buy row, must not appear in ``metric_values`` at all.
+    """
+    numerator = pipeline_row_counts()
+    denominator = pipeline_buy_counts()
+    return {
+        bucket: numerator[bucket] / denominator[bucket]
+        for bucket in numerator
+        if denominator.get(bucket)
+    }
+
+
+def pipeline_distinct_users() -> dict[datetime, float]:
+    """Per-bucket ``count(distinct user_id)``."""
+    return {bucket: float(len({row.user_id for row in rows})) for bucket, rows in _fold().items()}
+
+
+def pipeline_platform_sums() -> dict[tuple[datetime, str], float]:
+    """``{(bucket, platform): sum(amount)}`` — the fact metric's breakdown rows.
+
+    Every platform group holds at least one non-NULL amount by construction; see the
+    all-NULL-group note in the pipeline gate's module docstring.
+    """
+    sums: dict[tuple[datetime, str], float] = {}
+    for bucket, rows in _fold().items():
+        for row in rows:
+            if row.amount is None:
+                continue
+            key = (bucket, row.platform)
+            sums[key] = sums.get(key, 0.0) + row.amount
+    return sums
+
+
+def pipeline_event_composition_ratio() -> dict[datetime, float]:
+    """``click / buy`` per bucket — the event_composition ratio, zero-denominator dropped."""
+    counts = pipeline_event_counts()
+    clicks = counts["event_name=click"]
+    buys = counts["event_name=buy"]
+    return {bucket: clicks[bucket] / buys[bucket] for bucket in clicks if buys.get(bucket)}
+
+
+def pipeline_events_per_distinct_user() -> dict[datetime, float]:
+    """``click / count(distinct user_id)`` per bucket — the per_distinct_user composition."""
+    clicks = pipeline_event_counts()["event_name=click"]
+    users = pipeline_distinct_users()
+    return {bucket: clicks[bucket] / users[bucket] for bucket in clicks if users.get(bucket)}
 
 
 def json_null_only_leaf_paths() -> frozenset[str]:
