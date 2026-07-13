@@ -227,9 +227,17 @@ for the product's release cadence.
 
 Releases roll out gradually, and a build spends its first stretch seen only by
 developers and testers, so tripl judges a release only once it takes a real
-share of traffic, and compares the new release against the previous one over the
-window where both are live. That catches "we shipped 2.4 and
+share of the project's version traffic. The same project-total maturity status
+is used by every event and catalog metric on that source, so a rare event or a
+ratio cannot make an already rolled-out release look like a pre-release. tripl
+then compares the new release against the previous one over the window where
+both are live. That catches "we shipped 2.4 and
 `checkout_completed` stopped firing" without crying wolf during the rollout.
+
+When a standalone SQL or fact metric is not already tied to a scan, tripl uses
+the version-enabled scan on that metric's data source with the largest
+project-total volume in the selected window. It deliberately does not merge
+overlapping scans, which could double-count traffic or mix bucket grids.
 
 Per-version lines are observational rollout views, not stable cohorts for the
 generic breakdown detector. Their expected ramp-up and decline do not produce

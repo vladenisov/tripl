@@ -149,6 +149,33 @@ def test_build_series_falls_back_to_semver_max_when_nothing_active() -> None:
     assert by_version["1.0.0"].is_active is False
 
 
+def test_build_series_uses_project_total_maturity_not_event_volume() -> None:
+    # This event is rare in 2.0.0, but the release is mature across the project.
+    # Version status must come from the project-total rows, not from this event's
+    # own per-version volume.
+    event_rows = {
+        ("1.0.0", False): _rows({d: 1000 for d in DAYS}),
+        ("2.0.0", False): _rows({d: 1 for d in DAYS}),
+    }
+    project_total_rows = {
+        ("1.0.0", False): _rows({d: 10 for d in DAYS}),
+        ("2.0.0", False): _rows({d: 990 for d in DAYS}),
+    }
+
+    latest_version, versions, _series = _build_app_version_series(
+        interval=None,
+        metric_rows_by_series=event_rows,
+        maturity_metric_rows_by_series=project_total_rows,
+        keep_releases=5,
+    )
+
+    assert latest_version == "2.0.0"
+    by_version = {version.version: version for version in versions}
+    assert by_version["2.0.0"].is_latest is True
+    assert by_version["2.0.0"].is_active is True
+    assert by_version["1.0.0"].is_active is False
+
+
 def test_build_series_empty_input_is_inert() -> None:
     latest_version, versions, series = _build_app_version_series(
         interval=None,

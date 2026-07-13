@@ -245,6 +245,8 @@ app-version column), **Heatmap** (7×24 seasonality), **Distribution** (drift
 bands), and **Breakdowns**. The page also surfaces top movers and release
 regressions, plus chart annotations on the Volume tab. For an `event` scope it
 additionally renders variable-value drift review and the Photos & specs panel.
+For ratios, averages, and other non-count catalog metrics, the version legend
+shows each version's latest observed value rather than a sum of daily values.
 
 ### Metrics catalog
 

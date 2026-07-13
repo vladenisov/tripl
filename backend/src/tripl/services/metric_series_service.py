@@ -24,6 +24,7 @@ from __future__ import annotations
 import re
 import uuid
 from datetime import datetime
+from typing import cast
 
 from fastapi import HTTPException
 from sqlalchemy import func, select
@@ -36,6 +37,8 @@ from tripl.core.analyzers.anomaly_detector import (
     forecast_next_buckets,
 )
 from tripl.core.intervals import get_interval
+from tripl.models.event_metric_breakdown import EventMetricBreakdown
+from tripl.models.fact_table import FactTable
 from tripl.models.metric_anomaly import MetricAnomaly
 from tripl.models.metric_definition import MetricDefinition
 from tripl.models.metric_value import MetricValue
@@ -65,7 +68,6 @@ from tripl.services.version_activation import (
     DEFAULT_ACTIVE_SHARE_MIN,
     active_release_versions,
     compile_prerelease_pattern,
-    latest_active_version,
     released_versions,
     resolve_share_min,
 )
@@ -441,39 +443,40 @@ def _build_metric_version_series(
     *,
     interval: str | None,
     value_rows_by_series: dict[tuple[str, bool], list[tuple[datetime, float]]],
+    maturity_rows_by_series: dict[tuple[str, bool], list[tuple[datetime, float]]] | None = None,
     keep_releases: int,
     count_shaped: bool = True,
     prerelease_pattern: re.Pattern[str] | None = None,
     share_min: float = DEFAULT_ACTIVE_SHARE_MIN,
 ) -> tuple[str | None, list[AppVersionInfo], list[MetricVersionSeries]]:
-    """Read-time retention with an activation gate, mirroring the event
-    app-version shaping for floats.
+    """Read-time retention with project-total release maturity for all metric shapes.
 
-    For COUNT-shaped metrics the summed per-version VALUE is a real volume, so the
-    activation gate applies: activated releases take the ``keep_releases``
-    retention slots first (a below-activation dev build cannot fold an active
-    shipped release into "Other"), and the SemVer-max ACTIVE release is marked
-    "latest". For FRACTIONAL metrics (ratio / avg / sql) a value-share gate is
-    meaningless, so there is no active set — retention and "latest" fall back to
-    pure SemVer-max, and every version reports ``is_active=False``.
+    Chart values remain metric-local, but rollout maturity comes from project
+    version totals. This makes a release's latest/pre-release state consistent
+    across counts, ratios, and every event view. If project totals are not yet
+    available, the metric's own rows remain a backwards-compatible fallback.
     """
     explicit = {version for version, is_other in value_rows_by_series if not is_other}
-    per_version_totals, all_by_bucket = _version_bucket_totals(value_rows_by_series)
+    maturity_rows = maturity_rows_by_series or value_rows_by_series
+    per_version_totals, all_by_bucket = _version_bucket_totals(maturity_rows)
 
     # Prerelease/dev builds are ineligible to be latest/active and are subordinate
-    # to released versions for retention, regardless of metric shape. Activation
-    # (count-shaped only) is computed over released versions so a prerelease is
-    # never marked active.
+    # to released versions for retention. Maturity is computed only over released
+    # project-total rows, so a prerelease is never marked active.
     released = released_versions(explicit, prerelease_pattern=prerelease_pattern)
+    maturity_released = released_versions(
+        {version for version, is_other in maturity_rows if not is_other},
+        prerelease_pattern=prerelease_pattern,
+    )
     released_totals = {
         version: by_bucket
         for version, by_bucket in per_version_totals.items()
-        if version in released
+        if version in maturity_released
     }
     active_versions = (
-        active_release_versions(released_totals, all_by_bucket, share_min=share_min)
-        if count_shaped
-        else set()
+        released
+        if not maturity_rows_by_series and not count_shaped
+        else active_release_versions(released_totals, all_by_bucket, share_min=share_min) & explicit
     )
     kept = _retained_versions(explicit, active_versions, keep_releases, released=released)
 
@@ -490,14 +493,12 @@ def _build_metric_version_series(
     rows_by_display = {key: sorted(values.items()) for key, values in folded.items()}
 
     ordered_keys, semver_latest = _order_version_keys(set(rows_by_display), released=released)
-    # Prefer the SemVer-max ACTIVE released version; fall back to the SemVer-max
-    # released version when nothing has activated (or for fractional metrics with
-    # no active set). Prereleases are excluded from both, so never latest.
+    # Prefer the SemVer-max mature release from the shared project total; fall
+    # back to the visible SemVer-max released version before any total is mature.
+    # Prereleases are excluded from both, so never latest.
     latest_version = (
-        latest_active_version(released_totals, all_by_bucket, share_min=share_min)
-        if count_shaped
-        else None
-    ) or semver_latest
+        order_versions(active_versions, reverse=True)[0] if active_versions else semver_latest
+    )
 
     def _is_active(version: str, is_other: bool) -> bool:
         return not is_other and version in active_versions
@@ -517,6 +518,7 @@ def _build_metric_version_series(
             interval=interval,
             value_rows=rows_by_display.get((version, is_other), []),
             anomalies=[],
+            count_shaped=count_shaped,
         )
         series.append(
             MetricVersionSeries(
@@ -561,6 +563,135 @@ async def _resolve_version_gate(
     return project_keep_releases, None, DEFAULT_ACTIVE_SHARE_MIN
 
 
+async def _metric_source_data_source_id(
+    session: AsyncSession,
+    project_id: uuid.UUID,
+    metric: MetricDefinition,
+    scan_config_id: uuid.UUID | None,
+) -> uuid.UUID | None:
+    """Resolve the data source whose project total defines metric release maturity."""
+    if scan_config_id is not None:
+        return cast(
+            uuid.UUID | None,
+            await session.scalar(
+                select(ScanConfig.data_source_id).where(
+                    ScanConfig.id == scan_config_id,
+                    ScanConfig.project_id == project_id,
+                )
+            ),
+        )
+    if metric.data_source_id is not None:
+        return metric.data_source_id
+    if metric.fact_table_id is not None:
+        return cast(
+            uuid.UUID | None,
+            await session.scalar(
+                select(FactTable.data_source_id).where(
+                    FactTable.id == metric.fact_table_id,
+                    FactTable.project_id == project_id,
+                )
+            ),
+        )
+    return None
+
+
+async def _load_project_version_maturity_rows(
+    session: AsyncSession,
+    *,
+    project_id: uuid.UUID,
+    scan_config_id: uuid.UUID | None,
+    time_from: datetime | None,
+    time_to: datetime | None,
+) -> dict[tuple[str, bool], list[tuple[datetime, float]]]:
+    """Load project-total version traffic from one canonical scan."""
+    if scan_config_id is None:
+        return {}
+
+    query = (
+        select(
+            EventMetricBreakdown.breakdown_value,
+            EventMetricBreakdown.is_other,
+            EventMetricBreakdown.bucket,
+            func.sum(EventMetricBreakdown.count),
+        )
+        .join(ScanConfig, EventMetricBreakdown.scan_config_id == ScanConfig.id)
+        .where(
+            ScanConfig.id == scan_config_id,
+            ScanConfig.project_id == project_id,
+            ScanConfig.app_version_column.is_not(None),
+            EventMetricBreakdown.breakdown_column == ScanConfig.app_version_column,
+            EventMetricBreakdown.event_id.is_(None),
+            EventMetricBreakdown.event_type_id.is_not(None),
+        )
+        .group_by(
+            EventMetricBreakdown.breakdown_value,
+            EventMetricBreakdown.is_other,
+            EventMetricBreakdown.bucket,
+        )
+        .order_by(EventMetricBreakdown.bucket)
+    )
+    if time_from is not None:
+        query = query.where(EventMetricBreakdown.bucket >= time_from)
+    if time_to is not None:
+        query = query.where(EventMetricBreakdown.bucket < time_to)
+
+    rows_by_series: dict[tuple[str, bool], list[tuple[datetime, float]]] = {}
+    for version, is_other, bucket, count in (await session.execute(query)).all():
+        rows_by_series.setdefault((str(version), bool(is_other)), []).append((bucket, float(count)))
+    return rows_by_series
+
+
+async def _resolve_maturity_scan_config_id(
+    session: AsyncSession,
+    *,
+    project_id: uuid.UUID,
+    data_source_id: uuid.UUID | None,
+    metric_scan_config_id: uuid.UUID | None,
+    time_from: datetime | None,
+    time_to: datetime | None,
+) -> uuid.UUID | None:
+    """Resolve one scan whose project total defines a metric's rollout state.
+
+    Metrics aligned to a scan always reuse that exact scan. Standalone SQL/fact
+    metrics choose the source scan with the largest project-total volume in the
+    requested window, which avoids mixing overlapping scans or bucket grids.
+    """
+    if metric_scan_config_id is not None:
+        return cast(
+            uuid.UUID | None,
+            await session.scalar(
+                select(ScanConfig.id).where(
+                    ScanConfig.id == metric_scan_config_id,
+                    ScanConfig.project_id == project_id,
+                    ScanConfig.app_version_column.is_not(None),
+                )
+            ),
+        )
+    if data_source_id is None:
+        return None
+
+    query = (
+        select(ScanConfig.id)
+        .join(EventMetricBreakdown, EventMetricBreakdown.scan_config_id == ScanConfig.id)
+        .where(
+            ScanConfig.project_id == project_id,
+            ScanConfig.data_source_id == data_source_id,
+            ScanConfig.app_version_column.is_not(None),
+            EventMetricBreakdown.breakdown_column == ScanConfig.app_version_column,
+            EventMetricBreakdown.event_id.is_(None),
+            EventMetricBreakdown.event_type_id.is_not(None),
+        )
+        .group_by(ScanConfig.id)
+        .order_by(func.sum(EventMetricBreakdown.count).desc(), ScanConfig.id)
+        .limit(1)
+    )
+    if time_from is not None:
+        query = query.where(EventMetricBreakdown.bucket >= time_from)
+    if time_to is not None:
+        query = query.where(EventMetricBreakdown.bucket < time_to)
+    return cast(uuid.UUID | None, await session.scalar(query))
+
+
 async def get_metric_version_series(
     session: AsyncSession,
     slug: str,
@@ -589,14 +720,35 @@ async def get_metric_version_series(
         time_from=time_from,
         time_to=time_to,
     )
+    maturity_scan_config_id = await _resolve_maturity_scan_config_id(
+        session,
+        project_id=project.id,
+        data_source_id=await _metric_source_data_source_id(
+            session,
+            project.id,
+            metric,
+            scan_config_id,
+        ),
+        metric_scan_config_id=scan_config_id,
+        time_from=time_from,
+        time_to=time_to,
+    )
+    maturity_rows_by_series = await _load_project_version_maturity_rows(
+        session,
+        project_id=project.id,
+        scan_config_id=maturity_scan_config_id,
+        time_from=time_from,
+        time_to=time_to,
+    )
     keep_releases, prerelease_pattern, share_min = await _resolve_version_gate(
         session,
-        scan_config_id,
+        maturity_scan_config_id,
         project.app_version_keep_releases,
     )
     latest_version, versions, series = _build_metric_version_series(
         interval=interval,
         value_rows_by_series=value_rows_by_series,
+        maturity_rows_by_series=maturity_rows_by_series,
         keep_releases=keep_releases,
         count_shaped=is_count_shaped(metric),
         prerelease_pattern=prerelease_pattern,
