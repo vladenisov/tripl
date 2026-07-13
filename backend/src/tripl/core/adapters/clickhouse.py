@@ -3,10 +3,11 @@ from __future__ import annotations
 import logging
 import re
 import time
+from collections.abc import Sequence
 from datetime import datetime
-from typing import override
+from typing import Any, override
 
-import clickhouse_connect  # type: ignore[import-untyped]
+import clickhouse_connect
 
 from tripl.core.adapters.base import (
     AggregateSpec,
@@ -51,6 +52,11 @@ _JSON_PATH_DISCOVERY_FUNCS = {"all": "JSONAllPaths", "dynamic": "JSONDynamicPath
 _DEFAULT_JSON_PATH_DISCOVERY = "dynamic"
 
 
+def _as_rows(rows: Sequence[Sequence[Any]]) -> list[tuple[object, ...]]:
+    """clickhouse-connect yields rows as lists; the adapter contract is tuples."""
+    return [tuple(row) for row in rows]
+
+
 class ClickHouseAdapter(BaseAdapter):
     def __init__(
         self,
@@ -60,7 +66,7 @@ class ClickHouseAdapter(BaseAdapter):
         username: str = "",
         password: str = "",
         json_path_discovery: str | None = None,
-        **kwargs: object,
+        **kwargs: Any,
     ) -> None:
         self._client = clickhouse_connect.get_client(
             host=host,
@@ -84,7 +90,8 @@ class ClickHouseAdapter(BaseAdapter):
 
     def test_connection(self) -> bool:
         result = self._client.query("SELECT 1")
-        return bool(result.first_row[0] == 1)
+        first_row = result.first_row
+        return bool(first_row is not None and first_row[0] == 1)
 
     def get_columns(self, base_query: str) -> list[ColumnInfo]:
         result = self._client.query(f"SELECT * FROM ({base_query}) AS _src LIMIT 0")
@@ -147,7 +154,7 @@ class ClickHouseAdapter(BaseAdapter):
         sql = f"SELECT * FROM ({base_query}) AS _src{where_clause} LIMIT {int(limit)}"
         logger.info("CH preview query: %s", sql)
         result = self._client.query(sql)
-        return list(result.column_names), result.result_rows
+        return list(result.column_names), _as_rows(result.result_rows)
 
     @override
     def get_json_path_samples(
@@ -606,7 +613,7 @@ class ClickHouseAdapter(BaseAdapter):
         n_rows = len(result.result_rows)
         logger.info(f"CH breakdown done in {elapsed:.2f}s, {n_rows} rows")
 
-        return reg_cols, json_cols, json_value_names, result.result_rows
+        return reg_cols, json_cols, json_value_names, _as_rows(result.result_rows)
 
     def get_time_bucketed_counts(
         self,
@@ -665,7 +672,7 @@ class ClickHouseAdapter(BaseAdapter):
         n_rows = len(result.result_rows)
         logger.info(f"CH bucketed done in {elapsed:.2f}s, {n_rows} rows")
 
-        return col_names, json_value_names, result.result_rows
+        return col_names, json_value_names, _as_rows(result.result_rows)
 
     def _aggregate_value_sql(self, agg_fn: MetricAggregation, measure_column: str | None) -> str:
         """Validate + escape the measure and build the safe aggregate fragment."""
@@ -734,7 +741,7 @@ class ClickHouseAdapter(BaseAdapter):
         n_rows = len(result.result_rows)
         logger.info("CH bucketed aggregate done in %.2fs, %s rows", elapsed, n_rows)
 
-        return col_names, json_value_names, result.result_rows
+        return col_names, json_value_names, _as_rows(result.result_rows)
 
     def get_time_bucketed_aggregate_breakdown(
         self,
@@ -815,7 +822,7 @@ class ClickHouseAdapter(BaseAdapter):
         n_rows = len(result.result_rows)
         logger.info("CH bucketed aggregate breakdown done in %.2fs, %s rows", elapsed, n_rows)
 
-        return col_names, json_value_names, result.result_rows
+        return col_names, json_value_names, _as_rows(result.result_rows)
 
     def _breakdown_value_exprs(
         self,
@@ -938,7 +945,7 @@ class ClickHouseAdapter(BaseAdapter):
         n_rows = len(result.result_rows)
         logger.info("CH bucketed multi-aggregate done in %.2fs, %s rows", elapsed, n_rows)
 
-        return col_names, result.result_rows
+        return col_names, _as_rows(result.result_rows)
 
     def get_time_bucketed_multi_aggregate_breakdown(
         self,
@@ -1000,7 +1007,7 @@ class ClickHouseAdapter(BaseAdapter):
         n_rows = len(result.result_rows)
         logger.info("CH bucketed multi-aggregate breakdown done in %.2fs, %s rows", elapsed, n_rows)
 
-        return col_names, result.result_rows
+        return col_names, _as_rows(result.result_rows)
 
     def get_time_bucketed_breakdown_counts(
         self,
@@ -1169,4 +1176,4 @@ class ClickHouseAdapter(BaseAdapter):
         n_rows = len(result.result_rows)
         logger.info("CH bucketed breakdown GROUPING SETS done in %.2fs, %s rows", elapsed, n_rows)
 
-        return col_names, json_value_names, result.result_rows
+        return col_names, json_value_names, _as_rows(result.result_rows)
