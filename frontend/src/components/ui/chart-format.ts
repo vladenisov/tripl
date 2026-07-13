@@ -15,7 +15,18 @@ export function formatTick(dateStr: string, granularity: MetricsGranularity): st
   const d = new Date(dateStr)
 
   switch (granularity) {
+    // A 15-minute bucket needs its minutes on the axis: without them, the four
+    // buckets of an hour all render as the same tick.
+    case '15min':
+      return d.toLocaleString('en-US', {
+        month: 'short',
+        day: 'numeric',
+        hour: '2-digit',
+        minute: '2-digit',
+        timeZone: UTC,
+      })
     case 'hour':
+    case '6h':
       return d.toLocaleString('en-US', {
         month: 'short',
         day: 'numeric',
@@ -35,7 +46,9 @@ export function formatTooltipLabel(dateStr: string, granularity: MetricsGranular
   const d = new Date(dateStr)
 
   switch (granularity) {
+    case '15min':
     case 'hour':
+    case '6h':
       return d.toLocaleString('en-US', {
         month: 'short',
         day: 'numeric',

@@ -692,6 +692,29 @@ appear. You can still type the dotted path in by hand — extraction is not samp
 These are real divergences that tripl does **not** paper over, because papering
 over them would mean lying about the data.
 
+### ClickHouse `DateTime64(6)` window literals do *not* hurt index pruning
+
+Recorded here as a **disproven** worry, so nobody spends the afternoon re-deriving
+it. Pinning the window bounds to explicit UTC (`parseDateTime64BestEffort(…, 6,
+'UTC')`) fixed a real correctness bug — on a `DateTime('Asia/Tokyo')` column the old
+offset-less literal matched *zero* of six in-window rows. The obvious follow-up fear
+was that comparing a `DateTime` primary key against a `DateTime64(6)` literal would
+defeat the primary-key range scan and quietly turn every bounded scan into a full
+one.
+
+Measured on a 5M-row `MergeTree ORDER BY ts` (ClickHouse 25.8), with
+`EXPLAIN indexes=1`:
+
+| window literal | parts | granules |
+|---|---|---|
+| old, offset-less string | 1 / 5 | **1 / 611** |
+| new, `parseDateTime64BestEffort(…, 6, 'UTC')` | 1 / 5 | **1 / 611** |
+| `DateTime64(3)` variant | 1 / 5 | **1 / 611** |
+
+Identical, and both read the same number of rows. ClickHouse coerces the literal to
+the column's type *before* the index is consulted, so the primary key is used exactly
+as before. No change was made, because there was nothing to fix.
+
 ### ClickHouse cannot discover a key whose only value is JSON `null`
 
 For the same document, the warehouses disagree:
@@ -798,10 +821,6 @@ For the record, so the matrix above is not read as static. Every item below was 
 | --- | --- |
 | BigQuery bucket **values** and contract **values** are analyzed, never executed | [tripl-l2so] |
 | Scan/replay, event generation, fact metrics and drift are not yet covered against real warehouses | [tripl-l2so] |
-| PostgreSQL's per-row recursive nested-JSON walk inside a scan's `GROUP BY` is unbenchmarked | [tripl-64n8.11] |
-| The PostgreSQL version/capability error is generalized away by `_friendly_test_error` in the UI | [tripl-64n8.12] |
-| ClickHouse `DateTime64(6)` window literals may inhibit primary-key range pruning (correctness verified, index usage not) | [tripl-64n8.14] |
-| The frontend has no chart granularity for the `15m` and `6h` intervals | [tripl-64n8.15] |
 | ClickHouse JSON discovery drops null-valued leaf paths | [tripl-foo3] |
 | PostgreSQL's default `sslmode` is `prefer`, not the `require` the adapter documents | [tripl-64n8.17] |
 | The data-source **edit** dialog shows ClickHouse/PostgreSQL fields for a BigQuery source | [tripl-64n8.16] |
