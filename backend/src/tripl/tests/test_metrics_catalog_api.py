@@ -8,11 +8,14 @@ from sqlalchemy import func, select
 import tripl.core.adapters.registry as adapter_registry
 import tripl.worker.tasks.metrics.metric_collect as mc
 from tripl.api.deps import get_current_user
+from tripl.core.adapters.measure_validator import SqlDialect
 from tripl.main import app
 from tripl.models.domain_enums import AnomalyDirection, MetricScopeType, UserRole
+from tripl.models.fact_table import FactTable
 from tripl.models.metric_anomaly import MetricAnomaly
 from tripl.models.metric_value import MetricValue
 from tripl.models.metric_value_breakdown import MetricValueBreakdown
+from tripl.models.scan_config import ScanConfig
 from tripl.models.user import User
 from tripl.tests.conftest import TestSessionLocal
 
@@ -56,6 +59,47 @@ async def fact_table(client: AsyncClient, project: dict) -> dict:
                 {"name": "created_at", "type": "timestamp"},
                 {"name": "amount", "type": "number"},
                 {"name": "user_id", "type": "string"},
+            ],
+            "identifier_columns": ["user_id"],
+            "row_filters": [{"name": "exclude_test", "sql": "is_test = 0"}],
+        },
+    )
+    assert resp.status_code == 201, resp.text
+    return resp.json()
+
+
+@pytest.fixture
+async def bound_fact_table(client: AsyncClient, project: dict, data_source: dict) -> dict:
+    """A fact table BOUND to a data source — required to preview its filters.
+
+    A data source is scoped to a project through a ``ScanConfig`` (multi-tenant
+    isolation), so the membership link is seeded first; without it the fact-table
+    create rejects the ``data_source_id`` with a 404.
+    """
+    async with TestSessionLocal() as session:
+        session.add(
+            ScanConfig(
+                project_id=uuid.UUID(project["id"]),
+                data_source_id=uuid.UUID(data_source["id"]),
+                name="scan-binding",
+                base_query="SELECT 1",
+            )
+        )
+        await session.commit()
+
+    resp = await client.post(
+        f"/api/v1/projects/{project['slug']}/fact-tables",
+        json={
+            "name": "bound_orders_ft",
+            "display_name": "Bound Orders",
+            "sql": "SELECT created_at, amount, user_id, is_test FROM orders",
+            "timestamp_column": "created_at",
+            "data_source_id": data_source["id"],
+            "columns": [
+                {"name": "created_at", "type": "timestamp"},
+                {"name": "amount", "type": "number"},
+                {"name": "user_id", "type": "string"},
+                {"name": "is_test", "type": "number"},
             ],
             "identifier_columns": ["user_id"],
             "row_filters": [{"name": "exclude_test", "sql": "is_test = 0"}],
@@ -1914,6 +1958,340 @@ class TestPreview:
                     "time_column": "t",
                     "interval": "1h",
                 },
+            )
+        finally:
+            app.dependency_overrides.pop(get_current_user, None)
+
+        assert resp.status_code == 403, resp.text
+        assert adapter.calls == []
+
+    async def test_connection_failure_is_masked_not_echoed(
+        self,
+        client: AsyncClient,
+        project: dict,
+        data_source: dict,
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        # A driver connection error names the host, the port and the user. It is a
+        # failure to REACH the warehouse, not the engine's verdict on the SQL, so
+        # it is replaced wholesale (the raw text stays in the log).
+        adapter = _PreviewStubAdapter(
+            [],
+            [],
+            error=RuntimeError("connection refused: 10.1.2.3:9440 user=analytics_admin"),
+        )
+        _patch_preview_adapter(monkeypatch, adapter)
+
+        resp = await client.post(
+            _preview_url(project["slug"]),
+            json={
+                "data_source_id": data_source["id"],
+                "sql": "SELECT t, value FROM e",
+                "time_column": "t",
+                "interval": "1h",
+            },
+        )
+        assert resp.status_code == 200, resp.text
+        error = resp.json()["error"]
+        assert "10.1.2.3" not in error
+        assert "9440" not in error
+        assert "analytics_admin" not in error
+        assert "Could not reach the data source" in error
+
+
+def _fact_preview_url(slug: str) -> str:
+    return f"{_metrics_url(slug)}/fact-preview"
+
+
+class TestFactPreview:
+    """POST /metrics/fact-preview: dry-run of ONE fact operand's row filter.
+
+    The gap this closes: a fact metric's filters were compiled per dialect but
+    never EXECUTED before save, so the first run happened inside a Celery worker
+    where the user could not see it fail.
+    """
+
+    async def test_happy_path_executes_the_collector_s_own_compiled_sql(
+        self,
+        client: AsyncClient,
+        project: dict,
+        bound_fact_table: dict,
+        data_source: dict,
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        adapter = _PreviewStubAdapter(
+            ["created_at", "amount", "user_id", "is_test"],
+            [(datetime(2026, 7, 1, 10, 0, tzinfo=UTC), 12.5, "u1", 0)],
+        )
+        built = _patch_preview_adapter(monkeypatch, adapter)
+
+        resp = await client.post(
+            _fact_preview_url(project["slug"]),
+            json={
+                "fact_table_id": bound_fact_table["id"],
+                "aggregation": "sum",
+                "measure_column": "amount",
+                "row_filters": ["exclude_test"],
+                "conditions": [{"column": "amount", "operator": "gt", "value": 3}],
+            },
+        )
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        assert body["error"] is None
+        assert body["row_count"] == 1
+        assert body["columns"] == ["created_at", "amount", "user_id", "is_test"]
+
+        # The SQL that ran is the collector's, not a re-implementation: the named
+        # filter resolved by name, the structured condition compiled for the
+        # source's dialect (ClickHouse -> back-quoted identifier), both ANDed and
+        # wrapped around the fact table's own SELECT.
+        assert built == [uuid.UUID(data_source["id"])]
+        assert len(adapter.calls) == 1
+        call = adapter.calls[0]
+        assert call["sql"] == (
+            "SELECT * FROM (SELECT created_at, amount, user_id, is_test FROM orders) "
+            "AS _filtered WHERE (is_test = 0) AND (`amount` > 3)"
+        )
+        # A probe, not a data dump: one row, over a bounded recent window of the
+        # fact table's timestamp column.
+        assert call["limit"] == 1
+        assert call["time_column"] == "created_at"
+        assert call["time_to"] - call["time_from"] == timedelta(days=7)
+        assert adapter.closed is True
+
+    async def test_compiled_sql_matches_the_worker_resolver_exactly(
+        self,
+        client: AsyncClient,
+        project: dict,
+        bound_fact_table: dict,
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        # Preview and collection must not be able to drift: assert the previewed
+        # string is byte-identical to what the worker's own resolver produces for
+        # the same operand config.
+        adapter = _PreviewStubAdapter(["created_at", "amount"], [])
+        _patch_preview_adapter(monkeypatch, adapter)
+
+        operand = {
+            "fact_table_id": bound_fact_table["id"],
+            "aggregation": "count",
+            "filter_sql": "user_id != ''",
+            "conditions": [{"column": "amount", "operator": "in", "value": [1, 2]}],
+        }
+        resp = await client.post(_fact_preview_url(project["slug"]), json=operand)
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["error"] is None
+
+        async with TestSessionLocal() as session:
+            fact_table = await session.get(FactTable, uuid.UUID(bound_fact_table["id"]))
+            assert fact_table is not None
+            expected = mc._resolve_fact_operand_query(
+                fact_table,
+                mc._operand_from_config(operand),
+                dialect=SqlDialect.clickhouse,
+            )
+        assert adapter.calls[0]["sql"] == expected
+
+    async def test_unknown_named_filter_returns_error_payload(
+        self,
+        client: AsyncClient,
+        project: dict,
+        bound_fact_table: dict,
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        adapter = _PreviewStubAdapter(["created_at", "amount"], [])
+        _patch_preview_adapter(monkeypatch, adapter)
+
+        resp = await client.post(
+            _fact_preview_url(project["slug"]),
+            json={
+                "fact_table_id": bound_fact_table["id"],
+                "aggregation": "count",
+                "row_filters": ["no_such_filter"],
+            },
+        )
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        assert body["error"] is not None
+        assert "no_such_filter" in body["error"]
+        assert body["row_count"] == 0
+        # A filter that cannot be compiled never reaches the warehouse.
+        assert adapter.calls == []
+
+    async def test_warehouse_rejection_returns_the_engine_s_own_message(
+        self,
+        client: AsyncClient,
+        project: dict,
+        bound_fact_table: dict,
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        # The engine's verdict on the user's filter IS the product here: it names
+        # the mistake ("amont") and is surfaced verbatim on a 200.
+        adapter = _PreviewStubAdapter(
+            [],
+            [],
+            error=RuntimeError("Code: 47. DB::Exception: Missing columns: 'amont'"),
+        )
+        _patch_preview_adapter(monkeypatch, adapter)
+
+        resp = await client.post(
+            _fact_preview_url(project["slug"]),
+            json={
+                "fact_table_id": bound_fact_table["id"],
+                "aggregation": "count",
+                "filter_sql": "amont > 0",
+            },
+        )
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        assert body["error"] is not None
+        assert "Missing columns: 'amont'" in body["error"]
+        assert body["row_count"] == 0
+
+    async def test_connection_failure_does_not_leak_host_or_credentials(
+        self,
+        client: AsyncClient,
+        project: dict,
+        bound_fact_table: dict,
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        adapter = _PreviewStubAdapter(
+            [],
+            [],
+            error=RuntimeError(
+                "could not connect to server at warehouse.internal:5432, "
+                "password authentication failed for user 'tripl_ro'"
+            ),
+        )
+        _patch_preview_adapter(monkeypatch, adapter)
+
+        resp = await client.post(
+            _fact_preview_url(project["slug"]),
+            json={"fact_table_id": bound_fact_table["id"], "aggregation": "count"},
+        )
+        assert resp.status_code == 200, resp.text
+        error = resp.json()["error"]
+        assert "warehouse.internal" not in error
+        assert "5432" not in error
+        assert "tripl_ro" not in error
+        assert "Could not reach the data source" in error
+
+    async def test_mutating_filter_sql_is_rejected_at_the_schema_boundary(
+        self,
+        client: AsyncClient,
+        project: dict,
+        bound_fact_table: dict,
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        # The read-only gate is NOT relaxed to make previewing easier: the preview
+        # body is the same FactOperand a save sends, so validate_sql_fragment
+        # rejects a mutating / stacked / subquery fragment with a 422 before any
+        # adapter exists.
+        adapter = _PreviewStubAdapter(["created_at"], [])
+        _patch_preview_adapter(monkeypatch, adapter)
+
+        for filter_sql in (
+            "1=1; DROP TABLE orders",
+            "user_id IN (SELECT id FROM admins)",
+            "1=1 UNION SELECT 1",
+            "amount > 0 -- comment",
+        ):
+            resp = await client.post(
+                _fact_preview_url(project["slug"]),
+                json={
+                    "fact_table_id": bound_fact_table["id"],
+                    "aggregation": "count",
+                    "filter_sql": filter_sql,
+                },
+            )
+            assert resp.status_code == 422, f"{filter_sql!r} -> {resp.text}"
+        assert adapter.calls == []
+
+    async def test_measure_column_absent_from_filtered_query_returns_error(
+        self,
+        client: AsyncClient,
+        project: dict,
+        bound_fact_table: dict,
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        # The measure is checked against the columns the FILTERED query actually
+        # returned — the same allowlist check `_aggregate_fact_window` runs before
+        # it aggregates.
+        adapter = _PreviewStubAdapter(["created_at", "user_id"], [])
+        _patch_preview_adapter(monkeypatch, adapter)
+
+        resp = await client.post(
+            _fact_preview_url(project["slug"]),
+            json={
+                "fact_table_id": bound_fact_table["id"],
+                "aggregation": "sum",
+                "measure_column": "amount",
+            },
+        )
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        assert body["error"] is not None
+        assert "amount" in body["error"]
+        assert body["columns"] == ["created_at", "user_id"]
+
+    async def test_fact_table_without_data_source_returns_error_payload(
+        self,
+        client: AsyncClient,
+        project: dict,
+        fact_table: dict,
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        adapter = _PreviewStubAdapter(["created_at"], [])
+        _patch_preview_adapter(monkeypatch, adapter)
+
+        resp = await client.post(
+            _fact_preview_url(project["slug"]),
+            json={"fact_table_id": fact_table["id"], "aggregation": "count"},
+        )
+        assert resp.status_code == 200, resp.text
+        assert "no data source" in resp.json()["error"]
+        assert adapter.calls == []
+
+    async def test_unknown_fact_table_returns_404(
+        self,
+        client: AsyncClient,
+        project: dict,
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        adapter = _PreviewStubAdapter(["created_at"], [])
+        _patch_preview_adapter(monkeypatch, adapter)
+
+        resp = await client.post(
+            _fact_preview_url(project["slug"]),
+            json={"fact_table_id": str(uuid.uuid4()), "aggregation": "count"},
+        )
+        assert resp.status_code == 404, resp.text
+        assert adapter.calls == []
+
+    async def test_requires_editor_role(
+        self,
+        client: AsyncClient,
+        project: dict,
+        bound_fact_table: dict,
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        adapter = _PreviewStubAdapter(["created_at"], [])
+        _patch_preview_adapter(monkeypatch, adapter)
+
+        async def _viewer() -> User:
+            return User(
+                id=uuid.uuid4(),
+                email="viewer@example.com",
+                name="Viewer",
+                password_hash="x",
+                role=UserRole.viewer.value,
+            )
+
+        app.dependency_overrides[get_current_user] = _viewer
+        try:
+            resp = await client.post(
+                _fact_preview_url(project["slug"]),
+                json={"fact_table_id": bound_fact_table["id"], "aggregation": "count"},
             )
         finally:
             app.dependency_overrides.pop(get_current_user, None)

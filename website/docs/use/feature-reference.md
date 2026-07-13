@@ -426,10 +426,34 @@ documents indexed and whether embeddings were queued.
 ### Data sources & connection test
 
 **Where:** Workspace settings › Data sources (owner only). Supported types and
-default ports: **ClickHouse** (8123), **PostgreSQL** (5432), and **BigQuery**
-(project/dataset based). Create, edit, and delete sources; **Test connection**;
-browse the schema (tables/columns) for the scan query builder; and view ingestion
-stats. Health is shown as healthy / stale / failing / untested.
+default ports: **ClickHouse** (8123), **PostgreSQL** (5432, **version 14+
+required**), and **BigQuery** (project/dataset based). Create, edit, and delete
+sources; **Test connection**; browse the schema (tables/columns) for the scan
+query builder; and view ingestion stats. Health is shown as healthy / stale /
+failing / untested.
+
+**Runtime controls.** Every source takes a **query timeout** (default 300s),
+applied to the connect handshake and to the query itself. Per-warehouse
+connection settings, shown only for the warehouse they apply to:
+
+| Warehouse | Settings |
+| --- | --- |
+| ClickHouse | JSON path discovery mode (`dynamic` / `all`) |
+| PostgreSQL | SSL mode, CA certificate, client certificate, client private key (PEM content; the key is stored encrypted and never returned), search path |
+| BigQuery | Location, max billed bytes (cost guard, default 100 GiB), dataset allowlist (schema-browse scope) |
+
+:::info Not interchangeable — read the capability matrix
+The three warehouses expose the same features but not the same guarantees.
+ClickHouse and PostgreSQL are verified by **executing** tripl's generated SQL
+against real servers in CI. BigQuery is verified by Google's real ZetaSQL
+analyzer, which proves the SQL is **valid** but never checks a computed **value**.
+Supported time-column types, nested-JSON behavior, TLS defaults and minimum
+versions also differ.
+
+See the **[warehouse capability matrix](../develop/warehouse-parity.md)** for the
+per-capability proven/believed/bounded breakdown, setup requirements, permissions,
+dialect-correct SQL examples and troubleshooting.
+:::
 
 ---
 

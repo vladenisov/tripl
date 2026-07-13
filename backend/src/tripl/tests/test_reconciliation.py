@@ -491,7 +491,7 @@ def test_collect_metrics_records_coverage_and_shadow_candidates(
             self,
             base_query: str,
             time_column: str,
-            ch_interval: str,
+            interval: str,
             regular_columns: list[str],
             json_columns: list[str],
             json_value_paths: dict[str, list[str]] | None,

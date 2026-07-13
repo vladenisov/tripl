@@ -114,13 +114,42 @@ needs.
 1. Open **Data sources** from the workspace settings area.
 2. Add a connection for your warehouse — **ClickHouse**, **BigQuery**, or
    **PostgreSQL** — and fill in the connection details:
-   - **ClickHouse / PostgreSQL**: host, port, database, username, password.
-     ClickHouse also accepts an optional query timeout in seconds.
+   - **ClickHouse**: host, port (8123), database, username, password. Optionally
+     pick a **JSON path discovery** mode for `JSON`-typed columns.
+   - **PostgreSQL**: host, port (5432), database, username, password. **Version 14
+     or newer is required** — tripl buckets time with `date_bin()`, which older
+     servers do not have, and the connection test refuses them. Optionally set an
+     **SSL mode**, a **CA / client certificate**, and a **search path**.
    - **BigQuery**: GCP project ID, a default dataset, and a service-account JSON
-     key pasted into the form.
-3. Save, then click **Test** on the connection card.
+     key pasted into the form. Optionally set the dataset **location**, a **max
+     billed bytes** cost guard (100 GiB by default), and a **dataset allowlist**
+     for the schema browser.
+3. Every warehouse — BigQuery included — accepts a **query timeout in seconds**
+   (300 by default).
+4. Save, then click **Test** on the connection card.
 
 tripl only ever *reads* from the warehouse; it never writes to it.
+
+:::info The three warehouses are not interchangeable
+They support the same features, but not with the same guarantees. ClickHouse and
+PostgreSQL are verified by **executing** tripl's generated SQL against real
+servers in CI; BigQuery's SQL is verified as *valid* by Google's own ZetaSQL
+analyzer, but its computed **values** have never been executed against real
+BigQuery. There are also real differences in supported time-column types, nested
+JSON behavior, TLS defaults and minimum versions.
+
+Before you commit to a warehouse, read the
+**[warehouse capability matrix](../develop/warehouse-parity.md)**. It states, per
+capability, what is proven, what is merely believed, and what is bounded — plus
+per-warehouse setup requirements, permissions and dialect-correct SQL examples.
+:::
+
+:::caution PostgreSQL TLS defaults to `prefer`
+`prefer` uses TLS if the server offers it and **silently falls back to plaintext
+if it does not**. If you need the connection to actually be encrypted, choose
+`require`; to also authenticate the server, choose `verify-full` and supply a CA
+certificate.
+:::
 
 :::warning Only owners manage data sources
 Connecting, editing, testing, and deleting data sources is restricted to the

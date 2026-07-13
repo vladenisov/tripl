@@ -56,12 +56,27 @@ class _BQClient:
         return _BQJob(self.rows)
 
 
-def _bq() -> tuple[BigQueryAdapter, _BQClient]:
+def _bq(time_type: str = "TIMESTAMP") -> tuple[BigQueryAdapter, _BQClient]:
     client = _BQClient()
     adapter = object.__new__(BigQueryAdapter)
     adapter._client = client
     adapter._allowed_columns = set(_ALLOWED)
+    # The bucket function and the window literal follow the column's declared type, so
+    # the fake declares one. Pre-seeding also stops `_ensure_column_types` from firing
+    # its own `LIMIT 0` schema probe ahead of the query under test at `client.sql[0]`.
+    adapter._column_types = {"time": time_type, "event_name": "STRING", "amount": "FLOAT64"}
+    adapter._struct_paths = {}
+    adapter._repeated_columns = set()
     return adapter, client
+
+
+# `TIMESTAMP_BUCKET`, not the old `TIMESTAMP_BIN` — BIN is not a GoogleSQL function, so
+# the previous form was a syntax error that never executed. Origin is the Unix epoch.
+_BQ_BUCKET_1H = (
+    "TIMESTAMP_BUCKET(`time`, INTERVAL 1 HOUR, "
+    "TIMESTAMP '1970-01-01 00:00:00.000000+00:00') AS _bucket"
+)
+_BQ_WINDOW_LOWER = "WHERE `time` >= TIMESTAMP '2026-04-01 00:00:00.000000+00:00'"
 
 
 # --- multi-aggregate: one scan, many aggregates -----------------------------
@@ -77,7 +92,7 @@ def test_multi_aggregate_select_shape() -> None:
     names, _ = adapter.get_time_bucketed_multi_aggregate(
         _BASE,
         "time",
-        "1 hour",
+        "1h",
         specs,
         _FROM,
         _TO,
@@ -89,13 +104,11 @@ def test_multi_aggregate_select_shape() -> None:
     assert "count(*) AS `k_cnt`" in sql
     assert "sum(`amount`) AS `k_sum`" in sql
     assert "count(DISTINCT `user_id`) AS `k_dist`" in sql
-    assert (
-        "TIMESTAMP_BIN(INTERVAL 1 HOUR, `time`, TIMESTAMP '1970-01-01 00:00:00+00') AS _bucket"
-        in sql
-    )
+    assert _BQ_BUCKET_1H in sql
+    assert "TIMESTAMP_BIN" not in sql
     assert "GROUP BY _bucket" in sql
     assert "ORDER BY _bucket" in sql
-    assert "WHERE `time` >= TIMESTAMP '2026-04-01 00:00:00'" in sql
+    assert _BQ_WINDOW_LOWER in sql
 
 
 def test_multi_aggregate_conditional_filter_folds_into_case() -> None:
@@ -119,7 +132,7 @@ def test_multi_aggregate_conditional_filter_folds_into_case() -> None:
             filter_sql="`amount` > 0",
         ),
     ]
-    adapter.get_time_bucketed_multi_aggregate(_BASE, "time", "1 day", specs, _FROM, _TO)
+    adapter.get_time_bucketed_multi_aggregate(_BASE, "time", "1d", specs, _FROM, _TO)
     sql = client.sql[0]
     # BigQuery has no FILTER (WHERE ...); conditions fold into CASE / IF forms.
     assert "FILTER (WHERE" not in sql
@@ -149,7 +162,7 @@ def test_multi_aggregate_unfiltered_matches_single_path(
     adapter.get_time_bucketed_multi_aggregate(
         _BASE,
         "time",
-        "1 hour",
+        "1h",
         [AggregateSpec(key="k", aggregation=agg, column=column)],
         _FROM,
         _TO,
@@ -162,7 +175,7 @@ def test_multi_aggregate_empty_specs_returns_header_only() -> None:
     names, rows = adapter.get_time_bucketed_multi_aggregate(
         _BASE,
         "time",
-        "1 hour",
+        "1h",
         [],
         _FROM,
         _TO,
@@ -178,7 +191,7 @@ def test_multi_aggregate_rejects_unknown_measure() -> None:
         adapter.get_time_bucketed_multi_aggregate(
             _BASE,
             "time",
-            "1 hour",
+            "1h",
             [AggregateSpec(key="k", aggregation=MetricAggregation.sum, column="revenue")],
             _FROM,
             _TO,
@@ -191,20 +204,57 @@ def test_multi_aggregate_rejects_bad_alias() -> None:
         adapter.get_time_bucketed_multi_aggregate(
             _BASE,
             "time",
-            "1 hour",
+            "1h",
             [AggregateSpec(key="bad alias`", aggregation=MetricAggregation.count)],
             _FROM,
             _TO,
         )
 
 
-def test_multi_aggregate_rejects_bad_interval() -> None:
+@pytest.mark.parametrize("bad", ["1; DROP TABLE x", "1 fortnight", "1 hour", "1 month"])
+def test_multi_aggregate_rejects_bad_interval(bad: str) -> None:
     adapter, _ = _bq()
-    with pytest.raises(ValueError, match="Unsupported interval"):
+    with pytest.raises(ValueError, match="Unknown interval code"):
         adapter.get_time_bucketed_multi_aggregate(
             _BASE,
             "time",
-            "1; DROP TABLE x",
+            bad,
+            [AggregateSpec(key="k", aggregation=MetricAggregation.count)],
+            _FROM,
+            _TO,
+        )
+
+
+def test_multi_aggregate_datetime_column_uses_datetime_bucket() -> None:
+    # The bucket function follows the column's *declared* type family: GoogleSQL
+    # rejects a TIMESTAMP_* function applied to a DATETIME column, so a DATETIME time
+    # column must bucket (and compare) zone-lessly.
+    adapter, client = _bq(time_type="DATETIME")
+    adapter.get_time_bucketed_multi_aggregate(
+        _BASE,
+        "time",
+        "1h",
+        [AggregateSpec(key="k", aggregation=MetricAggregation.count)],
+        _FROM,
+        _TO,
+    )
+    sql = client.sql[0]
+    assert (
+        "DATETIME_BUCKET(`time`, INTERVAL 1 HOUR, DATETIME '1970-01-01 00:00:00.000000') AS _bucket"
+    ) in sql
+    assert "WHERE `time` >= DATETIME '2026-04-01 00:00:00.000000'" in sql
+    assert "TIMESTAMP" not in sql
+
+
+def test_multi_aggregate_date_column_rejects_sub_day_interval() -> None:
+    # A DATE column has no time-of-day, so a sub-day bucket is a configuration error
+    # surfaced now rather than silently rounded.
+    adapter, _ = _bq(time_type="DATE")
+    with pytest.raises(ValueError, match="which has no |no time-of-day"):
+        adapter.get_time_bucketed_multi_aggregate(
+            _BASE,
+            "time",
+            "15m",
             [AggregateSpec(key="k", aggregation=MetricAggregation.count)],
             _FROM,
             _TO,
@@ -223,7 +273,7 @@ def test_multi_aggregate_breakdown_select_shape() -> None:
     names, _ = adapter.get_time_bucketed_multi_aggregate_breakdown(
         _BASE,
         "time",
-        "1 day",
+        "1d",
         "event_name",
         specs,
         _FROM,
@@ -246,7 +296,7 @@ def test_multi_aggregate_breakdown_folds_other_with_limit() -> None:
     adapter.get_time_bucketed_multi_aggregate_breakdown(
         _BASE,
         "time",
-        "1 day",
+        "1d",
         "event_name",
         [AggregateSpec(key="k_cnt", aggregation=MetricAggregation.count)],
         _FROM,
@@ -264,7 +314,7 @@ def test_multi_aggregate_breakdown_conditional_filter() -> None:
     adapter.get_time_bucketed_multi_aggregate_breakdown(
         _BASE,
         "time",
-        "1 day",
+        "1d",
         "event_name",
         [
             AggregateSpec(

@@ -12,7 +12,12 @@ import {
   YAxis,
 } from 'recharts'
 import { cn } from '@/lib/utils'
-import { axisWidthForValues, formatCount } from '@/components/ui/chart-format'
+import {
+  axisWidthForValues,
+  formatCount,
+  formatTick,
+  formatTooltipLabel,
+} from '@/components/ui/chart-format'
 import type { MetricsGranularity } from '@/lib/metrics'
 import { useTheme, type ChartStyle } from '@/components/theme-provider'
 import type { ChartAnnotation, EventMetricPoint, ForecastPoint } from '@/types'
@@ -71,52 +76,6 @@ interface MetricsMultiSeriesChartProps {
    * default compact-count ticks and `value seriesLabel` tooltip lines.
    */
   valueFormatter?: (value: number) => string
-}
-
-function formatTick(dateStr: string, granularity: MetricsGranularity) {
-  const d = new Date(dateStr)
-
-  switch (granularity) {
-    case 'hour':
-      return d.toLocaleString('en-US', { month: 'short', day: 'numeric', hour: '2-digit' })
-    case 'day':
-      return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
-    case 'week':
-      return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
-    case 'month':
-      return d.toLocaleDateString('en-US', { month: 'short', year: 'numeric' })
-  }
-}
-
-function formatTooltipLabel(dateStr: string, granularity: MetricsGranularity) {
-  const d = new Date(dateStr)
-
-  switch (granularity) {
-    case 'hour':
-      return d.toLocaleString('en-US', {
-        month: 'short',
-        day: 'numeric',
-        hour: '2-digit',
-        minute: '2-digit',
-      })
-    case 'day':
-      return d.toLocaleDateString('en-US', {
-        month: 'short',
-        day: 'numeric',
-        year: 'numeric',
-      })
-    case 'week':
-      return `Week of ${d.toLocaleDateString('en-US', {
-        month: 'short',
-        day: 'numeric',
-        year: 'numeric',
-      })}`
-    case 'month':
-      return d.toLocaleDateString('en-US', {
-        month: 'long',
-        year: 'numeric',
-      })
-  }
 }
 
 function collectChartYValues(data: ChartDataPoint[]): number[] {

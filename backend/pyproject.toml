@@ -50,6 +50,14 @@ asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "session"
 asyncio_default_test_loop_scope = "session"
 testpaths = ["src/tripl/tests"]
+markers = [
+    # Executable warehouse conformance gates (src/tripl/tests/conformance/). They
+    # need a real PostgreSQL, a real ClickHouse and the BigQuery emulator, so they
+    # SKIP when those are unreachable — run `pytest -m "not conformance"` to drop
+    # them from a local run entirely. CI runs them with TRIPL_CONFORMANCE_REQUIRED=1,
+    # which turns "warehouse unreachable" from a skip into a failure.
+    "conformance: executes/analyzes generated SQL against a real warehouse",
+]
 filterwarnings = [
     # Third-party deprecations we don't control — keep the run summary clean
     # without hiding warnings raised by our own code.
