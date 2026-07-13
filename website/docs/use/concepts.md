@@ -222,6 +222,9 @@ SQL/fact/event-composition metrics; older releases fold into a single
 event that disappeared or fired far less in the newest release than in the one
 before it.
 
+New projects retain five releases by default; you can raise or lower that value
+for the product's release cadence.
+
 Releases roll out gradually, and a build spends its first stretch seen only by
 developers and testers, so tripl judges a release only once it takes a real
 share of traffic, and compares the new release against the previous one over the

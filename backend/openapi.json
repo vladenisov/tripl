@@ -12249,7 +12249,7 @@
       "ProjectCreate": {
         "properties": {
           "app_version_keep_releases": {
-            "default": 10,
+            "default": 5,
             "maximum": 100.0,
             "minimum": 1.0,
             "title": "App Version Keep Releases",
@@ -12444,7 +12444,7 @@
       "ProjectResponse": {
         "properties": {
           "app_version_keep_releases": {
-            "default": 10,
+            "default": 5,
             "maximum": 100.0,
             "minimum": 1.0,
             "title": "App Version Keep Releases",

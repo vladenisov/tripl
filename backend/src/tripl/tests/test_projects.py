@@ -123,7 +123,7 @@ async def test_create_project(client: AsyncClient):
     data = resp.json()
     assert data["name"] == "Test Project"
     assert data["slug"] == "test-project"
-    assert data["app_version_keep_releases"] == 10
+    assert data["app_version_keep_releases"] == 5
 
 
 @pytest.mark.asyncio

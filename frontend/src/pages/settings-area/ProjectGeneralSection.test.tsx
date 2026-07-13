@@ -85,14 +85,14 @@ afterEach(() => {
 
 describe('ProjectGeneralSection', () => {
   it('updates the shared app-version retention policy', async () => {
-    let patchBody: unknown = null
+    let patchBody: { app_version_keep_releases?: number } | null = null
     vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
       const url = String(input)
       if (url.endsWith('/api/v1/projects/demo') && (init?.method ?? 'GET') === 'GET') {
         return jsonResponse(PROJECT)
       }
       if (url.endsWith('/api/v1/projects/demo') && init?.method === 'PATCH') {
-        patchBody = JSON.parse(String(init.body))
+        patchBody = JSON.parse(String(init.body)) as { app_version_keep_releases?: number }
         return jsonResponse({ ...PROJECT, ...patchBody })
       }
       throw new Error(`Unhandled fetch: ${url}`)

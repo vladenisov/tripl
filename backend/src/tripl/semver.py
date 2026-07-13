@@ -22,7 +22,7 @@ _NUMERIC_IDENTIFIER_RE = re.compile(r"^(0|[1-9]\d*)$")
 # app-version breakdowns; older releases roll up into the shared "Other" bucket.
 # Retention is applied at READ time over the full requested window so the kept
 # set stays stable regardless of how collection was chunked.
-DEFAULT_APP_VERSION_KEEP_RELEASES = 10
+DEFAULT_APP_VERSION_KEEP_RELEASES = 5
 # Bound project configuration so accidental or hostile inputs cannot request an
 # impractically large number of chart series or overflow the database integer.
 MAX_APP_VERSION_KEEP_RELEASES = 100

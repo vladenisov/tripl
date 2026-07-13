@@ -42,7 +42,7 @@ def upgrade() -> None:
                 name="ck_projects_app_version_keep_releases_range",
             ),
             nullable=False,
-            server_default="10",
+            server_default="5",
         ),
     )
     op.execute(

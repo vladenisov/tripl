@@ -13,6 +13,7 @@ function makeProject(slug = 'demo-1'): Project {
     name: 'Demo workspace',
     slug,
     description: '',
+    app_version_keep_releases: 5,
     created_at: '2026-07-01T00:00:00Z',
     updated_at: '2026-07-01T00:00:00Z',
     is_demo: true,
