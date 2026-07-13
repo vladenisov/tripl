@@ -852,6 +852,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/projects/{slug}/branches/{branch_id}/revert": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Revert Branch Change */
+        post: operations["revert_branch_change_api_v1_projects__slug__branches__branch_id__revert_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/projects/{slug}/branches/{branch_id}/reviewers": {
         parameters: {
             query?: never;
@@ -3965,6 +3982,28 @@ export interface components {
          * @enum {string}
          */
         BranchKind: "main" | "working";
+        /**
+         * BranchRevertRequest
+         * @description Undo one entry of the branch's diff.
+         *
+         *     The entry is addressed the way the diff names it — entity type, natural name
+         *     and parent — rather than by id, so the request describes a *change* rather
+         *     than a row. ``field`` narrows the revert to one changed field; omitted, the
+         *     whole entity goes back to its base state.
+         */
+        BranchRevertRequest: {
+            /**
+             * Entity Type
+             * @enum {string}
+             */
+            entity_type: "event_type" | "field_definition" | "event" | "variable" | "meta_field" | "relation";
+            /** Field */
+            field?: string | null;
+            /** Name */
+            name: string;
+            /** Parent */
+            parent?: string | null;
+        };
         /** BranchReviewerCreate */
         BranchReviewerCreate: {
             /**
@@ -10907,6 +10946,42 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    revert_branch_change_api_v1_projects__slug__branches__branch_id__revert_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                slug: string;
+                branch_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["BranchRevertRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PlanBranchDiff"];
+                };
             };
             /** @description Validation Error */
             422: {

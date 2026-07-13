@@ -549,8 +549,11 @@ def _collection_item_changes(field: str, old_value: Any, new_value: Any) -> list
 
     Empty when the field isn't a known collection, when either side isn't a list
     (a v1 base stored overrides as a dict — cross-shape keying is meaningless),
-    or when a member doesn't fit the declared shape. In each of those cases the
-    field change still carries its raw before/after, so nothing is lost.
+    when a member doesn't fit the declared shape, or when two members share a
+    key (photos, for one, may repeat a filename — nothing in the schema stops
+    them, and keying by it would let one member mask another's removal). In each
+    of those cases the field change still carries its raw before/after, so the
+    reviewer sees the whole collection rather than a lie about part of it.
     """
     key_fields = _COLLECTION_ITEM_KEYS.get(field)
     if key_fields is None:
@@ -563,6 +566,8 @@ def _collection_item_changes(field: str, old_value: Any, new_value: Any) -> list
         for item in items:
             pair = _item_key_and_value(item, key_fields)
             if pair is None:
+                return None
+            if pair[0] in out:
                 return None
             out[pair[0]] = pair[1]
         return out

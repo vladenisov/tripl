@@ -309,6 +309,30 @@ def test_scalar_field_change_carries_no_items() -> None:
     assert entries[0].field_changes[0].items == []
 
 
+def test_duplicate_member_keys_fall_back_to_whole_value_diff() -> None:
+    """Two photos can share a filename — nothing in the schema stops them.
+
+    Keying members by a value that isn't unique would let one member mask
+    another's removal, so a collision drops the per-member breakdown and leaves
+    the raw before/after in place: the reviewer sees the whole collection rather
+    than a confident lie about part of it.
+    """
+    old = _v2_event("Checkout")
+    old["photos"] = [
+        {"original_filename": "shot.png", "size_bytes": 10},
+        {"original_filename": "shot.png", "size_bytes": 20},
+    ]
+    new = _v2_event("Checkout")
+    new["photos"] = [{"original_filename": "shot.png", "size_bytes": 20}]
+
+    entries = compute_plan_diff_entries(_payload(2, [old], []), _payload(2, [new], []))
+
+    change = next(fc for fc in entries[0].field_changes if fc.field == "photos")
+    assert change.items == []
+    assert len(change.before) == 2
+    assert len(change.after) == 1
+
+
 def test_v1_dict_shaped_overrides_fall_back_to_whole_value_diff() -> None:
     """A v1 base stored event_value_overrides as a dict, not a list.
 

@@ -290,13 +290,15 @@ export function VariablesTab({ slug, focusId }: { slug: string; focusId?: string
   })
 
   // Scroll the linked variable into view once its row exists (the list arrives
-  // asynchronously, so the ref is null on the first render).
+  // asynchronously, so the ref is null on the first render). Keyed on focusId
+  // as well, so following a second link — to a variable already on screen —
+  // scrolls to it instead of leaving the reviewer where the first one landed.
   const focusedRowExists = focusId !== undefined && rows.some((row) => row.id === focusId)
   useEffect(() => {
     if (focusedRowExists) {
       focusRef.current?.scrollIntoView({ block: 'center' })
     }
-  }, [focusedRowExists])
+  }, [focusId, focusedRowExists])
 
   const editingVarContexts = editingVar ? (contextsByVariableId.get(editingVar.id) ?? []) : []
   const editingSummaryRows = editingVarContexts.length > 0

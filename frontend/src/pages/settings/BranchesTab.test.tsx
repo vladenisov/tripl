@@ -22,6 +22,7 @@ vi.mock('@/api/planBranches', () => ({
     merge: vi.fn(),
     createComment: vi.fn(),
     saveResolution: vi.fn(),
+    revert: vi.fn(),
   },
 }))
 
@@ -339,6 +340,87 @@ describe('BranchesTab', () => {
     expect(screen.getByText(/value: EUR/)).toBeInTheDocument()
     // … and no JSON blob of the whole collection is rendered.
     expect(screen.queryByText(/"field_name"/)).not.toBeInTheDocument()
+  })
+
+  it('reverts a single changed field after the reviewer confirms', async () => {
+    vi.mocked(planBranchesApi.list).mockResolvedValue({ items: [MAIN, FEATURE], total: 2 })
+    vi.mocked(planBranchesApi.getConflicts).mockResolvedValue({ entities: [], unresolved_count: 0 })
+    vi.mocked(planBranchesApi.listComments).mockResolvedValue([])
+    vi.mocked(planBranchesApi.diff).mockResolvedValue({
+      behind_base: false,
+      summary: { added: 0, removed: 0, changed: 1 },
+      entries: [
+        {
+          entity_type: 'event',
+          kind: 'changed',
+          name: 'purchase',
+          parent: 'track',
+          entity_id: 'ev-1',
+          changes: ["description: '' → 'edited'"],
+          field_changes: [{ field: 'description', before: '', after: 'edited', items: [] }],
+          before: null,
+          after: null,
+        },
+      ],
+    })
+    vi.mocked(planBranchesApi.revert).mockResolvedValue({
+      behind_base: false,
+      summary: { added: 0, removed: 0, changed: 0 },
+      entries: [],
+    })
+
+    renderTab('feat-1')
+
+    fireEvent.click(await screen.findByRole('button', { name: /purchase/i }))
+    fireEvent.click(await screen.findByRole('button', { name: /Revert description/i }))
+
+    // Reverting is destructive to branch work, so it waits for consent.
+    expect(planBranchesApi.revert).not.toHaveBeenCalled()
+    fireEvent.click(await screen.findByRole('button', { name: 'Revert' }))
+
+    await waitFor(() =>
+      expect(planBranchesApi.revert).toHaveBeenCalledWith('demo', 'feat-1', {
+        entity_type: 'event',
+        name: 'purchase',
+        parent: 'track',
+        field: 'description',
+      }),
+    )
+  })
+
+  it('offers no revert on an entity the branch deleted', async () => {
+    vi.mocked(planBranchesApi.list).mockResolvedValue({ items: [MAIN, FEATURE], total: 2 })
+    vi.mocked(planBranchesApi.getConflicts).mockResolvedValue({ entities: [], unresolved_count: 0 })
+    vi.mocked(planBranchesApi.listComments).mockResolvedValue([])
+    vi.mocked(planBranchesApi.diff).mockResolvedValue({
+      behind_base: false,
+      summary: { added: 0, removed: 1, changed: 0 },
+      entries: [
+        {
+          entity_type: 'event',
+          kind: 'removed',
+          name: 'legacy_event',
+          parent: 'track',
+          entity_id: 'ev-old',
+          changes: [],
+          field_changes: [],
+          before: { name: 'legacy_event' },
+          after: null,
+        },
+      ],
+    })
+
+    renderTab('feat-1')
+
+    fireEvent.click(await screen.findByRole('button', { name: /legacy_event/i }))
+
+    // Restoring a deleted entity isn't supported yet, so no button promises it.
+    expect(screen.queryByRole('button', { name: /Revert/i })).not.toBeInTheDocument()
+    // It still links to the copy that survives on main.
+    expect(await screen.findByRole('link', { name: /Open on main/i })).toHaveAttribute(
+      'href',
+      '/p/demo/events/all/ev-old',
+    )
   })
 
   it('links a diff row to the entity it describes, in the branch', async () => {

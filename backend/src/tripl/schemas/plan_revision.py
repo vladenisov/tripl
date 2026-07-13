@@ -34,6 +34,16 @@ class PlanRevisionList(BaseModel):
 
 DriftKind = Literal["added", "removed", "changed"]
 
+# The plan entities a diff entry — and a revert request — can describe.
+PlanEntityType = Literal[
+    "event_type",
+    "field_definition",
+    "event",
+    "variable",
+    "meta_field",
+    "relation",
+]
+
 
 class PlanValueChange(BaseModel):
     """One member of a collection-valued field that moved.
@@ -70,14 +80,7 @@ class PlanFieldChange(BaseModel):
 
 
 class PlanDiffEntry(BaseModel):
-    entity_type: Literal[
-        "event_type",
-        "field_definition",
-        "event",
-        "variable",
-        "meta_field",
-        "relation",
-    ]
+    entity_type: PlanEntityType
     kind: DriftKind
     name: str
     parent: str | None = None

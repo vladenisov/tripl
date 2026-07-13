@@ -11,6 +11,7 @@ import {
   Settings2,
   Ticket,
   Trash2,
+  Undo2,
 } from 'lucide-react'
 
 import { branchSettingsApi } from '@/api/branchSettings'
@@ -18,7 +19,7 @@ import { ApiError } from '@/api/client'
 import { planBranchesApi } from '@/api/planBranches'
 import { usersApi } from '@/api/users'
 import { TrackerConfigDialog } from './TrackerConfigDialog'
-import { useBranchContext } from '@/hooks/useBranch'
+import { useBranchLinkProps } from '@/hooks/useBranch'
 import { useConfirm } from '@/hooks/useConfirm'
 import { Chip, type ChipTone } from '@/components/primitives/chip'
 import { Button } from '@/components/ui/button'
@@ -451,6 +452,37 @@ function FeatureBranchDetail({ slug, branch, diff, confirm }: FeatureBranchDetai
     onSuccess: () => qc.invalidateQueries({ queryKey: ['planBranches', slug] }),
   })
 
+  // Undo one diff entry — the whole entity, or one field of it — back to the
+  // state the plan was in when the branch was opened.
+  const revertMut = useMutation({
+    mutationFn: ({ entry, field }: { entry: PlanDiffEntry; field?: string }) =>
+      planBranchesApi.revert(slug, branch.id, {
+        entity_type: entry.entity_type,
+        name: entry.name,
+        parent: entry.parent,
+        field: field ?? null,
+      }),
+    onSuccess: invalidate,
+  })
+
+  const handleRevert = async (entry: PlanDiffEntry, field?: string) => {
+    const what = field
+      ? `the change to "${field}" on ${entry.name}`
+      : entry.kind === 'added'
+        ? `${entry.name}, which this branch added`
+        : `every change to ${entry.name}`
+    const ok = await confirm({
+      title: field ? 'Revert field' : 'Revert change',
+      message:
+        entry.kind === 'added' && !field
+          ? `Discard ${what}? It is deleted from the branch — main is untouched.`
+          : `Revert ${what} to the state it had when this branch was opened? Main is untouched.`,
+      confirmLabel: 'Revert',
+      variant: 'danger',
+    })
+    if (ok) revertMut.mutate({ entry, field })
+  }
+
   const handleDelete = async () => {
     const ok = await confirm({
       title: 'Delete branch',
@@ -589,10 +621,20 @@ function FeatureBranchDetail({ slug, branch, diff, confirm }: FeatureBranchDetai
                 slug={slug}
                 branchId={branch.id}
                 entry={entry}
+                onRevert={handleRevert}
+                reverting={revertMut.isPending}
               />
             ))}
           </div>
         )}
+        {revertMut.isError ? (
+          <p
+            className="border-t px-4 py-2.5 text-[11.5px]"
+            style={{ borderColor: 'var(--border-subtle)', color: 'var(--danger)' }}
+          >
+            {getErrorMessage(revertMut.error)}
+          </p>
+        ) : null}
       </Panel>
 
       <ConflictsPanel slug={slug} branchId={branch.id} />
@@ -625,38 +667,34 @@ function SummaryCount({
   )
 }
 
-/** Where a diff row points. Added and changed entities live on the branch, so
- * the link carries `?branch=` and opens them in that branch; a removed one only
- * still exists on main, so it links there. Field definitions, meta fields and
- * relations have no detail route yet — those rows stay unlinked. */
-function entityLink(slug: string, branchId: string, entry: PlanDiffEntry): string | null {
+/** Where a diff row points. Field definitions, meta fields and relations have no
+ * detail route yet — those rows stay unlinked. */
+function entityPath(slug: string, entry: PlanDiffEntry): string | null {
   if (!entry.entity_id) return null
-  const inBranch = entry.kind !== 'removed'
-  const branchQuery = inBranch ? `?branch=${branchId}` : ''
   switch (entry.entity_type) {
     case 'event':
-      return `/p/${slug}/events/all/${entry.entity_id}${branchQuery}`
+      return `/p/${slug}/events/all/${entry.entity_id}`
     case 'event_type':
-      return `/p/${slug}/settings/event-types/${entry.entity_id}${branchQuery}`
+      return `/p/${slug}/settings/event-types/${entry.entity_id}`
     case 'variable':
-      return `/p/${slug}/settings/variables/${entry.entity_id}${branchQuery}`
+      return `/p/${slug}/settings/variables/${entry.entity_id}`
     default:
       return null
   }
 }
 
-function ChangeRow({
-  slug,
-  branchId,
-  entry,
-}: {
+interface ChangeRowProps {
   slug: string
   branchId: string
   entry: PlanDiffEntry
-}) {
+  onRevert: (entry: PlanDiffEntry, field?: string) => void
+  reverting: boolean
+}
+
+function ChangeRow({ slug, branchId, entry, onRevert, reverting }: ChangeRowProps) {
   const [open, setOpen] = useState(false)
   const detailId = useId()
-  const { setBranchId } = useBranchContext()
+  const branchLink = useBranchLinkProps()
   const meta = KIND_META[entry.kind]
   // Removed entities only exist on the base side; everything else shows the
   // branch-side (current) state.
@@ -664,7 +702,12 @@ function ChangeRow({
   const hasState = !!fullState && Object.keys(fullState).length > 0
   const fieldChanges = entry.field_changes ?? []
   const hasFieldChanges = fieldChanges.length > 0
-  const link = entityLink(slug, branchId, entry)
+  const path = entityPath(slug, entry)
+  // A removed entity is gone from the branch — only main still has it.
+  const link = path ? branchLink(path, entry.kind === 'removed' ? null : branchId) : null
+  // Restoring a deleted entity isn't supported yet (the API says so too), so
+  // the button is offered only where it can actually deliver.
+  const canRevert = entry.kind !== 'removed'
 
   return (
     <div
@@ -720,25 +763,40 @@ function ChangeRow({
                 </>
               ) : null}
             </p>
-            {link ? (
-              <Link
-                to={link}
-                // The provider survives client-side navigation, so the target
-                // branch is set here as well as carried in the URL.
-                onClick={() => setBranchId(entry.kind === 'removed' ? null : branchId)}
-                className="flex shrink-0 items-center gap-1 text-[11px] hover:underline"
-                style={{ color: 'var(--accent)' }}
-              >
-                {entry.kind === 'removed'
-                  ? 'Open on main'
-                  : `Open ${ENTITY_LABEL[entry.entity_type]}`}
-                <ArrowUpRight className="size-3" aria-hidden="true" />
-              </Link>
-            ) : null}
+            <div className="flex shrink-0 items-center gap-3">
+              {canRevert ? (
+                <button
+                  type="button"
+                  disabled={reverting}
+                  onClick={() => onRevert(entry)}
+                  className="flex items-center gap-1 text-[11px] hover:underline disabled:opacity-50"
+                  style={{ color: 'var(--fg-muted)' }}
+                >
+                  <Undo2 className="size-3" aria-hidden="true" />
+                  {entry.kind === 'added' ? 'Discard this addition' : 'Revert all changes'}
+                </button>
+              ) : null}
+              {link ? (
+                <Link
+                  {...link}
+                  className="flex items-center gap-1 text-[11px] hover:underline"
+                  style={{ color: 'var(--accent)' }}
+                >
+                  {entry.kind === 'removed'
+                    ? 'Open on main'
+                    : `Open ${ENTITY_LABEL[entry.entity_type]}`}
+                  <ArrowUpRight className="size-3" aria-hidden="true" />
+                </Link>
+              ) : null}
+            </div>
           </div>
           {hasFieldChanges ? (
             <DetailSection title="Field changes">
-              <FieldChangeList changes={fieldChanges} />
+              <FieldChangeList
+                changes={fieldChanges}
+                reverting={reverting}
+                onRevert={(field) => onRevert(entry, field)}
+              />
             </DetailSection>
           ) : null}
           {hasState ? (
@@ -771,7 +829,15 @@ function DetailSection({ title, children }: { title: string; children: ReactNode
   )
 }
 
-function FieldChangeList({ changes }: { changes: PlanFieldChange[] }) {
+function FieldChangeList({
+  changes,
+  reverting,
+  onRevert,
+}: {
+  changes: PlanFieldChange[]
+  reverting: boolean
+  onRevert: (field: string) => void
+}) {
   return (
     <div className="flex flex-col gap-2">
       {changes.map((change) => (
@@ -780,8 +846,21 @@ function FieldChangeList({ changes }: { changes: PlanFieldChange[] }) {
           className="rounded-md border px-2.5 py-2"
           style={{ borderColor: 'var(--border-subtle)' }}
         >
-          <div className="mono mb-1 text-[11.5px] font-medium" style={{ color: 'var(--fg)' }}>
-            {change.field}
+          <div className="mb-1 flex items-center justify-between gap-2">
+            <span className="mono text-[11.5px] font-medium" style={{ color: 'var(--fg)' }}>
+              {change.field}
+            </span>
+            <button
+              type="button"
+              disabled={reverting}
+              onClick={() => onRevert(change.field)}
+              aria-label={`Revert ${change.field}`}
+              className="flex items-center gap-1 text-[11px] hover:underline disabled:opacity-50"
+              style={{ color: 'var(--fg-muted)' }}
+            >
+              <Undo2 className="size-3" aria-hidden="true" />
+              Revert
+            </button>
           </div>
           {change.items && change.items.length > 0 ? (
             // A collection changed one member at a time — show those members,
