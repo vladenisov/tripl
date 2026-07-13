@@ -495,10 +495,13 @@ async def test_diff_only_reports_branch_changes_when_main_advances(client: Async
     assert entry["name"] == "purchase:success"
     assert entry["parent"] == "track"
     assert entry["changes"] == ["description: '' → 'edited on branch'"]
-    # Structured field-level diff mirrors the human-readable string.
+    # Structured field-level diff mirrors the human-readable string. A scalar
+    # field carries no per-member breakdown — before/after already say it all.
     assert entry["field_changes"] == [
-        {"field": "description", "before": "", "after": "edited on branch"}
+        {"field": "description", "before": "", "after": "edited on branch", "items": []}
     ]
+    # The row can link to the event it describes.
+    assert entry["entity_id"] is not None
     # Full before/after state carries the raw values, with DB ids / ordering stripped.
     assert entry["before"]["description"] == ""
     assert entry["after"]["description"] == "edited on branch"

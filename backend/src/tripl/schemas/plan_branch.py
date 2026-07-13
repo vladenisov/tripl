@@ -8,7 +8,7 @@ from pydantic import BaseModel, field_validator
 
 from tripl.models.domain_enums import MergeResolutionChoice
 from tripl.models.plan_branch import BranchKind, BranchStatus
-from tripl.schemas.plan_revision import PlanDiffEntry
+from tripl.schemas.plan_revision import PlanDiffEntry, PlanEntityType
 
 BranchTransitionAction = Literal[
     "submit",
@@ -115,6 +115,21 @@ class PlanBranchDiff(BaseModel):
     # True when main advanced since the branch's base snapshot — the branch is
     # behind and should be rebased before merge (Phase 4).
     behind_base: bool
+
+
+class BranchRevertRequest(BaseModel):
+    """Undo one entry of the branch's diff.
+
+    The entry is addressed the way the diff names it — entity type, natural name
+    and parent — rather than by id, so the request describes a *change* rather
+    than a row. ``field`` narrows the revert to one changed field; omitted, the
+    whole entity goes back to its base state.
+    """
+
+    entity_type: PlanEntityType
+    name: str
+    parent: str | None = None
+    field: str | None = None
 
 
 # --- inline 3-way merge conflict resolution ---------------------------------

@@ -250,8 +250,12 @@ branch instead — the same idea as a pull request for code.
 3. Set the branch to **Ready for review** and assign a reviewer.
 4. The reviewer reads the **diff** — exactly what changed on the branch since it
    was created. Changes that landed only on main appear as the branch being
-   behind, not as branch changes. The reviewer leaves comments and either
-   requests changes or approves.
+   behind, not as branch changes. Each row expands to the field-level detail:
+   collections such as an event's field values, meta values and tags are broken
+   down member by member (`currency: USD → EUR`), and the row links straight to
+   the event, event type, or variable it describes, opened in that branch. The
+   selected branch lives in the page URL, so a review can be shared as a link.
+   The reviewer leaves comments and either requests changes or approves.
 5. **Merge.** tripl matches events by name, so nothing is duplicated and the
    metrics, history, and alerts already attached to an event stay attached.
    Non-conflicting edits on either side merge automatically, including child
@@ -277,6 +281,24 @@ polls it in the background; when Jira reports Done, those events advance to
 is separate from a Jira alert destination, which opens incident tickets from
 monitoring signals.
 
+### Undo one change on a branch
+
+A branch is not all-or-nothing. Expand any row in the diff and press **Revert**
+to put that change back to the state the plan was in when the branch was opened:
+
+- a change the branch **added** is discarded — the entity is deleted from the
+  branch;
+- a change the branch **edited** is written back, either every field at once or
+  one field at a time (each field-change row has its own Revert);
+- an entity the branch **deleted** is restored, together with its field values,
+  meta values, tags, and per-event overrides.
+
+Reverting only ever touches the branch — main is left alone — and it works while
+the branch is open (a merged or closed branch has to be reopened first). Two
+things are refused rather than half-done: an event's **photos** are not restored
+(their files are not part of the plan snapshot), and a field or event cannot come
+back before the event type it belongs to, so restore the event type first.
+
 ### Branch best practices
 
 - **One branch per change.** Keep a branch focused on a single addition or
@@ -294,14 +316,16 @@ monitoring signals.
 
 :::warning Branch review is the real safety net
 The branch review step is your best protection — it is far easier to catch a
-mistake in a diff than to unwind it afterwards. There is no "undo merge" button,
-and deleting an event is permanent: an event and its change history are removed
-outright, and its collected metrics are keyed to the event internally, so
+mistake in a diff than to unwind it afterwards. **Before** a merge, any change on
+a branch can be reverted from the diff (see [Undo one change on a
+branch](#undo-one-change-on-a-branch)). **After** a merge there is no "undo merge"
+button, and deleting an event is permanent: an event and its change history are
+removed outright, and its collected metrics are keyed to the event internally, so
 re-creating an event with the same name produces a **new** event with no prior
-metrics or history. Recovery is manual.
+metrics or history. Post-merge recovery is manual.
 :::
 
-If something lands that shouldn't have:
+If something lands on main that shouldn't have:
 
 - **A wrong edit or merge** — open the **Audit log** (under Govern) to see
   exactly who changed what and when, then make a follow-up branch that sets the

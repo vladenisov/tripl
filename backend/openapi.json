@@ -3483,6 +3483,55 @@
         "title": "BranchKind",
         "type": "string"
       },
+      "BranchRevertRequest": {
+        "description": "Undo one entry of the branch's diff.\n\nThe entry is addressed the way the diff names it \u2014 entity type, natural name\nand parent \u2014 rather than by id, so the request describes a *change* rather\nthan a row. ``field`` narrows the revert to one changed field; omitted, the\nwhole entity goes back to its base state.",
+        "properties": {
+          "entity_type": {
+            "enum": [
+              "event_type",
+              "field_definition",
+              "event",
+              "variable",
+              "meta_field",
+              "relation"
+            ],
+            "title": "Entity Type",
+            "type": "string"
+          },
+          "field": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Field"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "parent": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Parent"
+          }
+        },
+        "required": [
+          "entity_type",
+          "name"
+        ],
+        "title": "BranchRevertRequest",
+        "type": "object"
+      },
       "BranchReviewerCreate": {
         "properties": {
           "user_id": {
@@ -11471,6 +11520,17 @@
             "title": "Changes",
             "type": "array"
           },
+          "entity_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Entity Id"
+          },
           "entity_type": {
             "enum": [
               "event_type",
@@ -11535,6 +11595,13 @@
           "field": {
             "title": "Field",
             "type": "string"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/PlanValueChange"
+            },
+            "title": "Items",
+            "type": "array"
           }
         },
         "required": [
@@ -11685,6 +11752,36 @@
           "entity_counts"
         ],
         "title": "PlanRevisionSummary",
+        "type": "object"
+      },
+      "PlanValueChange": {
+        "description": "One member of a collection-valued field that moved.\n\n``key`` is the member's natural identifier \u2014 the field name behind an event\nfield value, the tag itself, the event an override targets. ``before``/\n``after`` carry that member's value with the key stripped out, so a reviewer\nreads \"currency: USD \u2192 EUR\" instead of two JSON dumps of the whole\ncollection.",
+        "properties": {
+          "after": {
+            "title": "After"
+          },
+          "before": {
+            "title": "Before"
+          },
+          "key": {
+            "title": "Key",
+            "type": "string"
+          },
+          "kind": {
+            "enum": [
+              "added",
+              "removed",
+              "changed"
+            ],
+            "title": "Kind",
+            "type": "string"
+          }
+        },
+        "required": [
+          "key",
+          "kind"
+        ],
+        "title": "PlanValueChange",
         "type": "object"
       },
       "PlatformParityAnomaly": {
@@ -20153,6 +20250,68 @@
           }
         },
         "summary": "Delete Branch Resolution",
+        "tags": [
+          "plan-branches"
+        ]
+      }
+    },
+    "/api/v1/projects/{slug}/branches/{branch_id}/revert": {
+      "post": {
+        "operationId": "revert_branch_change_api_v1_projects__slug__branches__branch_id__revert_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "slug",
+            "required": true,
+            "schema": {
+              "title": "Slug",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "branch_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Branch Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BranchRevertRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlanBranchDiff"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Revert Branch Change",
         "tags": [
           "plan-branches"
         ]

@@ -146,12 +146,24 @@ export type PlanDiffEntityType =
 
 export type PlanDiffKind = 'added' | 'removed' | 'changed'
 
+/** One member of a collection-valued field (an event field value, a tag, a
+ * per-event override) that moved. `key` is the member's natural identifier;
+ * `before`/`after` carry its value with the key stripped out. */
+export interface PlanValueChange {
+  key: string
+  kind: PlanDiffKind
+  before: unknown
+  after: unknown
+}
+
 /** Raw before/after values for a single changed field (structured mirror of
  * the human-readable `changes` strings). Present on `changed` entries. */
 export interface PlanFieldChange {
   field: string
   before: unknown
   after: unknown
+  /** Per-member breakdown for collection-valued fields; empty for scalars. */
+  items?: PlanValueChange[]
 }
 
 export interface PlanDiffEntry {
@@ -159,6 +171,9 @@ export interface PlanDiffEntry {
   kind: PlanDiffKind
   name: string
   parent: string | null
+  /** Id of the entity the entry describes — branch-side for added/changed,
+   * base-side for removed. Null on legacy snapshots that predate id capture. */
+  entity_id?: string | null
   changes: string[]
   /** Per-field before/after for `changed` entries; empty/absent otherwise.
    * Optional to match the OpenAPI shape (Pydantic default → not required). */

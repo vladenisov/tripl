@@ -1,4 +1,5 @@
-import { useCallback, useMemo, useState, type ReactNode } from 'react'
+import { useEffect, useMemo, useState, type ReactNode } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import { BranchContext } from './branch-context-internal'
 
 const STORAGE_PREFIX = 'tripl-branch:'
@@ -35,16 +36,25 @@ export function BranchProvider({ slug, children }: { slug: string | null; childr
 }
 
 function BranchProviderState({ slug, children }: { slug: string | null; children: ReactNode }) {
-  const [branchId, setBranchIdState] = useState<string | null>(() => readStored(slug))
-
-  const setBranchId = useCallback(
-    (next: string | null) => {
-      setBranchIdState(next)
-      if (slug) writeStored(slug, next)
-    },
-    [slug],
+  const [searchParams] = useSearchParams()
+  // A shared link carries ?branch=<id> (branch-diff rows link this way), and on
+  // open it wins over the visitor's stored selection — otherwise the recipient
+  // would land in whatever branch their localStorage last held. In-app links
+  // additionally set the branch on click, since the provider outlives client
+  // side navigation and would keep its initial value.
+  const [branchId, setBranchIdState] = useState<string | null>(
+    () => searchParams.get('branch') ?? readStored(slug),
   )
 
-  const value = useMemo(() => ({ branchId, setBranchId, slug }), [branchId, setBranchId, slug])
+  // Persistence has one home: whatever the branch ends up as — switched by hand,
+  // adopted from a ?branch= link, or read back from storage — is written here.
+  useEffect(() => {
+    if (slug) writeStored(slug, branchId)
+  }, [slug, branchId])
+
+  const value = useMemo(
+    () => ({ branchId, setBranchId: setBranchIdState, slug }),
+    [branchId, slug],
+  )
   return <BranchContext.Provider value={value}>{children}</BranchContext.Provider>
 }

@@ -38,6 +38,7 @@ from tripl.schemas.plan_revision import (
     PlanRevisionDetail,
     PlanRevisionList,
     PlanRevisionSummary,
+    PlanValueChange,
 )
 from tripl.services.project_lookup import get_project_by_slug
 
@@ -503,8 +504,105 @@ def _to_summary(rev: PlanRevision) -> PlanRevisionSummary:
     )
 
 
-def _format_change(key: str, old: Any, new: Any) -> str:
-    return f"{key}: {old!r} → {new!r}"
+# Collection-valued change keys, mapped to the item fields that identify one
+# member. An empty tuple marks a list of scalars, where the member IS its own
+# key (tags, bindings, documented values). Diffing these by member — instead of
+# comparing the whole list — is what turns two JSON dumps into
+# "currency: USD → EUR".
+_COLLECTION_ITEM_KEYS: dict[str, tuple[str, ...]] = {
+    "field_values": ("field_name",),
+    "meta_values": ("meta_field_name",),
+    "event_value_overrides": ("event_type_name", "event_name"),
+    "photos": ("original_filename",),
+    "tags": (),
+    "allowed_values": (),
+    "bindings": (),
+    "metric_breakdown_columns": (),
+    "enum_options": (),
+}
+
+
+def _item_key_and_value(item: Any, key_fields: tuple[str, ...]) -> tuple[str, Any] | None:
+    """Split one collection member into its natural key and its value.
+
+    Returns None when the member doesn't match the collection's declared shape
+    (a container where a scalar was expected, or a dict missing a key field);
+    the caller then diffs the collection as a whole rather than inventing a key.
+    """
+    if not key_fields:
+        if isinstance(item, (dict, list)):
+            return None
+        return str(item), item
+    if not isinstance(item, dict) or any(field not in item for field in key_fields):
+        return None
+    key = ".".join(str(item[field]) for field in key_fields)
+    value = {k: v for k, v in item.items() if k not in key_fields}
+    # A member carrying a single attribute (a meta value's ``value``, an
+    # override's ``values``) reads better unwrapped than as a one-key dict.
+    if len(value) == 1:
+        return key, next(iter(value.values()))
+    return key, value
+
+
+def _collection_item_changes(field: str, old_value: Any, new_value: Any) -> list[PlanValueChange]:
+    """Per-member diff of a collection-valued field, keyed by natural identity.
+
+    Empty when the field isn't a known collection, when either side isn't a list
+    (a v1 base stored overrides as a dict — cross-shape keying is meaningless),
+    when a member doesn't fit the declared shape, or when two members share a
+    key (photos, for one, may repeat a filename — nothing in the schema stops
+    them, and keying by it would let one member mask another's removal). In each
+    of those cases the field change still carries its raw before/after, so the
+    reviewer sees the whole collection rather than a lie about part of it.
+    """
+    key_fields = _COLLECTION_ITEM_KEYS.get(field)
+    if key_fields is None:
+        return []
+    if not isinstance(old_value, list) or not isinstance(new_value, list):
+        return []
+
+    def index(items: list[Any]) -> dict[str, Any] | None:
+        out: dict[str, Any] = {}
+        for item in items:
+            pair = _item_key_and_value(item, key_fields)
+            if pair is None:
+                return None
+            if pair[0] in out:
+                return None
+            out[pair[0]] = pair[1]
+        return out
+
+    old_by_key = index(old_value)
+    new_by_key = index(new_value)
+    if old_by_key is None or new_by_key is None:
+        return []
+
+    changes: list[PlanValueChange] = []
+    for key in sorted(set(old_by_key) | set(new_by_key)):
+        before = old_by_key.get(key)
+        after = new_by_key.get(key)
+        if key not in new_by_key:
+            changes.append(PlanValueChange(key=key, kind="removed", before=before))
+        elif key not in old_by_key:
+            changes.append(PlanValueChange(key=key, kind="added", after=after))
+        elif before != after:
+            changes.append(PlanValueChange(key=key, kind="changed", before=before, after=after))
+    return changes
+
+
+def _format_change(change: PlanFieldChange) -> str:
+    """One-line summary of a field change for the collapsed diff row.
+
+    Collections are summarised by member counts — dumping both lists into the
+    row is exactly the noise the per-member breakdown exists to remove.
+    """
+    if change.items:
+        counts = {"added": 0, "changed": 0, "removed": 0}
+        for item in change.items:
+            counts[item.kind] += 1
+        parts = [f"{n} {kind}" for kind, n in counts.items() if n]
+        return f"{change.field}: {', '.join(parts)}"
+    return f"{change.field}: {change.before!r} → {change.after!r}"
 
 
 def _snapshot_values_equal(old_value: Any, new_value: Any) -> bool:
@@ -545,16 +643,25 @@ def _field_changes_between(
     # divergence (e.g. a future conditionally-omitting serializer path). We must
     # NOT silently drop it: treat the absent key as a real change so the diff
     # surfaces instead of being lost (tripl-2d3d).
-    return [
-        PlanFieldChange(
-            field=key,
-            before=_sanitize_public_value(old.get(key)),
-            after=_sanitize_public_value(new.get(key)),
-        )
+    changed_keys = [
+        key
         for key in keys
         if (old_is_current_version or key in old)
         and not _snapshot_values_equal(old.get(key), new.get(key))
     ]
+    field_changes: list[PlanFieldChange] = []
+    for key in changed_keys:
+        before = _sanitize_public_value(old.get(key))
+        after = _sanitize_public_value(new.get(key))
+        field_changes.append(
+            PlanFieldChange(
+                field=key,
+                before=before,
+                after=after,
+                items=_collection_item_changes(key, before, after),
+            )
+        )
+    return field_changes
 
 
 def _public_state(item: dict[str, Any]) -> dict[str, Any]:
@@ -572,6 +679,12 @@ def _public_state(item: dict[str, Any]) -> dict[str, Any]:
         and not key.startswith("_")
         and not key.endswith("_id")
     }
+
+
+def _entity_id(item: dict[str, Any]) -> str | None:
+    """The entity's id, kept out of ``_public_state`` but needed to link to it."""
+    value = item.get("id")
+    return None if value is None else str(value)
 
 
 def _diff_set(
@@ -597,6 +710,7 @@ def _diff_set(
                     kind="added",
                     name=name_of(item),
                     parent=parent_of(item) if parent_of else None,
+                    entity_id=_entity_id(item),
                     after=_public_state(item),
                 )
             )
@@ -608,6 +722,9 @@ def _diff_set(
                     kind="removed",
                     name=name_of(item),
                     parent=parent_of(item) if parent_of else None,
+                    # The entity is gone from the new side, so the only id that
+                    # resolves is the old one.
+                    entity_id=_entity_id(item),
                     before=_public_state(item),
                 )
             )
@@ -628,7 +745,8 @@ def _diff_set(
                     kind="changed",
                     name=name_of(new_item),
                     parent=parent_of(new_item) if parent_of else None,
-                    changes=[_format_change(fc.field, fc.before, fc.after) for fc in field_changes],
+                    entity_id=_entity_id(new_item),
+                    changes=[_format_change(fc) for fc in field_changes],
                     field_changes=field_changes,
                     before=_public_state(old_item),
                     after=_public_state(new_item),

@@ -1,4 +1,4 @@
-import { useId, useState } from "react"
+import { useEffect, useId, useRef, useState } from "react"
 import { useMutation, useQueries, useQuery, useQueryClient } from "@tanstack/react-query"
 import { Ban, Pencil, Plus, RotateCcw, Trash2, Variable as VariableIcon, X } from "lucide-react"
 import { eventsApi } from "@/api/events"
@@ -64,9 +64,13 @@ function ChipListInput({ values, onChange, placeholder, ariaLabel, validate }: {
   )
 }
 
-export function VariablesTab({ slug }: { slug: string }) {
+/** `focusId` scrolls to and highlights one variable — the landing spot for a
+ * branch-diff link, which knows the variable's id but has no detail page to
+ * send the reviewer to. */
+export function VariablesTab({ slug, focusId }: { slug: string; focusId?: string }) {
   const qc = useQueryClient()
   const branchId = useActiveBranchId()
+  const focusRef = useRef<HTMLTableRowElement | null>(null)
   const [showForm, setShowForm] = useState(false)
   const [name, setName] = useState('')
   const [varType, setVarType] = useState<VariableType>('string')
@@ -284,6 +288,17 @@ export function VariablesTab({ slug }: { slug: string }) {
     const values = Array.from(new Set(contexts.flatMap((context) => context.values)))
     return { id: variable.id, variable, events, values }
   })
+
+  // Scroll the linked variable into view once its row exists (the list arrives
+  // asynchronously, so the ref is null on the first render). Keyed on focusId
+  // as well, so following a second link — to a variable already on screen —
+  // scrolls to it instead of leaving the reviewer where the first one landed.
+  const focusedRowExists = focusId !== undefined && rows.some((row) => row.id === focusId)
+  useEffect(() => {
+    if (focusedRowExists) {
+      focusRef.current?.scrollIntoView({ block: 'center' })
+    }
+  }, [focusId, focusedRowExists])
 
   const editingVarContexts = editingVar ? (contextsByVariableId.get(editingVar.id) ?? []) : []
   const editingSummaryRows = editingVarContexts.length > 0
@@ -561,8 +576,14 @@ export function VariablesTab({ slug }: { slug: string }) {
             <TableBody>
               {rows.map((row) => {
                 const v = row.variable
+                const focused = row.id === focusId
                 return (
-                <TableRow key={row.id}>
+                <TableRow
+                  key={row.id}
+                  ref={focused ? focusRef : undefined}
+                  data-focused={focused || undefined}
+                  className={focused ? 'bg-primary/5 outline outline-1 outline-primary/40' : undefined}
+                >
                   <TableCell className="align-top">
                     <input
                       type="checkbox"
