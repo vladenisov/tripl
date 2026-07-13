@@ -1636,6 +1636,34 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/projects/{slug}/metrics/fact-preview": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Preview Fact Operand
+         * @description Stateless dry-run of ONE fact operand's row filter (editor-gated).
+         *
+         *     The body is the operand a save would send. Its filters are compiled by the
+         *     worker's own resolver for the fact table's data-source dialect and the
+         *     resulting query is executed with a 1-row cap over a bounded recent window;
+         *     nothing is persisted. Expected user mistakes — an unknown named filter, SQL
+         *     the warehouse rejects, a measure column the filtered query does not project —
+         *     return 200 with ``error`` set so the filter editor can render them inline.
+         *     An unknown project or fact table is a 404.
+         */
+        post: operations["preview_fact_operand_api_v1_projects__slug__metrics_fact_preview_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/projects/{slug}/metrics/preview": {
         parameters: {
             query?: never;
@@ -5556,6 +5584,29 @@ export interface components {
             row_filter?: string | null;
             /** Row Filters */
             row_filters?: string[];
+        };
+        /**
+         * FactOperandPreviewResponse
+         * @description Dry-run outcome for ONE fact operand's compiled row filter.
+         *
+         *     The request body is the operand itself (:class:`FactOperand`) — the same
+         *     payload a save sends — so the preview compiles from the identical config the
+         *     worker will later read. ``columns`` / ``row_count`` describe the filtered
+         *     fact query the operand aggregates (probed with a 1-row cap); expected user
+         *     mistakes — an unknown named filter, a filter the warehouse rejects, a measure
+         *     column the filtered query does not project — come back with ``error`` set on
+         *     a 200 (see ``metric_preview_service.preview_fact_operand``), not a 5xx.
+         */
+        FactOperandPreviewResponse: {
+            /** Columns */
+            columns?: string[];
+            /** Error */
+            error?: string | null;
+            /**
+             * Row Count
+             * @default 0
+             */
+            row_count: number;
         };
         /**
          * FactTableColumnSchema
@@ -12913,6 +12964,41 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    preview_fact_operand_api_v1_projects__slug__metrics_fact_preview_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                slug: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["FactOperand"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["FactOperandPreviewResponse"];
+                };
             };
             /** @description Validation Error */
             422: {

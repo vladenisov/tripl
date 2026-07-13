@@ -1,4 +1,8 @@
-import { describe, expect, it } from 'vitest'
+import { fireEvent, render, screen } from '@testing-library/react'
+import { createElement } from 'react'
+import { describe, expect, it, vi } from 'vitest'
+import type { FactOperandPreviewResponse } from '@/types/metricsCatalog'
+import { FactFilterEditor } from './FactFilterEditor'
 import {
   filtersFromConfig,
   filtersToPayload,
@@ -7,6 +11,103 @@ import {
   makeSqlFilter,
   type FactFilter,
 } from './factFilters'
+
+// CodeMirror needs real layout measurement jsdom cannot provide; the SQL-filter
+// row is not under test here, so stub the editor with a plain textarea.
+vi.mock('@/components/sql-editor', () => ({
+  SqlEditor: ({
+    ariaLabel,
+    value,
+    onChange,
+  }: {
+    ariaLabel?: string
+    value: string
+    onChange: (value: string) => void
+  }) =>
+    createElement('textarea', {
+      'aria-label': ariaLabel,
+      value,
+      onChange: (event: { target: { value: string } }) => onChange(event.target.value),
+    }),
+}))
+
+const clean = (rowCount: number): FactOperandPreviewResponse => ({
+  columns: ['created_at', 'amount'],
+  row_count: rowCount,
+  error: null,
+})
+
+// The filter dry-run: until it existed, a fact metric's filters were first
+// executed inside a Celery worker, so a filter the selected warehouse rejects
+// was saved happily and failed later, where nobody could see it.
+describe('FactFilterEditor filter check', () => {
+  const renderEditor = (props: Partial<Parameters<typeof FactFilterEditor>[0]> = {}) =>
+    render(
+      <FactFilterEditor
+        filters={[]}
+        onChange={vi.fn()}
+        namedOptions={['exclude_test']}
+        {...props}
+      />,
+    )
+
+  it('offers no check when there is nothing to compile against (no onCheck)', () => {
+    renderEditor()
+    expect(screen.queryByRole('button', { name: /check filters/i })).toBeNull()
+  })
+
+  it('runs the check on click', () => {
+    const onCheck = vi.fn()
+    renderEditor({ onCheck })
+    fireEvent.click(screen.getByRole('button', { name: /check filters/i }))
+    expect(onCheck).toHaveBeenCalledTimes(1)
+  })
+
+  it('disables the button while the check is in flight', () => {
+    renderEditor({ onCheck: vi.fn(), checkPending: true })
+    const button = screen.getByRole('button', { name: /checking/i })
+    expect(button).toBeDisabled()
+  })
+
+  it("surfaces the warehouse's own rejection verbatim as an alert", () => {
+    // A 200 with `error` set: a verdict on the user's filter, not a server fault.
+    renderEditor({
+      onCheck: vi.fn(),
+      checkResult: {
+        columns: [],
+        row_count: 0,
+        error: "Code: 47. DB::Exception: Missing columns: 'amont'",
+      },
+    })
+    expect(screen.getByRole('alert')).toHaveTextContent("Missing columns: 'amont'")
+    expect(screen.queryByRole('status')).toBeNull()
+  })
+
+  it('reports a clean run', () => {
+    renderEditor({ onCheck: vi.fn(), checkResult: clean(1) })
+    expect(screen.getByRole('status')).toHaveTextContent(/ran clean against the warehouse/i)
+    expect(screen.queryByRole('alert')).toBeNull()
+  })
+
+  it('distinguishes "valid SQL, but matched nothing" from a failure', () => {
+    renderEditor({ onCheck: vi.fn(), checkResult: clean(0) })
+    const status = screen.getByRole('status')
+    expect(status).toHaveTextContent(/ran clean/i)
+    expect(status).toHaveTextContent(/matched no rows/i)
+    expect(screen.queryByRole('alert')).toBeNull()
+  })
+
+  it('renders a transport failure as an alert too', () => {
+    renderEditor({ onCheck: vi.fn(), checkError: 'Fact table not found' })
+    expect(screen.getByRole('alert')).toHaveTextContent('Fact table not found')
+  })
+
+  it('shows no panel before the first check', () => {
+    renderEditor({ onCheck: vi.fn() })
+    expect(screen.queryByRole('alert')).toBeNull()
+    expect(screen.queryByRole('status')).toBeNull()
+  })
+})
 
 const namedNames = (filters: FactFilter[]): string[] =>
   filters

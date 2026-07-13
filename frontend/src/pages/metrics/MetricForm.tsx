@@ -241,6 +241,7 @@ function operandErrors(
 }
 
 interface FactOperandEditorProps {
+  slug: string
   idPrefix: string
   operand: FactOperandState
   onChange: (next: FactOperandState) => void
@@ -256,8 +257,13 @@ interface FactOperandEditorProps {
  * aggregation, the measure/distinct column it requires, and an optional named
  * row filter. The column / row-filter dropdowns are populated from the loaded
  * fact table; for `count_distinct`, identifier columns are surfaced first.
+ *
+ * The operand owns its own filter dry-run ("Check filters"): it POSTs the exact
+ * payload a save would send, so the backend compiles and EXECUTES the same SQL
+ * the collector will. Each operand of a ratio checks independently.
  */
 function FactOperandEditor({
+  slug,
   idPrefix,
   operand,
   onChange,
@@ -266,8 +272,26 @@ function FactOperandEditor({
   loading,
   errors,
 }: FactOperandEditorProps) {
-  const set = <K extends keyof FactOperandState>(key: K, value: FactOperandState[K]): void =>
+  // Stateless dry-run of this operand's compiled row filter. Warehouse/compiler
+  // rejections come back as a 200 with `error` set and render inside the panel;
+  // a transport failure (404 fact table, 403) lands in `checkMut.error`.
+  const checkMut = useMutation({
+    mutationFn: (payload: FactOperandPayload) => metricsCatalogApi.previewFactOperand(slug, payload),
+  })
+
+  // The check describes the operand it ran against, so ANY edit to the operand
+  // invalidates it — cleared here, in the only place the operand changes, rather
+  // than in an effect reacting to it.
+  const set = <K extends keyof FactOperandState>(key: K, value: FactOperandState[K]): void => {
+    checkMut.reset()
     onChange({ ...operand, [key]: value })
+  }
+
+  const checkError = checkMut.error
+    ? checkMut.error instanceof Error && checkMut.error.message
+      ? checkMut.error.message
+      : 'The filter check could not be run.'
+    : null
 
   const columnOptions = useMemo(
     () =>
@@ -368,6 +392,16 @@ function FactOperandEditor({
           namedOptions={detail.rowFilters}
           conditionColumns={detail.columns}
           disabled={!operand.factTableId}
+          // Nothing to compile against without a fact table, so the check is not
+          // offered at all until one is picked.
+          onCheck={
+            operand.factTableId
+              ? () => checkMut.mutate(toOperandPayload(operand))
+              : undefined
+          }
+          checkPending={checkMut.isPending}
+          checkResult={checkMut.data ?? null}
+          checkError={checkError}
         />
       </MField>
     </>
@@ -1374,6 +1408,7 @@ export function MetricForm({ slug, metric, dataSources, events, onClose }: Metri
           ) : factComposition === 'single' ? (
             <SCard title="Aggregation">
               <FactOperandEditor
+                slug={slug}
                 idPrefix="metric-fact"
                 operand={numeratorOp}
                 onChange={setNumeratorOp}
@@ -1388,6 +1423,7 @@ export function MetricForm({ slug, metric, dataSources, events, onClose }: Metri
               <div>
                 <SCard title="Numerator">
                   <FactOperandEditor
+                    slug={slug}
                     idPrefix="metric-fact-num"
                     operand={numeratorOp}
                     onChange={setNumeratorOp}
@@ -1401,6 +1437,7 @@ export function MetricForm({ slug, metric, dataSources, events, onClose }: Metri
               <div>
                 <SCard title="Denominator" description="May reference a different fact table.">
                   <FactOperandEditor
+                    slug={slug}
                     idPrefix="metric-fact-den"
                     operand={denominatorOp}
                     onChange={setDenominatorOp}

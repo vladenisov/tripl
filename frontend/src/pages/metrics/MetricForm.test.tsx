@@ -10,6 +10,7 @@ vi.mock('@/api/metricsCatalogApi', () => ({
     create: vi.fn().mockResolvedValue({ id: 'created' }),
     update: vi.fn().mockResolvedValue({ id: 'updated' }),
     preview: vi.fn(),
+    previewFactOperand: vi.fn(),
   },
 }))
 

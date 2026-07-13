@@ -7783,6 +7783,36 @@
         "title": "FactOperand",
         "type": "object"
       },
+      "FactOperandPreviewResponse": {
+        "description": "Dry-run outcome for ONE fact operand's compiled row filter.\n\nThe request body is the operand itself (:class:`FactOperand`) \u2014 the same\npayload a save sends \u2014 so the preview compiles from the identical config the\nworker will later read. ``columns`` / ``row_count`` describe the filtered\nfact query the operand aggregates (probed with a 1-row cap); expected user\nmistakes \u2014 an unknown named filter, a filter the warehouse rejects, a measure\ncolumn the filtered query does not project \u2014 come back with ``error`` set on\na 200 (see ``metric_preview_service.preview_fact_operand``), not a 5xx.",
+        "properties": {
+          "columns": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Columns",
+            "type": "array"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          },
+          "row_count": {
+            "default": 0,
+            "title": "Row Count",
+            "type": "integer"
+          }
+        },
+        "title": "FactOperandPreviewResponse",
+        "type": "object"
+      },
       "FactTableColumnSchema": {
         "description": "A single introspected column descriptor: its name and warehouse type.",
         "properties": {
@@ -24004,6 +24034,59 @@
           }
         },
         "summary": "Bulk Update Metric Definitions",
+        "tags": [
+          "metrics-catalog"
+        ]
+      }
+    },
+    "/api/v1/projects/{slug}/metrics/fact-preview": {
+      "post": {
+        "description": "Stateless dry-run of ONE fact operand's row filter (editor-gated).\n\nThe body is the operand a save would send. Its filters are compiled by the\nworker's own resolver for the fact table's data-source dialect and the\nresulting query is executed with a 1-row cap over a bounded recent window;\nnothing is persisted. Expected user mistakes \u2014 an unknown named filter, SQL\nthe warehouse rejects, a measure column the filtered query does not project \u2014\nreturn 200 with ``error`` set so the filter editor can render them inline.\nAn unknown project or fact table is a 404.",
+        "operationId": "preview_fact_operand_api_v1_projects__slug__metrics_fact_preview_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "slug",
+            "required": true,
+            "schema": {
+              "title": "Slug",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FactOperand"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FactOperandPreviewResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Preview Fact Operand",
         "tags": [
           "metrics-catalog"
         ]
