@@ -243,9 +243,13 @@ export default function MonitoringDetailPage() {
   // Catalog-metric drilldowns belong to the Metrics surface, so their back
   // affordance returns to the metrics list rather than the events list.
   const goToMetrics = () => navigate(`/p/${slug}/metrics`)
-  const [rangeDays, setRangeDays] = useState(30)
+  // The legacy `/events/detail/:eventId` route carries no `:scope`; default to
+  // the event scope when an eventId is present so the page never crashes on an
+  // undefined scope (it now redirects to the canonical URL, but stay defensive).
+  const scope = resolveDetailScope(scopeParam, eventId)
+  const [rangeDays, setRangeDays] = useState(scope === 'metric' ? 30 : 7)
   // null = "no manual pick yet": the effective granularity then follows the
-  // scope's default (interval-aware for catalog metrics, hourly otherwise).
+  // scope's default (interval-aware for catalog metrics, range-aware otherwise).
   const [granularityOverride, setGranularityOverride] = useState<MetricsGranularity | null>(null)
   const [activeTab, setActiveTab] = useState<MonitoringDetailTab>('volume')
   const metricsRef = useRef<HTMLSpanElement>(null)
@@ -257,10 +261,6 @@ export default function MonitoringDetailPage() {
   const [breakdownValueFilter, setBreakdownValueFilter] = useState<string[]>([])
 
   const branchId = useActiveBranchId()
-  // The legacy `/events/detail/:eventId` route carries no `:scope`; default to
-  // the event scope when an eventId is present so the page never crashes on an
-  // undefined scope (it now redirects to the canonical URL, but stay defensive).
-  const scope = resolveDetailScope(scopeParam, eventId)
   const scopeId = id ?? eventId ?? ''
   // Reused by the header Edit button and the metric-scope Breakdowns empty state.
   const metricEditPath = `/p/${slug}/metrics/${scopeId}/edit`
@@ -472,6 +472,12 @@ export default function MonitoringDetailPage() {
     () => aggregateMetricPoints(metrics?.data ?? [], granularity),
     [granularity, metrics?.data],
   )
+  // The API forecasts exactly one native collection bucket. Once actuals are
+  // rolled up (for example 1h -> day), that single point is not a forecast for
+  // the whole display bucket and can even duplicate the last x-axis date.
+  const chartForecast = GRANULARITY_FOR_INTERVAL[metrics?.interval ?? ''] === granularity
+    ? metrics?.forecast
+    : undefined
 
   // Breakdowns: split this event's volume into a series per value of a chosen column
   // (event-level only). Columns come from the event's configured breakdown columns plus
@@ -1011,7 +1017,7 @@ export default function MonitoringDetailPage() {
               ) : (
                 <MetricsChart
                   data={chartData}
-                  forecast={metrics?.forecast}
+                  forecast={chartForecast}
                   annotations={annotations}
                   height={200}
                   color={eventType?.color || metricDefinition?.color || 'var(--chart-3)'}

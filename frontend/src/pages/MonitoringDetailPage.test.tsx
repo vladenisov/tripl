@@ -374,7 +374,9 @@ describe('MonitoringDetailPage volume granularity follows range (tripl-7l83.10)'
   // Three project-total points that bucket to distinct counts per granularity:
   //   hour -> 3 buckets, day -> 2 (the two 2026-01-01 points merge),
   //   week -> 1 (all three land in the epoch-anchored 2026-01-01 week).
-  function installProjectTotalFetch() {
+  function installProjectTotalFetch(
+    forecast: Array<{ bucket: string; expected_count: number; stddev: number }> = [],
+  ) {
     return vi.spyOn(globalThis, 'fetch').mockImplementation(async input => {
       const url = String(input)
 
@@ -392,7 +394,7 @@ describe('MonitoringDetailPage volume granularity follows range (tripl-7l83.10)'
             metricPoint('2026-01-01T18:00:00Z', 7),
             metricPoint('2026-01-02T10:00:00Z', 3),
           ],
-          forecast: [],
+          forecast,
         })
       }
       if (url.endsWith('/api/v1/projects/demo/scans/scan-1')) {
@@ -407,13 +409,26 @@ describe('MonitoringDetailPage volume granularity follows range (tripl-7l83.10)'
   // Each range change refetches (no placeholderData) and remounts the chart, so
   // always re-query the testid rather than holding a stale node reference.
   const chartPoints = () => screen.getByTestId('metrics-chart').getAttribute('data-points')
+  const chartForecastCount = () => screen.getByTestId('metrics-chart').getAttribute('data-forecast-count')
 
-  it('defaults granularity to the selected range (30d -> days, 90d -> weeks, 7d -> hours)', async () => {
-    installProjectTotalFetch()
+  it('defaults to 7d hours and follows later range changes', async () => {
+    const fetchSpy = installProjectTotalFetch()
     renderMonitoringPage()
 
     await screen.findByTestId('metrics-chart')
-    // 30d default: daily buckets, so the two 2026-01-01 points collapse.
+    // Initial 7d default: hourly buckets, so every point stays distinct.
+    await waitFor(() => expect(chartPoints()).toBe('3'))
+    const initialMetricsUrl = fetchSpy.mock.calls
+      .map(([input]) => String(input))
+      .find(url => url.includes('/api/v1/projects/demo/metrics/total'))
+    expect(initialMetricsUrl).toBeDefined()
+    const initialRange = new URL(initialMetricsUrl!, 'http://localhost').searchParams
+    const initialFrom = new Date(initialRange.get('from')!).getTime()
+    const initialTo = new Date(initialRange.get('to')!).getTime()
+    expect(initialTo - initialFrom).toBe(7 * 24 * 60 * 60 * 1000)
+
+    // 30d: daily buckets, so the two 2026-01-01 points collapse.
+    fireEvent.click(screen.getByRole('button', { name: '30d' }))
     await waitFor(() => expect(chartPoints()).toBe('2'))
 
     // 90d: weekly buckets, all three points collapse into one.
@@ -430,17 +445,44 @@ describe('MonitoringDetailPage volume granularity follows range (tripl-7l83.10)'
     renderMonitoringPage()
 
     await screen.findByTestId('metrics-chart')
+    await waitFor(() => expect(chartPoints()).toBe('3'))
+
+    // Manually override the 7d hourly default to Days.
+    fireEvent.click(screen.getByRole('combobox', { name: /time granularity/i }))
+    fireEvent.click(await screen.findByRole('option', { name: 'Days' }))
     await waitFor(() => expect(chartPoints()).toBe('2'))
 
-    // Manually override to Hours.
+    // Changing the range must NOT reset the override back to a range default:
+    // 90d would default to weekly (1 point), but the sticky override keeps 2.
+    fireEvent.click(screen.getByRole('button', { name: '90d' }))
+    await waitFor(() => expect(chartPoints()).toBe('2'))
+  })
+
+  it('only renders a forecast at the native collection granularity', async () => {
+    installProjectTotalFetch([
+      {
+        bucket: '2026-01-02T11:00:00Z',
+        expected_count: 4,
+        stddev: 1,
+      },
+    ])
+    renderMonitoringPage()
+
+    await screen.findByTestId('metrics-chart')
+    // The 7d default keeps native hourly buckets and their one-hour forecast.
+    await waitFor(() => expect(chartForecastCount()).toBe('1'))
+
+    // The 30d preset rolls hourly actuals into days. A one-hour forecast is not
+    // a forecast for the whole day and must not be appended to that series.
+    fireEvent.click(screen.getByRole('button', { name: '30d' }))
+    await waitFor(() => expect(chartForecastCount()).toBe('0'))
+
+    fireEvent.click(screen.getByRole('button', { name: '90d' }))
+    await waitFor(() => expect(chartForecastCount()).toBe('0'))
+
     fireEvent.click(screen.getByRole('combobox', { name: /time granularity/i }))
     fireEvent.click(await screen.findByRole('option', { name: 'Hours' }))
-    await waitFor(() => expect(chartPoints()).toBe('3'))
-
-    // Changing the range must NOT reset the override back to a range default:
-    // 90d would default to weekly (1 point), but the sticky override keeps 3.
-    fireEvent.click(screen.getByRole('button', { name: '90d' }))
-    await waitFor(() => expect(chartPoints()).toBe('3'))
+    await waitFor(() => expect(chartForecastCount()).toBe('1'))
   })
 })
 
@@ -1006,13 +1048,21 @@ describe('MonitoringDetailPage catalog-metric drilldown', () => {
     )
   }
 
-  it('defaults granularity to the metric interval for 1d metrics (tripl-4m86)', async () => {
-    installMetricDetailFetch('1d')
+  it('keeps the 30d range and defaults granularity to the interval for 1d metrics (tripl-4m86)', async () => {
+    const fetchSpy = installMetricDetailFetch('1d')
     renderMetricDetail()
 
     const chart = await screen.findByTestId('metrics-chart')
     await waitFor(() => expect(chart).toHaveAttribute('data-points', '1'))
     expect(chart).toHaveAttribute('data-first-bucket', '2026-01-02T00:00:00.000Z')
+    const seriesUrl = fetchSpy.mock.calls
+      .map(([input]) => String(input))
+      .find(url => url.includes('/api/v1/projects/demo/metrics/metric-1/series'))
+    expect(seriesUrl).toBeDefined()
+    const range = new URL(seriesUrl!, 'http://localhost').searchParams
+    const from = new Date(range.get('from')!).getTime()
+    const to = new Date(range.get('to')!).getTime()
+    expect(to - from).toBe(30 * 24 * 60 * 60 * 1000)
   })
 
   it('keeps the hourly default for sub-daily metrics', async () => {
