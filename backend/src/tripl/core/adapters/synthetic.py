@@ -30,7 +30,6 @@ Design
 from __future__ import annotations
 
 import hashlib
-import math
 import re
 from datetime import UTC, datetime, timedelta
 
@@ -42,6 +41,7 @@ from tripl.core.adapters.base import (
     SchemaTable,
 )
 from tripl.core.adapters.measure_validator import coerce_aggregation, requires_measure
+from tripl.core.bucketing import floor_to_bucket, to_utc
 from tripl.models.domain_enums import MetricAggregation
 
 # Default deterministic seed for the synthetic dataset. Overridable per adapter so
@@ -60,7 +60,6 @@ SYNTHETIC_MAX_ROWS = 40000
 _DEFAULT_TIMEOUT_SECONDS = 300
 
 _IDENT_RE = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_.]*$")
-_INTERVAL_RE = re.compile(r"^(\d+)\s+(second|minute|hour|day|week|month)s?$", re.IGNORECASE)
 # Aggregate / join / function tokens that make a query more than a plain table
 # scan. Any such token in a query that is NOT the recognized sql-metric shape is a
 # capability boundary — we refuse rather than guess.
@@ -69,11 +68,9 @@ _NON_SCAN_RE = re.compile(
     r"|\b(count|sum|avg|min|max|uniq|tostartof\w*)\s*\(",
     re.IGNORECASE,
 )
-_UNIT_SECONDS = {"second": 1, "minute": 60, "hour": 3600, "day": 86400, "week": 604800}
-_EPOCH = datetime(1970, 1, 1, tzinfo=UTC)
-# 1970-01-05 is the first Monday after the epoch — the origin ClickHouse aligns
-# weekly ``toStartOfInterval`` buckets to.
-_WEEK_ORIGIN = datetime(1970, 1, 5, tzinfo=UTC)
+
+# The interval code the seeded ``active_sessions`` sql metric buckets by.
+_DAY_INTERVAL = "1d"
 
 
 class SyntheticCapabilityError(RuntimeError):
@@ -145,12 +142,6 @@ def _digest_int(*parts: object) -> int:
 
 def _pick(seq: tuple[object, ...], *parts: object) -> object:
     return seq[_digest_int(*parts) % len(seq)]
-
-
-def _ensure_utc(value: datetime) -> datetime:
-    if value.tzinfo is None:
-        return value.replace(tzinfo=UTC)
-    return value.astimezone(UTC)
 
 
 def _bval(value: object) -> str:
@@ -251,7 +242,7 @@ class SyntheticAdapter(BaseAdapter):
         # Anchor to the start of the current UTC day by default: keeps the data
         # recent (so now-relative windows overlap it) while staying deterministic
         # within a day. Tests pass an explicit anchor for exactness.
-        base = _ensure_utc(anchor) if anchor is not None else datetime.now(UTC)
+        base = to_utc(anchor) if anchor is not None else datetime.now(UTC)
         self._anchor = base.replace(hour=0, minute=0, second=0, microsecond=0)
         self._events = _generate_events(seed, self._anchor, history_days, max_rows)
         self._orders = _generate_orders(seed, self._anchor, history_days, max_rows)
@@ -348,7 +339,7 @@ class SyntheticAdapter(BaseAdapter):
         self,
         base_query: str,
         time_column: str,
-        ch_interval: str,
+        interval: str,
         regular_columns: list[str],
         json_columns: list[str],
         json_value_paths: dict[str, list[str]] | None,
@@ -360,7 +351,7 @@ class SyntheticAdapter(BaseAdapter):
         table = self._table_for_query(base_query)
         reg = [self._validate_column(table, column) for column in regular_columns]
         self._validate_column(table, time_column)
-        groups = self._bucket_groups(table, time_column, ch_interval, reg, time_from, time_to)
+        groups = self._bucket_groups(table, time_column, interval, reg, time_from, time_to)
         out: list[tuple[object, ...]] = []
         for (bucket, *values), members in self._sorted_items(groups):
             out.append((bucket, *values, len(members)))
@@ -370,7 +361,7 @@ class SyntheticAdapter(BaseAdapter):
         self,
         base_query: str,
         time_column: str,
-        ch_interval: str,
+        interval: str,
         breakdown_column: str,
         regular_columns: list[str],
         json_columns: list[str],
@@ -389,7 +380,7 @@ class SyntheticAdapter(BaseAdapter):
         top = self._top_values(windowed, breakdown, values_limit)
         groups: dict[tuple[object, ...], list[dict[str, object]]] = {}
         for row in windowed:
-            bucket = self._bucket_start(row[time_column], ch_interval)
+            bucket = self._bucket_start(row[time_column], interval)
             value, is_other = self._fold(top, _bval(row.get(breakdown)))
             key = (bucket, value, is_other, *tuple(row.get(column) for column in reg))
             groups.setdefault(key, []).append(row)
@@ -403,7 +394,7 @@ class SyntheticAdapter(BaseAdapter):
         self,
         base_query: str,
         time_column: str,
-        ch_interval: str,
+        interval: str,
         breakdown_columns: list[str],
         regular_columns: list[str],
         json_columns: list[str],
@@ -426,7 +417,7 @@ class SyntheticAdapter(BaseAdapter):
             top = self._top_values(windowed, breakdown, values_limit)
             groups: dict[tuple[object, ...], list[dict[str, object]]] = {}
             for row in windowed:
-                bucket = self._bucket_start(row[time_column], ch_interval)
+                bucket = self._bucket_start(row[time_column], interval)
                 value, is_other = self._fold(top, _bval(row.get(breakdown)))
                 key = (bucket, value, is_other, *tuple(row.get(column) for column in reg))
                 groups.setdefault(key, []).append(row)
@@ -442,7 +433,7 @@ class SyntheticAdapter(BaseAdapter):
         self,
         base_query: str,
         time_column: str,
-        ch_interval: str,
+        interval: str,
         agg_fn: MetricAggregation,
         measure_column: str | None,
         regular_columns: list[str],
@@ -457,7 +448,7 @@ class SyntheticAdapter(BaseAdapter):
         reg = [self._validate_column(table, column) for column in regular_columns]
         self._validate_column(table, time_column)
         measure = self._validate_measure(table, agg_fn, measure_column)
-        groups = self._bucket_groups(table, time_column, ch_interval, reg, time_from, time_to)
+        groups = self._bucket_groups(table, time_column, interval, reg, time_from, time_to)
         out: list[tuple[object, ...]] = []
         for (bucket, *values), members in self._sorted_items(groups):
             out.append((bucket, *values, self._aggregate(members, agg_fn, measure)))
@@ -467,7 +458,7 @@ class SyntheticAdapter(BaseAdapter):
         self,
         base_query: str,
         time_column: str,
-        ch_interval: str,
+        interval: str,
         agg_fn: MetricAggregation,
         measure_column: str | None,
         breakdown_column: str,
@@ -489,7 +480,7 @@ class SyntheticAdapter(BaseAdapter):
         top = self._top_values(windowed, breakdown, values_limit)
         groups: dict[tuple[object, ...], list[dict[str, object]]] = {}
         for row in windowed:
-            bucket = self._bucket_start(row[time_column], ch_interval)
+            bucket = self._bucket_start(row[time_column], interval)
             value, is_other = self._fold(top, _bval(row.get(breakdown)))
             key = (bucket, value, is_other, *tuple(row.get(column) for column in reg))
             groups.setdefault(key, []).append(row)
@@ -504,7 +495,7 @@ class SyntheticAdapter(BaseAdapter):
         self,
         base_query: str,
         time_column: str,
-        ch_interval: str,
+        interval: str,
         specs: list[AggregateSpec],
         time_from: datetime,
         time_to: datetime,
@@ -516,7 +507,7 @@ class SyntheticAdapter(BaseAdapter):
         windowed = self._windowed_rows(self._rows_for_table(table), time_column, time_from, time_to)
         buckets: dict[datetime, list[dict[str, object]]] = {}
         for row in windowed:
-            buckets.setdefault(self._bucket_start(row[time_column], ch_interval), []).append(row)
+            buckets.setdefault(self._bucket_start(row[time_column], interval), []).append(row)
         column_names = ["bucket", *[spec.key for spec in specs]]
         out: list[tuple[object, ...]] = []
         for bucket in sorted(buckets):
@@ -528,7 +519,7 @@ class SyntheticAdapter(BaseAdapter):
         self,
         base_query: str,
         time_column: str,
-        ch_interval: str,
+        interval: str,
         breakdown_column: str,
         specs: list[AggregateSpec],
         time_from: datetime,
@@ -544,7 +535,7 @@ class SyntheticAdapter(BaseAdapter):
         top = self._top_values(windowed, breakdown, values_limit)
         groups: dict[tuple[datetime, str, int], list[dict[str, object]]] = {}
         for row in windowed:
-            bucket = self._bucket_start(row[time_column], ch_interval)
+            bucket = self._bucket_start(row[time_column], interval)
             value, is_other = self._fold(top, _bval(row.get(breakdown)))
             groups.setdefault((bucket, value, is_other), []).append(row)
         column_names = ["bucket", "breakdown_value", "is_other", *[spec.key for spec in specs]]
@@ -607,14 +598,19 @@ class SyntheticAdapter(BaseAdapter):
         self._enforce_budget(rows)
         if time_column is None or (time_from is None and time_to is None):
             return list(rows)
-        lower = _ensure_utc(time_from) if time_from is not None else None
-        upper = _ensure_utc(time_to) if time_to is not None else None
+        # Half-open ``[from, to)`` in UTC, per tripl.core.bucketing: a row exactly
+        # on ``time_to`` belongs to the NEXT window, so adjacent windows tile
+        # without double-counting a boundary row. ``to_utc`` normalizes both the
+        # bounds and the row so a naive datetime is read as UTC rather than in the
+        # host's local zone.
+        lower = to_utc(time_from) if time_from is not None else None
+        upper = to_utc(time_to) if time_to is not None else None
         out: list[dict[str, object]] = []
         for row in rows:
             raw = row.get(time_column)
             if not isinstance(raw, datetime):
                 continue
-            moment = _ensure_utc(raw)
+            moment = to_utc(raw)
             if lower is not None and moment < lower:
                 continue
             if upper is not None and moment >= upper:
@@ -634,7 +630,7 @@ class SyntheticAdapter(BaseAdapter):
         self,
         table: str,
         time_column: str,
-        ch_interval: str,
+        interval: str,
         regular_columns: list[str],
         time_from: datetime,
         time_to: datetime,
@@ -642,7 +638,7 @@ class SyntheticAdapter(BaseAdapter):
         windowed = self._windowed_rows(self._rows_for_table(table), time_column, time_from, time_to)
         groups: dict[tuple[object, ...], list[dict[str, object]]] = {}
         for row in windowed:
-            bucket = self._bucket_start(row[time_column], ch_interval)
+            bucket = self._bucket_start(row[time_column], interval)
             key = (bucket, *tuple(row.get(column) for column in regular_columns))
             groups.setdefault(key, []).append(row)
         return groups
@@ -725,29 +721,24 @@ class SyntheticAdapter(BaseAdapter):
 
     # -- interval bucketing ------------------------------------------------
 
-    def _bucket_start(self, value: object, ch_interval: str) -> datetime:
+    def _bucket_start(self, value: object, interval_code: str) -> datetime:
+        """Floor a row's timestamp to its bucket, per the shared contract.
+
+        This adapter is what the conformance fixtures compare the real warehouses
+        against, so it must not carry its own opinion about bucketing. It used to
+        hand-roll the interval math (parsing ClickHouse-style ``"1 hour"`` strings
+        and re-deriving the epoch/Monday origins), which is exactly the second
+        implementation that drifts. There is now one definition —
+        :func:`tripl.core.bucketing.floor_to_bucket` — and this delegates to it.
+
+        Unknown interval codes raise ``ValueError`` from ``get_interval``, and the
+        old ``month`` unit is gone with the rest of the math: it was never a valid
+        interval code.
+        """
         if not isinstance(value, datetime):
             msg = f"Cannot bucket non-datetime value: {value!r}"
             raise ValueError(msg)
-        moment = _ensure_utc(value)
-        count, unit = self._parse_interval(ch_interval)
-        if unit == "month":
-            month_index = moment.year * 12 + (moment.month - 1)
-            floored = (month_index // count) * count
-            year, month = divmod(floored, 12)
-            return datetime(year, month + 1, 1, tzinfo=UTC)
-        origin = _WEEK_ORIGIN if unit == "week" else _EPOCH
-        step = count * _UNIT_SECONDS[unit]
-        elapsed = (moment - origin).total_seconds()
-        floored_seconds = math.floor(elapsed / step) * step
-        return origin + timedelta(seconds=floored_seconds)
-
-    def _parse_interval(self, ch_interval: str) -> tuple[int, str]:
-        match = _INTERVAL_RE.match(ch_interval.strip())
-        if match is None:
-            msg = f"Unsupported interval: {ch_interval!r}"
-            raise ValueError(msg)
-        return int(match.group(1)), match.group(2).lower()
+        return floor_to_bucket(value, interval_code)
 
     # -- sql-metric support ------------------------------------------------
 
@@ -782,10 +773,10 @@ class SyntheticAdapter(BaseAdapter):
         self._enforce_budget(self._events)
         sessions_by_day: dict[datetime, set[object]] = {}
         for row in self._events:
-            day = self._bucket_start(row["event_time"], "1 DAY")
+            day = self._bucket_start(row["event_time"], _DAY_INTERVAL)
             sessions_by_day.setdefault(day, set()).add(row["session_id"])
-        lower = _ensure_utc(time_from) if time_from is not None else None
-        upper = _ensure_utc(time_to) if time_to is not None else None
+        lower = to_utc(time_from) if time_from is not None else None
+        upper = to_utc(time_to) if time_to is not None else None
         rows: list[tuple[object, ...]] = []
         for day in sorted(sessions_by_day):
             if lower is not None and day < lower:

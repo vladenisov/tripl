@@ -19,6 +19,7 @@ from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session, sessionmaker
 
 from tripl.core.adapters.base import AggregateSpec, ColumnInfo
+from tripl.core.adapters.measure_validator import SqlDialect
 from tripl.models import Base
 from tripl.models.data_source import DataSource
 from tripl.models.domain_enums import (
@@ -112,7 +113,7 @@ class _FactAdapter:
         self,
         base_query: str,
         time_column: str,
-        ch_interval: str,
+        interval: str,
         agg_fn: MetricAggregation,
         measure_column: str | None,
         regular_columns: list[str],
@@ -153,7 +154,7 @@ class _FactRatioAdapter:
         self,
         base_query: str,
         time_column: str,
-        ch_interval: str,
+        interval: str,
         agg_fn: MetricAggregation,
         measure_column: str | None,
         regular_columns: list[str],
@@ -193,7 +194,7 @@ class _FactRatioBreakdownAdapter(_FactRatioAdapter):
         self,
         base_query: str,
         time_column: str,
-        ch_interval: str,
+        interval: str,
         breakdown_column: str,
         specs: list[AggregateSpec],
         time_from: datetime,
@@ -545,7 +546,7 @@ class _FactBreakdownAdapter(_FactAdapter):
         self,
         base_query: str,
         time_column: str,
-        ch_interval: str,
+        interval: str,
         agg_fn: MetricAggregation,
         measure_column: str | None,
         breakdown_column: str,
@@ -1095,7 +1096,7 @@ class _DistinctUserAdapter:
         self,
         base_query: str,
         time_column: str,
-        ch_interval: str,
+        interval: str,
         agg_fn: MetricAggregation,
         measure_column: str | None,
         regular_columns: list[str],
@@ -1386,17 +1387,26 @@ def _filter_operand(
     )
 
 
+#: The dialect most of the assembly tests below run under. Assembly (AND-joining,
+#: parenthesising, named-filter lookup) is dialect-independent; the tests that are
+#: ABOUT the dialect parametrise over all three explicitly.
+_CH = SqlDialect.clickhouse
+
+
 def test_combined_filter_empty_is_none() -> None:
     fact_table = _filter_fact_table()
     assert (
-        metric_collect._resolve_combined_filter(fact_table, row_filters=(), filter_sql=None) is None
+        metric_collect._resolve_combined_filter(
+            fact_table, dialect=_CH, row_filters=(), filter_sql=None
+        )
+        is None
     )
 
 
 def test_combined_filter_single_named_is_parenthesised() -> None:
     fact_table = _filter_fact_table()
     combined = metric_collect._resolve_combined_filter(
-        fact_table, row_filters=("positive",), filter_sql=None
+        fact_table, dialect=_CH, row_filters=("positive",), filter_sql=None
     )
     assert combined == "(amount > 0)"
 
@@ -1404,7 +1414,7 @@ def test_combined_filter_single_named_is_parenthesised() -> None:
 def test_combined_filter_multiple_named_are_anded() -> None:
     fact_table = _filter_fact_table()
     combined = metric_collect._resolve_combined_filter(
-        fact_table, row_filters=("positive", "big"), filter_sql=None
+        fact_table, dialect=_CH, row_filters=("positive", "big"), filter_sql=None
     )
     assert combined == "(amount > 0) AND (amount > 100)"
 
@@ -1412,15 +1422,28 @@ def test_combined_filter_multiple_named_are_anded() -> None:
 def test_combined_filter_free_text_only() -> None:
     fact_table = _filter_fact_table()
     combined = metric_collect._resolve_combined_filter(
-        fact_table, row_filters=(), filter_sql="status = 'paid'"
+        fact_table, dialect=_CH, row_filters=(), filter_sql="status = 'paid'"
     )
     assert combined == "(status = 'paid')"
+
+
+@pytest.mark.parametrize("dialect", list(SqlDialect))
+def test_free_text_filters_stay_verbatim_on_every_dialect(dialect: SqlDialect) -> None:
+    """Free-text SQL is the user's own dialect-specific text: never rewritten."""
+    fact_table = _filter_fact_table()
+    combined = metric_collect._resolve_combined_filter(
+        fact_table,
+        dialect=dialect,
+        row_filters=("positive",),
+        filter_sql="status = 'paid'",
+    )
+    assert combined == "(amount > 0) AND (status = 'paid')"
 
 
 def test_combined_filter_named_and_free_text_are_anded() -> None:
     fact_table = _filter_fact_table()
     combined = metric_collect._resolve_combined_filter(
-        fact_table, row_filters=("positive",), filter_sql="status = 'paid'"
+        fact_table, dialect=_CH, row_filters=("positive",), filter_sql="status = 'paid'"
     )
     assert combined == "(amount > 0) AND (status = 'paid')"
 
@@ -1429,37 +1452,137 @@ def test_combined_filter_condition_only() -> None:
     fact_table = _filter_fact_table()
     combined = metric_collect._resolve_combined_filter(
         fact_table,
+        dialect=_CH,
         row_filters=(),
         filter_sql=None,
         conditions=(metric_collect._FactCondition("amount", "gt", "3"),),
     )
-    assert combined == "(amount > 3)"
+    assert combined == "(`amount` > 3)"
 
 
-def test_combined_filter_conditions_escape_string_values() -> None:
+@pytest.mark.parametrize(
+    ("dialect", "expected"),
+    [
+        # PostgreSQL and BigQuery BOTH reject an unquoted reserved column ("syntax
+        # error at or near \"order\"" / "Unexpected keyword ORDER"); ClickHouse
+        # accepts it, which is why an unquoted compiler shipped green.
+        (SqlDialect.clickhouse, "(`order` = 'o1')"),
+        (SqlDialect.postgres, "(\"order\" = 'o1')"),
+        (SqlDialect.bigquery, "(`order` = 'o1')"),
+    ],
+)
+def test_condition_quotes_reserved_identifier_per_dialect(
+    dialect: SqlDialect, expected: str
+) -> None:
     fact_table = _filter_fact_table()
     combined = metric_collect._resolve_combined_filter(
         fact_table,
+        dialect=dialect,
+        row_filters=(),
+        filter_sql=None,
+        conditions=(metric_collect._FactCondition("order", "eq", "o1"),),
+    )
+    assert combined == expected
+
+
+@pytest.mark.parametrize(
+    ("dialect", "expected"),
+    [
+        # PostgreSQL DOUBLES the quote; a backslash there is a literal backslash and
+        # would leave the string unterminated. BigQuery has NO '' escape at all --
+        # 'u'' ...' is read as two adjacent literals and is a hard parse error -- so
+        # it (and ClickHouse, which accepts both) get the backslash form.
+        (SqlDialect.clickhouse, "(`user_id` = 'u\\' OR 1=1 --')"),
+        (SqlDialect.postgres, "(\"user_id\" = 'u'' OR 1=1 --')"),
+        (SqlDialect.bigquery, "(`user_id` = 'u\\' OR 1=1 --')"),
+    ],
+)
+def test_condition_escapes_string_values_per_dialect(dialect: SqlDialect, expected: str) -> None:
+    fact_table = _filter_fact_table()
+    combined = metric_collect._resolve_combined_filter(
+        fact_table,
+        dialect=dialect,
         row_filters=(),
         filter_sql=None,
         conditions=(metric_collect._FactCondition("user_id", "eq", "u' OR 1=1 --"),),
     )
-    assert combined == "(user_id = 'u'' OR 1=1 --')"
+    assert combined == expected
+
+
+@pytest.mark.parametrize("dialect", list(SqlDialect))
+def test_condition_value_cannot_break_out_of_its_string(dialect: SqlDialect) -> None:
+    """Whatever the escape, a value only ever adds PAIRED quotes."""
+    fact_table = _filter_fact_table()
+    combined = metric_collect._resolve_combined_filter(
+        fact_table,
+        dialect=dialect,
+        row_filters=(),
+        filter_sql=None,
+        conditions=(metric_collect._FactCondition("user_id", "eq", "x' OR TRUE OR 'y"),),
+    )
+    assert combined is not None
+    # The compiled fragment is one comparison against one literal: the injected
+    # OR never becomes a predicate.
+    assert combined.count(" OR TRUE OR ") == 1
+    assert combined.startswith("(") and combined.endswith("')")
+
+
+@pytest.mark.parametrize(
+    ("dialect", "expected"),
+    [
+        # A time column's bound is pinned to UTC with the dialect's own typed literal
+        # -- the same form each adapter renders its window bounds with. A bare string
+        # parses everywhere, but is re-read in the COLUMN's timezone (ClickHouse) or
+        # the SESSION's (PostgreSQL), silently shifting the comparison.
+        (
+            SqlDialect.clickhouse,
+            "(`ts` > parseDateTime64BestEffort('2026-01-01 00:00:00.000000+00:00', 6, 'UTC'))",
+        ),
+        (SqlDialect.postgres, "(\"ts\" > TIMESTAMPTZ '2026-01-01 00:00:00.000000+00:00')"),
+        (SqlDialect.bigquery, "(`ts` > TIMESTAMP '2026-01-01 00:00:00.000000+00:00')"),
+    ],
+)
+def test_condition_on_time_column_emits_typed_utc_literal(
+    dialect: SqlDialect, expected: str
+) -> None:
+    fact_table = _filter_fact_table()
+    combined = metric_collect._resolve_combined_filter(
+        fact_table,
+        dialect=dialect,
+        row_filters=(),
+        filter_sql=None,
+        conditions=(metric_collect._FactCondition("ts", "gt", "2026-01-01 00:00:00"),),
+    )
+    assert combined == expected
+
+
+def test_condition_on_non_time_column_keeps_plain_literal() -> None:
+    """A timestamp-shaped value in a NON-time column is still a plain string."""
+    fact_table = _filter_fact_table()
+    combined = metric_collect._resolve_combined_filter(
+        fact_table,
+        dialect=SqlDialect.bigquery,
+        row_filters=(),
+        filter_sql=None,
+        # `user_id` is not in the introspected columns at all -> unknown type.
+        conditions=(metric_collect._FactCondition("user_id", "eq", "2026-01-01"),),
+    )
+    assert combined == "(`user_id` = '2026-01-01')"
 
 
 @pytest.mark.parametrize(
     ("operator", "value", "expected"),
     [
-        ("ne", "trial", "user_id != 'trial'"),
-        ("contains", "wind", "user_id LIKE '%wind%'"),
-        ("not_contains", "test", "user_id NOT LIKE '%test%'"),
-        ("like", "u_%", "user_id LIKE 'u_%'"),
-        ("in", "a, b", "user_id IN ('a', 'b')"),
-        ("not_in", ["a", "b"], "user_id NOT IN ('a', 'b')"),
-        ("is_null", None, "user_id IS NULL"),
-        ("is_not_null", None, "user_id IS NOT NULL"),
-        ("is_true", None, "user_id = TRUE"),
-        ("is_false", None, "user_id = FALSE"),
+        ("ne", "trial", "`user_id` != 'trial'"),
+        ("contains", "wind", "`user_id` LIKE '%wind%'"),
+        ("not_contains", "test", "`user_id` NOT LIKE '%test%'"),
+        ("like", "u_%", "`user_id` LIKE 'u_%'"),
+        ("in", "a, b", "`user_id` IN ('a', 'b')"),
+        ("not_in", ["a", "b"], "`user_id` NOT IN ('a', 'b')"),
+        ("is_null", None, "`user_id` IS NULL"),
+        ("is_not_null", None, "`user_id` IS NOT NULL"),
+        ("is_true", None, "`user_id` = TRUE"),
+        ("is_false", None, "`user_id` = FALSE"),
     ],
 )
 def test_combined_filter_condition_operators_compile(
@@ -1468,6 +1591,7 @@ def test_combined_filter_condition_operators_compile(
     fact_table = _filter_fact_table()
     combined = metric_collect._resolve_combined_filter(
         fact_table,
+        dialect=_CH,
         row_filters=(),
         filter_sql=None,
         conditions=(metric_collect._FactCondition("user_id", operator, value),),
@@ -1479,17 +1603,20 @@ def test_combined_filter_named_free_text_and_condition_are_anded() -> None:
     fact_table = _filter_fact_table()
     combined = metric_collect._resolve_combined_filter(
         fact_table,
+        dialect=_CH,
         row_filters=("positive",),
         filter_sql="status = 'paid'",
         conditions=(metric_collect._FactCondition("amount", "lte", "100"),),
     )
-    assert combined == "(amount > 0) AND (status = 'paid') AND (amount <= 100)"
+    assert combined == "(amount > 0) AND (status = 'paid') AND (`amount` <= 100)"
 
 
 def test_combined_filter_unknown_name_raises() -> None:
     fact_table = _filter_fact_table()
     with pytest.raises(ScanError):
-        metric_collect._resolve_combined_filter(fact_table, row_filters=("ghost",), filter_sql=None)
+        metric_collect._resolve_combined_filter(
+            fact_table, dialect=_CH, row_filters=("ghost",), filter_sql=None
+        )
 
 
 def test_per_metric_query_wraps_with_combined_filter() -> None:
@@ -1499,20 +1626,24 @@ def test_per_metric_query_wraps_with_combined_filter() -> None:
         filter_sql="status = 'paid'",
         conditions=(metric_collect._FactCondition("amount", "lte", "100"),),
     )
-    query = metric_collect._resolve_fact_operand_query(fact_table, operand)
+    query = metric_collect._resolve_fact_operand_query(fact_table, operand, dialect=_CH)
     assert query == (
         "SELECT * FROM (SELECT ts, amount FROM orders) AS _filtered "
-        "WHERE (amount > 0) AND (amount > 100) AND (status = 'paid') AND (amount <= 100)"
+        "WHERE (amount > 0) AND (amount > 100) AND (status = 'paid') AND (`amount` <= 100)"
     )
 
 
 def test_per_metric_query_unfiltered_returns_source() -> None:
     fact_table = _filter_fact_table()
     operand = _filter_operand()
-    assert metric_collect._resolve_fact_operand_query(fact_table, operand) == fact_table.sql
+    assert (
+        metric_collect._resolve_fact_operand_query(fact_table, operand, dialect=_CH)
+        == fact_table.sql
+    )
 
 
-def test_per_metric_and_batch_filter_are_value_identical() -> None:
+@pytest.mark.parametrize("dialect", list(SqlDialect))
+def test_per_metric_and_batch_filter_are_value_identical(dialect: SqlDialect) -> None:
     """The WHERE the per-metric path embeds == the conditional the batch injects."""
     fact_table = _filter_fact_table()
     operand = _filter_operand(
@@ -1521,8 +1652,12 @@ def test_per_metric_and_batch_filter_are_value_identical() -> None:
         conditions=(metric_collect._FactCondition("amount", "lte", "100"),),
     )
 
-    batch_filter = metric_collect._resolve_fact_operand_filter(operand, fact_table=fact_table)
-    per_metric_query = metric_collect._resolve_fact_operand_query(fact_table, operand)
+    batch_filter = metric_collect._resolve_fact_operand_filter(
+        operand, fact_table=fact_table, dialect=dialect
+    )
+    per_metric_query = metric_collect._resolve_fact_operand_query(
+        fact_table, operand, dialect=dialect
+    )
 
     assert batch_filter is not None
     # The exact boolean expression used in both paths must be identical.

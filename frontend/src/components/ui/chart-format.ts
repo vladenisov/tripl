@@ -2,6 +2,83 @@
 // so that file exports only components (react-refresh/only-export-components);
 // chart.tsx and the chart tests import these.
 
+import type { MetricsGranularity } from '@/lib/metrics'
+
+// Bucket starts are UTC instants (see getBucketStart / backend bucketing.py), so
+// every label is rendered in UTC. Formatting them in the viewer's local timezone
+// would print a Monday week bucket as "Week of Sun Jun 7" west of Greenwich and
+// a day bucket under the wrong date entirely — the axis would disagree with the
+// bucket the server actually computed (tripl-64n8.2).
+const UTC = 'UTC'
+
+export function formatTick(dateStr: string, granularity: MetricsGranularity): string {
+  const d = new Date(dateStr)
+
+  switch (granularity) {
+    // A 15-minute bucket needs its minutes on the axis: without them, the four
+    // buckets of an hour all render as the same tick.
+    case '15min':
+      return d.toLocaleString('en-US', {
+        month: 'short',
+        day: 'numeric',
+        hour: '2-digit',
+        minute: '2-digit',
+        timeZone: UTC,
+      })
+    case 'hour':
+    case '6h':
+      return d.toLocaleString('en-US', {
+        month: 'short',
+        day: 'numeric',
+        hour: '2-digit',
+        timeZone: UTC,
+      })
+    case 'day':
+      return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', timeZone: UTC })
+    case 'week':
+      return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', timeZone: UTC })
+    case 'month':
+      return d.toLocaleDateString('en-US', { month: 'short', year: 'numeric', timeZone: UTC })
+  }
+}
+
+export function formatTooltipLabel(dateStr: string, granularity: MetricsGranularity): string {
+  const d = new Date(dateStr)
+
+  switch (granularity) {
+    case '15min':
+    case 'hour':
+    case '6h':
+      return d.toLocaleString('en-US', {
+        month: 'short',
+        day: 'numeric',
+        hour: '2-digit',
+        minute: '2-digit',
+        timeZone: UTC,
+      })
+    case 'day':
+      return d.toLocaleDateString('en-US', {
+        month: 'short',
+        day: 'numeric',
+        year: 'numeric',
+        timeZone: UTC,
+      })
+    case 'week':
+      return `Week of ${d.toLocaleDateString('en-US', {
+        month: 'short',
+        day: 'numeric',
+        year: 'numeric',
+        timeZone: UTC,
+      })}`
+    case 'month':
+      return d.toLocaleDateString('en-US', {
+        month: 'long',
+        year: 'numeric',
+        timeZone: UTC,
+      })
+  }
+}
+
 // Compact axis/tick labels that never blow out the reserved Y-axis width:
 // 380000 -> "380k", 1_500_000 -> "1.5M", 1_000_000 -> "1M". Whole numbers at
 // >= 100 of a unit, one decimal (trailing .0 stripped) below, so a label stays

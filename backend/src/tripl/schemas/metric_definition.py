@@ -831,6 +831,23 @@ class MetricPreviewRequest(BaseModel):
     interval: ScanInterval
 
 
+class FactOperandPreviewResponse(BaseModel):
+    """Dry-run outcome for ONE fact operand's compiled row filter.
+
+    The request body is the operand itself (:class:`FactOperand`) — the same
+    payload a save sends — so the preview compiles from the identical config the
+    worker will later read. ``columns`` / ``row_count`` describe the filtered
+    fact query the operand aggregates (probed with a 1-row cap); expected user
+    mistakes — an unknown named filter, a filter the warehouse rejects, a measure
+    column the filtered query does not project — come back with ``error`` set on
+    a 200 (see ``metric_preview_service.preview_fact_operand``), not a 5xx.
+    """
+
+    columns: list[str] = Field(default_factory=list)
+    row_count: int = 0
+    error: str | None = None
+
+
 class MetricPreviewPoint(BaseModel):
     """One interval-floored (bucket, value) preview point."""
 

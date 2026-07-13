@@ -1,10 +1,11 @@
 import { useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
-import { Plus, Trash2 } from 'lucide-react'
+import { CheckCircle2, Loader2, Play, Plus, Trash2 } from 'lucide-react'
 import { SqlEditor } from '@/components/sql-editor'
 import { Select, TextInput, type SelectOption } from '@/components/settings/kit'
 import type { DbType } from '@/types/dataSources'
 import type { TableSchema } from '@/types/dataSourceSchema'
+import type { FactOperandPreviewResponse } from '@/types/metricsCatalog'
 import type { FactTableColumn } from '@/types/factTables'
 
 import {
@@ -26,6 +27,17 @@ interface FactFilterEditorProps {
   dialect?: DbType
   tables?: TableSchema[]
   disabled?: boolean
+  /**
+   * Run the filters against the warehouse (a stateless dry-run of the compiled
+   * WHERE). Omitted while the operand has no fact table to compile against, in
+   * which case the Check button is not rendered at all.
+   */
+  onCheck?: () => void
+  checkPending?: boolean
+  /** Last dry-run outcome; `error` set means the warehouse (or the compiler) said no. */
+  checkResult?: FactOperandPreviewResponse | null
+  /** Transport-level failure (the check never reached a verdict). */
+  checkError?: string | null
 }
 
 /**
@@ -33,6 +45,12 @@ interface FactFilterEditorProps {
  * opens a small menu to append either a named or a free-text SQL filter; each
  * row is independently editable and removable. SQL filters use the shared
  * {@link SqlEditor} so they get highlighting + Format.
+ *
+ * "Check filters" dry-runs the list against the warehouse. Until it existed, a
+ * fact metric's filters were only ever executed inside a Celery worker — so a
+ * filter that the selected engine rejects was saved happily and failed later,
+ * out of sight. The check compiles the filters exactly as the collector does and
+ * runs them, so a green check means the collection will not fail on this SQL.
  */
 export function FactFilterEditor({
   filters,
@@ -42,6 +60,10 @@ export function FactFilterEditor({
   dialect,
   tables,
   disabled,
+  onCheck,
+  checkPending = false,
+  checkResult = null,
+  checkError = null,
 }: FactFilterEditorProps) {
   const [menuOpen, setMenuOpen] = useState(false)
   const [menuPos, setMenuPos] = useState({ top: 0, left: 0 })
@@ -162,7 +184,7 @@ export function FactFilterEditor({
         </ul>
       )}
 
-      <div className="inline-block">
+      <div className="flex items-center gap-2">
         <button
           ref={buttonRef}
           type="button"
@@ -175,7 +197,25 @@ export function FactFilterEditor({
         >
           <Plus size={12} /> Add filter
         </button>
+        {onCheck && (
+          <button
+            type="button"
+            disabled={disabled || checkPending}
+            onClick={onCheck}
+            className="inline-flex h-8 items-center gap-[6px] rounded-[7px] border px-3 text-[12px] font-medium transition-colors hover:bg-[var(--surface-hover)] disabled:opacity-60"
+            style={{ borderColor: 'var(--border)', color: 'var(--fg)' }}
+          >
+            {checkPending ? (
+              <Loader2 size={12} className="animate-spin" />
+            ) : (
+              <Play size={12} />
+            )}
+            {checkPending ? 'Checking…' : 'Check filters'}
+          </button>
+        )}
       </div>
+
+      <FilterCheckPanel result={checkResult} transportError={checkError} />
       {menuOpen &&
         createPortal(
           <>
@@ -225,6 +265,51 @@ export function FactFilterEditor({
           </>,
           document.body,
         )}
+    </div>
+  )
+}
+
+interface FilterCheckPanelProps {
+  result: FactOperandPreviewResponse | null
+  transportError: string | null
+}
+
+/**
+ * Outcome of the filter dry-run. A compiler or warehouse rejection arrives as a
+ * 200 with `error` set (it is a verdict on the user's filters, not a server
+ * fault) and renders in the danger style with the engine's own wording; a
+ * transport failure renders the same way. A clean run says so explicitly —
+ * "no rows matched" is NOT an error, so it is called out separately, since valid
+ * SQL that matches nothing is a filter-value mistake, not a SQL mistake.
+ */
+function FilterCheckPanel({ result, transportError }: FilterCheckPanelProps) {
+  const message = transportError ?? result?.error ?? null
+  if (message) {
+    return (
+      <div
+        role="alert"
+        className="rounded-[10px] border px-4 py-3 text-[12.5px]"
+        style={{
+          background: 'var(--danger-soft)',
+          borderColor: 'color-mix(in oklab, var(--danger) 35%, var(--border))',
+          color: 'var(--danger)',
+        }}
+      >
+        {message}
+      </div>
+    )
+  }
+  if (!result) return null
+  return (
+    <div
+      role="status"
+      className="flex items-center gap-[6px] rounded-[10px] border px-4 py-3 text-[12.5px]"
+      style={{ borderColor: 'var(--border)', color: 'var(--fg-muted)' }}
+    >
+      <CheckCircle2 size={13} style={{ color: 'var(--success, var(--fg-muted))' }} />
+      {result.row_count > 0
+        ? 'Filters ran clean against the warehouse.'
+        : 'Filters ran clean against the warehouse, but matched no rows in the last 7 days.'}
     </div>
   )
 }

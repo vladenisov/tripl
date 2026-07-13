@@ -23,6 +23,8 @@ from tripl.core.adapters.measure_validator import (
     coerce_aggregation,
     validate_measure_column,
 )
+from tripl.core.bucketing import format_utc_literal
+from tripl.core.intervals import IntervalUnit, get_interval
 from tripl.models.domain_enums import MetricAggregation
 
 # Hard cap on rows pulled from the catalog so a warehouse with thousands of
@@ -42,10 +44,6 @@ logger = logging.getLogger(__name__)
 
 _IDENTIFIER_RE = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_.]*$")
 _IDENTIFIER_PART_RE = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*$")
-# Mirrors PostgresAdapter._INTERVAL_RE: a positive integer and a supported unit.
-# The bucketed-aggregate paths interpolate the interval into SQL with no bound
-# parameters, so the value must be allowlisted before it reaches the string.
-_INTERVAL_RE = re.compile(r"^\d+\s+(second|minute|hour|day|week|month)s?$", re.IGNORECASE)
 
 # JSON path *discovery* (preview) enumeration functions. "dynamic" lists only the
 # important typed subcolumn paths (fast); "all" lists every path incl. shared-data
@@ -269,11 +267,32 @@ class ClickHouseAdapter(BaseAdapter):
             raise ValueError(msg)
         return column
 
-    def _validate_interval(self, ch_interval: str) -> str:
-        if not _INTERVAL_RE.match(ch_interval.strip()):
-            msg = f"Unsupported interval: {ch_interval!r}"
-            raise ValueError(msg)
-        return ch_interval.strip()
+    def _bucket_expression(self, time_column: str, interval_code: str) -> str:
+        """Translate an interval code into ClickHouse bucket SQL.
+
+        Must agree with ``tripl.core.bucketing.floor_to_bucket``.
+
+        The explicit ``'UTC'`` argument is load-bearing: without it
+        ``toStartOfInterval`` buckets in the *column's* timezone, so a DateTime
+        column declared in, say, ``Asia/Tokyo`` lands rows in the wrong day
+        (verified on ClickHouse 26.6 — a Tokyo 05:30 row buckets to the Tokyo day,
+        not the UTC one).
+
+        The week form needs a word, because the obvious reading is wrong.
+        ClickHouse's ``toStartOfInterval(col, INTERVAL 1 WEEK)`` does *not* bin off
+        the epoch Thursday — it is already Monday-aligned and anchored at
+        1970-01-05, i.e. it agrees with :data:`~tripl.core.bucketing.WEEK_ORIGIN`.
+        ``toMonday`` is used anyway for a different reason: ``toStartOfInterval``
+        with a WEEK interval returns a **Date**, not a DateTime, so a 1w bucket
+        would come back from clickhouse-connect as ``datetime.date`` while every
+        other interval yields ``datetime.datetime``. ``toDateTime(toMonday(...))``
+        keeps the bucket column a DateTime across all five intervals.
+        """
+        spec = get_interval(interval_code)
+        col = f"`{self._validate_column(time_column)}`"
+        if spec.unit is IntervalUnit.week:
+            return f"toDateTime(toMonday({col}, 'UTC'), 'UTC')"
+        return f"toStartOfInterval({col}, INTERVAL {spec.count} {spec.unit.value.upper()}, 'UTC')"
 
     def _json_path_expression(self, column: str, path: str) -> str:
         parts = [part for part in path.split(".") if part]
@@ -294,18 +313,53 @@ class ClickHouseAdapter(BaseAdapter):
         escaped = value.replace("\\", "\\\\").replace("'", "\\'")
         return f"'{escaped}'"
 
+    def _utc_literal(self, value: datetime) -> str:
+        """Render a datetime as an unambiguously-UTC ClickHouse timestamp.
+
+        The old form here was ``value.strftime("%Y-%m-%d %H:%M:%S")``, which is
+        wrong twice over: ``strftime`` silently drops ``tzinfo`` (an aware
+        non-UTC datetime yields its *local* wall clock, not the UTC instant), and
+        the resulting offset-less literal is read by ClickHouse in the **column's**
+        timezone. Verified on ClickHouse 26.6: against a ``DateTime('Asia/Tokyo')``
+        column, ``col >= '2026-07-12 05:30:00'`` compares the literal as Tokyo
+        wall-clock and answers *true*, where the same instant expressed in UTC
+        answers *false*. That is a whole-window shift on any non-UTC column.
+
+        :func:`~tripl.core.bucketing.format_utc_literal` emits the instant with an
+        explicit ``+00:00``. ``parseDateTime64BestEffort`` is the function that
+        honors that offset (verified: ``...+03:00`` parses to 02:30Z, not 05:30Z)
+        and it returns ``DateTime64(6, 'UTC')`` — scale 6 so the microseconds the
+        contract preserves survive into the bound, and a pinned result timezone so
+        the comparison cannot be reinterpreted in the column's or server's zone.
+        """
+        return f"parseDateTime64BestEffort('{format_utc_literal(value)}', 6, 'UTC')"
+
+    def _time_condition(
+        self,
+        time_column: str | None,
+        time_from: datetime | None,
+        time_to: datetime | None,
+    ) -> str:
+        """The half-open ``[from, to)`` window predicate, or ``""`` if unbounded.
+
+        The single definition of the time window for every query this adapter
+        builds — preview, JSON path discovery, field contracts, breakdown
+        top-values and all five bucketed scans. It used to be copy-pasted six
+        times, which is how six of them ended up with the same timezone bug.
+        """
+        if time_column is None or time_from is None or time_to is None:
+            return ""
+        tc = self._validate_column(time_column)
+        return f"`{tc}` >= {self._utc_literal(time_from)} AND `{tc}` < {self._utc_literal(time_to)}"
+
     def _time_window_where_clause(
         self,
         time_column: str | None,
         time_from: datetime | None,
         time_to: datetime | None,
     ) -> str:
-        if time_column is None or time_from is None or time_to is None:
-            return ""
-        tc = self._validate_column(time_column)
-        t_from = time_from.strftime("%Y-%m-%d %H:%M:%S")
-        t_to = time_to.strftime("%Y-%m-%d %H:%M:%S")
-        return f" WHERE `{tc}` >= '{t_from}' AND `{tc}` < '{t_to}'"
+        condition = self._time_condition(time_column, time_from, time_to)
+        return f" WHERE {condition}" if condition else ""
 
     def _contract_where_clause(
         self,
@@ -316,11 +370,9 @@ class ClickHouseAdapter(BaseAdapter):
         group_value: str | None,
     ) -> str:
         conditions: list[str] = []
-        if time_column is not None and time_from is not None and time_to is not None:
-            tc = self._validate_column(time_column)
-            t_from = time_from.strftime("%Y-%m-%d %H:%M:%S")
-            t_to = time_to.strftime("%Y-%m-%d %H:%M:%S")
-            conditions.append(f"`{tc}` >= '{t_from}' AND `{tc}` < '{t_to}'")
+        time_condition = self._time_condition(time_column, time_from, time_to)
+        if time_condition:
+            conditions.append(time_condition)
         if group_column is not None:
             gc = self._validate_column(group_column)
             expected = self._quote_string(group_value or "")
@@ -473,8 +525,7 @@ class ClickHouseAdapter(BaseAdapter):
 
         tc = self._validate_column(time_column)
         breakdown_cols = [self._validate_column(column) for column in breakdown_columns]
-        t_from = time_from.strftime("%Y-%m-%d %H:%M:%S")
-        t_to = time_to.strftime("%Y-%m-%d %H:%M:%S")
+        where_clause = self._time_window_where_clause(tc, time_from, time_to)
         prepared_parts = [
             f"{self._string_value_expression(column)} AS `__bd_raw_{idx}`"
             for idx, column in enumerate(breakdown_cols)
@@ -497,8 +548,7 @@ class ClickHouseAdapter(BaseAdapter):
             "count() AS _cnt "
             "FROM ("
             f"SELECT {', '.join(prepared_parts)} "
-            f"FROM ({base_query}) AS _src "
-            f"WHERE `{tc}` >= '{t_from}' AND `{tc}` < '{t_to}'"
+            f"FROM ({base_query}) AS _src{where_clause}"
             ") AS _prepared "
             f"GROUP BY GROUPING SETS ({grouping_sets})"
             ") "
@@ -569,7 +619,7 @@ class ClickHouseAdapter(BaseAdapter):
         self,
         base_query: str,
         time_column: str,
-        ch_interval: str,
+        interval: str,
         regular_columns: list[str],
         json_columns: list[str],
         json_value_paths: dict[str, list[str]] | None,
@@ -583,12 +633,12 @@ class ClickHouseAdapter(BaseAdapter):
         Row layout: (_bucket, col1_val, ..., json_paths1, ..., count).
         """
         tc = self._validate_column(time_column)
-        interval = self._validate_interval(ch_interval)
+        bucket_sql = self._bucket_expression(tc, interval)
         reg_cols = [self._validate_column(c) for c in regular_columns]
         json_cols = [self._validate_column(c) for c in json_columns]
         json_value_paths = json_value_paths or {}
 
-        select_parts = [f"toStartOfInterval(`{tc}`, INTERVAL {interval}) AS _bucket"]
+        select_parts = [f"{bucket_sql} AS _bucket"]
         col_names: list[str] = []
         json_value_names: list[str] = []
         for c in reg_cols:
@@ -606,14 +656,10 @@ class ClickHouseAdapter(BaseAdapter):
                 json_value_names.append(full_path)
         select_parts.append("count() AS _cnt")
 
-        # Format timestamps for ClickHouse
-        t_from = time_from.strftime("%Y-%m-%d %H:%M:%S")
-        t_to = time_to.strftime("%Y-%m-%d %H:%M:%S")
-
+        where_clause = self._time_window_where_clause(tc, time_from, time_to)
         sql = (
             f"SELECT {', '.join(select_parts)} "
-            f"FROM ({base_query}) AS _src "
-            f"WHERE `{tc}` >= '{t_from}' AND `{tc}` < '{t_to}' "
+            f"FROM ({base_query}) AS _src{where_clause} "
             f"GROUP BY ALL "
             f"ORDER BY _bucket "
             f"LIMIT {int(limit)}"
@@ -639,7 +685,7 @@ class ClickHouseAdapter(BaseAdapter):
         self,
         base_query: str,
         time_column: str,
-        ch_interval: str,
+        interval: str,
         agg_fn: MetricAggregation,
         measure_column: str | None,
         regular_columns: list[str],
@@ -655,13 +701,13 @@ class ClickHouseAdapter(BaseAdapter):
         Row layout: (_bucket, col1_val, ..., json_paths1, ..., aggregate_value).
         """
         tc = self._validate_column(time_column)
-        interval = self._validate_interval(ch_interval)
+        bucket_sql = self._bucket_expression(tc, interval)
         reg_cols = [self._validate_column(c) for c in regular_columns]
         json_cols = [self._validate_column(c) for c in json_columns]
         json_value_paths = json_value_paths or {}
         value_sql = self._aggregate_value_sql(agg_fn, measure_column)
 
-        select_parts = [f"toStartOfInterval(`{tc}`, INTERVAL {interval}) AS _bucket"]
+        select_parts = [f"{bucket_sql} AS _bucket"]
         col_names: list[str] = []
         json_value_names: list[str] = []
         for c in reg_cols:
@@ -679,12 +725,10 @@ class ClickHouseAdapter(BaseAdapter):
                 json_value_names.append(full_path)
         select_parts.append(f"{value_sql} AS _value")
 
-        t_from = time_from.strftime("%Y-%m-%d %H:%M:%S")
-        t_to = time_to.strftime("%Y-%m-%d %H:%M:%S")
+        where_clause = self._time_window_where_clause(tc, time_from, time_to)
         sql = (
             f"SELECT {', '.join(select_parts)} "
-            f"FROM ({base_query}) AS _src "
-            f"WHERE `{tc}` >= '{t_from}' AND `{tc}` < '{t_to}' "
+            f"FROM ({base_query}) AS _src{where_clause} "
             f"GROUP BY ALL "
             f"ORDER BY _bucket "
             f"LIMIT {int(limit)}"
@@ -703,7 +747,7 @@ class ClickHouseAdapter(BaseAdapter):
         self,
         base_query: str,
         time_column: str,
-        ch_interval: str,
+        interval: str,
         agg_fn: MetricAggregation,
         measure_column: str | None,
         breakdown_column: str,
@@ -721,7 +765,7 @@ class ClickHouseAdapter(BaseAdapter):
         Row layout: (_bucket, _breakdown_value, _is_other, col1_val, ..., aggregate_value).
         """
         tc = self._validate_column(time_column)
-        interval = self._validate_interval(ch_interval)
+        bucket_sql = self._bucket_expression(tc, interval)
         reg_cols = [self._validate_column(c) for c in regular_columns]
         json_cols = [self._validate_column(c) for c in json_columns]
         breakdown = self._validate_column(breakdown_column)
@@ -742,7 +786,7 @@ class ClickHouseAdapter(BaseAdapter):
             values_limit,
         )
 
-        select_parts = [f"toStartOfInterval(`{tc}`, INTERVAL {interval}) AS _bucket"]
+        select_parts = [f"{bucket_sql} AS _bucket"]
         select_parts.append(f"{breakdown_expr} AS _breakdown_value")
         select_parts.append(f"{is_other_expr} AS _is_other")
         col_names: list[str] = []
@@ -762,12 +806,10 @@ class ClickHouseAdapter(BaseAdapter):
                 json_value_names.append(full_path)
         select_parts.append(f"{value_sql} AS _value")
 
-        t_from = time_from.strftime("%Y-%m-%d %H:%M:%S")
-        t_to = time_to.strftime("%Y-%m-%d %H:%M:%S")
+        where_clause = self._time_window_where_clause(tc, time_from, time_to)
         sql = (
             f"SELECT {', '.join(select_parts)} "
-            f"FROM ({base_query}) AS _src "
-            f"WHERE `{tc}` >= '{t_from}' AND `{tc}` < '{t_to}' "
+            f"FROM ({base_query}) AS _src{where_clause} "
             f"GROUP BY ALL "
             f"ORDER BY _bucket, _breakdown_value "
             f"LIMIT {int(limit)}"
@@ -865,7 +907,7 @@ class ClickHouseAdapter(BaseAdapter):
         self,
         base_query: str,
         time_column: str,
-        ch_interval: str,
+        interval: str,
         specs: list[AggregateSpec],
         time_from: datetime,
         time_to: datetime,
@@ -879,20 +921,18 @@ class ClickHouseAdapter(BaseAdapter):
         spec aliased by ``spec.key``.
         """
         tc = self._validate_column(time_column)
-        interval = self._validate_interval(ch_interval)
+        bucket_sql = self._bucket_expression(tc, interval)
 
-        select_parts = [f"toStartOfInterval(`{tc}`, INTERVAL {interval}) AS _bucket"]
+        select_parts = [f"{bucket_sql} AS _bucket"]
         col_names: list[str] = ["bucket"]
         for spec in specs:
             select_parts.append(f"{self._spec_aggregate_sql(spec)} AS `{spec.key}`")
             col_names.append(spec.key)
 
-        t_from = time_from.strftime("%Y-%m-%d %H:%M:%S")
-        t_to = time_to.strftime("%Y-%m-%d %H:%M:%S")
+        where_clause = self._time_window_where_clause(tc, time_from, time_to)
         sql = (
             f"SELECT {', '.join(select_parts)} "
-            f"FROM ({base_query}) AS _src "
-            f"WHERE `{tc}` >= '{t_from}' AND `{tc}` < '{t_to}' "
+            f"FROM ({base_query}) AS _src{where_clause} "
             f"GROUP BY _bucket "
             f"ORDER BY _bucket "
             f"LIMIT {int(limit)}"
@@ -911,7 +951,7 @@ class ClickHouseAdapter(BaseAdapter):
         self,
         base_query: str,
         time_column: str,
-        ch_interval: str,
+        interval: str,
         breakdown_column: str,
         specs: list[AggregateSpec],
         time_from: datetime,
@@ -927,7 +967,7 @@ class ClickHouseAdapter(BaseAdapter):
         column per spec.
         """
         tc = self._validate_column(time_column)
-        interval = self._validate_interval(ch_interval)
+        bucket_sql = self._bucket_expression(tc, interval)
         breakdown = self._validate_column(breakdown_column)
 
         raw_expr = self._string_value_expression(breakdown)
@@ -942,7 +982,7 @@ class ClickHouseAdapter(BaseAdapter):
         )
 
         select_parts = [
-            f"toStartOfInterval(`{tc}`, INTERVAL {interval}) AS _bucket",
+            f"{bucket_sql} AS _bucket",
             f"{breakdown_expr} AS _breakdown_value",
             f"{is_other_expr} AS _is_other",
         ]
@@ -951,12 +991,10 @@ class ClickHouseAdapter(BaseAdapter):
             select_parts.append(f"{self._spec_aggregate_sql(spec)} AS `{spec.key}`")
             col_names.append(spec.key)
 
-        t_from = time_from.strftime("%Y-%m-%d %H:%M:%S")
-        t_to = time_to.strftime("%Y-%m-%d %H:%M:%S")
+        where_clause = self._time_window_where_clause(tc, time_from, time_to)
         sql = (
             f"SELECT {', '.join(select_parts)} "
-            f"FROM ({base_query}) AS _src "
-            f"WHERE `{tc}` >= '{t_from}' AND `{tc}` < '{t_to}' "
+            f"FROM ({base_query}) AS _src{where_clause} "
             f"GROUP BY ALL "
             f"ORDER BY _bucket, _breakdown_value "
             f"LIMIT {int(limit)}"
@@ -975,7 +1013,7 @@ class ClickHouseAdapter(BaseAdapter):
         self,
         base_query: str,
         time_column: str,
-        ch_interval: str,
+        interval: str,
         breakdown_column: str,
         regular_columns: list[str],
         json_columns: list[str],
@@ -988,7 +1026,7 @@ class ClickHouseAdapter(BaseAdapter):
         col_names, json_value_names, rows = self.get_time_bucketed_breakdown_counts_multi(
             base_query,
             time_column,
-            ch_interval,
+            interval,
             [breakdown_column],
             regular_columns,
             json_columns,
@@ -1004,7 +1042,7 @@ class ClickHouseAdapter(BaseAdapter):
         self,
         base_query: str,
         time_column: str,
-        ch_interval: str,
+        interval: str,
         breakdown_columns: list[str],
         regular_columns: list[str],
         json_columns: list[str],
@@ -1023,7 +1061,7 @@ class ClickHouseAdapter(BaseAdapter):
             return [], [], []
 
         tc = self._validate_column(time_column)
-        interval = self._validate_interval(ch_interval)
+        bucket_sql = self._bucket_expression(tc, interval)
         reg_cols = [self._validate_column(c) for c in regular_columns]
         json_cols = [self._validate_column(c) for c in json_columns]
         breakdown_cols = [self._validate_column(c) for c in breakdown_columns]
@@ -1045,7 +1083,7 @@ class ClickHouseAdapter(BaseAdapter):
                 top_count,
             )
 
-        prepared_parts = [f"toStartOfInterval(`{tc}`, INTERVAL {interval}) AS _bucket"]
+        prepared_parts = [f"{bucket_sql} AS _bucket"]
         col_names: list[str] = []
         json_value_names: list[str] = []
         for c in reg_cols:
@@ -1115,14 +1153,12 @@ class ClickHouseAdapter(BaseAdapter):
             "count() AS _cnt",
         ]
 
-        t_from = time_from.strftime("%Y-%m-%d %H:%M:%S")
-        t_to = time_to.strftime("%Y-%m-%d %H:%M:%S")
+        where_clause = self._time_window_where_clause(tc, time_from, time_to)
         sql = (
             f"SELECT {', '.join(select_parts)} "
             "FROM ("
             f"SELECT {', '.join(prepared_parts)} "
-            f"FROM ({base_query}) AS _src "
-            f"WHERE `{tc}` >= '{t_from}' AND `{tc}` < '{t_to}'"
+            f"FROM ({base_query}) AS _src{where_clause}"
             ") AS _prepared "
             f"GROUP BY GROUPING SETS ({', '.join(grouping_sets)}) "
             "ORDER BY _bucket, _breakdown_column, _breakdown_value "

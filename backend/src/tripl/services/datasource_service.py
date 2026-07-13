@@ -3,19 +3,26 @@ import contextlib
 import logging
 import uuid
 from datetime import UTC, datetime
+from typing import Any
 
 from fastapi import HTTPException
+from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from tripl import cache
+from tripl.core.adapters.errors import WarehouseCapabilityError
 from tripl.crypto import encrypt_value
 from tripl.models.data_source import DataSource, DBType, TestStatus
 from tripl.schemas.data_source import (
+    SSLKEY_STORAGE_KEY,
+    ConnectionSettingsError,
     DataSourceCreate,
     DataSourceResponse,
     DataSourceTestResponse,
     DataSourceUpdate,
+    connection_settings_response,
+    parse_connection_settings,
 )
 
 
@@ -45,7 +52,64 @@ async def get_data_source(session: AsyncSession, ds_id: uuid.UUID) -> DataSource
 # Fields on a synthetic source that, if edited, would turn it into (or point it
 # at) a real warehouse. They are locked: a synthetic source is demo-only and must
 # never gain a real host, port, database, or credentials.
-_SYNTHETIC_LOCKED_FIELDS = ("host", "port", "database_name", "username", "password", "extra_params")
+_SYNTHETIC_LOCKED_FIELDS = (
+    "host",
+    "port",
+    "database_name",
+    "username",
+    "password",
+    "connection_settings",
+)
+
+# Sentinel: "the client did not send connection_settings at all" (leave stored
+# settings untouched) as distinct from "the client sent null" (clear them).
+_UNSET = object()
+
+
+def _validated_settings(db_type: str, raw: object) -> BaseModel | None:
+    """Validate a raw settings payload against the warehouse it is destined for.
+
+    ``raw`` is the dict of keys the client actually sent (the request model's
+    nested union already rejected keys that belong to no warehouse at all). This
+    is where a setting that exists but does not apply to *this* db_type — a
+    BigQuery ``location`` on a PostgreSQL source — becomes a 422 instead of a
+    silently stored no-op.
+    """
+    if raw is None:
+        return None
+    if not isinstance(raw, dict):  # pragma: no cover - pydantic guarantees a mapping
+        raise HTTPException(status_code=422, detail="connection_settings must be an object")
+    try:
+        return parse_connection_settings(db_type, raw)
+    except ConnectionSettingsError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+def _settings_to_storage(
+    settings: BaseModel | None, *, previous: dict[str, Any] | None
+) -> dict[str, Any] | None:
+    """Serialize validated settings for the ``extra_params`` JSON column.
+
+    The private key never lands in the column as plaintext: it is Fernet-encrypted
+    under ``sslkey_encrypted``, exactly like ``password_encrypted``. An omitted
+    ``sslkey`` keeps the stored key (same UX as an omitted password); an explicit
+    empty string clears it.
+    """
+    if settings is None:
+        return None
+    stored: dict[str, Any] = settings.model_dump(exclude_none=True, mode="python")
+    secret = stored.pop("sslkey", None)
+
+    if secret is None:
+        carried = (previous or {}).get(SSLKEY_STORAGE_KEY)
+        if carried:
+            stored[SSLKEY_STORAGE_KEY] = carried
+    else:
+        plaintext = secret.get_secret_value()
+        if plaintext:
+            stored[SSLKEY_STORAGE_KEY] = encrypt_value(plaintext)
+
+    return stored or None
 
 
 async def create_data_source(session: AsyncSession, data: DataSourceCreate) -> DataSourceResponse:
@@ -63,6 +127,9 @@ async def create_data_source(session: AsyncSession, data: DataSourceCreate) -> D
     if existing.scalar_one_or_none():
         raise HTTPException(status_code=409, detail="Data source with this name already exists")
 
+    raw_settings = data.model_dump(exclude_unset=True).get("connection_settings")
+    settings = _validated_settings(data.db_type.value, raw_settings)
+
     ds = DataSource(
         name=data.name,
         db_type=data.db_type,
@@ -73,7 +140,7 @@ async def create_data_source(session: AsyncSession, data: DataSourceCreate) -> D
         password_encrypted=encrypt_value(data.password),
         timeout_seconds=data.timeout_seconds,
         json_path_discovery=data.json_path_discovery,
-        extra_params=data.extra_params,
+        extra_params=_settings_to_storage(settings, previous=None),
     )
     session.add(ds)
     await session.commit()
@@ -94,6 +161,15 @@ async def update_data_source(
         password = update_dict.pop("password")
         if password is not None:
             ds.password_encrypted = encrypt_value(password)
+
+    # Settings are validated against the db_type the row will *have* after this
+    # update, not the one it had before.
+    raw_settings = update_dict.pop("connection_settings", _UNSET)
+    if raw_settings is not _UNSET:
+        db_type = str(update_dict.get("db_type") or ds.db_type)
+        settings = _validated_settings(db_type, raw_settings)
+        previous = ds.extra_params if isinstance(ds.extra_params, dict) else None
+        ds.extra_params = _settings_to_storage(settings, previous=previous)
 
     for key, value in update_dict.items():
         setattr(ds, key, value)
@@ -163,7 +239,9 @@ def _to_response(ds: DataSource) -> DataSourceResponse:
         password_set=bool(ds.password_encrypted),
         timeout_seconds=ds.timeout_seconds,
         json_path_discovery=ds.json_path_discovery,
-        extra_params=ds.extra_params,
+        connection_settings=connection_settings_response(
+            ds.extra_params if isinstance(ds.extra_params, dict) else None
+        ),
         last_test_at=ds.last_test_at,
         last_test_status=ds.last_test_status,
         last_test_message=ds.last_test_message,
@@ -193,6 +271,13 @@ def _friendly_test_error(exc: Exception) -> str:
 
     Never echoes host/port/driver/credential internals — those go to logs only.
     """
+    # A capability error is a message tripl authored about a configuration the
+    # operator can act on ("PostgreSQL 13 is too old: date_bin() needs 14"). It holds
+    # no host, port or credential, and generalizing it away leaves the operator
+    # re-checking settings that are all, in fact, correct. Surface it verbatim.
+    if isinstance(exc, WarehouseCapabilityError):
+        return f"Connection test failed: {exc}"
+
     text = str(exc).lower()
     if any(hint in text for hint in _TIMEOUT_HINTS):
         return "Connection test failed: the data source did not respond in time."

@@ -85,6 +85,24 @@ type CollectTarget = { slug: string; scope: string; scopeId: string; displayName
 // doesn't mint a new array each render and bust the memoized lookup map.
 const EMPTY_META_FIELDS: MetaFieldDefinition[] = []
 
+/**
+ * A catalog metric charts at the granularity it was *collected* at, so the axis
+ * describes the buckets the data actually has.
+ *
+ * One entry per backend interval code (backend/src/tripl/core/intervals.py). This
+ * used to be a chain of ternaries covering only `1d` and `1w`, so a `15m` or `6h`
+ * metric fell through to "Hours" — an axis labelled with a bucket width the series
+ * does not have (tripl-64n8.15). A table makes the missing case obvious instead of
+ * hiding it in a fallback.
+ */
+const GRANULARITY_FOR_INTERVAL: Record<string, MetricsGranularity> = {
+  '15m': '15min',
+  '1h': 'hour',
+  '6h': '6h',
+  '1d': 'day',
+  '1w': 'week',
+}
+
 type MonitoringDetailTab = 'volume' | 'versions' | 'distribution' | 'heatmap' | 'breakdowns'
 type VersionFilter = 'all' | 'latest'
 
@@ -343,11 +361,7 @@ export default function MonitoringDetailPage() {
   // (granularityOverride) still wins and stays sticky across range changes.
   const defaultGranularity: MetricsGranularity =
     scope === 'metric'
-      ? metrics?.interval === '1d'
-        ? 'day'
-        : metrics?.interval === '1w'
-          ? 'week'
-          : 'hour'
+      ? (GRANULARITY_FOR_INTERVAL[metrics?.interval ?? ''] ?? 'hour')
       : defaultGranularityForRange(rangeDays)
   const granularity = granularityOverride ?? defaultGranularity
   const scanConfigId = metrics?.scan_config_id ?? (scope === 'project_total' ? scopeId : null)
