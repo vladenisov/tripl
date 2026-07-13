@@ -4,12 +4,13 @@ A branch's diff is computed against the snapshot taken when the branch was
 created (``PlanBranch.base_revision_id``), so "revert" has one meaning here:
 make this entity — or this one field of it — look like it did in that snapshot.
 An entity the branch added is deleted; a field the branch edited is written back
-to its base value.
+to its base value; an entity the branch deleted is rebuilt from the snapshot,
+child rows and all.
 
-Restoring an entity the branch *removed* is the one case not handled: it needs a
-writer that materialises rows (with their child collections) out of a snapshot
-payload, which nothing in the codebase does yet. It is rejected with a clear
-message rather than half-done (tripl-mzsb.3).
+Order matters when a whole subtree was deleted: an event type comes back before
+the fields and events that hang off it, because the snapshot references them by
+name and there is nothing to attach them to until the parent exists. The service
+says so instead of guessing.
 """
 
 from __future__ import annotations
@@ -440,6 +441,197 @@ async def _restore_variable_overrides(
         )
 
 
+async def _event_type_by_name(
+    session: AsyncSession, project_id: uuid.UUID, branch_id: uuid.UUID, name: str
+) -> EventType:
+    event_type = (
+        await session.execute(
+            select(EventType).where(
+                EventType.project_id == project_id,
+                EventType.branch_id == branch_id,
+                EventType.name == name,
+            )
+        )
+    ).scalar_one_or_none()
+    if event_type is None:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"Event type '{name}' does not exist on this branch. "
+                "Restore it first, then restore what hangs off it."
+            ),
+        )
+    return event_type
+
+
+async def _recreate_entity(
+    session: AsyncSession,
+    project_id: uuid.UUID,
+    branch_id: uuid.UUID,
+    data: BranchRevertRequest,
+    base_item: dict[str, Any],
+) -> None:
+    """Put back an entity the branch deleted, from its state in the base snapshot.
+
+    Only the entity the diff entry names is recreated, plus the child rows that
+    have no diff entry of their own (an event's values and tags, a variable's
+    overrides). An event type's fields and events are separate entries, so they
+    are restored by their own reverts — in that order, since a field cannot hang
+    off an event type that is still missing.
+
+    One gap is deliberate and visible: an event's photos are not restored. The
+    snapshot redacts their storage keys, so the rows cannot be rebuilt — and the
+    diff keeps showing the photos as missing afterwards rather than pretending
+    the restore was complete.
+    """
+    if data.entity_type == "event_type":
+        session.add(
+            EventType(
+                id=uuid.uuid4(),
+                project_id=project_id,
+                branch_id=branch_id,
+                name=base_item["name"],
+                display_name=base_item["display_name"],
+                description=base_item.get("description"),
+                color=base_item.get("color"),
+                order=base_item.get("order", 0),
+            )
+        )
+        return
+
+    if data.entity_type == "field_definition":
+        event_type = await _event_type_by_name(session, project_id, branch_id, str(data.parent))
+        session.add(
+            FieldDefinition(
+                id=uuid.uuid4(),
+                event_type_id=event_type.id,
+                name=base_item["name"],
+                display_name=base_item["display_name"],
+                field_type=base_item["field_type"],
+                is_required=base_item.get("is_required", False),
+                enum_options=list(base_item["enum_options"])
+                if base_item.get("enum_options")
+                else None,
+                description=base_item.get("description"),
+                order=base_item.get("order", 0),
+                sensitivity=base_item["sensitivity"],
+                contract_required_max_null_rate=base_item.get("contract_required_max_null_rate"),
+                contract_regex=base_item.get("contract_regex"),
+                contract_min_value=base_item.get("contract_min_value"),
+                contract_max_value=base_item.get("contract_max_value"),
+                contract_max_bad_rate=base_item.get("contract_max_bad_rate") or 0.0,
+            )
+        )
+        return
+
+    if data.entity_type == "event":
+        event_type = await _event_type_by_name(
+            session, project_id, branch_id, base_item["event_type_name"]
+        )
+        sunset_at = base_item.get("sunset_at")
+        owner_id = base_item.get("owner_id")
+        event = Event(
+            id=uuid.uuid4(),
+            project_id=project_id,
+            branch_id=branch_id,
+            event_type_id=event_type.id,
+            name=base_item["name"],
+            source_name=base_item.get("source_name"),
+            description=base_item.get("description"),
+            order=base_item.get("order", 0),
+            status=base_item["status"],
+            sunset_at=datetime.fromisoformat(sunset_at) if sunset_at else None,
+            owner_id=uuid.UUID(owner_id) if owner_id else None,
+            reviewed=base_item.get("reviewed", False),
+            metric_breakdown_columns=list(base_item.get("metric_breakdown_columns") or []),
+        )
+        session.add(event)
+        await session.flush()
+        for field in ("field_values", "meta_values", "tags"):
+            await _restore_event_children(session, project_id, branch_id, event, base_item, field)
+        return
+
+    if data.entity_type == "variable":
+        variable = Variable(
+            id=uuid.uuid4(),
+            project_id=project_id,
+            branch_id=branch_id,
+            name=base_item["name"],
+            source_name=base_item.get("source_name"),
+            variable_type=base_item["variable_type"],
+            description=base_item.get("description"),
+            allowed_values=list(base_item.get("allowed_values") or []),
+            bindings=list(base_item.get("bindings") or []),
+            excluded_from_scans=base_item.get("excluded_from_scans", False),
+        )
+        session.add(variable)
+        await session.flush()
+        await _restore_variable_overrides(session, project_id, branch_id, variable, base_item)
+        return
+
+    if data.entity_type == "meta_field":
+        session.add(
+            MetaFieldDefinition(
+                id=uuid.uuid4(),
+                project_id=project_id,
+                branch_id=branch_id,
+                name=base_item["name"],
+                display_name=base_item["display_name"],
+                field_type=base_item["field_type"],
+                is_required=base_item.get("is_required", False),
+                enum_options=list(base_item["enum_options"])
+                if base_item.get("enum_options")
+                else None,
+                default_value=base_item.get("default_value"),
+                link_template=base_item.get("link_template"),
+                order=base_item.get("order", 0),
+                sensitivity=base_item["sensitivity"],
+            )
+        )
+        return
+
+    source_et = await _event_type_by_name(
+        session, project_id, branch_id, base_item["source_event_type_name"]
+    )
+    target_et = await _event_type_by_name(
+        session, project_id, branch_id, base_item["target_event_type_name"]
+    )
+    fields = (
+        (
+            await session.execute(
+                select(FieldDefinition).where(
+                    FieldDefinition.event_type_id.in_([source_et.id, target_et.id])
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    field_by_key = {(fd.event_type_id, fd.name): fd for fd in fields}
+    source_field = field_by_key.get((source_et.id, base_item["source_field_name"]))
+    target_field = field_by_key.get((target_et.id, base_item["target_field_name"]))
+    if source_field is None or target_field is None:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "The fields this relation joins no longer exist on this branch. Restore them first."
+            ),
+        )
+    session.add(
+        EventTypeRelation(
+            id=uuid.uuid4(),
+            project_id=project_id,
+            branch_id=branch_id,
+            source_event_type_id=source_et.id,
+            target_event_type_id=target_et.id,
+            source_field_id=source_field.id,
+            target_field_id=target_field.id,
+            relation_type=base_item["relation_type"],
+            description=base_item.get("description"),
+        )
+    )
+
+
 async def _restore_field(
     session: AsyncSession,
     project_id: uuid.UUID,
@@ -516,13 +708,17 @@ async def revert_change(
     entry = _find_entry(diff, data)
 
     if entry.kind == "removed":
-        raise HTTPException(
-            status_code=409,
-            detail=(
-                "Restoring an entity this branch deleted is not supported yet — "
-                "recreate it by hand, or discard the branch."
-            ),
-        )
+        if data.field is not None:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "This entity was deleted on the branch, so its fields cannot be reverted "
+                    "one by one. Revert the whole entity to bring it back."
+                ),
+            )
+        await _recreate_entity(session, project.id, branch.id, data, _base_item(base_payload, data))
+        await session.commit()
+        return await plan_branch_service.diff_branch(session, slug, branch_id)
 
     if entry.kind == "added":
         if data.field is not None:

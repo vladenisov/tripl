@@ -388,7 +388,7 @@ describe('BranchesTab', () => {
     )
   })
 
-  it('offers no revert on an entity the branch deleted', async () => {
+  it('restores an entity the branch deleted', async () => {
     vi.mocked(planBranchesApi.list).mockResolvedValue({ items: [MAIN, FEATURE], total: 2 })
     vi.mocked(planBranchesApi.getConflicts).mockResolvedValue({ entities: [], unresolved_count: 0 })
     vi.mocked(planBranchesApi.listComments).mockResolvedValue([])
@@ -410,16 +410,32 @@ describe('BranchesTab', () => {
       ],
     })
 
+    vi.mocked(planBranchesApi.revert).mockResolvedValue({
+      behind_base: false,
+      summary: { added: 0, removed: 0, changed: 0 },
+      entries: [],
+    })
+
     renderTab('feat-1')
 
     fireEvent.click(await screen.findByRole('button', { name: /legacy_event/i }))
 
-    // Restoring a deleted entity isn't supported yet, so no button promises it.
-    expect(screen.queryByRole('button', { name: /Revert/i })).not.toBeInTheDocument()
-    // It still links to the copy that survives on main.
+    // The row links to the copy that survives on main — the branch has none.
     expect(await screen.findByRole('link', { name: /Open on main/i })).toHaveAttribute(
       'href',
       '/p/demo/events/all/ev-old',
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: /Restore on this branch/i }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Restore' }))
+
+    await waitFor(() =>
+      expect(planBranchesApi.revert).toHaveBeenCalledWith('demo', 'feat-1', {
+        entity_type: 'event',
+        name: 'legacy_event',
+        parent: 'track',
+        field: null,
+      }),
     )
   })
 

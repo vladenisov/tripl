@@ -465,19 +465,22 @@ function FeatureBranchDetail({ slug, branch, diff, confirm }: FeatureBranchDetai
     onSuccess: invalidate,
   })
 
+  // Every revert restores the branch to its base state and leaves main alone;
+  // the wording changes because discarding an addition, undoing an edit and
+  // bringing back a deletion read as three different acts to the reviewer.
+  const REVERT_PROMPT: Record<PlanDiffKind, (name: string) => string> = {
+    added: (name) => `Discard ${name}? This branch added it — it will be deleted from the branch.`,
+    changed: (name) => `Revert every change to ${name}, back to the state it had when this branch was opened?`,
+    removed: (name) => `Restore ${name} on this branch? It comes back as it was when the branch was opened; its photos are not restored.`,
+  }
+
   const handleRevert = async (entry: PlanDiffEntry, field?: string) => {
-    const what = field
-      ? `the change to "${field}" on ${entry.name}`
-      : entry.kind === 'added'
-        ? `${entry.name}, which this branch added`
-        : `every change to ${entry.name}`
     const ok = await confirm({
       title: field ? 'Revert field' : 'Revert change',
-      message:
-        entry.kind === 'added' && !field
-          ? `Discard ${what}? It is deleted from the branch — main is untouched.`
-          : `Revert ${what} to the state it had when this branch was opened? Main is untouched.`,
-      confirmLabel: 'Revert',
+      message: field
+        ? `Revert the change to "${field}" on ${entry.name}, back to the value it had when this branch was opened?`
+        : `${REVERT_PROMPT[entry.kind](entry.name)} Main is untouched.`,
+      confirmLabel: entry.kind === 'removed' && !field ? 'Restore' : 'Revert',
       variant: 'danger',
     })
     if (ok) revertMut.mutate({ entry, field })
@@ -705,9 +708,11 @@ function ChangeRow({ slug, branchId, entry, onRevert, reverting }: ChangeRowProp
   const path = entityPath(slug, entry)
   // A removed entity is gone from the branch — only main still has it.
   const link = path ? branchLink(path, entry.kind === 'removed' ? null : branchId) : null
-  // Restoring a deleted entity isn't supported yet (the API says so too), so
-  // the button is offered only where it can actually deliver.
-  const canRevert = entry.kind !== 'removed'
+  const REVERT_LABEL: Record<PlanDiffKind, string> = {
+    added: 'Discard this addition',
+    changed: 'Revert all changes',
+    removed: 'Restore on this branch',
+  }
 
   return (
     <div
@@ -764,18 +769,16 @@ function ChangeRow({ slug, branchId, entry, onRevert, reverting }: ChangeRowProp
               ) : null}
             </p>
             <div className="flex shrink-0 items-center gap-3">
-              {canRevert ? (
-                <button
-                  type="button"
-                  disabled={reverting}
-                  onClick={() => onRevert(entry)}
-                  className="flex items-center gap-1 text-[11px] hover:underline disabled:opacity-50"
-                  style={{ color: 'var(--fg-muted)' }}
-                >
-                  <Undo2 className="size-3" aria-hidden="true" />
-                  {entry.kind === 'added' ? 'Discard this addition' : 'Revert all changes'}
-                </button>
-              ) : null}
+              <button
+                type="button"
+                disabled={reverting}
+                onClick={() => onRevert(entry)}
+                className="flex items-center gap-1 text-[11px] hover:underline disabled:opacity-50"
+                style={{ color: 'var(--fg-muted)' }}
+              >
+                <Undo2 className="size-3" aria-hidden="true" />
+                {REVERT_LABEL[entry.kind]}
+              </button>
               {link ? (
                 <Link
                   {...link}

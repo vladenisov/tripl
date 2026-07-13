@@ -205,7 +205,7 @@ async def test_revert_rejects_a_single_field_of_an_added_entity(client: AsyncCli
 
 
 @pytest.mark.asyncio
-async def test_revert_of_a_deleted_entity_is_refused_not_faked(client: AsyncClient) -> None:
+async def test_revert_rebuilds_a_deleted_event_with_its_values(client: AsyncClient) -> None:
     slug = "revert-removed"
     await _seed(client, slug)
     branch_id = await _branch(client, slug)
@@ -215,14 +215,106 @@ async def test_revert_of_a_deleted_entity_is_refused_not_faked(client: AsyncClie
         f"/api/v1/projects/{slug}/events/{event['id']}?branch={branch_id}"
     )
     assert deleted.status_code == 204
+    assert (await _diff(client, slug, branch_id))["summary"]["removed"] == 1
 
     resp = await _revert(
         client, slug, branch_id, entity_type="event", name="purchase:success", parent="track"
     )
-    assert resp.status_code == 409
-    assert "not supported yet" in resp.json()["detail"]
-    # The deletion is still in the diff — nothing was half-applied.
-    assert (await _diff(client, slug, branch_id))["summary"]["removed"] == 1
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["entries"] == []
+
+    # The event is back, and so is the field value that hung off it.
+    restored = await _branch_event(client, slug, branch_id, "purchase:success")
+    assert restored["description"] == "on main"
+    assert [fv["value"] for fv in restored["field_values"]] == ["USD"]
+    # A fresh row on the branch — main's copy was never touched.
+    assert restored["id"] != event["id"]
+
+
+@pytest.mark.asyncio
+async def test_revert_rebuilds_a_deleted_event_type(client: AsyncClient) -> None:
+    slug = "revert-removed-type"
+    await _seed(client, slug)
+    empty = await client.post(
+        f"/api/v1/projects/{slug}/event-types",
+        json={"name": "identify", "display_name": "Identify", "description": "who"},
+    )
+    assert empty.status_code == 201
+    branch_id = await _branch(client, slug)
+
+    event_types = await client.get(f"/api/v1/projects/{slug}/event-types?branch={branch_id}")
+    branch_et_id = next(et["id"] for et in event_types.json() if et["name"] == "identify")
+    deleted = await client.delete(
+        f"/api/v1/projects/{slug}/event-types/{branch_et_id}?branch={branch_id}"
+    )
+    assert deleted.status_code == 204
+
+    resp = await _revert(client, slug, branch_id, entity_type="event_type", name="identify")
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["entries"] == []
+
+    event_types = await client.get(f"/api/v1/projects/{slug}/event-types?branch={branch_id}")
+    restored = next(et for et in event_types.json() if et["name"] == "identify")
+    assert restored["display_name"] == "Identify"
+    assert restored["description"] == "who"
+
+
+@pytest.mark.asyncio
+async def test_revert_rebuilds_a_deleted_field_definition(client: AsyncClient) -> None:
+    slug = "revert-removed-field-def"
+    et_id, _field_id, _event_id = await _seed(client, slug)
+    # A field no event carries a value for: restoring it is a clean insert, with
+    # no values to reconcile (those are the event's own diff entry).
+    spare = await client.post(
+        f"/api/v1/projects/{slug}/event-types/{et_id}/fields",
+        json={"name": "coupon", "display_name": "Coupon", "field_type": "string"},
+    )
+    assert spare.status_code == 201
+    branch_id = await _branch(client, slug)
+
+    event_types = await client.get(f"/api/v1/projects/{slug}/event-types?branch={branch_id}")
+    branch_et_id = next(et["id"] for et in event_types.json() if et["name"] == "track")
+    fields = await client.get(
+        f"/api/v1/projects/{slug}/event-types/{branch_et_id}/fields?branch={branch_id}"
+    )
+    field_id = next(f["id"] for f in fields.json() if f["name"] == "coupon")
+    deleted = await client.delete(
+        f"/api/v1/projects/{slug}/event-types/{branch_et_id}/fields/{field_id}?branch={branch_id}"
+    )
+    assert deleted.status_code == 204
+
+    resp = await _revert(
+        client, slug, branch_id, entity_type="field_definition", name="coupon", parent="track"
+    )
+    assert resp.status_code == 200, resp.text
+
+    fields = await client.get(
+        f"/api/v1/projects/{slug}/event-types/{branch_et_id}/fields?branch={branch_id}"
+    )
+    restored = next(f for f in fields.json() if f["name"] == "coupon")
+    assert restored["field_type"] == "string"
+    assert restored["display_name"] == "Coupon"
+
+
+@pytest.mark.asyncio
+async def test_revert_rejects_a_single_field_of_a_deleted_entity(client: AsyncClient) -> None:
+    slug = "revert-removed-field"
+    await _seed(client, slug)
+    branch_id = await _branch(client, slug)
+
+    event = await _branch_event(client, slug, branch_id, "purchase:success")
+    await client.delete(f"/api/v1/projects/{slug}/events/{event['id']}?branch={branch_id}")
+
+    resp = await _revert(
+        client,
+        slug,
+        branch_id,
+        entity_type="event",
+        name="purchase:success",
+        parent="track",
+        field="description",
+    )
+    assert resp.status_code == 400
 
 
 @pytest.mark.asyncio
@@ -354,3 +446,36 @@ async def test_revert_restores_a_variables_documented_values(client: AsyncClient
     variables = await client.get(f"/api/v1/projects/{slug}/variables?branch={branch_id}")
     restored = next(v for v in variables.json() if v["name"] == "currency")
     assert restored["allowed_values"] == ["USD"]
+
+
+@pytest.mark.asyncio
+async def test_revert_rebuilds_a_deleted_variable(client: AsyncClient) -> None:
+    slug = "revert-removed-variable"
+    await _seed(client, slug)
+    created = await client.post(
+        f"/api/v1/projects/{slug}/variables",
+        json={
+            "name": "currency",
+            "variable_type": "string",
+            "allowed_values": ["USD"],
+            "bindings": ["page_data.currency"],
+        },
+    )
+    assert created.status_code == 201
+    branch_id = await _branch(client, slug)
+
+    variables = await client.get(f"/api/v1/projects/{slug}/variables?branch={branch_id}")
+    branch_var = next(v for v in variables.json() if v["name"] == "currency")
+    deleted = await client.delete(
+        f"/api/v1/projects/{slug}/variables/{branch_var['id']}?branch={branch_id}"
+    )
+    assert deleted.status_code == 204
+
+    resp = await _revert(client, slug, branch_id, entity_type="variable", name="currency")
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["entries"] == []
+
+    variables = await client.get(f"/api/v1/projects/{slug}/variables?branch={branch_id}")
+    restored = next(v for v in variables.json() if v["name"] == "currency")
+    assert restored["allowed_values"] == ["USD"]
+    assert restored["bindings"] == ["page_data.currency"]
