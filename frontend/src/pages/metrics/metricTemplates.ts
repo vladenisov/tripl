@@ -13,6 +13,7 @@ import type {
   MetricKind,
   MetricScanInterval,
 } from '@/types'
+import type { DbType } from '@/types/dataSources'
 
 // The editable-field seed a template applies to the create form. Only fields a
 // template can sensibly prefill are here: kind + kind-specific shape + the
@@ -36,10 +37,90 @@ export interface MetricTemplateSeed {
   factComposition?: 'single' | 'ratio'
   /** Fact single-operand aggregation. */
   aggregation?: MetricAggregation
-  /** Starter SQL scaffold for the sql kind. */
-  metricSql?: string
+  /**
+   * Which starter SQL scaffold the `sql` kind begins from. The SQL TEXT is not
+   * stored on the seed, because there is no single text that works: it is
+   * rendered per warehouse by {@link starterSql}.
+   */
+  sqlTemplate?: SqlTemplateId
   /** Prefilled SQL time/bucket column for the sql kind. */
   sqlTimeColumn?: string
+}
+
+/** The starter SQL scaffolds, each renderable for any supported warehouse. */
+export type SqlTemplateId = 'daily-active-users' | 'event-volume'
+
+/** Every warehouse a starter template can be rendered for. */
+export const DB_TYPES: readonly DbType[] = ['clickhouse', 'postgres', 'bigquery', 'synthetic']
+
+/**
+ * The per-dialect time-bucket expression, mirroring each backend adapter's
+ * `_bucket_expression` so a starter query buckets exactly the way a collection
+ * will. All three agree with `tripl.core.bucketing.floor_to_bucket`: UTC, and
+ * anchored at the Unix epoch for these sub-week intervals.
+ *
+ * This is the whole point of the module. `date_trunc('day', ts)` — the single
+ * form every template used to emit — is valid on ClickHouse and PostgreSQL and a
+ * hard error on BigQuery, whose GoogleSQL `DATE_TRUNC` takes `(date_expr,
+ * date_part)` and answers the string-first form with "A valid date part name is
+ * required but found created_at". Every expression below was executed against a
+ * real engine (ClickHouse 25.8, PostgreSQL 18, and BigQuery's own ZetaSQL
+ * analyzer via the emulator).
+ */
+function bucketExpression(db: DbType | undefined, unit: 'day' | 'hour'): string {
+  switch (db) {
+    case 'postgres':
+      return `date_bin(INTERVAL '1 ${unit}', created_at, TIMESTAMPTZ '1970-01-01 00:00:00+00:00')`
+    case 'bigquery':
+      return `TIMESTAMP_TRUNC(created_at, ${unit.toUpperCase()}, 'UTC')`
+    // ClickHouse, the synthetic demo warehouse (which mimics ClickHouse
+    // semantics), and "no source picked yet" all use the ClickHouse form. The
+    // moment a source is selected the SQL is re-rendered for it, so an
+    // unselected source only ever shows a placeholder the user has not edited.
+    default:
+      return `toStartOfInterval(created_at, INTERVAL 1 ${unit.toUpperCase()}, 'UTC')`
+  }
+}
+
+/**
+ * Render a starter scaffold as SQL valid for the selected warehouse.
+ *
+ * `FROM events` is a placeholder the user repoints at their own table; what is
+ * dialect-specific — and what used to be wrong — is the bucket expression.
+ * Deliberately free of SQL comments: the backend's read-only gate
+ * (`validate_select_sql_safety`) rejects every comment marker outright.
+ */
+export function starterSql(id: SqlTemplateId, db: DbType | undefined): string {
+  if (id === 'daily-active-users') {
+    return [
+      `SELECT ${bucketExpression(db, 'day')} AS bucket,`,
+      '       count(DISTINCT user_id) AS value',
+      'FROM events',
+      'GROUP BY 1',
+      'ORDER BY 1',
+    ].join('\n')
+  }
+  return [
+    `SELECT ${bucketExpression(db, 'hour')} AS bucket,`,
+    '       count(*) AS value',
+    'FROM events',
+    'GROUP BY 1',
+    'ORDER BY 1',
+  ].join('\n')
+}
+
+/**
+ * Whether `sql` is still untouched starter output for `id` — i.e. it matches what
+ * {@link starterSql} renders for SOME warehouse.
+ *
+ * This is the guard that makes re-rendering on a data-source switch safe. Once
+ * the user has typed a single character into the editor the SQL stops matching
+ * any dialect's rendering, and their work is never silently overwritten. It stays
+ * true across a switch we performed ourselves (the text is then the new dialect's
+ * rendering), so a user who flips PG -> BigQuery -> PG keeps getting valid SQL.
+ */
+export function isPristineStarterSql(id: SqlTemplateId, sql: string): boolean {
+  return DB_TYPES.some(db => starterSql(id, db) === sql)
 }
 
 export interface MetricTemplate {
@@ -55,20 +136,6 @@ export interface MetricTemplate {
   seed: MetricTemplateSeed
 }
 
-const DAU_SQL =
-  "SELECT date_trunc('day', created_at) AS bucket,\n" +
-  '       count(DISTINCT user_id) AS value\n' +
-  'FROM events\n' +
-  'GROUP BY 1\n' +
-  'ORDER BY 1'
-
-const EVENT_VOLUME_SQL =
-  "SELECT date_trunc('hour', created_at) AS bucket,\n" +
-  '       count(*) AS value\n' +
-  'FROM events\n' +
-  'GROUP BY 1\n' +
-  'ORDER BY 1'
-
 // Starter templates surfaced on the New metric screen. Ordered easiest-first so
 // an empty project has a fast path to its first metric.
 export const METRIC_TEMPLATES: readonly MetricTemplate[] = [
@@ -83,7 +150,7 @@ export const METRIC_TEMPLATES: readonly MetricTemplate[] = [
       unit: '',
       anomalyDetection: true,
       interval: '1d',
-      metricSql: DAU_SQL,
+      sqlTemplate: 'daily-active-users',
       sqlTimeColumn: 'bucket',
     },
   },
@@ -154,7 +221,7 @@ export const METRIC_TEMPLATES: readonly MetricTemplate[] = [
       unit: '',
       anomalyDetection: true,
       interval: '1h',
-      metricSql: EVENT_VOLUME_SQL,
+      sqlTemplate: 'event-volume',
       sqlTimeColumn: 'bucket',
     },
   },

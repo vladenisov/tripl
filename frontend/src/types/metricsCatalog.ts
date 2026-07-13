@@ -60,6 +60,12 @@ export type MetricPreviewRequest = Schemas['MetricPreviewRequest']
 export type MetricPreviewResponse = Schemas['MetricPreviewResponse']
 export type MetricPreviewPoint = Schemas['MetricPreviewPoint']
 
+// ───────── Fact operand preview (stateless dry-run of ONE operand's filters) ─────────
+// The request IS the operand a save sends (`FactOperand`), so the compiled SQL a
+// preview executes is the SQL the collection will run.
+export type FactOperandPreviewRequest = Schemas['FactOperand']
+export type FactOperandPreviewResponse = Schemas['FactOperandPreviewResponse']
+
 // ───────── UI option lists ─────────
 export const METRIC_KINDS: readonly MetricKind[] = [
   'fact',

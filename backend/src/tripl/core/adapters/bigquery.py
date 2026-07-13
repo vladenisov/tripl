@@ -5,7 +5,7 @@ import logging
 import re
 import time
 from datetime import datetime
-from typing import cast
+from typing import cast, override
 
 from google.cloud import bigquery
 from google.oauth2 import service_account
@@ -14,6 +14,8 @@ from tripl.core.adapters.base import (
     AggregateSpec,
     BaseAdapter,
     ColumnInfo,
+    FieldContractExpectation,
+    FieldContractViolation,
     SchemaColumn,
     SchemaTable,
 )
@@ -31,7 +33,6 @@ logger = logging.getLogger(__name__)
 
 _IDENTIFIER_RE = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_.]*$")
 _IDENTIFIER_PART_RE = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*$")
-_INTERVAL_RE = re.compile(r"^(\d+)\s+(second|minute|hour|day|week|month)s?$", re.IGNORECASE)
 # GCP project ids allow letters/digits/hyphens; dataset ids allow
 # letters/digits/underscores. Validate the model-derived identifiers before
 # interpolating them into the catalog query as defense-in-depth.
@@ -43,11 +44,22 @@ _BQ_IDENTIFIER_MAX_LEN = 1024
 
 # Hard cap on catalog rows pulled for SQL-editor autocomplete. Kept generous and
 # in line with the ClickHouse/Postgres adapters so a dataset with thousands of
-# wide tables can't blow up the response.
+# wide tables can't blow up the response. This is the budget for the WHOLE browse,
+# shared across every dataset it spans — not a per-dataset allowance.
 _SCHEMA_ROW_LIMIT = 50000
 
+# How many datasets one schema browse may span. ClickHouse and Postgres cover every
+# non-system database/schema in a SINGLE catalog query; BigQuery's
+# INFORMATION_SCHEMA.COLUMNS view is dataset-qualified, so covering N datasets costs
+# N jobs. A UNION ALL across them would be one job but would make a single
+# permission-denied dataset fail the whole browse, which is exactly the failure mode
+# the contract forbids. So: one job per dataset, hard-capped here, so an autocomplete
+# keystroke can never fan out into an unbounded number of billed jobs.
+_MAX_SCHEMA_DATASETS = 20
+
 # Wall-clock cap on the catalog introspection job so a hung BQ job can't block
-# the worker thread forever. Scoped to schema introspection only.
+# the worker thread forever. Scoped to schema introspection: this is a CAP, not a
+# default — a data source configuring a *shorter* timeout_seconds still wins.
 _SCHEMA_QUERY_TIMEOUT_SECONDS = 30
 
 # GoogleSQL keeps TIMESTAMP/DATETIME/DATE in separate type families, each with its
@@ -80,6 +92,55 @@ _JSON_PATH_MAX_DEPTH = 20
 
 # BigQuery spells an array-valued field as mode=REPEATED rather than a distinct type.
 _REPEATED_MODE = "REPEATED"
+
+
+def _decode_grouped_array(value: object) -> object:
+    """Turn a ``TO_JSON_STRING(...)`` grouped value back into the list it stands for.
+
+    GoogleSQL flatly refuses to ``GROUP BY`` an ARRAY ("Grouping by expressions of type
+    ARRAY is not allowed"), and refuses a constant array just as hard ("Cannot GROUP BY
+    literal values"). Every array-valued grouped column — a JSON/STRUCT column's
+    leaf-path array, and a REPEATED scalar column — is therefore grouped by its JSON
+    *string* rendering, which is a scalar STRING and groups fine.
+
+    That is a SQL-level trick, and it must not leak into the row contract. ``BaseAdapter``
+    documents the json-paths column as an ARRAY of paths, and
+    ``core.analyzers.cardinality._process_breakdown`` branches on
+    ``isinstance(paths, (list, tuple))``: handed the raw ``'["a","b"]'`` string it would
+    read the whole blob as ONE path and silently corrupt every cardinality count. So the
+    string is decoded back to a list here, on the way out, before any caller sees it.
+    """
+    if value is None:
+        return None
+    if isinstance(value, (list, tuple)):
+        # Already an array — a fake/mock client, or a column the warehouse handed back
+        # natively. Normalize to a list and leave it alone.
+        return list(value)
+    if not isinstance(value, str):
+        msg = (
+            "BigQuery: expected a JSON string for an array-valued grouped column, "
+            f"got {type(value).__name__}"
+        )
+        raise ValueError(msg)
+    try:
+        decoded = json.loads(value)
+    except json.JSONDecodeError as exc:
+        msg = f"BigQuery: could not decode array-valued grouped column {value!r}: {exc}"
+        raise ValueError(msg) from exc
+
+    # Guard the DECODED type, not merely the input type. `json.loads` will happily
+    # return a dict, a bare string or a number, and any of those flowing out of here
+    # would put a non-list into the json-paths column — which
+    # `cardinality._process_breakdown` tests with `isinstance(paths, (list, tuple))`
+    # and, failing that, reads as ONE path. That is precisely the silent cardinality
+    # corruption this function exists to prevent, so it fails loudly instead.
+    if decoded is not None and not isinstance(decoded, list):
+        msg = (
+            "BigQuery: an array-valued grouped column decoded to "
+            f"{type(decoded).__name__}, not a list: {value!r}"
+        )
+        raise ValueError(msg)
+    return decoded
 
 
 def _walk_struct_fields(
@@ -143,6 +204,19 @@ class BigQueryAdapter(BaseAdapter):
     introspects lazily on first use.
     """
 
+    # Execution controls, as CLASS-level defaults on purpose. Every test module in the
+    # suite — and the ZetaSQL conformance gate — builds this adapter with
+    # ``object.__new__(BigQueryAdapter)`` to avoid constructing a live client from
+    # service-account credentials. Those instances never run ``__init__``, so an
+    # instance-only attribute read from a query path would blow up with AttributeError
+    # in exactly the tests that exist to protect the query paths. Declaring the
+    # defaults on the class keeps an un-initialized adapter behaving like an
+    # unconfigured one (no timeout, no cost guard, default dataset only), which is the
+    # pre-existing behavior.
+    _timeout_seconds: float | None = None
+    _maximum_bytes_billed: int | None = None
+    _dataset_allowlist: tuple[str, ...] | None = None
+
     def __init__(
         self,
         host: str,
@@ -150,9 +224,14 @@ class BigQueryAdapter(BaseAdapter):
         database: str,
         username: str = "",  # unused for BQ
         password: str = "",  # service-account JSON
+        *,
+        location: str | None = None,
+        timeout_seconds: int | None = None,
+        maximum_bytes_billed: int | None = None,
+        dataset_allowlist: list[str] | None = None,
         **kwargs: object,
     ) -> None:
-        del port, username  # not applicable to BigQuery
+        del port, username, kwargs  # not applicable to BigQuery / forward-compatible
         if not host:
             raise ValueError("BigQuery: host (project_id) is required")
         if not password:
@@ -165,15 +244,35 @@ class BigQueryAdapter(BaseAdapter):
             service_account.Credentials,
             service_account.Credentials.from_service_account_info(info),  # type: ignore[no-untyped-call]
         )
-        raw_location = kwargs.get("location")
-        location = raw_location if isinstance(raw_location, str) else None
+        self._timeout_seconds = float(timeout_seconds) if timeout_seconds else None
+        self._maximum_bytes_billed = (
+            maximum_bytes_billed if maximum_bytes_billed and maximum_bytes_billed > 0 else None
+        )
+        self._dataset_allowlist = tuple(dataset_allowlist) if dataset_allowlist else None
+
+        # Both guards ride on the client's DEFAULT job config rather than a per-call
+        # ``job_config=`` argument, so every statement this adapter will ever issue —
+        # including ones added later — inherits them without a call site having to
+        # remember. It also keeps ``self._client.query(sql)`` single-argument, which the
+        # fake clients in the test suite and the ZetaSQL gate rely on.
+        #
+        # ``maximum_bytes_billed`` is the cost guard: BigQuery REFUSES a query whose
+        # estimate exceeds it, so a runaway scan is rejected before a byte is billed.
+        # ``job_timeout_ms`` is the server-side half of the deadline: it makes BigQuery
+        # itself abandon the job, so a worker that is SIGKILLed before it can call
+        # ``job.cancel()`` still doesn't leave a query burning slots.
+        job_config = bigquery.QueryJobConfig(
+            default_dataset=f"{host}.{database}" if database else None,
+        )
+        if self._maximum_bytes_billed is not None:
+            job_config.maximum_bytes_billed = self._maximum_bytes_billed
+        if self._timeout_seconds is not None:
+            job_config.job_timeout_ms = int(self._timeout_seconds * 1000)
         self._client = bigquery.Client(
             project=host,
             credentials=creds,
             location=location,
-            default_query_job_config=bigquery.QueryJobConfig(
-                default_dataset=f"{host}.{database}" if database else None,
-            ),
+            default_query_job_config=job_config,
         )
         self._project = host
         self._dataset = database
@@ -186,13 +285,76 @@ class BigQueryAdapter(BaseAdapter):
         # STRUCT's paths come from the schema, not the data, so they are captured
         # alongside the types instead of being enumerated by a query.
         self._struct_paths: dict[str, dict[str, bool]] = {}
+        # Columns declared mode=REPEATED. BigQuery does not give an array its own
+        # *type* — an ARRAY<STRING> column reports field_type STRING — so array-ness
+        # is only visible in the mode, and it has to be remembered: a repeated column
+        # is an ARRAY value, which GoogleSQL can neither GROUP BY nor CAST to STRING.
+        self._repeated_columns: set[str] = set()
 
     def close(self) -> None:
         self._client.close()  # type: ignore[no-untyped-call]
 
+    def _query_deadline(self, cap: float | None = None) -> float | None:
+        """How long this adapter may wait for one job, in seconds (None = forever).
+
+        ``cap`` is an additional per-call ceiling (schema introspection uses one), never
+        a floor: a data source that configures a *shorter* ``timeout_seconds`` than the
+        cap still gets the shorter deadline.
+        """
+        timeout = self._timeout_seconds
+        if timeout is not None and timeout <= 0:
+            timeout = None
+        if timeout is None:
+            return cap
+        if cap is None:
+            return timeout
+        return min(timeout, cap)
+
+    def _run_query(
+        self, sql: str, *, timeout_cap: float | None = None
+    ) -> bigquery.table.RowIterator:
+        """Submit one statement and wait for it, bounded by the configured deadline.
+
+        Every BigQuery statement this adapter issues goes through here. It used to be
+        the ONLY warehouse adapter with no deadline at all: ClickHouse gets
+        ``send_receive_timeout``, Postgres gets ``statement_timeout``, and BigQuery got
+        a bare ``job.result()`` that waits forever — so a pathological ``base_query``
+        pinned a Celery worker until the 55-minute hard limit killed it.
+
+        On timeout the job is CANCELLED best-effort. A BigQuery job outlives the client
+        that started it: giving up on the wait does nothing to the job, which keeps
+        scanning (and billing) server-side. ``cancel()`` is the only thing that stops
+        it, and it is best-effort by nature — the cancel RPC can itself fail, and the
+        job may already have finished — so a failure to cancel is logged, never allowed
+        to mask the timeout the caller actually needs to see.
+        """
+        job = self._client.query(sql)
+        deadline = self._query_deadline(timeout_cap)
+        try:
+            if deadline is None:
+                return job.result()
+            return job.result(timeout=deadline)
+        except TimeoutError as exc:
+            # google-cloud-bigquery raises concurrent.futures.TimeoutError, which IS the
+            # builtin TimeoutError on the Python this runs on.
+            self._cancel(job)
+            msg = (
+                f"BigQuery: query exceeded the {deadline:g}s timeout configured for this "
+                "data source and was cancelled. Narrow the time window, reduce the "
+                "columns the base query selects, or raise the data source's timeout."
+            )
+            raise TimeoutError(msg) from exc
+
+    def _cancel(self, job: object) -> None:
+        """Best-effort cancel of a timed-out job. Never raises."""
+        try:
+            cancel = job.cancel  # type: ignore[attr-defined]
+            cancel()
+        except Exception:
+            logger.warning("BQ: could not cancel timed-out job", exc_info=True)
+
     def test_connection(self) -> bool:
-        job = self._client.query("SELECT 1 AS ok")
-        row = next(iter(job.result()))
+        row = next(iter(self._run_query("SELECT 1 AS ok")))
         return bool(row["ok"] == 1)
 
     def _validate_column(self, column: str) -> str:
@@ -337,24 +499,160 @@ class BigQueryAdapter(BaseAdapter):
         json_path = "$." + ".".join(parts)
         return f"JSON_QUERY(`{col}`, '{json_path}')"
 
-    def _string_value_expression(self, column: str) -> str:
-        return f"IFNULL(CAST(`{self._validate_column(column)}` AS STRING), '')"
+    def _string_value_expression(self, column: str, *, role: str = "breakdown column") -> str:
+        """The scalar STRING rendering of a column, used for breakdown and contract values.
+
+        Matches ClickHouse's ``ifNull(toString(col), '')`` — the NULL-collapsing matters,
+        because a grouped-event filter and an enum/regex check both compare against it.
+
+        A REPEATED column is rejected outright. ``CAST(<array> AS STRING)`` is not a
+        legal GoogleSQL cast, so a breakdown (or an enum/regex/range contract) on an
+        array column would compile to SQL that only fails once a worker runs it. Fail
+        loudly here instead, while the caller is still choosing the column. ``role`` only
+        shapes the message, so the error names what the caller was actually doing.
+        """
+        col = self._validate_column(column)
+        if col in self._repeated_columns:
+            msg = (
+                f"BigQuery: column {col!r} is REPEATED (an ARRAY) and cannot be used as a "
+                f"{role} — GoogleSQL cannot cast an ARRAY to a single STRING value, nor "
+                "group by one. Choose a scalar column."
+            )
+            raise ValueError(msg)
+        return f"IFNULL(CAST(`{col}` AS STRING), '')"
+
+    def _regular_column_sql(self, column: str) -> tuple[str, str]:
+        """``(select_sql, group_sql)`` for a plain (non-nested) column.
+
+        A REPEATED scalar column (``ARRAY<STRING> tags``) carries no distinct *type* —
+        it reports field_type STRING — so it is classified as a plain scalar and used to
+        be selected and grouped by directly. That is ``GROUP BY <array>``, which
+        GoogleSQL rejects, so such a column is grouped by its ``TO_JSON_STRING``
+        rendering and decoded back to a list on the way out.
+
+        This is a real dialect divergence, not a workaround: ClickHouse *can* group by
+        an ``Array(String)`` and returns the group key as a list. BigQuery cannot, so the
+        array is round-tripped through its JSON text to get a groupable scalar. The
+        observable result is deliberately the same on both warehouses — one group per
+        distinct array value (order-sensitive on both), surfaced to callers as a
+        ``list``.
+        """
+        col = self._validate_column(column)
+        if col not in self._repeated_columns:
+            return f"`{col}`", f"`{col}`"
+        group_sql = f"TO_JSON_STRING(`{col}`)"
+        return f"{group_sql} AS `{col}`", group_sql
+
+    def _nested_source(
+        self,
+        base_query: str,
+        where_clause: str,
+        json_cols: list[str],
+        json_value_paths: dict[str, list[str]],
+    ) -> tuple[str, dict[str, str], list[str]]:
+        """The FROM source, with every nested column pre-materialized under an alias.
+
+        A JSON column's leaf-path expression is a *correlated subquery* over the column
+        (``(SELECT ARRAY_AGG(...) FROM UNNEST(JSON_KEYS(col, ...)) ...)``). GoogleSQL will
+        not accept that in a GROUP BY as covering the column it reads: ZetaSQL rejects the
+        SELECT-list copy with "UNNEST expression references column <col> which is neither
+        grouped nor aggregated" *even when the identical expression is spelled out in the
+        GROUP BY*. Grouping by the expression is simply not the same as grouping by the
+        column it correlates on.
+
+        So the nested columns are computed ONCE in a prepared subquery and the outer query
+        groups by the resulting alias, which is a plain scalar STRING and groups fine. This
+        is the same shape ``get_time_bucketed_breakdown_counts_multi`` already uses for its
+        GROUPING SETS, and it is why that path was the only nested one that survived.
+
+        With no nested columns there is nothing to materialize and the source stays the
+        bare ``(base_query) AS _src`` it has always been.
+
+        Returns ``(from_sql, alias_by_output_name, json_value_names)``. The WHERE clause is
+        placed by this method — callers must not re-append it.
+        """
+        prepared: list[str] = []
+        alias_by_name: dict[str, str] = {}
+        json_value_names: list[str] = []
+        for index, c in enumerate(json_cols):
+            alias = f"__np_{index}"
+            prepared.append(f"{self._json_paths_expression(c)} AS `{alias}`")
+            alias_by_name[c] = alias
+        for c in json_cols:
+            for path in json_value_paths.get(c, []):
+                full_path = f"{c}.{path}"
+                alias = f"__nv_{len(json_value_names)}"
+                prepared.append(
+                    f"TO_JSON_STRING({self._json_path_expression(c, path)}) AS `{alias}`"
+                )
+                alias_by_name[full_path] = alias
+                json_value_names.append(full_path)
+
+        if not prepared:
+            return f"({base_query}) AS _src{where_clause}", alias_by_name, json_value_names
+
+        # `SELECT *` keeps every original column visible to the outer query — the time
+        # column it buckets, the measure it aggregates, the breakdown column it folds.
+        inner = f"SELECT *, {', '.join(prepared)} FROM ({base_query}) AS _src{where_clause}"
+        return f"({inner}) AS _prepared", alias_by_name, json_value_names
+
+    def _nested_select_group(
+        self,
+        names: list[str],
+        alias_by_name: dict[str, str],
+    ) -> tuple[list[str], list[str]]:
+        """(select_parts, group_parts) reading pre-materialized nested columns by alias."""
+        select_parts = [f"`{alias_by_name[name]}` AS `{name}`" for name in names]
+        group_parts = [f"`{alias_by_name[name]}`" for name in names]
+        return select_parts, group_parts
+
+    def _decode_rows(
+        self,
+        rows: list[tuple[object, ...]],
+        *,
+        offset: int,
+        reg_cols: list[str],
+        json_cols: list[str],
+    ) -> list[tuple[object, ...]]:
+        """Decode every array-valued grouped column in ``rows`` back into a list.
+
+        ``offset`` is how many leading positional columns (``_bucket``,
+        ``_breakdown_value`` …) precede the regular columns in the row layout; the
+        regular columns then run for ``len(reg_cols)``, and the json/struct path columns
+        immediately after them. Both groups were grouped as JSON strings (see
+        ``_regular_column_sql`` / ``_json_paths_expression``) and must be handed back as
+        lists so the documented row contract holds.
+        """
+        array_indexes = {
+            offset + index for index, c in enumerate(reg_cols) if c in self._repeated_columns
+        }
+        array_indexes |= {offset + len(reg_cols) + index for index in range(len(json_cols))}
+        if not array_indexes:
+            return rows
+        return [
+            tuple(
+                _decode_grouped_array(value) if index in array_indexes else value
+                for index, value in enumerate(row)
+            )
+            for row in rows
+        ]
 
     def _quote_string(self, value: str) -> str:
         return "'" + value.replace("\\", "\\\\").replace("'", "\\'") + "'"
 
-    def _time_window_where_clause(
+    def _time_condition(
         self,
         time_column: str | None,
         time_from: datetime | None,
         time_to: datetime | None,
     ) -> str:
-        """The half-open ``[time_from, time_to)`` predicate, or ``""`` if unbounded.
+        """The bare half-open ``[time_from, time_to)`` predicate, or ``""`` if unbounded.
 
         The single place a time window becomes SQL: every read path routes through it,
         so the literal type follows the column's type family and the UTC normalization
-        happens exactly once. Callers with a mandatory window pass non-None values and
-        always get a clause back.
+        happens exactly once. Split out from ``_time_window_where_clause`` because the
+        field-contract scan has a second predicate to AND with it, and re-deriving the
+        window there is how a window ends up subtly different on one code path.
         """
         if time_column is None or time_from is None or time_to is None:
             return ""
@@ -362,9 +660,19 @@ class BigQueryAdapter(BaseAdapter):
         kind = self._time_kind(time_column)
         lower = self._time_literal(kind, time_from)
         upper = self._time_literal(kind, time_to)
-        return f" WHERE `{tc}` >= {lower} AND `{tc}` < {upper}"
+        return f"`{tc}` >= {lower} AND `{tc}` < {upper}"
 
-    def _json_paths_expression(self, column: str) -> str:
+    def _time_window_where_clause(
+        self,
+        time_column: str | None,
+        time_from: datetime | None,
+        time_to: datetime | None,
+    ) -> str:
+        """``_time_condition`` as a WHERE clause. Callers with a window always get one."""
+        condition = self._time_condition(time_column, time_from, time_to)
+        return f" WHERE {condition}" if condition else ""
+
+    def _json_paths_array_expression(self, column: str) -> str:
         """The sorted ARRAY<STRING> of nested leaf paths held by a nested column.
 
         Mirrors ClickHouse's ``arraySort(JSONAllPaths(col))``, whose elements are the
@@ -376,6 +684,9 @@ class BigQueryAdapter(BaseAdapter):
         A STRUCT column has no data-dependent shape: its paths are declared by the
         schema and identical for every row, so they are emitted as an array literal
         rather than computed per row.
+
+        This is the ARRAY form. It is NOT groupable — see ``_json_paths_expression``,
+        which is what every caller actually selects and groups by.
         """
         col = self._validate_column(column)
         if self._complex_kind(col) is ComplexKind.struct:
@@ -391,25 +702,46 @@ class BigQueryAdapter(BaseAdapter):
             f"WHERE STARTS_WITH(_child, CONCAT(_path, '.'))))"
         )
 
+    def _json_paths_expression(self, column: str) -> str:
+        """The leaf-path set of a nested column, as a GROUP-BY-able scalar STRING.
+
+        Every caller puts this in both the SELECT list and the GROUP BY, and GoogleSQL
+        rejects an ARRAY in a GROUP BY outright — the computed JSON form with
+        ("Grouping by expressions of type ARRAY is not allowed") and the constant STRUCT
+        form just as hard ("Cannot GROUP BY literal values"). Both were verified against
+        ZetaSQL. So the array is rendered to its JSON text, which is a scalar and groups
+        fine, and the *paths semantics are unchanged*: still the sorted set of dotted
+        nested leaf paths, one group per distinct path-set.
+
+        The JSON string is an implementation detail of the SQL, not of the row contract:
+        ``_decode_rows`` turns it back into the ``list[str]`` that ``BaseAdapter``
+        documents and that the cardinality analyzer requires.
+        """
+        return f"TO_JSON_STRING({self._json_paths_array_expression(column)})"
+
     def get_columns(self, base_query: str) -> list[ColumnInfo]:
-        job = self._client.query(f"SELECT * FROM ({base_query}) AS _src LIMIT 0")
-        schema = job.result().schema
+        schema = self._run_query(f"SELECT * FROM ({base_query}) AS _src LIMIT 0").schema
         columns: list[ColumnInfo] = []
         struct_paths: dict[str, dict[str, bool]] = {}
+        repeated: set[str] = set()
         for field in schema:
             type_name = str(field.field_type)
+            mode = str(field.mode).upper()
             columns.append(
                 ColumnInfo(
                     name=field.name,
                     type_name=type_name,
-                    is_nullable=str(field.mode).upper() != "REQUIRED",
+                    is_nullable=mode != "REQUIRED",
                 )
             )
+            if mode == _REPEATED_MODE:
+                repeated.add(str(field.name))
             if classify_complex(type_name) is ComplexKind.struct:
                 struct_paths[str(field.name)] = _declared_struct_paths(field)
         self._allowed_columns = {c.name for c in columns}
         self._column_types = {c.name: c.type_name for c in columns}
         self._struct_paths = struct_paths
+        self._repeated_columns = repeated
         return columns
 
     def _ensure_column_types(self, base_query: str) -> None:
@@ -448,44 +780,114 @@ class BigQueryAdapter(BaseAdapter):
             raise ValueError(msg)
         return kind
 
-    def get_schema_tables(self) -> list[SchemaTable]:
-        # Unlike ClickHouse/Postgres, this stays scoped to the connection's
-        # default dataset and returns every table BARE. BigQuery's
-        # INFORMATION_SCHEMA.COLUMNS view is dataset-qualified, so covering every
-        # dataset would mean either listing datasets and issuing one job per
-        # dataset (N extra round-trips / billed jobs) or a region-qualified
-        # `region-<location>` view that requires the connection's location to be
-        # known and correct. Both are expensive/fragile for autocomplete, so we
-        # deliberately keep the single-dataset scan and leave cross-dataset
-        # qualification (`dataset.table`) to a future change if it proves needed.
-        #
-        # project/dataset come only from the validated DataSource model, never
-        # from a request; still validate before interpolating into the query.
+    def _schema_datasets(self) -> list[str]:
+        """The datasets one schema browse spans: validated, deduped, ordered, bounded.
+
+        The connection's default dataset is always first and can never be squeezed out
+        by the allowlist; the rest are sorted, so the browse is deterministic no matter
+        what order the allowlist was saved in. With no allowlist configured this is
+        exactly the single default dataset — the pre-existing behavior and the
+        pre-existing cost, so turning this on cannot silently multiply anyone's job
+        count.
+
+        project/dataset ids come only from the validated DataSource model, never from a
+        request; they are still validated before being interpolated into the catalog
+        query, as defense-in-depth. An allowlist entry is validated with exactly the
+        same rule as the default dataset — the allowlist is a new way to *reach* the
+        interpolation, so it must not be a new way to *weaken* it.
+        """
         if len(self._project) > _BQ_IDENTIFIER_MAX_LEN or not _BQ_PROJECT_RE.match(self._project):
             raise ValueError(f"Invalid BigQuery project id: {self._project!r}")
-        if len(self._dataset) > _BQ_IDENTIFIER_MAX_LEN or not _BQ_DATASET_RE.match(self._dataset):
-            raise ValueError(f"Invalid BigQuery dataset id: {self._dataset!r}")
-        sql = (
-            "SELECT table_name, column_name, data_type "
-            f"FROM `{self._project}.{self._dataset}.INFORMATION_SCHEMA.COLUMNS` "
-            f"ORDER BY table_name, ordinal_position LIMIT {_SCHEMA_ROW_LIMIT}"
+
+        ordered: list[str] = [self._dataset] if self._dataset else []
+        ordered.extend(
+            sorted({name for name in (self._dataset_allowlist or ()) if name != self._dataset})
         )
-        logger.debug("BQ schema introspection query: %s", sql)
-        _, rows = self._query_rows(sql, timeout=_SCHEMA_QUERY_TIMEOUT_SECONDS)
-        columns_by_table: dict[str, list[SchemaColumn]] = {}
-        for table_name, column_name, data_type in rows:
-            columns_by_table.setdefault(str(table_name), []).append(
-                SchemaColumn(name=str(column_name), data_type=str(data_type))
+        for name in ordered:
+            if len(name) > _BQ_IDENTIFIER_MAX_LEN or not _BQ_DATASET_RE.match(name):
+                raise ValueError(f"Invalid BigQuery dataset id: {name!r}")
+        if not ordered:
+            msg = "BigQuery: no dataset configured — set a default dataset or a dataset allowlist"
+            raise ValueError(msg)
+        if len(ordered) > _MAX_SCHEMA_DATASETS:
+            logger.warning(
+                "BQ schema introspection: %s datasets configured, browsing the first %s",
+                len(ordered),
+                _MAX_SCHEMA_DATASETS,
             )
+        return ordered[:_MAX_SCHEMA_DATASETS]
+
+    def get_schema_tables(self) -> list[SchemaTable]:
+        """Catalog introspection across every permitted dataset, qualified like the rest.
+
+        ClickHouse and Postgres span every non-system database/schema and QUALIFY names
+        that live outside the connection default (`analytics.orders`), leaving names
+        inside it bare (`events`). The frontend depends on that convention: a table name
+        carries at most one dot, and only when it sits outside the default. BigQuery used
+        to be the odd one out — default dataset only, every name bare — so a source whose
+        tables lived in a second dataset simply had no autocomplete.
+
+        The cost is bounded on three axes: at most ``_MAX_SCHEMA_DATASETS`` jobs, at most
+        ``_SCHEMA_ROW_LIMIT`` rows across ALL of them (the LIMIT shrinks as the budget is
+        spent, so the total is a budget rather than a per-dataset allowance), and each job
+        deadlined.
+
+        A dataset the credentials cannot read is a *partial* failure, not a total one: it
+        is logged and skipped, and the datasets that did work still return their tables.
+        Only a browse where every single dataset failed re-raises — silently returning an
+        empty catalog there would look exactly like "this project has no tables", which is
+        the wrong thing to tell a user staring at an empty autocomplete.
+        """
+        datasets = self._schema_datasets()
+        budget = _SCHEMA_ROW_LIMIT
+        columns_by_table: dict[str, list[SchemaColumn]] = {}
+        failures: list[tuple[str, Exception]] = []
+        succeeded = 0
+
+        for dataset in datasets:
+            if budget <= 0:
+                logger.warning(
+                    "BQ schema introspection: %s-row budget exhausted, skipping dataset %r "
+                    "and any after it",
+                    _SCHEMA_ROW_LIMIT,
+                    dataset,
+                )
+                break
+            sql = (
+                "SELECT table_name, column_name, data_type "
+                f"FROM `{self._project}.{dataset}.INFORMATION_SCHEMA.COLUMNS` "
+                f"ORDER BY table_name, ordinal_position LIMIT {budget}"
+            )
+            logger.debug("BQ schema introspection query: %s", sql)
+            try:
+                _, rows = self._query_rows(sql, timeout_cap=_SCHEMA_QUERY_TIMEOUT_SECONDS)
+            except Exception as exc:
+                logger.warning(
+                    "BQ schema introspection skipped dataset %r: %s", dataset, exc, exc_info=True
+                )
+                failures.append((dataset, exc))
+                continue
+
+            succeeded += 1
+            budget -= len(rows)
+            for table_name, column_name, data_type in rows:
+                bare = str(table_name)
+                # Bare inside the connection's default dataset, `dataset.table` outside it.
+                qualified = bare if dataset == self._dataset else f"{dataset}.{bare}"
+                columns_by_table.setdefault(qualified, []).append(
+                    SchemaColumn(name=str(column_name), data_type=str(data_type))
+                )
+
+        if succeeded == 0 and failures:
+            raise failures[0][1]
         return [
             SchemaTable(name=table, columns=columns) for table, columns in columns_by_table.items()
         ]
 
     def _query_rows(
-        self, sql: str, *, timeout: float | None = None
+        self, sql: str, *, timeout_cap: float | None = None
     ) -> tuple[list[str], list[tuple[object, ...]]]:
-        job = self._client.query(sql)
-        iterator = job.result() if timeout is None else job.result(timeout=timeout)
+        iterator = self._run_query(sql, timeout_cap=timeout_cap)
         names = [field.name for field in iterator.schema]
         rows = [tuple(row.values()) for row in iterator]
         return names, rows
@@ -509,6 +911,237 @@ class BigQueryAdapter(BaseAdapter):
         logger.info("BQ preview query: %s", sql)
         return self._query_rows(sql)
 
+    def _contract_where_clause(
+        self,
+        time_column: str | None,
+        time_from: datetime | None,
+        time_to: datetime | None,
+        group_column: str | None,
+        group_value: str | None,
+    ) -> str:
+        """The contract scan's window, ANDed with the optional grouped-event filter.
+
+        Mirrors ``ClickHouseAdapter._contract_where_clause`` exactly, including the way
+        the group value is compared: against the column's NULL-collapsed STRING rendering
+        (``ifNull(toString(c), '')`` there, ``IFNULL(CAST(c AS STRING), '')`` here), so a
+        NULL group column matches the empty-string group on both warehouses and on the
+        Python fallback, which compares ``"" if raw is None else str(raw)``.
+        """
+        conditions: list[str] = []
+        window = self._time_condition(time_column, time_from, time_to)
+        if window:
+            conditions.append(window)
+        if group_column is not None:
+            gc = self._validate_column(group_column)
+            expected = self._quote_string(group_value or "")
+            conditions.append(
+                f"{self._string_value_expression(gc, role='grouped-event column')} = {expected}"
+            )
+        if not conditions:
+            return ""
+        return " WHERE " + " AND ".join(conditions)
+
+    def _contract_fragments(
+        self,
+        expectation: FieldContractExpectation,
+        *,
+        index: int,
+    ) -> tuple[str, str] | None:
+        """Compile one expectation to ``(aggregate_sql, struct_sql)``, or None if inert.
+
+        Semantics are matched to ``ClickHouseAdapter._contract_select_sql`` term for term
+        — the canonical warehouse-side contract — and, through it, to the Python fallback
+        in ``BaseAdapter``:
+
+        * **required_null_violation** — the NULL *is* the violation, so NULLs are counted
+          in the denominator: ``total`` is ``COUNT(*)``, not the non-NULL count. Its sample
+          is the literal ``'<NULL>'``, exactly as the fallback records it.
+        * **enum / regex / range** — a NULL carries no evidence either way, so it is
+          EXCLUDED from the denominator entirely (``COUNTIF(col IS NOT NULL)``), matching
+          the fallback's ``if raw_value is None: continue`` *before* it increments
+          ``total_count``. Getting this backwards would dilute every bad_rate by the null
+          rate and quietly push violations under their threshold.
+        * **regex** — GoogleSQL's ``REGEXP_CONTAINS`` is a PARTIAL match (verified against
+          ZetaSQL: ``REGEXP_CONTAINS('xu1x', 'u\\\\d')`` is TRUE), which is what
+          ClickHouse's ``match()`` and the fallback's ``regex.search()`` both are.
+          ``REGEXP_FULL_MATCH`` would be the anchored one and is deliberately NOT used.
+        * **range** — a value that is not a number at all is BAD, not "skipped". The
+          fallback treats a ``float()`` failure as a violation and ClickHouse counts
+          ``isNull(toFloat64OrNull(...))`` as one, so ``SAFE_CAST(... AS FLOAT64) IS NULL``
+          is a bad condition here too. Both warehouses cast from the column's STRING
+          rendering rather than its native type, so all three agree on what "malformed"
+          means.
+
+        The sample is ``MIN(IF(bad, value, NULL))`` rather than an ``ANY_VALUE``: MIN
+        ignores NULL inputs, so it can only ever return a value from a row that actually
+        violated, and it is deterministic, where ClickHouse's ``anyIf`` is not.
+        """
+        column = self._validate_column(expectation.field_name)
+        present = f"`{column}` IS NOT NULL"
+        threshold = max(0.0, min(1.0, expectation.threshold))
+
+        if expectation.drift_type == "required_null_violation":
+            # Deliberately does NOT build the STRING rendering: a required-ness check is
+            # pure NULL logic and works on any column type, including one this adapter
+            # refuses to stringify.
+            bad = f"`{column}` IS NULL"
+            total = "COUNT(*)"
+            sample = f"MIN(IF({bad}, '<NULL>', NULL))"
+        elif expectation.drift_type == "enum_violation":
+            if not expectation.enum_options:
+                return None
+            value_expr = self._string_value_expression(column, role="field-contract column")
+            options = ", ".join(self._quote_string(option) for option in expectation.enum_options)
+            bad = f"{present} AND {value_expr} NOT IN ({options})"
+            total = f"COUNTIF({present})"
+            sample = f"MIN(IF({bad}, {value_expr}, NULL))"
+        elif expectation.drift_type == "regex_violation":
+            if not expectation.regex:
+                return None
+            value_expr = self._string_value_expression(column, role="field-contract column")
+            pattern = self._quote_string(expectation.regex)
+            bad = f"{present} AND NOT REGEXP_CONTAINS({value_expr}, {pattern})"
+            total = f"COUNTIF({present})"
+            sample = f"MIN(IF({bad}, {value_expr}, NULL))"
+        elif expectation.drift_type == "range_violation":
+            if expectation.min_value is None and expectation.max_value is None:
+                return None
+            value_expr = self._string_value_expression(column, role="field-contract column")
+            numeric = f"SAFE_CAST({value_expr} AS FLOAT64)"
+            checks = [f"{numeric} IS NULL"]
+            if expectation.min_value is not None:
+                checks.append(f"{numeric} < {float(expectation.min_value)}")
+            if expectation.max_value is not None:
+                checks.append(f"{numeric} > {float(expectation.max_value)}")
+            bad = f"{present} AND ({' OR '.join(checks)})"
+            total = f"COUNTIF({present})"
+            sample = f"MIN(IF({bad}, {value_expr}, NULL))"
+        else:
+            return None
+
+        aggregate_sql = (
+            f"COUNTIF({bad}) AS _bad_{index}, "
+            f"{total} AS _total_{index}, "
+            f"{sample} AS _sample_{index}"
+        )
+        # bad_rate goes through SAFE_DIVIDE, not `/`. GoogleSQL's `/` raises on a zero
+        # denominator ("zero divided error" — verified against the emulator), and SQL does
+        # not promise that the `total_count > 0` guard in the outer WHERE is evaluated
+        # first. ClickHouse can get away with a bare division because it yields nan there;
+        # BigQuery would fail the whole scan.
+        struct_sql = (
+            "STRUCT("
+            f"{self._quote_string(expectation.field_name)} AS field_name, "
+            f"{self._quote_string(expectation.drift_type)} AS drift_type, "
+            f"_agg._bad_{index} AS bad_count, "
+            f"_agg._total_{index} AS total_count, "
+            f"CAST({threshold:.12g} AS FLOAT64) AS threshold, "
+            f"IFNULL(SAFE_DIVIDE(_agg._bad_{index}, _agg._total_{index}), 0.0) AS bad_rate, "
+            f"_agg._sample_{index} AS sample_value"
+            ")"
+        )
+        return aggregate_sql, struct_sql
+
+    @override
+    def validate_field_contracts(
+        self,
+        base_query: str,
+        expectations: list[FieldContractExpectation],
+        *,
+        time_column: str | None = None,
+        time_from: datetime | None = None,
+        time_to: datetime | None = None,
+        group_column: str | None = None,
+        group_value: str | None = None,
+        limit: int = 50000,
+    ) -> list[FieldContractViolation]:
+        """Evaluate field contracts warehouse-side, over the FULL window.
+
+        Replaces ``BaseAdapter``'s fallback, which pulls at most ``limit`` (50,000)
+        sampled rows and evaluates them in Python. That fallback cannot see a violation
+        that first occurs at row 50,001, and the ``bad_rate`` it reports describes the
+        sample, not the data — so a contract could be badly violated and the scan would
+        either miss it or under-report it straight past its threshold.
+
+        ONE job covers every expectation. The naive port of ClickHouse's shape is a
+        ``UNION ALL`` of one aggregate subquery per expectation, which is one job but N
+        SCANS of ``base_query`` — and BigQuery bills by bytes scanned, so a table with ten
+        contracts would be billed ten times over on every scan. Instead the per-expectation
+        aggregates are computed side by side in a SINGLE pass, assembled into an array of
+        STRUCTs, and unnested into the one-row-per-violation shape the caller wants. The
+        threshold/nonzero filtering happens on the unnested rows, so — exactly as on
+        ClickHouse — a passing contract never crosses the wire.
+
+        ``limit`` no longer bounds what is *evaluated* (that is the whole point); it stays
+        as the bound on how many violation ROWS come back, matching ClickHouse.
+        """
+        if not expectations:
+            return []
+
+        # The window literal's type family (TIMESTAMP vs DATETIME vs DATE) and the
+        # scalar/REPEATED decision both come from the declared schema, and a worker
+        # constructs a fresh adapter and calls straight into this — nothing calls
+        # get_columns first. Introspect before generating any type-directed SQL.
+        self._ensure_column_types(base_query)
+        where_clause = self._contract_where_clause(
+            time_column, time_from, time_to, group_column, group_value
+        )
+
+        aggregate_parts: list[str] = []
+        struct_parts: list[str] = []
+        for index, expectation in enumerate(expectations):
+            if self._allowed_columns and expectation.field_name not in self._allowed_columns:
+                # The fallback skips an expectation whose field is absent from the source
+                # (`if field_index is None: continue`). Do the same rather than compiling a
+                # reference to a column that does not exist and failing the entire scan —
+                # a stale contract on a dropped column must not take the other contracts
+                # down with it.
+                continue
+            fragments = self._contract_fragments(expectation, index=index)
+            if fragments is None:
+                continue
+            aggregate_sql, struct_sql = fragments
+            aggregate_parts.append(aggregate_sql)
+            struct_parts.append(struct_sql)
+
+        if not struct_parts:
+            return []
+
+        # WITH OFFSET + ORDER BY: UNNEST does not promise it preserves array order, so
+        # without this the violation order would be unspecified. Ordering by the offset
+        # hands them back in expectation order, deterministically.
+        sql = (
+            "SELECT _c.field_name AS field_name, _c.drift_type AS drift_type, "
+            "_c.bad_count AS bad_count, _c.total_count AS total_count, "
+            "_c.threshold AS threshold, _c.bad_rate AS bad_rate, "
+            "_c.sample_value AS sample_value "
+            "FROM ("
+            f"SELECT [{', '.join(struct_parts)}] AS _contracts "
+            f"FROM (SELECT {', '.join(aggregate_parts)} "
+            f"FROM ({base_query}) AS _src{where_clause}"
+            ") AS _agg"
+            ") AS _rows "
+            "CROSS JOIN UNNEST(_rows._contracts) AS _c WITH OFFSET AS _ord "
+            "WHERE _c.total_count > 0 AND _c.bad_count > 0 "
+            "AND SAFE_DIVIDE(_c.bad_count, _c.total_count) > _c.threshold "
+            f"ORDER BY _ord LIMIT {int(limit)}"
+        )
+        logger.info("BQ field contract query: %s", sql)
+        _, rows = self._query_rows(sql)
+
+        return [
+            FieldContractViolation(
+                field_name=str(row[0]),
+                drift_type=str(row[1]),
+                bad_count=int(cast("int", row[2])),
+                total_count=int(cast("int", row[3])),
+                threshold=float(cast("float", row[4])),
+                bad_rate=float(cast("float", row[5])),
+                sample_value=None if row[6] is None else str(row[6]),
+            )
+            for row in rows
+        ]
+
     def get_full_breakdown(
         self,
         base_query: str,
@@ -524,31 +1157,28 @@ class BigQueryAdapter(BaseAdapter):
         reg_cols = [self._validate_column(c) for c in regular_columns]
         json_cols = [self._validate_column(c) for c in json_columns]
         json_value_paths = json_value_paths or {}
-        json_value_names: list[str] = []
+
+        where_clause = self._time_window_where_clause(time_column, time_from, time_to)
+        from_sql, alias_by_name, json_value_names = self._nested_source(
+            base_query, where_clause, json_cols, json_value_paths
+        )
 
         select_parts: list[str] = []
         group_parts: list[str] = []
         for c in reg_cols:
-            select_parts.append(f"`{c}`")
-            group_parts.append(f"`{c}`")
-        for c in json_cols:
-            expr = self._json_paths_expression(c)
-            select_parts.append(f"{expr} AS `{c}`")
-            group_parts.append(expr)
-        for c in json_cols:
-            for path in json_value_paths.get(c, []):
-                full_path = f"{c}.{path}"
-                value_expr = f"TO_JSON_STRING({self._json_path_expression(c, path)})"
-                select_parts.append(f"{value_expr} AS `{full_path}`")
-                group_parts.append(value_expr)
-                json_value_names.append(full_path)
+            select_sql, group_sql = self._regular_column_sql(c)
+            select_parts.append(select_sql)
+            group_parts.append(group_sql)
+        for names in (json_cols, json_value_names):
+            nested_select, nested_group = self._nested_select_group(names, alias_by_name)
+            select_parts.extend(nested_select)
+            group_parts.extend(nested_group)
         select_parts.append("COUNT(*) AS _cnt")
 
         group_by = ", ".join(group_parts) if group_parts else "()"
-        where_clause = self._time_window_where_clause(time_column, time_from, time_to)
         sql = (
             f"SELECT {', '.join(select_parts)} "
-            f"FROM ({base_query}) AS _src{where_clause} "
+            f"FROM {from_sql} "
             f"GROUP BY {group_by} "
             f"ORDER BY _cnt DESC "
             f"LIMIT {int(limit)}"
@@ -561,7 +1191,8 @@ class BigQueryAdapter(BaseAdapter):
         elapsed = time.monotonic() - t0
         logger.info("BQ breakdown done in %.2fs, %s rows", elapsed, len(rows))
 
-        return reg_cols, json_cols, json_value_names, rows
+        decoded = self._decode_rows(rows, offset=0, reg_cols=reg_cols, json_cols=json_cols)
+        return reg_cols, json_cols, json_value_names, decoded
 
     def get_time_bucketed_counts(
         self,
@@ -582,31 +1213,30 @@ class BigQueryAdapter(BaseAdapter):
         json_cols = [self._validate_column(c) for c in json_columns]
         json_value_paths = json_value_paths or {}
 
+        from_sql, alias_by_name, json_value_names = self._nested_source(
+            base_query, where_clause, json_cols, json_value_paths
+        )
+
         select_parts: list[str] = [f"{bucket_expr} AS _bucket"]
         group_parts: list[str] = ["_bucket"]
         col_names: list[str] = []
-        json_value_names: list[str] = []
         for c in reg_cols:
-            select_parts.append(f"`{c}`")
-            group_parts.append(f"`{c}`")
+            select_sql, group_sql = self._regular_column_sql(c)
+            select_parts.append(select_sql)
+            group_parts.append(group_sql)
             col_names.append(c)
-        for c in json_cols:
-            expr = self._json_paths_expression(c)
-            select_parts.append(f"{expr} AS `{c}`")
-            group_parts.append(expr)
-            col_names.append(c)
-        for c in json_cols:
-            for path in json_value_paths.get(c, []):
-                full_path = f"{c}.{path}"
-                value_expr = f"TO_JSON_STRING({self._json_path_expression(c, path)})"
-                select_parts.append(f"{value_expr} AS `{full_path}`")
-                group_parts.append(value_expr)
-                json_value_names.append(full_path)
+        nested_select, nested_group = self._nested_select_group(json_cols, alias_by_name)
+        select_parts.extend(nested_select)
+        group_parts.extend(nested_group)
+        col_names.extend(json_cols)
+        value_select, value_group = self._nested_select_group(json_value_names, alias_by_name)
+        select_parts.extend(value_select)
+        group_parts.extend(value_group)
         select_parts.append("COUNT(*) AS _cnt")
 
         sql = (
             f"SELECT {', '.join(select_parts)} "
-            f"FROM ({base_query}) AS _src{where_clause} "
+            f"FROM {from_sql} "
             f"GROUP BY {', '.join(group_parts)} "
             f"ORDER BY _bucket "
             f"LIMIT {int(limit)}"
@@ -618,7 +1248,8 @@ class BigQueryAdapter(BaseAdapter):
         elapsed = time.monotonic() - t0
         logger.info("BQ bucketed done in %.2fs, %s rows", elapsed, len(rows))
 
-        return col_names, json_value_names, rows
+        decoded = self._decode_rows(rows, offset=1, reg_cols=reg_cols, json_cols=json_cols)
+        return col_names, json_value_names, decoded
 
     def _aggregate_value_sql(self, agg_fn: MetricAggregation, measure_column: str | None) -> str:
         """Validate + escape the measure and build the safe aggregate fragment."""
@@ -691,31 +1322,30 @@ class BigQueryAdapter(BaseAdapter):
         json_value_paths = json_value_paths or {}
         value_sql = self._aggregate_value_sql(agg_fn, measure_column)
 
+        from_sql, alias_by_name, json_value_names = self._nested_source(
+            base_query, where_clause, json_cols, json_value_paths
+        )
+
         select_parts: list[str] = [f"{bucket_expr} AS _bucket"]
         group_parts: list[str] = ["_bucket"]
         col_names: list[str] = []
-        json_value_names: list[str] = []
         for c in reg_cols:
-            select_parts.append(f"`{c}`")
-            group_parts.append(f"`{c}`")
+            select_sql, group_sql = self._regular_column_sql(c)
+            select_parts.append(select_sql)
+            group_parts.append(group_sql)
             col_names.append(c)
-        for c in json_cols:
-            expr = self._json_paths_expression(c)
-            select_parts.append(f"{expr} AS `{c}`")
-            group_parts.append(expr)
-            col_names.append(c)
-        for c in json_cols:
-            for path in json_value_paths.get(c, []):
-                full_path = f"{c}.{path}"
-                value_expr = f"TO_JSON_STRING({self._json_path_expression(c, path)})"
-                select_parts.append(f"{value_expr} AS `{full_path}`")
-                group_parts.append(value_expr)
-                json_value_names.append(full_path)
+        nested_select, nested_group = self._nested_select_group(json_cols, alias_by_name)
+        select_parts.extend(nested_select)
+        group_parts.extend(nested_group)
+        col_names.extend(json_cols)
+        value_select, value_group = self._nested_select_group(json_value_names, alias_by_name)
+        select_parts.extend(value_select)
+        group_parts.extend(value_group)
         select_parts.append(f"{value_sql} AS _value")
 
         sql = (
             f"SELECT {', '.join(select_parts)} "
-            f"FROM ({base_query}) AS _src{where_clause} "
+            f"FROM {from_sql} "
             f"GROUP BY {', '.join(group_parts)} "
             f"ORDER BY _bucket "
             f"LIMIT {int(limit)}"
@@ -727,7 +1357,8 @@ class BigQueryAdapter(BaseAdapter):
         elapsed = time.monotonic() - t0
         logger.info("BQ bucketed aggregate done in %.2fs, %s rows", elapsed, len(rows))
 
-        return col_names, json_value_names, rows
+        decoded = self._decode_rows(rows, offset=1, reg_cols=reg_cols, json_cols=json_cols)
+        return col_names, json_value_names, decoded
 
     def _breakdown_value_exprs(
         self,
@@ -797,6 +1428,9 @@ class BigQueryAdapter(BaseAdapter):
             time_to,
             values_limit,
         )
+        from_sql, alias_by_name, json_value_names = self._nested_source(
+            base_query, where_clause, json_cols, json_value_paths
+        )
 
         select_parts: list[str] = [
             f"{bucket_expr} AS _bucket",
@@ -805,28 +1439,23 @@ class BigQueryAdapter(BaseAdapter):
         ]
         group_parts: list[str] = ["_bucket", "_breakdown_value", "_is_other"]
         col_names: list[str] = []
-        json_value_names: list[str] = []
         for c in reg_cols:
-            select_parts.append(f"`{c}`")
-            group_parts.append(f"`{c}`")
+            select_sql, group_sql = self._regular_column_sql(c)
+            select_parts.append(select_sql)
+            group_parts.append(group_sql)
             col_names.append(c)
-        for c in json_cols:
-            expr = self._json_paths_expression(c)
-            select_parts.append(f"{expr} AS `{c}`")
-            group_parts.append(expr)
-            col_names.append(c)
-        for c in json_cols:
-            for path in json_value_paths.get(c, []):
-                full_path = f"{c}.{path}"
-                value_expr = f"TO_JSON_STRING({self._json_path_expression(c, path)})"
-                select_parts.append(f"{value_expr} AS `{full_path}`")
-                group_parts.append(value_expr)
-                json_value_names.append(full_path)
+        nested_select, nested_group = self._nested_select_group(json_cols, alias_by_name)
+        select_parts.extend(nested_select)
+        group_parts.extend(nested_group)
+        col_names.extend(json_cols)
+        value_select, value_group = self._nested_select_group(json_value_names, alias_by_name)
+        select_parts.extend(value_select)
+        group_parts.extend(value_group)
         select_parts.append(f"{value_sql} AS _value")
 
         sql = (
             f"SELECT {', '.join(select_parts)} "
-            f"FROM ({base_query}) AS _src{where_clause} "
+            f"FROM {from_sql} "
             f"GROUP BY {', '.join(group_parts)} "
             f"ORDER BY _bucket, _breakdown_value "
             f"LIMIT {int(limit)}"
@@ -838,7 +1467,8 @@ class BigQueryAdapter(BaseAdapter):
         elapsed = time.monotonic() - t0
         logger.info("BQ bucketed aggregate breakdown done in %.2fs, %s rows", elapsed, len(rows))
 
-        return col_names, json_value_names, rows
+        decoded = self._decode_rows(rows, offset=3, reg_cols=reg_cols, json_cols=json_cols)
+        return col_names, json_value_names, decoded
 
     def get_time_bucketed_multi_aggregate(
         self,
@@ -1067,7 +1697,11 @@ class BigQueryAdapter(BaseAdapter):
         col_names: list[str] = []
         json_value_names: list[str] = []
         for c in reg_cols:
-            prepared_parts.append(f"`{c}` AS `{c}`")
+            # The outer GROUPING SETS groups by the prepared *alias*, so the alias must
+            # already carry a groupable scalar — a REPEATED column is rendered to its
+            # JSON text here, exactly as in the flat paths.
+            _, group_sql = self._regular_column_sql(c)
+            prepared_parts.append(f"{group_sql} AS `{c}`")
             col_names.append(c)
         for c in json_cols:
             prepared_parts.append(f"{self._json_paths_expression(c)} AS `{c}`")
@@ -1154,4 +1788,6 @@ class BigQueryAdapter(BaseAdapter):
         elapsed = time.monotonic() - t0
         logger.info("BQ bucketed breakdown done in %.2fs, %s rows", elapsed, len(rows))
 
-        return col_names, json_value_names, rows
+        # Row layout leads with _bucket, _breakdown_column, _breakdown_value, _is_other.
+        decoded = self._decode_rows(rows, offset=4, reg_cols=reg_cols, json_cols=json_cols)
+        return col_names, json_value_names, decoded

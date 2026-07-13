@@ -33,6 +33,36 @@ describe('defaultGranularityForRange', () => {
 })
 
 describe('getBucketStart', () => {
+  it('floors to the start of the UTC 15-minute bucket', () => {
+    // Every backend interval must have a granularity that matches it. A 15m metric
+    // used to chart under "Hours", naming the axis after a bucket width the data
+    // does not have (tripl-64n8.15).
+    expect(getBucketStart('2026-06-10T13:47:31.500Z', '15min'))
+      .toBe('2026-06-10T13:45:00.000Z')
+    expect(getBucketStart('2026-06-10T13:00:00.000Z', '15min'))
+      .toBe('2026-06-10T13:00:00.000Z')
+    expect(getBucketStart('2026-06-10T13:14:59.999Z', '15min'))
+      .toBe('2026-06-10T13:00:00.000Z')
+  })
+
+  it('keeps the four 15-minute buckets of an hour distinct', () => {
+    // The whole point of the granularity: they must not collapse onto one bucket.
+    const quarters = ['13:00', '13:15', '13:30', '13:45'].map((hm) =>
+      getBucketStart(`2026-06-10T${hm}:07Z`, '15min'),
+    )
+    expect(new Set(quarters).size).toBe(4)
+  })
+
+  it('floors to the start of the UTC 6-hour bucket', () => {
+    // 6h divides a UTC day evenly, so the epoch grid lands on 00/06/12/18.
+    expect(getBucketStart('2026-06-10T13:47:31.500Z', '6h'))
+      .toBe('2026-06-10T12:00:00.000Z')
+    expect(getBucketStart('2026-06-10T05:59:59.999Z', '6h'))
+      .toBe('2026-06-10T00:00:00.000Z')
+    expect(getBucketStart('2026-06-10T18:00:00.000Z', '6h'))
+      .toBe('2026-06-10T18:00:00.000Z')
+  })
+
   it('floors to the start of the UTC hour', () => {
     expect(getBucketStart('2026-06-10T13:47:31.500Z', 'hour'))
       .toBe('2026-06-10T13:00:00.000Z')
