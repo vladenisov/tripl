@@ -478,7 +478,7 @@ function FeatureBranchDetail({ slug, branch, diff, confirm }: FeatureBranchDetai
     const ok = await confirm({
       title: field ? 'Revert field' : 'Revert change',
       message: field
-        ? `Revert the change to "${field}" on ${entry.name}, back to the value it had when this branch was opened?`
+        ? `Revert the change to "${field}" on ${entry.name}, back to the value it had when this branch was opened? Main is untouched.`
         : `${REVERT_PROMPT[entry.kind](entry.name)} Main is untouched.`,
       confirmLabel: entry.kind === 'removed' && !field ? 'Restore' : 'Revert',
       variant: 'danger',

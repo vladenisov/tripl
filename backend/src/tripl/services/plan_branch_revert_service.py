@@ -24,7 +24,7 @@ from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from tripl.models.event import Event
+from tripl.models.event import Event, EventStatus
 from tripl.models.event_field_value import EventFieldValue
 from tripl.models.event_meta_value import EventMetaValue
 from tripl.models.event_tag import EventTag
@@ -82,6 +82,47 @@ _PLAIN_ATTRS: dict[str, tuple[str, ...]] = {
 def _relation_name(source_et: str, source_field: str, target_et: str, target_field: str) -> str:
     """The diff's name for a relation — mirrors compute_plan_diff_entries."""
     return f"{source_et}.{source_field} → {target_et}.{target_field}"
+
+
+def _required(base_item: dict[str, Any], key: str) -> Any:
+    """A value the entity cannot be rebuilt without.
+
+    Snapshots gain fields over time, and a branch opened before a field existed
+    has a base payload without it. For a value with no sensible default (a name,
+    a type) the honest answer is to refuse: guessing would rebuild the entity as
+    something the base never described.
+    """
+    if key not in base_item:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"This branch's base snapshot predates '{key}', so the entity cannot be "
+                "rebuilt from it. Recreate it by hand, or open a fresh branch from main."
+            ),
+        )
+    return base_item[key]
+
+
+def _one(rows: list[Any], data: BranchRevertRequest) -> Any:
+    """The single row a diff entry refers to.
+
+    Events and relations carry no uniqueness constraint on the name the diff
+    keys them by, so two rows can answer to one entry. Writing to an arbitrary
+    one of them would silently clobber a sibling the reviewer never looked at.
+    """
+    if not rows:
+        raise HTTPException(status_code=404, detail="Entity not found on this branch")
+    if len(rows) > 1:
+        where = f" in {data.parent}" if data.parent else ""
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"More than one {data.entity_type.replace('_', ' ')} on this branch is called "
+                f"'{data.name}'{where}, so it is ambiguous which one this change belongs to. "
+                "Rename one of them, then revert."
+            ),
+        )
+    return rows[0]
 
 
 async def _load_branch(session: AsyncSession, project: Project, branch_id: uuid.UUID) -> PlanBranch:
@@ -217,8 +258,8 @@ async def _find_entity(
             .scalars()
             .all()
         )
-        match = next(
-            (
+        return _one(
+            [
                 relation
                 for relation in relations
                 if _relation_name(
@@ -228,12 +269,9 @@ async def _find_entity(
                     relation.target_field.name,
                 )
                 == data.name
-            ),
-            None,
+            ],
+            data,
         )
-        if match is None:
-            raise HTTPException(status_code=404, detail="Entity not found on this branch")
-        return match
 
     if data.entity_type == "event_type":
         query: Any = select(EventType).where(
@@ -281,10 +319,7 @@ async def _find_entity(
             MetaFieldDefinition.name == data.name,
         )
 
-    entity = (await session.execute(query)).scalars().first()
-    if entity is None:
-        raise HTTPException(status_code=404, detail="Entity not found on this branch")
-    return entity
+    return _one(list((await session.execute(query)).scalars().all()), data)
 
 
 async def _restore_event_children(
@@ -404,8 +439,30 @@ async def _restore_variable_overrides(
         .tuples()
         .all()
     )
-    event_by_key = {(et_name, event.name): event for event, et_name in rows}
+    event_by_key: dict[tuple[str, str], Event] = {}
+    ambiguous: set[tuple[str, str]] = set()
+    for event, et_name in rows:
+        key = (et_name, event.name)
+        if key in event_by_key:
+            ambiguous.add(key)
+        event_by_key[key] = event
     base_overrides = base_item.get("event_value_overrides") or []
+    # Overrides point at their event by name, and event names are not unique —
+    # attaching one to an arbitrary namesake would silently override the wrong
+    # event's values.
+    clashing = sorted(
+        f"{o['event_type_name']}.{o['event_name']}"
+        for o in base_overrides
+        if (o["event_type_name"], o["event_name"]) in ambiguous
+    )
+    if clashing:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"More than one event on this branch is called {', '.join(clashing)}, so the "
+                "override cannot be attached unambiguously. Rename one of them, then revert."
+            ),
+        )
     missing = sorted(
         {
             f"{o['event_type_name']}.{o['event_name']}"
@@ -483,6 +540,12 @@ async def _recreate_entity(
     snapshot redacts their storage keys, so the rows cannot be rebuilt — and the
     diff keeps showing the photos as missing afterwards rather than pretending
     the restore was complete.
+
+    Identity fields (a name, a type) come through ``_required``: an old base
+    snapshot that predates one of them can't describe the entity, and refusing
+    beats rebuilding it as something the base never said. Everything with a
+    column default falls back to that default, which is also what the diff
+    assumes for an older base.
     """
     if data.entity_type == "event_type":
         session.add(
@@ -490,8 +553,8 @@ async def _recreate_entity(
                 id=uuid.uuid4(),
                 project_id=project_id,
                 branch_id=branch_id,
-                name=base_item["name"],
-                display_name=base_item["display_name"],
+                name=_required(base_item, "name"),
+                display_name=_required(base_item, "display_name"),
                 description=base_item.get("description"),
                 color=base_item.get("color"),
                 order=base_item.get("order", 0),
@@ -505,16 +568,16 @@ async def _recreate_entity(
             FieldDefinition(
                 id=uuid.uuid4(),
                 event_type_id=event_type.id,
-                name=base_item["name"],
-                display_name=base_item["display_name"],
-                field_type=base_item["field_type"],
+                name=_required(base_item, "name"),
+                display_name=_required(base_item, "display_name"),
+                field_type=_required(base_item, "field_type"),
                 is_required=base_item.get("is_required", False),
                 enum_options=list(base_item["enum_options"])
                 if base_item.get("enum_options")
                 else None,
                 description=base_item.get("description"),
                 order=base_item.get("order", 0),
-                sensitivity=base_item["sensitivity"],
+                sensitivity=_required(base_item, "sensitivity"),
                 contract_required_max_null_rate=base_item.get("contract_required_max_null_rate"),
                 contract_regex=base_item.get("contract_regex"),
                 contract_min_value=base_item.get("contract_min_value"),
@@ -526,7 +589,7 @@ async def _recreate_entity(
 
     if data.entity_type == "event":
         event_type = await _event_type_by_name(
-            session, project_id, branch_id, base_item["event_type_name"]
+            session, project_id, branch_id, _required(base_item, "event_type_name")
         )
         sunset_at = base_item.get("sunset_at")
         owner_id = base_item.get("owner_id")
@@ -535,11 +598,14 @@ async def _recreate_entity(
             project_id=project_id,
             branch_id=branch_id,
             event_type_id=event_type.id,
-            name=base_item["name"],
+            name=_required(base_item, "name"),
             source_name=base_item.get("source_name"),
-            description=base_item.get("description"),
+            description=base_item.get("description") or "",
             order=base_item.get("order", 0),
-            status=base_item["status"],
+            # A base snapshot older than the status field describes an event with
+            # no status; the column's own default is the same answer the diff
+            # gives for that older base, so it stays consistent either way.
+            status=base_item.get("status") or EventStatus.draft,
             sunset_at=datetime.fromisoformat(sunset_at) if sunset_at else None,
             owner_id=uuid.UUID(owner_id) if owner_id else None,
             reviewed=base_item.get("reviewed", False),
@@ -556,10 +622,10 @@ async def _recreate_entity(
             id=uuid.uuid4(),
             project_id=project_id,
             branch_id=branch_id,
-            name=base_item["name"],
+            name=_required(base_item, "name"),
             source_name=base_item.get("source_name"),
-            variable_type=base_item["variable_type"],
-            description=base_item.get("description"),
+            variable_type=_required(base_item, "variable_type"),
+            description=base_item.get("description") or "",
             allowed_values=list(base_item.get("allowed_values") or []),
             bindings=list(base_item.get("bindings") or []),
             excluded_from_scans=base_item.get("excluded_from_scans", False),
@@ -575,9 +641,9 @@ async def _recreate_entity(
                 id=uuid.uuid4(),
                 project_id=project_id,
                 branch_id=branch_id,
-                name=base_item["name"],
-                display_name=base_item["display_name"],
-                field_type=base_item["field_type"],
+                name=_required(base_item, "name"),
+                display_name=_required(base_item, "display_name"),
+                field_type=_required(base_item, "field_type"),
                 is_required=base_item.get("is_required", False),
                 enum_options=list(base_item["enum_options"])
                 if base_item.get("enum_options")
@@ -585,16 +651,16 @@ async def _recreate_entity(
                 default_value=base_item.get("default_value"),
                 link_template=base_item.get("link_template"),
                 order=base_item.get("order", 0),
-                sensitivity=base_item["sensitivity"],
+                sensitivity=_required(base_item, "sensitivity"),
             )
         )
         return
 
     source_et = await _event_type_by_name(
-        session, project_id, branch_id, base_item["source_event_type_name"]
+        session, project_id, branch_id, _required(base_item, "source_event_type_name")
     )
     target_et = await _event_type_by_name(
-        session, project_id, branch_id, base_item["target_event_type_name"]
+        session, project_id, branch_id, _required(base_item, "target_event_type_name")
     )
     fields = (
         (
@@ -608,8 +674,8 @@ async def _recreate_entity(
         .all()
     )
     field_by_key = {(fd.event_type_id, fd.name): fd for fd in fields}
-    source_field = field_by_key.get((source_et.id, base_item["source_field_name"]))
-    target_field = field_by_key.get((target_et.id, base_item["target_field_name"]))
+    source_field = field_by_key.get((source_et.id, _required(base_item, "source_field_name")))
+    target_field = field_by_key.get((target_et.id, _required(base_item, "target_field_name")))
     if source_field is None or target_field is None:
         raise HTTPException(
             status_code=409,
@@ -626,8 +692,8 @@ async def _recreate_entity(
             target_event_type_id=target_et.id,
             source_field_id=source_field.id,
             target_field_id=target_field.id,
-            relation_type=base_item["relation_type"],
-            description=base_item.get("description"),
+            relation_type=_required(base_item, "relation_type"),
+            description=base_item.get("description") or "",
         )
     )
 

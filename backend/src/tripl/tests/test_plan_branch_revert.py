@@ -10,6 +10,13 @@ import uuid
 
 import pytest
 from httpx import AsyncClient
+from sqlalchemy import select
+from sqlalchemy.orm.attributes import flag_modified
+
+from tripl.models.event import Event
+from tripl.models.plan_branch import PlanBranch
+from tripl.models.plan_revision import PlanRevision
+from tripl.tests.conftest import TestSessionLocal
 
 
 async def _seed(client: AsyncClient, slug: str) -> tuple[str, str, str]:
@@ -229,6 +236,153 @@ async def test_revert_rebuilds_a_deleted_event_with_its_values(client: AsyncClie
     assert [fv["value"] for fv in restored["field_values"]] == ["USD"]
     # A fresh row on the branch — main's copy was never touched.
     assert restored["id"] != event["id"]
+
+
+@pytest.mark.asyncio
+async def test_revert_refuses_when_two_events_share_the_name(client: AsyncClient) -> None:
+    """Event names are not unique, and the diff keys entries by name.
+
+    With two namesakes on the branch, "which one does this change belong to" has
+    no answer — writing base values onto an arbitrary one would clobber a
+    sibling the reviewer never looked at.
+    """
+    slug = "revert-ambiguous"
+    await _seed(client, slug)
+    branch_id = await _branch(client, slug)
+
+    event = await _branch_event(client, slug, branch_id, "purchase:success")
+    await client.patch(
+        f"/api/v1/projects/{slug}/events/{event['id']}?branch={branch_id}",
+        json={"description": "edited on branch"},
+    )
+
+    # A namesake under the same event type — the API allows it (no uniqueness).
+    async with TestSessionLocal() as session:
+        branch_event = (
+            await session.execute(select(Event).where(Event.id == uuid.UUID(event["id"])))
+        ).scalar_one()
+        session.add(
+            Event(
+                id=uuid.uuid4(),
+                project_id=branch_event.project_id,
+                branch_id=branch_event.branch_id,
+                event_type_id=branch_event.event_type_id,
+                name=branch_event.name,
+                description="the namesake",
+            )
+        )
+        await session.commit()
+
+    resp = await _revert(
+        client,
+        slug,
+        branch_id,
+        entity_type="event",
+        name="purchase:success",
+        parent="track",
+        field="description",
+    )
+    assert resp.status_code == 409
+    assert "More than one event" in resp.json()["detail"]
+
+    # Neither namesake was touched.
+    async with TestSessionLocal() as session:
+        descriptions = sorted(
+            e.description
+            for e in (
+                await session.execute(select(Event).where(Event.branch_id == uuid.UUID(branch_id)))
+            )
+            .scalars()
+            .all()
+        )
+    assert descriptions == ["edited on branch", "the namesake"]
+
+
+@pytest.mark.asyncio
+async def test_revert_refuses_a_base_snapshot_that_predates_a_required_field(
+    client: AsyncClient,
+) -> None:
+    """Snapshots gain fields over time; an old base may not describe the entity.
+
+    Rebuilding it anyway would invent state the base never recorded, so a base
+    missing an identity field is refused with a message that says why — not a
+    500 from a KeyError.
+    """
+    slug = "revert-old-base"
+    await _seed(client, slug)
+    created = await client.post(
+        f"/api/v1/projects/{slug}/meta-fields",
+        json={"name": "jira", "display_name": "Jira ticket", "field_type": "string"},
+    )
+    assert created.status_code == 201
+    branch_id = await _branch(client, slug)
+
+    meta_fields = await client.get(f"/api/v1/projects/{slug}/meta-fields?branch={branch_id}")
+    branch_mf_id = next(mf["id"] for mf in meta_fields.json() if mf["name"] == "jira")
+    deleted = await client.delete(
+        f"/api/v1/projects/{slug}/meta-fields/{branch_mf_id}?branch={branch_id}"
+    )
+    assert deleted.status_code == 204
+
+    # Age the base snapshot: drop a field the serializer only started emitting
+    # after this branch would have been opened. (display_name is not part of the
+    # diff's key, so the diff still lists the deletion — only the rebuild is
+    # short of what it needs.)
+    async with TestSessionLocal() as session:
+        branch = (
+            await session.execute(select(PlanBranch).where(PlanBranch.id == uuid.UUID(branch_id)))
+        ).scalar_one()
+        revision = (
+            await session.execute(
+                select(PlanRevision).where(PlanRevision.id == branch.base_revision_id)
+            )
+        ).scalar_one()
+        for snapshot_meta_field in revision.payload["meta_fields"]:
+            del snapshot_meta_field["display_name"]
+        flag_modified(revision, "payload")
+        await session.commit()
+
+    resp = await _revert(client, slug, branch_id, entity_type="meta_field", name="jira")
+    assert resp.status_code == 409
+    assert "predates 'display_name'" in resp.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_revert_rebuilds_an_event_whose_base_predates_status(client: AsyncClient) -> None:
+    """A field with a column default is filled from that default, not refused.
+
+    That is the same answer the diff gives for an older base (it skips keys the
+    base never had), so the branch lands level with its base instead of showing
+    a phantom status change.
+    """
+    slug = "revert-old-base-status"
+    await _seed(client, slug)
+    branch_id = await _branch(client, slug)
+
+    event = await _branch_event(client, slug, branch_id, "purchase:success")
+    await client.delete(f"/api/v1/projects/{slug}/events/{event['id']}?branch={branch_id}")
+
+    async with TestSessionLocal() as session:
+        branch = (
+            await session.execute(select(PlanBranch).where(PlanBranch.id == uuid.UUID(branch_id)))
+        ).scalar_one()
+        revision = (
+            await session.execute(
+                select(PlanRevision).where(PlanRevision.id == branch.base_revision_id)
+            )
+        ).scalar_one()
+        revision.payload["snapshot_version"] = 1
+        for snapshot_event in revision.payload["events"]:
+            del snapshot_event["status"]
+        flag_modified(revision, "payload")
+        await session.commit()
+
+    resp = await _revert(
+        client, slug, branch_id, entity_type="event", name="purchase:success", parent="track"
+    )
+    assert resp.status_code == 200, resp.text
+    restored = await _branch_event(client, slug, branch_id, "purchase:success")
+    assert restored["status"] == "draft"
 
 
 @pytest.mark.asyncio
