@@ -161,6 +161,21 @@ merging. Working surfaces are scoped to the active branch via a `?branch=`
 context. Merging an owned event type re-checks ownership (see
 [Event types](#event-types)).
 
+The selected branch is part of the route (`/p/:slug/settings/branches/:branchId`),
+so a review is linkable. Each diff row expands to its field-level changes;
+collection-valued fields (an event's field values and meta values, its tags, a
+variable's documented values and per-event overrides) are broken out member by
+member rather than dumped whole. A row also links to the entity it describes —
+the event, event type, or variable — opened in the branch, or on `main` when the
+branch deleted it.
+
+**Revert** on a diff row (or on a single field-change row) puts that change back
+to the branch's base state: an addition is discarded, an edit is written back,
+and a deletion is rebuilt with its child rows (values, tags, overrides). It never
+touches `main`, needs the branch to be open, and refuses two cases instead of
+half-applying them — an event's photos (their files are not in the plan snapshot)
+and a child whose parent event type is still deleted.
+
 The branch policy can require a minimum number of **distinct approvals** and can
 forbid self-approval. Approval hashes include event values, tags,
 photos/comments, ownership/review state, variable overrides, and metric

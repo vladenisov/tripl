@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react'
+import { useEffect, useMemo, useState, type ReactNode } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { BranchContext } from './branch-context-internal'
 
@@ -46,20 +46,15 @@ function BranchProviderState({ slug, children }: { slug: string | null; children
     () => searchParams.get('branch') ?? readStored(slug),
   )
 
-  const setBranchId = useCallback(
-    (next: string | null) => {
-      setBranchIdState(next)
-      if (slug) writeStored(slug, next)
-    },
-    [slug],
-  )
-
-  // Persist a branch adopted from the URL, so a reload without the query param
-  // keeps the reviewer where the link put them.
+  // Persistence has one home: whatever the branch ends up as — switched by hand,
+  // adopted from a ?branch= link, or read back from storage — is written here.
   useEffect(() => {
     if (slug) writeStored(slug, branchId)
   }, [slug, branchId])
 
-  const value = useMemo(() => ({ branchId, setBranchId, slug }), [branchId, setBranchId, slug])
+  const value = useMemo(
+    () => ({ branchId, setBranchId: setBranchIdState, slug }),
+    [branchId, slug],
+  )
   return <BranchContext.Provider value={value}>{children}</BranchContext.Provider>
 }

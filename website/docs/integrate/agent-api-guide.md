@@ -77,6 +77,23 @@ GET /api/v1/projects/{slug}/branches
 
 The response includes each branch `id`, `name`, `kind`, and `status`. Use the `id` as the `branch` query parameter on plan endpoints.
 
+Review what a working branch changed, and undo one change of it:
+
+```http
+GET  /api/v1/projects/{slug}/branches/{branch_id}/diff
+POST /api/v1/projects/{slug}/branches/{branch_id}/revert
+```
+
+The diff returns one entry per changed entity, each carrying `entity_type`, `kind` (`added` / `changed` / `removed`), `name`, `parent`, the `entity_id` it describes, and — for a changed entity — `field_changes`. A collection-valued field there additionally breaks down into `items`, keyed by the member that moved (a field name, a tag, the event an override targets).
+
+`revert` takes the coordinates of one such entry and restores it to the branch's base state, responding with the resulting diff:
+
+```json
+{ "entity_type": "event", "name": "purchase:success", "parent": "track", "field": "field_values" }
+```
+
+Omit `field` to revert the whole entity: an addition is deleted, an edit is written back, a deletion is rebuilt with its child rows. A revert never touches main, needs an open branch and an editor role, and answers with a `409` — rather than a partial write — when the change cannot be undone unambiguously (two entities answer to the name, the parent event type is still deleted, or the branch's base snapshot predates a field the entity needs).
+
 ## Search And Retrieval Flow
 
 Start with project search when the agent has a natural-language question or a partial event name:
