@@ -354,11 +354,15 @@ With a plan in place and metrics collecting, monitoring comes to life.
 
 Open a monitor (or an event's monitoring detail) to see, across tabs:
 
-- **Volume** — the metric chart with a short **forecast** of where the next
-  point should land, plus a panel summarising the latest signal (its bucket,
-  actual vs expected count, and z-score) and **top movers** showing which slice
-  of the data moved. You can also add **annotations** to mark deploys, releases,
-  or incidents directly on the chart.
+- **Volume** — event, event-type, and project-total charts open on the last 7
+  days at hourly granularity. The chart includes a short **forecast** of where
+  the next native-interval point should land only when the selected granularity
+  matches that collection interval, plus a panel summarising the latest signal
+  (its bucket, actual vs expected count, and z-score) and **top movers** showing
+  which slice of the data moved. Other rollups omit the forecast because one
+  native bucket is not a forecast for the whole aggregate bucket. You can also
+  add **annotations** to mark deploys, releases, or incidents directly on the
+  chart.
 - **Heatmap** — activity by hour of day and day of week.
 - **Distribution** — whether a field's mix of values is drifting (reported as a
   PSI score and a band of *normal / minor / significant*).
