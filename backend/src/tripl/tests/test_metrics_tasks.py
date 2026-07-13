@@ -4248,11 +4248,10 @@ def test_platform_disappearance_creates_parity_drop_only_when_bucket_is_covered(
         assert remaining == []
 
 
-def test_collect_breakdown_scope_keys_gates_immature_app_versions(
+def test_collect_breakdown_scope_keys_excludes_app_versions(
     sync_session_factory: sessionmaker[Session],
 ) -> None:
-    """An app_version value below the activation gate gets no anomaly series;
-    an activated release and every non-version column are untouched."""
+    """App-version series are observational; regular breakdowns stay monitored."""
     from tripl.core.analyzers.anomaly_detector import SCOPE_EVENT
     from tripl.worker.tasks.metrics.detect import _collect_breakdown_scope_keys
 
@@ -4264,7 +4263,7 @@ def test_collect_breakdown_scope_keys_gates_immature_app_versions(
             bucket = base + timedelta(hours=hour)
             session.add_all(
                 [
-                    # Activated release: dominant share, well over the volume floor.
+                    # Mature release: it must still stay out of the generic detector.
                     EventMetricBreakdown(
                         id=uuid.uuid4(),
                         scan_config_id=config.id,
@@ -4276,7 +4275,7 @@ def test_collect_breakdown_scope_keys_gates_immature_app_versions(
                         is_other=False,
                         count=100,
                     ),
-                    # Immature dev build: high SemVer, negligible traffic.
+                    # Immature dev build is excluded for the same semantic reason.
                     EventMetricBreakdown(
                         id=uuid.uuid4(),
                         scan_config_id=config.id,
@@ -4315,9 +4314,100 @@ def test_collect_breakdown_scope_keys_gates_immature_app_versions(
         )
 
     pairs = {(column, value) for _e, _t, column, value, _o in keys}
-    assert ("app_version", "2.0.0") in pairs  # activated release keeps its series
-    assert ("app_version", "9.9.9") not in pairs  # immature build gated out
+    assert ("app_version", "2.0.0") not in pairs
+    assert ("app_version", "9.9.9") not in pairs
     assert ("platform", "ios") in pairs  # other columns untouched
+
+
+def test_recalculate_breakdown_anomalies_purges_app_version_rows(
+    sync_session_factory: sessionmaker[Session],
+) -> None:
+    """A recompute removes legacy version markers without disabling real breakdowns."""
+    from tripl.core.analyzers.anomaly_detector import SCOPE_EVENT
+    from tripl.worker.tasks.metrics.detect import _recalculate_metric_breakdown_anomalies
+
+    base = datetime(2026, 1, 1, 0, 0)
+    with sync_session_factory() as session:
+        config, _event_type, event = _seed_anomaly_scan_state(session, base=base)
+        config.app_version_column = "app_version"
+        config.metric_breakdown_columns = ["country"]
+        settings = session.execute(
+            select(ProjectAnomalySettings).where(
+                ProjectAnomalySettings.project_id == config.project_id
+            )
+        ).scalar_one()
+        settings.detect_project_total = False
+        settings.detect_event_types = False
+        settings.min_history_buckets = 7
+        settings.baseline_window_buckets = 7
+        settings.sigma_threshold = 3.0
+
+        for hour in range(10):
+            count = 1 if hour == 9 else 50
+            session.add_all(
+                [
+                    EventMetricBreakdown(
+                        id=uuid.uuid4(),
+                        scan_config_id=config.id,
+                        event_id=event.id,
+                        event_type_id=None,
+                        bucket=base + timedelta(hours=hour),
+                        breakdown_column="country",
+                        breakdown_value="US",
+                        is_other=False,
+                        count=count,
+                    ),
+                    EventMetricBreakdown(
+                        id=uuid.uuid4(),
+                        scan_config_id=config.id,
+                        event_id=event.id,
+                        event_type_id=None,
+                        bucket=base + timedelta(hours=hour),
+                        breakdown_column="app_version",
+                        breakdown_value="2.0.0",
+                        is_other=False,
+                        count=count,
+                    ),
+                ]
+            )
+        session.add(
+            MetricBreakdownAnomaly(
+                id=uuid.uuid4(),
+                scan_config_id=config.id,
+                scope_type=SCOPE_EVENT,
+                scope_ref=str(event.id),
+                event_id=event.id,
+                event_type_id=None,
+                bucket=base + timedelta(hours=9),
+                breakdown_column="app_version",
+                breakdown_value="2.0.0",
+                is_other=False,
+                actual_count=1,
+                expected_count=50,
+                stddev=1,
+                z_score=-49,
+                direction="drop",
+            )
+        )
+        session.flush()
+
+        detected = _recalculate_metric_breakdown_anomalies(
+            session,
+            config,
+            evaluation_start=base + timedelta(hours=9),
+            evaluation_end=base + timedelta(hours=10),
+        )
+        rows = list(
+            session.execute(
+                select(MetricBreakdownAnomaly).where(
+                    MetricBreakdownAnomaly.scan_config_id == config.id,
+                    MetricBreakdownAnomaly.scope_type == SCOPE_EVENT,
+                )
+            ).scalars()
+        )
+
+    assert detected == 1
+    assert {(row.breakdown_column, row.breakdown_value) for row in rows} == {("country", "US")}
 
 
 def test_recalculate_metric_anomalies_excludes_uncovered_gap(

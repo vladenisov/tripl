@@ -828,100 +828,17 @@ async def _load_app_version_metric_rows(
     return metric_rows_by_series
 
 
-def _active_versions_from_metric_rows(
-    metric_rows_by_series: dict[tuple[str, bool], list[tuple[datetime, int]]],
-    *,
-    share_min: float = DEFAULT_ACTIVE_SHARE_MIN,
-) -> set[str]:
-    """Activation-gated versions computed from the raw (pre-fold) breakdown rows.
-
-    Mirrors the denominator build in ``_build_app_version_series`` so the two
-    share one definition of "active": per-version per-bucket totals against the
-    total traffic per bucket, fed to ``active_release_versions`` at the per-scan
-    ``share_min``.
-    """
-    release_totals_by_version: dict[str, dict[datetime, int]] = {}
-    all_traffic_by_bucket: dict[datetime, int] = {}
-    for (version, is_other), rows in metric_rows_by_series.items():
-        for bucket, count in rows:
-            all_traffic_by_bucket[bucket] = all_traffic_by_bucket.get(bucket, 0) + count
-            if not is_other:
-                per_bucket = release_totals_by_version.setdefault(version, {})
-                per_bucket[bucket] = per_bucket.get(bucket, 0) + count
-    return active_release_versions(
-        release_totals_by_version, all_traffic_by_bucket, share_min=share_min
-    )
-
-
-def _drop_immature_version_anomalies(
-    anomalies_by_series: dict[tuple[str, bool], list[MetricBreakdownAnomaly]],
-    active_versions: set[str],
-) -> dict[tuple[str, bool], list[MetricBreakdownAnomaly]]:
-    """Keep only anomalies on activation-gated version values (and the rolled-up
-    "Other" bucket). An immature (non-active) dev/tester build never took real
-    traffic, so its stored anomalies are noise — dropping them here also stops an
-    anomaly-only immature version from entering the app-version key union and
-    being picked as "latest" downstream.
-    """
-    return {
-        key: rows
-        for key, rows in anomalies_by_series.items()
-        if key[1] or key[0] in active_versions
-    }
-
-
-async def _load_app_version_anomaly_rows(
-    session: AsyncSession,
-    *,
-    config: ScanConfig,
-    scope_type: str,
-    scope_ref: str,
-    time_from: datetime | None,
-    time_to: datetime | None,
-    metric_rows_by_series: dict[tuple[str, bool], list[tuple[datetime, int]]],
-) -> dict[tuple[str, bool], list[MetricBreakdownAnomaly]]:
-    if config.app_version_column is None:
-        return {}
-
-    anomaly_query = (
-        select(MetricBreakdownAnomaly)
-        .where(
-            MetricBreakdownAnomaly.scan_config_id == config.id,
-            MetricBreakdownAnomaly.scope_type == scope_type,
-            MetricBreakdownAnomaly.scope_ref == scope_ref,
-            MetricBreakdownAnomaly.breakdown_column == config.app_version_column,
-            MetricBreakdownAnomaly.kind == MetricBreakdownAnomalyKind.volume,
-        )
-        .order_by(MetricBreakdownAnomaly.breakdown_value, MetricBreakdownAnomaly.bucket)
-    )
-    if time_from is not None:
-        anomaly_query = anomaly_query.where(MetricBreakdownAnomaly.bucket >= time_from)
-    if time_to is not None:
-        anomaly_query = anomaly_query.where(MetricBreakdownAnomaly.bucket < time_to)
-
-    anomalies_by_series: dict[tuple[str, bool], list[MetricBreakdownAnomaly]] = {}
-    for anomaly in (await session.execute(anomaly_query)).scalars():
-        key = (anomaly.breakdown_value, anomaly.is_other)
-        anomalies_by_series.setdefault(key, []).append(anomaly)
-
-    # Filter out anomalies on immature (non-activation-gated) versions so a
-    # dev/tester build that never took real traffic cannot surface anomaly
-    # markers — or, when anomaly-only, sneak into the version key union.
-    active_versions = _active_versions_from_metric_rows(
-        metric_rows_by_series, share_min=resolve_share_min(config.app_version_active_share_min)
-    )
-    return _drop_immature_version_anomalies(anomalies_by_series, active_versions)
-
-
 def _build_app_version_series(
     *,
     interval: str | None,
     metric_rows_by_series: dict[tuple[str, bool], list[tuple[datetime, int]]],
-    anomalies_by_series: dict[tuple[str, bool], list[MetricBreakdownAnomaly]],
     keep_releases: int,
     prerelease_pattern: re.Pattern[str] | None = None,
     share_min: float = DEFAULT_ACTIVE_SHARE_MIN,
 ) -> tuple[str | None, list[AppVersionInfo], list[AppVersionMetricSeries]]:
+    # App-version curves are observational rollout/adoption views. They never
+    # consume generic breakdown anomaly rows; release-specific failures are
+    # represented by the dedicated ReleaseRegression model instead.
     # Retention is applied here, at read time, over every version present in the
     # requested window: keep the latest ``keep_releases`` versions — activated
     # releases first (see below) — as explicit series and roll the rest, plus any
@@ -929,11 +846,7 @@ def _build_app_version_series(
     # kept set once over the whole window (rather than per collection chunk at
     # write time) stops a version from flipping in and out of "Other" between
     # chunks.
-    explicit_versions = {
-        version
-        for version, is_other in (set(metric_rows_by_series) | set(anomalies_by_series))
-        if not is_other
-    }
+    explicit_versions = {version for version, is_other in metric_rows_by_series if not is_other}
     # Activation gate: a release can only be the "latest" — and can only hold a
     # retention slot ahead of an untried build — once it takes a real share of
     # traffic. Volumes are computed from the raw rows (pre-fold) so releases
@@ -981,11 +894,7 @@ def _build_app_version_series(
         key: sorted(counts.items()) for key, counts in folded_metric_rows.items()
     }
 
-    folded_anomalies: dict[tuple[str, bool], list[MetricBreakdownAnomaly]] = {}
-    for (version, is_other), anomalies in anomalies_by_series.items():
-        folded_anomalies.setdefault(_display_key(version, is_other), []).extend(anomalies)
-
-    keys = set(metric_rows_by_display) | set(folded_anomalies)
+    keys = set(metric_rows_by_display)
     ordered_keys = _order_app_version_keys(keys)
 
     # Prefer the SemVer-max ACTIVE released version; fall back to the SemVer-max
@@ -1014,7 +923,7 @@ def _build_app_version_series(
         data = _build_metric_points(
             interval=interval,
             metric_rows=metric_rows_by_display.get(key, []),
-            anomalies=folded_anomalies.get(key, []),
+            anomalies=[],
         )
         series.append(
             AppVersionMetricSeries(
@@ -1085,19 +994,9 @@ async def get_app_version_series(
         time_from=time_from,
         time_to=time_to,
     )
-    anomalies_by_series = await _load_app_version_anomaly_rows(
-        session,
-        config=config,
-        scope_type=scope_type,
-        scope_ref=resolved_scope_ref,
-        time_from=time_from,
-        time_to=time_to,
-        metric_rows_by_series=metric_rows_by_series,
-    )
     latest_version, versions, series = _build_app_version_series(
         interval=config.interval,
         metric_rows_by_series=metric_rows_by_series,
-        anomalies_by_series=anomalies_by_series,
         keep_releases=config.app_version_keep_releases or DEFAULT_APP_VERSION_KEEP_RELEASES,
         prerelease_pattern=compile_prerelease_pattern(config.app_version_prerelease_pattern),
         share_min=resolve_share_min(config.app_version_active_share_min),
@@ -1149,19 +1048,9 @@ async def get_app_version_adoption(
         time_from=time_from,
         time_to=time_to,
     )
-    anomalies_by_series = await _load_app_version_anomaly_rows(
-        session,
-        config=config,
-        scope_type=SCOPE_PROJECT_TOTAL,
-        scope_ref=scope_ref,
-        time_from=time_from,
-        time_to=time_to,
-        metric_rows_by_series=metric_rows_by_series,
-    )
     latest_version, versions, series = _build_app_version_series(
         interval=config.interval,
         metric_rows_by_series=metric_rows_by_series,
-        anomalies_by_series=anomalies_by_series,
         keep_releases=config.app_version_keep_releases or DEFAULT_APP_VERSION_KEEP_RELEASES,
         prerelease_pattern=compile_prerelease_pattern(config.app_version_prerelease_pattern),
         share_min=resolve_share_min(config.app_version_active_share_min),

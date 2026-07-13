@@ -112,7 +112,6 @@ def test_build_series_low_traffic_dev_build_is_not_latest() -> None:
     latest_version, versions, series = _build_app_version_series(
         interval=None,
         metric_rows_by_series=metric_rows,
-        anomalies_by_series={},
         keep_releases=5,
     )
 
@@ -139,7 +138,6 @@ def test_build_series_falls_back_to_semver_max_when_nothing_active() -> None:
     latest_version, versions, _series = _build_app_version_series(
         interval=None,
         metric_rows_by_series=metric_rows,
-        anomalies_by_series={},
         keep_releases=5,
     )
 
@@ -155,7 +153,6 @@ def test_build_series_empty_input_is_inert() -> None:
     latest_version, versions, series = _build_app_version_series(
         interval=None,
         metric_rows_by_series={},
-        anomalies_by_series={},
         keep_releases=5,
     )
     assert latest_version is None
@@ -200,7 +197,6 @@ def test_build_series_dev_build_does_not_steal_retention_slot() -> None:
     latest_version, _versions, series = _build_app_version_series(
         interval=None,
         metric_rows_by_series=metric_rows,
-        anomalies_by_series={},
         keep_releases=1,
     )
     assert latest_version == "1.0.0"
@@ -266,7 +262,6 @@ def test_build_series_semver_prerelease_never_latest_even_when_max() -> None:
     latest_version, versions, series = _build_app_version_series(
         interval=None,
         metric_rows_by_series=metric_rows,
-        anomalies_by_series={},
         keep_releases=5,
     )
     assert latest_version == "1.0.0"
@@ -290,7 +285,6 @@ def test_build_series_custom_pattern_excludes_matching_version() -> None:
     latest_version, versions, _series = _build_app_version_series(
         interval=None,
         metric_rows_by_series=metric_rows,
-        anomalies_by_series={},
         keep_releases=5,
         prerelease_pattern=compile_prerelease_pattern(r"internal"),
     )
@@ -310,7 +304,6 @@ def test_build_series_prerelease_does_not_steal_retention_slot() -> None:
     _latest, _versions, series = _build_app_version_series(
         interval=None,
         metric_rows_by_series=metric_rows,
-        anomalies_by_series={},
         keep_releases=1,
     )
     series_by_version = {s.version: s for s in series}
@@ -330,7 +323,6 @@ def test_build_series_share_min_override_changes_activation() -> None:
     latest_default, _v, _s = _build_app_version_series(
         interval=None,
         metric_rows_by_series=metric_rows,
-        anomalies_by_series={},
         keep_releases=5,
     )
     assert latest_default == "2.0.0"
@@ -338,7 +330,6 @@ def test_build_series_share_min_override_changes_activation() -> None:
     latest_strict, versions_strict, _s2 = _build_app_version_series(
         interval=None,
         metric_rows_by_series=metric_rows,
-        anomalies_by_series={},
         keep_releases=5,
         share_min=0.15,
     )

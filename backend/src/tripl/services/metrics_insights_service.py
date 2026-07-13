@@ -506,19 +506,24 @@ async def get_top_movers(
     if scan_config is None:
         raise HTTPException(404, "Scan config not found")
 
+    query = select(MetricBreakdownAnomaly).where(
+        MetricBreakdownAnomaly.scan_config_id == scan_config_id,
+        MetricBreakdownAnomaly.scope_type == scope_type,
+        MetricBreakdownAnomaly.scope_ref == scope_ref,
+        MetricBreakdownAnomaly.bucket == bucket,
+        MetricBreakdownAnomaly.kind == MetricBreakdownAnomalyKind.volume,
+    )
+    if scan_config.app_version_column:
+        # Version rollout curves are observational and use the dedicated
+        # release-regression detector. Do not let legacy version markers appear
+        # as causal movers for an otherwise valid aggregate alert.
+        query = query.where(
+            MetricBreakdownAnomaly.breakdown_column != scan_config.app_version_column
+        )
     rows = (
         (
             await session.execute(
-                select(MetricBreakdownAnomaly)
-                .where(
-                    MetricBreakdownAnomaly.scan_config_id == scan_config_id,
-                    MetricBreakdownAnomaly.scope_type == scope_type,
-                    MetricBreakdownAnomaly.scope_ref == scope_ref,
-                    MetricBreakdownAnomaly.bucket == bucket,
-                    MetricBreakdownAnomaly.kind == MetricBreakdownAnomalyKind.volume,
-                )
-                .order_by(func.abs(MetricBreakdownAnomaly.z_score).desc())
-                .limit(limit)
+                query.order_by(func.abs(MetricBreakdownAnomaly.z_score).desc()).limit(limit)
             )
         )
         .scalars()

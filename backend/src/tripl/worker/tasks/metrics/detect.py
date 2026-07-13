@@ -33,11 +33,6 @@ from tripl.models.metric_value import MetricValue
 from tripl.models.project_anomaly_settings import ProjectAnomalySettings
 from tripl.models.scan_config import ScanConfig
 from tripl.observability.metrics import anomalies_detected_total
-from tripl.services.version_activation import (
-    DEFAULT_ACTIVE_SHARE_MIN,
-    active_release_versions,
-    resolve_share_min,
-)
 from tripl.worker.analyzers.metric_value_kind import is_count_shaped
 
 # Fractional (ratio/average/sql) catalog metrics drop the count-shaped
@@ -518,92 +513,6 @@ def _collect_scope_ids(
     return ids
 
 
-def _active_app_version_values_by_group(
-    session: Session,
-    *,
-    scan_config_id: uuid.UUID,
-    scope_type: str,
-    app_version_column: str,
-    history_from: datetime,
-    evaluation_end: datetime,
-    share_min: float = DEFAULT_ACTIVE_SHARE_MIN,
-) -> dict[tuple[uuid.UUID | None, uuid.UUID | None], set[str]]:
-    """Activation-gated app_version breakdown values, keyed by scope grouping.
-
-    Immature dev/tester builds surface with a high SemVer but negligible
-    traffic; giving each its own per-version anomaly series floods monitoring
-    with noise. We reuse the shared activation gate
-    (``tripl.services.version_activation.active_release_versions``) over the
-    per-version per-bucket breakdown totals so only releases that took a real
-    share of traffic keep an anomaly series. The rolled-up ``is_other`` bucket
-    is never a single build, so it is excluded from the candidate set here and
-    always retained by the caller.
-    """
-    query = (
-        select(
-            EventMetricBreakdown.event_id,
-            EventMetricBreakdown.event_type_id,
-            EventMetricBreakdown.breakdown_value,
-            EventMetricBreakdown.is_other,
-            EventMetricBreakdown.bucket,
-            sa_func.sum(EventMetricBreakdown.count),
-        )
-        .where(
-            EventMetricBreakdown.scan_config_id == scan_config_id,
-            EventMetricBreakdown.breakdown_column == app_version_column,
-            EventMetricBreakdown.bucket >= history_from,
-            EventMetricBreakdown.bucket < evaluation_end,
-        )
-        .group_by(
-            EventMetricBreakdown.event_id,
-            EventMetricBreakdown.event_type_id,
-            EventMetricBreakdown.breakdown_value,
-            EventMetricBreakdown.is_other,
-            EventMetricBreakdown.bucket,
-        )
-    )
-
-    if scope_type == SCOPE_PROJECT_TOTAL:
-        query = query.where(
-            EventMetricBreakdown.event_id.is_(None),
-            EventMetricBreakdown.event_type_id.is_not(None),
-        )
-    elif scope_type == SCOPE_EVENT:
-        query = query.join(Event, EventMetricBreakdown.event_id == Event.id).where(
-            EventMetricBreakdown.event_id.is_not(None),
-            Event.status != "archived",
-        )
-    else:  # SCOPE_EVENT_TYPE
-        query = query.where(EventMetricBreakdown.event_type_id.is_not(None))
-
-    Group = tuple[uuid.UUID | None, uuid.UUID | None]
-    # group -> version -> {bucket: total} for real versions (is_other False)
-    per_version: dict[Group, dict[str, dict[datetime, float]]] = {}
-    # group -> {bucket: total} over EVERY value incl. the "Other" rollup, so the
-    # activation share denominator is not inflated (version_activation expects
-    # the caller to pass an all_by_bucket that includes Other).
-    all_by_bucket: dict[Group, dict[datetime, float]] = {}
-    for event_id, event_type_id, value, is_other, bucket, total in session.execute(query).all():
-        group: Group = (
-            (None, None)
-            if scope_type == SCOPE_PROJECT_TOTAL
-            else (
-                event_id,
-                event_type_id,
-            )
-        )
-        totals = all_by_bucket.setdefault(group, {})
-        totals[bucket] = totals.get(bucket, 0.0) + float(total)
-        if not is_other:
-            by_bucket = per_version.setdefault(group, {}).setdefault(value, {})
-            by_bucket[bucket] = by_bucket.get(bucket, 0.0) + float(total)
-
-    return {
-        group: active_release_versions(versions, all_by_bucket.get(group), share_min=share_min)
-        for group, versions in per_version.items()
-    }
-
-
 def _collect_breakdown_scope_keys(
     session: Session,
     *,
@@ -613,7 +522,6 @@ def _collect_breakdown_scope_keys(
     evaluation_end: datetime,
     scope_type: str,
     app_version_column: str | None = None,
-    app_version_share_min: float = DEFAULT_ACTIVE_SHARE_MIN,
     kind: MetricBreakdownAnomalyKind = MetricBreakdownAnomalyKind.volume,
 ) -> set[tuple[uuid.UUID | None, uuid.UUID | None, str, str, bool]]:
     metric_id_column = (
@@ -685,34 +593,15 @@ def _collect_breakdown_scope_keys(
         else:
             keys.add((event_id, event_type_id, column, value, bool(is_other)))
 
-    if not app_version_column or not any(
-        column == app_version_column for _, _, column, _, _ in keys
-    ):
+    if not app_version_column:
         return keys
 
-    # Restrict app_version breakdown series to activation-gated releases so
-    # immature dev/tester builds do not each spawn their own anomaly series
-    # (tripl-dmch.4). Other breakdown columns (platform, country, ...) are
-    # untouched. The "Other" rollup is always kept.
-    active_by_group = _active_app_version_values_by_group(
-        session,
-        scan_config_id=scan_config_id,
-        scope_type=scope_type,
-        app_version_column=app_version_column,
-        history_from=history_from,
-        evaluation_end=evaluation_end,
-        share_min=app_version_share_min,
-    )
-    gated: set[tuple[uuid.UUID | None, uuid.UUID | None, str, str, bool]] = set()
-    for key in keys:
-        event_id, event_type_id, column, value, is_other = key
-        if column != app_version_column or is_other:
-            gated.add(key)
-            continue
-        group = (None, None) if scope_type == SCOPE_PROJECT_TOTAL else (event_id, event_type_id)
-        if value in active_by_group.get(group, set()):
-            gated.add(key)
-    return gated
+    # App-version series describe rollout adoption rather than a stable cohort:
+    # each release naturally ramps up and then declines as the next one ships.
+    # Running the generic per-breakdown detector on those lifecycle curves
+    # creates noise. Dedicated release-regression detection handles version
+    # correctness; every other breakdown column stays monitored here.
+    return {key for key in keys if key[2] != app_version_column}
 
 
 def _load_metric_value_points(
@@ -1204,7 +1093,6 @@ def _recalculate_metric_breakdown_anomalies(
 
     if not config.interval or (
         not config.metric_breakdown_columns
-        and not config.app_version_column
         and not config.platform_column
         and not _scan_has_event_level_breakdown_columns(session, config.id)
     ):
@@ -1219,6 +1107,17 @@ def _recalculate_metric_breakdown_anomalies(
     interval_spec = get_interval(config.interval)
     settings = _build_anomaly_settings(project_settings)
     app_version_column = config.app_version_column
+    if app_version_column:
+        # Clear markers produced before app-version series became observational.
+        # Keep parity rows (platform-only) and the raw breakdown metrics used by
+        # adoption charts and the dedicated release-regression detector.
+        session.execute(
+            delete(MetricBreakdownAnomaly).where(
+                MetricBreakdownAnomaly.scan_config_id == config.id,
+                MetricBreakdownAnomaly.breakdown_column == app_version_column,
+                MetricBreakdownAnomaly.kind == MetricBreakdownAnomalyKind.volume,
+            )
+        )
     history_from = evaluation_start - interval_spec.delta * required_history_buckets(
         interval_spec.delta, settings
     )
@@ -1233,7 +1132,6 @@ def _recalculate_metric_breakdown_anomalies(
             evaluation_end=evaluation_end,
             scope_type=SCOPE_PROJECT_TOTAL,
             app_version_column=app_version_column,
-            app_version_share_min=resolve_share_min(config.app_version_active_share_min),
         ):
             points = _load_breakdown_scope_points(
                 session,
@@ -1286,7 +1184,6 @@ def _recalculate_metric_breakdown_anomalies(
             evaluation_end=evaluation_end,
             scope_type=SCOPE_EVENT_TYPE,
             app_version_column=app_version_column,
-            app_version_share_min=resolve_share_min(config.app_version_active_share_min),
         ):
             if event_type_id is None:
                 continue
@@ -1342,7 +1239,6 @@ def _recalculate_metric_breakdown_anomalies(
             evaluation_end=evaluation_end,
             scope_type=SCOPE_EVENT,
             app_version_column=app_version_column,
-            app_version_share_min=resolve_share_min(config.app_version_active_share_min),
         ):
             if event_id is None:
                 continue
