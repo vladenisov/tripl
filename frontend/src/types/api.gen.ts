@@ -7209,7 +7209,7 @@ export interface components {
         ProjectCreate: {
             /**
              * App Version Keep Releases
-             * @default 10
+             * @default 5
              */
             app_version_keep_releases: number;
             /**
@@ -7297,7 +7297,7 @@ export interface components {
         ProjectResponse: {
             /**
              * App Version Keep Releases
-             * @default 10
+             * @default 5
              */
             app_version_keep_releases: number;
             /**

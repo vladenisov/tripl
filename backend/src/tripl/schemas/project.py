@@ -1,5 +1,6 @@
 import uuid
 from datetime import datetime
+from typing import cast
 
 from pydantic import BaseModel, Field
 
@@ -35,7 +36,7 @@ class ProjectUpdate(BaseModel):
     # ``int`` with a default of None makes the PATCH field optional while still
     # rejecting an explicitly supplied JSON null (and keeps OpenAPI non-nullable).
     app_version_keep_releases: int = Field(
-        None,
+        cast(int, None),
         ge=1,
         le=MAX_APP_VERSION_KEEP_RELEASES,
     )
