@@ -183,12 +183,35 @@ Path rules:
 - A path is a dot-separated chain of identifier-safe parts (`a.b.c`). Parts that
   are not identifier-safe are rejected, not escaped — the path is interpolated
   into SQL, so the allowlist is also a security boundary.
-- **Dotted nested leaf paths now work on all three warehouses at scan time.**
-  ClickHouse enumerates them with `arraySort(JSONAllPaths(col))`, PostgreSQL with
-  a recursive `jsonb_each` walk, BigQuery with `JSON_KEYS(col, 20)` reduced to its
-  leaf set. All three report `user.address.city`, not just `user`. Two bounds
-  remain, and they are real: BigQuery stops at **depth 20** (caveat [5]), and
-  PostgreSQL's walk is **unbenchmarked** inside a scan's `GROUP BY` (caveat [6]).
+- **Dotted nested leaf paths are served by *discovery* on all three warehouses** —
+  ClickHouse via `arraySort(JSONAllPaths(col))`, PostgreSQL via a recursive
+  `jsonb_each` walk, BigQuery via `JSON_KEYS(col, 20)` reduced to its leaf set. All
+  three surface `user.address.city`, not just `user`. This is the enumeration the UI
+  shows you and the one you pick paths from. BigQuery stops at **depth 20** (caveat
+  [5]).
+- **Scan-time *shape grouping* differs, and PostgreSQL is deliberately coarser.**
+  The scan groups each row by its path set to count distinct document shapes, so that
+  expression runs once per row across the whole window. ClickHouse gets nested paths
+  there for free — `JSONAllPaths` is a columnar metadata read. PostgreSQL has no such
+  primitive: the equivalent recursive walk costs **~44 µs/row**, measured on
+  PostgreSQL 18 over a 30k-row, 4-level fixture:
+
+  | scan | time (30k rows) |
+  |---|---|
+  | scalar columns only | 16 ms |
+  | top-level keys (what PostgreSQL now does) | 245 ms |
+  | nested leaf paths | 1744 ms — **7×** the above, **108×** the floor |
+
+  It is irreducible rather than a coding mistake: `EXPLAIN` shows the recursive CTE
+  running with `loops=30000` (once per row), a LATERAL rewrite is slower (1847 ms),
+  an unrolled depth-limited expansion is slower still (2976 ms), and the walk *alone*
+  with no grouping already costs 1320 ms. On a 10M-row window that is minutes of CPU
+  spent purely on parsing paths.
+
+  So PostgreSQL groups scans on **top-level keys**, and its "distinct shapes" count is
+  coarser than ClickHouse's. Nested paths are unaffected everywhere they are actually
+  used: discovery, extraction, and metrics over a chosen path. This is a real
+  divergence, stated here rather than passed off as parity.
 - Path *discovery* (the preview-time "what keys does this column have" probe) is
   bounded on **all three** by a source-row sample — see caveat [4]. It is a
   different operation from scan-time enumeration, with a different bound.
@@ -232,7 +255,7 @@ is a shipping warehouse.
 | Schema browse (autocomplete) | `get_schema_tables` | full | **bounded [1]** | full | full |
 | Preview rows (time-windowed) | `get_preview_rows` | full | full | full | full |
 | JSON path discovery (preview probe) | `get_json_path_samples` | **bounded [4]** | **bounded [4]** | **bounded [4]** | bounded [4] |
-| Nested path enumeration (scan) | `get_full_breakdown` | full | **bounded [5]** | full [6] | full |
+| Nested path enumeration (scan) | `get_full_breakdown` | full | **bounded [5]** | **top-level only [6]** | full |
 | Nested value extraction (selected paths) | all bucketed methods | full (JSON), none for `Tuple`/`Map` [8] | full (JSON + STRUCT [5]) | full (JSON) | full |
 | Scan run / full breakdown | `get_full_breakdown` | full | full | full | full |
 | Scan replay (chunked) | bucketed methods | full | full | full | full |
@@ -322,15 +345,25 @@ are still *enumerated* (so they stay visible in discovery) but are rejected with
 an actionable error if selected, rather than compiled into SQL that fails opaquely
 inside a worker.
 
-**[6] PostgreSQL's scan-time nested walk is correct but unbenchmarked.** The
-recursive `jsonb_each` walk that gives PostgreSQL full nested leaf paths is
-embedded in the SELECT/GROUP BY of the scan and breakdown queries, so it is
-evaluated **per row** over the whole scan window. It is verified correct against
-a real PostgreSQL 18, and the discovery path is bounded — but the scan path is
-not, and a grouping sublink over a correlated `WITH RECURSIVE` is unusual SQL and
-the most likely place for a production scan to regress on a wide or deeply nested
-`jsonb` column. Treat it as a known performance risk, not a known performance
-cost.
+**[6] PostgreSQL groups scans on top-level keys, not nested leaves — measured, and
+deliberate.** The scan's path expression runs once per row over the whole window.
+ClickHouse gets nested paths there for free (`JSONAllPaths` is a columnar metadata
+read); PostgreSQL has no equivalent, and the recursive `jsonb_each` walk that
+produces the same answer costs **~44 µs/row** — on a 30k-row, 4-level fixture on
+PostgreSQL 18: 16 ms for a scan with no JSON, 245 ms for top-level keys, **1744 ms**
+for nested leaves. That is 7× the top-level form and 108× the floor; on a 10M-row
+window it is minutes of CPU spent only on parsing paths.
+
+The cost is irreducible, not a coding mistake: `EXPLAIN` shows the recursive CTE at
+`loops=30000` (once per row), a LATERAL rewrite measures *slower* (1847 ms), an
+unrolled depth-limited expansion slower still (2976 ms), and the walk alone with no
+grouping is already 1320 ms.
+
+So the scan groups on top-level keys and PostgreSQL's **distinct-shapes count is
+coarser than ClickHouse's**. Everything users actually reach for is unaffected:
+nested-path *discovery*, *extraction*, and metrics over a chosen path all still see
+`user.address.city`. A conformance test pins both depths, so restoring the nested
+walk to the scan cannot silently reintroduce the regression.
 → [tripl-64n8.11]
 
 **[7] PostgreSQL requires version 14 or newer, and `time` columns are still not

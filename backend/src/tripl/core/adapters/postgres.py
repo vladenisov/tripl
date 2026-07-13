@@ -623,32 +623,47 @@ class PostgresAdapter(BaseAdapter):
         return f" WHERE {self._time_window_condition(time_column, time_from, time_to)}"
 
     def _json_paths_expression(self, column: str) -> str:
-        """Sorted text[] of the document's nested leaf paths, for one row.
+        """Sorted text[] of the document's TOP-LEVEL keys, for one row.
 
-        Parity with ClickHouse's ``arraySort(JSONAllPaths(col))``: full dotted leaf
-        paths ("user.address.city"), not the top-level keys ``jsonb_object_keys``
-        returns. Semantics, made explicit because the three warehouses have to
-        agree on them:
+        This is the *scan* path: it is evaluated once per row across the whole
+        window, so its per-row cost is multiplied by every row scanned.
 
-        * **Objects** are recursed into and are *not* themselves paths; only leaves
-          are emitted. An empty object is therefore not a path (it has no leaf) —
-          the same thing ``json_paths.flatten_json_paths`` does locally.
-        * **Arrays are leaves.** The array lands at its own path and is never
-          indexed into, so ``{"tags": ["a"]}`` yields ``tags``, not ``tags.0``.
-        * **JSON nulls are leaves.** ``{"a": null}`` yields ``a``: the key exists in
-          the document, so it stays discoverable rather than vanishing.
-        * A **SQL NULL** column, or a JSON scalar/array at the *root*, has no keys
-          and yields ``ARRAY[]::text[]`` — an empty array, never NULL, so it groups
-          as a value like any other.
+        It deliberately does NOT enumerate nested leaf paths, unlike
+        :meth:`get_json_path_samples` below. ClickHouse's ``JSONAllPaths`` returns
+        full nested paths essentially for free — it is a columnar metadata read —
+        but PostgreSQL has no such primitive, and the recursive ``jsonb_each`` walk
+        that produces the same answer costs **~44 microseconds per row**, measured on
+        PostgreSQL 18 over a 30k-row fixture with a 4-level document::
+
+            scalar columns only ...     16 ms   (the floor)
+            top-level keys (this) ..    245 ms
+            nested leaf paths .....    1744 ms  (7x this, 108x the floor)
+
+        ``EXPLAIN`` shows both why and that it is irreducible: the recursive CTE runs
+        with ``loops=30000`` — once per row — and rewriting it as a LATERAL join
+        (1847 ms) or as an unrolled depth-limited expansion (2976 ms) is no better.
+        The walk *alone*, with no grouping at all, already costs 1320 ms. On a 10M-row
+        window that is minutes of CPU spent purely on parsing paths.
+
+        So nested paths live where they are both needed and affordable:
+        ``get_json_path_samples``, which is bounded by ``sample_row_limit`` (~44 ms)
+        and is what the UI uses to show which paths exist and let the user pick one.
+        Scan-time grouping only has to tell document *shapes* apart, which top-level
+        keys already do.
+
+        The consequence — a coarser "distinct shapes" count on PostgreSQL than on
+        ClickHouse — is a real divergence, and is documented as one in the capability
+        matrix with these numbers rather than passed off as parity.
+
+        Semantics are unchanged from the nested form except for depth. In particular a
+        **SQL NULL** column, or a JSON scalar/array at the *root*, has no keys and
+        still yields ``ARRAY[]::text[]`` — an empty array, never NULL, so it groups as
+        a value like any other.
         """
         c = _quote_ident(self._validate_column(column))
-        seed = f"(SELECT {_jsonb_object(c)} AS _doc)"
         return (
-            "(SELECT COALESCE(array_agg(DISTINCT _leaf._path ORDER BY _leaf._path), "
-            "ARRAY[]::text[]) FROM ("
-            f"WITH RECURSIVE {_JSON_LEAF_WALK.format(seed=seed)} "
-            "SELECT _path FROM _walk WHERE jsonb_typeof(_value) <> 'object'"
-            ") AS _leaf(_path))"
+            "(SELECT COALESCE(array_agg(_key ORDER BY _key), ARRAY[]::text[]) "
+            f"FROM jsonb_object_keys({_jsonb_object(c)}) AS _key)"
         )
 
     @override
