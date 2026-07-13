@@ -7,8 +7,9 @@ metric-catalog version series (``_build_metric_version_series``):
   active shipped release (it is folded into "Other");
 * only activated versions are marked ``is_latest`` / ``is_active`` for
   count-shaped metrics;
-* fractional metrics (ratio / avg / sql) have no meaningful value-share gate, so
-  they fall back to pure SemVer-max and report ``is_active=False``;
+* fractional metrics (ratio / avg / sql) carry shares, not traffic, so release
+  maturity comes from the project totals; with no totals collected yet they fall
+  back to pure SemVer-max and leave shipped releases active;
 * ``keep_releases`` is honored (extra active releases fold into "Other").
 
 These exercise the pure builder directly (no DB), mirroring the style of
@@ -75,9 +76,10 @@ def test_count_shaped_marks_only_active_version_is_latest() -> None:
     assert series_by_version["2.0.0"].is_active is False
 
 
-def test_fractional_metric_falls_back_to_semver_max_no_active() -> None:
-    # A ratio metric: value-share gate is meaningless, so there is no active set;
-    # latest is the raw SemVer-max and nothing is marked active.
+def test_fractional_metric_without_project_totals_keeps_releases_active() -> None:
+    # A ratio metric with no project-total rows yet: its own values are shares,
+    # not traffic, so the activation gate must not run at all. Latest is the raw
+    # SemVer-max and no shipped release is demoted to inactive on ratio values.
     value_rows = {
         ("1.0.0", False): _rows({d: 0.9 for d in DAYS}),
         ("2.0.0", False): _rows({d: 0.5 for d in DAYS}),
@@ -91,8 +93,33 @@ def test_fractional_metric_falls_back_to_semver_max_no_active() -> None:
     assert latest_version == "2.0.0"
     by_version = {v.version: v for v in versions}
     assert by_version["2.0.0"].is_latest is True
-    assert all(v.is_active is False for v in versions)
-    assert all(s.is_active is False for s in series)
+    assert all(v.is_active is True for v in versions)
+    assert all(s.is_active is True for s in series)
+
+
+def test_fractional_metric_uses_project_totals_when_available() -> None:
+    # Same ratio metric, but project totals exist: maturity now comes from real
+    # traffic, so the low-volume 1.0.0 is inactive and 2.0.0 is the active latest
+    # even though its ratio value is the smaller one.
+    value_rows = {
+        ("1.0.0", False): _rows({d: 0.9 for d in DAYS}),
+        ("2.0.0", False): _rows({d: 0.5 for d in DAYS}),
+    }
+    maturity_rows = {
+        ("1.0.0", False): _rows({d: 10.0 for d in DAYS}),
+        ("2.0.0", False): _rows({d: 990.0 for d in DAYS}),
+    }
+    latest_version, versions, _series = _build_metric_version_series(
+        interval=None,
+        value_rows_by_series=value_rows,
+        maturity_rows_by_series=maturity_rows,
+        keep_releases=5,
+        count_shaped=False,
+    )
+    assert latest_version == "2.0.0"
+    by_version = {v.version: v for v in versions}
+    assert by_version["2.0.0"].is_active is True
+    assert by_version["1.0.0"].is_active is False
 
 
 def test_count_shaped_honors_keep_releases() -> None:
