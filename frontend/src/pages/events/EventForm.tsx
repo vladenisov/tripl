@@ -1,4 +1,4 @@
-import { useMemo, useState, type ReactNode } from 'react'
+import { useMemo, useRef, useState, type ReactNode } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import type {
@@ -301,6 +301,7 @@ export function EventForm({
   const qc = useQueryClient()
   const branchId = useActiveBranchId()
   const aiEnabled = useAiStatus(slug)
+  const formRef = useRef<HTMLFormElement>(null)
   const isNew = !event
   const [etId, setEtId] = useState(
     // Preselect the only event type so a fresh form shows its fields at once.
@@ -343,7 +344,10 @@ export function EventForm({
       sc => !!sc.event_name_format && (sc.event_type_id === etId || sc.event_type_id === null),
     )
     const exact = ruled.filter(sc => sc.event_type_id === etId)
-    return (exact[0] ?? ruled[0])?.event_name_format ?? null
+    const candidates = exact.length > 0 ? exact : ruled
+    return [...candidates]
+      .sort((a, b) => Date.parse(b.updated_at) - Date.parse(a.updated_at))[0]
+      ?.event_name_format ?? null
   }, [isNew, etId, scanConfigs])
   const generatedName = useMemo(() => {
     if (!nameFormat) return null
@@ -374,7 +378,7 @@ export function EventForm({
   })
 
   const saveMut = useMutation({
-    mutationFn: () => {
+    mutationFn: (_closeAfterSave: boolean) => {
       const payload = {
         event_type_id: etId,
         name: generatedName ? generatedName.name : name,
@@ -394,20 +398,26 @@ export function EventForm({
         ? eventsApi.update(slug, event.id, payload, branchId)
         : eventsApi.create(slug, payload, branchId)
     },
-    onSuccess: () => {
+    onSuccess: (_data, closeAfterSave: boolean) => {
       qc.invalidateQueries({ queryKey: ['events', slug, branchId] })
       qc.invalidateQueries({ queryKey: ['eventTags', slug, branchId] })
       if (event) qc.invalidateQueries({ queryKey: ['event', slug] })
-      onClose()
+      if (closeAfterSave) onClose()
     },
   })
+
+  const saveAndAddAnother = () => {
+    if (generatedName?.missing.length || !formRef.current?.reportValidity()) return
+    saveMut.mutate(false)
+  }
 
   const typeLabel = selectedEt?.display_name ?? etId
 
   return (
     <div className="h-full overflow-y-auto">
       <form
-        onSubmit={e => { e.preventDefault(); saveMut.mutate() }}
+        ref={formRef}
+        onSubmit={e => { e.preventDefault(); saveMut.mutate(true) }}
         className="mx-auto max-w-[880px] px-6 pb-12 pt-4"
       >
         <button
@@ -643,6 +653,18 @@ export function EventForm({
           >
             Cancel
           </button>
+          {isNew && (
+            <button
+              type="button"
+              onClick={saveAndAddAnother}
+              disabled={saveMut.isPending || (generatedName ? generatedName.missing.length > 0 : false)}
+              className="inline-flex h-8 items-center gap-[6px] rounded-[7px] border px-3 text-[12px] font-medium transition-colors hover:bg-[var(--surface-hover)] disabled:opacity-60"
+              style={{ borderColor: 'var(--border)', color: 'var(--fg)' }}
+            >
+              {saveMut.isPending ? <Loader2 className="animate-spin" size={12} /> : <Plus size={12} />}
+              Save and add another
+            </button>
+          )}
           <button
             type="submit"
             disabled={saveMut.isPending || (generatedName ? generatedName.missing.length > 0 : false)}

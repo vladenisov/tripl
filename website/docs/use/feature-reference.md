@@ -74,12 +74,15 @@ enabled; **Status** — one of `draft`, `in_review`, `ready_for_dev`,
 fields or add another warehouse column manually; JSON fields are excluded);
 **Field values**
 (per the event type's schema — boolean/enum selects, a JSON editor for `json`
-fields, variable-aware text inputs); and **Meta fields** values.
+fields that validates and saves canonical JSON while preserving complete
+`${variable}` values, variable-aware text inputs); and **Meta fields** values.
+For a series of similar events, **Save and add another** creates the current
+event and keeps the entered form values in place for the next one.
 
 When a scan targeting the selected event type defines an **Event name format**,
 new manual events use that same template. The form renders a live name preview
-from field values and blocks save until every referenced scalar or JSON-path
-field is present. The backend treats the generated name as the identity and
+from field values, locks the name input, and blocks save until every referenced
+scalar or JSON-path field is present. The backend treats the generated name as the identity and
 returns advisory `warnings` if a client supplied a different name. Values saved
 manually are marked as authored, so later scans add missing values but do not
 overwrite the authored ones.
@@ -168,6 +171,7 @@ variable's documented values and per-event overrides) are broken out member by
 member rather than dumped whole. A row also links to the entity it describes —
 the event, event type, or variable — opened in the branch, or on `main` when the
 branch deleted it.
+Branch comments identify their author using the current project roster.
 
 **Revert** on a diff row (or on a single field-change row) puts that change back
 to the branch's base state: an addition is discarded, an edit is written back,

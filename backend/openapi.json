@@ -5563,6 +5563,7 @@
             "type": "string"
           },
           "value": {
+            "maxLength": 100000,
             "title": "Value",
             "type": "string"
           }

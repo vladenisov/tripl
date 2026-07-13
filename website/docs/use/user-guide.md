@@ -216,7 +216,9 @@ it is what populates monitoring later.
 Create a variable under **Plan → Variables**, document the values the team
 expects, and add the warehouse column or dotted JSON path that supplies it. Use
 `${variable_name}` in event field or meta values; the event form shows matching
-variables, documented values, and warnings for unknown tokens.
+variables, documented values, and warnings for unknown tokens. A JSON field
+must be valid JSON; tripl saves its canonical JSON form while preserving complete
+template values such as `${variable_name}`.
 
 Scans keep observed samples separate from the documented list. If a new value
 appears, review the drift from the Variables table or the affected event: accept
@@ -255,7 +257,7 @@ branch instead — the same idea as a pull request for code.
    down member by member (`currency: USD → EUR`), and the row links straight to
    the event, event type, or variable it describes, opened in that branch. The
    selected branch lives in the page URL, so a review can be shared as a link.
-   The reviewer leaves comments and either requests changes or approves.
+   The reviewer leaves named comments and either requests changes or approves.
 5. **Merge.** tripl matches events by name, so nothing is duplicated and the
    metrics, history, and alerts already attached to an event stay attached.
    Non-conflicting edits on either side merge automatically, including child
