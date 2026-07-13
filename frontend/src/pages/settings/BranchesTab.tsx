@@ -641,7 +641,7 @@ function FeatureBranchDetail({ slug, branch, diff, confirm }: FeatureBranchDetai
       </Panel>
 
       <ConflictsPanel slug={slug} branchId={branch.id} />
-      <CommentsPanel slug={slug} branchId={branch.id} />
+      <CommentsPanel slug={slug} branchId={branch.id} usersById={usersById} />
     </div>
   )
 }
@@ -1129,7 +1129,15 @@ function ConflictValue({ label, value }: { label: string; value: unknown }) {
   )
 }
 
-function CommentsPanel({ slug, branchId }: { slug: string; branchId: string }) {
+function CommentsPanel({
+  slug,
+  branchId,
+  usersById,
+}: {
+  slug: string
+  branchId: string
+  usersById: Map<string, string>
+}) {
   const qc = useQueryClient()
   const [commentBody, setCommentBody] = useState('')
 
@@ -1162,7 +1170,7 @@ function CommentsPanel({ slug, branchId }: { slug: string; branchId: string }) {
           >
             <p style={{ color: 'var(--fg)' }}>{c.body}</p>
             <p className="mt-1 text-xs" style={{ color: 'var(--fg-subtle)' }}>
-              {formatRelativeTime(c.created_at)}
+              {(c.user_id ? usersById.get(c.user_id) : undefined) ?? 'unknown'} · {formatRelativeTime(c.created_at)}
             </p>
           </div>
         ))}

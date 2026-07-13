@@ -284,6 +284,32 @@ describe('BranchesTab', () => {
     expect(screen.queryByText(/every change merges here/i)).not.toBeInTheDocument()
   })
 
+  it('renders the comment author name instead of an anonymous comment', async () => {
+    vi.mocked(planBranchesApi.list).mockResolvedValue({ items: [MAIN, FEATURE], total: 2 })
+    vi.mocked(planBranchesApi.getConflicts).mockResolvedValue({ entities: [], unresolved_count: 0 })
+    vi.mocked(planBranchesApi.diff).mockResolvedValue({
+      behind_base: false,
+      summary: { added: 0, removed: 0, changed: 0 },
+      entries: [],
+    })
+    vi.mocked(planBranchesApi.listComments).mockResolvedValue([
+      {
+        id: 'comment-1',
+        branch_id: 'feat-1',
+        parent_id: null,
+        user_id: 'u-priya',
+        body: 'Please rename this event.',
+        created_at: '2026-01-01T00:00:00Z',
+        updated_at: '2026-01-01T00:00:00Z',
+      },
+    ])
+
+    renderTab('feat-1')
+
+    expect(await screen.findByText('Please rename this event.')).toBeInTheDocument()
+    expect(await screen.findByText(/Priya S\./)).toBeInTheDocument()
+  })
+
   it('breaks a changed collection down per member instead of dumping JSON', async () => {
     vi.mocked(planBranchesApi.list).mockResolvedValue({ items: [MAIN, FEATURE], total: 2 })
     vi.mocked(planBranchesApi.getConflicts).mockResolvedValue({ entities: [], unresolved_count: 0 })

@@ -1386,6 +1386,150 @@ async def test_create_event_name_generated_from_scan_rule(client: AsyncClient):
 
 
 @pytest.mark.asyncio
+async def test_event_json_field_values_are_validated_and_normalized_with_variables(
+    client: AsyncClient,
+):
+    """JSON fields keep template tokens, but malformed values never reach storage."""
+    slug = "ev-json-values"
+    await client.post("/api/v1/projects", json={"name": slug, "slug": slug})
+    event_type = await client.post(
+        f"/api/v1/projects/{slug}/event-types",
+        json={"name": "pv", "display_name": "Page View"},
+    )
+    event_type_id = event_type.json()["id"]
+    payload_field = await client.post(
+        f"/api/v1/projects/{slug}/event-types/{event_type_id}/fields",
+        json={"name": "payload", "display_name": "Payload", "field_type": "json"},
+    )
+    field_id = payload_field.json()["id"]
+
+    malformed = await client.post(
+        f"/api/v1/projects/{slug}/events",
+        json={
+            "event_type_id": event_type_id,
+            "name": "bad-json",
+            "field_values": [
+                {"field_definition_id": field_id, "value": '{"variant":"${variant}",}'},
+            ],
+        },
+    )
+    assert malformed.status_code == 422
+    assert "Payload" in malformed.json()["detail"]
+    assert "valid JSON" in malformed.json()["detail"]
+
+    blank = await client.post(
+        f"/api/v1/projects/{slug}/events",
+        json={
+            "event_type_id": event_type_id,
+            "name": "blank-json",
+            "field_values": [{"field_definition_id": field_id, "value": "   "}],
+        },
+    )
+    assert blank.status_code == 422
+    assert "valid JSON" in blank.json()["detail"]
+
+    omitted_optional = await client.post(
+        f"/api/v1/projects/{slug}/events",
+        json={"event_type_id": event_type_id, "name": "without-json"},
+    )
+    assert omitted_optional.status_code == 201
+
+    created = await client.post(
+        f"/api/v1/projects/{slug}/events",
+        json={
+            "event_type_id": event_type_id,
+            "name": "templated-json",
+            "field_values": [
+                {
+                    "field_definition_id": field_id,
+                    "value": (
+                        '{ "literal": "\\u005f_TRIPL_JSON_TEMPLATE_0__", '
+                        '"variant" : "${variant}", "nested": {"id":"${user_id}"} }'
+                    ),
+                },
+            ],
+        },
+    )
+    assert created.status_code == 201, created.text
+    event_id = created.json()["id"]
+    expected_value = (
+        '{"literal": "__TRIPL_JSON_TEMPLATE_0__", "variant": "${variant}", '
+        '"nested": {"id": "${user_id}"}}'
+    )
+    assert created.json()["field_values"][0]["value"] == expected_value
+
+    invalid_update = await client.patch(
+        f"/api/v1/projects/{slug}/events/{event_id}",
+        json={"field_values": [{"field_definition_id": field_id, "value": '{"nested":}'}]},
+    )
+    assert invalid_update.status_code == 422
+    assert "Payload" in invalid_update.json()["detail"]
+
+    persisted = await client.get(f"/api/v1/projects/{slug}/events/{event_id}")
+    assert persisted.status_code == 200
+    assert persisted.json()["field_values"][0]["value"] == expected_value
+
+    invalid_template = await client.post(
+        f"/api/v1/projects/{slug}/events",
+        json={
+            "event_type_id": event_type_id,
+            "name": "invalid-template",
+            "field_values": [
+                {"field_definition_id": field_id, "value": '{"variant": ${bad"token}}'},
+            ],
+        },
+    )
+    assert invalid_template.status_code == 422
+    assert "invalid variable token" in invalid_template.json()["detail"]
+
+    empty_template = await client.post(
+        f"/api/v1/projects/{slug}/events",
+        json={
+            "event_type_id": event_type_id,
+            "name": "empty-template",
+            "field_values": [{"field_definition_id": field_id, "value": '{"variant": "${}"}'}],
+        },
+    )
+    assert empty_template.status_code == 422
+    assert "invalid variable token" in empty_template.json()["detail"]
+
+    templated_key = await client.post(
+        f"/api/v1/projects/{slug}/events",
+        json={
+            "event_type_id": event_type_id,
+            "name": "templated-key",
+            "field_values": [
+                {"field_definition_id": field_id, "value": '{"${key}": "value"}'},
+            ],
+        },
+    )
+    assert templated_key.status_code == 422
+    assert "cannot be JSON object keys" in templated_key.json()["detail"]
+
+    nonstandard_number = await client.post(
+        f"/api/v1/projects/{slug}/events",
+        json={
+            "event_type_id": event_type_id,
+            "name": "nan-json",
+            "field_values": [{"field_definition_id": field_id, "value": '{"ratio": NaN}'}],
+        },
+    )
+    assert nonstandard_number.status_code == 422
+    assert "valid JSON" in nonstandard_number.json()["detail"]
+
+    overflow_number = await client.post(
+        f"/api/v1/projects/{slug}/events",
+        json={
+            "event_type_id": event_type_id,
+            "name": "overflow-json",
+            "field_values": [{"field_definition_id": field_id, "value": '{"ratio": 1e400}'}],
+        },
+    )
+    assert overflow_number.status_code == 422
+    assert "valid JSON" in overflow_number.json()["detail"]
+
+
+@pytest.mark.asyncio
 async def test_create_event_scan_rule_requires_template_fields(client: AsyncClient):
     slug = "ev-namegen-422"
     await client.post("/api/v1/projects", json={"name": slug, "slug": slug})

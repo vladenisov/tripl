@@ -1,3 +1,4 @@
+import json
 import re
 import uuid
 from datetime import UTC, datetime, timedelta
@@ -42,7 +43,91 @@ from tripl.services.search_service import (
 from tripl.services.variable_value_service import attach_event_field_variable_values
 
 _TRACKED_FIELDS = ("status", "name", "description", "sunset_at")
-_TEMPLATE_TOKEN_PATTERN = re.compile(r"\$\{([^}]+)\}")
+_TEMPLATE_TOKEN_PATTERN = re.compile(r"\$\{([^}]*)\}")
+_JSON_TEMPLATE_TOKEN_NAME_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_.-]*$")
+_JSON_TEMPLATE_VALUE_PATTERN = re.compile(
+    r'"\$\{[A-Za-z_][A-Za-z0-9_.-]*\}"|\$\{[A-Za-z_][A-Za-z0-9_.-]*\}'
+)
+
+
+def _normalize_json_template_value(field: FieldDefinition, value: str) -> str:
+    """Validate and canonically dump JSON while preserving ``${variable}`` values.
+
+    Template values may occupy a complete JSON value either with quotes or
+    without them.  Temporarily replacing them with distinct JSON strings lets
+    ``json.loads`` validate the surrounding JSON; restoring the original token
+    after ``json.dumps`` keeps the authored template intact.
+    """
+    tokens = [match.group(1) for match in _TEMPLATE_TOKEN_PATTERN.finditer(value)]
+    if any(not _JSON_TEMPLATE_TOKEN_NAME_PATTERN.fullmatch(token) for token in tokens):
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"Field '{field.display_name}' has an invalid variable token; "
+                "use letters, digits, underscores, dots, or hyphens"
+            ),
+        )
+
+    placeholders: dict[str, str] = {}
+
+    def _stash(match: re.Match[str]) -> str:
+        sentinel = f"__TRIPL_JSON_TEMPLATE_{uuid.uuid4().hex}__"
+        while sentinel in value or sentinel in placeholders:
+            sentinel = f"__TRIPL_JSON_TEMPLATE_{uuid.uuid4().hex}__"
+        placeholders[sentinel] = match.group(0)
+        return f'"{sentinel}"'
+
+    def _reject_nonstandard_constant(constant: str) -> None:
+        raise ValueError(f"{constant} is not valid JSON")
+
+    def _has_template_key(node: object) -> bool:
+        if isinstance(node, list):
+            return any(_has_template_key(item) for item in node)
+        if isinstance(node, dict):
+            return any(key in placeholders or _has_template_key(item) for key, item in node.items())
+        return False
+
+    try:
+        safe_value = _JSON_TEMPLATE_VALUE_PATTERN.sub(_stash, value)
+        if len(placeholders) != len(tokens):
+            raise ValueError("Variable templates must occupy a complete JSON value")
+        parsed = json.loads(safe_value, parse_constant=_reject_nonstandard_constant)
+        if _has_template_key(parsed):
+            raise ValueError("Variable templates cannot be JSON object keys")
+    except (json.JSONDecodeError, TypeError, ValueError, RecursionError) as exc:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Field '{field.display_name}' must contain valid JSON: {exc}",
+        ) from exc
+
+    def _dump(node: object) -> str:
+        if isinstance(node, str):
+            return placeholders.get(node, json.dumps(node, ensure_ascii=False))
+        if isinstance(node, list):
+            return "[" + ", ".join(_dump(item) for item in node) + "]"
+        if isinstance(node, dict):
+            return (
+                "{"
+                + ", ".join(
+                    f"{json.dumps(key, ensure_ascii=False)}: {_dump(item)}"
+                    for key, item in node.items()
+                )
+                + "}"
+            )
+        return json.dumps(node, ensure_ascii=False, allow_nan=False)
+
+    try:
+        return _dump(parsed)
+    except RecursionError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Field '{field.display_name}' must contain valid JSON: nesting is too deep",
+        ) from exc
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Field '{field.display_name}' must contain valid JSON: {exc}",
+        ) from exc
 
 
 async def _attach_template_warnings(session: AsyncSession, event: Event) -> None:
@@ -97,7 +182,7 @@ def _record_changes(
 
 async def _validate_field_values(
     session: AsyncSession, event_type_id: uuid.UUID, field_values: list[EventFieldValueIn]
-) -> None:
+) -> list[EventFieldValueIn]:
     result = await session.execute(
         select(FieldDefinition).where(FieldDefinition.event_type_id == event_type_id)
     )
@@ -107,11 +192,23 @@ async def _validate_field_values(
     for fd_id, fd in field_defs.items():
         if fd.is_required and fd_id not in provided_ids:
             raise HTTPException(status_code=422, detail=f"Required field '{fd.name}' is missing")
+    normalized_values: list[EventFieldValueIn] = []
     for fv in field_values:
         if fv.field_definition_id not in field_defs:
             raise HTTPException(
                 status_code=422, detail=f"Field definition {fv.field_definition_id} not found"
             )
+        field = field_defs[fv.field_definition_id]
+        normalized_values.append(
+            fv.model_copy(
+                update={
+                    "value": _normalize_json_template_value(field, fv.value)
+                    if field.field_type == "json"
+                    else fv.value
+                }
+            )
+        )
+    return normalized_values
 
 
 async def list_events(
@@ -400,12 +497,12 @@ async def create_event(
     is_main = branch_id is None
     project_id = await get_project_id_by_slug(session, slug)
     branch_id = await resolve_branch_id(session, project_id, branch_id)
-    await _validate_field_values(session, data.event_type_id, data.field_values)
+    field_values = await _validate_field_values(session, data.event_type_id, data.field_values)
     generated_name = await _generate_scan_template_name(
         session,
         project_id=project_id,
         event_type_id=data.event_type_id,
-        field_values=data.field_values,
+        field_values=field_values,
     )
 
     event = Event(
@@ -427,7 +524,7 @@ async def create_event(
     session.add(event)
     await session.flush()
 
-    for fv in data.field_values:
+    for fv in field_values:
         session.add(
             EventFieldValue(
                 event_id=event.id,
@@ -516,12 +613,12 @@ async def update_event(
             session.add_all([EventTag(event_id=event.id, name=name) for name in data.tags])
 
     if data.field_values is not None:
-        await _validate_field_values(session, event.event_type_id, data.field_values)
+        field_values = await _validate_field_values(session, event.event_type_id, data.field_values)
         # VariableValue rows are scan-observed contexts keyed by field_definition_id,
         # not by EventFieldValue rows — manual edits must not wipe them.
         await session.execute(delete(EventFieldValue).where(EventFieldValue.event_id == event.id))
         await session.flush()
-        if data.field_values:
+        if field_values:
             session.add_all(
                 [
                     EventFieldValue(
@@ -530,7 +627,7 @@ async def update_event(
                         value=field_value.value,
                         is_authored=True,
                     )
-                    for field_value in data.field_values
+                    for field_value in field_values
                 ]
             )
 

@@ -31,4 +31,48 @@ describe('JsonEditor template authoring', () => {
     fireEvent.change(editor, { target: { value: '{"variant":"${variant}"}' } })
     expect(editor).toHaveAttribute('aria-invalid', 'false')
   })
+
+  it('rejects malformed JSON even when it contains a valid variable token', () => {
+    render(<JsonEditor value="" onChange={vi.fn()} variables={VARIABLES} />)
+
+    const editor = screen.getByRole('combobox')
+    fireEvent.change(editor, { target: { value: '{"variant":"${variant}",}' } })
+
+    expect(editor).toHaveAttribute('aria-invalid', 'true')
+  })
+
+  it('rejects a variable token with JSON-breaking characters', () => {
+    render(<JsonEditor value="" onChange={vi.fn()} variables={VARIABLES} />)
+
+    const editor = screen.getByRole('combobox')
+    fireEvent.change(editor, { target: { value: '{"variant": ${bad"token}}' } })
+
+    expect(editor).toHaveAttribute('aria-invalid', 'true')
+  })
+
+  it('rejects variable templates used as object keys', () => {
+    render(<JsonEditor value="" onChange={vi.fn()} variables={VARIABLES} />)
+
+    const editor = screen.getByRole('combobox')
+    fireEvent.change(editor, { target: { value: '{"${variant}": "control"}' } })
+
+    expect(editor).toHaveAttribute('aria-invalid', 'true')
+  })
+
+  it('formats templates without replacing a matching literal sentinel value', () => {
+    const onChange = vi.fn()
+    render(
+      <JsonEditor
+        value={'{"literal":"\\u005f_TRIPL_VAR_1__","a":"${variant}","b":"${variant}"}'}
+        onChange={onChange}
+        variables={VARIABLES}
+      />,
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: 'Format' }))
+
+    expect(onChange).toHaveBeenCalledWith(
+      '{\n  "literal": "__TRIPL_VAR_1__",\n  "a": "${variant}",\n  "b": "${variant}"\n}',
+    )
+  })
 })

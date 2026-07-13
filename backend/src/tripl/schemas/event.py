@@ -11,7 +11,7 @@ from tripl.schemas.event_type import EventTypeBrief
 
 class EventFieldValueIn(BaseModel):
     field_definition_id: uuid.UUID
-    value: str
+    value: str = Field(max_length=100_000)
 
 
 class EventMetaValueIn(BaseModel):

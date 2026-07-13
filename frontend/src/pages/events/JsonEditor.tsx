@@ -5,17 +5,37 @@ import { getErrorMessage } from '@/lib/utils'
 import { SuggestionRow, type VariableSuggestion } from './VariableInput'
 import { suggestionMatches } from './utils'
 
+const TEMPLATE_TOKEN_PATTERN = /\$\{([^}]*)\}/g
+const TEMPLATE_TOKEN_NAME_PATTERN = /^[A-Za-z_][A-Za-z0-9_.-]*$/
+const JSON_TEMPLATE_VALUE_PATTERN = /"\$\{[A-Za-z_][A-Za-z0-9_.-]*\}"|\$\{[A-Za-z_][A-Za-z0-9_.-]*\}/g
+const JSON_TEMPLATE_KEY_PATTERN = /"\$\{[A-Za-z_][A-Za-z0-9_.-]*\}"\s*:/
+
+function templateJsonError(text: string): string | null {
+  const tokens = [...text.matchAll(TEMPLATE_TOKEN_PATTERN)].map(match => match[1])
+  if (tokens.some(token => !TEMPLATE_TOKEN_NAME_PATTERN.test(token))) {
+    return 'Variable tokens may use letters, digits, underscores, dots, or hyphens.'
+  }
+  const templateValues = text.match(JSON_TEMPLATE_VALUE_PATTERN) ?? []
+  if (templateValues.length !== tokens.length) {
+    return 'Variable templates must occupy a complete JSON value.'
+  }
+  if (JSON_TEMPLATE_KEY_PATTERN.test(text)) {
+    return 'Variable templates cannot be JSON object keys.'
+  }
+  return null
+}
+
 function validateJsonWithVars(text: string): string | null {
   if (!text.trim()) return null
+  const templateError = templateJsonError(text)
+  if (templateError) return templateError
   if (!text.includes('${')) {
     try { JSON.parse(text); return null } catch (e) { return getErrorMessage(e) }
   }
   // Replace ${var} placeholders with a sentinel string before validating, so
   // partially-templated JSON parses successfully. Quoted tokens ("${var}")
   // must be swapped together with their quotes or the sentinel doubles them.
-  const safe = text
-    .replace(/"\$\{[^}{]*\}"/g, '"__var__"')
-    .replace(/\$\{[^}{]*\}/g, '"__var__"')
+  const safe = text.replace(JSON_TEMPLATE_VALUE_PATTERN, '"__var__"')
   try { JSON.parse(safe); return null } catch (e) { return getErrorMessage(e) }
 }
 
@@ -129,6 +149,8 @@ export function JsonEditor({
 
   const handleFormat = () => {
     if (!raw.trim()) return
+    const templateError = templateJsonError(raw)
+    if (templateError) return
     if (!raw.includes('${')) {
       try {
         const formatted = JSON.stringify(JSON.parse(raw), null, 2)
@@ -140,19 +162,20 @@ export function JsonEditor({
     }
     // Round-trip ${var} placeholders through unique sentinels so JSON.stringify
     // doesn't escape them — then put them back as-is.
-    const placeholders: string[] = []
+    const placeholders = new Map<string, string>()
     const stash = (match: string) => {
-      const idx = placeholders.length
-      placeholders.push(match)
-      return `"__TRIPL_VAR_${idx}__"`
+      let sentinel = `__TRIPL_VAR_${crypto.randomUUID()}__`
+      while (raw.includes(sentinel) || placeholders.has(sentinel)) {
+        sentinel = `__TRIPL_VAR_${crypto.randomUUID()}__`
+      }
+      placeholders.set(sentinel, match)
+      return `"${sentinel}"`
     }
-    const safe = raw
-      .replace(/"\$\{[^}{]*\}"/g, stash)
-      .replace(/\$\{[^}{]*\}/g, stash)
+    const safe = raw.replace(JSON_TEMPLATE_VALUE_PATTERN, stash)
     try {
       let formatted = JSON.stringify(JSON.parse(safe), null, 2)
-      placeholders.forEach((ph, idx) => {
-        formatted = formatted.replace(`"__TRIPL_VAR_${idx}__"`, ph)
+      placeholders.forEach((placeholder, sentinel) => {
+        formatted = formatted.replace(`"${sentinel}"`, placeholder)
       })
       setRaw(formatted)
       onChange(formatted)

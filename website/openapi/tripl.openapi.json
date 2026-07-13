@@ -17358,6 +17358,7 @@
           },
           "value": {
             "type": "string",
+            "maxLength": 100000,
             "title": "Value"
           }
         },
