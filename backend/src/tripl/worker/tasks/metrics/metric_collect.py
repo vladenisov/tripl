@@ -50,16 +50,23 @@ from sqlalchemy.orm import Session
 
 from tripl.core.adapters.base import AggregateSpec, BaseAdapter
 from tripl.core.adapters.measure_validator import (
+    SqlDialect,
     coerce_aggregation,
+    dialect_for_db_type,
+    parse_utc_timestamp,
+    quote_identifier,
     quote_sql_literal,
     quote_sql_string_literal,
+    quote_timestamp_literal,
     requires_measure,
+    time_kind_of,
     validate_identifier,
     validate_measure_column,
     validate_select_sql,
     validate_sql_fragment,
 )
 from tripl.core.intervals import IntervalSpec, get_interval
+from tripl.core.warehouse_types import TimeKind
 from tripl.models.data_source import DataSource
 from tripl.models.domain_enums import (
     MetricAggregation,
@@ -438,25 +445,50 @@ def _resolve_named_filter_fragment(fact_table: FactTable, name: str) -> str:
     raise ScanError(msg)
 
 
-def _condition_literal(value: object) -> str:
+def _condition_literal(value: object, dialect: SqlDialect) -> str:
     if not _is_sql_literal_value(value):
         msg = "fact operand condition value must be a scalar"
         raise ScanError(msg)
     try:
-        return quote_sql_literal(value)
+        return quote_sql_literal(value, dialect)
     except ValueError as exc:
         msg = f"fact operand condition value is invalid: {exc}"
         raise ScanError(msg) from exc
 
 
-def _condition_text(value: object) -> str:
+def _condition_scalar_literal(
+    value: object,
+    *,
+    dialect: SqlDialect,
+    time_kind: TimeKind,
+) -> str:
+    """One comparison literal, typed as a timestamp when the column is a time column.
+
+    A bare ``'2026-01-01 00:00:00'`` *parses* on all three engines, so this is not a
+    syntax fix — it is the UTC contract in :mod:`tripl.core.bucketing`. An offset-less
+    literal is re-read in the COLUMN's timezone (ClickHouse) or the SESSION's
+    (PostgreSQL), which silently shifts the comparison; the typed literal pins UTC the
+    same way the adapters' own window bounds do.
+
+    Only a column whose INTROSPECTED type is a time type is retyped, and only when the
+    value actually parses as a timestamp. Anything else falls through to the plain
+    literal — a STRING column holding ``'2026-01-01'`` still compares as a string.
+    """
+    if time_kind is not TimeKind.unsupported and isinstance(value, str):
+        moment = parse_utc_timestamp(value)
+        if moment is not None:
+            return quote_timestamp_literal(moment, dialect, kind=time_kind)
+    return _condition_literal(value, dialect)
+
+
+def _condition_text(value: object, dialect: SqlDialect) -> str:
     if not _is_sql_literal_value(value):
         msg = "fact operand condition value must be a scalar"
         raise ScanError(msg)
     if isinstance(value, bool):
         return "true" if value else "false"
     if isinstance(value, (int, float)):
-        return _condition_literal(value)
+        return _condition_literal(value, dialect)
     text = value.strip()
     if not text:
         msg = "fact operand condition value must not be empty"
@@ -464,7 +496,12 @@ def _condition_text(value: object) -> str:
     return text
 
 
-def _condition_list_literals(value: object) -> list[str]:
+def _condition_list_literals(
+    value: object,
+    *,
+    dialect: SqlDialect,
+    time_kind: TimeKind,
+) -> list[str]:
     values: list[object]
     if isinstance(value, list):
         values = list(value)
@@ -474,7 +511,9 @@ def _condition_list_literals(value: object) -> list[str]:
         values = [value]
 
     literals = [
-        _condition_literal(item) for item in values if not (isinstance(item, str) and not item)
+        _condition_scalar_literal(item, dialect=dialect, time_kind=time_kind)
+        for item in values
+        if not (isinstance(item, str) and not item)
     ]
     if not literals:
         msg = "fact operand IN condition requires at least one value"
@@ -482,54 +521,108 @@ def _condition_list_literals(value: object) -> list[str]:
     return literals
 
 
-def _resolve_condition_fragment(condition: _FactCondition) -> str:
-    column = validate_identifier(condition.column)
+def _resolve_condition_fragment(
+    condition: _FactCondition,
+    *,
+    dialect: SqlDialect,
+    column_types: Mapping[str, str] | None = None,
+) -> str:
+    """Compile ONE visual condition into a boolean WHERE fragment for ``dialect``.
+
+    Dialect-aware on three axes, each of which used to be a latent worker crash:
+
+    * **Identifier quoting.** The column is quoted for the selected engine, so a
+      reserved name (``order``, ``select``) works. Unquoted, it is a syntax error on
+      PostgreSQL and BigQuery while ClickHouse happily accepts it (verified live) —
+      the exact asymmetry that let this ship.
+    * **String escaping.** ``quote_sql_literal`` now escapes per dialect. BigQuery has
+      no ``''`` escape, so before this every filter value containing an apostrophe was
+      a hard GoogleSQL parse error raised inside a Celery worker.
+    * **Timestamp literals.** A time column's bound is emitted as a UTC-pinned typed
+      literal (see ``_condition_scalar_literal``).
+
+    Security: the column still clears ``validate_identifier``'s allowlist regex FIRST
+    (inside ``quote_identifier``), and every value still becomes a quoted/escaped
+    literal — there are no bound parameters and no new path by which user input
+    reaches the statement unescaped.
+    """
+    quoted = quote_identifier(condition.column, dialect)
     operator = condition.operator
     value = condition.value
+    time_kind = time_kind_of(condition.column, column_types)
 
     if operator == "is_null":
-        return f"{column} IS NULL"
+        return f"{quoted} IS NULL"
     if operator == "is_not_null":
-        return f"{column} IS NOT NULL"
+        return f"{quoted} IS NOT NULL"
     if operator == "is_true":
-        return f"{column} = TRUE"
+        return f"{quoted} = TRUE"
     if operator == "is_false":
-        return f"{column} = FALSE"
+        return f"{quoted} = FALSE"
 
     if operator in _CONDITION_BINARY_OPERATORS:
         if value is None:
             msg = f"fact operand condition {operator!r} requires a value"
             raise ScanError(msg)
-        return f"{column} {_CONDITION_BINARY_OPERATORS[operator]} {_condition_literal(value)}"
+        literal = _condition_scalar_literal(value, dialect=dialect, time_kind=time_kind)
+        return f"{quoted} {_CONDITION_BINARY_OPERATORS[operator]} {literal}"
 
     if operator in _CONDITION_MULTI_VALUE_OPERATORS:
         if value is None:
             msg = f"fact operand condition {operator!r} requires a value"
             raise ScanError(msg)
         keyword = "NOT IN" if operator == "not_in" else "IN"
-        return f"{column} {keyword} ({', '.join(_condition_list_literals(value))})"
+        literals = _condition_list_literals(value, dialect=dialect, time_kind=time_kind)
+        return f"{quoted} {keyword} ({', '.join(literals)})"
 
     if operator in {"like", "not_like", "contains", "not_contains"}:
         if value is None:
             msg = f"fact operand condition {operator!r} requires a value"
             raise ScanError(msg)
-        text = _condition_text(value)
+        text = _condition_text(value, dialect)
         pattern = f"%{text}%" if operator in {"contains", "not_contains"} else text
         keyword = "NOT LIKE" if operator in {"not_like", "not_contains"} else "LIKE"
         try:
-            literal = quote_sql_string_literal(pattern)
+            literal = quote_sql_string_literal(pattern, dialect)
         except ValueError as exc:
             msg = f"fact operand condition value is invalid: {exc}"
             raise ScanError(msg) from exc
-        return f"{column} {keyword} {literal}"
+        return f"{quoted} {keyword} {literal}"
 
     msg = f"fact operand condition has unsupported operator {operator!r}"
     raise ScanError(msg)
 
 
+def _dialect_for_data_source(ds: DataSource) -> SqlDialect:
+    """The SQL dialect a data source's filters/queries must be compiled for.
+
+    A ``db_type`` with no dialect is a configuration error, and it is raised as a
+    ``ScanError`` so it surfaces on the metric like every other collection failure
+    rather than as an unhandled worker crash.
+    """
+    try:
+        return dialect_for_db_type(ds.db_type)
+    except ValueError as exc:
+        raise ScanError(str(exc)) from exc
+
+
+def _fact_column_types(fact_table: FactTable) -> dict[str, str]:
+    """``{column: warehouse_type}`` from the fact table's introspected columns."""
+    types: dict[str, str] = {}
+    for column in fact_table.columns or []:
+        if not isinstance(column, Mapping):
+            continue
+        name = column.get("name")
+        type_name = column.get("type")
+        if isinstance(name, str) and isinstance(type_name, str):
+            types[name] = type_name
+    return types
+
+
 def _resolve_combined_filter(
     fact_table: FactTable,
     *,
+    dialect: SqlDialect,
     row_filters: tuple[str, ...],
     filter_sql: str | None,
     conditions: tuple[_FactCondition, ...] = (),
@@ -543,27 +636,44 @@ def _resolve_combined_filter(
     combined string is consumed by both the per-metric path (a bounded ``WHERE``
     subquery) and the batched path (a conditional aggregate), preserving
     value-identity between them.
+
+    Named filters and ``filter_sql`` are FREE-TEXT and stay explicitly
+    dialect-specific: the user wrote them against a particular warehouse, so they
+    are re-validated by the dialect-agnostic read-only gate
+    (``validate_sql_fragment``) and passed through verbatim. Only the STRUCTURED
+    conditions — which we compile — are rendered for ``dialect``.
     """
     fragments = [_resolve_named_filter_fragment(fact_table, name) for name in row_filters]
     if filter_sql is not None:
         fragments.append(validate_sql_fragment(filter_sql))
-    fragments.extend(_resolve_condition_fragment(condition) for condition in conditions)
+    column_types = _fact_column_types(fact_table)
+    fragments.extend(
+        _resolve_condition_fragment(condition, dialect=dialect, column_types=column_types)
+        for condition in conditions
+    )
     if not fragments:
         return None
     return " AND ".join(f"({fragment})" for fragment in fragments)
 
 
-def _resolve_fact_operand_query(fact_table: FactTable, operand: _FactOperand) -> str:
+def _resolve_fact_operand_query(
+    fact_table: FactTable, operand: _FactOperand, *, dialect: SqlDialect
+) -> str:
     """Resolve a fact operand's base query, applying its combined row filter.
 
     The base query is the fact table's stored ``sql``. The operand's effective
     named filters and ``filter_sql`` are assembled into one ANDed boolean
     expression (see ``_resolve_combined_filter``); when present it wraps the
     source in a bounded ``WHERE`` subquery, else the source is returned as-is.
+
+    The wrapper holds for a CTE-backed fact source too: ``SELECT * FROM (WITH x AS
+    (...) SELECT * FROM x) AS _filtered WHERE ...`` is valid on ClickHouse,
+    PostgreSQL and BigQuery alike (verified against live engines).
     """
     source = fact_table.sql
     combined = _resolve_combined_filter(
         fact_table,
+        dialect=dialect,
         row_filters=operand.row_filters,
         filter_sql=operand.filter_sql,
         conditions=operand.conditions,
@@ -603,6 +713,7 @@ def _aggregate_fact_window(
     *,
     fact_table: FactTable,
     operand: _FactOperand,
+    dialect: SqlDialect,
     interval_code: str,
     delta: timedelta,
     chunk_from: datetime,
@@ -613,7 +724,7 @@ def _aggregate_fact_window(
     Returns ``(values_by_bucket, base_query, validated_measure)`` so a SINGLE
     caller can reuse the base query / measure for its breakdown pass.
     """
-    base_query = _resolve_fact_operand_query(fact_table, operand)
+    base_query = _resolve_fact_operand_query(fact_table, operand, dialect=dialect)
     measure = _fact_operand_measure(operand)
     if requires_measure(operand.aggregation):
         if measure is None:
@@ -783,6 +894,7 @@ def _collect_fact_ratio_breakdown_rows(
     fact_table: FactTable,
     numerator_op: _FactOperand,
     denominator_op: _FactOperand,
+    dialect: SqlDialect,
     interval_code: str,
     delta: timedelta,
     chunk_from: datetime,
@@ -798,11 +910,13 @@ def _collect_fact_ratio_breakdown_rows(
         numerator_op,
         fact_table=fact_table,
         allowed_columns=allowed_columns,
+        dialect=dialect,
     )
     denominator_measure, denominator_filter = _resolve_batch_operand(
         denominator_op,
         fact_table=fact_table,
         allowed_columns=allowed_columns,
+        dialect=dialect,
     )
 
     rows_out: list[dict[str, object]] = []
@@ -934,6 +1048,7 @@ def _collect_fact_single(
         msg = "DataSource for fact metric not found"
         raise ScanError(msg)
     interval_code = interval_spec.code
+    dialect = _dialect_for_data_source(ds)
 
     adapter = _build_adapter(ds)
     total_values = 0
@@ -951,6 +1066,7 @@ def _collect_fact_single(
                 adapter,
                 fact_table=fact_table,
                 operand=operand,
+                dialect=dialect,
                 interval_code=interval_code,
                 delta=delta,
                 chunk_from=chunk_from,
@@ -1033,6 +1149,8 @@ def _collect_fact_ratio(
         )
         raise ScanError(msg)
     interval_code = interval_spec.code
+    numerator_dialect = _dialect_for_data_source(numerator_ds)
+    denominator_dialect = _dialect_for_data_source(denominator_ds)
 
     numerator_adapter = _build_adapter(numerator_ds)
     total_values = 0
@@ -1053,6 +1171,7 @@ def _collect_fact_ratio(
                     numerator_adapter,
                     fact_table=numerator_ft,
                     operand=numerator_op,
+                    dialect=numerator_dialect,
                     interval_code=interval_code,
                     delta=delta,
                     chunk_from=chunk_from,
@@ -1062,6 +1181,7 @@ def _collect_fact_ratio(
                     denominator_adapter,
                     fact_table=denominator_ft,
                     operand=denominator_op,
+                    dialect=denominator_dialect,
                     interval_code=interval_code,
                     delta=delta,
                     chunk_from=chunk_from,
@@ -1093,6 +1213,7 @@ def _collect_fact_ratio(
                         fact_table=numerator_ft,
                         numerator_op=numerator_op,
                         denominator_op=denominator_op,
+                        dialect=numerator_dialect,
                         interval_code=interval_code,
                         delta=delta,
                         chunk_from=chunk_from,
@@ -1119,18 +1240,22 @@ def _collect_fact_ratio(
 # aggregate equals the same aggregate over the row-filtered subquery.
 
 
-def _resolve_fact_operand_filter(operand: _FactOperand, *, fact_table: FactTable) -> str | None:
+def _resolve_fact_operand_filter(
+    operand: _FactOperand, *, fact_table: FactTable, dialect: SqlDialect
+) -> str | None:
     """Resolve an operand's combined WHERE fragment for the batched path.
 
     Unlike ``_resolve_fact_operand_query`` (which wraps the source in a bounded
     ``WHERE`` subquery for the single-aggregate path), this returns just the
     combined boolean fragment so it can be injected as a per-aggregate
     conditional in a shared multi-aggregate scan. The fragment is built by the
-    SAME ``_resolve_combined_filter`` the per-metric path uses, so the conditional
-    aggregate computes the identical value. ``None`` means no filter.
+    SAME ``_resolve_combined_filter`` the per-metric path uses — and now for the
+    SAME dialect — so the conditional aggregate computes the identical value.
+    ``None`` means no filter.
     """
     return _resolve_combined_filter(
         fact_table,
+        dialect=dialect,
         row_filters=operand.row_filters,
         filter_sql=operand.filter_sql,
         conditions=operand.conditions,
@@ -1231,12 +1356,15 @@ def _resolve_batch_operand(
     *,
     fact_table: FactTable,
     allowed_columns: set[str],
+    dialect: SqlDialect,
 ) -> tuple[str | None, str | None]:
     """Validate one operand's measure column and resolve its row filter fragment.
 
     Returns ``(validated_measure, filter_sql)``. Mirrors ``_aggregate_fact_window``'s
     measure validation (empty allowlist -> ``ScanError``) so the batched path
-    enforces the same column guard as the per-metric path.
+    enforces the same column guard as the per-metric path — and compiles the filter
+    for the SAME ``dialect``, so the conditional aggregate and the bounded-subquery
+    path stay value-identical.
     """
     measure = _fact_operand_measure(operand)
     if requires_measure(operand.aggregation):
@@ -1250,7 +1378,7 @@ def _resolve_batch_operand(
             msg = "fact table query returned no columns; cannot validate measure column"
             raise ScanError(msg)
         measure = validate_measure_column(measure, allowed_columns)
-    filter_sql = _resolve_fact_operand_filter(operand, fact_table=fact_table)
+    filter_sql = _resolve_fact_operand_filter(operand, fact_table=fact_table, dialect=dialect)
     return measure, filter_sql
 
 
@@ -1346,6 +1474,7 @@ class _FactBatchContext:
     fact_tables: dict[uuid.UUID, FactTable] = field(default_factory=dict)
     adapters: dict[uuid.UUID, BaseAdapter] = field(default_factory=dict)
     columns: dict[uuid.UUID, set[str]] = field(default_factory=dict)
+    dialects: dict[uuid.UUID, SqlDialect] = field(default_factory=dict)
 
     def resolve(
         self, fact_table_id: uuid.UUID | None, *, project_id: uuid.UUID
@@ -1366,6 +1495,9 @@ class _FactBatchContext:
             adapter = _build_adapter(ds)
             adapter.test_connection()
             self.adapters[data_source_id] = adapter
+            # Cached under the same key as the adapter: the dialect a filter must be
+            # compiled for is a property of the data source, not of the fact table.
+            self.dialects[data_source_id] = _dialect_for_data_source(ds)
         return fact_table, adapter
 
     def adapter_for(self, fact_table: FactTable) -> BaseAdapter:
@@ -1373,6 +1505,12 @@ class _FactBatchContext:
         data_source_id = fact_table.data_source_id
         assert data_source_id is not None
         return self.adapters[data_source_id]
+
+    def dialect_for(self, fact_table: FactTable) -> SqlDialect:
+        """Return the SQL dialect ``fact_table``'s data source must be compiled for."""
+        data_source_id = fact_table.data_source_id
+        assert data_source_id is not None
+        return self.dialects[data_source_id]
 
     def allowed_columns(self, fact_table: FactTable, adapter: BaseAdapter) -> set[str]:
         cached = self.columns.get(fact_table.id)
@@ -1415,6 +1553,7 @@ def _plan_single_metric(
         operand,
         fact_table=fact_table,
         allowed_columns=context.allowed_columns(fact_table, adapter),
+        dialect=context.dialect_for(fact_table),
     )
     registry = ft_registries.setdefault(fact_table.id, _SpecRegistry())
     spec_key = registry.register(
@@ -1480,6 +1619,7 @@ def _plan_ratio_metric(
             operand,
             fact_table=fact_table,
             allowed_columns=context.allowed_columns(fact_table, adapter),
+            dialect=context.dialect_for(fact_table),
         )
         registry = ft_registries.setdefault(fact_table.id, _SpecRegistry())
         spec_key = registry.register(
@@ -2030,7 +2170,14 @@ def _collect_distinct_user_series(
         )
     finally:
         adapter.close()
-    return {cast(datetime, row[0]): _coerce_value(row[-1]) for row in rows}
+    # Launder the bucket cell exactly like every sibling collection path does
+    # (_aggregate_fact_window, _index_multi_aggregate). A bare cast() was a lie: the
+    # adapters disagree on tz-awareness — ClickHouse hands back a NAIVE datetime while
+    # PostgreSQL returns the same instant as aware — so the naive key met the aware
+    # bucket read back from event_metrics, and every per_distinct_user metric on a
+    # ClickHouse source died with "can't compare offset-naive and offset-aware
+    # datetimes". _coerce_bucket stamps UTC and floors to the interval (tripl-ju0d).
+    return {_coerce_bucket(row[0], interval_spec.delta): _coerce_value(row[-1]) for row in rows}
 
 
 def _collect_event_composition(

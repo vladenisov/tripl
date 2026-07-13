@@ -5,7 +5,7 @@ import logging
 import re
 import time
 from datetime import datetime
-from typing import cast
+from typing import cast, override
 
 from google.cloud import bigquery
 from google.oauth2 import service_account
@@ -14,6 +14,8 @@ from tripl.core.adapters.base import (
     AggregateSpec,
     BaseAdapter,
     ColumnInfo,
+    FieldContractExpectation,
+    FieldContractViolation,
     SchemaColumn,
     SchemaTable,
 )
@@ -31,7 +33,6 @@ logger = logging.getLogger(__name__)
 
 _IDENTIFIER_RE = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_.]*$")
 _IDENTIFIER_PART_RE = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*$")
-_INTERVAL_RE = re.compile(r"^(\d+)\s+(second|minute|hour|day|week|month)s?$", re.IGNORECASE)
 # GCP project ids allow letters/digits/hyphens; dataset ids allow
 # letters/digits/underscores. Validate the model-derived identifiers before
 # interpolating them into the catalog query as defense-in-depth.
@@ -43,11 +44,22 @@ _BQ_IDENTIFIER_MAX_LEN = 1024
 
 # Hard cap on catalog rows pulled for SQL-editor autocomplete. Kept generous and
 # in line with the ClickHouse/Postgres adapters so a dataset with thousands of
-# wide tables can't blow up the response.
+# wide tables can't blow up the response. This is the budget for the WHOLE browse,
+# shared across every dataset it spans — not a per-dataset allowance.
 _SCHEMA_ROW_LIMIT = 50000
 
+# How many datasets one schema browse may span. ClickHouse and Postgres cover every
+# non-system database/schema in a SINGLE catalog query; BigQuery's
+# INFORMATION_SCHEMA.COLUMNS view is dataset-qualified, so covering N datasets costs
+# N jobs. A UNION ALL across them would be one job but would make a single
+# permission-denied dataset fail the whole browse, which is exactly the failure mode
+# the contract forbids. So: one job per dataset, hard-capped here, so an autocomplete
+# keystroke can never fan out into an unbounded number of billed jobs.
+_MAX_SCHEMA_DATASETS = 20
+
 # Wall-clock cap on the catalog introspection job so a hung BQ job can't block
-# the worker thread forever. Scoped to schema introspection only.
+# the worker thread forever. Scoped to schema introspection: this is a CAP, not a
+# default — a data source configuring a *shorter* timeout_seconds still wins.
 _SCHEMA_QUERY_TIMEOUT_SECONDS = 30
 
 # GoogleSQL keeps TIMESTAMP/DATETIME/DATE in separate type families, each with its
@@ -111,10 +123,24 @@ def _decode_grouped_array(value: object) -> object:
         )
         raise ValueError(msg)
     try:
-        return json.loads(value)
+        decoded = json.loads(value)
     except json.JSONDecodeError as exc:
         msg = f"BigQuery: could not decode array-valued grouped column {value!r}: {exc}"
         raise ValueError(msg) from exc
+
+    # Guard the DECODED type, not merely the input type. `json.loads` will happily
+    # return a dict, a bare string or a number, and any of those flowing out of here
+    # would put a non-list into the json-paths column — which
+    # `cardinality._process_breakdown` tests with `isinstance(paths, (list, tuple))`
+    # and, failing that, reads as ONE path. That is precisely the silent cardinality
+    # corruption this function exists to prevent, so it fails loudly instead.
+    if decoded is not None and not isinstance(decoded, list):
+        msg = (
+            "BigQuery: an array-valued grouped column decoded to "
+            f"{type(decoded).__name__}, not a list: {value!r}"
+        )
+        raise ValueError(msg)
+    return decoded
 
 
 def _walk_struct_fields(
@@ -178,6 +204,19 @@ class BigQueryAdapter(BaseAdapter):
     introspects lazily on first use.
     """
 
+    # Execution controls, as CLASS-level defaults on purpose. Every test module in the
+    # suite — and the ZetaSQL conformance gate — builds this adapter with
+    # ``object.__new__(BigQueryAdapter)`` to avoid constructing a live client from
+    # service-account credentials. Those instances never run ``__init__``, so an
+    # instance-only attribute read from a query path would blow up with AttributeError
+    # in exactly the tests that exist to protect the query paths. Declaring the
+    # defaults on the class keeps an un-initialized adapter behaving like an
+    # unconfigured one (no timeout, no cost guard, default dataset only), which is the
+    # pre-existing behavior.
+    _timeout_seconds: float | None = None
+    _maximum_bytes_billed: int | None = None
+    _dataset_allowlist: tuple[str, ...] | None = None
+
     def __init__(
         self,
         host: str,
@@ -185,9 +224,14 @@ class BigQueryAdapter(BaseAdapter):
         database: str,
         username: str = "",  # unused for BQ
         password: str = "",  # service-account JSON
+        *,
+        location: str | None = None,
+        timeout_seconds: int | None = None,
+        maximum_bytes_billed: int | None = None,
+        dataset_allowlist: list[str] | None = None,
         **kwargs: object,
     ) -> None:
-        del port, username  # not applicable to BigQuery
+        del port, username, kwargs  # not applicable to BigQuery / forward-compatible
         if not host:
             raise ValueError("BigQuery: host (project_id) is required")
         if not password:
@@ -200,15 +244,35 @@ class BigQueryAdapter(BaseAdapter):
             service_account.Credentials,
             service_account.Credentials.from_service_account_info(info),  # type: ignore[no-untyped-call]
         )
-        raw_location = kwargs.get("location")
-        location = raw_location if isinstance(raw_location, str) else None
+        self._timeout_seconds = float(timeout_seconds) if timeout_seconds else None
+        self._maximum_bytes_billed = (
+            maximum_bytes_billed if maximum_bytes_billed and maximum_bytes_billed > 0 else None
+        )
+        self._dataset_allowlist = tuple(dataset_allowlist) if dataset_allowlist else None
+
+        # Both guards ride on the client's DEFAULT job config rather than a per-call
+        # ``job_config=`` argument, so every statement this adapter will ever issue —
+        # including ones added later — inherits them without a call site having to
+        # remember. It also keeps ``self._client.query(sql)`` single-argument, which the
+        # fake clients in the test suite and the ZetaSQL gate rely on.
+        #
+        # ``maximum_bytes_billed`` is the cost guard: BigQuery REFUSES a query whose
+        # estimate exceeds it, so a runaway scan is rejected before a byte is billed.
+        # ``job_timeout_ms`` is the server-side half of the deadline: it makes BigQuery
+        # itself abandon the job, so a worker that is SIGKILLed before it can call
+        # ``job.cancel()`` still doesn't leave a query burning slots.
+        job_config = bigquery.QueryJobConfig(
+            default_dataset=f"{host}.{database}" if database else None,
+        )
+        if self._maximum_bytes_billed is not None:
+            job_config.maximum_bytes_billed = self._maximum_bytes_billed
+        if self._timeout_seconds is not None:
+            job_config.job_timeout_ms = int(self._timeout_seconds * 1000)
         self._client = bigquery.Client(
             project=host,
             credentials=creds,
             location=location,
-            default_query_job_config=bigquery.QueryJobConfig(
-                default_dataset=f"{host}.{database}" if database else None,
-            ),
+            default_query_job_config=job_config,
         )
         self._project = host
         self._dataset = database
@@ -230,9 +294,67 @@ class BigQueryAdapter(BaseAdapter):
     def close(self) -> None:
         self._client.close()  # type: ignore[no-untyped-call]
 
+    def _query_deadline(self, cap: float | None = None) -> float | None:
+        """How long this adapter may wait for one job, in seconds (None = forever).
+
+        ``cap`` is an additional per-call ceiling (schema introspection uses one), never
+        a floor: a data source that configures a *shorter* ``timeout_seconds`` than the
+        cap still gets the shorter deadline.
+        """
+        timeout = self._timeout_seconds
+        if timeout is not None and timeout <= 0:
+            timeout = None
+        if timeout is None:
+            return cap
+        if cap is None:
+            return timeout
+        return min(timeout, cap)
+
+    def _run_query(
+        self, sql: str, *, timeout_cap: float | None = None
+    ) -> bigquery.table.RowIterator:
+        """Submit one statement and wait for it, bounded by the configured deadline.
+
+        Every BigQuery statement this adapter issues goes through here. It used to be
+        the ONLY warehouse adapter with no deadline at all: ClickHouse gets
+        ``send_receive_timeout``, Postgres gets ``statement_timeout``, and BigQuery got
+        a bare ``job.result()`` that waits forever — so a pathological ``base_query``
+        pinned a Celery worker until the 55-minute hard limit killed it.
+
+        On timeout the job is CANCELLED best-effort. A BigQuery job outlives the client
+        that started it: giving up on the wait does nothing to the job, which keeps
+        scanning (and billing) server-side. ``cancel()`` is the only thing that stops
+        it, and it is best-effort by nature — the cancel RPC can itself fail, and the
+        job may already have finished — so a failure to cancel is logged, never allowed
+        to mask the timeout the caller actually needs to see.
+        """
+        job = self._client.query(sql)
+        deadline = self._query_deadline(timeout_cap)
+        try:
+            if deadline is None:
+                return job.result()
+            return job.result(timeout=deadline)
+        except TimeoutError as exc:
+            # google-cloud-bigquery raises concurrent.futures.TimeoutError, which IS the
+            # builtin TimeoutError on the Python this runs on.
+            self._cancel(job)
+            msg = (
+                f"BigQuery: query exceeded the {deadline:g}s timeout configured for this "
+                "data source and was cancelled. Narrow the time window, reduce the "
+                "columns the base query selects, or raise the data source's timeout."
+            )
+            raise TimeoutError(msg) from exc
+
+    def _cancel(self, job: object) -> None:
+        """Best-effort cancel of a timed-out job. Never raises."""
+        try:
+            cancel = job.cancel  # type: ignore[attr-defined]
+            cancel()
+        except Exception:
+            logger.warning("BQ: could not cancel timed-out job", exc_info=True)
+
     def test_connection(self) -> bool:
-        job = self._client.query("SELECT 1 AS ok")
-        row = next(iter(job.result()))
+        row = next(iter(self._run_query("SELECT 1 AS ok")))
         return bool(row["ok"] == 1)
 
     def _validate_column(self, column: str) -> str:
@@ -377,20 +499,24 @@ class BigQueryAdapter(BaseAdapter):
         json_path = "$." + ".".join(parts)
         return f"JSON_QUERY(`{col}`, '{json_path}')"
 
-    def _string_value_expression(self, column: str) -> str:
-        """The scalar STRING rendering of a column, used for breakdown values.
+    def _string_value_expression(self, column: str, *, role: str = "breakdown column") -> str:
+        """The scalar STRING rendering of a column, used for breakdown and contract values.
+
+        Matches ClickHouse's ``ifNull(toString(col), '')`` — the NULL-collapsing matters,
+        because a grouped-event filter and an enum/regex check both compare against it.
 
         A REPEATED column is rejected outright. ``CAST(<array> AS STRING)`` is not a
-        legal GoogleSQL cast, so a breakdown on an array column would compile to SQL
-        that only fails once a worker runs it. Fail loudly here instead, while the
-        caller is still choosing the breakdown column.
+        legal GoogleSQL cast, so a breakdown (or an enum/regex/range contract) on an
+        array column would compile to SQL that only fails once a worker runs it. Fail
+        loudly here instead, while the caller is still choosing the column. ``role`` only
+        shapes the message, so the error names what the caller was actually doing.
         """
         col = self._validate_column(column)
         if col in self._repeated_columns:
             msg = (
-                f"BigQuery: column {col!r} is REPEATED (an ARRAY) and cannot be a "
-                "breakdown column — GoogleSQL cannot cast an ARRAY to a single STRING "
-                "value, nor group by one. Choose a scalar column."
+                f"BigQuery: column {col!r} is REPEATED (an ARRAY) and cannot be used as a "
+                f"{role} — GoogleSQL cannot cast an ARRAY to a single STRING value, nor "
+                "group by one. Choose a scalar column."
             )
             raise ValueError(msg)
         return f"IFNULL(CAST(`{col}` AS STRING), '')"
@@ -514,18 +640,19 @@ class BigQueryAdapter(BaseAdapter):
     def _quote_string(self, value: str) -> str:
         return "'" + value.replace("\\", "\\\\").replace("'", "\\'") + "'"
 
-    def _time_window_where_clause(
+    def _time_condition(
         self,
         time_column: str | None,
         time_from: datetime | None,
         time_to: datetime | None,
     ) -> str:
-        """The half-open ``[time_from, time_to)`` predicate, or ``""`` if unbounded.
+        """The bare half-open ``[time_from, time_to)`` predicate, or ``""`` if unbounded.
 
         The single place a time window becomes SQL: every read path routes through it,
         so the literal type follows the column's type family and the UTC normalization
-        happens exactly once. Callers with a mandatory window pass non-None values and
-        always get a clause back.
+        happens exactly once. Split out from ``_time_window_where_clause`` because the
+        field-contract scan has a second predicate to AND with it, and re-deriving the
+        window there is how a window ends up subtly different on one code path.
         """
         if time_column is None or time_from is None or time_to is None:
             return ""
@@ -533,7 +660,17 @@ class BigQueryAdapter(BaseAdapter):
         kind = self._time_kind(time_column)
         lower = self._time_literal(kind, time_from)
         upper = self._time_literal(kind, time_to)
-        return f" WHERE `{tc}` >= {lower} AND `{tc}` < {upper}"
+        return f"`{tc}` >= {lower} AND `{tc}` < {upper}"
+
+    def _time_window_where_clause(
+        self,
+        time_column: str | None,
+        time_from: datetime | None,
+        time_to: datetime | None,
+    ) -> str:
+        """``_time_condition`` as a WHERE clause. Callers with a window always get one."""
+        condition = self._time_condition(time_column, time_from, time_to)
+        return f" WHERE {condition}" if condition else ""
 
     def _json_paths_array_expression(self, column: str) -> str:
         """The sorted ARRAY<STRING> of nested leaf paths held by a nested column.
@@ -583,8 +720,7 @@ class BigQueryAdapter(BaseAdapter):
         return f"TO_JSON_STRING({self._json_paths_array_expression(column)})"
 
     def get_columns(self, base_query: str) -> list[ColumnInfo]:
-        job = self._client.query(f"SELECT * FROM ({base_query}) AS _src LIMIT 0")
-        schema = job.result().schema
+        schema = self._run_query(f"SELECT * FROM ({base_query}) AS _src LIMIT 0").schema
         columns: list[ColumnInfo] = []
         struct_paths: dict[str, dict[str, bool]] = {}
         repeated: set[str] = set()
@@ -644,44 +780,114 @@ class BigQueryAdapter(BaseAdapter):
             raise ValueError(msg)
         return kind
 
-    def get_schema_tables(self) -> list[SchemaTable]:
-        # Unlike ClickHouse/Postgres, this stays scoped to the connection's
-        # default dataset and returns every table BARE. BigQuery's
-        # INFORMATION_SCHEMA.COLUMNS view is dataset-qualified, so covering every
-        # dataset would mean either listing datasets and issuing one job per
-        # dataset (N extra round-trips / billed jobs) or a region-qualified
-        # `region-<location>` view that requires the connection's location to be
-        # known and correct. Both are expensive/fragile for autocomplete, so we
-        # deliberately keep the single-dataset scan and leave cross-dataset
-        # qualification (`dataset.table`) to a future change if it proves needed.
-        #
-        # project/dataset come only from the validated DataSource model, never
-        # from a request; still validate before interpolating into the query.
+    def _schema_datasets(self) -> list[str]:
+        """The datasets one schema browse spans: validated, deduped, ordered, bounded.
+
+        The connection's default dataset is always first and can never be squeezed out
+        by the allowlist; the rest are sorted, so the browse is deterministic no matter
+        what order the allowlist was saved in. With no allowlist configured this is
+        exactly the single default dataset — the pre-existing behavior and the
+        pre-existing cost, so turning this on cannot silently multiply anyone's job
+        count.
+
+        project/dataset ids come only from the validated DataSource model, never from a
+        request; they are still validated before being interpolated into the catalog
+        query, as defense-in-depth. An allowlist entry is validated with exactly the
+        same rule as the default dataset — the allowlist is a new way to *reach* the
+        interpolation, so it must not be a new way to *weaken* it.
+        """
         if len(self._project) > _BQ_IDENTIFIER_MAX_LEN or not _BQ_PROJECT_RE.match(self._project):
             raise ValueError(f"Invalid BigQuery project id: {self._project!r}")
-        if len(self._dataset) > _BQ_IDENTIFIER_MAX_LEN or not _BQ_DATASET_RE.match(self._dataset):
-            raise ValueError(f"Invalid BigQuery dataset id: {self._dataset!r}")
-        sql = (
-            "SELECT table_name, column_name, data_type "
-            f"FROM `{self._project}.{self._dataset}.INFORMATION_SCHEMA.COLUMNS` "
-            f"ORDER BY table_name, ordinal_position LIMIT {_SCHEMA_ROW_LIMIT}"
+
+        ordered: list[str] = [self._dataset] if self._dataset else []
+        ordered.extend(
+            sorted({name for name in (self._dataset_allowlist or ()) if name != self._dataset})
         )
-        logger.debug("BQ schema introspection query: %s", sql)
-        _, rows = self._query_rows(sql, timeout=_SCHEMA_QUERY_TIMEOUT_SECONDS)
-        columns_by_table: dict[str, list[SchemaColumn]] = {}
-        for table_name, column_name, data_type in rows:
-            columns_by_table.setdefault(str(table_name), []).append(
-                SchemaColumn(name=str(column_name), data_type=str(data_type))
+        for name in ordered:
+            if len(name) > _BQ_IDENTIFIER_MAX_LEN or not _BQ_DATASET_RE.match(name):
+                raise ValueError(f"Invalid BigQuery dataset id: {name!r}")
+        if not ordered:
+            msg = "BigQuery: no dataset configured — set a default dataset or a dataset allowlist"
+            raise ValueError(msg)
+        if len(ordered) > _MAX_SCHEMA_DATASETS:
+            logger.warning(
+                "BQ schema introspection: %s datasets configured, browsing the first %s",
+                len(ordered),
+                _MAX_SCHEMA_DATASETS,
             )
+        return ordered[:_MAX_SCHEMA_DATASETS]
+
+    def get_schema_tables(self) -> list[SchemaTable]:
+        """Catalog introspection across every permitted dataset, qualified like the rest.
+
+        ClickHouse and Postgres span every non-system database/schema and QUALIFY names
+        that live outside the connection default (`analytics.orders`), leaving names
+        inside it bare (`events`). The frontend depends on that convention: a table name
+        carries at most one dot, and only when it sits outside the default. BigQuery used
+        to be the odd one out — default dataset only, every name bare — so a source whose
+        tables lived in a second dataset simply had no autocomplete.
+
+        The cost is bounded on three axes: at most ``_MAX_SCHEMA_DATASETS`` jobs, at most
+        ``_SCHEMA_ROW_LIMIT`` rows across ALL of them (the LIMIT shrinks as the budget is
+        spent, so the total is a budget rather than a per-dataset allowance), and each job
+        deadlined.
+
+        A dataset the credentials cannot read is a *partial* failure, not a total one: it
+        is logged and skipped, and the datasets that did work still return their tables.
+        Only a browse where every single dataset failed re-raises — silently returning an
+        empty catalog there would look exactly like "this project has no tables", which is
+        the wrong thing to tell a user staring at an empty autocomplete.
+        """
+        datasets = self._schema_datasets()
+        budget = _SCHEMA_ROW_LIMIT
+        columns_by_table: dict[str, list[SchemaColumn]] = {}
+        failures: list[tuple[str, Exception]] = []
+        succeeded = 0
+
+        for dataset in datasets:
+            if budget <= 0:
+                logger.warning(
+                    "BQ schema introspection: %s-row budget exhausted, skipping dataset %r "
+                    "and any after it",
+                    _SCHEMA_ROW_LIMIT,
+                    dataset,
+                )
+                break
+            sql = (
+                "SELECT table_name, column_name, data_type "
+                f"FROM `{self._project}.{dataset}.INFORMATION_SCHEMA.COLUMNS` "
+                f"ORDER BY table_name, ordinal_position LIMIT {budget}"
+            )
+            logger.debug("BQ schema introspection query: %s", sql)
+            try:
+                _, rows = self._query_rows(sql, timeout_cap=_SCHEMA_QUERY_TIMEOUT_SECONDS)
+            except Exception as exc:
+                logger.warning(
+                    "BQ schema introspection skipped dataset %r: %s", dataset, exc, exc_info=True
+                )
+                failures.append((dataset, exc))
+                continue
+
+            succeeded += 1
+            budget -= len(rows)
+            for table_name, column_name, data_type in rows:
+                bare = str(table_name)
+                # Bare inside the connection's default dataset, `dataset.table` outside it.
+                qualified = bare if dataset == self._dataset else f"{dataset}.{bare}"
+                columns_by_table.setdefault(qualified, []).append(
+                    SchemaColumn(name=str(column_name), data_type=str(data_type))
+                )
+
+        if succeeded == 0 and failures:
+            raise failures[0][1]
         return [
             SchemaTable(name=table, columns=columns) for table, columns in columns_by_table.items()
         ]
 
     def _query_rows(
-        self, sql: str, *, timeout: float | None = None
+        self, sql: str, *, timeout_cap: float | None = None
     ) -> tuple[list[str], list[tuple[object, ...]]]:
-        job = self._client.query(sql)
-        iterator = job.result() if timeout is None else job.result(timeout=timeout)
+        iterator = self._run_query(sql, timeout_cap=timeout_cap)
         names = [field.name for field in iterator.schema]
         rows = [tuple(row.values()) for row in iterator]
         return names, rows
@@ -704,6 +910,237 @@ class BigQueryAdapter(BaseAdapter):
         sql = f"SELECT * FROM ({base_query}) AS _src{where_clause} LIMIT {int(limit)}"
         logger.info("BQ preview query: %s", sql)
         return self._query_rows(sql)
+
+    def _contract_where_clause(
+        self,
+        time_column: str | None,
+        time_from: datetime | None,
+        time_to: datetime | None,
+        group_column: str | None,
+        group_value: str | None,
+    ) -> str:
+        """The contract scan's window, ANDed with the optional grouped-event filter.
+
+        Mirrors ``ClickHouseAdapter._contract_where_clause`` exactly, including the way
+        the group value is compared: against the column's NULL-collapsed STRING rendering
+        (``ifNull(toString(c), '')`` there, ``IFNULL(CAST(c AS STRING), '')`` here), so a
+        NULL group column matches the empty-string group on both warehouses and on the
+        Python fallback, which compares ``"" if raw is None else str(raw)``.
+        """
+        conditions: list[str] = []
+        window = self._time_condition(time_column, time_from, time_to)
+        if window:
+            conditions.append(window)
+        if group_column is not None:
+            gc = self._validate_column(group_column)
+            expected = self._quote_string(group_value or "")
+            conditions.append(
+                f"{self._string_value_expression(gc, role='grouped-event column')} = {expected}"
+            )
+        if not conditions:
+            return ""
+        return " WHERE " + " AND ".join(conditions)
+
+    def _contract_fragments(
+        self,
+        expectation: FieldContractExpectation,
+        *,
+        index: int,
+    ) -> tuple[str, str] | None:
+        """Compile one expectation to ``(aggregate_sql, struct_sql)``, or None if inert.
+
+        Semantics are matched to ``ClickHouseAdapter._contract_select_sql`` term for term
+        — the canonical warehouse-side contract — and, through it, to the Python fallback
+        in ``BaseAdapter``:
+
+        * **required_null_violation** — the NULL *is* the violation, so NULLs are counted
+          in the denominator: ``total`` is ``COUNT(*)``, not the non-NULL count. Its sample
+          is the literal ``'<NULL>'``, exactly as the fallback records it.
+        * **enum / regex / range** — a NULL carries no evidence either way, so it is
+          EXCLUDED from the denominator entirely (``COUNTIF(col IS NOT NULL)``), matching
+          the fallback's ``if raw_value is None: continue`` *before* it increments
+          ``total_count``. Getting this backwards would dilute every bad_rate by the null
+          rate and quietly push violations under their threshold.
+        * **regex** — GoogleSQL's ``REGEXP_CONTAINS`` is a PARTIAL match (verified against
+          ZetaSQL: ``REGEXP_CONTAINS('xu1x', 'u\\\\d')`` is TRUE), which is what
+          ClickHouse's ``match()`` and the fallback's ``regex.search()`` both are.
+          ``REGEXP_FULL_MATCH`` would be the anchored one and is deliberately NOT used.
+        * **range** — a value that is not a number at all is BAD, not "skipped". The
+          fallback treats a ``float()`` failure as a violation and ClickHouse counts
+          ``isNull(toFloat64OrNull(...))`` as one, so ``SAFE_CAST(... AS FLOAT64) IS NULL``
+          is a bad condition here too. Both warehouses cast from the column's STRING
+          rendering rather than its native type, so all three agree on what "malformed"
+          means.
+
+        The sample is ``MIN(IF(bad, value, NULL))`` rather than an ``ANY_VALUE``: MIN
+        ignores NULL inputs, so it can only ever return a value from a row that actually
+        violated, and it is deterministic, where ClickHouse's ``anyIf`` is not.
+        """
+        column = self._validate_column(expectation.field_name)
+        present = f"`{column}` IS NOT NULL"
+        threshold = max(0.0, min(1.0, expectation.threshold))
+
+        if expectation.drift_type == "required_null_violation":
+            # Deliberately does NOT build the STRING rendering: a required-ness check is
+            # pure NULL logic and works on any column type, including one this adapter
+            # refuses to stringify.
+            bad = f"`{column}` IS NULL"
+            total = "COUNT(*)"
+            sample = f"MIN(IF({bad}, '<NULL>', NULL))"
+        elif expectation.drift_type == "enum_violation":
+            if not expectation.enum_options:
+                return None
+            value_expr = self._string_value_expression(column, role="field-contract column")
+            options = ", ".join(self._quote_string(option) for option in expectation.enum_options)
+            bad = f"{present} AND {value_expr} NOT IN ({options})"
+            total = f"COUNTIF({present})"
+            sample = f"MIN(IF({bad}, {value_expr}, NULL))"
+        elif expectation.drift_type == "regex_violation":
+            if not expectation.regex:
+                return None
+            value_expr = self._string_value_expression(column, role="field-contract column")
+            pattern = self._quote_string(expectation.regex)
+            bad = f"{present} AND NOT REGEXP_CONTAINS({value_expr}, {pattern})"
+            total = f"COUNTIF({present})"
+            sample = f"MIN(IF({bad}, {value_expr}, NULL))"
+        elif expectation.drift_type == "range_violation":
+            if expectation.min_value is None and expectation.max_value is None:
+                return None
+            value_expr = self._string_value_expression(column, role="field-contract column")
+            numeric = f"SAFE_CAST({value_expr} AS FLOAT64)"
+            checks = [f"{numeric} IS NULL"]
+            if expectation.min_value is not None:
+                checks.append(f"{numeric} < {float(expectation.min_value)}")
+            if expectation.max_value is not None:
+                checks.append(f"{numeric} > {float(expectation.max_value)}")
+            bad = f"{present} AND ({' OR '.join(checks)})"
+            total = f"COUNTIF({present})"
+            sample = f"MIN(IF({bad}, {value_expr}, NULL))"
+        else:
+            return None
+
+        aggregate_sql = (
+            f"COUNTIF({bad}) AS _bad_{index}, "
+            f"{total} AS _total_{index}, "
+            f"{sample} AS _sample_{index}"
+        )
+        # bad_rate goes through SAFE_DIVIDE, not `/`. GoogleSQL's `/` raises on a zero
+        # denominator ("zero divided error" — verified against the emulator), and SQL does
+        # not promise that the `total_count > 0` guard in the outer WHERE is evaluated
+        # first. ClickHouse can get away with a bare division because it yields nan there;
+        # BigQuery would fail the whole scan.
+        struct_sql = (
+            "STRUCT("
+            f"{self._quote_string(expectation.field_name)} AS field_name, "
+            f"{self._quote_string(expectation.drift_type)} AS drift_type, "
+            f"_agg._bad_{index} AS bad_count, "
+            f"_agg._total_{index} AS total_count, "
+            f"CAST({threshold:.12g} AS FLOAT64) AS threshold, "
+            f"IFNULL(SAFE_DIVIDE(_agg._bad_{index}, _agg._total_{index}), 0.0) AS bad_rate, "
+            f"_agg._sample_{index} AS sample_value"
+            ")"
+        )
+        return aggregate_sql, struct_sql
+
+    @override
+    def validate_field_contracts(
+        self,
+        base_query: str,
+        expectations: list[FieldContractExpectation],
+        *,
+        time_column: str | None = None,
+        time_from: datetime | None = None,
+        time_to: datetime | None = None,
+        group_column: str | None = None,
+        group_value: str | None = None,
+        limit: int = 50000,
+    ) -> list[FieldContractViolation]:
+        """Evaluate field contracts warehouse-side, over the FULL window.
+
+        Replaces ``BaseAdapter``'s fallback, which pulls at most ``limit`` (50,000)
+        sampled rows and evaluates them in Python. That fallback cannot see a violation
+        that first occurs at row 50,001, and the ``bad_rate`` it reports describes the
+        sample, not the data — so a contract could be badly violated and the scan would
+        either miss it or under-report it straight past its threshold.
+
+        ONE job covers every expectation. The naive port of ClickHouse's shape is a
+        ``UNION ALL`` of one aggregate subquery per expectation, which is one job but N
+        SCANS of ``base_query`` — and BigQuery bills by bytes scanned, so a table with ten
+        contracts would be billed ten times over on every scan. Instead the per-expectation
+        aggregates are computed side by side in a SINGLE pass, assembled into an array of
+        STRUCTs, and unnested into the one-row-per-violation shape the caller wants. The
+        threshold/nonzero filtering happens on the unnested rows, so — exactly as on
+        ClickHouse — a passing contract never crosses the wire.
+
+        ``limit`` no longer bounds what is *evaluated* (that is the whole point); it stays
+        as the bound on how many violation ROWS come back, matching ClickHouse.
+        """
+        if not expectations:
+            return []
+
+        # The window literal's type family (TIMESTAMP vs DATETIME vs DATE) and the
+        # scalar/REPEATED decision both come from the declared schema, and a worker
+        # constructs a fresh adapter and calls straight into this — nothing calls
+        # get_columns first. Introspect before generating any type-directed SQL.
+        self._ensure_column_types(base_query)
+        where_clause = self._contract_where_clause(
+            time_column, time_from, time_to, group_column, group_value
+        )
+
+        aggregate_parts: list[str] = []
+        struct_parts: list[str] = []
+        for index, expectation in enumerate(expectations):
+            if self._allowed_columns and expectation.field_name not in self._allowed_columns:
+                # The fallback skips an expectation whose field is absent from the source
+                # (`if field_index is None: continue`). Do the same rather than compiling a
+                # reference to a column that does not exist and failing the entire scan —
+                # a stale contract on a dropped column must not take the other contracts
+                # down with it.
+                continue
+            fragments = self._contract_fragments(expectation, index=index)
+            if fragments is None:
+                continue
+            aggregate_sql, struct_sql = fragments
+            aggregate_parts.append(aggregate_sql)
+            struct_parts.append(struct_sql)
+
+        if not struct_parts:
+            return []
+
+        # WITH OFFSET + ORDER BY: UNNEST does not promise it preserves array order, so
+        # without this the violation order would be unspecified. Ordering by the offset
+        # hands them back in expectation order, deterministically.
+        sql = (
+            "SELECT _c.field_name AS field_name, _c.drift_type AS drift_type, "
+            "_c.bad_count AS bad_count, _c.total_count AS total_count, "
+            "_c.threshold AS threshold, _c.bad_rate AS bad_rate, "
+            "_c.sample_value AS sample_value "
+            "FROM ("
+            f"SELECT [{', '.join(struct_parts)}] AS _contracts "
+            f"FROM (SELECT {', '.join(aggregate_parts)} "
+            f"FROM ({base_query}) AS _src{where_clause}"
+            ") AS _agg"
+            ") AS _rows "
+            "CROSS JOIN UNNEST(_rows._contracts) AS _c WITH OFFSET AS _ord "
+            "WHERE _c.total_count > 0 AND _c.bad_count > 0 "
+            "AND SAFE_DIVIDE(_c.bad_count, _c.total_count) > _c.threshold "
+            f"ORDER BY _ord LIMIT {int(limit)}"
+        )
+        logger.info("BQ field contract query: %s", sql)
+        _, rows = self._query_rows(sql)
+
+        return [
+            FieldContractViolation(
+                field_name=str(row[0]),
+                drift_type=str(row[1]),
+                bad_count=int(cast("int", row[2])),
+                total_count=int(cast("int", row[3])),
+                threshold=float(cast("float", row[4])),
+                bad_rate=float(cast("float", row[5])),
+                sample_value=None if row[6] is None else str(row[6]),
+            )
+            for row in rows
+        ]
 
     def get_full_breakdown(
         self,

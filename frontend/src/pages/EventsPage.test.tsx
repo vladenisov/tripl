@@ -14,6 +14,23 @@ vi.mock('recharts', async () => {
   }
 })
 
+/**
+ * Assert an accessible control is absent — searching the whole DOM, not just the
+ * accessibility tree.
+ *
+ * `queryByRole` defaults to `hidden: false`, which only considers elements exposed to
+ * the a11y tree. For an *absence* assertion that is the wrong default: a control still
+ * present in the DOM but hidden from a11y satisfies `not.toBeInTheDocument()`, so the
+ * assertion can pass for the wrong reason. Searching everything cannot.
+ *
+ * This is a correctness argument, not a speed one. `hidden: true` is only ~1ms cheaper
+ * per query in steady state (6.7ms -> 5.5ms measured); it is the *first* role query in
+ * a file that costs ~87ms, once, warming dom-accessibility-api. See tripl-mwv3.
+ */
+function expectAbsent(role: Parameters<typeof screen.queryByRole>[0], name: string) {
+  expect(screen.queryByRole(role, { name, hidden: true })).not.toBeInTheDocument()
+}
+
 function mockJsonResponse(body: unknown) {
   return new Response(JSON.stringify(body), {
     status: 200,
@@ -190,14 +207,18 @@ describe('EventsPage', () => {
     const { container } = renderEventsPage()
 
     expect(await screen.findByText('Homepage View')).toBeInTheDocument()
-    const eventHeader = screen.getByRole('columnheader', { name: 'Event' })
-    const typeHeader = screen.getByRole('columnheader', { name: 'Type' })
-    const metricsHeader = screen.getByRole('columnheader', { name: '48h' })
-    expect(typeHeader.compareDocumentPosition(metricsHeader) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
-    expect(eventHeader).toBeInTheDocument()
+
+    // One traversal for every column instead of a `getByRole` per header. This is a
+    // clarity win — the ordering assertion now reads off the header list directly,
+    // rather than through compareDocumentPosition — and only a marginal speed one.
+    // See tripl-mwv3: role queries cost ~6.7ms each in steady state here, so the
+    // thirteen in this test are not what makes it slow.
+    const headers = screen.getAllByRole('columnheader').map((h) => h.textContent?.trim())
+    expect(headers).toContain('Event')
+    expect(headers.indexOf('Type')).toBeLessThan(headers.indexOf('48h'))
     // The trailing sticky "Actions" column and its hover cluster were removed;
     // reordering is now drag-handle only.
-    expect(screen.queryByRole('columnheader', { name: 'Actions' })).not.toBeInTheDocument()
+    expect(headers).not.toContain('Actions')
     expect(screen.getByText('48h')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: '7d' })).toBeInTheDocument()
     expect(screen.getByText('Hours')).toBeInTheDocument()
@@ -205,7 +226,8 @@ describe('EventsPage', () => {
     expect(metricsButton).toBeInTheDocument()
     // The row exposes no inline action buttons — Edit/Metrics/Archive/Delete and
     // move/status now live on the event detail page, not on the row.
-    expect(screen.queryByRole('button', { name: 'Edit event' })).not.toBeInTheDocument()
+    // (`expectAbsent` searches the whole DOM, not just the a11y tree — see its docstring.)
+    expectAbsent('button', 'Edit event')
     // The toolbar's own "More actions" overflow (tripl-7l83.9) lives above the
     // grid; scope this row-cleanliness check to the events table so it verifies
     // rows carry no per-row action menu, not the toolbar affordance.
@@ -228,12 +250,12 @@ describe('EventsPage', () => {
 
     // The hover action cluster was removed entirely — no move up/down buttons
     // and no per-row status select.
-    expect(screen.queryByRole('button', { name: 'Move event up' })).not.toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: 'Move event down' })).not.toBeInTheDocument()
-    expect(screen.queryByRole('combobox', { name: 'Set event status' })).not.toBeInTheDocument()
-    expect(screen.queryByRole('link', { name: 'View metrics' })).not.toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: 'Archive event' })).not.toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: 'Delete event' })).not.toBeInTheDocument()
+    expectAbsent('button', 'Move event up')
+    expectAbsent('button', 'Move event down')
+    expectAbsent('combobox', 'Set event status')
+    expectAbsent('link', 'View metrics')
+    expectAbsent('button', 'Archive event')
+    expectAbsent('button', 'Delete event')
 
     // The "<Tab> Dynamics" chart now defaults open (UX-14), so the toggle reads
     // "Hide chart" and the signal link in its header is visible without a click.

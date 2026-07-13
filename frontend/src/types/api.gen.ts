@@ -1636,6 +1636,34 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/projects/{slug}/metrics/fact-preview": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Preview Fact Operand
+         * @description Stateless dry-run of ONE fact operand's row filter (editor-gated).
+         *
+         *     The body is the operand a save would send. Its filters are compiled by the
+         *     worker's own resolver for the fact table's data-source dialect and the
+         *     resulting query is executed with a 1-row cap over a bounded recent window;
+         *     nothing is persisted. Expected user mistakes — an unknown named filter, SQL
+         *     the warehouse rejects, a measure column the filtered query does not project —
+         *     return 200 with ``error`` set so the filter editor can render them inline.
+         *     An unknown project or fact table is a 404.
+         */
+        post: operations["preview_fact_operand_api_v1_projects__slug__metrics_fact_preview_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/projects/{slug}/metrics/preview": {
         parameters: {
             query?: never;
@@ -3862,6 +3890,18 @@ export interface components {
              */
             updated_at: string;
         };
+        /**
+         * BigQuerySettings
+         * @description Typed BigQuery execution controls (location, cost guard, dataset scope).
+         */
+        BigQuerySettings: {
+            /** Dataset Allowlist */
+            dataset_allowlist?: string[] | null;
+            /** Location */
+            location?: string | null;
+            /** Maximum Bytes Billed */
+            maximum_bytes_billed?: number | null;
+        };
         /** Body_upload_event_photo_api_v1_projects__slug__events__event_id__photos_post */
         Body_upload_event_photo_api_v1_projects__slug__events__event_id__photos_post: {
             /** File */
@@ -4057,6 +4097,14 @@ export interface components {
          * @enum {string}
          */
         ChartAnnotationScopeType: "project_total" | "event_type" | "event" | "metric";
+        /**
+         * ClickHouseSettings
+         * @description ClickHouse has no extra connection settings.
+         *
+         *     Its two knobs — ``timeout_seconds`` and ``json_path_discovery`` — are
+         *     first-class columns on the data source, not connection settings.
+         */
+        ClickHouseSettings: Record<string, never>;
         /** ColumnSchema */
         ColumnSchema: {
             /** Data Type */
@@ -4092,6 +4140,34 @@ export interface components {
             ours: unknown | null;
             /** Theirs */
             theirs: unknown | null;
+        };
+        /**
+         * ConnectionSettingsResponse
+         * @description Read side of the connection settings: the union, flattened, secrets removed.
+         *
+         *     Applicability is enforced on write, so the response can be one flat object;
+         *     only the fields that apply to the source's ``db_type`` are ever populated.
+         */
+        ConnectionSettingsResponse: {
+            /** Dataset Allowlist */
+            dataset_allowlist?: string[] | null;
+            /** Location */
+            location?: string | null;
+            /** Maximum Bytes Billed */
+            maximum_bytes_billed?: number | null;
+            /** Search Path */
+            search_path?: string | null;
+            /** Sslcert */
+            sslcert?: string | null;
+            /**
+             * Sslkey Set
+             * @default false
+             */
+            sslkey_set: boolean;
+            /** Sslmode */
+            sslmode?: ("disable" | "allow" | "prefer" | "require" | "verify-ca" | "verify-full") | null;
+            /** Sslrootcert */
+            sslrootcert?: string | null;
         };
         /** CoverageBucket */
         CoverageBucket: {
@@ -4129,13 +4205,11 @@ export interface components {
         DBType: "clickhouse" | "postgres" | "bigquery" | "synthetic";
         /** DataSourceCreate */
         DataSourceCreate: {
+            /** Connection Settings */
+            connection_settings?: components["schemas"]["ClickHouseSettings"] | components["schemas"]["PostgresSettings"] | components["schemas"]["BigQuerySettings"] | components["schemas"]["SyntheticSettings"] | null;
             /** Database Name */
             database_name: string;
             db_type: components["schemas"]["DBType"];
-            /** Extra Params */
-            extra_params?: {
-                [key: string]: unknown;
-            } | null;
             /** Host */
             host: string;
             /** Json Path Discovery */
@@ -4162,6 +4236,7 @@ export interface components {
         };
         /** DataSourceResponse */
         DataSourceResponse: {
+            connection_settings: components["schemas"]["ConnectionSettingsResponse"];
             /**
              * Created At
              * Format: date-time
@@ -4170,10 +4245,6 @@ export interface components {
             /** Database Name */
             database_name: string;
             db_type: components["schemas"]["DBType"];
-            /** Extra Params */
-            extra_params: {
-                [key: string]: unknown;
-            } | null;
             /** Host */
             host: string;
             /**
@@ -4250,13 +4321,11 @@ export interface components {
         };
         /** DataSourceUpdate */
         DataSourceUpdate: {
+            /** Connection Settings */
+            connection_settings?: components["schemas"]["ClickHouseSettings"] | components["schemas"]["PostgresSettings"] | components["schemas"]["BigQuerySettings"] | components["schemas"]["SyntheticSettings"] | null;
             /** Database Name */
             database_name?: string | null;
             db_type?: components["schemas"]["DBType"] | null;
-            /** Extra Params */
-            extra_params?: {
-                [key: string]: unknown;
-            } | null;
             /** Host */
             host?: string | null;
             /** Json Path Discovery */
@@ -5515,6 +5584,29 @@ export interface components {
             row_filter?: string | null;
             /** Row Filters */
             row_filters?: string[];
+        };
+        /**
+         * FactOperandPreviewResponse
+         * @description Dry-run outcome for ONE fact operand's compiled row filter.
+         *
+         *     The request body is the operand itself (:class:`FactOperand`) — the same
+         *     payload a save sends — so the preview compiles from the identical config the
+         *     worker will later read. ``columns`` / ``row_count`` describe the filtered
+         *     fact query the operand aggregates (probed with a 1-row cap); expected user
+         *     mistakes — an unknown named filter, a filter the warehouse rejects, a measure
+         *     column the filtered query does not project — come back with ``error`` set on
+         *     a 200 (see ``metric_preview_service.preview_fact_operand``), not a 5xx.
+         */
+        FactOperandPreviewResponse: {
+            /** Columns */
+            columns?: string[];
+            /** Error */
+            error?: string | null;
+            /**
+             * Row Count
+             * @default 0
+             */
+            row_count: number;
         };
         /**
          * FactTableColumnSchema
@@ -6940,6 +7032,22 @@ export interface components {
             /** Present Platforms */
             present_platforms: string[];
         };
+        /**
+         * PostgresSettings
+         * @description Typed allowlist of safe PostgreSQL connection options.
+         */
+        PostgresSettings: {
+            /** Search Path */
+            search_path?: string | null;
+            /** Sslcert */
+            sslcert?: string | null;
+            /** Sslkey */
+            sslkey?: string | null;
+            /** Sslmode */
+            sslmode?: ("disable" | "allow" | "prefer" | "require" | "verify-ca" | "verify-full") | null;
+            /** Sslrootcert */
+            sslrootcert?: string | null;
+        };
         /** ProjectAnomalySettingsResponse */
         ProjectAnomalySettingsResponse: {
             /** Anomaly Detection Enabled */
@@ -8332,6 +8440,11 @@ export interface components {
             /** Photo Storage Backend */
             photo_storage_backend?: string | null;
         };
+        /**
+         * SyntheticSettings
+         * @description The synthetic (demo) warehouse is in-memory: it has nothing to configure.
+         */
+        SyntheticSettings: Record<string, never>;
         /** SystemSettings */
         SystemSettings: {
             /** Database Url Configured */
@@ -12851,6 +12964,41 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    preview_fact_operand_api_v1_projects__slug__metrics_fact_preview_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                slug: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["FactOperand"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["FactOperandPreviewResponse"];
+                };
             };
             /** @description Validation Error */
             422: {

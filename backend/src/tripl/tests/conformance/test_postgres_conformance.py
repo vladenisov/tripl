@@ -242,6 +242,46 @@ def test_multi_aggregate_runs_one_scan_and_agrees_with_the_single_path(
 # --- nested jsonb -------------------------------------------------------------
 
 
+def test_the_scan_enumerates_top_level_keys_and_discovery_enumerates_nested_leaves(
+    pg: PostgresAdapter,
+) -> None:
+    """The two JSON path enumerations are deliberately DIFFERENT depths. Pin both.
+
+    The scan expression runs once per row over the whole window; the recursive walk
+    that yields nested leaves costs ~44us/row on PostgreSQL (7x the top-level form,
+    108x a scan with no JSON at all — measured on PG 18, and irreducible: a LATERAL
+    join and an unrolled expansion are both slower, and the walk alone is already 76%
+    of the cost). ClickHouse gets nested paths free from JSONAllPaths; PostgreSQL has
+    no such primitive.
+
+    So the scan groups on cheap top-level keys, and the nested leaves are served by
+    the bounded discovery path — which is where the user actually browses and picks
+    them. Restoring the nested walk to the scan would reintroduce a 7x regression that
+    no functional test would notice, which is why this asserts the DEPTH of each and
+    not merely that each returns something.
+    """
+    pg.get_columns(BASE)
+
+    scan_sql = pg._json_paths_expression("doc")  # noqa: SLF001
+    with pg._conn.cursor() as cur:  # noqa: SLF001
+        cur.execute(f"SELECT DISTINCT {scan_sql} FROM ({BASE}) AS _src")
+        scan_paths = {p for (row,) in cur.fetchall() for p in (row or [])}
+
+    # Top-level keys only: no dotted path may appear in the SCAN enumeration.
+    assert scan_paths, "the scan must still enumerate something"
+    assert not any("." in p for p in scan_paths), (
+        "the scan enumeration must stay top-level, got nested paths: "
+        f"{sorted(p for p in scan_paths if '.' in p)}"
+    )
+    assert "user" in scan_paths
+
+    # Discovery, by contrast, must reach the nested leaves.
+    samples = pg.get_json_path_samples(
+        BASE, ["doc"], time_column="ts", time_from=FROM_TIME, time_to=TO_TIME
+    )
+    assert "user.address.city" in set(samples["doc"])
+
+
 def test_nested_jsonb_leaves_are_discovered_as_dotted_paths(pg: PostgresAdapter) -> None:
     pg.get_columns(BASE)
     samples = pg.get_json_path_samples(

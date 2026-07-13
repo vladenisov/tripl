@@ -4,7 +4,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { dataSourcesApi } from '@/api/dataSources'
 import { useAuth } from '@/components/auth-context'
 import { useConfirm } from '@/hooks/useConfirm'
-import type { DataSource, DbType, JsonPathDiscovery } from '@/types'
+import type { DataSource, DbType } from '@/types'
 import { DB_TYPE_OPTIONS } from '@/types'
 import { Button } from '@/components/ui/button'
 import {
@@ -16,6 +16,21 @@ import {
 } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
+import { ConnectionSettingsFields } from '@/components/data-sources/connection-settings-fields'
+import { ConnectionCoreFields } from '@/components/data-sources/connection-core-fields'
+import {
+  EMPTY_CONNECTION_CORE_FORM,
+  buildCoreCreatePayload,
+  buildCoreUpdatePayload,
+  dataSourceToCoreForm,
+  type ConnectionCoreForm,
+} from '@/components/data-sources/connection-core'
+import {
+  EMPTY_CONNECTION_SETTINGS_FORM,
+  buildConnectionSettings,
+  connectionSettingsToForm,
+  type ConnectionSettingsForm,
+} from '@/components/data-sources/connection-settings'
 import { EmptyState } from '@/components/empty-state'
 import { ErrorState } from '@/components/error-state'
 import { SyntheticSourceBadge } from '@/demo/capabilityBadges'
@@ -37,18 +52,6 @@ import { dataSourceHealthLexeme } from '@/lib/statusLexicon'
 import { getErrorMessage } from '@/lib/utils'
 
 const EMPTY_DATA_SOURCES: DataSource[] = []
-
-// ClickHouse JSON path discovery options (the preview step that enumerates
-// candidate JSON paths). Defaults to "dynamic" — the effective backend default
-// when the stored value is null.
-const JSON_PATH_DISCOVERY_OPTIONS: { value: JsonPathDiscovery; label: string }[] = [
-  { value: 'dynamic', label: 'Dynamic (recommended)' },
-  { value: 'all', label: 'All paths' },
-]
-
-const JSON_PATH_DISCOVERY_HELP =
-  'Dynamic lists only the important typed JSON sub-paths (faster). ' +
-  'All lists every path including rarely-used ones (slower, exhaustive).'
 
 // A successful connection test older than this is no longer a trustworthy
 // "healthy" signal — connections can silently break between manual checks, so
@@ -76,8 +79,12 @@ function ConnectionsTab({ openDsId }: { openDsId?: string }) {
 
   const [name, setName] = useState('')
   const [dbType, setDbType] = useState<DbType>('clickhouse')
-  const [host, setHost] = useState('')
-  const [port, setPort] = useState(8123)
+  const [core, setCore] = useState<ConnectionCoreForm>(EMPTY_CONNECTION_CORE_FORM)
+  const patchCore = (patch: Partial<ConnectionCoreForm>) =>
+    setCore((prev) => ({ ...prev, ...patch }))
+  const [settings, setSettings] = useState<ConnectionSettingsForm>(EMPTY_CONNECTION_SETTINGS_FORM)
+  const patchSettings = (patch: Partial<ConnectionSettingsForm>) =>
+    setSettings((prev) => ({ ...prev, ...patch }))
 
   const handleDbTypeChange = (value: DbType) => {
     const previousDefault = DB_TYPE_OPTIONS.find((o) => o.value === dbType)?.defaultPort
@@ -85,24 +92,20 @@ function ConnectionsTab({ openDsId }: { openDsId?: string }) {
     setDbType(value)
     // Only auto-update port if the user hasn't customized it away from the
     // previous adapter's default.
-    if (nextDefault && port === previousDefault) {
-      setPort(nextDefault)
+    if (nextDefault && core.port === previousDefault) {
+      patchCore({ port: nextDefault })
     }
   }
-  const [databaseName, setDatabaseName] = useState('')
-  const [username, setUsername] = useState('')
-  const [password, setPassword] = useState('')
-  const [timeoutSeconds, setTimeoutSeconds] = useState('')
-  const [jsonPathDiscovery, setJsonPathDiscovery] = useState<JsonPathDiscovery>('dynamic')
 
   const [editName, setEditName] = useState('')
-  const [editHost, setEditHost] = useState('')
-  const [editPort, setEditPort] = useState(8123)
-  const [editDatabaseName, setEditDatabaseName] = useState('')
-  const [editUsername, setEditUsername] = useState('')
-  const [editPassword, setEditPassword] = useState('')
-  const [editTimeoutSeconds, setEditTimeoutSeconds] = useState('')
-  const [editJsonPathDiscovery, setEditJsonPathDiscovery] = useState<JsonPathDiscovery>('dynamic')
+  const [editCore, setEditCore] = useState<ConnectionCoreForm>(EMPTY_CONNECTION_CORE_FORM)
+  const patchEditCore = (patch: Partial<ConnectionCoreForm>) =>
+    setEditCore((prev) => ({ ...prev, ...patch }))
+  const [editSettings, setEditSettings] = useState<ConnectionSettingsForm>(
+    EMPTY_CONNECTION_SETTINGS_FORM,
+  )
+  const patchEditSettings = (patch: Partial<ConnectionSettingsForm>) =>
+    setEditSettings((prev) => ({ ...prev, ...patch }))
 
   const [testingId, setTestingId] = useState<string | null>(null)
   const canManageDataSources = user?.role === 'owner'
@@ -114,17 +117,15 @@ function ConnectionsTab({ openDsId }: { openDsId?: string }) {
   const dataSources = dataSourcesQuery.data ?? EMPTY_DATA_SOURCES
 
   const createMut = useMutation({
-    mutationFn: () =>
-      dataSourcesApi.create({
-        name, db_type: dbType, host, port,
-        database_name: databaseName, username, password,
-        ...(dbType === 'clickhouse'
-          ? {
-              timeout_seconds: parseTimeoutSeconds(timeoutSeconds),
-              json_path_discovery: jsonPathDiscovery,
-            }
-          : {}),
-      }),
+    mutationFn: () => {
+      const connectionSettings = buildConnectionSettings(dbType, settings)
+      return dataSourcesApi.create({
+        name,
+        db_type: dbType,
+        ...buildCoreCreatePayload(dbType, core),
+        ...(connectionSettings ? { connection_settings: connectionSettings } : {}),
+      })
+    },
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['dataSources'] })
       resetForm()
@@ -132,18 +133,19 @@ function ConnectionsTab({ openDsId }: { openDsId?: string }) {
   })
 
   const updateMut = useMutation({
-    mutationFn: (id: string) =>
-      dataSourcesApi.update(id, {
-        name: editName, host: editHost, port: editPort,
-        database_name: editDatabaseName, username: editUsername,
-        ...(editPassword ? { password: editPassword } : {}),
-        ...(editingDs?.db_type === 'clickhouse'
-          ? {
-              timeout_seconds: parseTimeoutSeconds(editTimeoutSeconds),
-              json_path_discovery: editJsonPathDiscovery,
-            }
-          : {}),
-      }),
+    mutationFn: (id: string) => {
+      const editDbType = editingDs?.db_type
+      if (!editDbType) throw new Error('No data source is being edited')
+      const connectionSettings = buildConnectionSettings(editDbType, editSettings)
+      return dataSourcesApi.update(id, {
+        name: editName,
+        // Branches on the warehouse exactly like the create payload does:
+        // BigQuery gets no port and no username, and the secret is only sent
+        // when the operator typed a new one.
+        ...buildCoreUpdatePayload(editDbType, editCore),
+        ...(connectionSettings ? { connection_settings: connectionSettings } : {}),
+      })
+    },
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['dataSources'] })
       closeEdit()
@@ -197,13 +199,10 @@ function ConnectionsTab({ openDsId }: { openDsId?: string }) {
     editingDsIdRef.current = ds.id
     setEditingDs(ds)
     setEditName(ds.name)
-    setEditHost(ds.host)
-    setEditPort(ds.port)
-    setEditDatabaseName(ds.database_name)
-    setEditUsername(ds.username)
-    setEditPassword('')
-    setEditTimeoutSeconds(ds.timeout_seconds == null ? '' : String(ds.timeout_seconds))
-    setEditJsonPathDiscovery(ds.json_path_discovery ?? 'dynamic')
+    // Neither helper prefills a secret: the API returns `password_set` /
+    // `sslkey_set` booleans, never the credential itself.
+    setEditCore(dataSourceToCoreForm(ds))
+    setEditSettings(connectionSettingsToForm(ds.connection_settings))
   }, [])
 
   const startEdit = useCallback((ds: DataSource) => {
@@ -241,13 +240,8 @@ function ConnectionsTab({ openDsId }: { openDsId?: string }) {
     setShowForm(false)
     setName('')
     setDbType('clickhouse')
-    setHost('')
-    setPort(8123)
-    setDatabaseName('')
-    setUsername('')
-    setPassword('')
-    setTimeoutSeconds('')
-    setJsonPathDiscovery('dynamic')
+    setCore(EMPTY_CONNECTION_CORE_FORM)
+    setSettings(EMPTY_CONNECTION_SETTINGS_FORM)
   }
 
   const healthyCount = dataSources.filter(
@@ -315,91 +309,19 @@ function ConnectionsTab({ openDsId }: { openDsId?: string }) {
                   </select>
                 </div>
               </div>
-              {dbType === 'bigquery' ? (
-                <>
-                  <div className="grid grid-cols-2 gap-3">
-                    <div className="grid gap-2">
-                      <Label htmlFor="ds-project-id">Project ID</Label>
-                      <Input id="ds-project-id" value={host} onChange={(e) => setHost(e.target.value)} required placeholder="my-gcp-project" />
-                    </div>
-                    <div className="grid gap-2">
-                      <Label htmlFor="ds-default-dataset">Default dataset</Label>
-                      <Input id="ds-default-dataset" value={databaseName} onChange={(e) => setDatabaseName(e.target.value)} required placeholder="analytics" />
-                    </div>
-                  </div>
-                  <div className="grid gap-2">
-                    <Label htmlFor="ds-service-account-json">Service account JSON</Label>
-                    <textarea
-                      id="ds-service-account-json"
-                      value={password}
-                      onChange={(e) => setPassword(e.target.value)}
-                      required
-                      rows={6}
-                      placeholder='{"type":"service_account", ...}'
-                      className="flex w-full rounded-md border border-input bg-background px-3 py-2 font-mono text-xs shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-                    />
-                  </div>
-                </>
-              ) : (
-                <>
-                  <div className="grid grid-cols-5 gap-3">
-                    <div className="col-span-2 grid gap-2">
-                      <Label htmlFor="ds-host">Host</Label>
-                      <Input id="ds-host" value={host} onChange={(e) => setHost(e.target.value)} required placeholder="localhost" />
-                    </div>
-                    <div className="grid gap-2">
-                      <Label htmlFor="ds-port">Port</Label>
-                      <Input id="ds-port" type="number" value={port} onChange={(e) => setPort(Number(e.target.value))} required />
-                    </div>
-                    <div className="col-span-2 grid gap-2">
-                      <Label htmlFor="ds-database">Database</Label>
-                      <Input id="ds-database" value={databaseName} onChange={(e) => setDatabaseName(e.target.value)} required placeholder="default" />
-                    </div>
-                  </div>
-                  <div className={dbType === 'clickhouse' ? 'grid grid-cols-3 gap-3' : 'grid grid-cols-2 gap-3'}>
-                    <div className="grid gap-2">
-                      <Label htmlFor="ds-username">Username</Label>
-                      <Input id="ds-username" value={username} onChange={(e) => setUsername(e.target.value)} placeholder="default" />
-                    </div>
-                    <div className="grid gap-2">
-                      <Label htmlFor="ds-password">Password</Label>
-                      <Input id="ds-password" type="password" value={password} onChange={(e) => setPassword(e.target.value)} placeholder="••••••••" />
-                    </div>
-                    {dbType === 'clickhouse' && (
-                      <div className="grid gap-2">
-                        <Label htmlFor="ds-timeout">Timeout, s</Label>
-                        <Input
-                          id="ds-timeout"
-                          type="number"
-                          min={1}
-                          step={1}
-                          value={timeoutSeconds}
-                          onChange={(e) => setTimeoutSeconds(e.target.value)}
-                          placeholder="Default"
-                        />
-                      </div>
-                    )}
-                  </div>
-                  {dbType === 'clickhouse' && (
-                    <div className="grid gap-2">
-                      <Label htmlFor="ds-json-path-discovery">JSON path discovery</Label>
-                      <select
-                        id="ds-json-path-discovery"
-                        value={jsonPathDiscovery}
-                        onChange={(e) => setJsonPathDiscovery(e.target.value as JsonPathDiscovery)}
-                        className="flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-                      >
-                        {JSON_PATH_DISCOVERY_OPTIONS.map((opt) => (
-                          <option key={opt.value} value={opt.value}>
-                            {opt.label}
-                          </option>
-                        ))}
-                      </select>
-                      <p className="text-xs text-muted-foreground">{JSON_PATH_DISCOVERY_HELP}</p>
-                    </div>
-                  )}
-                </>
-              )}
+              <ConnectionCoreFields
+                idPrefix="ds"
+                dbType={dbType}
+                value={core}
+                onChange={patchCore}
+                mode="create"
+              />
+              <ConnectionSettingsFields
+                idPrefix="ds"
+                dbType={dbType}
+                value={settings}
+                onChange={patchSettings}
+              />
               {createMut.isError && (
                 <p className="text-sm text-destructive">{getErrorMessage(createMut.error)}</p>
               )}
@@ -424,61 +346,27 @@ function ConnectionsTab({ openDsId }: { openDsId?: string }) {
                 <Label htmlFor="edit-ds-name">Name</Label>
                 <Input id="edit-ds-name" value={editName} onChange={(e) => setEditName(e.target.value)} />
               </div>
-              <div className="grid grid-cols-5 gap-3">
-                <div className="col-span-2 grid gap-2">
-                  <Label htmlFor="edit-ds-host">Host</Label>
-                  <Input id="edit-ds-host" value={editHost} onChange={(e) => setEditHost(e.target.value)} />
-                </div>
-                <div className="grid gap-2">
-                  <Label htmlFor="edit-ds-port">Port</Label>
-                  <Input id="edit-ds-port" type="number" value={editPort} onChange={(e) => setEditPort(Number(e.target.value))} />
-                </div>
-                <div className="col-span-2 grid gap-2">
-                  <Label htmlFor="edit-ds-database">Database</Label>
-                  <Input id="edit-ds-database" value={editDatabaseName} onChange={(e) => setEditDatabaseName(e.target.value)} />
-                </div>
-              </div>
-              <div className={editingDs?.db_type === 'clickhouse' ? 'grid grid-cols-3 gap-3' : 'grid grid-cols-2 gap-3'}>
-                <div className="grid gap-2">
-                  <Label htmlFor="edit-ds-username">Username</Label>
-                  <Input id="edit-ds-username" value={editUsername} onChange={(e) => setEditUsername(e.target.value)} />
-                </div>
-                <div className="grid gap-2">
-                  <Label htmlFor="edit-ds-password">Password</Label>
-                  <Input id="edit-ds-password" type="password" value={editPassword} onChange={(e) => setEditPassword(e.target.value)} placeholder="Leave empty to keep" />
-                </div>
-                {editingDs?.db_type === 'clickhouse' && (
-                  <div className="grid gap-2">
-                    <Label htmlFor="edit-ds-timeout">Timeout, s</Label>
-                    <Input
-                      id="edit-ds-timeout"
-                      type="number"
-                      min={1}
-                      step={1}
-                      value={editTimeoutSeconds}
-                      onChange={(e) => setEditTimeoutSeconds(e.target.value)}
-                      placeholder="Default"
-                    />
-                  </div>
-                )}
-              </div>
-              {editingDs?.db_type === 'clickhouse' && (
-                <div className="grid gap-2">
-                  <Label htmlFor="edit-ds-json-path-discovery">JSON path discovery</Label>
-                  <select
-                    id="edit-ds-json-path-discovery"
-                    value={editJsonPathDiscovery}
-                    onChange={(e) => setEditJsonPathDiscovery(e.target.value as JsonPathDiscovery)}
-                    className="flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-                  >
-                    {JSON_PATH_DISCOVERY_OPTIONS.map((opt) => (
-                      <option key={opt.value} value={opt.value}>
-                        {opt.label}
-                      </option>
-                    ))}
-                  </select>
-                  <p className="text-xs text-muted-foreground">{JSON_PATH_DISCOVERY_HELP}</p>
-                </div>
+              {editingDs && (
+                <>
+                  {/* Same component as the create dialog, so a BigQuery source is
+                      edited as project id / dataset / service-account JSON — not
+                      as host / port / username. */}
+                  <ConnectionCoreFields
+                    idPrefix="edit-ds"
+                    dbType={editingDs.db_type}
+                    value={editCore}
+                    onChange={patchEditCore}
+                    mode="edit"
+                    secretSet={editingDs.password_set}
+                  />
+                  <ConnectionSettingsFields
+                    idPrefix="edit-ds"
+                    dbType={editingDs.db_type}
+                    value={editSettings}
+                    onChange={patchEditSettings}
+                    sslkeySet={editingDs.connection_settings?.sslkey_set ?? false}
+                  />
+                </>
               )}
               {updateMut.isError && (
                 <p className="text-sm text-destructive">{getErrorMessage(updateMut.error)}</p>
@@ -567,6 +455,14 @@ function DataSourceCard({
   // (re-test / edit) right where the failure is reported, not just in the
   // card's management footer.
   const needsRecovery = stale || ds.last_test_status === 'failed'
+  // BigQuery has no port (the adapter deletes it) and no username, so the usual
+  // host:port/database summary would print a meaningless ":8123". It is a
+  // project and a dataset.
+  const isBigQuery = ds.db_type === 'bigquery'
+  const connectionLabel = isBigQuery
+    ? `${ds.host}/${ds.database_name}`
+    : `${ds.host}:${ds.port}/${ds.database_name}`
+  const secretLabel = isBigQuery ? 'Service account key set' : 'Password set'
 
   return (
     <div
@@ -594,13 +490,13 @@ function DataSourceCard({
           <div
             className="mono mt-0.5 truncate text-[11px]"
             style={{ color: 'var(--fg-subtle)' }}
-            title={`${ds.host}:${ds.port}/${ds.database_name}`}
+            title={connectionLabel}
           >
-            {ds.host}:{ds.port}/{ds.database_name}
+            {connectionLabel}
           </div>
         </div>
         {ds.password_set && (
-          <span title="Password set" style={{ color: 'var(--fg-subtle)' }}>
+          <span title={secretLabel} style={{ color: 'var(--fg-subtle)' }}>
             <Lock className="h-3.5 w-3.5" />
           </span>
         )}
@@ -702,13 +598,6 @@ function DataSourceCard({
       )}
     </div>
   )
-}
-
-function parseTimeoutSeconds(value: string): number | null {
-  const trimmed = value.trim()
-  if (!trimmed) return null
-  const parsed = Number(trimmed)
-  return Number.isFinite(parsed) ? parsed : null
 }
 
 function formatDate(iso: string): string {

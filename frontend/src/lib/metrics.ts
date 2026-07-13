@@ -1,6 +1,13 @@
 import type { EventMetricPoint } from '@/types'
 
-export type MetricsGranularity = 'hour' | 'day' | 'week' | 'month'
+/**
+ * Chart granularities. `15min` and `6h` exist so that every *collection* interval
+ * the backend supports (`15m`, `1h`, `6h`, `1d`, `1w` — see
+ * backend/src/tripl/core/intervals.py) has a chart granularity that matches it.
+ * Without them a 15m or 6h metric charted under an "Hours" label, naming the axis
+ * after a bucket width the data does not have (tripl-64n8.15).
+ */
+export type MetricsGranularity = '15min' | 'hour' | '6h' | 'day' | 'week' | 'month'
 
 export const RANGE_OPTIONS = [
   { label: '7d', days: 7 },
@@ -9,7 +16,9 @@ export const RANGE_OPTIONS = [
 ] as const
 
 export const GRANULARITY_OPTIONS: { value: MetricsGranularity; label: string }[] = [
+  { value: '15min', label: '15 min' },
   { value: 'hour', label: 'Hours' },
+  { value: '6h', label: '6 hours' },
   { value: 'day', label: 'Days' },
   { value: 'week', label: 'Weeks' },
   { value: 'month', label: 'Months' },
@@ -30,7 +39,10 @@ export function defaultGranularityForRange(rangeDays: number): MetricsGranularit
   return 'week'
 }
 
-const HOUR_MS = 60 * 60 * 1000
+const MINUTE_MS = 60 * 1000
+const QUARTER_HOUR_MS = 15 * MINUTE_MS
+const HOUR_MS = 60 * MINUTE_MS
+const SIX_HOUR_MS = 6 * HOUR_MS
 const DAY_MS = 24 * HOUR_MS
 const WEEK_MS = 7 * DAY_MS
 
@@ -76,8 +88,15 @@ export function getBucketStart(dateStr: string, granularity: MetricsGranularity)
   const ms = new Date(dateStr).getTime()
 
   switch (granularity) {
+    // 15 min, 1h and 6h all divide a UTC day evenly, so an epoch anchor puts every
+    // boundary on a natural clock boundary — and lands on the same grid the backend
+    // bins to (sub-week buckets are epoch-anchored there too).
+    case '15min':
+      return new Date(floorToGrid(ms, QUARTER_HOUR_MS, EPOCH_MS)).toISOString()
     case 'hour':
       return new Date(floorToGrid(ms, HOUR_MS, EPOCH_MS)).toISOString()
+    case '6h':
+      return new Date(floorToGrid(ms, SIX_HOUR_MS, EPOCH_MS)).toISOString()
     case 'day':
       return new Date(floorToGrid(ms, DAY_MS, EPOCH_MS)).toISOString()
     case 'week':

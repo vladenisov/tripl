@@ -123,7 +123,12 @@ def test_postgres_wires_timeout_and_tls(monkeypatch: pytest.MonkeyPatch) -> None
     # and binned in the *session* timezone, so a server whose TimeZone is Europe/Berlin
     # would shift every window bound and bucket edge (see tripl.core.bucketing).
     assert captured["options"] == "-c timezone=UTC -c statement_timeout=90000"
-    assert captured["sslmode"] == "prefer"
+    # A REMOTE host that pins no mode gets `require`, not `prefer`. `prefer` negotiates
+    # TLS when the server offers it and silently accepts PLAINTEXT when it doesn't, so a
+    # stripped connection is indistinguishable from a healthy one. The registry used to
+    # substitute a static `prefer` before the adapter could apply this host-aware
+    # default, which left every remote warehouse tolerating plaintext.
+    assert captured["sslmode"] == "require"
     assert captured["autocommit"] is True
 
 
@@ -151,8 +156,12 @@ def test_postgres_localhost_skips_tls_and_uses_default_timeout(
 
     build_adapter(ds)
 
-    # Local hosts skip TLS (no cert configured in dev/docker).
-    assert captured["sslmode"] is None
+    # Local hosts do not force TLS: dev/docker Postgres has no certificate, and the
+    # traffic never leaves the machine. `prefer` is libpq's own default (use TLS if
+    # the server offers it, plaintext otherwise) — the adapter now passes it
+    # EXPLICITLY rather than leaving it unset, because an sslmode it merely ignored
+    # is the bug tripl-64n8.7 closes.
+    assert captured["sslmode"] == "prefer"
     assert captured["connect_timeout"] == _DEFAULT_TIMEOUT_SECONDS
     assert captured["options"] == (
         f"-c timezone=UTC -c statement_timeout={_DEFAULT_TIMEOUT_SECONDS * 1000}"

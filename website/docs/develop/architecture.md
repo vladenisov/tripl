@@ -96,10 +96,29 @@ Locally, all of the above (except the warehouses) run under Docker Compose:
 - **Celery** app with a **RabbitMQ** broker.
 - **Warehouse adapters** (`core/adapters`) provide a common interface over
   **ClickHouse**, **BigQuery**, and **PostgreSQL** source databases. A common
-  interface is not the same as identical behavior: see the
-  **[warehouse capability matrix](warehouse-parity.md)** for what each warehouse
-  actually supports, which paths are sampled rather than exact, and the UTC /
-  Monday-week bucket contract every adapter must honor.
+  interface is not the same as identical behavior, and it is emphatically not the
+  same as an equally *verified* behavior:
+  - **ClickHouse and PostgreSQL are executed** in CI. The `conformance` job stands
+    up real `clickhouse-server` and `postgres` containers, runs the SQL the
+    adapters generate, and compares the results against the reference
+    implementation. Their bucket values, counts and contract counts are proven.
+  - **BigQuery is analyzed, not executed.** CI posts every generated statement to
+    an emulator embedding Google's real **ZetaSQL analyzer**, which is
+    authoritative on whether the SQL is *valid* GoogleSQL — but not on what it
+    *computes*. BigQuery bucket values and field-contract values remain believed
+    rather than proven; a credentialed value-conformance job is specified but
+    deliberately unwired.
+
+  The gates live in `backend/src/tripl/tests/conformance/`. See the
+  **[warehouse capability matrix](warehouse-parity.md)** for the per-capability
+  proven/believed/bounded breakdown, which paths are still sampled or depth-capped,
+  the supported time types per dialect, and the UTC / Monday-week bucket contract
+  every adapter must honor.
+- **Dialect awareness** (`core/adapters/measure_validator`) centralizes identifier
+  quoting, string/number/timestamp literals and a pre-flight `lint_dialect_sql`
+  check per `SqlDialect`, so a query that provably cannot resolve on the selected
+  warehouse is rejected at preview time rather than inside a worker. The lint runs
+  *after* the read-only gate and can only reject more, never admit more.
 - **Analyzers** (`core/analyzers`) hold the scan, anomaly, and drift logic.
   (Both live in the shared `core` kernel — see the Backend section — so the
   request path can reuse them without importing the worker package.)

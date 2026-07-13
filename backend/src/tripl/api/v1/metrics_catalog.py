@@ -8,6 +8,8 @@ from tripl.api.deps import EditorUserDep, SessionDep, get_editor_user
 from tripl.models.domain_enums import MetricKind, MetricStatus
 from tripl.models.metric_definition import MetricDefinition
 from tripl.schemas.metric_definition import (
+    FactOperand,
+    FactOperandPreviewResponse,
     MetricCollectNowResponse,
     MetricDefinitionBulkUpdate,
     MetricDefinitionCreate,
@@ -114,6 +116,29 @@ async def preview_metric_sql(
     a 404.
     """
     return await metric_preview_service.preview_sql_metric(session, slug, data)
+
+
+@router.post(
+    "/fact-preview",
+    response_model=FactOperandPreviewResponse,
+    dependencies=_editor_required,
+)
+async def preview_fact_operand(
+    session: SessionDep,
+    slug: str,
+    data: FactOperand,
+) -> FactOperandPreviewResponse:
+    """Stateless dry-run of ONE fact operand's row filter (editor-gated).
+
+    The body is the operand a save would send. Its filters are compiled by the
+    worker's own resolver for the fact table's data-source dialect and the
+    resulting query is executed with a 1-row cap over a bounded recent window;
+    nothing is persisted. Expected user mistakes — an unknown named filter, SQL
+    the warehouse rejects, a measure column the filtered query does not project —
+    return 200 with ``error`` set so the filter editor can render them inline.
+    An unknown project or fact table is a 404.
+    """
+    return await metric_preview_service.preview_fact_operand(session, slug, data)
 
 
 @router.patch(

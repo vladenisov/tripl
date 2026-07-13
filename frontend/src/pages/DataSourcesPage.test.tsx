@@ -18,12 +18,62 @@ const DATA_SOURCE: DataSource = {
   password_set: false,
   timeout_seconds: null,
   json_path_discovery: null,
-  extra_params: null,
+  connection_settings: {
+    location: null,
+    maximum_bytes_billed: null,
+    dataset_allowlist: null,
+    sslmode: null,
+    sslrootcert: null,
+    sslcert: null,
+    search_path: null,
+    sslkey_set: false,
+  },
   last_test_at: null,
   last_test_status: null,
   last_test_message: null,
   created_at: '2026-04-01T09:00:00Z',
   updated_at: '2026-04-10T09:00:00Z',
+}
+
+const BIGQUERY_SOURCE: DataSource = {
+  ...DATA_SOURCE,
+  id: 'ds-bq',
+  name: 'Warehouse BQ',
+  db_type: 'bigquery',
+  // A BigQuery source stores the GCP project in `host` and the default dataset
+  // in `database_name`; `port`/`username` are meaningless (the adapter deletes
+  // them) but a row still carries whatever the create call defaulted them to.
+  host: 'my-gcp-project',
+  port: 8123,
+  database_name: 'analytics',
+  username: '',
+  password_set: true,
+  connection_settings: {
+    ...DATA_SOURCE.connection_settings,
+    location: 'EU',
+    maximum_bytes_billed: 5_000_000,
+    dataset_allowlist: ['analytics', 'marts'],
+  },
+}
+
+const POSTGRES_SOURCE: DataSource = {
+  ...DATA_SOURCE,
+  id: 'ds-pg',
+  name: 'Warehouse PG',
+  db_type: 'postgres',
+  host: 'pg.example.com',
+  port: 5432,
+  username: 'reader',
+  password_set: true,
+  timeout_seconds: 90,
+  connection_settings: {
+    ...DATA_SOURCE.connection_settings,
+    sslmode: 'verify-full',
+    sslrootcert: '-----BEGIN CERTIFICATE-----ca',
+    sslcert: '-----BEGIN CERTIFICATE-----client',
+    search_path: 'public, analytics',
+    sslkey_set: true,
+  },
 }
 
 function jsonResponse(data: unknown, status = 200) {
@@ -44,6 +94,29 @@ function listFetchMock(sources: DataSource[]) {
 
     if (url.endsWith('/api/v1/data-sources')) {
       return Promise.resolve(jsonResponse(sources))
+    }
+
+    return Promise.reject(new Error(`Unexpected request: ${url}`))
+  }
+}
+
+/** Lists `source`, and captures the body of the PATCH the edit dialog sends for it. */
+function editFetchMock(source: DataSource, onPatch: (payload: Record<string, unknown>) => void) {
+  return (input: RequestInfo | URL, init?: RequestInit) => {
+    const url =
+      typeof input === 'string'
+        ? input
+        : input instanceof URL
+          ? input.toString()
+          : input.url
+
+    if (url.endsWith('/api/v1/data-sources') && !init?.method) {
+      return Promise.resolve(jsonResponse([source]))
+    }
+
+    if (url.endsWith(`/api/v1/data-sources/${source.id}`) && init?.method === 'PATCH') {
+      onPatch(JSON.parse(String(init.body)) as Record<string, unknown>)
+      return Promise.resolve(jsonResponse(source))
     }
 
     return Promise.reject(new Error(`Unexpected request: ${url}`))
@@ -491,6 +564,165 @@ describe('DataSourcesPage', () => {
       expect(postPayload).toBeDefined()
     })
     expect(postPayload).not.toHaveProperty('json_path_discovery')
+  })
+
+  it('edits a BigQuery source as project / dataset / key — never as host, port or username', async () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(listFetchMock([BIGQUERY_SOURCE]))
+
+    renderDataSourcesPage('/settings/data-sources/ds-bq', 'owner')
+
+    expect(await screen.findByRole('dialog', { name: 'Edit data source' })).toBeInTheDocument()
+
+    // The BigQuery vocabulary, matching the create dialog.
+    expect(screen.getByLabelText('Project ID')).toHaveValue('my-gcp-project')
+    expect(screen.getByLabelText('Default dataset')).toHaveValue('analytics')
+
+    // The service-account key is a JSON document, so it needs a textarea — not
+    // the single-line type=password input the edit dialog used to cram it into.
+    const key = screen.getByLabelText('Service account JSON')
+    expect(key.tagName).toBe('TEXTAREA')
+
+    // None of these exist for BigQuery: the adapter deletes port and username.
+    expect(screen.queryByLabelText('Host')).not.toBeInTheDocument()
+    expect(screen.queryByLabelText('Port')).not.toBeInTheDocument()
+    expect(screen.queryByLabelText('Username')).not.toBeInTheDocument()
+    expect(screen.queryByLabelText('Password')).not.toBeInTheDocument()
+    // ClickHouse-only control.
+    expect(screen.queryByLabelText('JSON path discovery')).not.toBeInTheDocument()
+
+    // The BigQuery connection settings and the (universal) timeout are still there.
+    expect(screen.getByLabelText('Location')).toHaveValue('EU')
+    expect(screen.getByLabelText('Max billed bytes')).toHaveValue(5_000_000)
+    expect(screen.getByLabelText('Dataset allowlist')).toHaveValue('analytics, marts')
+    expect(screen.getByLabelText('Timeout, s')).toBeInTheDocument()
+  })
+
+  it('never pre-fills the BigQuery key and keeps the stored one when the form is untouched', async () => {
+    let patchPayload: Record<string, unknown> | undefined
+
+    vi.spyOn(globalThis, 'fetch').mockImplementation(
+      editFetchMock(BIGQUERY_SOURCE, (payload) => { patchPayload = payload }),
+    )
+
+    renderDataSourcesPage('/settings/data-sources/ds-bq', 'owner')
+
+    expect(await screen.findByRole('dialog', { name: 'Edit data source' })).toBeInTheDocument()
+
+    // The API returns `password_set`, never the key itself — so the field is
+    // empty and the form says so rather than echoing a fake secret.
+    expect(screen.getByLabelText('Service account JSON')).toHaveValue('')
+    expect(screen.getByText(/Service account key: set/)).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+
+    await waitFor(() => {
+      expect(patchPayload).toBeDefined()
+    })
+    // An untouched secret is not sent at all — an omitted password keeps the stored one.
+    expect(patchPayload).not.toHaveProperty('password')
+    // And the fields BigQuery has no concept of are not written back either.
+    expect(patchPayload).not.toHaveProperty('port')
+    expect(patchPayload).not.toHaveProperty('username')
+    expect(patchPayload?.host).toBe('my-gcp-project')
+    expect(patchPayload?.database_name).toBe('analytics')
+  })
+
+  it('sends a new BigQuery service account key only once the operator types one', async () => {
+    let patchPayload: Record<string, unknown> | undefined
+
+    vi.spyOn(globalThis, 'fetch').mockImplementation(
+      editFetchMock(BIGQUERY_SOURCE, (payload) => { patchPayload = payload }),
+    )
+
+    renderDataSourcesPage('/settings/data-sources/ds-bq', 'owner')
+
+    expect(await screen.findByRole('dialog', { name: 'Edit data source' })).toBeInTheDocument()
+    fireEvent.change(screen.getByLabelText('Service account JSON'), {
+      target: { value: '{"type":"service_account","private_key":"rotated"}' },
+    })
+
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+
+    await waitFor(() => {
+      expect(patchPayload?.password).toBe('{"type":"service_account","private_key":"rotated"}')
+    })
+  })
+
+  it('shows a PostgreSQL source its TLS settings, search path and timeout on edit', async () => {
+    let patchPayload: Record<string, unknown> | undefined
+
+    vi.spyOn(globalThis, 'fetch').mockImplementation(
+      editFetchMock(POSTGRES_SOURCE, (payload) => { patchPayload = payload }),
+    )
+
+    renderDataSourcesPage('/settings/data-sources/ds-pg', 'owner')
+
+    expect(await screen.findByRole('dialog', { name: 'Edit data source' })).toBeInTheDocument()
+
+    // PostgreSQL keeps the host/port/username triple — it really has one.
+    expect(screen.getByLabelText('Host')).toHaveValue('pg.example.com')
+    expect(screen.getByLabelText('Port')).toHaveValue(5432)
+    expect(screen.getByLabelText('Username')).toHaveValue('reader')
+    expect(screen.getByLabelText('Timeout, s')).toHaveValue(90)
+    expect(screen.queryByLabelText('JSON path discovery')).not.toBeInTheDocument()
+    expect(screen.queryByLabelText('Project ID')).not.toBeInTheDocument()
+
+    // The TLS settings, which the edit dialog must show for PostgreSQL.
+    expect(screen.getByLabelText('SSL mode')).toHaveValue('verify-full')
+    expect(screen.getByLabelText('CA certificate')).toHaveValue('-----BEGIN CERTIFICATE-----ca')
+    expect(screen.getByLabelText('Client certificate')).toHaveValue(
+      '-----BEGIN CERTIFICATE-----client',
+    )
+    expect(screen.getByLabelText('Search path')).toHaveValue('public, analytics')
+
+    // Both write-only secrets come back empty, with a set/not-set indicator.
+    expect(screen.getByLabelText('Password')).toHaveValue('')
+    expect(screen.getByText(/Password: set/)).toBeInTheDocument()
+    expect(screen.getByLabelText('Client private key')).toHaveValue('')
+    expect(screen.getByText('Remove the stored client private key')).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+
+    await waitFor(() => {
+      expect(patchPayload).toBeDefined()
+    })
+    // Neither secret is echoed back when it was left untouched.
+    expect(patchPayload).not.toHaveProperty('password')
+    expect(patchPayload?.connection_settings).not.toHaveProperty('sslkey')
+    expect(patchPayload?.port).toBe(5432)
+    expect(patchPayload?.connection_settings).toMatchObject({
+      sslmode: 'verify-full',
+      search_path: 'public, analytics',
+    })
+  })
+
+  it('sends a new PostgreSQL password only once the operator types one', async () => {
+    let patchPayload: Record<string, unknown> | undefined
+
+    vi.spyOn(globalThis, 'fetch').mockImplementation(
+      editFetchMock(POSTGRES_SOURCE, (payload) => { patchPayload = payload }),
+    )
+
+    renderDataSourcesPage('/settings/data-sources/ds-pg', 'owner')
+
+    expect(await screen.findByRole('dialog', { name: 'Edit data source' })).toBeInTheDocument()
+    fireEvent.change(screen.getByLabelText('Password'), { target: { value: 'rotated-secret' } })
+
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+
+    await waitFor(() => {
+      expect(patchPayload?.password).toBe('rotated-secret')
+    })
+  })
+
+  it('summarises a BigQuery source as project/dataset, without a meaningless port', async () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(listFetchMock([BIGQUERY_SOURCE]))
+
+    renderDataSourcesPage('/settings/data-sources', 'owner')
+
+    expect(await screen.findByText('Warehouse BQ')).toBeInTheDocument()
+    expect(screen.getByText('my-gcp-project/analytics')).toBeInTheDocument()
+    expect(screen.queryByText('my-gcp-project:8123/analytics')).not.toBeInTheDocument()
   })
 
   it('hides inline recovery actions from non-owners on a failed source', async () => {
