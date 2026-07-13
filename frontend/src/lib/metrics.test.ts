@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { EventMetricPoint } from '@/types'
 import { aggregateMetricPoints, defaultGranularityForRange, getBucketStart } from './metrics'
 
@@ -33,6 +33,36 @@ describe('defaultGranularityForRange', () => {
 })
 
 describe('getBucketStart', () => {
+  it('floors to the start of the UTC 15-minute bucket', () => {
+    // Every backend interval must have a granularity that matches it. A 15m metric
+    // used to chart under "Hours", naming the axis after a bucket width the data
+    // does not have (tripl-64n8.15).
+    expect(getBucketStart('2026-06-10T13:47:31.500Z', '15min'))
+      .toBe('2026-06-10T13:45:00.000Z')
+    expect(getBucketStart('2026-06-10T13:00:00.000Z', '15min'))
+      .toBe('2026-06-10T13:00:00.000Z')
+    expect(getBucketStart('2026-06-10T13:14:59.999Z', '15min'))
+      .toBe('2026-06-10T13:00:00.000Z')
+  })
+
+  it('keeps the four 15-minute buckets of an hour distinct', () => {
+    // The whole point of the granularity: they must not collapse onto one bucket.
+    const quarters = ['13:00', '13:15', '13:30', '13:45'].map((hm) =>
+      getBucketStart(`2026-06-10T${hm}:07Z`, '15min'),
+    )
+    expect(new Set(quarters).size).toBe(4)
+  })
+
+  it('floors to the start of the UTC 6-hour bucket', () => {
+    // 6h divides a UTC day evenly, so the epoch grid lands on 00/06/12/18.
+    expect(getBucketStart('2026-06-10T13:47:31.500Z', '6h'))
+      .toBe('2026-06-10T12:00:00.000Z')
+    expect(getBucketStart('2026-06-10T05:59:59.999Z', '6h'))
+      .toBe('2026-06-10T00:00:00.000Z')
+    expect(getBucketStart('2026-06-10T18:00:00.000Z', '6h'))
+      .toBe('2026-06-10T18:00:00.000Z')
+  })
+
   it('floors to the start of the UTC hour', () => {
     expect(getBucketStart('2026-06-10T13:47:31.500Z', 'hour'))
       .toBe('2026-06-10T13:00:00.000Z')
@@ -48,32 +78,167 @@ describe('getBucketStart', () => {
       .toBe('2026-06-01T00:00:00.000Z')
   })
 
-  // Weekly buckets anchor to the Unix epoch (1970-01-01, a Thursday) on a
-  // fixed 7-day grid, matching the backend toStartOfInterval/date_bin stores.
-  // Every week boundary therefore lands on a Thursday at UTC midnight.
-  it('snaps to the epoch-anchored Thursday that starts the week', () => {
-    // 2026-06-08 is a Monday -> back to Thursday 2026-06-04.
-    expect(getBucketStart('2026-06-08T10:00:00Z', 'week'))
-      .toBe('2026-06-04T00:00:00.000Z')
+  // Buckets are half-open [start, next): a timestamp exactly on a boundary
+  // belongs to the bucket it opens, never to the one it closes. Matches the
+  // window contract in backend/src/tripl/core/bucketing.py.
+  it('keeps a timestamp exactly on a boundary in the bucket it opens', () => {
+    expect(getBucketStart('2026-06-10T13:00:00.000Z', 'hour'))
+      .toBe('2026-06-10T13:00:00.000Z')
+    expect(getBucketStart('2026-06-10T00:00:00.000Z', 'day'))
+      .toBe('2026-06-10T00:00:00.000Z')
+    // 2026-06-08 is a Monday — the start of its own week bucket.
+    expect(getBucketStart('2026-06-08T00:00:00.000Z', 'week'))
+      .toBe('2026-06-08T00:00:00.000Z')
+    expect(getBucketStart('2026-06-01T00:00:00.000Z', 'month'))
+      .toBe('2026-06-01T00:00:00.000Z')
   })
 
-  it('rolls a mid-week day back to the epoch-anchored Thursday', () => {
-    // 2026-06-10 is a Wednesday -> back to Thursday 2026-06-04.
+  it('puts the last millisecond of a bucket in that bucket, not the next', () => {
+    expect(getBucketStart('2026-06-10T13:59:59.999Z', 'hour'))
+      .toBe('2026-06-10T13:00:00.000Z')
+    expect(getBucketStart('2026-06-10T23:59:59.999Z', 'day'))
+      .toBe('2026-06-10T00:00:00.000Z')
+    // Sunday 2026-06-14 23:59:59.999 still belongs to the Monday 06-08 week.
+    expect(getBucketStart('2026-06-14T23:59:59.999Z', 'week'))
+      .toBe('2026-06-08T00:00:00.000Z')
+  })
+
+  // Weeks START ON MONDAY, anchored at 1970-01-05 (the first Monday of the
+  // epoch) — see WEEK_ORIGIN in backend/src/tripl/core/bucketing.py. Binning
+  // straight off the epoch lands weeks on a THURSDAY (1970-01-01 was one),
+  // which is exactly the bug this suite now guards (tripl-64n8.2).
+  it('snaps a week bucket back to Monday', () => {
+    // 2026-06-10 is a Wednesday -> back to Monday 2026-06-08.
     expect(getBucketStart('2026-06-10T23:59:59Z', 'week'))
-      .toBe('2026-06-04T00:00:00.000Z')
+      .toBe('2026-06-08T00:00:00.000Z')
   })
 
-  it('starts a new week on the grid Thursday (2026-06-11)', () => {
-    // 2026-06-14 is a Sunday -> back to Thursday 2026-06-11, the start of the
-    // next 7-day grid cell after 2026-06-04.
+  it('keeps Sunday in the week its Monday opened', () => {
+    // 2026-06-14 is a Sunday -> back to Monday 2026-06-08, NOT forward.
     expect(getBucketStart('2026-06-14T12:00:00Z', 'week'))
-      .toBe('2026-06-11T00:00:00.000Z')
+      .toBe('2026-06-08T00:00:00.000Z')
   })
 
-  it('crosses a month boundary when the grid Thursday is in the previous month', () => {
-    // 2026-07-01 is a Wednesday -> back to Thursday 2026-06-25.
+  it('starts a new week bucket on the following Monday', () => {
+    // 2026-06-15 is the next Monday -> opens its own bucket.
+    expect(getBucketStart('2026-06-15T00:00:00Z', 'week'))
+      .toBe('2026-06-15T00:00:00.000Z')
+  })
+
+  it('crosses a month boundary when the week Monday is in the previous month', () => {
+    // 2026-07-01 is a Wednesday -> back to Monday 2026-06-29.
     expect(getBucketStart('2026-07-01T00:00:00Z', 'week'))
-      .toBe('2026-06-25T00:00:00.000Z')
+      .toBe('2026-06-29T00:00:00.000Z')
+  })
+
+  it('lands every week bucket on a Monday across a full year of samples', () => {
+    // The regression that started this: an epoch-anchored 7-day grid puts every
+    // boundary on a Thursday. Sweep a year of hourly-ish samples and assert the
+    // floor is always a Monday at UTC midnight.
+    const start = Date.UTC(2026, 0, 1)
+    for (let hours = 0; hours < 365 * 24; hours += 7) {
+      const sample = new Date(start + hours * 60 * 60 * 1000).toISOString()
+      const bucket = new Date(getBucketStart(sample, 'week'))
+      expect(bucket.getUTCDay()).toBe(1) // 1 = Monday
+      expect(bucket.getUTCHours()).toBe(0)
+      expect(bucket.getUTCMinutes()).toBe(0)
+      expect(bucket.getUTCSeconds()).toBe(0)
+      expect(bucket.getUTCMilliseconds()).toBe(0)
+      // Half-open: the bucket never starts after the sample it contains.
+      expect(bucket.getTime()).toBeLessThanOrEqual(Date.parse(sample))
+    }
+  })
+})
+
+/**
+ * The bucket a point lands in must be a property of the UTC instant alone. If
+ * any flooring reaches for local-time date math (getDate/getHours/setHours), a
+ * viewer in UTC+14 buckets a timestamp a day away from the one the warehouse
+ * computed and stored — the chart would then draw an anomaly against the wrong
+ * bucket. Node re-reads `process.env.TZ` on every Date operation, so stubbing it
+ * exercises the real regression rather than trusting CI to run under UTC.
+ */
+describe('getBucketStart is timezone-independent', () => {
+  const ZONES = [
+    'UTC',
+    'Pacific/Kiritimati', // UTC+14: local date runs AHEAD of UTC
+    'America/Anchorage', // UTC-9: local date runs BEHIND UTC
+    'Asia/Kathmandu', // UTC+5:45: not even a whole-hour offset
+  ]
+
+  afterEach(() => {
+    vi.unstubAllEnvs()
+  })
+
+  function inZone<T>(timeZone: string, run: () => T): T {
+    vi.stubEnv('TZ', timeZone)
+    try {
+      return run()
+    } finally {
+      vi.unstubAllEnvs()
+    }
+  }
+
+  // Instants deliberately parked next to a UTC midnight, where the local
+  // calendar date differs from the UTC one in at least one zone above.
+  const CASES: { instant: string; hour: string; day: string; week: string; month: string }[] = [
+    {
+      // Late Sunday UTC: already Monday in Kiritimati.
+      instant: '2026-06-07T23:30:00Z',
+      hour: '2026-06-07T23:00:00.000Z',
+      day: '2026-06-07T00:00:00.000Z',
+      week: '2026-06-01T00:00:00.000Z',
+      month: '2026-06-01T00:00:00.000Z',
+    },
+    {
+      // Just past Monday UTC midnight: still Sunday in Anchorage.
+      instant: '2026-06-08T00:30:00Z',
+      hour: '2026-06-08T00:00:00.000Z',
+      day: '2026-06-08T00:00:00.000Z',
+      week: '2026-06-08T00:00:00.000Z',
+      month: '2026-06-01T00:00:00.000Z',
+    },
+    {
+      // First instant of a UTC month, which is still the previous month locally
+      // west of Greenwich.
+      instant: '2026-07-01T00:00:00Z',
+      hour: '2026-07-01T00:00:00.000Z',
+      day: '2026-07-01T00:00:00.000Z',
+      week: '2026-06-29T00:00:00.000Z',
+      month: '2026-07-01T00:00:00.000Z',
+    },
+  ]
+
+  for (const timeZone of ZONES) {
+    it(`floors identically under ${timeZone}`, () => {
+      inZone(timeZone, () => {
+        for (const expected of CASES) {
+          expect(getBucketStart(expected.instant, 'hour')).toBe(expected.hour)
+          expect(getBucketStart(expected.instant, 'day')).toBe(expected.day)
+          expect(getBucketStart(expected.instant, 'week')).toBe(expected.week)
+          expect(getBucketStart(expected.instant, 'month')).toBe(expected.month)
+        }
+      })
+    })
+  }
+
+  it('groups the same points into the same buckets in every zone', () => {
+    // Two hours that straddle UTC midnight: one calendar day in UTC, but two
+    // different local days in both Kiritimati and Anchorage.
+    const points = [
+      point({ bucket: '2026-06-08T00:30:00Z', count: 3 }),
+      point({ bucket: '2026-06-08T23:30:00Z', count: 4 }),
+    ]
+
+    const byZone = ZONES.map(timeZone =>
+      inZone(timeZone, () => aggregateMetricPoints(points, 'day')),
+    )
+
+    for (const result of byZone) {
+      expect(result).toHaveLength(1)
+      expect(result[0].bucket).toBe('2026-06-08T00:00:00.000Z')
+      expect(result[0].count).toBe(7)
+    }
   })
 })
 

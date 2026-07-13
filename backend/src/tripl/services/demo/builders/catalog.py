@@ -243,7 +243,7 @@ def _build_adapter_derived_values(
     and the seeded distinct-sessions SQL read back through ``get_preview_rows``.
     """
     day = timedelta(days=1)
-    ch_interval = get_interval(ScanInterval.d1.value).ch_interval
+    interval_code = get_interval(ScanInterval.d1.value).code
     end_day = ctx.now.replace(hour=0, minute=0, second=0, microsecond=0)
     time_from = end_day - day * _DEMO_METRIC_HISTORY_DAYS
     time_to = end_day + day
@@ -259,7 +259,7 @@ def _build_adapter_derived_values(
         )
     ]
     _revenue_cols, revenue_rows = adapter.get_time_bucketed_multi_aggregate(
-        _ORDERS_SQL, "created_at", ch_interval, revenue_specs, time_from, time_to
+        _ORDERS_SQL, "created_at", interval_code, revenue_specs, time_from, time_to
     )
     for bucket, revenue in revenue_rows:
         if revenue is None:
@@ -280,7 +280,7 @@ def _build_adapter_derived_values(
         AggregateSpec(key="denominator", aggregation=MetricAggregation.count),
     ]
     _aov_cols, aov_rows = adapter.get_time_bucketed_multi_aggregate(
-        _ORDERS_SQL, "created_at", ch_interval, aov_specs, time_from, time_to
+        _ORDERS_SQL, "created_at", interval_code, aov_specs, time_from, time_to
     )
     for bucket, numerator, denominator in aov_rows:
         if not denominator:

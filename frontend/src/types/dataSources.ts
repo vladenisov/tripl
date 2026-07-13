@@ -19,6 +19,49 @@ export type DataSourceTestStatus = 'success' | 'failed'
 // Ignored by Postgres/BigQuery and does not affect scan-time value extraction.
 export type JsonPathDiscovery = 'all' | 'dynamic'
 
+// psql's sslmode ladder. The backend default for PostgreSQL is 'prefer'.
+export type PostgresSslMode =
+  | 'disable'
+  | 'allow'
+  | 'prefer'
+  | 'require'
+  | 'verify-ca'
+  | 'verify-full'
+
+// Typed, per-warehouse connection settings. The backend validates the payload
+// against the model for the source's db_type: a setting that belongs to another
+// warehouse (or to none) is a 422, not a silently dropped key.
+export interface BigQueryConnectionSettings {
+  location?: string | null
+  maximum_bytes_billed?: number | null
+  dataset_allowlist?: string[] | null
+}
+
+export interface PostgresConnectionSettings {
+  sslmode?: PostgresSslMode | null
+  sslrootcert?: string | null
+  sslcert?: string | null
+  // Write-only: PEM content of the client private key. Never returned by a GET.
+  sslkey?: string | null
+  search_path?: string | null
+}
+
+// ClickHouse and the synthetic warehouse have no connection settings of their own.
+export type ConnectionSettings = BigQueryConnectionSettings | PostgresConnectionSettings
+
+// Read side: the union flattened, with the private key replaced by a boolean.
+// Only the fields applicable to the source's db_type are ever populated.
+export interface ConnectionSettingsResponse {
+  location: string | null
+  maximum_bytes_billed: number | null
+  dataset_allowlist: string[] | null
+  sslmode: PostgresSslMode | null
+  sslrootcert: string | null
+  sslcert: string | null
+  search_path: string | null
+  sslkey_set: boolean
+}
+
 export interface DataSource {
   id: string
   name: string
@@ -31,7 +74,7 @@ export interface DataSource {
   password_set: boolean
   timeout_seconds: number | null
   json_path_discovery: JsonPathDiscovery | null
-  extra_params: Record<string, unknown> | null
+  connection_settings: ConnectionSettingsResponse
   last_test_at: string | null
   last_test_status: DataSourceTestStatus | null
   last_test_message: string | null

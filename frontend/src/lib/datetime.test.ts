@@ -1,9 +1,23 @@
-import { describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { formatDate, formatDateTime, formatIsoDate, formatRelativeTime, formatTimestamp } from './datetime'
 
 // The formatters delegate to Intl/toLocale* with the host's default locale, so
 // we assert on the structured parts (year/month/day, presence of time) that are
 // stable across environments rather than an exact localized string.
+//
+// These formatters render in the viewer's LOCAL zone on purpose — a row's
+// "created" date should read as the user's calendar day, unlike a metric bucket
+// (see lib/metrics.ts), which is a UTC instant fixed by the warehouse. The
+// calendar day of a fixed UTC instant is therefore host-dependent: 10:00Z is
+// already the next day in UTC+14. Pin the zone so the expectations below are
+// deterministic instead of quietly assuming a UTC host (tripl-64n8.2).
+beforeEach(() => {
+  vi.stubEnv('TZ', 'UTC')
+})
+
+afterEach(() => {
+  vi.unstubAllEnvs()
+})
 
 describe('formatDate', () => {
   it('renders the calendar date of a UTC instant', () => {
@@ -36,8 +50,8 @@ describe('formatDate', () => {
 
 describe('formatIsoDate', () => {
   it('renders an unambiguous YYYY-MM-DD date (never US mm/dd/yyyy)', () => {
-    // 10:00 UTC keeps the calendar day stable across the dev/CI host timezones,
-    // so the exact string is deterministic here.
+    // Deterministic because the suite pins TZ=UTC above; the formatter itself
+    // still renders the viewer's local calendar day by design.
     const out = formatIsoDate('2026-07-04T10:00:00Z')
     expect(out).toBe('2026-07-04')
     expect(out).toMatch(/^\d{4}-\d{2}-\d{2}$/)

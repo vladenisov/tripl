@@ -16,6 +16,31 @@ _TO = datetime(2026, 4, 2, 0, 0)
 _ALLOWED = {"time", "event_name", "amount", "user_id"}
 _BASE = "SELECT time, event_name, amount, user_id FROM events"
 
+# Window bounds now carry an explicit +00:00 offset in every dialect (see
+# `tripl.core.bucketing.format_utc_literal`): an offset-less literal is read in the
+# session/column timezone, which shifts the whole window on a non-UTC warehouse.
+_CH_WINDOW = (
+    "WHERE `time` >= parseDateTime64BestEffort('2026-04-01 00:00:00.000000+00:00', 6, 'UTC') "
+    "AND `time` < parseDateTime64BestEffort('2026-04-02 00:00:00.000000+00:00', 6, 'UTC')"
+)
+_PG_WINDOW = (
+    "WHERE \"time\" >= TIMESTAMPTZ '2026-04-01 00:00:00.000000+00:00' "
+    "AND \"time\" < TIMESTAMPTZ '2026-04-02 00:00:00.000000+00:00'"
+)
+_BQ_WINDOW_LOWER = "WHERE `time` >= TIMESTAMP '2026-04-01 00:00:00.000000+00:00'"
+
+# Bucket grids are anchored explicitly: sub-week at the Unix epoch, 1w on Monday.
+_CH_BUCKET_1H = "toStartOfInterval(`time`, INTERVAL 1 HOUR, 'UTC') AS _bucket"
+_CH_BUCKET_1D = "toStartOfInterval(`time`, INTERVAL 1 DAY, 'UTC') AS _bucket"
+_PG_BUCKET_1H = (
+    "date_bin(INTERVAL '1 hours', \"time\", "
+    "TIMESTAMPTZ '1970-01-01 00:00:00.000000+00:00') AS _bucket"
+)
+_BQ_BUCKET_1H = (
+    "TIMESTAMP_BUCKET(`time`, INTERVAL 1 HOUR, "
+    "TIMESTAMP '1970-01-01 00:00:00.000000+00:00') AS _bucket"
+)
+
 
 # --- ClickHouse fakes -------------------------------------------------------
 
@@ -124,11 +149,21 @@ class _BQClient:
         return _BQJob(self.rows)
 
 
-def _bq() -> tuple[BigQueryAdapter, _BQClient]:
+def _bq(time_type: str = "TIMESTAMP") -> tuple[BigQueryAdapter, _BQClient]:
     client = _BQClient()
     adapter = object.__new__(BigQueryAdapter)
     adapter._client = client
     adapter._allowed_columns = set(_ALLOWED)
+    # The bucket function and the window literal are now chosen from the column's
+    # *declared* type, so the fake declares one. Pre-seeding also keeps
+    # `_ensure_column_types` from firing its own `LIMIT 0` schema probe, which would
+    # otherwise land at `client.sql[0]` ahead of the query under test.
+    adapter._column_types = {"time": time_type, "event_name": "STRING", "amount": "FLOAT64"}
+    adapter._struct_paths = {}
+    # BigQuery reports an ARRAY<STRING> column as field_type STRING + mode=REPEATED, so
+    # array-ness lives only in the mode and the adapter has to remember it: a repeated
+    # column can be neither GROUPed BY nor CAST to STRING. None here.
+    adapter._repeated_columns = set()
     return adapter, client
 
 
@@ -153,7 +188,7 @@ def test_clickhouse_aggregate_sql(
     adapter.get_time_bucketed_aggregate(
         _BASE,
         "time",
-        "1 hour",
+        "1h",
         agg,
         measure,
         regular_columns=["event_name"],
@@ -164,10 +199,10 @@ def test_clickhouse_aggregate_sql(
     )
     sql = client.sql[0]
     assert expected in sql
-    assert "toStartOfInterval(`time`, INTERVAL 1 hour) AS _bucket" in sql
+    assert _CH_BUCKET_1H in sql
     assert "`event_name`" in sql
     assert "GROUP BY ALL" in sql
-    assert "WHERE `time` >= '2026-04-01 00:00:00' AND `time` < '2026-04-02 00:00:00'" in sql
+    assert _CH_WINDOW in sql
 
 
 def test_clickhouse_aggregate_breakdown_sql() -> None:
@@ -175,7 +210,7 @@ def test_clickhouse_aggregate_breakdown_sql() -> None:
     adapter.get_time_bucketed_aggregate_breakdown(
         _BASE,
         "time",
-        "1 day",
+        "1d",
         MetricAggregation.sum,
         "amount",
         breakdown_column="event_name",
@@ -187,7 +222,7 @@ def test_clickhouse_aggregate_breakdown_sql() -> None:
     )
     sql = client.sql[0]
     assert "sum(`amount`) AS _value" in sql
-    assert "toStartOfInterval(`time`, INTERVAL 1 day) AS _bucket" in sql
+    assert _CH_BUCKET_1D in sql
     assert "ifNull(toString(`event_name`), '') AS _breakdown_value" in sql
     assert "0 AS _is_other" in sql
     assert "ORDER BY _bucket, _breakdown_value" in sql
@@ -198,7 +233,7 @@ def test_clickhouse_aggregate_breakdown_folds_other_with_limit() -> None:
     adapter.get_time_bucketed_aggregate_breakdown(
         _BASE,
         "time",
-        "1 day",
+        "1d",
         MetricAggregation.sum,
         "amount",
         breakdown_column="event_name",
@@ -221,7 +256,7 @@ def test_clickhouse_aggregate_rejects_unknown_measure() -> None:
         adapter.get_time_bucketed_aggregate(
             _BASE,
             "time",
-            "1 hour",
+            "1h",
             MetricAggregation.sum,
             "revenue",
             regular_columns=["event_name"],
@@ -251,7 +286,7 @@ def test_postgres_aggregate_sql(agg: MetricAggregation, measure: str | None, exp
     adapter.get_time_bucketed_aggregate(
         _BASE,
         "time",
-        "1 hour",
+        "1h",
         agg,
         measure,
         regular_columns=["event_name"],
@@ -262,10 +297,10 @@ def test_postgres_aggregate_sql(agg: MetricAggregation, measure: str | None, exp
     )
     sql = conn.sql[0]
     assert expected in sql
-    assert "date_bin(INTERVAL '1 hour', \"time\", TIMESTAMP 'epoch') AS _bucket" in sql
+    assert _PG_BUCKET_1H in sql
     assert '"event_name"' in sql
     assert "GROUP BY _bucket" in sql
-    assert "WHERE \"time\" >= '2026-04-01 00:00:00' AND \"time\" < '2026-04-02 00:00:00'" in sql
+    assert _PG_WINDOW in sql
 
 
 def test_postgres_aggregate_breakdown_sql() -> None:
@@ -273,7 +308,7 @@ def test_postgres_aggregate_breakdown_sql() -> None:
     adapter.get_time_bucketed_aggregate_breakdown(
         _BASE,
         "time",
-        "1 day",
+        "1d",
         MetricAggregation.count_distinct,
         "user_id",
         breakdown_column="event_name",
@@ -300,7 +335,7 @@ def test_postgres_multi_aggregate_select_shape() -> None:
     col_names, rows = adapter.get_time_bucketed_multi_aggregate(
         _BASE,
         "time",
-        "1 hour",
+        "1h",
         [
             AggregateSpec(key="c", aggregation=MetricAggregation.count),
             AggregateSpec(key="s", aggregation=MetricAggregation.sum, column="amount"),
@@ -316,10 +351,10 @@ def test_postgres_multi_aggregate_select_shape() -> None:
     assert 'count(*) AS "c"' in sql
     assert 'sum("amount") AS "s"' in sql
     assert 'count(DISTINCT "user_id") AS "d"' in sql
-    assert "date_bin(INTERVAL '1 hour', \"time\", TIMESTAMP 'epoch') AS _bucket" in sql
+    assert _PG_BUCKET_1H in sql
     assert "GROUP BY _bucket" in sql
     assert "ORDER BY _bucket" in sql
-    assert "WHERE \"time\" >= '2026-04-01 00:00:00' AND \"time\" < '2026-04-02 00:00:00'" in sql
+    assert _PG_WINDOW in sql
 
 
 def test_postgres_multi_aggregate_conditional_filter() -> None:
@@ -327,7 +362,7 @@ def test_postgres_multi_aggregate_conditional_filter() -> None:
     col_names, _ = adapter.get_time_bucketed_multi_aggregate(
         _BASE,
         "time",
-        "1 day",
+        "1d",
         [
             AggregateSpec(
                 key="paid",
@@ -352,7 +387,7 @@ def test_postgres_multi_aggregate_count_filter() -> None:
     adapter.get_time_bucketed_multi_aggregate(
         _BASE,
         "time",
-        "1 hour",
+        "1h",
         [
             AggregateSpec(
                 key="hits",
@@ -375,7 +410,7 @@ def test_postgres_multi_aggregate_breakdown_select_shape() -> None:
     col_names, rows = adapter.get_time_bucketed_multi_aggregate_breakdown(
         _BASE,
         "time",
-        "1 day",
+        "1d",
         "event_name",
         [
             AggregateSpec(key="c", aggregation=MetricAggregation.count),
@@ -402,7 +437,7 @@ def test_postgres_multi_aggregate_breakdown_folds_other_with_limit() -> None:
     adapter.get_time_bucketed_multi_aggregate_breakdown(
         _BASE,
         "time",
-        "1 day",
+        "1d",
         "event_name",
         [AggregateSpec(key="s", aggregation=MetricAggregation.sum, column="amount")],
         time_from=_FROM,
@@ -421,7 +456,7 @@ def test_postgres_multi_aggregate_rejects_unknown_measure() -> None:
         adapter.get_time_bucketed_multi_aggregate(
             _BASE,
             "time",
-            "1 hour",
+            "1h",
             [AggregateSpec(key="s", aggregation=MetricAggregation.sum, column="revenue")],
             time_from=_FROM,
             time_to=_TO,
@@ -447,7 +482,7 @@ def test_bigquery_aggregate_sql(agg: MetricAggregation, measure: str | None, exp
     adapter.get_time_bucketed_aggregate(
         _BASE,
         "time",
-        "1 hour",
+        "1h",
         agg,
         measure,
         regular_columns=["event_name"],
@@ -458,13 +493,14 @@ def test_bigquery_aggregate_sql(agg: MetricAggregation, measure: str | None, exp
     )
     sql = client.sql[0]
     assert expected in sql
-    assert (
-        "TIMESTAMP_BIN(INTERVAL 1 HOUR, `time`, TIMESTAMP '1970-01-01 00:00:00+00') AS _bucket"
-        in sql
-    )
+    # `TIMESTAMP_BUCKET`, not the old `TIMESTAMP_BIN`: BIN is not a GoogleSQL function
+    # at all, so every bucketed BigQuery query this adapter built used to be a syntax
+    # error. The origin is the Unix epoch, stated rather than defaulted.
+    assert _BQ_BUCKET_1H in sql
+    assert "TIMESTAMP_BIN" not in sql
     assert "`event_name`" in sql
     assert "GROUP BY _bucket" in sql
-    assert "WHERE `time` >= TIMESTAMP '2026-04-01 00:00:00'" in sql
+    assert _BQ_WINDOW_LOWER in sql
 
 
 def test_bigquery_aggregate_breakdown_sql() -> None:
@@ -472,7 +508,7 @@ def test_bigquery_aggregate_breakdown_sql() -> None:
     adapter.get_time_bucketed_aggregate_breakdown(
         _BASE,
         "time",
-        "1 day",
+        "1d",
         MetricAggregation.max,
         "amount",
         breakdown_column="event_name",
@@ -493,13 +529,19 @@ def test_bigquery_aggregate_breakdown_sql() -> None:
 # --- ClickHouse interval validation -----------------------------------------
 
 
-def test_clickhouse_aggregate_rejects_bad_interval() -> None:
+# Intervals are dialect-neutral codes now, so the allowlist *is* the interval table:
+# anything that is not one of the five codes is rejected before it can reach the SQL
+# string. That covers the injection attempt and the plausible-but-unknown unit, and
+# it now also covers raw ClickHouse `INTERVAL` syntax — no caller may hand a dialect
+# fragment to an adapter any more.
+@pytest.mark.parametrize("bad", ["1; DROP TABLE x", "1 fortnight", "1 hour", "1 DAY", "1 month"])
+def test_clickhouse_aggregate_rejects_bad_interval(bad: str) -> None:
     adapter, _ = _ch()
-    with pytest.raises(ValueError, match="Unsupported interval"):
+    with pytest.raises(ValueError, match="Unknown interval code"):
         adapter.get_time_bucketed_aggregate(
             _BASE,
             "time",
-            "1; DROP TABLE x",
+            bad,
             MetricAggregation.sum,
             "amount",
             regular_columns=["event_name"],
@@ -510,13 +552,14 @@ def test_clickhouse_aggregate_rejects_bad_interval() -> None:
         )
 
 
-def test_clickhouse_aggregate_breakdown_rejects_bad_interval() -> None:
+@pytest.mark.parametrize("bad", ["1; DROP TABLE x", "1 fortnight", "1 day"])
+def test_clickhouse_aggregate_breakdown_rejects_bad_interval(bad: str) -> None:
     adapter, _ = _ch()
-    with pytest.raises(ValueError, match="Unsupported interval"):
+    with pytest.raises(ValueError, match="Unknown interval code"):
         adapter.get_time_bucketed_aggregate_breakdown(
             _BASE,
             "time",
-            "1 fortnight",
+            bad,
             MetricAggregation.sum,
             "amount",
             breakdown_column="event_name",
@@ -538,7 +581,7 @@ def test_postgres_aggregate_breakdown_folds_other_with_limit() -> None:
     adapter.get_time_bucketed_aggregate_breakdown(
         _BASE,
         "time",
-        "1 day",
+        "1d",
         MetricAggregation.sum,
         "amount",
         breakdown_column="event_name",
@@ -562,7 +605,7 @@ def test_bigquery_aggregate_breakdown_folds_other_with_limit() -> None:
     adapter.get_time_bucketed_aggregate_breakdown(
         _BASE,
         "time",
-        "1 day",
+        "1d",
         MetricAggregation.max,
         "amount",
         breakdown_column="event_name",

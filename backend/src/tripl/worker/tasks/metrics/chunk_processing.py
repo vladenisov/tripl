@@ -110,7 +110,7 @@ def process_chunk(
     *,
     adapter: BaseAdapter,
     config: ScanConfig,
-    interval_ch_interval: str,
+    interval_code: str,
     interval_delta: timedelta,
     regular_cols: list[str],
     json_cols: list[str],
@@ -138,7 +138,7 @@ def process_chunk(
     _col_names, json_value_names, rows = adapter.get_time_bucketed_counts(
         config.base_query,
         config.time_column,
-        interval_ch_interval,
+        interval_code,
         regular_cols,
         json_cols,
         json_value_path_map,
@@ -301,7 +301,7 @@ def process_chunk(
     ) = _collect_metric_breakdown_rows(
         adapter=adapter,
         config=config,
-        interval_ch_interval=interval_ch_interval,
+        interval_code=interval_code,
         regular_cols=regular_cols,
         json_cols=json_cols,
         json_value_path_map=json_value_path_map,
@@ -353,7 +353,7 @@ def process_chunk(
     ) = _collect_distribution_drift_rows(
         adapter=adapter,
         config=config,
-        interval_ch_interval=interval_ch_interval,
+        interval_code=interval_code,
         interval_delta=interval_delta,
         regular_cols=regular_cols,
         json_cols=json_cols,

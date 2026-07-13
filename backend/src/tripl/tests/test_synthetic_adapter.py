@@ -158,7 +158,7 @@ def test_time_bucketed_counts_sum_to_windowed_rows() -> None:
     adapter = _adapter()
     tf, tt = ANCHOR - timedelta(days=3), ANCHOR
     col_names, json_names, rows = adapter.get_time_bucketed_counts(
-        "SELECT * FROM events", "event_time", "1 DAY", ["event_type"], [], None, tf, tt
+        "SELECT * FROM events", "event_time", "1d", ["event_type"], [], None, tf, tt
     )
     assert col_names == ["event_type"]
     assert json_names == []
@@ -175,7 +175,7 @@ def test_bucketed_breakdown_counts_topn_folds_other() -> None:
     _cols, _json, rows = adapter.get_time_bucketed_breakdown_counts(
         "SELECT * FROM events",
         "event_time",
-        "1 DAY",
+        "1d",
         "platform",
         [],
         [],
@@ -198,7 +198,7 @@ def test_bucketed_breakdown_counts_multi_covers_each_column() -> None:
     _cols, _json, rows = adapter.get_time_bucketed_breakdown_counts_multi(
         "SELECT * FROM events",
         "event_time",
-        "1 DAY",
+        "1d",
         ["platform", "event_type"],
         [],
         [],
@@ -227,7 +227,7 @@ def test_bucketed_aggregate_sum_matches_manual() -> None:
     adapter = _adapter()
     tf, tt = ANCHOR - timedelta(days=6), ANCHOR
     _cols, _json, rows = adapter.get_time_bucketed_aggregate(
-        "SELECT * FROM orders", "created_at", "1 DAY", MA.sum, "amount", [], [], None, tf, tt
+        "SELECT * FROM orders", "created_at", "1d", MA.sum, "amount", [], [], None, tf, tt
     )
     got = {bucket: value for bucket, value in rows}
     manual: dict[datetime, float] = {}
@@ -244,12 +244,12 @@ def test_bucketed_aggregate_count_avg_and_count_distinct() -> None:
     orders = _orders_in(adapter, tf, tt)
 
     _c, _j, count_rows = adapter.get_time_bucketed_aggregate(
-        "SELECT * FROM orders", "created_at", "1 DAY", MA.count, None, [], [], None, tf, tt
+        "SELECT * FROM orders", "created_at", "1d", MA.count, None, [], [], None, tf, tt
     )
     assert sum(r[-1] for r in count_rows) == len(orders)
 
     _c, _j, avg_rows = adapter.get_time_bucketed_aggregate(
-        "SELECT * FROM orders", "created_at", "1 DAY", MA.avg, "amount", [], [], None, tf, tt
+        "SELECT * FROM orders", "created_at", "1d", MA.avg, "amount", [], [], None, tf, tt
     )
     for bucket, value in avg_rows:
         day_orders = [r["amount"] for r in orders if _day(r["created_at"]) == bucket]
@@ -258,7 +258,7 @@ def test_bucketed_aggregate_count_avg_and_count_distinct() -> None:
     _c, _j, distinct_rows = adapter.get_time_bucketed_aggregate(
         "SELECT * FROM orders",
         "created_at",
-        "1 DAY",
+        "1d",
         MA.count_distinct,
         "user_id",
         [],
@@ -278,7 +278,7 @@ def test_aggregate_breakdown_folds_other_and_sums() -> None:
     _c, _j, rows = adapter.get_time_bucketed_aggregate_breakdown(
         "SELECT * FROM orders",
         "created_at",
-        "1 DAY",
+        "1d",
         MA.sum,
         "amount",
         "country",
@@ -314,7 +314,7 @@ def test_multi_aggregate_one_scan_many_specs() -> None:
         AggregateSpec(key="cnt", aggregation=MA.count),
     ]
     col_names, rows = adapter.get_time_bucketed_multi_aggregate(
-        "SELECT * FROM orders", "created_at", "1 DAY", specs, tf, tt
+        "SELECT * FROM orders", "created_at", "1d", specs, tf, tt
     )
     assert col_names == ["bucket", "rev", "cnt"]
     for bucket, rev, cnt in rows:
@@ -333,7 +333,7 @@ def test_multi_aggregate_breakdown_with_filter_and_null_sentinel() -> None:
         AggregateSpec(key="cnt", aggregation=MA.count),
     ]
     col_names, rows = adapter.get_time_bucketed_multi_aggregate_breakdown(
-        "SELECT * FROM orders", "created_at", "1 DAY", "country", specs, tf, tt, values_limit=4
+        "SELECT * FROM orders", "created_at", "1d", "country", specs, tf, tt, values_limit=4
     )
     assert col_names == ["bucket", "breakdown_value", "is_other", "rev", "cnt"]
     # 'Other' folds the countries outside the top (values_limit - 1) by row count.
@@ -368,7 +368,7 @@ def test_unsupported_filter_sql_raises_capability_error() -> None:
     ]
     with pytest.raises(SyntheticCapabilityError):
         adapter.get_time_bucketed_multi_aggregate(
-            "SELECT * FROM orders", "created_at", "1 DAY", specs, tf, tt
+            "SELECT * FROM orders", "created_at", "1d", specs, tf, tt
         )
 
 
@@ -411,7 +411,7 @@ def test_determinism_same_seed_and_anchor_are_identical() -> None:
     assert a._orders == b._orders
     # Identical method output too, not just identical raw data.
     tf, tt = ANCHOR - timedelta(days=5), ANCHOR
-    args = ("SELECT * FROM orders", "created_at", "1 DAY", MA.sum, "amount", [], [], None, tf, tt)
+    args = ("SELECT * FROM orders", "created_at", "1d", MA.sum, "amount", [], [], None, tf, tt)
     assert a.get_time_bucketed_aggregate(*args) == b.get_time_bucketed_aggregate(*args)
 
 
@@ -457,5 +457,5 @@ def test_unknown_column_is_rejected() -> None:
     tf, tt = ANCHOR - timedelta(days=2), ANCHOR
     with pytest.raises(ValueError, match="not found"):
         adapter.get_time_bucketed_counts(
-            "SELECT * FROM events", "event_time", "1 DAY", ["nope"], [], None, tf, tt
+            "SELECT * FROM events", "event_time", "1d", ["nope"], [], None, tf, tt
         )

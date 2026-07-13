@@ -621,7 +621,7 @@ def collect_metrics(
                 session,
                 adapter=adapter,
                 config=config,
-                interval_ch_interval=interval_spec.ch_interval,
+                interval_code=interval_spec.code,
                 interval_delta=delta,
                 regular_cols=regular_cols,
                 json_cols=json_cols,

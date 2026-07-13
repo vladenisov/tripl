@@ -1,5 +1,7 @@
 import { api } from './client'
 import type {
+  FactOperandPreviewRequest,
+  FactOperandPreviewResponse,
   MetricBreakdownsResponse,
   MetricCollectNowResponse,
   MetricCreate,
@@ -79,6 +81,17 @@ export const metricsCatalogApi = {
    */
   preview: (slug: string, data: MetricPreviewRequest) =>
     api.post<MetricPreviewResponse>(`/projects/${slug}/metrics/preview`, data),
+
+  /**
+   * Stateless dry-run of ONE fact operand's row filters: the backend compiles
+   * them with the collector's own resolver for the fact table's dialect and
+   * executes the result (1-row cap). Expected user mistakes (unknown named
+   * filter, SQL the warehouse rejects, a measure column the filtered query does
+   * not project) come back as 200 with `error` set; an unknown fact table is a
+   * 404.
+   */
+  previewFactOperand: (slug: string, data: FactOperandPreviewRequest) =>
+    api.post<FactOperandPreviewResponse>(`/projects/${slug}/metrics/fact-preview`, data),
 
   bulkUpdate: (slug: string, data: MetricDefinitionBulkUpdate) =>
     api.post<void>(`/projects/${slug}/metrics/bulk-update`, data),
