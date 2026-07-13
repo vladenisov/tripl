@@ -33,7 +33,6 @@ logger = logging.getLogger(__name__)
 
 _IDENTIFIER_RE = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_.]*$")
 _IDENTIFIER_PART_RE = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*$")
-_INTERVAL_RE = re.compile(r"^(\d+)\s+(second|minute|hour|day|week|month)s?$", re.IGNORECASE)
 # GCP project ids allow letters/digits/hyphens; dataset ids allow
 # letters/digits/underscores. Validate the model-derived identifiers before
 # interpolating them into the catalog query as defense-in-depth.
@@ -124,10 +123,24 @@ def _decode_grouped_array(value: object) -> object:
         )
         raise ValueError(msg)
     try:
-        return json.loads(value)
+        decoded = json.loads(value)
     except json.JSONDecodeError as exc:
         msg = f"BigQuery: could not decode array-valued grouped column {value!r}: {exc}"
         raise ValueError(msg) from exc
+
+    # Guard the DECODED type, not merely the input type. `json.loads` will happily
+    # return a dict, a bare string or a number, and any of those flowing out of here
+    # would put a non-list into the json-paths column — which
+    # `cardinality._process_breakdown` tests with `isinstance(paths, (list, tuple))`
+    # and, failing that, reads as ONE path. That is precisely the silent cardinality
+    # corruption this function exists to prevent, so it fails loudly instead.
+    if decoded is not None and not isinstance(decoded, list):
+        msg = (
+            "BigQuery: an array-valued grouped column decoded to "
+            f"{type(decoded).__name__}, not a list: {value!r}"
+        )
+        raise ValueError(msg)
+    return decoded
 
 
 def _walk_struct_fields(

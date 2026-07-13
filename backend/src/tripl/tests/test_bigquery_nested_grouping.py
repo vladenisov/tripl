@@ -469,6 +469,24 @@ def test_decode_grouped_array_rejects_garbage() -> None:
         _decode_grouped_array("not json")
 
 
+@pytest.mark.parametrize("raw", ['{"a":1}', '"a string"', "42", "true"])
+def test_decode_grouped_array_rejects_valid_json_that_is_not_a_list(raw: str) -> None:
+    """Valid JSON is not enough — it has to decode to a LIST.
+
+    ``json.loads`` will cheerfully hand back a dict, a bare string or a number. Any of
+    those reaching the json-paths column defeats the entire point of this function:
+    ``cardinality._process_breakdown`` branches on ``isinstance(paths, (list, tuple))``
+    and, when that is False, reads the value as ONE path — silently corrupting every
+    cardinality count with no error raised. That is the exact failure this decode step
+    exists to prevent, so a non-list has to be loud.
+
+    ``null`` stays allowed — it is how TO_JSON_STRING renders a NULL array — and is
+    covered above.
+    """
+    with pytest.raises(ValueError, match="not a list"):
+        _decode_grouped_array(raw)
+
+
 def test_get_columns_records_repeated_mode() -> None:
     """Array-ness lives in ``mode``, not in the type — so it has to be captured there."""
 
