@@ -9,12 +9,21 @@ from tripl.models.domain_enums import (
     ProjectGenerationStatus,
 )
 from tripl.models.scan_job import ScanJobStatus
+from tripl.semver import (
+    DEFAULT_APP_VERSION_KEEP_RELEASES,
+    MAX_APP_VERSION_KEEP_RELEASES,
+)
 
 
 class ProjectCreate(BaseModel):
     name: str = Field(min_length=1, max_length=255)
     slug: str = Field(min_length=1, max_length=255, pattern=r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
     description: str = ""
+    app_version_keep_releases: int = Field(
+        default=DEFAULT_APP_VERSION_KEEP_RELEASES,
+        ge=1,
+        le=MAX_APP_VERSION_KEEP_RELEASES,
+    )
 
 
 class ProjectUpdate(BaseModel):
@@ -23,6 +32,13 @@ class ProjectUpdate(BaseModel):
         None, min_length=1, max_length=255, pattern=r"^[a-z0-9]+(?:-[a-z0-9]+)*$"
     )
     description: str | None = None
+    # ``int`` with a default of None makes the PATCH field optional while still
+    # rejecting an explicitly supplied JSON null (and keeps OpenAPI non-nullable).
+    app_version_keep_releases: int = Field(
+        None,
+        ge=1,
+        le=MAX_APP_VERSION_KEEP_RELEASES,
+    )
 
 
 class DetectionResetPeriod(BaseModel):
@@ -98,6 +114,11 @@ class ProjectResponse(BaseModel):
     name: str
     slug: str
     description: str
+    app_version_keep_releases: int = Field(
+        default=DEFAULT_APP_VERSION_KEEP_RELEASES,
+        ge=1,
+        le=MAX_APP_VERSION_KEEP_RELEASES,
+    )
     created_at: datetime
     updated_at: datetime
     summary: ProjectSummary = Field(default_factory=ProjectSummary)

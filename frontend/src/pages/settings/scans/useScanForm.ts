@@ -20,7 +20,6 @@ export interface ScanFormPayload {
   metric_breakdown_values_limit: number | null
   distribution_drift_fields: string[]
   app_version_column: string | null
-  app_version_keep_releases: number | null
   app_version_prerelease_pattern: string | null
   app_version_active_share_min: number | null
   platform_column: string | null
@@ -40,7 +39,6 @@ export interface ScanFormState {
   eventTypeColumn: string
   timeColumn: string
   appVersionColumn: string
-  appVersionKeepReleases: string
   appVersionPrereleasePattern: string
   appVersionActiveShareMin: string
   platformColumn: string
@@ -67,9 +65,6 @@ function initialState(scanConfig: ScanConfig | null): ScanFormState {
     eventTypeColumn: scanConfig?.event_type_column ?? '',
     timeColumn: scanConfig?.time_column ?? '',
     appVersionColumn: scanConfig?.app_version_column ?? '',
-    appVersionKeepReleases: scanConfig?.app_version_keep_releases
-      ? String(scanConfig.app_version_keep_releases)
-      : '',
     appVersionPrereleasePattern: scanConfig?.app_version_prerelease_pattern ?? '',
     appVersionActiveShareMin: scanConfig?.app_version_active_share_min != null
       ? String(scanConfig.app_version_active_share_min)
@@ -160,7 +155,6 @@ export function useScanForm(
           timeColumn,
           appVersionColumn,
           platformColumn,
-          appVersionKeepReleases: appVersionColumn ? current.appVersionKeepReleases : '',
           appVersionPrereleasePattern: appVersionColumn ? current.appVersionPrereleasePattern : '',
           appVersionActiveShareMin: appVersionColumn ? current.appVersionActiveShareMin : '',
           metricBreakdownColumns: current.metricBreakdownColumns.filter(
@@ -226,7 +220,6 @@ export function useScanForm(
     setState(current => ({
       ...current,
       appVersionColumn: value,
-      appVersionKeepReleases: value ? current.appVersionKeepReleases : '',
       appVersionPrereleasePattern: value ? current.appVersionPrereleasePattern : '',
       appVersionActiveShareMin: value ? current.appVersionActiveShareMin : '',
       metricBreakdownColumns: current.metricBreakdownColumns.filter(column => column !== value),
@@ -292,9 +285,6 @@ export function useScanForm(
         : null,
       distribution_drift_fields: state.distributionDriftFields,
       app_version_column: state.appVersionColumn || null,
-      app_version_keep_releases: state.appVersionColumn
-        ? parseOptionalPositiveInt(state.appVersionKeepReleases)
-        : null,
       app_version_prerelease_pattern: state.appVersionColumn
         ? state.appVersionPrereleasePattern.trim() || null
         : null,

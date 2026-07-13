@@ -330,7 +330,7 @@ export function ScanDetail({
             label="App version column"
             value={
               scanConfig.app_version_column
-                ? `${scanConfig.app_version_column}${scanConfig.app_version_keep_releases ? ` · keep ${scanConfig.app_version_keep_releases}` : ''}`
+                ? scanConfig.app_version_column
                 : <NoneTag />
             }
             mono={!!scanConfig.app_version_column}

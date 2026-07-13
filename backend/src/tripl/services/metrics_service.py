@@ -54,7 +54,6 @@ from tripl.schemas.event_metric import (
 )
 from tripl.semver import (
     APP_VERSION_OTHER_LABEL,
-    DEFAULT_APP_VERSION_KEEP_RELEASES,
     order_versions,
 )
 from tripl.services.monitoring_utils import classify_signal_state
@@ -997,7 +996,7 @@ async def get_app_version_series(
     latest_version, versions, series = _build_app_version_series(
         interval=config.interval,
         metric_rows_by_series=metric_rows_by_series,
-        keep_releases=config.app_version_keep_releases or DEFAULT_APP_VERSION_KEEP_RELEASES,
+        keep_releases=project.app_version_keep_releases,
         prerelease_pattern=compile_prerelease_pattern(config.app_version_prerelease_pattern),
         share_min=resolve_share_min(config.app_version_active_share_min),
     )
@@ -1051,7 +1050,7 @@ async def get_app_version_adoption(
     latest_version, versions, series = _build_app_version_series(
         interval=config.interval,
         metric_rows_by_series=metric_rows_by_series,
-        keep_releases=config.app_version_keep_releases or DEFAULT_APP_VERSION_KEEP_RELEASES,
+        keep_releases=project.app_version_keep_releases,
         prerelease_pattern=compile_prerelease_pattern(config.app_version_prerelease_pattern),
         share_min=resolve_share_min(config.app_version_active_share_min),
     )

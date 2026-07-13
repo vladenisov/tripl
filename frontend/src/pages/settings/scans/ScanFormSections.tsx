@@ -191,19 +191,17 @@ export function AppVersionSection({ form, footerFor }: SectionProps) {
   return (
     <SCard
       title="App version"
-      description="Track adoption and keep recent releases for distribution metrics."
+      description="Choose source columns and activation gates. Release retention is configured in Project General."
       footer={footerFor?.()}
     >
       <div className="px-[18px] py-4">
         <AppVersionFields
           columns={preview?.columns ?? null}
           appVersionColumn={state.appVersionColumn}
-          keepReleases={state.appVersionKeepReleases}
           prereleasePattern={state.appVersionPrereleasePattern}
           activeShareMin={state.appVersionActiveShareMin}
           platformColumn={state.platformColumn}
           onAppVersionColumnChange={setAppVersionColumn}
-          onKeepReleasesChange={value => set('appVersionKeepReleases', value)}
           onPrereleasePatternChange={value => set('appVersionPrereleasePattern', value)}
           onActiveShareMinChange={value => set('appVersionActiveShareMin', value)}
           onPlatformColumnChange={setPlatformColumn}

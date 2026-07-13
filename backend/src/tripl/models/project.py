@@ -4,12 +4,13 @@ import uuid
 from datetime import datetime
 from typing import TYPE_CHECKING
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, String, Text, false
+from sqlalchemy import Boolean, CheckConstraint, DateTime, ForeignKey, Integer, String, Text, false
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from tripl.models.base import Base, TimestampMixin, UUIDMixin
 from tripl.models.domain_enums import ProjectGenerationStatus
 from tripl.models.enum_types import db_enum
+from tripl.semver import DEFAULT_APP_VERSION_KEEP_RELEASES
 
 if TYPE_CHECKING:
     from tripl.models.event_type import EventType
@@ -24,6 +25,19 @@ class Project(UUIDMixin, TimestampMixin, Base):
     name: Mapped[str] = mapped_column(String(255))
     slug: Mapped[str] = mapped_column(String(255), unique=True, index=True)
     description: Mapped[str] = mapped_column(Text, default="")
+    # One retention policy for every app-version series in this project. The
+    # source column remains per scan/metric, but the number of explicit releases
+    # is a product-level choice and must not diverge between those sources.
+    app_version_keep_releases: Mapped[int] = mapped_column(
+        Integer,
+        CheckConstraint(
+            "app_version_keep_releases BETWEEN 1 AND 100",
+            name="ck_projects_app_version_keep_releases_range",
+        ),
+        default=DEFAULT_APP_VERSION_KEEP_RELEASES,
+        server_default=str(DEFAULT_APP_VERSION_KEEP_RELEASES),
+        nullable=False,
+    )
 
     # ── Demo identity & provisioning lifecycle ─────────────────────────────
     # A demo is a first-class, generated project. Identity is this explicit

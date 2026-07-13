@@ -42,6 +42,7 @@ export interface Project {
   name: string
   slug: string
   description: string
+  app_version_keep_releases: number
   created_at: string
   updated_at: string
   summary: ProjectSummary

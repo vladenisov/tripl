@@ -123,6 +123,7 @@ async def test_create_project(client: AsyncClient):
     data = resp.json()
     assert data["name"] == "Test Project"
     assert data["slug"] == "test-project"
+    assert data["app_version_keep_releases"] == 10
 
 
 @pytest.mark.asyncio
@@ -171,6 +172,44 @@ async def test_update_project(client: AsyncClient):
     resp = await client.patch("/api/v1/projects/upd-me", json={"name": "New"})
     assert resp.status_code == 200
     assert resp.json()["name"] == "New"
+
+
+@pytest.mark.asyncio
+async def test_update_project_app_version_retention(client: AsyncClient):
+    await client.post(
+        "/api/v1/projects",
+        json={"name": "Version policy", "slug": "version-policy"},
+    )
+
+    resp = await client.patch(
+        "/api/v1/projects/version-policy",
+        json={"app_version_keep_releases": 3},
+    )
+
+    assert resp.status_code == 200
+    assert resp.json()["app_version_keep_releases"] == 3
+    assert (await client.get("/api/v1/projects/version-policy")).json()[
+        "app_version_keep_releases"
+    ] == 3
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("invalid_value", [0, 101, None])
+async def test_update_project_rejects_invalid_app_version_retention(
+    client: AsyncClient,
+    invalid_value: int | None,
+):
+    await client.post(
+        "/api/v1/projects",
+        json={"name": "Version validation", "slug": "version-validation"},
+    )
+
+    resp = await client.patch(
+        "/api/v1/projects/version-validation",
+        json={"app_version_keep_releases": invalid_value},
+    )
+
+    assert resp.status_code == 422
 
 
 @pytest.mark.asyncio

@@ -53,7 +53,6 @@ from tripl.schemas.metric_series import (
 )
 from tripl.semver import (
     APP_VERSION_OTHER_LABEL,
-    DEFAULT_APP_VERSION_KEEP_RELEASES,
     order_versions,
 )
 from tripl.services.metrics_service import (
@@ -535,31 +534,31 @@ def _build_metric_version_series(
 async def _resolve_version_gate(
     session: AsyncSession,
     scan_config_id: uuid.UUID | None,
+    project_keep_releases: int,
 ) -> tuple[int, re.Pattern[str] | None, float]:
-    """Per-scan version-gate config for the metric's source scan (as the event
-    app-version series does): ``(keep_releases, prerelease_pattern, share_min)``.
+    """Resolve the shared retention plus source-specific version gates.
 
-    Falls back to system defaults when the metric is not aligned to a scan config
-    (e.g. a standalone ``sql`` / ``fact`` metric).
+    Retention is project-wide. Prerelease and activation-share gates remain
+    per scan when the metric is aligned to one; standalone SQL/fact metrics use
+    their existing defaults for those two gates.
     """
     if scan_config_id is not None:
         row = (
             await session.execute(
                 select(
-                    ScanConfig.app_version_keep_releases,
                     ScanConfig.app_version_prerelease_pattern,
                     ScanConfig.app_version_active_share_min,
                 ).where(ScanConfig.id == scan_config_id)
             )
         ).first()
         if row is not None:
-            keep, pattern, share = row
+            pattern, share = row
             return (
-                keep or DEFAULT_APP_VERSION_KEEP_RELEASES,
+                project_keep_releases,
                 compile_prerelease_pattern(pattern),
                 resolve_share_min(share),
             )
-    return DEFAULT_APP_VERSION_KEEP_RELEASES, None, DEFAULT_ACTIVE_SHARE_MIN
+    return project_keep_releases, None, DEFAULT_ACTIVE_SHARE_MIN
 
 
 async def get_metric_version_series(
@@ -591,7 +590,9 @@ async def get_metric_version_series(
         time_to=time_to,
     )
     keep_releases, prerelease_pattern, share_min = await _resolve_version_gate(
-        session, scan_config_id
+        session,
+        scan_config_id,
+        project.app_version_keep_releases,
     )
     latest_version, versions, series = _build_metric_version_series(
         interval=interval,

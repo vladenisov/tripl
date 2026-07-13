@@ -396,6 +396,40 @@ class TestMetricVersionSeries:
         assert versions["1.1.0"]["is_latest"] is True
         assert {item["version"] for item in body["series"]} == {"1.0.0", "1.1.0"}
 
+    async def test_standalone_metric_uses_project_version_retention(
+        self, client: AsyncClient, project: dict, data_source: dict
+    ):
+        slug = project["slug"]
+        update = await client.patch(
+            f"/api/v1/projects/{slug}",
+            json={"app_version_keep_releases": 1},
+        )
+        assert update.status_code == 200, update.text
+        metric = await _create_sql_metric(
+            client,
+            slug,
+            data_source["id"],
+            "project-ver",
+            app_version_column="app_version",
+        )
+        await _seed_breakdowns(
+            metric["id"],
+            [
+                ("app_version", "1.0.0", B0, 2.0),
+                ("app_version", "1.1.0", B0, 3.0),
+                ("app_version", "2.0.0", B0, 4.0),
+            ],
+        )
+
+        resp = await client.get(f"{_metrics_url(slug)}/{metric['id']}/versions")
+
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        assert [item["version"] for item in body["versions"]] == ["2.0.0", "Other"]
+        series_by_version = {item["version"]: item for item in body["series"]}
+        assert set(series_by_version) == {"2.0.0", "Other"}
+        assert series_by_version["Other"]["total_value"] == 5.0
+
     async def test_version_series_empty_when_no_column(
         self, client: AsyncClient, project: dict, data_source: dict
     ):

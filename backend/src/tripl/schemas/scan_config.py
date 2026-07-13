@@ -126,7 +126,15 @@ class ScanConfigCreate(BaseModel):
     scan_row_limit: int | None = Field(default=None, ge=1)
     metrics_row_limit: int | None = Field(default=None, ge=1)
     app_version_column: str | None = Field(default=None, min_length=1, max_length=255)
-    app_version_keep_releases: int | None = Field(default=None, ge=1)
+    app_version_keep_releases: int | None = Field(
+        default=None,
+        ge=1,
+        deprecated=True,
+        description=(
+            "Deprecated compatibility mirror of Project.app_version_keep_releases; "
+            "caller values are ignored."
+        ),
+    )
     app_version_prerelease_pattern: str | None = Field(default=None, min_length=1, max_length=255)
     app_version_active_share_min: float | None = Field(default=None, gt=0.0, lt=1.0)
     platform_column: str | None = Field(default=None, min_length=1, max_length=255)
@@ -207,7 +215,15 @@ class ScanConfigUpdate(BaseModel):
     scan_row_limit: int | None = Field(default=None, ge=1)
     metrics_row_limit: int | None = Field(default=None, ge=1)
     app_version_column: str | None = Field(default=None, max_length=255)
-    app_version_keep_releases: int | None = Field(default=None, ge=1)
+    app_version_keep_releases: int | None = Field(
+        default=None,
+        ge=1,
+        deprecated=True,
+        description=(
+            "Deprecated compatibility mirror of Project.app_version_keep_releases; "
+            "caller values are ignored."
+        ),
+    )
     app_version_prerelease_pattern: str | None = Field(default=None, max_length=255)
     app_version_active_share_min: float | None = Field(default=None, gt=0.0, lt=1.0)
     platform_column: str | None = Field(default=None, max_length=255)
@@ -260,7 +276,10 @@ class ScanConfigResponse(BaseModel):
     scan_row_limit: int | None
     metrics_row_limit: int | None
     app_version_column: str | None
-    app_version_keep_releases: int | None
+    app_version_keep_releases: int | None = Field(
+        deprecated=True,
+        description="Deprecated compatibility mirror of Project.app_version_keep_releases.",
+    )
     app_version_prerelease_pattern: str | None
     app_version_active_share_min: float | None
     platform_column: str | None

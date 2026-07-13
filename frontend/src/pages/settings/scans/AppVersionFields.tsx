@@ -6,24 +6,20 @@ import { isJsonPreviewType, SELECT_CLASS } from './scanUtils'
 export function AppVersionFields({
   columns,
   appVersionColumn,
-  keepReleases,
   prereleasePattern,
   activeShareMin,
   platformColumn,
   onAppVersionColumnChange,
-  onKeepReleasesChange,
   onPrereleasePatternChange,
   onActiveShareMinChange,
   onPlatformColumnChange,
 }: {
   columns: ScanConfigPreview['columns'] | null
   appVersionColumn: string
-  keepReleases: string
   prereleasePattern: string
   activeShareMin: string
   platformColumn: string
   onAppVersionColumnChange: (column: string) => void
-  onKeepReleasesChange: (value: string) => void
   onPrereleasePatternChange: (value: string) => void
   onActiveShareMinChange: (value: string) => void
   onPlatformColumnChange: (column: string) => void
@@ -59,16 +55,22 @@ export function AppVersionFields({
           </select>
         </div>
         <div className="grid gap-2">
-          <Label htmlFor="app-version-keep-releases">Releases to keep</Label>
-          <Input
-            id="app-version-keep-releases"
-            type="number"
-            min={1}
-            value={keepReleases}
-            onChange={e => onKeepReleasesChange(e.target.value)}
-            disabled={!appVersionColumn}
-            placeholder={appVersionColumn ? 'Default' : 'Select version column'}
-          />
+          <Label htmlFor="platform-column">Platform Column (optional)</Label>
+          <select
+            id="platform-column"
+            value={platformColumn}
+            onChange={e => onPlatformColumnChange(e.target.value)}
+            className={SELECT_CLASS}
+            disabled={platformSelectDisabled}
+          >
+            <option value="">{columns || hasSelectedPlatform ? 'No platform' : 'Load preview first'}</option>
+            {hasSelectedPlatform && !selectedPlatformIsAvailable && (
+              <option value={platformColumn}>{platformColumn}</option>
+            )}
+            {availableColumns.map(column => (
+              <option key={column.name} value={column.name}>{column.name}</option>
+            ))}
+          </select>
         </div>
       </div>
       <div className="grid grid-cols-2 gap-3">
@@ -97,24 +99,6 @@ export function AppVersionFields({
             placeholder={appVersionColumn ? 'Default 0.05' : 'Select version column'}
           />
         </div>
-      </div>
-      <div className="grid gap-2">
-        <Label htmlFor="platform-column">Platform Column (optional)</Label>
-        <select
-          id="platform-column"
-          value={platformColumn}
-          onChange={e => onPlatformColumnChange(e.target.value)}
-          className={SELECT_CLASS}
-          disabled={platformSelectDisabled}
-        >
-          <option value="">{columns || hasSelectedPlatform ? 'No platform' : 'Load preview first'}</option>
-          {hasSelectedPlatform && !selectedPlatformIsAvailable && (
-            <option value={platformColumn}>{platformColumn}</option>
-          )}
-          {availableColumns.map(column => (
-            <option key={column.name} value={column.name}>{column.name}</option>
-          ))}
-        </select>
       </div>
     </div>
   )

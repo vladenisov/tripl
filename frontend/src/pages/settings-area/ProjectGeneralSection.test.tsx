@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, within } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { MemoryRouter } from 'react-router-dom'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -18,6 +18,7 @@ const PROJECT = {
   name: 'Demo',
   slug: 'demo',
   description: '',
+  app_version_keep_releases: 3,
   created_at: '2026-01-01T00:00:00Z',
   updated_at: '2026-01-01T00:00:00Z',
   summary: {
@@ -83,6 +84,34 @@ afterEach(() => {
 })
 
 describe('ProjectGeneralSection', () => {
+  it('updates the shared app-version retention policy', async () => {
+    let patchBody: unknown = null
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const url = String(input)
+      if (url.endsWith('/api/v1/projects/demo') && (init?.method ?? 'GET') === 'GET') {
+        return jsonResponse(PROJECT)
+      }
+      if (url.endsWith('/api/v1/projects/demo') && init?.method === 'PATCH') {
+        patchBody = JSON.parse(String(init.body))
+        return jsonResponse({ ...PROJECT, ...patchBody })
+      }
+      throw new Error(`Unhandled fetch: ${url}`)
+    })
+
+    renderSection()
+
+    const input = await screen.findByLabelText('Releases to keep')
+    expect(input).toHaveValue(3)
+    fireEvent.change(input, { target: { value: '4' } })
+    const card = screen.getByText('Version monitoring').closest('section')
+    expect(card).not.toBeNull()
+    fireEvent.click(within(card as HTMLElement).getByRole('button', { name: 'Save' }))
+
+    await waitFor(() => {
+      expect(patchBody).toEqual({ app_version_keep_releases: 4 })
+    })
+  })
+
   it('rebuilds the search index', async () => {
     const reindex = vi.spyOn(searchApi, 'reindex').mockResolvedValue({
       documents_indexed: 42,
@@ -107,7 +136,7 @@ describe('ProjectGeneralSection', () => {
     renderSection()
 
     // Wait for the project to load (the Save button renders once it resolves).
-    await screen.findByRole('button', { name: /Save/i })
+    expect((await screen.findAllByRole('button', { name: /Save/i })).length).toBeGreaterThan(0)
 
     // The four preview-only fields (accent color + the Defaults trio) are gone.
     // "Timezone" here is scoped to this section — ProfileSection's real Timezone

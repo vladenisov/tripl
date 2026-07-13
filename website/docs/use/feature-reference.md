@@ -203,8 +203,11 @@ the working naming rule for scan-targeted event types.
 ### Project general & danger zone
 
 **Where:** Workspace settings › Project › **General**. Edit the project name,
-slug, and description; rebuild its search index; or use owner-only destructive
-resets. **Reset anomalies** removes metric and breakdown anomaly records (and
+slug, and description; set the project-wide number of app releases retained as
+explicit version series; rebuild its search index; or use owner-only destructive
+resets. Version retention applies to event monitoring and standalone catalog
+metrics alike, with older releases combined into **Other**. **Reset anomalies**
+removes metric and breakdown anomaly records (and
 their derived active signals) across every scan/catalog metric. **Reset drifts**
 removes schema and distribution drift, but not variable-value drift. Both can be
 limited to a selected historical period and cannot be undone.
@@ -385,11 +388,12 @@ event-name format); optional app-version and platform columns; metrics & drift
 *Every day* (`1d`), or *Every week* (`1w`).
 
 Advanced controls bound catalog/metrics row counts and scan lookback, choose a
-replay chunk interval, cap breakdown cardinality, and configure how many app
-versions to retain. Version monitoring also exposes the active-traffic share
-gate and an optional prerelease pattern; the platform column powers the
-platform-presence matrix. Reserved role columns (event type, time, version,
-platform) cannot simultaneously be selected as scalar breakdown/drift fields.
+replay chunk interval, and cap breakdown cardinality. Version monitoring also
+exposes the active-traffic share gate and an optional prerelease pattern; the
+shared number of releases to retain lives under **Settings → Project → General**.
+The platform column powers the platform-presence matrix. Reserved role columns
+(event type, time, version, platform) cannot simultaneously be selected as
+scalar breakdown/drift fields.
 
 ### Scan jobs
 
