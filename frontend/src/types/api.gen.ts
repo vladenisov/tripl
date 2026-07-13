@@ -6875,6 +6875,8 @@ export interface components {
             } | null;
             /** Changes */
             changes?: string[];
+            /** Entity Id */
+            entity_id?: string | null;
             /**
              * Entity Type
              * @enum {string}
@@ -6907,6 +6909,8 @@ export interface components {
             before?: unknown;
             /** Field */
             field: string;
+            /** Items */
+            items?: components["schemas"]["PlanValueChange"][];
         };
         /** PlanRevisionCreate */
         PlanRevisionCreate: {
@@ -6981,6 +6985,29 @@ export interface components {
             project_id: string;
             /** Summary */
             summary: string;
+        };
+        /**
+         * PlanValueChange
+         * @description One member of a collection-valued field that moved.
+         *
+         *     ``key`` is the member's natural identifier — the field name behind an event
+         *     field value, the tag itself, the event an override targets. ``before``/
+         *     ``after`` carry that member's value with the key stripped out, so a reviewer
+         *     reads "currency: USD → EUR" instead of two JSON dumps of the whole
+         *     collection.
+         */
+        PlanValueChange: {
+            /** After */
+            after?: unknown;
+            /** Before */
+            before?: unknown;
+            /** Key */
+            key: string;
+            /**
+             * Kind
+             * @enum {string}
+             */
+            kind: "added" | "removed" | "changed";
         };
         /** PlatformParityAnomaly */
         PlatformParityAnomaly: {

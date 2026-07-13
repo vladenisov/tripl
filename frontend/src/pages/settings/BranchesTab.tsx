@@ -1,6 +1,8 @@
 import { Fragment, useId, useMemo, useState, type ReactNode } from 'react'
+import { Link, useNavigate } from 'react-router-dom'
 import { useMutation, useQueries, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
+  ArrowUpRight,
   ChevronRight,
   GitBranch,
   GitCompare,
@@ -16,6 +18,7 @@ import { ApiError } from '@/api/client'
 import { planBranchesApi } from '@/api/planBranches'
 import { usersApi } from '@/api/users'
 import { TrackerConfigDialog } from './TrackerConfigDialog'
+import { useBranchContext } from '@/hooks/useBranch'
 import { useConfirm } from '@/hooks/useConfirm'
 import { Chip, type ChipTone } from '@/components/primitives/chip'
 import { Button } from '@/components/ui/button'
@@ -43,6 +46,7 @@ import type {
   PlanDiffEntry,
   PlanDiffKind,
   PlanFieldChange,
+  PlanValueChange,
   ProjectBranchSettings,
   ResolutionChoice,
 } from '@/types'
@@ -163,15 +167,17 @@ function describeBranchActionError(error: unknown): string {
   return getErrorMessage(error)
 }
 
-export function BranchesTab({ slug }: { slug: string }) {
+/** The selected branch lives in the URL (`/p/:slug/settings/branches/:branchId`),
+ * not in component state, so a review can be linked to and shared. */
+export function BranchesTab({ slug, branchId }: { slug: string; branchId?: string }) {
   const qc = useQueryClient()
+  const navigate = useNavigate()
   const { confirm, dialog } = useConfirm()
   const [createOpen, setCreateOpen] = useState(false)
   const [policyOpen, setPolicyOpen] = useState(false)
   const [trackerOpen, setTrackerOpen] = useState(false)
   const [createName, setCreateName] = useState('')
   const [createDescription, setCreateDescription] = useState('')
-  const [activeBranchId, setActiveBranchId] = useState<string | null>(null)
   const usersById = useUsersById()
 
   const { data, isLoading } = useQuery({
@@ -180,6 +186,8 @@ export function BranchesTab({ slug }: { slug: string }) {
   })
 
   const invalidate = () => qc.invalidateQueries({ queryKey: ['planBranches', slug] })
+  const selectBranch = (branch: PlanBranchSummary) =>
+    navigate(`/p/${slug}/settings/branches/${branch.id}`)
 
   const createMut = useMutation({
     mutationFn: () =>
@@ -189,15 +197,17 @@ export function BranchesTab({ slug }: { slug: string }) {
       setCreateOpen(false)
       setCreateName('')
       setCreateDescription('')
-      setActiveBranchId(branch.id)
+      selectBranch(branch)
     },
   })
 
   const items = data?.items ?? []
   const mainBranch = items.find((b) => b.kind === 'main')
   const defaultCount = items.filter((b) => b.kind === 'main').length
-  const selected = activeBranchId
-    ? items.find((b) => b.id === activeBranchId) ?? null
+  // An unknown id in the URL (deleted or merged-away branch) falls back to main
+  // rather than rendering an empty detail pane.
+  const selected = branchId
+    ? (items.find((b) => b.id === branchId) ?? mainBranch ?? null)
     : (mainBranch ?? items[0] ?? null)
 
   // The selected feature branch's diff drives the real ahead/behind counts shown
@@ -262,7 +272,7 @@ export function BranchesTab({ slug }: { slug: string }) {
               selectedId={selected?.id ?? null}
               countsByBranch={countsByBranch}
               usersById={usersById}
-              onSelect={(branch) => setActiveBranchId(branch.id)}
+              onSelect={selectBranch}
             />
             <BranchDetail
               slug={slug}
@@ -574,7 +584,12 @@ function FeatureBranchDetail({ slug, branch, diff, confirm }: FeatureBranchDetai
         ) : (
           <div>
             {entries.map((entry, idx) => (
-              <ChangeRow key={`${entry.entity_type}-${entry.name}-${idx}`} entry={entry} />
+              <ChangeRow
+                key={`${entry.entity_type}-${entry.name}-${idx}`}
+                slug={slug}
+                branchId={branch.id}
+                entry={entry}
+              />
             ))}
           </div>
         )}
@@ -610,9 +625,38 @@ function SummaryCount({
   )
 }
 
-function ChangeRow({ entry }: { entry: PlanDiffEntry }) {
+/** Where a diff row points. Added and changed entities live on the branch, so
+ * the link carries `?branch=` and opens them in that branch; a removed one only
+ * still exists on main, so it links there. Field definitions, meta fields and
+ * relations have no detail route yet — those rows stay unlinked. */
+function entityLink(slug: string, branchId: string, entry: PlanDiffEntry): string | null {
+  if (!entry.entity_id) return null
+  const inBranch = entry.kind !== 'removed'
+  const branchQuery = inBranch ? `?branch=${branchId}` : ''
+  switch (entry.entity_type) {
+    case 'event':
+      return `/p/${slug}/events/all/${entry.entity_id}${branchQuery}`
+    case 'event_type':
+      return `/p/${slug}/settings/event-types/${entry.entity_id}${branchQuery}`
+    case 'variable':
+      return `/p/${slug}/settings/variables/${entry.entity_id}${branchQuery}`
+    default:
+      return null
+  }
+}
+
+function ChangeRow({
+  slug,
+  branchId,
+  entry,
+}: {
+  slug: string
+  branchId: string
+  entry: PlanDiffEntry
+}) {
   const [open, setOpen] = useState(false)
   const detailId = useId()
+  const { setBranchId } = useBranchContext()
   const meta = KIND_META[entry.kind]
   // Removed entities only exist on the base side; everything else shows the
   // branch-side (current) state.
@@ -620,6 +664,7 @@ function ChangeRow({ entry }: { entry: PlanDiffEntry }) {
   const hasState = !!fullState && Object.keys(fullState).length > 0
   const fieldChanges = entry.field_changes ?? []
   const hasFieldChanges = fieldChanges.length > 0
+  const link = entityLink(slug, branchId, entry)
 
   return (
     <div
@@ -663,17 +708,34 @@ function ChangeRow({ entry }: { entry: PlanDiffEntry }) {
           className="flex flex-col gap-3 border-t px-4 py-3"
           style={{ borderColor: 'var(--border-subtle)', background: 'var(--surface)' }}
         >
-          <p className="text-[11px]" style={{ color: 'var(--fg-subtle)' }}>
-            {meta.label} {ENTITY_LABEL[entry.entity_type]}
-            {entry.parent ? (
-              <>
-                {' in '}
-                <span className="mono" style={{ color: 'var(--fg)' }}>
-                  {entry.parent}
-                </span>
-              </>
+          <div className="flex items-center justify-between gap-3">
+            <p className="text-[11px]" style={{ color: 'var(--fg-subtle)' }}>
+              {meta.label} {ENTITY_LABEL[entry.entity_type]}
+              {entry.parent ? (
+                <>
+                  {' in '}
+                  <span className="mono" style={{ color: 'var(--fg)' }}>
+                    {entry.parent}
+                  </span>
+                </>
+              ) : null}
+            </p>
+            {link ? (
+              <Link
+                to={link}
+                // The provider survives client-side navigation, so the target
+                // branch is set here as well as carried in the URL.
+                onClick={() => setBranchId(entry.kind === 'removed' ? null : branchId)}
+                className="flex shrink-0 items-center gap-1 text-[11px] hover:underline"
+                style={{ color: 'var(--accent)' }}
+              >
+                {entry.kind === 'removed'
+                  ? 'Open on main'
+                  : `Open ${ENTITY_LABEL[entry.entity_type]}`}
+                <ArrowUpRight className="size-3" aria-hidden="true" />
+              </Link>
             ) : null}
-          </p>
+          </div>
           {hasFieldChanges ? (
             <DetailSection title="Field changes">
               <FieldChangeList changes={fieldChanges} />
@@ -721,15 +783,55 @@ function FieldChangeList({ changes }: { changes: PlanFieldChange[] }) {
           <div className="mono mb-1 text-[11.5px] font-medium" style={{ color: 'var(--fg)' }}>
             {change.field}
           </div>
-          <div className="flex flex-wrap items-start gap-1.5">
-            <DiffValue value={change.before} tone="danger" />
-            <span className="text-[12px]" style={{ color: 'var(--fg-faint)' }} aria-hidden="true">
-              →
-            </span>
-            <DiffValue value={change.after} tone="success" />
-          </div>
+          {change.items && change.items.length > 0 ? (
+            // A collection changed one member at a time — show those members,
+            // not two dumps of the whole list.
+            <div className="flex flex-col gap-1">
+              {change.items.map((item) => (
+                <ValueChangeRow key={item.key} item={item} />
+              ))}
+            </div>
+          ) : (
+            <div className="flex flex-wrap items-start gap-1.5">
+              <DiffValue value={change.before} tone="danger" />
+              <span className="text-[12px]" style={{ color: 'var(--fg-faint)' }} aria-hidden="true">
+                →
+              </span>
+              <DiffValue value={change.after} tone="success" />
+            </div>
+          )}
         </div>
       ))}
+    </div>
+  )
+}
+
+/** One member of a changed collection: `~ currency  USD → EUR`. */
+function ValueChangeRow({ item }: { item: PlanValueChange }) {
+  const meta = KIND_META[item.kind]
+  return (
+    <div className="flex flex-wrap items-baseline gap-1.5 text-[11.5px]">
+      <span
+        className="mono w-3 shrink-0 text-center font-bold"
+        style={{ color: `var(--${meta.tone})` }}
+        aria-hidden="true"
+      >
+        {meta.sym}
+      </span>
+      <span className="mono shrink-0" style={{ color: 'var(--fg)' }}>
+        {item.key}
+      </span>
+      {item.kind === 'changed' ? (
+        <>
+          <DiffValue value={item.before} tone="danger" />
+          <span className="text-[12px]" style={{ color: 'var(--fg-faint)' }} aria-hidden="true">
+            →
+          </span>
+          <DiffValue value={item.after} tone="success" />
+        </>
+      ) : (
+        <DiffValue value={item.kind === 'added' ? item.after : item.before} tone={meta.tone} />
+      )}
     </div>
   )
 }
@@ -752,15 +854,66 @@ function StateView({ state }: { state: Record<string, unknown> }) {
   )
 }
 
-/** Renders a raw JSON value: scalars inline, objects/arrays as a pretty-printed
- * block. `tone` colours the before (danger) / after (success) sides of a diff. */
+/** Flattens a small record to `key: value · key: value` — the shape an event
+ * field value or a photo takes once its natural key is stripped off. */
+function inlineRecord(value: Record<string, unknown>): string {
+  return Object.entries(value)
+    .map(([key, item]) => `${key}: ${item === null || item === '' ? '∅' : String(item)}`)
+    .join(' · ')
+}
+
+function isFlatRecord(value: unknown): value is Record<string, unknown> {
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    !Array.isArray(value) &&
+    Object.values(value).every((item) => typeof item !== 'object' || item === null)
+  )
+}
+
+/** Renders a diff value the way a reviewer reads it: scalars plain, lists
+ * comma-joined, flat records as inline `key: value` pairs, and nested records
+ * one per line. Pretty-printed JSON is the last resort, not the default.
+ * `tone` colours the before (danger) / after (success) sides of a diff. */
 function DiffValue({ value, tone }: { value: unknown; tone?: ChipTone }) {
   const color = tone ? `var(--${tone})` : 'var(--fg)'
-  const isEmpty = value === null || value === undefined || value === ''
+  const isEmpty =
+    value === null || value === undefined || value === '' || (Array.isArray(value) && !value.length)
   if (isEmpty) {
     return (
       <span className="mono text-[11.5px]" style={{ color: 'var(--fg-faint)' }}>
         ∅
+      </span>
+    )
+  }
+  if (Array.isArray(value)) {
+    if (value.every((item) => typeof item !== 'object' || item === null)) {
+      return (
+        <span className="mono break-words text-[11.5px]" style={{ color }}>
+          {value.map((item) => String(item)).join(', ')}
+        </span>
+      )
+    }
+    if (value.every(isFlatRecord)) {
+      return (
+        <div className="flex flex-col gap-0.5">
+          {value.map((item, idx) => (
+            <span
+              key={idx}
+              className="mono break-words text-[11.5px]"
+              style={{ color }}
+            >
+              {inlineRecord(item)}
+            </span>
+          ))}
+        </div>
+      )
+    }
+  }
+  if (isFlatRecord(value)) {
+    return (
+      <span className="mono break-words text-[11.5px]" style={{ color }}>
+        {inlineRecord(value)}
       </span>
     )
   }

@@ -235,6 +235,122 @@ def test_old_version_base_missing_change_key_still_tolerated() -> None:
     assert entries == []
 
 
+# --- per-item diff of collection-valued fields (tripl-mzsb.1) ----------------
+# An event's field values, its tags, a variable's documented values and its
+# per-event overrides are collections. Comparing them as opaque blobs makes the
+# reviewer eyeball two JSON dumps to find the one item that moved, so the diff
+# breaks them down by the item's natural key.
+
+
+def _field_value(name: str, value: str, *, is_authored: bool = True) -> dict[str, Any]:
+    return {"field_name": name, "value": value, "is_authored": is_authored}
+
+
+def test_field_value_change_breaks_down_per_field() -> None:
+    old = _v2_event("Checkout")
+    old["field_values"] = [_field_value("currency", "USD"), _field_value("coupon", "SUMMER")]
+    new = _v2_event("Checkout")
+    new["field_values"] = [_field_value("currency", "EUR"), _field_value("method", "card")]
+
+    entries = compute_plan_diff_entries(_payload(2, [old], []), _payload(2, [new], []))
+
+    change = next(fc for fc in entries[0].field_changes if fc.field == "field_values")
+    assert [(item.key, item.kind) for item in change.items] == [
+        ("coupon", "removed"),
+        ("currency", "changed"),
+        ("method", "added"),
+    ]
+    currency = next(item for item in change.items if item.key == "currency")
+    assert currency.before == {"value": "USD", "is_authored": True}
+    assert currency.after == {"value": "EUR", "is_authored": True}
+    # The summary string stays field-prefixed (the collapsed row renders it) but
+    # counts the items instead of dumping both lists.
+    assert entries[0].changes == ["field_values: 1 added, 1 changed, 1 removed"]
+
+
+def test_scalar_list_change_keys_items_by_value() -> None:
+    old = _v2_event("Checkout")
+    old["tags"] = ["urgent"]
+    new = _v2_event("Checkout")
+    new["tags"] = ["urgent", "revenue"]
+
+    entries = compute_plan_diff_entries(_payload(2, [old], []), _payload(2, [new], []))
+
+    change = next(fc for fc in entries[0].field_changes if fc.field == "tags")
+    assert [(item.key, item.kind, item.before, item.after) for item in change.items] == [
+        ("revenue", "added", None, "revenue")
+    ]
+
+
+def test_variable_event_overrides_key_on_the_event_they_target() -> None:
+    old = _v2_variable("currency")
+    old["event_value_overrides"] = [
+        {"event_type_name": "track", "event_name": "purchase", "values": ["USD"]}
+    ]
+    new = _v2_variable("currency")
+    new["event_value_overrides"] = [
+        {"event_type_name": "track", "event_name": "purchase", "values": ["USD", "EUR"]}
+    ]
+
+    entries = compute_plan_diff_entries(_payload(2, [], [old]), _payload(2, [], [new]))
+
+    change = next(fc for fc in entries[0].field_changes if fc.field == "event_value_overrides")
+    assert [(item.key, item.kind) for item in change.items] == [("track.purchase", "changed")]
+    assert change.items[0].before == ["USD"]
+    assert change.items[0].after == ["USD", "EUR"]
+
+
+def test_scalar_field_change_carries_no_items() -> None:
+    entries = compute_plan_diff_entries(
+        _payload(2, [_v2_event("Home View", description="old")], []),
+        _payload(2, [_v2_event("Home View", description="new")], []),
+    )
+
+    assert entries[0].field_changes[0].items == []
+
+
+def test_v1_dict_shaped_overrides_fall_back_to_whole_value_diff() -> None:
+    """A v1 base stored event_value_overrides as a dict, not a list.
+
+    Cross-shape item keying is meaningless, so the entry keeps the raw
+    before/after and simply reports no per-item breakdown.
+    """
+    old = _v1_variable("currency")
+    old["event_value_overrides"] = {"purchase": ["USD"]}
+    new = _v2_variable("currency")
+    new["event_value_overrides"] = [
+        {"event_type_name": "track", "event_name": "purchase", "values": ["USD"]}
+    ]
+
+    entries = compute_plan_diff_entries(_payload(1, [], [old]), _payload(2, [], [new]))
+
+    change = next(fc for fc in entries[0].field_changes if fc.field == "event_value_overrides")
+    assert change.items == []
+    assert change.before == {"purchase": ["USD"]}
+
+
+# --- entity_id: the diff row has to link to the entity it describes ----------
+
+
+def test_entries_carry_the_entity_id_they_describe() -> None:
+    old_event = _v2_event("Home View", description="old")
+    new_event = _v2_event("Home View", description="new")
+    removed = _v2_event("Gone")
+    added = _v2_event("Brand New")
+
+    entries = compute_plan_diff_entries(
+        _payload(2, [old_event, removed], []),
+        _payload(2, [new_event, added], []),
+    )
+    by_name = {entry.name: entry for entry in entries}
+
+    # Changed and added entities are linkable on the branch side …
+    assert by_name["Home View"].entity_id == new_event["id"]
+    assert by_name["Brand New"].entity_id == added["id"]
+    # … a removed one only exists on the base side, so link there.
+    assert by_name["Gone"].entity_id == removed["id"]
+
+
 @pytest.mark.asyncio
 async def test_create_revision_captures_full_plan_snapshot(client: AsyncClient) -> None:
     et_id, _field_id, _event_id = await _setup_project(client, "rev-snap")
