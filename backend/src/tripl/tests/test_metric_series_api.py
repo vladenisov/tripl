@@ -14,6 +14,7 @@ from httpx import AsyncClient
 
 from tripl.models.data_source import DataSource
 from tripl.models.domain_enums import MetricComposition, MetricKind
+from tripl.models.event_metric_breakdown import EventMetricBreakdown
 from tripl.models.metric_anomaly import MetricAnomaly
 from tripl.models.metric_definition import MetricDefinition
 from tripl.models.metric_value import MetricValue
@@ -83,34 +84,52 @@ async def _create_sql_metric(
     return resp.json()
 
 
-async def _seed_scan_config(project_id: str, *, interval: str = "1h") -> uuid.UUID:
+async def _seed_scan_config(
+    project_id: str,
+    *,
+    interval: str = "1h",
+    data_source_id: str | None = None,
+    app_version_column: str | None = None,
+) -> uuid.UUID:
     """A bare scan config to satisfy MetricAnomaly.scan_config_id (non-nullable)."""
     scan_config_id = uuid.uuid4()
     async with TestSessionLocal() as session:
-        data_source = DataSource(
-            id=uuid.uuid4(),
-            name=f"Series DS {uuid.uuid4().hex[:8]}",
-            db_type="clickhouse",
-            host="localhost",
-            port=8123,
-            database_name="default",
-            username="default",
-            password_encrypted="",
-        )
+        data_source = None
+        resolved_data_source_id = uuid.UUID(data_source_id) if data_source_id is not None else None
+        if resolved_data_source_id is None:
+            data_source = DataSource(
+                id=uuid.uuid4(),
+                name=f"Series DS {uuid.uuid4().hex[:8]}",
+                db_type="clickhouse",
+                host="localhost",
+                port=8123,
+                database_name="default",
+                username="default",
+                password_encrypted="",
+            )
+            resolved_data_source_id = data_source.id
         scan_config = ScanConfig(
             id=scan_config_id,
-            data_source_id=data_source.id,
+            data_source_id=resolved_data_source_id,
             project_id=uuid.UUID(project_id),
             name=f"Series Config {uuid.uuid4().hex[:8]}",
             base_query="SELECT time, v FROM t",
             interval=interval,
+            app_version_column=app_version_column,
         )
-        session.add_all([data_source, scan_config])
+        session.add(scan_config)
+        if data_source is not None:
+            session.add(data_source)
         await session.commit()
     return scan_config_id
 
 
-async def _seed_event_composition_metric(project_id: str, name: str) -> str:
+async def _seed_event_composition_metric(
+    project_id: str,
+    name: str,
+    *,
+    app_version_column: str | None = None,
+) -> str:
     """Seed an ``event_composition`` metric (interval NULL) straight to the DB.
 
     Composition metrics are normally created via the API with real event refs;
@@ -129,6 +148,7 @@ async def _seed_event_composition_metric(project_id: str, name: str) -> str:
                 composition=MetricComposition.single,
                 config={},
                 interval=None,
+                app_version_column=app_version_column,
             )
         )
         await session.commit()
@@ -190,6 +210,8 @@ async def _seed_metric_anomaly(
 async def _seed_breakdowns(
     metric_id: str,
     rows: list[tuple[str, str, datetime, float]],
+    *,
+    scan_config_id: uuid.UUID | None = None,
 ) -> None:
     async with TestSessionLocal() as session:
         for column, value, bucket, amount in rows:
@@ -197,12 +219,34 @@ async def _seed_breakdowns(
                 MetricValueBreakdown(
                     id=uuid.uuid4(),
                     metric_definition_id=uuid.UUID(metric_id),
-                    scan_config_id=None,
+                    scan_config_id=scan_config_id,
                     bucket=bucket,
                     breakdown_column=column,
                     breakdown_value=value,
                     is_other=False,
                     value=amount,
+                )
+            )
+        await session.commit()
+
+
+async def _seed_project_version_totals(
+    scan_config_id: uuid.UUID,
+    rows: list[tuple[str, datetime, int]],
+) -> None:
+    async with TestSessionLocal() as session:
+        for version, bucket, count in rows:
+            session.add(
+                EventMetricBreakdown(
+                    id=uuid.uuid4(),
+                    scan_config_id=scan_config_id,
+                    event_id=None,
+                    event_type_id=uuid.uuid4(),
+                    bucket=bucket,
+                    breakdown_column="app_version",
+                    breakdown_value=version,
+                    is_other=False,
+                    count=count,
                 )
             )
         await session.commit()
@@ -394,7 +438,169 @@ class TestMetricVersionSeries:
         assert body["latest_version"] == "1.1.0"
         versions = {item["version"]: item for item in body["versions"]}
         assert versions["1.1.0"]["is_latest"] is True
+        # Until a matching project-total scan has collected rows, a fractional
+        # metric must not interpret ratio values as rollout traffic.
+        assert versions["1.1.0"]["is_active"] is True
         assert {item["version"] for item in body["series"]} == {"1.0.0", "1.1.0"}
+
+    async def test_ratio_versions_use_project_total_release_maturity(
+        self, client: AsyncClient, project: dict, data_source: dict
+    ):
+        slug = project["slug"]
+        metric = await _create_sql_metric(
+            client,
+            slug,
+            data_source["id"],
+            "ratio-ver",
+            app_version_column="app_version",
+        )
+        scan_config_id = await _seed_scan_config(
+            project["id"],
+            data_source_id=data_source["id"],
+            app_version_column="app_version",
+        )
+        await _seed_breakdowns(
+            metric["id"],
+            [
+                ("app_version", "1.0.0", B0, 0.9),
+                ("app_version", "1.0.0", B1, 0.9),
+                ("app_version", "2.0.0", B0, 0.1),
+                ("app_version", "2.0.0", B1, 0.1),
+            ],
+        )
+        await _seed_project_version_totals(
+            scan_config_id,
+            [
+                ("1.0.0", B0, 10),
+                ("1.0.0", B1, 10),
+                ("2.0.0", B0, 990),
+                ("2.0.0", B1, 990),
+            ],
+        )
+
+        resp = await client.get(f"{_metrics_url(slug)}/{metric['id']}/versions")
+
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        assert body["latest_version"] == "2.0.0"
+        versions = {item["version"]: item for item in body["versions"]}
+        assert versions["2.0.0"]["is_latest"] is True
+        assert versions["2.0.0"]["is_active"] is True
+        assert versions["1.0.0"]["is_active"] is False
+
+    async def test_ratio_versions_choose_one_canonical_project_total_scan(
+        self, client: AsyncClient, project: dict, data_source: dict
+    ):
+        slug = project["slug"]
+        metric = await _create_sql_metric(
+            client,
+            slug,
+            data_source["id"],
+            "canonical-ver",
+            app_version_column="app_version",
+        )
+        broad_scan_id = await _seed_scan_config(
+            project["id"],
+            data_source_id=data_source["id"],
+            app_version_column="app_version",
+        )
+        narrow_scan_id = await _seed_scan_config(
+            project["id"],
+            data_source_id=data_source["id"],
+            app_version_column="app_version",
+        )
+        await _seed_breakdowns(
+            metric["id"],
+            [
+                ("app_version", "1.0.0", B0, 0.9),
+                ("app_version", "1.0.0", B1, 0.9),
+                ("app_version", "2.0.0", B0, 0.1),
+                ("app_version", "2.0.0", B1, 0.1),
+            ],
+        )
+        await _seed_project_version_totals(
+            broad_scan_id,
+            [
+                ("1.0.0", B0, 9000),
+                ("1.0.0", B1, 9000),
+                ("2.0.0", B0, 1),
+                ("2.0.0", B1, 1),
+            ],
+        )
+        await _seed_project_version_totals(
+            narrow_scan_id,
+            [
+                ("1.0.0", B0, 10),
+                ("1.0.0", B1, 10),
+                ("2.0.0", B0, 900),
+                ("2.0.0", B1, 900),
+            ],
+        )
+
+        resp = await client.get(f"{_metrics_url(slug)}/{metric['id']}/versions")
+
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        assert body["latest_version"] == "1.0.0"
+        versions = {item["version"]: item for item in body["versions"]}
+        assert versions["1.0.0"]["is_active"] is True
+        assert versions["2.0.0"]["is_active"] is False
+
+    async def test_scan_bound_metric_uses_its_exact_project_total_scan(
+        self, client: AsyncClient, project: dict, data_source: dict
+    ):
+        slug = project["slug"]
+        metric_id = await _seed_event_composition_metric(
+            project["id"],
+            "bound-ver",
+            app_version_column="app_version",
+        )
+        bound_scan_id = await _seed_scan_config(
+            project["id"],
+            data_source_id=data_source["id"],
+            app_version_column="app_version",
+        )
+        unrelated_scan_id = await _seed_scan_config(
+            project["id"],
+            data_source_id=data_source["id"],
+            app_version_column="app_version",
+        )
+        await _seed_metric_values(metric_id, [(B0, 1.0)], scan_config_id=bound_scan_id)
+        await _seed_breakdowns(
+            metric_id,
+            [
+                ("app_version", "1.0.0", B0, 0.9),
+                ("app_version", "2.0.0", B0, 0.1),
+            ],
+            scan_config_id=bound_scan_id,
+        )
+        await _seed_project_version_totals(
+            bound_scan_id,
+            [
+                ("1.0.0", B0, 900),
+                ("1.0.0", B1, 900),
+                ("2.0.0", B0, 1),
+                ("2.0.0", B1, 1),
+            ],
+        )
+        await _seed_project_version_totals(
+            unrelated_scan_id,
+            [
+                ("1.0.0", B0, 10),
+                ("1.0.0", B1, 10),
+                ("2.0.0", B0, 9000),
+                ("2.0.0", B1, 9000),
+            ],
+        )
+
+        resp = await client.get(f"{_metrics_url(slug)}/{metric_id}/versions")
+
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        assert body["latest_version"] == "1.0.0"
+        versions = {item["version"]: item for item in body["versions"]}
+        assert versions["1.0.0"]["is_active"] is True
+        assert versions["2.0.0"]["is_active"] is False
 
     async def test_standalone_metric_uses_project_version_retention(
         self, client: AsyncClient, project: dict, data_source: dict

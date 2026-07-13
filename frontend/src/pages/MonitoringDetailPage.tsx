@@ -126,9 +126,25 @@ interface VersionChartSeries {
   // (backend is_latest && !is_active): a pre-release / not-yet-rolled-out build.
   isPreRelease: boolean
   totalCount: number
+  legendValue: number
   data: AppVersionMetricSeries['data']
   color: string
   isHighlighted: boolean
+}
+
+function isCountShapedMetric(metric: {
+  kind?: string
+  aggregation?: string | null
+  composition?: string | null
+} | undefined): boolean {
+  if (!metric) return true
+  if (metric.kind === 'sql') return false
+  if (metric.kind === 'event_composition') return metric.composition === 'single'
+  if (metric.kind === 'fact') {
+    if (metric.composition === 'ratio') return false
+    return metric.aggregation === 'count' || metric.aggregation === 'count_distinct'
+  }
+  return true
 }
 
 // ───────── Catalog-metric adapters ─────────
@@ -328,6 +344,9 @@ export default function MonitoringDetailPage() {
   // their unit ('%', 'ms', …, falling back to 'value'); event scopes keep the
   // historical 'events'.
   const metricSeriesLabel = scope === 'metric' ? metricDefinition?.unit || 'value' : 'events'
+  const versionLegendValueKind = scope === 'metric' && !isCountShapedMetric(metricDefinition)
+    ? 'latest'
+    : 'total'
 
   const metricsQuery = useQuery({
     queryKey: ['monitoringMetrics', slug, scope, scopeId, rangeDays],
@@ -557,12 +576,14 @@ export default function MonitoringDetailPage() {
       granularity,
       selectedVersionFilter,
       appVersionSeriesQuery.data?.latest_version,
+      versionLegendValueKind,
     ),
     [
       appVersionSeriesQuery.data?.latest_version,
       appVersionSeriesQuery.data?.series,
       granularity,
       selectedVersionFilter,
+      versionLegendValueKind,
     ],
   )
   const adoptionChartSeries = useMemo(
@@ -571,6 +592,7 @@ export default function MonitoringDetailPage() {
       granularity,
       selectedVersionFilter,
       appVersionAdoptionQuery.data?.latest_version,
+      'total',
     ),
     [
       appVersionAdoptionQuery.data?.latest_version,
@@ -1220,6 +1242,7 @@ export default function MonitoringDetailPage() {
                       series={versionChartSeries}
                       latestShare={latestAdoptionShare}
                       valueFormatter={metricValueFormatter}
+                      valueKind={versionLegendValueKind}
                     />
                     {appVersionSeriesQuery.data?.interval && (
                       <p className="mt-2 text-xs text-muted-foreground">
@@ -1488,6 +1511,7 @@ function buildVersionChartSeries(
   granularity: MetricsGranularity,
   versionFilter: VersionFilter,
   latestVersion: string | null | undefined,
+  legendValueKind: 'total' | 'latest',
 ): VersionChartSeries[] {
   return series
     .filter(item => versionFilter === 'all' || (!!latestVersion && item.is_latest))
@@ -1497,6 +1521,7 @@ function buildVersionChartSeries(
       // identity and highlight; a not-yet-active newest release is a pre-release.
       const isActiveLatest = isNewest && item.is_active
       const isPreRelease = isNewest && !item.is_active
+      const data = aggregateMetricPoints(item.data, granularity)
       return {
         label: formatVersionLabel(item),
         version: item.version,
@@ -1504,7 +1529,10 @@ function buildVersionChartSeries(
         isLatest: isActiveLatest,
         isPreRelease,
         totalCount: item.total_count,
-        data: aggregateMetricPoints(item.data, granularity),
+        legendValue: legendValueKind === 'latest'
+          ? item.data.at(-1)?.count ?? item.total_count
+          : item.total_count,
+        data,
         color: isActiveLatest
           ? 'var(--primary)'
           : isPreRelease
@@ -1529,22 +1557,47 @@ function VersionLegend({
   series,
   latestShare,
   valueFormatter,
+  valueKind = 'total',
 }: {
   series: VersionChartSeries[]
   latestShare?: number | null
   // Same convention as the charts: the formatted string carries its own unit
   // (percent-unit catalog metrics render stored fractions ×100).
   valueFormatter?: (value: number) => string
+  valueKind?: 'total' | 'latest'
 }) {
   if (!series.length) return null
   const shareSuffix = latestShare != null ? ` · ${formatPercent(latestShare)}` : ''
   return (
     <div className="mt-3 flex flex-wrap gap-2">
       {series.map(item => (
-        <div
+        <VersionLegendItem
           key={`${item.version}-${item.isOther}`}
-          className="flex min-w-0 items-center gap-2 rounded-md border bg-background px-2 py-1 text-xs"
-        >
+          item={item}
+          shareSuffix={shareSuffix}
+          valueFormatter={valueFormatter}
+          valueKind={valueKind}
+        />
+      ))}
+    </div>
+  )
+}
+
+function VersionLegendItem({
+  item,
+  shareSuffix,
+  valueFormatter,
+  valueKind,
+}: {
+  item: VersionChartSeries
+  shareSuffix: string
+  valueFormatter?: (value: number) => string
+  valueKind: 'total' | 'latest'
+}) {
+  const value = valueFormatter ? valueFormatter(item.legendValue) : item.legendValue.toLocaleString()
+  const displayValue = valueKind === 'latest' ? `latest value: ${value}` : value
+  return (
+    <div className="flex min-w-0 items-center gap-2 rounded-md border bg-background px-2 py-1 text-xs">
           <span
             className="h-2.5 w-2.5 shrink-0 rounded-full"
             style={{ backgroundColor: item.color }}
@@ -1564,10 +1617,8 @@ function VersionLegend({
             </Badge>
           )}
           <span className="shrink-0 text-muted-foreground">
-            {valueFormatter ? valueFormatter(item.totalCount) : item.totalCount.toLocaleString()}
+            {displayValue}
           </span>
-        </div>
-      ))}
     </div>
   )
 }

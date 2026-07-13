@@ -62,7 +62,6 @@ from tripl.services.version_activation import (
     DEFAULT_ACTIVE_SHARE_MIN,
     active_release_versions,
     compile_prerelease_pattern,
-    latest_active_version,
     released_versions,
     resolve_share_min,
 )
@@ -831,6 +830,9 @@ def _build_app_version_series(
     *,
     interval: str | None,
     metric_rows_by_series: dict[tuple[str, bool], list[tuple[datetime, int]]],
+    maturity_metric_rows_by_series: (
+        dict[tuple[str, bool], list[tuple[datetime, int]]] | None
+    ) = None,
     keep_releases: int,
     prerelease_pattern: re.Pattern[str] | None = None,
     share_min: float = DEFAULT_ACTIVE_SHARE_MIN,
@@ -848,11 +850,14 @@ def _build_app_version_series(
     explicit_versions = {version for version, is_other in metric_rows_by_series if not is_other}
     # Activation gate: a release can only be the "latest" — and can only hold a
     # retention slot ahead of an untried build — once it takes a real share of
-    # traffic. Volumes are computed from the raw rows (pre-fold) so releases
-    # rolled into "Other" still count toward the total traffic denominator.
+    # project traffic. Event and event-type views supply their project's total
+    # rows separately, so a rare event cannot make an otherwise mature release
+    # look like a pre-release. Falling back keeps historical views usable until
+    # a project-total row has been collected.
+    maturity_rows_by_series = maturity_metric_rows_by_series or metric_rows_by_series
     release_totals_by_version: dict[str, dict[datetime, int]] = {}
     all_traffic_by_bucket: dict[datetime, int] = {}
-    for (version, is_other), rows in metric_rows_by_series.items():
+    for (version, is_other), rows in maturity_rows_by_series.items():
         for bucket, count in rows:
             all_traffic_by_bucket[bucket] = all_traffic_by_bucket.get(bucket, 0) + count
             if not is_other:
@@ -865,13 +870,18 @@ def _build_app_version_series(
     # ``active`` over only released versions keeps the denominator (all traffic)
     # intact while guaranteeing a prerelease is never marked active.
     released = released_versions(explicit_versions, prerelease_pattern=prerelease_pattern)
+    maturity_released = released_versions(
+        {version for version, is_other in maturity_rows_by_series if not is_other},
+        prerelease_pattern=prerelease_pattern,
+    )
     released_totals = {
         version: by_bucket
         for version, by_bucket in release_totals_by_version.items()
-        if version in released
+        if version in maturity_released
     }
-    active_versions = active_release_versions(
-        released_totals, all_traffic_by_bucket, share_min=share_min
+    active_versions = (
+        active_release_versions(released_totals, all_traffic_by_bucket, share_min=share_min)
+        & explicit_versions
     )
     # Retain the latest ``keep_releases`` versions, released+active first, so a
     # higher-SemVer dev/prerelease build cannot push a shipped release into "Other".
@@ -899,9 +909,11 @@ def _build_app_version_series(
     # Prefer the SemVer-max ACTIVE released version; fall back to the SemVer-max
     # released version only when nothing has activated yet (a young project still
     # ramping). Prereleases are excluded from both, so they are never latest.
-    latest_version = latest_active_version(
-        released_totals, all_traffic_by_bucket, share_min=share_min
-    ) or _latest_app_version(keys, released)
+    latest_version = (
+        order_versions(active_versions, reverse=True)[0]
+        if active_versions
+        else _latest_app_version(keys, released)
+    )
 
     def _is_active(version: str, is_other: bool) -> bool:
         return not is_other and version in active_versions
@@ -993,9 +1005,23 @@ async def get_app_version_series(
         time_from=time_from,
         time_to=time_to,
     )
+    maturity_metric_rows_by_series = (
+        metric_rows_by_series
+        if scope_type == SCOPE_PROJECT_TOTAL
+        else await _load_app_version_metric_rows(
+            session,
+            config=config,
+            scope_type=SCOPE_PROJECT_TOTAL,
+            event_id=None,
+            event_type_id=None,
+            time_from=time_from,
+            time_to=time_to,
+        )
+    )
     latest_version, versions, series = _build_app_version_series(
         interval=config.interval,
         metric_rows_by_series=metric_rows_by_series,
+        maturity_metric_rows_by_series=maturity_metric_rows_by_series,
         keep_releases=project.app_version_keep_releases,
         prerelease_pattern=compile_prerelease_pattern(config.app_version_prerelease_pattern),
         share_min=resolve_share_min(config.app_version_active_share_min),

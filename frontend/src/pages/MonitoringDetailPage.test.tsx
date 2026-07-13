@@ -964,6 +964,7 @@ describe('MonitoringDetailPage catalog-metric drilldown', () => {
     seriesOverrides: Record<string, unknown> = {},
     annotations: Array<Record<string, unknown>> = [],
     breakdownsOverrides: Record<string, unknown> = {},
+    versionsOverrides: Record<string, unknown> = {},
   ) {
     return vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
       const url = String(input)
@@ -1003,6 +1004,32 @@ describe('MonitoringDetailPage catalog-metric drilldown', () => {
           selected_column: null,
           series: [],
           ...breakdownsOverrides,
+        })
+      }
+      if (url.includes('/api/v1/projects/demo/metrics/metric-1/versions')) {
+        return mockJsonResponse({
+          metric_id: 'metric-1',
+          scan_config_id: null,
+          app_version_column: 'app_version',
+          interval,
+          latest_version: '2.0.0',
+          versions: [
+            { version: '2.0.0', is_other: false, is_latest: true, is_active: true },
+          ],
+          series: [
+            {
+              version: '2.0.0',
+              is_other: false,
+              is_latest: true,
+              is_active: true,
+              total_value: 0.3,
+              data: [
+                metricSeriesPoint('2026-01-01T00:00:00Z', 0.1),
+                metricSeriesPoint('2026-01-02T00:00:00Z', 0.2),
+              ],
+            },
+          ],
+          ...versionsOverrides,
         })
       }
       // Manual "Collect now" — the POST the scenario's collect step hangs on.
@@ -1202,6 +1229,27 @@ describe('MonitoringDetailPage catalog-metric drilldown', () => {
     // and the tooltip label is the metric's unit — never 'events'.
     expect(chart).toHaveAttribute('data-value-sample', '8%')
     expect(chart).toHaveAttribute('data-series-label', '%')
+  })
+
+  it('shows the latest ratio value in the version legend instead of a summed total', async () => {
+    installMetricDetailFetch('1d', {
+      unit: '%',
+      kind: 'fact',
+      composition: 'ratio',
+      app_version_column: 'app_version',
+    })
+    renderMetricDetail()
+
+    await screen.findByTestId('metrics-chart')
+    const byVersionTab = screen.getByRole('tab', { name: /By version/i })
+    fireEvent.pointerDown(byVersionTab, { button: 0, ctrlKey: false })
+    fireEvent.mouseDown(byVersionTab, { button: 0, ctrlKey: false })
+    fireEvent.pointerUp(byVersionTab, { button: 0, ctrlKey: false })
+    fireEvent.mouseUp(byVersionTab, { button: 0, ctrlKey: false })
+    fireEvent.click(byVersionTab)
+
+    expect(await screen.findByText('latest value: 20%')).toBeInTheDocument()
+    expect(screen.queryByText('30%')).not.toBeInTheDocument()
   })
 
   it('coaches the metric-scope Breakdowns empty state with an Edit metric link', async () => {
