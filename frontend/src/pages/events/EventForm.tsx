@@ -3,6 +3,7 @@ import { useNavigate, useParams } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import type {
   Event as TEvent,
+  EventMutationResponse,
   EventType,
   FieldDefinition,
   MetaFieldDefinition,
@@ -377,8 +378,8 @@ export function EventForm({
     onSuccess: data => setDescription(data.description),
   })
 
-  const saveMut = useMutation({
-    mutationFn: (_closeAfterSave: boolean) => {
+  const saveMut = useMutation<EventMutationResponse, unknown, boolean>({
+    mutationFn: () => {
       const payload = {
         event_type_id: etId,
         name: generatedName ? generatedName.name : name,
