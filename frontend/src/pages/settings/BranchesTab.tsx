@@ -1,6 +1,8 @@
 import { Fragment, useId, useMemo, useState, type ReactNode } from 'react'
+import { Link, useNavigate } from 'react-router-dom'
 import { useMutation, useQueries, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
+  ArrowUpRight,
   ChevronRight,
   GitBranch,
   GitCompare,
@@ -9,6 +11,7 @@ import {
   Settings2,
   Ticket,
   Trash2,
+  Undo2,
 } from 'lucide-react'
 
 import { branchSettingsApi } from '@/api/branchSettings'
@@ -16,6 +19,7 @@ import { ApiError } from '@/api/client'
 import { planBranchesApi } from '@/api/planBranches'
 import { usersApi } from '@/api/users'
 import { TrackerConfigDialog } from './TrackerConfigDialog'
+import { useBranchLinkProps } from '@/hooks/useBranch'
 import { useConfirm } from '@/hooks/useConfirm'
 import { Chip, type ChipTone } from '@/components/primitives/chip'
 import { Button } from '@/components/ui/button'
@@ -43,6 +47,7 @@ import type {
   PlanDiffEntry,
   PlanDiffKind,
   PlanFieldChange,
+  PlanValueChange,
   ProjectBranchSettings,
   ResolutionChoice,
 } from '@/types'
@@ -163,15 +168,17 @@ function describeBranchActionError(error: unknown): string {
   return getErrorMessage(error)
 }
 
-export function BranchesTab({ slug }: { slug: string }) {
+/** The selected branch lives in the URL (`/p/:slug/settings/branches/:branchId`),
+ * not in component state, so a review can be linked to and shared. */
+export function BranchesTab({ slug, branchId }: { slug: string; branchId?: string }) {
   const qc = useQueryClient()
+  const navigate = useNavigate()
   const { confirm, dialog } = useConfirm()
   const [createOpen, setCreateOpen] = useState(false)
   const [policyOpen, setPolicyOpen] = useState(false)
   const [trackerOpen, setTrackerOpen] = useState(false)
   const [createName, setCreateName] = useState('')
   const [createDescription, setCreateDescription] = useState('')
-  const [activeBranchId, setActiveBranchId] = useState<string | null>(null)
   const usersById = useUsersById()
 
   const { data, isLoading } = useQuery({
@@ -180,6 +187,8 @@ export function BranchesTab({ slug }: { slug: string }) {
   })
 
   const invalidate = () => qc.invalidateQueries({ queryKey: ['planBranches', slug] })
+  const selectBranch = (branch: PlanBranchSummary) =>
+    navigate(`/p/${slug}/settings/branches/${branch.id}`)
 
   const createMut = useMutation({
     mutationFn: () =>
@@ -189,15 +198,17 @@ export function BranchesTab({ slug }: { slug: string }) {
       setCreateOpen(false)
       setCreateName('')
       setCreateDescription('')
-      setActiveBranchId(branch.id)
+      selectBranch(branch)
     },
   })
 
   const items = data?.items ?? []
   const mainBranch = items.find((b) => b.kind === 'main')
   const defaultCount = items.filter((b) => b.kind === 'main').length
-  const selected = activeBranchId
-    ? items.find((b) => b.id === activeBranchId) ?? null
+  // An unknown id in the URL (deleted or merged-away branch) falls back to main
+  // rather than rendering an empty detail pane.
+  const selected = branchId
+    ? (items.find((b) => b.id === branchId) ?? mainBranch ?? null)
     : (mainBranch ?? items[0] ?? null)
 
   // The selected feature branch's diff drives the real ahead/behind counts shown
@@ -262,7 +273,7 @@ export function BranchesTab({ slug }: { slug: string }) {
               selectedId={selected?.id ?? null}
               countsByBranch={countsByBranch}
               usersById={usersById}
-              onSelect={(branch) => setActiveBranchId(branch.id)}
+              onSelect={selectBranch}
             />
             <BranchDetail
               slug={slug}
@@ -441,6 +452,40 @@ function FeatureBranchDetail({ slug, branch, diff, confirm }: FeatureBranchDetai
     onSuccess: () => qc.invalidateQueries({ queryKey: ['planBranches', slug] }),
   })
 
+  // Undo one diff entry — the whole entity, or one field of it — back to the
+  // state the plan was in when the branch was opened.
+  const revertMut = useMutation({
+    mutationFn: ({ entry, field }: { entry: PlanDiffEntry; field?: string }) =>
+      planBranchesApi.revert(slug, branch.id, {
+        entity_type: entry.entity_type,
+        name: entry.name,
+        parent: entry.parent,
+        field: field ?? null,
+      }),
+    onSuccess: invalidate,
+  })
+
+  // Every revert restores the branch to its base state and leaves main alone;
+  // the wording changes because discarding an addition, undoing an edit and
+  // bringing back a deletion read as three different acts to the reviewer.
+  const REVERT_PROMPT: Record<PlanDiffKind, (name: string) => string> = {
+    added: (name) => `Discard ${name}? This branch added it — it will be deleted from the branch.`,
+    changed: (name) => `Revert every change to ${name}, back to the state it had when this branch was opened?`,
+    removed: (name) => `Restore ${name} on this branch? It comes back as it was when the branch was opened; its photos are not restored.`,
+  }
+
+  const handleRevert = async (entry: PlanDiffEntry, field?: string) => {
+    const ok = await confirm({
+      title: field ? 'Revert field' : 'Revert change',
+      message: field
+        ? `Revert the change to "${field}" on ${entry.name}, back to the value it had when this branch was opened? Main is untouched.`
+        : `${REVERT_PROMPT[entry.kind](entry.name)} Main is untouched.`,
+      confirmLabel: entry.kind === 'removed' && !field ? 'Restore' : 'Revert',
+      variant: 'danger',
+    })
+    if (ok) revertMut.mutate({ entry, field })
+  }
+
   const handleDelete = async () => {
     const ok = await confirm({
       title: 'Delete branch',
@@ -574,10 +619,25 @@ function FeatureBranchDetail({ slug, branch, diff, confirm }: FeatureBranchDetai
         ) : (
           <div>
             {entries.map((entry, idx) => (
-              <ChangeRow key={`${entry.entity_type}-${entry.name}-${idx}`} entry={entry} />
+              <ChangeRow
+                key={`${entry.entity_type}-${entry.name}-${idx}`}
+                slug={slug}
+                branchId={branch.id}
+                entry={entry}
+                onRevert={handleRevert}
+                reverting={revertMut.isPending}
+              />
             ))}
           </div>
         )}
+        {revertMut.isError ? (
+          <p
+            className="border-t px-4 py-2.5 text-[11.5px]"
+            style={{ borderColor: 'var(--border-subtle)', color: 'var(--danger)' }}
+          >
+            {getErrorMessage(revertMut.error)}
+          </p>
+        ) : null}
       </Panel>
 
       <ConflictsPanel slug={slug} branchId={branch.id} />
@@ -610,9 +670,34 @@ function SummaryCount({
   )
 }
 
-function ChangeRow({ entry }: { entry: PlanDiffEntry }) {
+/** Where a diff row points. Field definitions, meta fields and relations have no
+ * detail route yet — those rows stay unlinked. */
+function entityPath(slug: string, entry: PlanDiffEntry): string | null {
+  if (!entry.entity_id) return null
+  switch (entry.entity_type) {
+    case 'event':
+      return `/p/${slug}/events/all/${entry.entity_id}`
+    case 'event_type':
+      return `/p/${slug}/settings/event-types/${entry.entity_id}`
+    case 'variable':
+      return `/p/${slug}/settings/variables/${entry.entity_id}`
+    default:
+      return null
+  }
+}
+
+interface ChangeRowProps {
+  slug: string
+  branchId: string
+  entry: PlanDiffEntry
+  onRevert: (entry: PlanDiffEntry, field?: string) => void
+  reverting: boolean
+}
+
+function ChangeRow({ slug, branchId, entry, onRevert, reverting }: ChangeRowProps) {
   const [open, setOpen] = useState(false)
   const detailId = useId()
+  const branchLink = useBranchLinkProps()
   const meta = KIND_META[entry.kind]
   // Removed entities only exist on the base side; everything else shows the
   // branch-side (current) state.
@@ -620,6 +705,14 @@ function ChangeRow({ entry }: { entry: PlanDiffEntry }) {
   const hasState = !!fullState && Object.keys(fullState).length > 0
   const fieldChanges = entry.field_changes ?? []
   const hasFieldChanges = fieldChanges.length > 0
+  const path = entityPath(slug, entry)
+  // A removed entity is gone from the branch — only main still has it.
+  const link = path ? branchLink(path, entry.kind === 'removed' ? null : branchId) : null
+  const REVERT_LABEL: Record<PlanDiffKind, string> = {
+    added: 'Discard this addition',
+    changed: 'Revert all changes',
+    removed: 'Restore on this branch',
+  }
 
   return (
     <div
@@ -663,20 +756,50 @@ function ChangeRow({ entry }: { entry: PlanDiffEntry }) {
           className="flex flex-col gap-3 border-t px-4 py-3"
           style={{ borderColor: 'var(--border-subtle)', background: 'var(--surface)' }}
         >
-          <p className="text-[11px]" style={{ color: 'var(--fg-subtle)' }}>
-            {meta.label} {ENTITY_LABEL[entry.entity_type]}
-            {entry.parent ? (
-              <>
-                {' in '}
-                <span className="mono" style={{ color: 'var(--fg)' }}>
-                  {entry.parent}
-                </span>
-              </>
-            ) : null}
-          </p>
+          <div className="flex items-center justify-between gap-3">
+            <p className="text-[11px]" style={{ color: 'var(--fg-subtle)' }}>
+              {meta.label} {ENTITY_LABEL[entry.entity_type]}
+              {entry.parent ? (
+                <>
+                  {' in '}
+                  <span className="mono" style={{ color: 'var(--fg)' }}>
+                    {entry.parent}
+                  </span>
+                </>
+              ) : null}
+            </p>
+            <div className="flex shrink-0 items-center gap-3">
+              <button
+                type="button"
+                disabled={reverting}
+                onClick={() => onRevert(entry)}
+                className="flex items-center gap-1 text-[11px] hover:underline disabled:opacity-50"
+                style={{ color: 'var(--fg-muted)' }}
+              >
+                <Undo2 className="size-3" aria-hidden="true" />
+                {REVERT_LABEL[entry.kind]}
+              </button>
+              {link ? (
+                <Link
+                  {...link}
+                  className="flex items-center gap-1 text-[11px] hover:underline"
+                  style={{ color: 'var(--accent)' }}
+                >
+                  {entry.kind === 'removed'
+                    ? 'Open on main'
+                    : `Open ${ENTITY_LABEL[entry.entity_type]}`}
+                  <ArrowUpRight className="size-3" aria-hidden="true" />
+                </Link>
+              ) : null}
+            </div>
+          </div>
           {hasFieldChanges ? (
             <DetailSection title="Field changes">
-              <FieldChangeList changes={fieldChanges} />
+              <FieldChangeList
+                changes={fieldChanges}
+                reverting={reverting}
+                onRevert={(field) => onRevert(entry, field)}
+              />
             </DetailSection>
           ) : null}
           {hasState ? (
@@ -709,7 +832,15 @@ function DetailSection({ title, children }: { title: string; children: ReactNode
   )
 }
 
-function FieldChangeList({ changes }: { changes: PlanFieldChange[] }) {
+function FieldChangeList({
+  changes,
+  reverting,
+  onRevert,
+}: {
+  changes: PlanFieldChange[]
+  reverting: boolean
+  onRevert: (field: string) => void
+}) {
   return (
     <div className="flex flex-col gap-2">
       {changes.map((change) => (
@@ -718,18 +849,71 @@ function FieldChangeList({ changes }: { changes: PlanFieldChange[] }) {
           className="rounded-md border px-2.5 py-2"
           style={{ borderColor: 'var(--border-subtle)' }}
         >
-          <div className="mono mb-1 text-[11.5px] font-medium" style={{ color: 'var(--fg)' }}>
-            {change.field}
-          </div>
-          <div className="flex flex-wrap items-start gap-1.5">
-            <DiffValue value={change.before} tone="danger" />
-            <span className="text-[12px]" style={{ color: 'var(--fg-faint)' }} aria-hidden="true">
-              →
+          <div className="mb-1 flex items-center justify-between gap-2">
+            <span className="mono text-[11.5px] font-medium" style={{ color: 'var(--fg)' }}>
+              {change.field}
             </span>
-            <DiffValue value={change.after} tone="success" />
+            <button
+              type="button"
+              disabled={reverting}
+              onClick={() => onRevert(change.field)}
+              aria-label={`Revert ${change.field}`}
+              className="flex items-center gap-1 text-[11px] hover:underline disabled:opacity-50"
+              style={{ color: 'var(--fg-muted)' }}
+            >
+              <Undo2 className="size-3" aria-hidden="true" />
+              Revert
+            </button>
           </div>
+          {change.items && change.items.length > 0 ? (
+            // A collection changed one member at a time — show those members,
+            // not two dumps of the whole list.
+            <div className="flex flex-col gap-1">
+              {change.items.map((item) => (
+                <ValueChangeRow key={item.key} item={item} />
+              ))}
+            </div>
+          ) : (
+            <div className="flex flex-wrap items-start gap-1.5">
+              <DiffValue value={change.before} tone="danger" />
+              <span className="text-[12px]" style={{ color: 'var(--fg-faint)' }} aria-hidden="true">
+                →
+              </span>
+              <DiffValue value={change.after} tone="success" />
+            </div>
+          )}
         </div>
       ))}
+    </div>
+  )
+}
+
+/** One member of a changed collection: `~ currency  USD → EUR`. */
+function ValueChangeRow({ item }: { item: PlanValueChange }) {
+  const meta = KIND_META[item.kind]
+  return (
+    <div className="flex flex-wrap items-baseline gap-1.5 text-[11.5px]">
+      <span
+        className="mono w-3 shrink-0 text-center font-bold"
+        style={{ color: `var(--${meta.tone})` }}
+        aria-hidden="true"
+      >
+        {meta.sym}
+      </span>
+      <span className="mono shrink-0" style={{ color: 'var(--fg)' }}>
+        {item.key}
+      </span>
+      {item.kind === 'changed' ? (
+        <>
+          <DiffValue value={item.before} tone="danger" />
+          <span className="text-[12px]" style={{ color: 'var(--fg-faint)' }} aria-hidden="true">
+            →
+          </span>
+          <DiffValue value={item.after} tone="success" />
+        </>
+      ) : (
+        <DiffValue value={item.kind === 'added' ? item.after : item.before} tone={meta.tone} />
+      )}
     </div>
   )
 }
@@ -752,15 +936,66 @@ function StateView({ state }: { state: Record<string, unknown> }) {
   )
 }
 
-/** Renders a raw JSON value: scalars inline, objects/arrays as a pretty-printed
- * block. `tone` colours the before (danger) / after (success) sides of a diff. */
+/** Flattens a small record to `key: value · key: value` — the shape an event
+ * field value or a photo takes once its natural key is stripped off. */
+function inlineRecord(value: Record<string, unknown>): string {
+  return Object.entries(value)
+    .map(([key, item]) => `${key}: ${item === null || item === '' ? '∅' : String(item)}`)
+    .join(' · ')
+}
+
+function isFlatRecord(value: unknown): value is Record<string, unknown> {
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    !Array.isArray(value) &&
+    Object.values(value).every((item) => typeof item !== 'object' || item === null)
+  )
+}
+
+/** Renders a diff value the way a reviewer reads it: scalars plain, lists
+ * comma-joined, flat records as inline `key: value` pairs, and nested records
+ * one per line. Pretty-printed JSON is the last resort, not the default.
+ * `tone` colours the before (danger) / after (success) sides of a diff. */
 function DiffValue({ value, tone }: { value: unknown; tone?: ChipTone }) {
   const color = tone ? `var(--${tone})` : 'var(--fg)'
-  const isEmpty = value === null || value === undefined || value === ''
+  const isEmpty =
+    value === null || value === undefined || value === '' || (Array.isArray(value) && !value.length)
   if (isEmpty) {
     return (
       <span className="mono text-[11.5px]" style={{ color: 'var(--fg-faint)' }}>
         ∅
+      </span>
+    )
+  }
+  if (Array.isArray(value)) {
+    if (value.every((item) => typeof item !== 'object' || item === null)) {
+      return (
+        <span className="mono break-words text-[11.5px]" style={{ color }}>
+          {value.map((item) => String(item)).join(', ')}
+        </span>
+      )
+    }
+    if (value.every(isFlatRecord)) {
+      return (
+        <div className="flex flex-col gap-0.5">
+          {value.map((item, idx) => (
+            <span
+              key={idx}
+              className="mono break-words text-[11.5px]"
+              style={{ color }}
+            >
+              {inlineRecord(item)}
+            </span>
+          ))}
+        </div>
+      )
+    }
+  }
+  if (isFlatRecord(value)) {
+    return (
+      <span className="mono break-words text-[11.5px]" style={{ color }}>
+        {inlineRecord(value)}
       </span>
     )
   }

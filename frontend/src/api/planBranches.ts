@@ -9,6 +9,7 @@ import type {
   PlanBranchReviewer,
   PlanBranchSummary,
   PlanBranchTransitionAction,
+  PlanDiffEntityType,
   ResolutionChoice,
 } from '../types'
 
@@ -74,6 +75,23 @@ export const planBranchesApi = {
     api.post<PlanBranchDetail>(
       `/projects/${slug}/branches/${branchId}/merge`,
       undefined,
+    ),
+
+  /** Undo one entry of the branch's diff — the whole entity, or one field of it
+   * — back to the branch's base state. Responds with the resulting diff. */
+  revert: (
+    slug: string,
+    branchId: string,
+    data: {
+      entity_type: PlanDiffEntityType
+      name: string
+      parent?: string | null
+      field?: string | null
+    },
+  ) =>
+    api.post<PlanBranchDiffSummary>(
+      `/projects/${slug}/branches/${branchId}/revert`,
+      data,
     ),
 
   getConflicts: (slug: string, branchId: string) =>

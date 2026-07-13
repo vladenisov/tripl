@@ -1,4 +1,5 @@
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { MemoryRouter, Route, Routes, useParams } from 'react-router-dom'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { branchSettingsApi } from '@/api/branchSettings'
@@ -21,6 +22,7 @@ vi.mock('@/api/planBranches', () => ({
     merge: vi.fn(),
     createComment: vi.fn(),
     saveResolution: vi.fn(),
+    revert: vi.fn(),
   },
 }))
 
@@ -95,11 +97,25 @@ const FEATURE = makeBranch({
   created_by: 'u-maya',
 })
 
-function renderTab() {
+/** The selected branch comes from the route, so the tab is mounted behind the
+ * real `/p/:slug/settings/branches/:branchId` routes — selecting a branch in the
+ * list navigates, exactly as it does in the app. */
+function BranchesTabRoute() {
+  const { branchId } = useParams<{ branchId?: string }>()
+  return <BranchesTab slug="demo" branchId={branchId} />
+}
+
+function renderTab(branchId?: string) {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+  const path = `/p/demo/settings/branches${branchId ? `/${branchId}` : ''}`
   return render(
     <QueryClientProvider client={queryClient}>
-      <BranchesTab slug="demo" />
+      <MemoryRouter initialEntries={[path]}>
+        <Routes>
+          <Route path="/p/:slug/settings/branches" element={<BranchesTabRoute />} />
+          <Route path="/p/:slug/settings/branches/:branchId" element={<BranchesTabRoute />} />
+        </Routes>
+      </MemoryRouter>
     </QueryClientProvider>,
   )
 }
@@ -248,6 +264,210 @@ describe('BranchesTab', () => {
     expect(screen.getByText('Added')).toBeInTheDocument()
     expect(screen.getByText('Modified')).toBeInTheDocument()
     expect(screen.getByText('Removed')).toBeInTheDocument()
+  })
+
+  it('selects the branch named in the route without a click', async () => {
+    vi.mocked(planBranchesApi.list).mockResolvedValue({ items: [MAIN, FEATURE], total: 2 })
+    vi.mocked(planBranchesApi.getConflicts).mockResolvedValue({ entities: [], unresolved_count: 0 })
+    vi.mocked(planBranchesApi.listComments).mockResolvedValue([])
+    vi.mocked(planBranchesApi.diff).mockResolvedValue({
+      behind_base: false,
+      summary: { added: 0, removed: 0, changed: 0 },
+      entries: [],
+    })
+
+    // A shared link lands straight on the branch's review — no main detour.
+    renderTab('feat-1')
+
+    await waitFor(() => expect(planBranchesApi.diff).toHaveBeenCalledWith('demo', 'feat-1'))
+    expect(await screen.findByText('No changes in this branch.')).toBeInTheDocument()
+    expect(screen.queryByText(/every change merges here/i)).not.toBeInTheDocument()
+  })
+
+  it('breaks a changed collection down per member instead of dumping JSON', async () => {
+    vi.mocked(planBranchesApi.list).mockResolvedValue({ items: [MAIN, FEATURE], total: 2 })
+    vi.mocked(planBranchesApi.getConflicts).mockResolvedValue({ entities: [], unresolved_count: 0 })
+    vi.mocked(planBranchesApi.listComments).mockResolvedValue([])
+    vi.mocked(planBranchesApi.diff).mockResolvedValue({
+      behind_base: false,
+      summary: { added: 0, removed: 0, changed: 1 },
+      entries: [
+        {
+          entity_type: 'event',
+          kind: 'changed',
+          name: 'purchase',
+          parent: 'track',
+          entity_id: 'ev-1',
+          changes: ['field_values: 1 added, 1 changed'],
+          field_changes: [
+            {
+              field: 'field_values',
+              before: [{ field_name: 'currency', value: 'USD', is_authored: true }],
+              after: [
+                { field_name: 'currency', value: 'EUR', is_authored: true },
+                { field_name: 'method', value: 'card', is_authored: true },
+              ],
+              items: [
+                {
+                  key: 'currency',
+                  kind: 'changed',
+                  before: { value: 'USD', is_authored: true },
+                  after: { value: 'EUR', is_authored: true },
+                },
+                {
+                  key: 'method',
+                  kind: 'added',
+                  before: null,
+                  after: { value: 'card', is_authored: true },
+                },
+              ],
+            },
+          ],
+          before: null,
+          after: null,
+        },
+      ],
+    })
+
+    renderTab('feat-1')
+
+    fireEvent.click(await screen.findByRole('button', { name: /purchase/i }))
+
+    // Each changed member is named and shown with its own before → after …
+    expect(await screen.findByText('currency')).toBeInTheDocument()
+    expect(screen.getByText('method')).toBeInTheDocument()
+    expect(screen.getByText(/value: USD/)).toBeInTheDocument()
+    expect(screen.getByText(/value: EUR/)).toBeInTheDocument()
+    // … and no JSON blob of the whole collection is rendered.
+    expect(screen.queryByText(/"field_name"/)).not.toBeInTheDocument()
+  })
+
+  it('reverts a single changed field after the reviewer confirms', async () => {
+    vi.mocked(planBranchesApi.list).mockResolvedValue({ items: [MAIN, FEATURE], total: 2 })
+    vi.mocked(planBranchesApi.getConflicts).mockResolvedValue({ entities: [], unresolved_count: 0 })
+    vi.mocked(planBranchesApi.listComments).mockResolvedValue([])
+    vi.mocked(planBranchesApi.diff).mockResolvedValue({
+      behind_base: false,
+      summary: { added: 0, removed: 0, changed: 1 },
+      entries: [
+        {
+          entity_type: 'event',
+          kind: 'changed',
+          name: 'purchase',
+          parent: 'track',
+          entity_id: 'ev-1',
+          changes: ["description: '' → 'edited'"],
+          field_changes: [{ field: 'description', before: '', after: 'edited', items: [] }],
+          before: null,
+          after: null,
+        },
+      ],
+    })
+    vi.mocked(planBranchesApi.revert).mockResolvedValue({
+      behind_base: false,
+      summary: { added: 0, removed: 0, changed: 0 },
+      entries: [],
+    })
+
+    renderTab('feat-1')
+
+    fireEvent.click(await screen.findByRole('button', { name: /purchase/i }))
+    fireEvent.click(await screen.findByRole('button', { name: /Revert description/i }))
+
+    // Reverting is destructive to branch work, so it waits for consent.
+    expect(planBranchesApi.revert).not.toHaveBeenCalled()
+    fireEvent.click(await screen.findByRole('button', { name: 'Revert' }))
+
+    await waitFor(() =>
+      expect(planBranchesApi.revert).toHaveBeenCalledWith('demo', 'feat-1', {
+        entity_type: 'event',
+        name: 'purchase',
+        parent: 'track',
+        field: 'description',
+      }),
+    )
+  })
+
+  it('restores an entity the branch deleted', async () => {
+    vi.mocked(planBranchesApi.list).mockResolvedValue({ items: [MAIN, FEATURE], total: 2 })
+    vi.mocked(planBranchesApi.getConflicts).mockResolvedValue({ entities: [], unresolved_count: 0 })
+    vi.mocked(planBranchesApi.listComments).mockResolvedValue([])
+    vi.mocked(planBranchesApi.diff).mockResolvedValue({
+      behind_base: false,
+      summary: { added: 0, removed: 1, changed: 0 },
+      entries: [
+        {
+          entity_type: 'event',
+          kind: 'removed',
+          name: 'legacy_event',
+          parent: 'track',
+          entity_id: 'ev-old',
+          changes: [],
+          field_changes: [],
+          before: { name: 'legacy_event' },
+          after: null,
+        },
+      ],
+    })
+
+    vi.mocked(planBranchesApi.revert).mockResolvedValue({
+      behind_base: false,
+      summary: { added: 0, removed: 0, changed: 0 },
+      entries: [],
+    })
+
+    renderTab('feat-1')
+
+    fireEvent.click(await screen.findByRole('button', { name: /legacy_event/i }))
+
+    // The row links to the copy that survives on main — the branch has none.
+    expect(await screen.findByRole('link', { name: /Open on main/i })).toHaveAttribute(
+      'href',
+      '/p/demo/events/all/ev-old',
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: /Restore on this branch/i }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Restore' }))
+
+    await waitFor(() =>
+      expect(planBranchesApi.revert).toHaveBeenCalledWith('demo', 'feat-1', {
+        entity_type: 'event',
+        name: 'legacy_event',
+        parent: 'track',
+        field: null,
+      }),
+    )
+  })
+
+  it('links a diff row to the entity it describes, in the branch', async () => {
+    vi.mocked(planBranchesApi.list).mockResolvedValue({ items: [MAIN, FEATURE], total: 2 })
+    vi.mocked(planBranchesApi.getConflicts).mockResolvedValue({ entities: [], unresolved_count: 0 })
+    vi.mocked(planBranchesApi.listComments).mockResolvedValue([])
+    vi.mocked(planBranchesApi.diff).mockResolvedValue({
+      behind_base: false,
+      summary: { added: 1, removed: 0, changed: 0 },
+      entries: [
+        {
+          entity_type: 'event',
+          kind: 'added',
+          name: 'checkout_started',
+          parent: 'track',
+          entity_id: 'ev-9',
+          changes: [],
+          field_changes: [],
+          before: null,
+          after: { name: 'checkout_started', status: 'active' },
+        },
+      ],
+    })
+
+    renderTab('feat-1')
+
+    fireEvent.click(await screen.findByRole('button', { name: /checkout_started/i }))
+
+    const link = await screen.findByRole('link', { name: /Open event/i })
+    // The event lives on the branch, so the link opens it there.
+    expect(link).toHaveAttribute('href', '/p/demo/events/all/ev-9?branch=feat-1')
   })
 
   it('expands a change row to reveal the field diff and full state', async () => {

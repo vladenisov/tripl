@@ -72,7 +72,8 @@ export default function ProjectSettingsPage() {
       {tab === 'event-types' && !itemId && <EventTypesTab slug={slug} />}
       {tab === 'meta-fields' && <MetaFieldsTab slug={slug} />}
       {tab === 'relations' && <RelationsTab slug={slug} />}
-      {tab === 'variables' && <VariablesTab slug={slug} />}
+      {/* `itemId` focuses one variable — the target of a branch-diff link. */}
+      {tab === 'variables' && <VariablesTab slug={slug} focusId={itemId} />}
       {tab === 'monitoring' && <MonitoringTab slug={slug} />}
       {tab === 'alerting' && (
         <Suspense fallback={<p className="text-sm text-muted-foreground">Loading alerting settings…</p>}>
@@ -81,7 +82,7 @@ export default function ProjectSettingsPage() {
       )}
       {tab === 'scans' && itemId && <ScanConfigDetail slug={slug} scanConfigId={itemId} />}
       {tab === 'scans' && !itemId && <ScansTab slug={slug} />}
-      {tab === 'branches' && <BranchesTab slug={slug} />}
+      {tab === 'branches' && <BranchesTab slug={slug} branchId={itemId} />}
       {tab === 'history' && <HistoryTab slug={slug} />}
       {tab === 'audit' && <AuditTab slug={slug} />}
     </div>

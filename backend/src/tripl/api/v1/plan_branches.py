@@ -7,6 +7,7 @@ from tripl.schemas.plan_branch import (
     BranchCommentCreate,
     BranchCommentResponse,
     BranchConflictsResponse,
+    BranchRevertRequest,
     BranchReviewerCreate,
     BranchReviewerResponse,
     BranchTransitionRequest,
@@ -22,6 +23,7 @@ from tripl.services import (
     audit_service,
     plan_branch_conflicts,
     plan_branch_merge_service,
+    plan_branch_revert_service,
     plan_branch_service,
 )
 
@@ -182,6 +184,33 @@ async def delete_comment(
 @router.get("/{branch_id}/diff", response_model=PlanBranchDiff)
 async def diff_branch(session: SessionDep, slug: str, branch_id: uuid.UUID) -> PlanBranchDiff:
     return await plan_branch_service.diff_branch(session, slug, branch_id)
+
+
+@router.post("/{branch_id}/revert", response_model=PlanBranchDiff)
+async def revert_branch_change(
+    session: SessionDep,
+    current_user: EditorUserDep,
+    slug: str,
+    branch_id: uuid.UUID,
+    data: BranchRevertRequest,
+) -> PlanBranchDiff:
+    diff = await plan_branch_revert_service.revert_change(session, slug, branch_id, data)
+    await audit_service.record(
+        session,
+        user=current_user,
+        action="plan_branch.revert",
+        target_type="plan_branch",
+        target_id=branch_id,
+        target_name=data.name,
+        project_slug=slug,
+        payload={
+            "entity_type": data.entity_type,
+            "name": data.name,
+            "parent": data.parent,
+            "field": data.field,
+        },
+    )
+    return diff
 
 
 @router.get("/{branch_id}/conflicts", response_model=BranchConflictsResponse)
