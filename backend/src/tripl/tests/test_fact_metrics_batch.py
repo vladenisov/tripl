@@ -1233,3 +1233,43 @@ def test_sibling_failure_is_reported_without_discarding_the_clicked_metric_rows(
         broken_definition = session.get(MetricDefinition, broken_id)
         assert broken_definition is not None
         assert broken_definition.last_collection_status == "error"
+
+
+# (i) a condition column dropped from the warehouse must fail by name ──────────
+
+
+def test_condition_column_missing_from_the_fact_table_fails_with_its_name(
+    sync_session_factory: sessionmaker[Session],
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """Save-time validation saw the column; the warehouse has since lost it.
+
+    Nothing rechecked condition columns at collection time, so the metric
+    compiled a query referencing a column that no longer exists — failing deep in
+    the warehouse, and (through the generated-SQL disclosure) handing the user
+    SQL that cannot run.
+    """
+    with sync_session_factory() as session:
+        project, data_source = _seed_project_and_ds(session)
+        fact_table = _seed_fact_table(session, project, data_source)
+        metric = _make_single_metric(
+            session,
+            project,
+            fact_table,
+            aggregation=MetricAggregation.count,
+            config={"conditions": [{"column": "since_dropped", "operator": "eq", "value": "x"}]},
+        )
+        metric_id = metric.id
+
+    adapter = _BatchAdapter(spec_values={})
+    _patch(monkeypatch, sync_session_factory, adapter)
+
+    result = metric_collect.collect_fact_metrics_batch.run([str(metric_id)])
+
+    assert result["errors"] == 1
+    assert adapter.multi_calls == 0
+    with sync_session_factory() as session:
+        definition = session.get(MetricDefinition, metric_id)
+        assert definition is not None
+        assert definition.last_collection_status == "error"
+        assert "since_dropped" in (definition.last_collection_error or "")

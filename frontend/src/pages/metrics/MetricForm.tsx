@@ -37,7 +37,7 @@ import {
   type MetricAggregation,
   type MetricComposition,
   type MetricCreate,
-  type MetricDefinitionResponse,
+  type MetricDefinitionDetailResponse,
   type MetricDefinitionUpdate,
   type MetricKind,
   type MetricPreviewRequest,
@@ -585,7 +585,7 @@ function TemplateGallery({ onPick, onSkip }: TemplateGalleryProps) {
 
 interface MetricFormProps {
   slug: string
-  metric: MetricDefinitionResponse | null
+  metric: MetricDefinitionDetailResponse | null
   dataSources: DataSource[]
   events: EventListItem[]
   onClose: () => void

@@ -1514,6 +1514,52 @@ class TestCollectNow:
             got = await client.get(f"{_metrics_url(project['slug'])}/{metric_id}")
             assert got.json()["last_collection_status"] == "running"
 
+    async def test_fact_metric_collect_is_capped_and_reports_its_batch_size(
+        self,
+        client: AsyncClient,
+        project: dict,
+        fact_table: dict,
+        dispatch_recorder: dict[str, _DispatchRecorder],
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        """One click must not hand a whole project to a single Celery task.
+
+        The fact-table dependency closure is transitive, so a chain of ratios can
+        walk from the clicked metric across most of a project. Metrics past the
+        cap keep their own watermark and stay on the scheduler.
+        """
+        monkeypatch.setattr(metric_definition_service, "MAX_MANUAL_COLLECT_GROUP", 2)
+
+        async def create_metric(name: str) -> dict:
+            response = await client.post(
+                _metrics_url(project["slug"]),
+                json={
+                    "kind": "fact",
+                    "name": name,
+                    "display_name": name,
+                    "status": "active",
+                    "composition": "single",
+                    "fact_table_id": fact_table["id"],
+                    "aggregation": "count",
+                    "interval": "1h",
+                },
+            )
+            assert response.status_code == 201, response.text
+            return response.json()
+
+        clicked = await create_metric("collect_capped_clicked")
+        for index in range(3):
+            await create_metric(f"collect_capped_sibling_{index}")
+
+        response = await client.post(f"{_metrics_url(project['slug'])}/{clicked['id']}/collect")
+
+        assert response.status_code == 202, response.text
+        dispatched_ids = dispatch_recorder["fact"].calls[0][0]
+        assert len(dispatched_ids) == 2
+        assert clicked["id"] in dispatched_ids
+        # ... and the click reports what it actually set in motion.
+        assert response.json()["metric_count"] == 2
+
     async def test_collect_marks_metric_running(
         self,
         client: AsyncClient,

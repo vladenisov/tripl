@@ -59,7 +59,7 @@ import {
   type MetricCreate,
   type MetricDefinitionListItem,
   type MetricDefinitionListResponse,
-  type MetricDefinitionResponse,
+  type MetricDefinitionDetailResponse,
   type MetricKind,
   type MetricScanInterval,
   type MetricStatus,
@@ -234,7 +234,7 @@ function readFactConditions(raw: unknown): FactConditionPayload[] {
  * remapped explicitly.
  */
 function buildDuplicatePayload(
-  def: MetricDefinitionResponse,
+  def: MetricDefinitionDetailResponse,
   displayName: string,
   name: string,
 ): MetricCreate {

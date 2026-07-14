@@ -18,7 +18,8 @@ from sqlalchemy import select, text
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session
 
-from tripl.core.bucketing import floor_to_bucket, to_utc
+from tripl.core.bucketing import floor_to_bucket
+from tripl.core.collection_progress import collection_progress_to
 from tripl.core.intervals import get_interval
 from tripl.models.domain_enums import MetricKind, MetricStatus
 from tripl.models.event_metric import EventMetric
@@ -292,15 +293,10 @@ def _metric_definition_due(
         )
     ).scalar()
     current_boundary = floor_to_bucket(now, str(definition.interval))
-    value_window_to = to_utc(last_bucket) + delta if last_bucket is not None else None
-    watermark = (
-        to_utc(definition.last_collection_window_to)
-        if definition.last_collection_window_to is not None
-        else None
-    )
-    progress_to = max(
-        (candidate for candidate in (value_window_to, watermark) if candidate is not None),
-        default=None,
+    progress_to = collection_progress_to(
+        last_bucket=last_bucket,
+        watermark=definition.last_collection_window_to,
+        delta=delta,
     )
     return progress_to is None or progress_to < current_boundary
 

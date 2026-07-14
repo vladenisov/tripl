@@ -1,4 +1,6 @@
+import logging
 import uuid
+from collections import deque
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -13,6 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from tripl.core.adapters.measure_validator import SqlDialect, quote_sql_literal
 from tripl.core.bucketing import floor_to_bucket, to_utc
+from tripl.core.collection_progress import collection_progress_to
 from tripl.core.intervals import get_interval
 from tripl.models.data_source import DataSource
 from tripl.models.domain_enums import MetricComposition, MetricKind, MetricScopeType, MetricStatus
@@ -49,9 +52,18 @@ from tripl.services.plan_branch_service import resolve_branch_id
 from tripl.services.project_lookup import get_project_id_by_slug
 from tripl.services.search_service import reindex_project_branch
 
+logger = logging.getLogger(__name__)
+
 # Defensive cap on the list query; realistic projects have well under this many
 # metric definitions.
 _LIST_HARD_CAP = 1000
+
+# Ceiling on how many metrics ONE "collect now" click may sweep into its shared
+# batch. The fact-table dependency closure is transitive, so without this a click
+# on a metric in a long ratio chain can mark most of a project RUNNING and hand a
+# single Celery task more work than its soft_time_limit allows. Metrics past the
+# cap simply stay on the scheduler.
+MAX_MANUAL_COLLECT_GROUP = 25
 
 # Number of trailing values returned per metric for the catalog sparkline.
 _SPARK_POINTS = 20
@@ -676,15 +688,10 @@ def _collection_schedule(
     delta = get_interval(interval_code).delta
     moment = to_utc(now)
     current_boundary = floor_to_bucket(moment, interval_code)
-    value_window_to = to_utc(latest_bucket) + delta if latest_bucket is not None else None
-    watermark = (
-        to_utc(metric.last_collection_window_to)
-        if metric.last_collection_window_to is not None
-        else None
-    )
-    progress_to = max(
-        (candidate for candidate in (value_window_to, watermark) if candidate is not None),
-        default=None,
+    progress_to = collection_progress_to(
+        last_bucket=latest_bucket,
+        watermark=metric.last_collection_window_to,
+        delta=delta,
     )
     if progress_to is None or progress_to < current_boundary:
         return moment, True
@@ -964,8 +971,15 @@ async def _fact_collection_group(
 
     A ratio connects two fact tables. Once such a metric is selected, collecting
     it necessarily refreshes both sources, so every active metric using the newly
-    reached table is included too. The fixed-point closure ensures a source query
-    is never refreshed while another active dependent metric is left stale.
+    reached table is included too: sharing a scan they would each have run anyway
+    is the whole point of the batch.
+
+    That closure is transitive, so chained ratios can walk from one clicked metric
+    to most of a project. Expansion is therefore breadth-first from the clicked
+    metric's own fact tables and stops at ``MAX_MANUAL_COLLECT_GROUP``, keeping
+    the nearest metrics — the ones that actually share the clicked metric's scans.
+    Metrics left out are not stranded: they keep their own watermark, so the
+    scheduler collects them, and their backlog, on their next tick.
     """
     active = list(
         (
@@ -980,21 +994,39 @@ async def _fact_collection_group(
         .scalars()
         .all()
     )
-    reached_tables = _metric_fact_table_ids(clicked)
+    metrics_by_table: dict[uuid.UUID, list[MetricDefinition]] = {}
+    for candidate in active:
+        for table_id in _metric_fact_table_ids(candidate):
+            metrics_by_table.setdefault(table_id, []).append(candidate)
+
     selected: dict[uuid.UUID, MetricDefinition] = {clicked.id: clicked}
-    changed = True
-    while changed:
-        changed = False
-        for candidate in active:
+    # Sorted throughout so an over-large graph truncates the same way every time.
+    pending_tables = deque(sorted(_metric_fact_table_ids(clicked), key=str))
+    reached_tables = set(pending_tables)
+    truncated = False
+    while pending_tables and not truncated:
+        table_id = pending_tables.popleft()
+        candidates = sorted(
+            metrics_by_table.get(table_id, []), key=lambda definition: str(definition.id)
+        )
+        for candidate in candidates:
             if candidate.id in selected:
                 continue
-            candidate_tables = _metric_fact_table_ids(candidate)
-            if not candidate_tables.intersection(reached_tables):
-                continue
+            if len(selected) >= MAX_MANUAL_COLLECT_GROUP:
+                truncated = True
+                break
             selected[candidate.id] = candidate
-            previous_count = len(reached_tables)
-            reached_tables.update(candidate_tables)
-            changed = changed or len(reached_tables) != previous_count
+            for next_table in sorted(_metric_fact_table_ids(candidate), key=str):
+                if next_table not in reached_tables:
+                    reached_tables.add(next_table)
+                    pending_tables.append(next_table)
+    if truncated:
+        logger.warning(
+            "Manual collection of metric %s capped at %d metrics; the rest of its "
+            "fact-table dependency graph stays on the scheduler",
+            clicked.id,
+            MAX_MANUAL_COLLECT_GROUP,
+        )
     return sorted(selected.values(), key=lambda definition: str(definition.id))
 
 
@@ -1109,6 +1141,7 @@ async def trigger_metric_collection(
         window_from=window[0] if window is not None else None,
         window_to=window[1] if window is not None else None,
         task_id=task_id,
+        metric_count=len(collection_group),
     )
 
 

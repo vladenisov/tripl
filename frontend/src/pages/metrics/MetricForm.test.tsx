@@ -2,7 +2,7 @@ import { act, fireEvent, render, screen, waitFor, within } from '@testing-librar
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { createElement, type ReactNode } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import type { DataSource, EventListItem, MetricDefinitionResponse } from '@/types'
+import type { DataSource, EventListItem, MetricDefinitionDetailResponse } from '@/types'
 import { MetricForm } from './MetricForm'
 
 vi.mock('@/api/metricsCatalogApi', () => ({
@@ -111,7 +111,7 @@ function wrapper({ children }: { children: ReactNode }) {
 }
 
 function renderForm(
-  metric: MetricDefinitionResponse | null = null,
+  metric: MetricDefinitionDetailResponse | null = null,
   dataSources: DataSource[] = DATA_SOURCES,
 ) {
   const onClose = vi.fn()
@@ -266,7 +266,7 @@ describe('MetricForm validation', () => {
     },
     created_at: '2026-06-01T00:00:00Z',
     updated_at: '2026-06-20T00:00:00Z',
-  } as unknown as MetricDefinitionResponse
+  } as unknown as MetricDefinitionDetailResponse
 
   it('keeps the internal name read-only and renders editable kind/config in edit mode', () => {
     renderForm(EDIT_METRIC)
@@ -341,7 +341,7 @@ describe('MetricForm validation', () => {
           distinct_column: 'session_id',
         },
       },
-    } as unknown as MetricDefinitionResponse
+    } as unknown as MetricDefinitionDetailResponse
 
     renderForm(metric)
     await waitFor(() => expect(screen.getByRole('button', { name: 'Save metric' })).toBeEnabled())
@@ -388,7 +388,7 @@ describe('MetricForm validation', () => {
       numerator_event_id: null,
       numerator_event_type_id: 'event-type-1',
       config: {},
-    } as unknown as MetricDefinitionResponse
+    } as unknown as MetricDefinitionDetailResponse
 
     renderForm(metric)
     submit()
@@ -945,7 +945,7 @@ describe('MetricForm validation', () => {
     renderForm({
       ...EDIT_METRIC,
       breakdown_columns: ['custom_dim'],
-    } as unknown as MetricDefinitionResponse)
+    } as unknown as MetricDefinitionDetailResponse)
 
     expect(screen.getByRole('checkbox', { name: 'Break down by custom_dim' })).toBeChecked()
   })
@@ -992,7 +992,7 @@ describe('MetricForm templates', () => {
     },
     created_at: '2026-06-01T00:00:00Z',
     updated_at: '2026-06-20T00:00:00Z',
-  } as unknown as MetricDefinitionResponse
+  } as unknown as MetricDefinitionDetailResponse
 
   it('shows the starter template gallery in create mode', () => {
     renderForm()

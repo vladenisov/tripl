@@ -66,6 +66,7 @@ from tripl.core.adapters.measure_validator import (
     validate_sql_fragment,
 )
 from tripl.core.bucketing import floor_to_bucket, to_utc
+from tripl.core.collection_progress import collection_progress_to
 from tripl.core.intervals import IntervalSpec, get_interval
 from tripl.core.warehouse_types import TimeKind
 from tripl.models.data_source import DataSource
@@ -218,15 +219,10 @@ def _resolve_value_window(
         )
     ).scalar()
     definition = session.get(MetricDefinition, metric_definition_id)
-    value_progress_to = to_utc(last_bucket) + delta if last_bucket is not None else None
-    watermark = (
-        to_utc(definition.last_collection_window_to)
-        if definition is not None and definition.last_collection_window_to is not None
-        else None
-    )
-    progress_to = max(
-        (candidate for candidate in (value_progress_to, watermark) if candidate is not None),
-        default=None,
+    progress_to = collection_progress_to(
+        last_bucket=last_bucket,
+        watermark=definition.last_collection_window_to if definition is not None else None,
+        delta=delta,
     )
     if progress_to is not None:
         # Preserve the historical two-bucket overlap: the latest completed
@@ -1477,8 +1473,38 @@ def _resolve_batch_operand(
             msg = "fact table query returned no columns; cannot validate measure column"
             raise ScanError(msg)
         measure = validate_measure_column(measure, allowed_columns)
+    _validate_condition_columns(operand, allowed_columns=allowed_columns)
     filter_sql = _resolve_fact_operand_filter(operand, fact_table=fact_table, dialect=dialect)
     return measure, filter_sql
+
+
+def _validate_condition_columns(operand: _FactOperand, *, allowed_columns: set[str]) -> None:
+    """Hold condition columns to the same allowlist a measure column answers to.
+
+    Condition columns clear ``validate_identifier``'s regex when the metric is
+    saved, and ``_verify_fact_operand`` checks them against the fact table's
+    columns AS THEY WERE THEN. Nothing rechecks them at collection time, so a
+    column dropped or renamed in the warehouse afterwards compiles into a query
+    that fails deep inside a worker — or, through the generated-SQL disclosure,
+    into SQL a user is invited to copy and run. Fail here instead, naming the
+    column, the way an unknown measure column already does.
+    """
+    if not operand.conditions:
+        return
+    if not allowed_columns:
+        msg = "fact table query returned no columns; cannot validate condition columns"
+        raise ScanError(msg)
+    unknown = sorted(
+        {
+            condition.column
+            for condition in operand.conditions
+            if condition.column not in allowed_columns
+        }
+    )
+    if unknown:
+        listed = ", ".join(repr(column) for column in unknown)
+        msg = f"condition column(s) {listed} are not columns of the fact table"
+        raise ScanError(msg)
 
 
 def _index_multi_aggregate(

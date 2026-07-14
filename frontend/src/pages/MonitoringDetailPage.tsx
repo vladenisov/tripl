@@ -705,16 +705,26 @@ export default function MonitoringDetailPage() {
       void queryClient.invalidateQueries({ queryKey: ['metrics-catalog', context.slug] })
     }
   })
+  /**
+   * A fact click collects every metric sharing its source, in one batch — say how
+   * many, rather than "all active dependent metrics": the batch is capped, so
+   * that phrasing could promise more than the click actually started.
+   */
+  const factCollectMessage = (metricCount: number): string =>
+    metricCount > 1
+      ? `Source refresh started — ${metricCount} metrics sharing this source will update in one batch.`
+      : 'Source refresh started — current fact data will update shortly.'
+
   const collectMut = useMutation({
     // The target travels WITH the mutation instead of being re-read in onSuccess.
     // react-query refreshes the observer's options every render, so onSuccess saw
     // the CURRENT scopeId: firing a collect for metric A and navigating to B
     // before the POST resolved attached the watcher to B (tripl-htvg).
     mutationFn: (target: CollectTarget) => metricsCatalogApi.collect(target.slug, target.scopeId),
-    onSuccess: (_data, target) => {
+    onSuccess: (data, target) => {
       toast.success(
         target.isFactMetric
-          ? 'Source refresh started — current fact data and all active dependent metrics will update in one batch.'
+          ? factCollectMessage(data.metric_count)
           : 'Collection started — you will be notified when it finishes.',
       )
       collectWatcher.watch({

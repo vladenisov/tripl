@@ -21191,6 +21191,11 @@
               }
             ],
             "title": "Task Id"
+          },
+          "metric_count": {
+            "type": "integer",
+            "title": "Metric Count",
+            "default": 1
           }
         },
         "type": "object",
@@ -21198,7 +21203,7 @@
           "metric_id"
         ],
         "title": "MetricCollectNowResponse",
-        "description": "202 payload for a manual ``POST /metrics/{id}/collect`` trigger.\n\n``window_from`` / ``window_to`` describe the backfilled [from, to) window for\n``fact`` / ``sql`` metrics; they are ``None`` for ``event_composition``\nmetrics, which have no interval and recompute from the full event-metric\nseries. ``task_id`` is the dispatched Celery task id when the broker returns\none, else ``None``. For a fact metric the task is a shared dependency batch:\nthe response window describes the clicked metric, while each\ndifferent-interval dependent receives its own bounded window in that task."
+        "description": "202 payload for a manual ``POST /metrics/{id}/collect`` trigger.\n\n``window_from`` / ``window_to`` describe the backfilled [from, to) window for\n``fact`` / ``sql`` metrics; they are ``None`` for ``event_composition``\nmetrics, which have no interval and recompute from the full event-metric\nseries. ``task_id`` is the dispatched Celery task id when the broker returns\none, else ``None``. For a fact metric the task is a shared dependency batch:\nthe response window describes the clicked metric, while each\ndifferent-interval dependent receives its own bounded window in that task.\n``metric_count`` is how many metrics that batch refreshes (1 for a metric\nwith no active siblings), so a click can say what it set in motion instead of\nsilently refreshing a dozen other metrics."
       },
       "MetricComposition": {
         "type": "string",

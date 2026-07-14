@@ -213,6 +213,16 @@ def _saved_fact_column_types(fact_table: FactTable, data_source: DataSource) -> 
         for column in columns
         if column.get("name")
     }
+    if not column_types:
+        # An empty map becomes an empty column allowlist downstream, and an empty
+        # allowlist is exactly what makes a membership check vacuous. The batch
+        # resolver does refuse it, but that guard lives in another module — say so
+        # here, for every dialect, rather than depend on remembering that.
+        msg = (
+            "Re-preview and save this fact table before viewing generated SQL; "
+            "its columns have not been recorded yet."
+        )
+        raise ValueError(msg)
     if str(data_source.db_type) == "bigquery":
         timestamp_column = next(
             (column for column in columns if column.get("name") == fact_table.timestamp_column),

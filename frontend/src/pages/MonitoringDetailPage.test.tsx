@@ -13,6 +13,15 @@ import {
 } from '@/demo/scenarioModel'
 import MonitoringDetailPage from './MonitoringDetailPage'
 
+const { toastSuccess, toastError } = vi.hoisted(() => ({
+  toastSuccess: vi.fn(),
+  toastError: vi.fn(),
+}))
+vi.mock('sonner', () => ({
+  toast: { success: toastSuccess, error: toastError },
+  Toaster: () => null,
+}))
+
 vi.mock('@/components/ui/chart-lazy', () => ({
   MetricsChart: ({
     data,
@@ -1094,6 +1103,8 @@ describe('MonitoringDetailPage catalog-metric drilldown', () => {
           window_from: null,
           window_to: null,
           task_id: 'task-1',
+          // The batch is capped, so a click reports the size it actually got.
+          metric_count: 3,
         })
       }
       if (url.endsWith('/api/v1/projects/demo/metrics/metric-1')) {
@@ -1403,6 +1414,25 @@ describe('MonitoringDetailPage catalog-metric drilldown', () => {
       )).toBe(true)
     })
     expect(screen.getByRole('button', { name: 'Refreshing source metrics…' })).toBeDisabled()
+  })
+
+  it('reports how many metrics the fact batch actually refreshes', async () => {
+    // The batch is capped, so "all dependent metrics" could promise more than the
+    // click started. The response says how many it got; the toast repeats it.
+    toastSuccess.mockClear()
+    installMetricDetailFetch('1d', {
+      kind: 'fact',
+      composition: 'single',
+      aggregation: 'count',
+      fact_table_id: 'ft-1',
+    })
+    renderMetricDetail()
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Refresh source metrics' }))
+
+    await waitFor(() => {
+      expect(toastSuccess).toHaveBeenCalledWith(expect.stringContaining('3 metrics'))
+    })
   })
 
   it('refreshes every metric-series cache after a fact batch completes', async () => {

@@ -885,6 +885,9 @@ class MetricCollectNowResponse(BaseModel):
     one, else ``None``. For a fact metric the task is a shared dependency batch:
     the response window describes the clicked metric, while each
     different-interval dependent receives its own bounded window in that task.
+    ``metric_count`` is how many metrics that batch refreshes (1 for a metric
+    with no active siblings), so a click can say what it set in motion instead of
+    silently refreshing a dozen other metrics.
     """
 
     metric_id: uuid.UUID
@@ -892,6 +895,7 @@ class MetricCollectNowResponse(BaseModel):
     window_from: datetime | None = None
     window_to: datetime | None = None
     task_id: str | None = None
+    metric_count: int = 1
 
 
 class MetricGeneratedSqlQuery(BaseModel):

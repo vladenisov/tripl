@@ -6156,8 +6156,16 @@ export interface components {
          *     one, else ``None``. For a fact metric the task is a shared dependency batch:
          *     the response window describes the clicked metric, while each
          *     different-interval dependent receives its own bounded window in that task.
+         *     ``metric_count`` is how many metrics that batch refreshes (1 for a metric
+         *     with no active siblings), so a click can say what it set in motion instead of
+         *     silently refreshing a dozen other metrics.
          */
         MetricCollectNowResponse: {
+            /**
+             * Metric Count
+             * @default 1
+             */
+            metric_count: number;
             /**
              * Metric Id
              * Format: uuid
