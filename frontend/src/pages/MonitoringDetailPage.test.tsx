@@ -13,6 +13,15 @@ import {
 } from '@/demo/scenarioModel'
 import MonitoringDetailPage from './MonitoringDetailPage'
 
+const { toastSuccess, toastError } = vi.hoisted(() => ({
+  toastSuccess: vi.fn(),
+  toastError: vi.fn(),
+}))
+vi.mock('sonner', () => ({
+  toast: { success: toastSuccess, error: toastError },
+  Toaster: () => null,
+}))
+
 vi.mock('@/components/ui/chart-lazy', () => ({
   MetricsChart: ({
     data,
@@ -53,6 +62,18 @@ vi.mock('@/components/ui/chart-lazy', () => ({
       {series.length ? series.map(item => <span key={item.label}>{item.label}</span>) : emptyLabel}
     </div>
   ),
+}))
+
+vi.mock('@/components/sql-editor', () => ({
+  SqlEditor: ({
+    ariaLabel,
+    value,
+    readOnly,
+  }: {
+    ariaLabel?: string
+    value: string
+    readOnly?: boolean
+  }) => <textarea aria-label={ariaLabel} value={value} readOnly={readOnly} onChange={() => {}} />,
 }))
 
 function mockJsonResponse(body: unknown) {
@@ -965,7 +986,9 @@ describe('MonitoringDetailPage catalog-metric drilldown', () => {
     annotations: Array<Record<string, unknown>> = [],
     breakdownsOverrides: Record<string, unknown> = {},
     versionsOverrides: Record<string, unknown> = {},
+    settledCollectionStatus: 'success' | 'error' | null = null,
   ) {
+    let collectStarted = false
     return vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
       const url = String(input)
 
@@ -978,6 +1001,45 @@ describe('MonitoringDetailPage catalog-metric drilldown', () => {
             { id: 'event-b', name: 'session_started' },
           ],
           total: 2,
+        })
+      }
+      if (url.endsWith('/api/v1/projects/demo/fact-tables')) {
+        return mockJsonResponse({
+          items: [
+            {
+              id: 'ft-1',
+              project_id: 'p-1',
+              name: 'orders',
+              display_name: 'Orders',
+              description: '',
+              color: '#6366f1',
+              order: 0,
+              data_source_id: null,
+              timestamp_column: 'created_at',
+              created_at: '2026-01-01T00:00:00Z',
+              updated_at: '2026-01-01T00:00:00Z',
+            },
+          ],
+          total: 1,
+        })
+      }
+      if (url.endsWith('/api/v1/projects/demo/fact-tables/ft-1')) {
+        return mockJsonResponse({
+          id: 'ft-1',
+          project_id: 'p-1',
+          name: 'orders',
+          display_name: 'Orders',
+          description: '',
+          color: '#6366f1',
+          order: 0,
+          data_source_id: null,
+          timestamp_column: 'created_at',
+          sql: 'SELECT * FROM orders',
+          columns: [{ name: 'created_at', type: 'timestamp' }],
+          identifier_columns: [],
+          row_filters: [],
+          created_at: '2026-01-01T00:00:00Z',
+          updated_at: '2026-01-01T00:00:00Z',
         })
       }
       if (url.includes('/api/v1/projects/demo/metrics/metric-1/series')) {
@@ -1034,16 +1096,24 @@ describe('MonitoringDetailPage catalog-metric drilldown', () => {
       }
       // Manual "Collect now" — the POST the scenario's collect step hangs on.
       if (url.endsWith('/api/v1/projects/demo/metrics/metric-1/collect')) {
+        collectStarted = true
         return mockJsonResponse({
           metric_id: 'metric-1',
           status: 'queued',
           window_from: null,
           window_to: null,
           task_id: 'task-1',
+          // The batch is capped, so a click reports the size it actually got.
+          metric_count: 3,
         })
       }
       if (url.endsWith('/api/v1/projects/demo/metrics/metric-1')) {
-        return mockJsonResponse(metricDefinitionResponse(interval, definitionOverrides))
+        return mockJsonResponse(metricDefinitionResponse(interval, {
+          ...definitionOverrides,
+          ...(collectStarted && settledCollectionStatus
+            ? { last_collection_status: settledCollectionStatus }
+            : {}),
+        }))
       }
       if (url.includes('/api/v1/projects/demo/annotations')) {
         if (init?.method === 'POST') {
@@ -1064,7 +1134,7 @@ describe('MonitoringDetailPage catalog-metric drilldown', () => {
     const queryClient = new QueryClient({
       defaultOptions: { queries: { retry: false } },
     })
-    return render(
+    const result = render(
       <QueryClientProvider client={queryClient}>
         <MemoryRouter initialEntries={['/p/demo/monitoring/metric/metric-1']}>
           <Routes>
@@ -1073,6 +1143,7 @@ describe('MonitoringDetailPage catalog-metric drilldown', () => {
         </MemoryRouter>
       </QueryClientProvider>,
     )
+    return { ...result, queryClient }
   }
 
   it('keeps the 30d range and defaults granularity to the interval for 1d metrics (tripl-4m86)', async () => {
@@ -1295,11 +1366,12 @@ describe('MonitoringDetailPage catalog-metric drilldown', () => {
     expect(screen.getByText('dau')).toBeInTheDocument()
 
     // The SQL itself is collapsed behind a "Show SQL" disclosure by default…
-    const sql = screen.getByText('SELECT day, dau FROM daily_users')
+    const sql = screen.getByDisplayValue('SELECT day, dau FROM daily_users')
     expect(sql).not.toBeVisible()
     // …and expands on click.
     fireEvent.click(screen.getByText('Show SQL'))
     expect(sql).toBeVisible()
+    expect(sql).toHaveAttribute('readonly')
   })
 
   it('renders an event-composition ratio as "A ÷ B" with resolved event names', async () => {
@@ -1317,6 +1389,81 @@ describe('MonitoringDetailPage catalog-metric drilldown', () => {
     expect(await screen.findByText('checkout_completed')).toBeInTheDocument()
     expect(screen.getByText('session_started')).toBeInTheDocument()
     expect(screen.getByText('÷')).toBeInTheDocument()
+  })
+
+  it('explains that collecting a fact metric refreshes all dependents in one batch', async () => {
+    const fetchSpy = installMetricDetailFetch('1d', {
+      kind: 'fact',
+      composition: 'single',
+      aggregation: 'count',
+      fact_table_id: 'ft-1',
+    })
+    renderMetricDetail()
+
+    const button = await screen.findByRole('button', { name: 'Refresh source metrics' })
+    expect(button.getAttribute('title')).toMatch(
+      /current warehouse data.*all dependent active metrics.*one batch/i,
+    )
+    fireEvent.click(button)
+
+    await waitFor(() => {
+      expect(fetchSpy.mock.calls.some(
+        ([url, init]) =>
+          String(url).endsWith('/api/v1/projects/demo/metrics/metric-1/collect')
+          && init?.method === 'POST',
+      )).toBe(true)
+    })
+    expect(screen.getByRole('button', { name: 'Refreshing source metrics…' })).toBeDisabled()
+  })
+
+  it('reports how many metrics the fact batch actually refreshes', async () => {
+    // The batch is capped, so "all dependent metrics" could promise more than the
+    // click started. The response says how many it got; the toast repeats it.
+    toastSuccess.mockClear()
+    installMetricDetailFetch('1d', {
+      kind: 'fact',
+      composition: 'single',
+      aggregation: 'count',
+      fact_table_id: 'ft-1',
+    })
+    renderMetricDetail()
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Refresh source metrics' }))
+
+    await waitFor(() => {
+      expect(toastSuccess).toHaveBeenCalledWith(expect.stringContaining('3 metrics'))
+    })
+  })
+
+  it('refreshes every metric-series cache after a fact batch completes', async () => {
+    installMetricDetailFetch(
+      '1d',
+      {
+        kind: 'fact',
+        composition: 'single',
+        aggregation: 'count',
+        fact_table_id: 'ft-1',
+      },
+      {},
+      [],
+      {},
+      {},
+      'success',
+    )
+    const { queryClient } = renderMetricDetail()
+    const invalidateSpy = vi.spyOn(queryClient, 'invalidateQueries')
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Refresh source metrics' }))
+
+    await waitFor(() => {
+      expect(invalidateSpy).toHaveBeenCalledWith({
+        queryKey: ['monitoringMetrics', 'demo', 'metric'],
+      })
+    })
+    expect(invalidateSpy).toHaveBeenCalledWith({
+      queryKey: ['metricDefinition', 'demo', 'metric-1'],
+    })
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['metrics-catalog', 'demo'] })
   })
 
   it('does not render the Definition card outside the metric scope', async () => {
@@ -1377,7 +1524,11 @@ describe('MonitoringDetailPage catalog-metric drilldown', () => {
     }
 
     const callouts = () => document.querySelectorAll('[data-slot="popover-content"]')
-    const collectButton = () => screen.findByRole('button', { name: /Collect now/ })
+    const collectButton = async () => {
+      const button = await screen.findByRole('button', { name: /Collect now/ })
+      await waitFor(() => expect(button).toBeEnabled())
+      return button
+    }
 
     afterEach(() => {
       window.localStorage.clear()

@@ -13,9 +13,9 @@ import { MemoryRouter } from 'react-router-dom'
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import type {
   MetricCollectNowResponse,
+  MetricDefinitionDetailResponse,
   MetricDefinitionListItem,
   MetricDefinitionListResponse,
-  MetricDefinitionResponse,
   Project,
 } from '@/types'
 import { DemoScenarioProvider } from '@/demo/DemoScenarioProvider'
@@ -166,7 +166,7 @@ beforeEach(() => {
   vi.mocked(metricsCatalogApi.get).mockResolvedValue({
     id: 'm-2',
     last_collection_status: 'running',
-  } as MetricDefinitionResponse)
+  } as MetricDefinitionDetailResponse)
 })
 
 afterEach(() => {

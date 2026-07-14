@@ -7,9 +7,9 @@ import type {
   FactTableListItem,
   FactTableListResponse,
   MetricCollectNowResponse,
+  MetricDefinitionDetailResponse,
   MetricDefinitionListItem,
   MetricDefinitionListResponse,
-  MetricDefinitionResponse,
 } from '@/types'
 import MetricsPage, { type MetricsTab } from './MetricsPage'
 
@@ -74,8 +74,8 @@ function makeItem(overrides: Partial<MetricDefinitionListItem>): MetricDefinitio
 // Full definition returned by `metricsCatalogApi.get` — what "Duplicate as
 // draft" reads to build the create payload. Defaults to a SQL metric.
 function makeDefinition(
-  overrides: Partial<MetricDefinitionResponse>,
-): MetricDefinitionResponse {
+  overrides: Partial<MetricDefinitionDetailResponse>,
+): MetricDefinitionDetailResponse {
   return {
     id: 'm-1',
     project_id: 'p-1',
@@ -108,6 +108,8 @@ function makeDefinition(
     last_collected_at: null,
     last_collection_status: null,
     last_collection_error: null,
+    next_collection_at: null,
+    collection_due: false,
     created_at: '2026-06-01T00:00:00Z',
     updated_at: '2026-06-20T00:00:00Z',
     ...overrides,

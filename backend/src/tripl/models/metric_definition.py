@@ -152,5 +152,11 @@ class MetricDefinition(UUIDMixin, TimestampMixin, Base):
     last_collected_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
+    # Exclusive upper bound of the latest successfully processed collection
+    # window. Unlike ``last_collected_at`` this is source-grid progress, so a
+    # successful empty warehouse response still advances the scheduler.
+    last_collection_window_to: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     last_collection_status: Mapped[str | None] = mapped_column(String(32), nullable=True)
     last_collection_error: Mapped[str | None] = mapped_column(Text, nullable=True)

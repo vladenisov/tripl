@@ -167,6 +167,39 @@ describe('filtersToPayload', () => {
       ],
     })
   })
+
+  it('serializes condition values from the selected warehouse column type', () => {
+    expect(
+      filtersToPayload(
+        [
+          makeConditionFilter('amount', 'gt', '3.5'),
+          makeConditionFilter('quantity', 'in', '1, 2, 3'),
+          makeConditionFilter('is_trial', 'eq', 'true'),
+          makeConditionFilter('postal_code', 'eq', '00123'),
+        ],
+        [
+          { name: 'amount', type: 'number' },
+          { name: 'quantity', type: 'number' },
+          { name: 'is_trial', type: 'bool' },
+          { name: 'postal_code', type: 'string' },
+        ],
+      ).conditions,
+    ).toEqual([
+      { column: 'amount', operator: 'gt', value: 3.5 },
+      { column: 'quantity', operator: 'in', value: [1, 2, 3] },
+      { column: 'is_trial', operator: 'eq', value: true },
+      { column: 'postal_code', operator: 'eq', value: '00123' },
+    ])
+  })
+
+  it('splits comma-separated IN values while preserving string columns', () => {
+    expect(
+      filtersToPayload(
+        [makeConditionFilter('plan', 'in', 'pro, team')],
+        [{ name: 'plan', type: 'string' }],
+      ).conditions,
+    ).toEqual([{ column: 'plan', operator: 'in', value: ['pro', 'team'] }])
+  })
 })
 
 describe('filtersFromConfig', () => {

@@ -1470,7 +1470,7 @@ class BigQueryAdapter(BaseAdapter):
         decoded = self._decode_rows(rows, offset=3, reg_cols=reg_cols, json_cols=json_cols)
         return col_names, json_value_names, decoded
 
-    def get_time_bucketed_multi_aggregate(
+    def build_time_bucketed_multi_aggregate_sql(
         self,
         base_query: str,
         time_column: str,
@@ -1480,12 +1480,11 @@ class BigQueryAdapter(BaseAdapter):
         time_to: datetime,
         *,
         limit: int = 100000,
-    ) -> tuple[list[str], list[tuple[object, ...]]]:
-        self._ensure_column_types(base_query)
+    ) -> tuple[list[str], str]:
         bucket_expr = self._bucket_expression(time_column, interval)
         where_clause = self._time_window_where_clause(time_column, time_from, time_to)
         if not specs:
-            return ["bucket"], []
+            return ["bucket"], ""
 
         select_parts: list[str] = [f"{bucket_expr} AS _bucket"]
         column_names: list[str] = ["bucket"]
@@ -1501,6 +1500,31 @@ class BigQueryAdapter(BaseAdapter):
             f"ORDER BY _bucket "
             f"LIMIT {int(limit)}"
         )
+        return column_names, sql
+
+    def get_time_bucketed_multi_aggregate(
+        self,
+        base_query: str,
+        time_column: str,
+        interval: str,
+        specs: list[AggregateSpec],
+        time_from: datetime,
+        time_to: datetime,
+        *,
+        limit: int = 100000,
+    ) -> tuple[list[str], list[tuple[object, ...]]]:
+        self._ensure_column_types(base_query)
+        column_names, sql = self.build_time_bucketed_multi_aggregate_sql(
+            base_query,
+            time_column,
+            interval,
+            specs,
+            time_from,
+            time_to,
+            limit=limit,
+        )
+        if not specs:
+            return column_names, []
 
         logger.info("BQ bucketed multi-aggregate query: %s", sql)
         t0 = time.monotonic()

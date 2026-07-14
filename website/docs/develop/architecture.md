@@ -177,10 +177,14 @@ Locally, all of the above (except the warehouses) run under Docker Compose:
   **`event_composition`** (a `single` event count, a `ratio` A/B, or an event
   `per_distinct_user`, derived from already-collected `event_metrics`).
 - **Scheduling.** The `check_metric_definitions_due` beat task runs about every
-  **300 s** and dispatches `collect_metric_definitions` for each **active** metric
-  whose interval is due. `sql` / `fact` metrics query their own data
-  source through the adapter; `event_composition` metrics read existing event
-  series on the shared scan grid (no warehouse query).
+  **300 s** and dispatches each **active** metric whose interval is due. SQL
+  metrics use `collect_metric_definitions`; fact metrics are grouped by interval
+  and use `collect_fact_metrics_batch`, which folds compatible aggregates into
+  one multi-aggregate warehouse query per fact table. A manual collect on one
+  fact metric discovers the other active metrics that reference either of its
+  operands and sends the same dependency set through that batch path. Metrics on
+  different interval grids remain separate groups. `event_composition` metrics
+  read existing event series on the shared scan grid (no warehouse query).
 - **Aggregations.** Adapter `_aggregate_value_sql` builds the per-kind SQL for
   ClickHouse / BigQuery / PostgreSQL; `core/adapters/measure_validator` checks the
   measure/distinct column against the source's real columns before it reaches a
@@ -189,6 +193,9 @@ Locally, all of the above (except the warehouses) run under Docker Compose:
   into one `AND` expression for both per-metric and batched aggregate paths.
 - **Storage.** Values land in `metric_values`, with per-split rows in
   `metric_value_breakdowns` (platform / app-version / …, like event breakdowns).
+  Each successful collection also advances a durable completed-window watermark,
+  including when the source returns zero rows; due checks and the metric detail's
+  next-update state therefore do not rescan an empty window every five minutes.
   A **divide-by-zero** in a `ratio` bucket produces **no value** — a gap, not a
   `0` — so the row is dropped rather than written as zero. Fact-ratio breakdowns
   are supported when numerator and denominator use the same fact table; each
@@ -196,7 +203,25 @@ Locally, all of the above (except the warehouses) run under Docker Compose:
   a component that sums to the top-line ratio.
 - **Surface.** Catalog CRUD lives at `/projects/{slug}/metrics`; a series read
   service feeds the frontend **MetricsPage** (list + kind-aware create/edit form)
-  and the metric **drilldown**, which reuses the monitoring detail tabs.
+  and the metric **drilldown**, which reuses the monitoring detail tabs. The
+  drilldown also exposes schedule state and the non-executing
+  `/{metric_id}/generated-sql` read endpoint. For fact metrics this endpoint
+  expands the same active fact-table dependency closure as **Collect now** and
+  returns the actual primary multi-aggregate statements grouped by fact table,
+  interval, and replay chunk. Statement construction uses the same adapter
+  builders as the worker without connecting to the warehouse. The fact-table
+  column snapshot keeps both the normalized form type and the native warehouse
+  type; this preserves BigQuery's distinct `TIMESTAMP`, `DATETIME`, and `DATE`
+  bucket syntax. Older BigQuery fact tables must be previewed and saved once to
+  capture that metadata. Breakdown scans are
+  deliberately omitted and the response marks that explicitly. The diagnostic
+  response is capped at 100 statements, 200 conditional aggregates per
+  statement, 1,000,000 SQL characters, and 10,000 repeated metric-ID references.
+  The compiler applies an input-size budget before assembling each statement;
+  fact operands and fact tables accept at most 100 structured/named filters, and
+  each free-text filter fragment is capped at 32,768 characters. A large
+  replay/dependency graph therefore cannot turn this viewer-facing endpoint into
+  an unbounded export.
 
 ---
 
@@ -290,9 +315,11 @@ photos, comments) and merge back via a
 ### Catalog metric flow
 
 1. Beat (`check_metric_definitions_due`, ~300 s) finds active, due metrics.
-2. `collect_metric_definitions` evaluates each — querying the warehouse
-   (`sql` / `fact`) or composing event series (`event_composition`). Compatible
-   fact aggregates are batched by fact table.
+2. `collect_metric_definitions` evaluates SQL metrics and composes event series;
+   `collect_fact_metrics_batch` groups fact metrics by interval, then runs one
+   multi-aggregate query per fact table for every compatible group. Manual fact
+   collection expands from the selected metric to all active dependents before
+   entering the same batch path.
 3. Values upsert into `metric_values` / `metric_value_breakdowns`.
 4. Metric-scope anomalies are recalculated into `metric_anomalies`.
 5. Alert rules with `include_metrics` enqueue deliveries.

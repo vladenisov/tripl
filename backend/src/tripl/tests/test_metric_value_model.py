@@ -255,6 +255,36 @@ def test_upsert_metric_values_is_idempotent(session_factory: sessionmaker[Sessio
         assert rows[0].value == 9.25
 
 
+def test_upsert_unscoped_metric_values_uses_partial_unique_index(
+    session_factory: sessionmaker[Session],
+) -> None:
+    bucket = datetime(2026, 1, 1, 12, tzinfo=UTC)
+    with session_factory() as session:
+        ctx = _seed(session)
+        session.commit()
+        base_row = {
+            "metric_definition_id": ctx.metric_id,
+            "scan_config_id": None,
+            "bucket": bucket,
+        }
+
+        _upsert_metric_values_rows(
+            session,
+            rows=[{"id": uuid.uuid4(), **base_row, "value": 1.5}],
+        )
+        _upsert_metric_values_rows(
+            session,
+            rows=[{"id": uuid.uuid4(), **base_row, "value": 9.25}],
+        )
+        session.commit()
+
+        rows = session.scalars(
+            select(MetricValue).where(MetricValue.metric_definition_id == ctx.metric_id)
+        ).all()
+        assert len(rows) == 1
+        assert rows[0].value == 9.25
+
+
 def test_upsert_metric_value_breakdown_is_idempotent(
     session_factory: sessionmaker[Session],
 ) -> None:
@@ -294,6 +324,73 @@ def test_upsert_metric_value_breakdown_is_idempotent(
         )
         assert len(rows) == 1
         assert rows[0].value == 5.0
+
+
+def test_upsert_unscoped_breakdown_uses_partial_unique_index(
+    session_factory: sessionmaker[Session],
+) -> None:
+    bucket = datetime(2026, 1, 1, 12, tzinfo=UTC)
+    with session_factory() as session:
+        ctx = _seed(session)
+        session.commit()
+        base_row = {
+            "metric_definition_id": ctx.metric_id,
+            "scan_config_id": None,
+            "bucket": bucket,
+            "breakdown_column": "country",
+            "breakdown_value": "US",
+            "is_other": False,
+        }
+
+        _upsert_metric_value_breakdown_rows(
+            session,
+            rows=[{"id": uuid.uuid4(), **base_row, "value": 2.0}],
+        )
+        _upsert_metric_value_breakdown_rows(
+            session,
+            rows=[{"id": uuid.uuid4(), **base_row, "value": 5.0}],
+        )
+        session.commit()
+
+        rows = session.scalars(
+            select(MetricValueBreakdown).where(
+                MetricValueBreakdown.metric_definition_id == ctx.metric_id
+            )
+        ).all()
+        assert len(rows) == 1
+        assert rows[0].value == 5.0
+
+
+def test_unscoped_breakdown_preserves_literal_and_folded_other_rows(
+    session_factory: sessionmaker[Session],
+) -> None:
+    bucket = datetime(2026, 1, 1, 12, tzinfo=UTC)
+    with session_factory() as session:
+        ctx = _seed(session)
+        session.commit()
+        common = {
+            "metric_definition_id": ctx.metric_id,
+            "scan_config_id": None,
+            "bucket": bucket,
+            "breakdown_column": "country",
+            "breakdown_value": "Other",
+        }
+
+        _upsert_metric_value_breakdown_rows(
+            session,
+            rows=[
+                {"id": uuid.uuid4(), **common, "is_other": False, "value": 2.0},
+                {"id": uuid.uuid4(), **common, "is_other": True, "value": 5.0},
+            ],
+        )
+        session.commit()
+
+        rows = session.scalars(
+            select(MetricValueBreakdown).where(
+                MetricValueBreakdown.metric_definition_id == ctx.metric_id
+            )
+        ).all()
+        assert {(row.is_other, row.value) for row in rows} == {(False, 2.0), (True, 5.0)}
 
 
 def test_delete_metric_values_window(session_factory: sessionmaker[Session]) -> None:

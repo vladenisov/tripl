@@ -44,7 +44,10 @@ export type MetricDefinitionMove = Schemas['MetricDefinitionMove']
 export type MetricDefinitionListItem = Schemas['MetricDefinitionListItem']
 export type MetricDefinitionListResponse = Schemas['MetricDefinitionListResponse']
 export type MetricDefinitionResponse = Schemas['MetricDefinitionResponse']
+export type MetricDefinitionDetailResponse = Schemas['MetricDefinitionDetailResponse']
 export type MetricCollectNowResponse = Schemas['MetricCollectNowResponse']
+export type MetricGeneratedSqlQuery = Schemas['MetricGeneratedSqlQuery']
+export type MetricGeneratedSqlResponse = Schemas['MetricGeneratedSqlResponse']
 
 // ───────── Series / breakdown / version shapes ─────────
 export type MetricSeriesPoint = Schemas['MetricSeriesPoint']

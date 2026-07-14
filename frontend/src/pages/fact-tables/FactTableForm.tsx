@@ -205,6 +205,7 @@ export function FactTableForm({ slug, factTable, dataSources, onClose }: FactTab
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: ['fact-tables', slug] })
       if (factTable) void qc.invalidateQueries({ queryKey: ['fact-table', slug] })
+      void qc.invalidateQueries({ queryKey: ['metric-generated-sql', slug] })
       onClose()
     },
   })

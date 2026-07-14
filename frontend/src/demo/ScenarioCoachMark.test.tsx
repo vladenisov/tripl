@@ -4,7 +4,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { MemoryRouter } from 'react-router-dom'
 import { metricsCatalogApi } from '@/api/metricsCatalogApi'
 import { scansApi } from '@/api/scans'
-import type { MetricDefinitionResponse, Project, ScanJob } from '@/types'
+import type { MetricDefinitionDetailResponse, Project, ScanJob } from '@/types'
 import { DemoScenarioProvider } from './DemoScenarioProvider'
 import { useDemoScenario } from './demoScenarioContext'
 import { ScenarioCoachMark } from './ScenarioCoachMark'
@@ -49,8 +49,8 @@ function scanJob(status: ScanJob['status']): ScanJob {
   }
 }
 
-function metricDefinition(status: string | null): MetricDefinitionResponse {
-  return { id: 'm-1', last_collection_status: status } as MetricDefinitionResponse
+function metricDefinition(status: string | null): MetricDefinitionDetailResponse {
+  return { id: 'm-1', last_collection_status: status } as MetricDefinitionDetailResponse
 }
 
 function collectMetricState(): ScenarioState {

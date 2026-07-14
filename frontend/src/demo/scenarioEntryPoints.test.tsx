@@ -14,7 +14,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom'
 import { metricsCatalogApi } from '@/api/metricsCatalogApi'
 import { scansApi } from '@/api/scans'
-import type { MetricDefinitionResponse, Project, ScanJob } from '@/types'
+import type { MetricDefinitionDetailResponse, Project, ScanJob } from '@/types'
 import { DemoScenarioProvider } from './DemoScenarioProvider'
 import { DemoWelcomePanel } from './DemoWelcomePanel'
 import { ProductTour } from './ProductTour'
@@ -85,7 +85,7 @@ beforeEach(() => {
   vi.spyOn(metricsCatalogApi, 'get').mockResolvedValue({
     id: 'm-1',
     last_collection_status: 'running',
-  } as MetricDefinitionResponse)
+  } as MetricDefinitionDetailResponse)
 })
 
 afterEach(() => {

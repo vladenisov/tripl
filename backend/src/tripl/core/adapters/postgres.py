@@ -1295,7 +1295,7 @@ class PostgresAdapter(BaseAdapter):
             return f"NULLIF({filtered}, 0)"
         return filtered
 
-    def get_time_bucketed_multi_aggregate(
+    def build_time_bucketed_multi_aggregate_sql(
         self,
         base_query: str,
         time_column: str,
@@ -1305,7 +1305,7 @@ class PostgresAdapter(BaseAdapter):
         time_to: datetime,
         *,
         limit: int = 100000,
-    ) -> tuple[list[str], list[tuple[object, ...]]]:
+    ) -> tuple[list[str], str]:
         tc = self._validate_column(time_column)
 
         bucket_expr = self._bucket_expression(tc, interval)
@@ -1323,6 +1323,28 @@ class PostgresAdapter(BaseAdapter):
             f"GROUP BY _bucket "
             f"ORDER BY _bucket "
             f"LIMIT {int(limit)}"
+        )
+        return col_names, sql
+
+    def get_time_bucketed_multi_aggregate(
+        self,
+        base_query: str,
+        time_column: str,
+        interval: str,
+        specs: list[AggregateSpec],
+        time_from: datetime,
+        time_to: datetime,
+        *,
+        limit: int = 100000,
+    ) -> tuple[list[str], list[tuple[object, ...]]]:
+        col_names, sql = self.build_time_bucketed_multi_aggregate_sql(
+            base_query,
+            time_column,
+            interval,
+            specs,
+            time_from,
+            time_to,
+            limit=limit,
         )
 
         logger.debug("PG bucketed multi-aggregate query: %s", _truncate_sql(sql))

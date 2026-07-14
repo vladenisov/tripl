@@ -18,6 +18,8 @@ from sqlalchemy import select, text
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session
 
+from tripl.core.bucketing import floor_to_bucket
+from tripl.core.collection_progress import collection_progress_to
 from tripl.core.intervals import get_interval
 from tripl.models.domain_enums import MetricKind, MetricStatus
 from tripl.models.event_metric import EventMetric
@@ -290,10 +292,13 @@ def _metric_definition_due(
             MetricValue.scan_config_id.is_(None),
         )
     ).scalar()
-    if last_bucket is None:
-        return True
-    latest_complete = _floor_to_interval(now, delta) - delta
-    return last_bucket < latest_complete
+    current_boundary = floor_to_bucket(now, str(definition.interval))
+    progress_to = collection_progress_to(
+        last_bucket=last_bucket,
+        watermark=definition.last_collection_window_to,
+        delta=delta,
+    )
+    return progress_to is None or progress_to < current_boundary
 
 
 @celery_app.task(name="tripl.worker.tasks.metrics.check_metric_definitions_due")  # type: ignore[untyped-decorator]

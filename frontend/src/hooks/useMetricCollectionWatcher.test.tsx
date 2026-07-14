@@ -1,7 +1,7 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import type { MetricDefinitionResponse } from '@/types'
+import type { MetricDefinitionDetailResponse } from '@/types'
 
 vi.mock('@/api/metricsCatalogApi', () => ({
   metricsCatalogApi: { get: vi.fn() },
@@ -20,12 +20,12 @@ import { useMetricCollectionWatcher } from './useMetricCollectionWatcher'
 function definitionWith(
   status: string | null,
   error: string | null = null,
-): MetricDefinitionResponse {
+): MetricDefinitionDetailResponse {
   return {
     id: 'm-1',
     last_collection_status: status,
     last_collection_error: error,
-  } as unknown as MetricDefinitionResponse
+  } as unknown as MetricDefinitionDetailResponse
 }
 
 function Harness({

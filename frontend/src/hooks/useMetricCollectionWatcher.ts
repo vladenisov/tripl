@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { toast } from 'sonner'
 import { metricsCatalogApi } from '@/api/metricsCatalogApi'
-import type { MetricDefinitionResponse } from '@/types'
+import type { MetricDefinitionDetailResponse } from '@/types'
 
 /** How often to re-check the watched metric's persisted collection status. */
 const DEFAULT_POLL_INTERVAL_MS = 3000
@@ -96,7 +96,7 @@ export function useMetricCollectionWatcher<TContext = void>(
 
   const settle = (
     watched: WatchTarget<TContext>,
-    definition: MetricDefinitionResponse | null,
+    definition: MetricDefinitionDetailResponse | null,
   ): void => {
     if (reportedRef.current === watched.startedAt) return
     reportedRef.current = watched.startedAt

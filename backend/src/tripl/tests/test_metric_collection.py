@@ -20,6 +20,7 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from tripl.core.adapters.base import AggregateSpec, ColumnInfo
 from tripl.core.adapters.measure_validator import SqlDialect
+from tripl.core.bucketing import floor_to_bucket
 from tripl.models import Base
 from tripl.models.data_source import DataSource
 from tripl.models.domain_enums import (
@@ -1193,9 +1194,24 @@ def test_coerce_bucket_makes_naive_datetime_utc_aware_and_floored() -> None:
     # A naive, unaligned warehouse bucket is coerced to UTC and floored to the
     # interval -- the normalization the fact path relies on so stored
     # buckets never mix naive/aware bounds across collection runs.
-    coerced = metric_collect._coerce_bucket(datetime(2026, 1, 1, 10, 37), timedelta(hours=1))
+    coerced = metric_collect._coerce_bucket(datetime(2026, 1, 1, 10, 37), "1h")
     assert coerced == datetime(2026, 1, 1, 10, tzinfo=UTC)
     assert coerced.tzinfo is UTC
+
+
+def test_coerce_weekly_bucket_uses_canonical_monday_grid() -> None:
+    coerced = metric_collect._coerce_bucket(datetime(2026, 1, 8, 10, 37), "1w")
+
+    assert coerced == datetime(2026, 1, 5, tzinfo=UTC)
+
+
+def test_manual_weekly_window_ends_on_canonical_monday() -> None:
+    time_from, time_to = metric_collect.compute_manual_collect_window("1w")
+
+    assert time_to.weekday() == 0
+    assert time_to.hour == 0
+    assert time_to.minute == 0
+    assert time_to - time_from == timedelta(weeks=4)
 
 
 # ── beat dispatch ──────────────────────────────────────────────────────────────
@@ -1345,6 +1361,81 @@ def test_check_metric_definitions_due_skips_non_active(
     assert dispatched == []
 
 
+def test_weekly_catalog_metric_due_uses_canonical_monday_grid(
+    sync_session_factory: sessionmaker[Session],
+) -> None:
+    """A weekly metric must not become due early on the legacy Saturday grid."""
+    with sync_session_factory() as session:
+        project, data_source = _seed_project_and_ds(session)
+        definition = _make_active_fact_metric_for_dispatch(session, project, data_source)
+        definition.interval = ScanInterval.w1
+        # On Saturday Jul 18, the latest complete canonical Monday bucket is
+        # Jul 6. The next bucket (Jul 13) completes on Monday Jul 20.
+        session.add(
+            MetricValue(
+                metric_definition_id=definition.id,
+                bucket=datetime(2026, 7, 6, tzinfo=UTC),
+                value=1.0,
+            )
+        )
+        session.commit()
+
+        assert (
+            metrics_schedule._metric_definition_due(
+                session,
+                definition,
+                now=datetime(2026, 7, 18, 12, tzinfo=UTC),
+            )
+            is False
+        )
+
+
+def test_successful_empty_window_is_not_immediately_due(
+    sync_session_factory: sessionmaker[Session],
+) -> None:
+    """The source-window watermark, not value existence, is scheduler progress."""
+    with sync_session_factory() as session:
+        project, data_source = _seed_project_and_ds(session)
+        definition = _make_active_fact_metric_for_dispatch(session, project, data_source)
+        definition.interval = ScanInterval.d1
+        # No MetricValue rows were produced, but the source was successfully
+        # scanned through the current UTC boundary.
+        definition.last_collection_window_to = datetime(2026, 7, 18, tzinfo=UTC)
+        definition.last_collection_status = "success"
+        session.commit()
+
+        assert (
+            metrics_schedule._metric_definition_due(
+                session,
+                definition,
+                now=datetime(2026, 7, 18, 12, tzinfo=UTC),
+            )
+            is False
+        )
+
+
+def test_empty_window_watermark_bounds_the_next_resume_window(
+    sync_session_factory: sessionmaker[Session],
+) -> None:
+    """A zero-row success resumes near its watermark, not at the default lookback."""
+    with sync_session_factory() as session:
+        project, data_source = _seed_project_and_ds(session)
+        definition = _make_active_fact_metric_for_dispatch(session, project, data_source)
+        definition.interval = ScanInterval.d1
+        current_boundary = floor_to_bucket(datetime.now(UTC), "1d")
+        definition.last_collection_window_to = current_boundary - timedelta(days=1)
+        session.commit()
+
+        time_from, time_to = metric_collect._resolve_value_window(
+            session,
+            metric_definition_id=definition.id,
+            interval_code="1d",
+        )
+
+        assert time_to == current_boundary
+        assert time_from == definition.last_collection_window_to - timedelta(days=2)
+
+
 # ── fact row-filter WHERE assembly (multiple named filters + free-text SQL) ──
 
 
@@ -1361,6 +1452,7 @@ def _filter_fact_table() -> FactTable:
         columns=[
             {"name": "ts", "type": "timestamp"},
             {"name": "amount", "type": "number"},
+            {"name": "user_id", "type": "string"},
         ],
         identifier_columns=[],
         row_filters=[
@@ -1458,6 +1550,32 @@ def test_combined_filter_condition_only() -> None:
         conditions=(metric_collect._FactCondition("amount", "gt", "3"),),
     )
     assert combined == "(`amount` > 3)"
+
+
+def test_numeric_looking_string_stays_quoted_for_string_column() -> None:
+    """Persisted string-column values must not be retyped just because they look numeric."""
+    fact_table = _filter_fact_table()
+    combined = metric_collect._resolve_combined_filter(
+        fact_table,
+        dialect=_CH,
+        row_filters=(),
+        filter_sql=None,
+        conditions=(metric_collect._FactCondition("user_id", "eq", "001"),),
+    )
+    assert combined == "(`user_id` = '001')"
+
+
+def test_invalid_numeric_literal_is_rejected_for_number_column() -> None:
+    """Old string configs get type-directed validation from fact-table metadata."""
+    fact_table = _filter_fact_table()
+    with pytest.raises(ScanError, match="numeric column 'amount' requires a numeric value"):
+        metric_collect._resolve_combined_filter(
+            fact_table,
+            dialect=_CH,
+            row_filters=(),
+            filter_sql=None,
+            conditions=(metric_collect._FactCondition("amount", "gt", "many"),),
+        )
 
 
 @pytest.mark.parametrize(
