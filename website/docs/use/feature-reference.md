@@ -262,7 +262,10 @@ catalog reads the same on every branch.
 
 The catalog supports kind/status/search filters, anomaly and stale-data filters,
 reordering, uniform bulk status changes, duplicate-as-draft, manual **Collect
-now**, archive/restore, and delete. The create/edit form picks a **kind** and
+now**, archive/restore, and delete. Collecting a fact metric refreshes every
+active metric that depends on the same fact table through the shared batch path:
+compatible aggregates are folded into one warehouse query instead of rerunning
+the fact-table SQL once per metric. The create/edit form picks a **kind** and
 then reveals kind-specific config:
 
 - **SQL** — a data source, a read-only `SELECT` or top-level `WITH ... SELECT`
@@ -297,7 +300,9 @@ a bounded sample so the form can validate and persist the available columns.
 
 Fact metrics can reference the table's named filters, add structured
 column/operator/value conditions, and add a guarded raw filter fragment; all
-effective filters are combined with `AND`. A ratio can combine two fact
+effective filters are combined with `AND`. Structured values retain their
+column type, so numeric conditions compile as numbers rather than quoted strings.
+A ratio can combine two fact
 operands, including operands from different fact tables. Fact tables and metrics
 are indexed by global search and are not copied into plan branches.
 
@@ -306,6 +311,14 @@ are indexed by global search and are not copied into plan branches.
 **Where:** open a metric from the catalog. The drilldown **reuses the monitoring
 detail tabs** (Volume with the latest signal, Heatmap, Distribution, Breakdowns)
 for the metric's own scope, so a metric reads like any other monitored series.
+Its definition card links fact-backed operands to their fact tables, shows the
+next scheduled collection (or an explicit due/unscheduled state), and exposes
+the generated primary collection SQL in a collapsed, read-only editor. This is
+the same time-windowed, multi-aggregate statement shape the collector executes
+for all compatible dependent metrics on that fact table and interval; separate
+breakdown scans are not included in this preview.
+The schedule advances after a successful empty collection as well as one that
+writes values, so an empty source window still has a concrete next update.
 Count-shaped metrics (counts/sums) and fractional metrics (ratios, averages, SQL
 values) are scored differently so a ratio that naturally sits below 1 isn't
 constantly flagged — see [How anomaly detection works](./anomaly-detection.md).

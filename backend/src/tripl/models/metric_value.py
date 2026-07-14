@@ -3,7 +3,7 @@ from __future__ import annotations
 import uuid
 from datetime import datetime
 
-from sqlalchemy import DateTime, Float, ForeignKey, Index, UniqueConstraint, func
+from sqlalchemy import DateTime, Float, ForeignKey, Index, UniqueConstraint, func, text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from tripl.models.base import Base, UUIDMixin
@@ -26,6 +26,14 @@ class MetricValue(UUIDMixin, Base):
             "scan_config_id",
             "bucket",
             name="uq_metric_value_def_config_bucket",
+        ),
+        Index(
+            "uq_metric_value_catalog_bucket",
+            "metric_definition_id",
+            "bucket",
+            unique=True,
+            postgresql_where=text("scan_config_id IS NULL"),
+            sqlite_where=text("scan_config_id IS NULL"),
         ),
         Index("ix_metric_value_def_bucket", "metric_definition_id", "bucket"),
     )

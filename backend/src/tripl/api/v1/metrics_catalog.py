@@ -13,11 +13,13 @@ from tripl.schemas.metric_definition import (
     MetricCollectNowResponse,
     MetricDefinitionBulkUpdate,
     MetricDefinitionCreate,
+    MetricDefinitionDetailResponse,
     MetricDefinitionListResponse,
     MetricDefinitionMove,
     MetricDefinitionReorder,
     MetricDefinitionResponse,
     MetricDefinitionUpdate,
+    MetricGeneratedSqlResponse,
     MetricPreviewRequest,
     MetricPreviewResponse,
 )
@@ -154,13 +156,30 @@ async def reorder_metric_definitions(
     return await metric_definition_service.reorder_metric_definitions(session, slug, data)
 
 
-@router.get("/{metric_id}", response_model=MetricDefinitionResponse)
+@router.get("/{metric_id}", response_model=MetricDefinitionDetailResponse)
 async def get_metric_definition(
     session: SessionDep,
     slug: str,
     metric_id: uuid.UUID,
-) -> MetricDefinition:
-    return await metric_definition_service.get_metric_definition(session, slug, metric_id)
+) -> MetricDefinitionDetailResponse:
+    return await metric_definition_service.get_metric_definition_enriched(session, slug, metric_id)
+
+
+@router.get(
+    "/{metric_id}/generated-sql",
+    response_model=MetricGeneratedSqlResponse,
+)
+async def get_metric_generated_sql(
+    session: SessionDep,
+    slug: str,
+    metric_id: uuid.UUID,
+) -> MetricGeneratedSqlResponse:
+    """Return a saved fact metric's primary dependency-batch SQL without running it."""
+    return await metric_preview_service.get_saved_fact_metric_sql(
+        session,
+        slug,
+        metric_id,
+    )
 
 
 # Series reads live under the two-segment ``/{metric_id}/...`` templates, which
@@ -230,11 +249,13 @@ async def collect_metric_now(
     metric_id: uuid.UUID,
     current_user: EditorUserDep,
 ) -> MetricCollectNowResponse:
-    """Trigger an immediate backfill collection for one metric (editor-gated).
+    """Trigger an immediate backfill collection from one metric (editor-gated).
 
-    Dispatches the same Celery collection the scheduler uses, backfilling a
-    bounded recent window so the chart is not empty. Returns 202 once queued;
-    the warehouse query runs in the worker. Unknown metric -> 404.
+    SQL/event-composition metrics dispatch alone. A fact metric refreshes every
+    fact table reachable through its operands and recalculates all active fact
+    metrics using those tables in shared batches (the clicked metric is included
+    even when draft). Returns 202 once queued; warehouse queries run in workers.
+    Unknown metric -> 404.
     """
     result = await metric_definition_service.trigger_metric_collection(session, slug, metric_id)
     await audit_service.record(

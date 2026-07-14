@@ -12,6 +12,7 @@ from sqlalchemy import (
     String,
     UniqueConstraint,
     func,
+    text,
 )
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -38,6 +39,17 @@ class MetricValueBreakdown(UUIDMixin, Base):
             "breakdown_value",
             "is_other",
             name="uq_metric_value_breakdown_def_config_bucket_value",
+        ),
+        Index(
+            "uq_metric_value_breakdown_catalog_bucket_value",
+            "metric_definition_id",
+            "bucket",
+            "breakdown_column",
+            "breakdown_value",
+            "is_other",
+            unique=True,
+            postgresql_where=text("scan_config_id IS NULL"),
+            sqlite_where=text("scan_config_id IS NULL"),
         ),
         Index(
             "ix_metric_value_breakdown_def_bucket",

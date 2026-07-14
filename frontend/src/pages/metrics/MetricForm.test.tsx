@@ -1,8 +1,8 @@
-import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { createElement, type ReactNode } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import type { DataSource, EventListItem, MetricDefinitionResponse } from '@/types'
+import type { DataSource, EventListItem, MetricDefinitionDetailResponse } from '@/types'
 import { MetricForm } from './MetricForm'
 
 vi.mock('@/api/metricsCatalogApi', () => ({
@@ -97,8 +97,8 @@ const FACT_TABLE_DETAIL = {
   name: 'orders',
   display_name: 'Orders',
   columns: [
-    { name: 'amount', type: 'numeric' },
-    { name: 'user_id', type: 'text' },
+    { name: 'amount', type: 'number' },
+    { name: 'user_id', type: 'string' },
   ],
   identifier_columns: ['user_id'],
   row_filters: [{ name: 'completed', sql: 'status = $1' }],
@@ -111,7 +111,7 @@ function wrapper({ children }: { children: ReactNode }) {
 }
 
 function renderForm(
-  metric: MetricDefinitionResponse | null = null,
+  metric: MetricDefinitionDetailResponse | null = null,
   dataSources: DataSource[] = DATA_SOURCES,
 ) {
   const onClose = vi.fn()
@@ -266,7 +266,7 @@ describe('MetricForm validation', () => {
     },
     created_at: '2026-06-01T00:00:00Z',
     updated_at: '2026-06-20T00:00:00Z',
-  } as unknown as MetricDefinitionResponse
+  } as unknown as MetricDefinitionDetailResponse
 
   it('keeps the internal name read-only and renders editable kind/config in edit mode', () => {
     renderForm(EDIT_METRIC)
@@ -341,9 +341,10 @@ describe('MetricForm validation', () => {
           distinct_column: 'session_id',
         },
       },
-    } as unknown as MetricDefinitionResponse
+    } as unknown as MetricDefinitionDetailResponse
 
     renderForm(metric)
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Save metric' })).toBeEnabled())
     submit()
 
     await waitFor(() => expect(metricsCatalogApi.update).toHaveBeenCalledTimes(1))
@@ -387,7 +388,7 @@ describe('MetricForm validation', () => {
       numerator_event_id: null,
       numerator_event_type_id: 'event-type-1',
       config: {},
-    } as unknown as MetricDefinitionResponse
+    } as unknown as MetricDefinitionDetailResponse
 
     renderForm(metric)
     submit()
@@ -531,6 +532,9 @@ describe('MetricForm validation', () => {
     )
     fireEvent.change(document.getElementById('metric-fact-table')!, { target: { value: 'ft-1' } })
     await waitFor(() => expect(factTablesApi.get).toHaveBeenCalledWith('demo', 'ft-1'))
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: /Check filters/i })).toBeEnabled(),
+    )
 
     // Sum requires a measure column; the dropdown appears and fills from columns.
     fireEvent.change(document.getElementById('metric-fact-aggregation')!, { target: { value: 'sum' } })
@@ -566,6 +570,9 @@ describe('MetricForm validation', () => {
     )
     fireEvent.change(document.getElementById('metric-fact-table')!, { target: { value: 'ft-1' } })
     await waitFor(() => expect(factTablesApi.get).toHaveBeenCalledWith('demo', 'ft-1'))
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: /Check filters/i })).toBeEnabled(),
+    )
 
     // Add a named filter (the "Named filter" option appears once the fact
     // table's named filters have loaded).
@@ -608,9 +615,12 @@ describe('MetricForm validation', () => {
     )
     fireEvent.change(document.getElementById('metric-fact-table')!, { target: { value: 'ft-1' } })
     await waitFor(() => expect(factTablesApi.get).toHaveBeenCalledWith('demo', 'ft-1'))
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: /Check filters/i })).toBeEnabled(),
+    )
 
     fireEvent.click(screen.getByRole('button', { name: 'Add filter' }))
-    fireEvent.click(screen.getByRole('menuitem', { name: 'Condition' }))
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Condition' }))
     fireEvent.change(screen.getByLabelText('Filter 1 condition column'), {
       target: { value: 'amount' },
     })
@@ -630,9 +640,55 @@ describe('MetricForm validation', () => {
         kind: 'fact',
         composition: 'single',
         fact_table_id: 'ft-1',
-        conditions: [{ column: 'amount', operator: 'gt', value: '3' }],
+        conditions: [{ column: 'amount', operator: 'gt', value: 3 }],
       }),
     )
+  })
+
+  it('blocks filter checks and save until fact-table column types load', async () => {
+    let resolveDetail!: (value: Awaited<ReturnType<typeof factTablesApi.get>>) => void
+    vi.mocked(factTablesApi.get).mockReturnValue(
+      new Promise<Awaited<ReturnType<typeof factTablesApi.get>>>(resolve => {
+        resolveDetail = resolve
+      }),
+    )
+    renderForm()
+    fillFactIdentity('Qualified orders', 'qualified_orders')
+
+    await waitFor(() =>
+      expect(document.querySelector('#metric-fact-table option[value="ft-1"]')).not.toBeNull(),
+    )
+    fireEvent.change(document.getElementById('metric-fact-table')!, { target: { value: 'ft-1' } })
+
+    expect(await screen.findByRole('button', { name: /Check filters/i })).toBeDisabled()
+    expect(screen.getByRole('button', { name: 'Create metric' })).toBeDisabled()
+
+    await act(async () => {
+      resolveDetail(
+        FACT_TABLE_DETAIL as unknown as Awaited<ReturnType<typeof factTablesApi.get>>,
+      )
+    })
+
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: /Check filters/i })).toBeEnabled()
+      expect(screen.getByRole('button', { name: 'Create metric' })).toBeEnabled()
+    })
+  })
+
+  it('surfaces a fact-table detail failure and keeps type-dependent actions disabled', async () => {
+    vi.mocked(factTablesApi.get).mockRejectedValue(new Error('Fact table details unavailable'))
+    renderForm()
+    fillFactIdentity('Qualified orders', 'qualified_orders')
+
+    await waitFor(() =>
+      expect(document.querySelector('#metric-fact-table option[value="ft-1"]')).not.toBeNull(),
+    )
+    fireEvent.change(document.getElementById('metric-fact-table')!, { target: { value: 'ft-1' } })
+
+    expect(await screen.findByText('Could not load fact table details')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /Check filters/i })).toBeDisabled()
+    expect(screen.getByRole('button', { name: 'Create metric' })).toBeDisabled()
+    expect(metricsCatalogApi.create).not.toHaveBeenCalled()
   })
 
   it('rejects a sum fact metric with no measure column', async () => {
@@ -663,6 +719,7 @@ describe('MetricForm validation', () => {
     fireEvent.change(document.getElementById('metric-fact-num-table')!, { target: { value: 'ft-1' } })
     fireEvent.change(document.getElementById('metric-fact-den-table')!, { target: { value: 'ft-2' } })
 
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Create metric' })).toBeEnabled())
     submit()
 
     await waitFor(() => expect(metricsCatalogApi.create).toHaveBeenCalledTimes(1))
@@ -888,7 +945,7 @@ describe('MetricForm validation', () => {
     renderForm({
       ...EDIT_METRIC,
       breakdown_columns: ['custom_dim'],
-    } as unknown as MetricDefinitionResponse)
+    } as unknown as MetricDefinitionDetailResponse)
 
     expect(screen.getByRole('checkbox', { name: 'Break down by custom_dim' })).toBeChecked()
   })
@@ -935,7 +992,7 @@ describe('MetricForm templates', () => {
     },
     created_at: '2026-06-01T00:00:00Z',
     updated_at: '2026-06-20T00:00:00Z',
-  } as unknown as MetricDefinitionResponse
+  } as unknown as MetricDefinitionDetailResponse
 
   it('shows the starter template gallery in create mode', () => {
     renderForm()

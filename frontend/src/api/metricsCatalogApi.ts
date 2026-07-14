@@ -6,11 +6,13 @@ import type {
   MetricCollectNowResponse,
   MetricCreate,
   MetricDefinitionBulkUpdate,
+  MetricDefinitionDetailResponse,
   MetricDefinitionListResponse,
   MetricDefinitionMove,
   MetricDefinitionReorder,
   MetricDefinitionResponse,
   MetricDefinitionUpdate,
+  MetricGeneratedSqlResponse,
   MetricKind,
   MetricPreviewRequest,
   MetricPreviewResponse,
@@ -59,7 +61,7 @@ export const metricsCatalogApi = {
   },
 
   get: (slug: string, metricId: string) =>
-    api.get<MetricDefinitionResponse>(`/projects/${slug}/metrics/${metricId}`),
+    api.get<MetricDefinitionDetailResponse>(`/projects/${slug}/metrics/${metricId}`),
 
   create: (slug: string, data: MetricCreate) =>
     api.post<MetricDefinitionResponse>(`/projects/${slug}/metrics`, data),
@@ -73,6 +75,12 @@ export const metricsCatalogApi = {
   /** Trigger an immediate backfill collection for one metric (editor-gated). */
   collect: (slug: string, metricId: string) =>
     api.post<MetricCollectNowResponse>(`/projects/${slug}/metrics/${metricId}/collect`, {}),
+
+  /** Build the exact shared primary SQL for the saved fact-metric collection batch. */
+  getGeneratedSql: (slug: string, metricId: string) =>
+    api.get<MetricGeneratedSqlResponse>(
+      `/projects/${slug}/metrics/${metricId}/generated-sql`,
+    ),
 
   /**
    * Stateless dry-run of a sql-kind metric SELECT. Expected user mistakes

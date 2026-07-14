@@ -1090,21 +1090,47 @@ def _upsert_metric_values_rows(
 
     is_sqlite = session.bind is not None and session.bind.dialect.name == "sqlite"
     for chunk in _chunk_rows(rows):
-        if is_sqlite:
-            sqlite_stmt = sqlite_insert(MetricValue).values(chunk)
-            sqlite_stmt = sqlite_stmt.on_conflict_do_update(
-                index_elements=["metric_definition_id", "scan_config_id", "bucket"],
-                set_={"value": sqlite_stmt.excluded.value},
-            )
-            session.execute(sqlite_stmt)
-            continue
-
-        pg_stmt = pg_insert(MetricValue).values(chunk)
-        pg_stmt = pg_stmt.on_conflict_do_update(
-            constraint="uq_metric_value_def_config_bucket",
-            set_={"value": pg_stmt.excluded.value},
+        # Catalog rows use NULL scan_config_id. PostgreSQL (and SQLite) UNIQUE
+        # constraints treat NULLs as distinct, so they target the dedicated
+        # partial unique index; event-composition rows keep the original full
+        # constraint. Splitting also handles a defensive mixed input batch.
+        groups = (
+            [row for row in chunk if row.get("scan_config_id") is None],
+            [row for row in chunk if row.get("scan_config_id") is not None],
         )
-        session.execute(pg_stmt)
+        for group in groups:
+            if not group:
+                continue
+            is_catalog = group[0].get("scan_config_id") is None
+            if is_sqlite:
+                sqlite_stmt = sqlite_insert(MetricValue).values(group)
+                if is_catalog:
+                    sqlite_stmt = sqlite_stmt.on_conflict_do_update(
+                        index_elements=["metric_definition_id", "bucket"],
+                        index_where=MetricValue.scan_config_id.is_(None),
+                        set_={"value": sqlite_stmt.excluded.value},
+                    )
+                else:
+                    sqlite_stmt = sqlite_stmt.on_conflict_do_update(
+                        index_elements=["metric_definition_id", "scan_config_id", "bucket"],
+                        set_={"value": sqlite_stmt.excluded.value},
+                    )
+                session.execute(sqlite_stmt)
+                continue
+
+            pg_stmt = pg_insert(MetricValue).values(group)
+            if is_catalog:
+                pg_stmt = pg_stmt.on_conflict_do_update(
+                    index_elements=["metric_definition_id", "bucket"],
+                    index_where=MetricValue.scan_config_id.is_(None),
+                    set_={"value": pg_stmt.excluded.value},
+                )
+            else:
+                pg_stmt = pg_stmt.on_conflict_do_update(
+                    constraint="uq_metric_value_def_config_bucket",
+                    set_={"value": pg_stmt.excluded.value},
+                )
+            session.execute(pg_stmt)
 
 
 def _upsert_metric_value_breakdown_rows(
@@ -1123,34 +1149,74 @@ def _upsert_metric_value_breakdown_rows(
 
     is_sqlite = session.bind is not None and session.bind.dialect.name == "sqlite"
     for chunk in _chunk_rows(rows):
-        if is_sqlite:
-            sqlite_stmt = sqlite_insert(MetricValueBreakdown).values(chunk)
-            sqlite_stmt = sqlite_stmt.on_conflict_do_update(
-                index_elements=[
-                    "metric_definition_id",
-                    "scan_config_id",
-                    "bucket",
-                    "breakdown_column",
-                    "breakdown_value",
-                    "is_other",
-                ],
-                set_={
-                    "value": sqlite_stmt.excluded.value,
-                    "is_other": sqlite_stmt.excluded.is_other,
-                },
-            )
-            session.execute(sqlite_stmt)
-            continue
-
-        pg_stmt = pg_insert(MetricValueBreakdown).values(chunk)
-        pg_stmt = pg_stmt.on_conflict_do_update(
-            constraint="uq_metric_value_breakdown_def_config_bucket_value",
-            set_={
-                "value": pg_stmt.excluded.value,
-                "is_other": pg_stmt.excluded.is_other,
-            },
+        groups = (
+            [row for row in chunk if row.get("scan_config_id") is None],
+            [row for row in chunk if row.get("scan_config_id") is not None],
         )
-        session.execute(pg_stmt)
+        for group in groups:
+            if not group:
+                continue
+            is_catalog = group[0].get("scan_config_id") is None
+            if is_sqlite:
+                sqlite_stmt = sqlite_insert(MetricValueBreakdown).values(group)
+                if is_catalog:
+                    sqlite_stmt = sqlite_stmt.on_conflict_do_update(
+                        index_elements=[
+                            "metric_definition_id",
+                            "bucket",
+                            "breakdown_column",
+                            "breakdown_value",
+                            "is_other",
+                        ],
+                        index_where=MetricValueBreakdown.scan_config_id.is_(None),
+                        set_={
+                            "value": sqlite_stmt.excluded.value,
+                            "is_other": sqlite_stmt.excluded.is_other,
+                        },
+                    )
+                else:
+                    sqlite_stmt = sqlite_stmt.on_conflict_do_update(
+                        index_elements=[
+                            "metric_definition_id",
+                            "scan_config_id",
+                            "bucket",
+                            "breakdown_column",
+                            "breakdown_value",
+                            "is_other",
+                        ],
+                        set_={
+                            "value": sqlite_stmt.excluded.value,
+                            "is_other": sqlite_stmt.excluded.is_other,
+                        },
+                    )
+                session.execute(sqlite_stmt)
+                continue
+
+            pg_stmt = pg_insert(MetricValueBreakdown).values(group)
+            if is_catalog:
+                pg_stmt = pg_stmt.on_conflict_do_update(
+                    index_elements=[
+                        "metric_definition_id",
+                        "bucket",
+                        "breakdown_column",
+                        "breakdown_value",
+                        "is_other",
+                    ],
+                    index_where=MetricValueBreakdown.scan_config_id.is_(None),
+                    set_={
+                        "value": pg_stmt.excluded.value,
+                        "is_other": pg_stmt.excluded.is_other,
+                    },
+                )
+            else:
+                pg_stmt = pg_stmt.on_conflict_do_update(
+                    constraint="uq_metric_value_breakdown_def_config_bucket_value",
+                    set_={
+                        "value": pg_stmt.excluded.value,
+                        "is_other": pg_stmt.excluded.is_other,
+                    },
+                )
+            session.execute(pg_stmt)
 
 
 def _delete_metric_values_window(

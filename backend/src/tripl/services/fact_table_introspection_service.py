@@ -157,6 +157,9 @@ class FactTableColumn:
     name: str
     # Bucketed type: one of "number" | "string" | "bool" | "timestamp".
     type: str
+    # Exact adapter type used by type-directed SQL builders (for example,
+    # BigQuery TIMESTAMP vs DATETIME vs DATE).
+    native_type: str | None = None
 
 
 @dataclass(frozen=True)
@@ -379,7 +382,11 @@ async def introspect_fact_table(
     )
 
     bucketed = [
-        FactTableColumn(name=column.name, type=bucket_warehouse_type(column.type_name))
+        FactTableColumn(
+            name=column.name,
+            type=bucket_warehouse_type(column.type_name),
+            native_type=column.type_name,
+        )
         for column in columns
     ]
     identifier_candidates = [

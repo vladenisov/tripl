@@ -92,7 +92,12 @@ async def preview_fact_table(
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     columns = [
-        FactTableColumnSchema(name=column.name, type=column.type) for column in result.columns
+        FactTableColumnSchema(
+            name=column.name,
+            type=column.type,
+            native_type=column.native_type,
+        )
+        for column in result.columns
     ]
     return FactTablePreviewResponse(
         columns=columns,

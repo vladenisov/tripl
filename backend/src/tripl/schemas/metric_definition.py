@@ -116,8 +116,10 @@ FactConditionOperator = Literal[
     "is_true",
     "is_false",
 ]
-FactConditionScalar = str | int | float | bool
-FactConditionValue = FactConditionScalar | list[FactConditionScalar] | None
+FactConditionString = Annotated[str, Field(max_length=4096)]
+FactConditionScalar = FactConditionString | int | float | bool
+FactConditionList = Annotated[list[FactConditionScalar], Field(max_length=100)]
+FactConditionValue = FactConditionScalar | FactConditionList | None
 
 _CONDITION_VALUELESS_OPERATORS = frozenset({"is_null", "is_not_null", "is_true", "is_false"})
 _CONDITION_MULTI_VALUE_OPERATORS = frozenset({"in", "not_in"})
@@ -226,11 +228,11 @@ class FactOperand(BaseModel):
     # ``row_filters`` by ``effective_row_filters`` / ``to_config``.
     row_filter: str | None = Field(default=None, min_length=1, max_length=255)
     # Names of named filters defined on this operand's fact table; ALL are ANDed.
-    row_filters: list[str] = Field(default_factory=list)
+    row_filters: list[str] = Field(default_factory=list, max_length=100)
     # Free-text boolean WHERE fragment, ANDed with the named filters.
-    filter_sql: str | None = Field(default=None, min_length=1)
+    filter_sql: str | None = Field(default=None, min_length=1, max_length=32768)
     # Visual column/operator/value rows, ANDed with named filters + filter_sql.
-    conditions: list[FactCondition] = Field(default_factory=list)
+    conditions: list[FactCondition] = Field(default_factory=list, max_length=100)
 
     @field_validator("measure_column", "distinct_column")
     @classmethod
@@ -394,9 +396,9 @@ class FactMetricDefinition(BaseModel):
     # ``row_filters`` by ``effective_row_filters`` / ``to_definition_values``.
     row_filter: str | None = Field(default=None, min_length=1, max_length=255)
     # Names of named filters on the fact table (ALL ANDed) + a free-text WHERE.
-    row_filters: list[str] = Field(default_factory=list)
-    filter_sql: str | None = Field(default=None, min_length=1)
-    conditions: list[FactCondition] = Field(default_factory=list)
+    row_filters: list[str] = Field(default_factory=list, max_length=100)
+    filter_sql: str | None = Field(default=None, min_length=1, max_length=32768)
+    conditions: list[FactCondition] = Field(default_factory=list, max_length=100)
 
     # RATIO operands.
     numerator: FactOperand | None = None
@@ -770,6 +772,14 @@ class MetricDefinitionResponse(BaseModel):
     updated_at: datetime
 
 
+class MetricDefinitionDetailResponse(MetricDefinitionResponse):
+    """Metric detail plus exact read-time scheduler state."""
+
+    # ``None`` means draft/archived/event-composition/no interval.
+    next_collection_at: datetime | None = None
+    collection_due: bool = False
+
+
 class MetricDefinitionListItem(BaseModel):
     """Slim list row: the catalog table fields, without the heavier config/refs."""
 
@@ -872,7 +882,12 @@ class MetricCollectNowResponse(BaseModel):
     ``fact`` / ``sql`` metrics; they are ``None`` for ``event_composition``
     metrics, which have no interval and recompute from the full event-metric
     series. ``task_id`` is the dispatched Celery task id when the broker returns
-    one, else ``None``.
+    one, else ``None``. For a fact metric the task is a shared dependency batch:
+    the response window describes the clicked metric, while each
+    different-interval dependent receives its own bounded window in that task.
+    ``metric_count`` is how many metrics that batch refreshes (1 for a metric
+    with no active siblings), so a click can say what it set in motion instead of
+    silently refreshing a dozen other metrics.
     """
 
     metric_id: uuid.UUID
@@ -880,3 +895,29 @@ class MetricCollectNowResponse(BaseModel):
     window_from: datetime | None = None
     window_to: datetime | None = None
     task_id: str | None = None
+    metric_count: int = 1
+
+
+class MetricGeneratedSqlQuery(BaseModel):
+    """One executable primary query from the shared fact-collection batch.
+
+    A batch is grouped by interval and fact table, then optionally split into
+    bounded replay chunks. ``metric_ids`` names the dependency-group metrics
+    whose aggregate specs are folded into this statement. Breakdown scans are a
+    separate path and are explicitly excluded by the response flag below.
+    """
+
+    role: Literal["primary"] = "primary"
+    label: str
+    fact_table_id: uuid.UUID
+    fact_table_name: str
+    interval: str
+    window_from: datetime
+    window_to: datetime
+    metric_ids: list[uuid.UUID]
+    sql: str
+
+
+class MetricGeneratedSqlResponse(BaseModel):
+    queries: list[MetricGeneratedSqlQuery]
+    breakdown_queries_omitted: bool = True

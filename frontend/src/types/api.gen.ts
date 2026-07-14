@@ -1789,13 +1789,35 @@ export interface paths {
         put?: never;
         /**
          * Collect Metric Now
-         * @description Trigger an immediate backfill collection for one metric (editor-gated).
+         * @description Trigger an immediate backfill collection from one metric (editor-gated).
          *
-         *     Dispatches the same Celery collection the scheduler uses, backfilling a
-         *     bounded recent window so the chart is not empty. Returns 202 once queued;
-         *     the warehouse query runs in the worker. Unknown metric -> 404.
+         *     SQL/event-composition metrics dispatch alone. A fact metric refreshes every
+         *     fact table reachable through its operands and recalculates all active fact
+         *     metrics using those tables in shared batches (the clicked metric is included
+         *     even when draft). Returns 202 once queued; warehouse queries run in workers.
+         *     Unknown metric -> 404.
          */
         post: operations["collect_metric_now_api_v1_projects__slug__metrics__metric_id__collect_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/projects/{slug}/metrics/{metric_id}/generated-sql": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Metric Generated Sql
+         * @description Return a saved fact metric's primary dependency-batch SQL without running it.
+         */
+        get: operations["get_metric_generated_sql_api_v1_projects__slug__metrics__metric_id__generated_sql_get"];
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -5649,11 +5671,13 @@ export interface components {
         };
         /**
          * FactTableColumnSchema
-         * @description A single introspected column descriptor: its name and warehouse type.
+         * @description An introspected column with UI type plus optional native warehouse type.
          */
         FactTableColumnSchema: {
             /** Name */
             name: string;
+            /** Native Type */
+            native_type?: string | null;
             /** Type */
             type: string;
         };
@@ -6129,9 +6153,19 @@ export interface components {
          *     ``fact`` / ``sql`` metrics; they are ``None`` for ``event_composition``
          *     metrics, which have no interval and recompute from the full event-metric
          *     series. ``task_id`` is the dispatched Celery task id when the broker returns
-         *     one, else ``None``.
+         *     one, else ``None``. For a fact metric the task is a shared dependency batch:
+         *     the response window describes the clicked metric, while each
+         *     different-interval dependent receives its own bounded window in that task.
+         *     ``metric_count`` is how many metrics that batch refreshes (1 for a metric
+         *     with no active siblings), so a click can say what it set in motion instead of
+         *     silently refreshing a dozen other metrics.
          */
         MetricCollectNowResponse: {
+            /**
+             * Metric Count
+             * @default 1
+             */
+            metric_count: number;
             /**
              * Metric Id
              * Format: uuid
@@ -6171,6 +6205,93 @@ export interface components {
             /** Reviewed */
             reviewed?: boolean | null;
             status?: components["schemas"]["MetricStatus"] | null;
+        };
+        /**
+         * MetricDefinitionDetailResponse
+         * @description Metric detail plus exact read-time scheduler state.
+         */
+        MetricDefinitionDetailResponse: {
+            aggregation: components["schemas"]["MetricAggregation"] | null;
+            /** Anomaly Detection Enabled */
+            anomaly_detection_enabled: boolean;
+            /** App Version Column */
+            app_version_column: string | null;
+            /** Breakdown Columns */
+            breakdown_columns: string[];
+            /** Breakdown Values Limit */
+            breakdown_values_limit: number | null;
+            /**
+             * Collection Due
+             * @default false
+             */
+            collection_due: boolean;
+            /** Color */
+            color: string;
+            composition: components["schemas"]["MetricComposition"] | null;
+            /** Config */
+            config: {
+                [key: string]: unknown;
+            };
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /** Data Source Id */
+            data_source_id: string | null;
+            /** Denominator Event Id */
+            denominator_event_id: string | null;
+            /** Denominator Event Type Id */
+            denominator_event_type_id: string | null;
+            /** Description */
+            description: string;
+            /** Display Name */
+            display_name: string;
+            /** Fact Table Id */
+            fact_table_id: string | null;
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            interval: components["schemas"]["ScanInterval"] | null;
+            kind: components["schemas"]["MetricKind"];
+            /** Last Collected At */
+            last_collected_at: string | null;
+            /** Last Collection Error */
+            last_collection_error: string | null;
+            /** Last Collection Status */
+            last_collection_status: string | null;
+            /** Name */
+            name: string;
+            /** Next Collection At */
+            next_collection_at?: string | null;
+            /** Numerator Event Id */
+            numerator_event_id: string | null;
+            /** Numerator Event Type Id */
+            numerator_event_type_id: string | null;
+            /** Order */
+            order: number;
+            /** Owner Id */
+            owner_id: string | null;
+            /** Platform Column */
+            platform_column: string | null;
+            /**
+             * Project Id
+             * Format: uuid
+             */
+            project_id: string;
+            replay_chunk_interval: components["schemas"]["ScanInterval"] | null;
+            /** Reviewed */
+            reviewed: boolean;
+            status: components["schemas"]["MetricStatus"];
+            /** Unit */
+            unit: string | null;
+            /**
+             * Updated At
+             * Format: date-time
+             */
+            updated_at: string;
         };
         /**
          * MetricDefinitionListItem
@@ -6376,6 +6497,58 @@ export interface components {
             status?: components["schemas"]["MetricStatus"] | null;
             /** Unit */
             unit?: string | null;
+        };
+        /**
+         * MetricGeneratedSqlQuery
+         * @description One executable primary query from the shared fact-collection batch.
+         *
+         *     A batch is grouped by interval and fact table, then optionally split into
+         *     bounded replay chunks. ``metric_ids`` names the dependency-group metrics
+         *     whose aggregate specs are folded into this statement. Breakdown scans are a
+         *     separate path and are explicitly excluded by the response flag below.
+         */
+        MetricGeneratedSqlQuery: {
+            /**
+             * Fact Table Id
+             * Format: uuid
+             */
+            fact_table_id: string;
+            /** Fact Table Name */
+            fact_table_name: string;
+            /** Interval */
+            interval: string;
+            /** Label */
+            label: string;
+            /** Metric Ids */
+            metric_ids: string[];
+            /**
+             * Role
+             * @default primary
+             * @constant
+             */
+            role: "primary";
+            /** Sql */
+            sql: string;
+            /**
+             * Window From
+             * Format: date-time
+             */
+            window_from: string;
+            /**
+             * Window To
+             * Format: date-time
+             */
+            window_to: string;
+        };
+        /** MetricGeneratedSqlResponse */
+        MetricGeneratedSqlResponse: {
+            /**
+             * Breakdown Queries Omitted
+             * @default true
+             */
+            breakdown_queries_omitted: boolean;
+            /** Queries */
+            queries: components["schemas"]["MetricGeneratedSqlQuery"][];
         };
         /**
          * MetricKind
@@ -13260,7 +13433,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["MetricDefinitionResponse"];
+                    "application/json": components["schemas"]["MetricDefinitionDetailResponse"];
                 };
             };
             /** @description Validation Error */
@@ -13395,6 +13568,38 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["MetricCollectNowResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_metric_generated_sql_api_v1_projects__slug__metrics__metric_id__generated_sql_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                slug: string;
+                metric_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MetricGeneratedSqlResponse"];
                 };
             };
             /** @description Validation Error */

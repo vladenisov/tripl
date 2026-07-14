@@ -88,8 +88,10 @@ class _BatchAdapter:
         self._columns = columns
         self.multi_calls = 0
         self.breakdown_calls = 0
+        self.seen_multi_intervals: list[str] = []
         self.seen_specs: list[list[AggregateSpec]] = []
         self.seen_breakdown_specs: list[list[AggregateSpec]] = []
+        self.seen_multi_windows: list[tuple[datetime, datetime]] = []
 
     def test_connection(self) -> bool:
         return True
@@ -114,7 +116,9 @@ class _BatchAdapter:
         limit: int = 100000,
     ) -> tuple[list[str], list[tuple[object, ...]]]:
         self.multi_calls += 1
+        self.seen_multi_intervals.append(interval)
         self.seen_specs.append(list(specs))
+        self.seen_multi_windows.append((time_from, time_to))
         col_names = ["bucket", *[spec.key for spec in specs]]
         buckets = sorted({bucket for spec in specs for bucket in self._values(base_query, spec)})
         rows: list[tuple[object, ...]] = []
@@ -303,6 +307,118 @@ def test_two_single_metrics_share_one_scan(
     with sync_session_factory() as session:
         assert _values_for(session, sum_id) == {(B10, 12.5), (B11, 7.0)}
         assert _values_for(session, count_id) == {(B10, 3.0), (B11, 4.0)}
+
+
+def test_successful_empty_batch_advances_every_metric_watermark(
+    sync_session_factory: sessionmaker[Session],
+    monkeypatch: MonkeyPatch,
+) -> None:
+    with sync_session_factory() as session:
+        project, data_source = _seed_project_and_ds(session)
+        fact_table = _seed_fact_table(session, project, data_source)
+        first = _make_single_metric(
+            session,
+            project,
+            fact_table,
+            aggregation=MetricAggregation.sum,
+            config={"measure_column": "amount"},
+        )
+        second = _make_single_metric(
+            session,
+            project,
+            fact_table,
+            aggregation=MetricAggregation.count,
+            config={},
+        )
+        metric_ids = [first.id, second.id]
+
+    adapter = _BatchAdapter(spec_values={})
+    _patch(monkeypatch, sync_session_factory, adapter)
+
+    result = metric_collect.collect_fact_metrics_batch.run(
+        [str(metric_id) for metric_id in metric_ids]
+    )
+
+    assert result["collected"] == 2
+    assert result["values"] == 0
+    with sync_session_factory() as session:
+        for metric_id in metric_ids:
+            definition = session.get(MetricDefinition, metric_id)
+            assert definition is not None
+            assert definition.last_collection_status == "success"
+            # SQLite drops timezone information from DateTime round-trips.
+            assert definition.last_collection_window_to == WINDOW_TO.replace(tzinfo=None)
+
+
+def test_manual_dependency_batch_uses_one_scan_per_compatible_interval_group(
+    sync_session_factory: sessionmaker[Session],
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """Different grids split explicitly; metrics on each grid still batch together."""
+    with sync_session_factory() as session:
+        project, data_source = _seed_project_and_ds(session)
+        fact_table = _seed_fact_table(session, project, data_source)
+        sql = fact_table.sql
+        hourly = _make_single_metric(
+            session,
+            project,
+            fact_table,
+            aggregation=MetricAggregation.sum,
+            config={"measure_column": "amount"},
+        )
+        daily = _make_single_metric(
+            session,
+            project,
+            fact_table,
+            aggregation=MetricAggregation.count,
+            config={},
+        )
+        daily.interval = ScanInterval.d1
+        session.commit()
+        hourly_id, daily_id = hourly.id, daily.id
+
+    adapter = _BatchAdapter(
+        spec_values={
+            (sql, MetricAggregation.sum, "amount", None): {B10: 12.5},
+            (sql, MetricAggregation.count, None, None): {B10: 3.0},
+        }
+    )
+    _patch(monkeypatch, sync_session_factory, adapter)
+    computed: list[str] = []
+
+    def manual_window(interval_code: str) -> tuple[datetime, datetime]:
+        computed.append(interval_code)
+        return WINDOW_FROM, WINDOW_TO
+
+    monkeypatch.setattr(metric_collect, "compute_manual_collect_window", manual_window)
+    stamped: list[uuid.UUID] = []
+    original_stamp_success = metric_collect._stamp_metric_success
+
+    def record_success(
+        session: Session,
+        definition: MetricDefinition,
+        *,
+        window_to: datetime | None = None,
+    ) -> None:
+        stamped.append(definition.id)
+        original_stamp_success(session, definition, window_to=window_to)
+
+    monkeypatch.setattr(metric_collect, "_stamp_metric_success", record_success)
+
+    result = metric_collect.collect_fact_metrics_batch.run(
+        [str(hourly_id), str(daily_id)],
+        None,
+        None,
+        False,
+        True,
+        str(hourly_id),
+    )
+
+    assert set(computed) == {"1h", "1d"}
+    assert sorted(adapter.seen_multi_intervals) == ["1d", "1h"]
+    assert adapter.multi_calls == 2
+    assert result["collected"] == 2
+    assert stamped[-1] == hourly_id
 
 
 # (b) two metrics with DIFFERENT row filters -> conditional aggregates, ONE call
@@ -988,3 +1104,172 @@ def test_force_includes_non_active_fact_metric(
     assert result["values"] == 2
     with sync_session_factory() as session:
         assert _values_for(session, metric_id) == {(B10, 3.0), (B11, 4.0)}
+
+
+# (g) a manual "collect now" sweeps in siblings — their backlog must survive it ─
+
+# A sibling that has been failing for a week sits far behind the bounded window a
+# "collect now" click derives (`compute_manual_collect_window`).
+LAGGING_FROM = datetime(2025, 12, 25, tzinfo=UTC)
+
+
+def test_manual_batch_keeps_the_backlog_of_a_lagging_swept_in_metric(
+    sync_session_factory: sessionmaker[Session],
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """The clicked metric's bounded manual window must not skip a sibling's gap.
+
+    Clicking one metric collects every active metric sharing its fact tables. The
+    manual window is bounded and recent, but each collected metric has its
+    watermark advanced to that window's end — so a metric lagging further behind
+    than the window would be scanned over the recent slice only, stranding the
+    un-queried buckets in between where no later resume reaches them.
+    """
+    with sync_session_factory() as session:
+        project, data_source = _seed_project_and_ds(session)
+        fact_table = _seed_fact_table(session, project, data_source)
+        clicked = _make_single_metric(
+            session,
+            project,
+            fact_table,
+            aggregation=MetricAggregation.sum,
+            config={"measure_column": "amount"},
+        )
+        lagging = _make_single_metric(
+            session, project, fact_table, aggregation=MetricAggregation.count, config={}
+        )
+        clicked_id, lagging_id = clicked.id, lagging.id
+
+    adapter = _BatchAdapter(spec_values={})
+    monkeypatch.setattr(metric_collect, "_get_sync_session", sync_session_factory)
+    monkeypatch.setattr(metric_collect, "_build_adapter", lambda ds: adapter)
+    # The clicked metric is current; the swept-in sibling is a week behind.
+    resume_windows = {clicked_id: (WINDOW_FROM, WINDOW_TO), lagging_id: (LAGGING_FROM, WINDOW_TO)}
+    monkeypatch.setattr(
+        metric_collect,
+        "_resolve_value_window",
+        lambda session, *, metric_definition_id, interval_code: resume_windows[
+            metric_definition_id
+        ],
+    )
+    monkeypatch.setattr(
+        metric_collect,
+        "compute_manual_collect_window",
+        lambda interval_code: (WINDOW_FROM, WINDOW_TO),
+    )
+
+    result = metric_collect.collect_fact_metrics_batch.run(
+        [str(clicked_id), str(lagging_id)],
+        None,
+        None,
+        True,
+        True,
+        str(clicked_id),
+    )
+
+    assert result["errors"] == 0
+    # The shared scan reaches back to the lagging metric's OWN resume point, not
+    # merely to the recent window the click derived.
+    assert min(window[0] for window in adapter.seen_multi_windows) == LAGGING_FROM
+
+
+# (h) one metric failing must not discard another's correctly collected rows ────
+
+
+def test_sibling_failure_is_reported_without_discarding_the_clicked_metric_rows(
+    sync_session_factory: sessionmaker[Session],
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """The clicked metric carries the batch's outcome, but keeps its own data.
+
+    It is the metric the UI's collection watcher polls, so a partially failed
+    batch has to surface through it — that must not cost the rows its own scan
+    collected correctly.
+    """
+    with sync_session_factory() as session:
+        project, data_source = _seed_project_and_ds(session)
+        fact_table = _seed_fact_table(session, project, data_source)
+        sql = fact_table.sql
+        clicked = _make_single_metric(
+            session,
+            project,
+            fact_table,
+            aggregation=MetricAggregation.sum,
+            config={"measure_column": "amount"},
+        )
+        broken = _make_single_metric(
+            session,
+            project,
+            fact_table,
+            aggregation=MetricAggregation.sum,
+            config={"measure_column": "not_a_column"},
+        )
+        clicked_id, broken_id = clicked.id, broken.id
+
+    adapter = _BatchAdapter(
+        spec_values={(sql, MetricAggregation.sum, "amount", None): {B10: 12.5, B11: 7.0}}
+    )
+    _patch(monkeypatch, sync_session_factory, adapter)
+
+    result = metric_collect.collect_fact_metrics_batch.run(
+        [str(clicked_id), str(broken_id)],
+        None,
+        None,
+        True,
+        False,
+        str(clicked_id),
+    )
+
+    assert result["errors"] == 1
+    assert result["collected"] == 1
+    with sync_session_factory() as session:
+        # The clicked metric's own scan succeeded, so its rows stay committed ...
+        assert _values_for(session, clicked_id) == {(B10, 12.5), (B11, 7.0)}
+        clicked_definition = session.get(MetricDefinition, clicked_id)
+        assert clicked_definition is not None
+        # ... while it still reports the failure the user needs to see.
+        assert clicked_definition.last_collection_status == "error"
+        assert "dependent metrics failed" in (clicked_definition.last_collection_error or "")
+        broken_definition = session.get(MetricDefinition, broken_id)
+        assert broken_definition is not None
+        assert broken_definition.last_collection_status == "error"
+
+
+# (i) a condition column dropped from the warehouse must fail by name ──────────
+
+
+def test_condition_column_missing_from_the_fact_table_fails_with_its_name(
+    sync_session_factory: sessionmaker[Session],
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """Save-time validation saw the column; the warehouse has since lost it.
+
+    Nothing rechecked condition columns at collection time, so the metric
+    compiled a query referencing a column that no longer exists — failing deep in
+    the warehouse, and (through the generated-SQL disclosure) handing the user
+    SQL that cannot run.
+    """
+    with sync_session_factory() as session:
+        project, data_source = _seed_project_and_ds(session)
+        fact_table = _seed_fact_table(session, project, data_source)
+        metric = _make_single_metric(
+            session,
+            project,
+            fact_table,
+            aggregation=MetricAggregation.count,
+            config={"conditions": [{"column": "since_dropped", "operator": "eq", "value": "x"}]},
+        )
+        metric_id = metric.id
+
+    adapter = _BatchAdapter(spec_values={})
+    _patch(monkeypatch, sync_session_factory, adapter)
+
+    result = metric_collect.collect_fact_metrics_batch.run([str(metric_id)])
+
+    assert result["errors"] == 1
+    assert adapter.multi_calls == 0
+    with sync_session_factory() as session:
+        definition = session.get(MetricDefinition, metric_id)
+        assert definition is not None
+        assert definition.last_collection_status == "error"
+        assert "since_dropped" in (definition.last_collection_error or "")
