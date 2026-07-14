@@ -352,7 +352,11 @@ With a plan in place and metrics collecting, monitoring comes to life.
   metrics. Fact tables keep a reusable read-only query, introspected columns,
   and named filters; a fact metric applies an aggregate or ratio to them. Active
   metrics collect on schedule and open the same monitoring drilldown as event
-  volume.
+  volume. The drilldown links back to the source fact table, shows when the next
+  collection is due, and can reveal the generated primary batch SQL without
+  executing it. Running **Collect now** on a fact metric refreshes the other
+  active metrics on that fact table in the same multi-aggregate batch rather
+  than scanning it once per metric.
 
 Open a monitor (or an event's monitoring detail) to see, across tabs:
 

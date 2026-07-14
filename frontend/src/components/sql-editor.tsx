@@ -49,6 +49,7 @@ export function SqlEditor({
   tables,
   ariaLabel = 'SQL editor',
   id,
+  readOnly = false,
 }: {
   value: string
   onChange: (v: string) => void
@@ -59,6 +60,8 @@ export function SqlEditor({
   tables?: TableSchema[]
   ariaLabel?: string
   id?: string
+  /** Display-only mode: keeps CodeMirror highlighting while disabling edits/tools. */
+  readOnly?: boolean
 }) {
   const viewRef = useRef<EditorView | null>(null)
 
@@ -135,6 +138,8 @@ export function SqlEditor({
         <CodeMirror
           value={value}
           onChange={onChange}
+          readOnly={readOnly}
+          editable={!readOnly}
           placeholder={placeholder}
           aria-label={ariaLabel}
           extensions={extensions}
@@ -142,17 +147,19 @@ export function SqlEditor({
           minHeight={minHeight}
           onCreateEditor={view => { viewRef.current = view }}
         />
-        <Button
-          type="button"
-          variant="ghost"
-          size="sm"
-          onClick={handleFormat}
-          className="absolute right-1.5 top-1.5 h-6 text-[10px]"
-        >
-          Format
-        </Button>
+        {!readOnly && (
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            onClick={handleFormat}
+            className="absolute right-1.5 top-1.5 h-6 text-[10px]"
+          >
+            Format
+          </Button>
+        )}
       </div>
-      {tables && tables.length > 0 && (
+      {!readOnly && tables && tables.length > 0 && (
         <SqlSchemaBrowser tables={tables} onInsert={insertToken} />
       )}
     </div>

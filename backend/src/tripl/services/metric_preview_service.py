@@ -22,6 +22,8 @@ data source use 4xx.
 import asyncio
 import contextlib
 import logging
+import uuid
+from collections.abc import Mapping
 from datetime import UTC, datetime, timedelta
 
 from fastapi import HTTPException
@@ -39,9 +41,14 @@ from tripl.core.adapters.measure_validator import (
 )
 from tripl.core.intervals import get_interval
 from tripl.models.data_source import DataSource
+from tripl.models.domain_enums import MetricComposition, MetricKind
+from tripl.models.fact_table import FactTable
+from tripl.models.metric_definition import MetricDefinition
 from tripl.schemas.metric_definition import (
     FactOperand,
     FactOperandPreviewResponse,
+    MetricGeneratedSqlQuery,
+    MetricGeneratedSqlResponse,
     MetricPreviewPoint,
     MetricPreviewRequest,
     MetricPreviewResponse,
@@ -64,6 +71,17 @@ PREVIEW_ROW_LIMIT = 200
 # warehouse (BigQuery bills bytes scanned).
 FACT_PREVIEW_WINDOW = timedelta(days=7)
 FACT_PREVIEW_ROW_LIMIT = 1
+
+# Generated SQL is a diagnostic response, not an export endpoint. A metric can
+# reference a transitive dependency graph and replay windows can split into
+# multiple chunks, so cap both dimensions before returning attacker-amplified
+# JSON to an authenticated viewer.
+MAX_GENERATED_SQL_QUERIES = 100
+MAX_GENERATED_SQL_CHARS = 1_000_000
+MAX_GENERATED_AGGREGATE_SPECS = 200
+MAX_GENERATED_METRIC_ID_REFERENCES = 10_000
+MAX_SAVED_FACT_FILTERS = 100
+MAX_SAVED_FACT_FILTER_CHARS = 32768
 
 # Warehouse error strings are trimmed to this many characters so a driver's
 # kilobyte-long dump never reaches the client (full context stays in logs).
@@ -180,6 +198,130 @@ def _run_preview_query(
             adapter.close()
 
 
+def _saved_fact_column_types(fact_table: FactTable, data_source: DataSource) -> dict[str, str]:
+    """Return the saved native type map used for side-effect-free SQL disclosure.
+
+    The normalized ``type`` remains the form/validation contract. ``native_type``
+    is captured by Fact table -> Preview columns and is required where a dialect
+    generates different SQL for members of the same normalized family. Existing
+    BigQuery tables without that snapshot must be re-previewed rather than being
+    shown a plausible but non-executable TIMESTAMP guess for DATETIME/DATE.
+    """
+    columns = [column for column in (fact_table.columns or []) if isinstance(column, Mapping)]
+    column_types = {
+        str(column["name"]): str(column.get("native_type") or column.get("type") or "")
+        for column in columns
+        if column.get("name")
+    }
+    if str(data_source.db_type) == "bigquery":
+        timestamp_column = next(
+            (column for column in columns if column.get("name") == fact_table.timestamp_column),
+            None,
+        )
+        if timestamp_column is None or not timestamp_column.get("native_type"):
+            msg = (
+                "Re-preview and save this BigQuery fact table before viewing generated SQL; "
+                "its native timestamp type has not been recorded yet."
+            )
+            raise ValueError(msg)
+    return column_types
+
+
+def _ensure_generated_sql_query_capacity(query_count: int) -> None:
+    if query_count >= MAX_GENERATED_SQL_QUERIES:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "Generated SQL exceeds the 100-statement preview limit. "
+                "Reduce the metric dependency graph or replay window."
+            ),
+        )
+
+
+def _consume_generated_sql_size(current_chars: int, sql: str) -> int:
+    next_chars = current_chars + len(sql)
+    if next_chars > MAX_GENERATED_SQL_CHARS:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "Generated SQL exceeds the 1,000,000-character preview limit. "
+                "Reduce the fact query, filters, or replay window."
+            ),
+        )
+    return next_chars
+
+
+def _consume_generated_metric_id_references(current_count: int, metric_count: int) -> int:
+    """Bound UUID metadata repeated across generated replay-chunk statements."""
+    next_count = current_count + metric_count
+    if next_count > MAX_GENERATED_METRIC_ID_REFERENCES:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "Generated SQL exceeds the 10,000 metric-reference preview limit. "
+                "Reduce the metric dependency graph or replay window."
+            ),
+        )
+    return next_count
+
+
+def _ensure_generated_sql_compile_budget(
+    *, current_chars: int, base_query: str, filter_sqls: list[str | None]
+) -> None:
+    """Reject oversized aggregate inputs before constructing a large SQL string."""
+    if len(filter_sqls) > MAX_GENERATED_AGGREGATE_SPECS:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "Generated SQL exceeds the 200-aggregate preview limit. "
+                "Reduce the metric dependency graph."
+            ),
+        )
+    # The compiler repeats each filter once and adds bounded syntax/aliases per
+    # aggregate. This conservative estimate blocks huge stored legacy filters or
+    # base queries before string assembly; the exact post-build limit remains the
+    # final guard.
+    estimated_chars = (
+        current_chars
+        + len(base_query)
+        + sum(len(filter_sql or "") for filter_sql in filter_sqls)
+        + 512 * len(filter_sqls)
+    )
+    if estimated_chars > MAX_GENERATED_SQL_CHARS:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "Generated SQL inputs exceed the 1,000,000-character preview limit. "
+                "Reduce the fact query, filters, or dependency graph."
+            ),
+        )
+
+
+def _ensure_saved_fact_filter_input_budget(
+    fact_table: FactTable,
+    *,
+    operand_filter_sql: str | None,
+    named_filter_count: int,
+    condition_count: int,
+) -> None:
+    """Guard legacy rows before their filter strings are combined into a copy."""
+    raw_filters = fact_table.row_filters or []
+    if (
+        len(raw_filters) > MAX_SAVED_FACT_FILTERS
+        or named_filter_count > MAX_SAVED_FACT_FILTERS
+        or condition_count > MAX_SAVED_FACT_FILTERS
+    ):
+        raise ValueError("Fact metric filters exceed the 100-item preview limit")
+    if operand_filter_sql is not None and len(operand_filter_sql) > MAX_SAVED_FACT_FILTER_CHARS:
+        raise ValueError("Fact metric filter SQL exceeds the 32,768-character preview limit")
+    for raw_filter in raw_filters:
+        if not isinstance(raw_filter, Mapping):
+            continue
+        raw_sql = raw_filter.get("sql")
+        if isinstance(raw_sql, str) and len(raw_sql) > MAX_SAVED_FACT_FILTER_CHARS:
+            raise ValueError("Fact table filter SQL exceeds the 32,768-character preview limit")
+
+
 async def preview_sql_metric(
     session: AsyncSession, slug: str, data: MetricPreviewRequest
 ) -> MetricPreviewResponse:
@@ -260,7 +402,7 @@ async def preview_sql_metric(
     values: dict[datetime, float] = {}
     try:
         for row in rows:
-            bucket = _coerce_bucket(row[time_index], delta)
+            bucket = _coerce_bucket(row[time_index], data.interval)
             values[bucket] = _coerce_value(row[value_index])
     except (TypeError, ValueError) as exc:
         return _error_response(_trimmed_error(exc), columns=list(columns))
@@ -371,3 +513,201 @@ async def preview_fact_operand(
             return _fact_error_response(_trimmed_error(exc), columns=list(columns))
 
     return FactOperandPreviewResponse(columns=list(columns), row_count=len(rows), error=None)
+
+
+async def get_saved_fact_metric_sql(
+    session: AsyncSession,
+    slug: str,
+    metric_id: uuid.UUID,
+) -> MetricGeneratedSqlResponse:
+    """Compile the clicked metric's real primary dependency-batch statements.
+
+    No adapter is connected and no warehouse statement is executed. The service
+    expands the same fact-table dependency closure as Collect now, builds the
+    worker's deduplicated conditional ``AggregateSpec`` registries, splits the
+    same bounded manual windows into replay chunks, then invokes the exact
+    adapter SQL builders used by collection.
+    """
+    from tripl.core.adapters.multi_aggregate_sql import (
+        compile_time_bucketed_multi_aggregate_sql,
+    )
+    from tripl.services.metric_definition_service import (
+        _fact_collection_group,
+        get_metric_definition,
+    )
+    from tripl.worker.tasks._errors import ScanError
+    from tripl.worker.tasks.metrics.generation import _iter_window_chunks
+    from tripl.worker.tasks.metrics.metric_collect import (
+        METRIC_QUERY_ROW_LIMIT,
+        _batch_chunk_interval_code,
+        _operand_from_config,
+        _resolve_batch_operand,
+        _SpecRegistry,
+        compute_manual_collect_window,
+    )
+
+    metric = await get_metric_definition(session, slug, metric_id)
+    kind = metric.kind if isinstance(metric.kind, MetricKind) else MetricKind(metric.kind)
+    if kind is not MetricKind.fact:
+        raise HTTPException(
+            status_code=400,
+            detail="Generated batch SQL is available for fact metrics only",
+        )
+
+    dependency_group = await _fact_collection_group(session, metric)
+    by_interval: dict[str, list[MetricDefinition]] = {}
+    for definition in dependency_group:
+        if definition.interval is None:
+            raise HTTPException(
+                status_code=422,
+                detail=f"Metric {definition.name!r} in the collection batch has no interval",
+            )
+        by_interval.setdefault(str(definition.interval), []).append(definition)
+
+    queries: list[MetricGeneratedSqlQuery] = []
+    generated_sql_chars = 0
+    generated_metric_id_references = 0
+    saved_column_types: dict[uuid.UUID, dict[str, str]] = {}
+    for interval_code, raw_definitions in by_interval.items():
+        definitions = sorted(raw_definitions, key=lambda definition: str(definition.id))
+        registries: dict[uuid.UUID, _SpecRegistry] = {}
+        fact_tables: dict[uuid.UUID, FactTable] = {}
+        data_sources: dict[uuid.UUID, DataSource] = {}
+        metric_ids_by_fact: dict[uuid.UUID, set[uuid.UUID]] = {}
+
+        for definition in definitions:
+            config = dict(definition.config or {})
+            composition = (
+                definition.composition
+                if isinstance(definition.composition, MetricComposition)
+                else MetricComposition(definition.composition or MetricComposition.single.value)
+            )
+            raw_operands: list[Mapping[str, object]] = []
+            if composition is MetricComposition.ratio:
+                for role in ("numerator", "denominator"):
+                    raw = config.get(role)
+                    if not isinstance(raw, Mapping):
+                        raise HTTPException(
+                            status_code=422,
+                            detail=(
+                                f"Metric {definition.name!r} in the collection batch "
+                                f"has no valid {role} operand"
+                            ),
+                        )
+                    raw_operands.append(raw)
+            elif definition.fact_table_id is not None and definition.aggregation is not None:
+                aggregation = getattr(definition.aggregation, "value", definition.aggregation)
+                raw_operands.append(
+                    {
+                        **config,
+                        "fact_table_id": str(definition.fact_table_id),
+                        "aggregation": str(aggregation),
+                    }
+                )
+            else:
+                raise HTTPException(
+                    status_code=422,
+                    detail=(
+                        f"Metric {definition.name!r} in the collection batch has no valid operand"
+                    ),
+                )
+
+            try:
+                for raw in raw_operands:
+                    operand = _operand_from_config(raw)
+                    fact_table = await get_fact_table(session, slug, operand.fact_table_id)
+                    _ensure_saved_fact_filter_input_budget(
+                        fact_table,
+                        operand_filter_sql=operand.filter_sql,
+                        named_filter_count=len(operand.row_filters),
+                        condition_count=len(operand.conditions),
+                    )
+                    if fact_table.data_source_id is None:
+                        raise ValueError("Fact table has no data source bound")
+                    data_source = data_sources.get(fact_table.data_source_id)
+                    if data_source is None:
+                        data_source = await session.scalar(
+                            select(DataSource).where(DataSource.id == fact_table.data_source_id)
+                        )
+                        if data_source is None:
+                            raise ValueError("Data source not found")
+                        data_sources[fact_table.data_source_id] = data_source
+
+                    column_types = saved_column_types.get(fact_table.id)
+                    if column_types is None:
+                        column_types = _saved_fact_column_types(fact_table, data_source)
+                        saved_column_types[fact_table.id] = column_types
+                    allowed_columns = set(column_types)
+                    measure, filter_sql = _resolve_batch_operand(
+                        operand,
+                        fact_table=fact_table,
+                        allowed_columns=allowed_columns,
+                        dialect=dialect_for_db_type(data_source.db_type),
+                    )
+                    registry = registries.setdefault(fact_table.id, _SpecRegistry())
+                    registry.register(
+                        aggregation=operand.aggregation,
+                        measure=measure,
+                        filter_sql=filter_sql,
+                    )
+                    fact_tables[fact_table.id] = fact_table
+                    metric_ids_by_fact.setdefault(fact_table.id, set()).add(definition.id)
+            except (ScanError, ValueError) as exc:
+                raise HTTPException(
+                    status_code=422,
+                    detail=f"Metric {definition.name!r} in the collection batch: {exc}",
+                ) from exc
+
+        time_from, time_to = compute_manual_collect_window(interval_code)
+        chunks = _iter_window_chunks(
+            time_from,
+            time_to,
+            interval_delta=get_interval(interval_code).delta,
+            chunk_interval_code=_batch_chunk_interval_code(definitions),
+        )
+        for chunk_from, chunk_to in chunks:
+            for fact_table_id, registry in registries.items():
+                _ensure_generated_sql_query_capacity(len(queries))
+                metric_ids = metric_ids_by_fact[fact_table_id]
+                generated_metric_id_references = _consume_generated_metric_id_references(
+                    generated_metric_id_references,
+                    len(metric_ids),
+                )
+                fact_table = fact_tables[fact_table_id]
+                data_source_id = fact_table.data_source_id
+                assert data_source_id is not None
+                data_source = data_sources[data_source_id]
+                column_types = saved_column_types[fact_table.id]
+                _ensure_generated_sql_compile_budget(
+                    current_chars=generated_sql_chars,
+                    base_query=fact_table.sql,
+                    filter_sqls=[spec.filter_sql for spec in registry.specs],
+                )
+                try:
+                    _columns, sql = compile_time_bucketed_multi_aggregate_sql(
+                        db_type=str(data_source.db_type),
+                        base_query=fact_table.sql,
+                        time_column=fact_table.timestamp_column,
+                        interval=interval_code,
+                        specs=registry.specs,
+                        time_from=chunk_from,
+                        time_to=chunk_to,
+                        column_types=column_types,
+                        limit=METRIC_QUERY_ROW_LIMIT,
+                    )
+                except ValueError as exc:
+                    raise HTTPException(status_code=422, detail=str(exc)) from exc
+                generated_sql_chars = _consume_generated_sql_size(generated_sql_chars, sql)
+                queries.append(
+                    MetricGeneratedSqlQuery(
+                        label=f"{fact_table.display_name} · {interval_code}",
+                        fact_table_id=fact_table.id,
+                        fact_table_name=fact_table.display_name,
+                        interval=interval_code,
+                        window_from=chunk_from,
+                        window_to=chunk_to,
+                        metric_ids=sorted(metric_ids, key=str),
+                        sql=sql,
+                    )
+                )
+    return MetricGeneratedSqlResponse(queries=queries, breakdown_queries_omitted=True)

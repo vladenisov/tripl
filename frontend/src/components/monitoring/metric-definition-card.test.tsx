@@ -1,14 +1,16 @@
-import { render, screen } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { describe, expect, it, vi } from 'vitest'
+import { MemoryRouter } from 'react-router-dom'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { factTablesApi } from '@/api/factTablesApi'
-import type { FactTableListResponse, MetricDefinitionResponse } from '@/types'
+import { metricsCatalogApi } from '@/api/metricsCatalogApi'
+import type { FactTableListResponse, MetricDefinitionDetailResponse } from '@/types'
 
 import { MetricDefinitionCard } from './metric-definition-card'
 
 vi.mock('@/api/factTablesApi', () => ({
-  factTablesApi: { list: vi.fn() },
+  factTablesApi: { list: vi.fn(), get: vi.fn() },
 }))
 vi.mock('@/api/events', () => ({
   eventsApi: { list: vi.fn() },
@@ -16,13 +18,30 @@ vi.mock('@/api/events', () => ({
 vi.mock('@/api/dataSources', () => ({
   dataSourcesApi: { list: vi.fn() },
 }))
+vi.mock('@/api/metricsCatalogApi', () => ({
+  metricsCatalogApi: { getGeneratedSql: vi.fn() },
+}))
+vi.mock('@uiw/react-codemirror', () => ({
+  default: ({
+    value,
+    readOnly,
+    'aria-label': ariaLabel,
+  }: {
+    value: string
+    readOnly?: boolean
+    'aria-label'?: string
+  }) => <textarea aria-label={ariaLabel} value={value} readOnly={readOnly} onChange={() => {}} />,
+}))
 
 const FACT_TABLE_ID = '11111111-1111-1111-1111-111111111111'
 const OTHER_FACT_TABLE_ID = '22222222-2222-2222-2222-222222222222'
 
 function factDefinition(
-  overrides: Partial<MetricDefinitionResponse>,
-): MetricDefinitionResponse {
+  overrides: Partial<MetricDefinitionDetailResponse> & {
+    next_collection_at?: string | null
+    collection_due?: boolean
+  },
+): MetricDefinitionDetailResponse {
   return {
     id: 'metric-1',
     project_id: 'project-1',
@@ -55,25 +74,85 @@ function factDefinition(
     last_collected_at: null,
     last_collection_status: null,
     last_collection_error: null,
+    collection_due: false,
+    next_collection_at: null,
     created_at: '2026-01-01T00:00:00',
     updated_at: '2026-01-01T00:00:00',
     ...overrides,
   }
 }
 
-function renderCard(definition: MetricDefinitionResponse) {
-  const emptyFactTables: FactTableListResponse = { items: [], total: 0 }
-  vi.mocked(factTablesApi.list).mockResolvedValue(emptyFactTables)
+function renderCard(definition: MetricDefinitionDetailResponse) {
+  const factTables: FactTableListResponse = {
+    items: [
+      {
+        id: FACT_TABLE_ID,
+        project_id: 'project-1',
+        name: 'orders',
+        display_name: 'Orders',
+        description: '',
+        color: '#6366f1',
+        order: 0,
+        data_source_id: null,
+        timestamp_column: 'created_at',
+        created_at: '2026-01-01T00:00:00Z',
+        updated_at: '2026-01-01T00:00:00Z',
+      },
+      {
+        id: OTHER_FACT_TABLE_ID,
+        project_id: 'project-1',
+        name: 'sessions',
+        display_name: 'Sessions',
+        description: '',
+        color: '#14b8a6',
+        order: 1,
+        data_source_id: null,
+        timestamp_column: 'created_at',
+        created_at: '2026-01-01T00:00:00Z',
+        updated_at: '2026-01-01T00:00:00Z',
+      },
+    ],
+    total: 2,
+  }
+  vi.mocked(factTablesApi.list).mockResolvedValue(factTables)
+  vi.mocked(factTablesApi.get).mockImplementation(async (_slug, id) => {
+    const item = factTables.items.find(table => table.id === id)
+    if (!item) throw new Error('Fact table not found')
+    return {
+      ...item,
+      sql: `SELECT * FROM ${item.name}`,
+      columns: id === FACT_TABLE_ID
+        ? [
+            { name: 'days_available', type: 'Int64' },
+            { name: 'platform', type: 'String' },
+            { name: 'plan', type: 'String' },
+            { name: 'deleted_at', type: 'DateTime' },
+          ]
+        : [{ name: 'created_at', type: 'DateTime' }],
+      identifier_columns: [],
+      row_filters: [],
+    }
+  })
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   return render(
     <QueryClientProvider client={client}>
-      <MetricDefinitionCard slug="demo" definition={definition} />
+      <MemoryRouter>
+        <MetricDefinitionCard slug="demo" definition={definition} />
+      </MemoryRouter>
     </QueryClientProvider>,
   )
 }
 
 describe('MetricDefinitionCard filters', () => {
-  it('renders named row filters, conditions, and filter SQL for a single fact metric', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    vi.mocked(metricsCatalogApi.getGeneratedSql).mockResolvedValue({
+      queries: [],
+      breakdown_queries_omitted: true,
+    })
+  })
+
+  it('renders named row filters, conditions, and filter SQL for a single fact metric', async () => {
     renderCard(
       factDefinition({
         config: {
@@ -85,6 +164,7 @@ describe('MetricDefinitionCard filters', () => {
             { column: 'platform', operator: 'eq', value: 'ios' },
             { column: 'plan', operator: 'in', value: ['pro', 'team'] },
             { column: 'deleted_at', operator: 'is_null' },
+            { column: 'days_available', operator: 'gt', value: '1' },
           ],
         },
       }),
@@ -94,7 +174,20 @@ describe('MetricDefinitionCard filters', () => {
     expect(screen.getByText("platform = 'ios'")).toBeInTheDocument()
     expect(screen.getByText("plan in ('pro', 'team')")).toBeInTheDocument()
     expect(screen.getByText('deleted_at is null')).toBeInTheDocument()
+    expect(await screen.findByText('days_available > 1')).toBeInTheDocument()
+    expect(screen.queryByText("days_available > '1'")).not.toBeInTheDocument()
     expect(screen.getByText("country != 'RU'")).toBeInTheDocument()
+    expect(screen.getAllByText('where')).toHaveLength(1)
+    expect(screen.getAllByText('and')).toHaveLength(4)
+  })
+
+  it('links each fact-table name to its editor', async () => {
+    renderCard(factDefinition({}))
+
+    expect(await screen.findByRole('link', { name: 'Orders' })).toHaveAttribute(
+      'href',
+      `/p/demo/metrics/fact-tables/${FACT_TABLE_ID}/edit`,
+    )
   })
 
   it('folds a legacy single row_filter name into the filter list', () => {
@@ -151,5 +244,69 @@ describe('MetricDefinitionCard filters', () => {
 
     expect(screen.queryByText(/where/)).not.toBeInTheDocument()
     expect(screen.queryByText(/filter ·/)).not.toBeInTheDocument()
+  })
+
+  it('loads canonical generated SQL when its collapsed disclosure opens', async () => {
+    vi.mocked(metricsCatalogApi.getGeneratedSql).mockResolvedValue({
+      queries: [
+        {
+          role: 'primary',
+          label: 'Orders · 1d',
+          fact_table_id: FACT_TABLE_ID,
+          fact_table_name: 'Orders',
+          interval: '1d',
+          window_from: '2026-07-01T00:00:00Z',
+          window_to: '2026-07-02T00:00:00Z',
+          metric_ids: ['metric-1', 'metric-2'],
+          sql: 'SELECT * FROM (SELECT * FROM orders) AS _filtered WHERE amount > 1',
+        },
+      ],
+      breakdown_queries_omitted: true,
+    })
+    renderCard(factDefinition({}))
+
+    expect(metricsCatalogApi.getGeneratedSql).not.toHaveBeenCalled()
+    fireEvent.click(screen.getByText('Generated batch SQL'))
+
+    const editor = await screen.findByRole('textbox', { name: 'Generated batch SQL' })
+    expect(editor).toHaveValue(
+      'SELECT * FROM (SELECT * FROM orders) AS _filtered WHERE amount > 1',
+    )
+    expect(editor).toHaveAttribute('readonly')
+    expect(screen.getByText(/2 metrics/)).toBeInTheDocument()
+    expect(screen.getByText(/Breakdown queries are generated separately/)).toBeInTheDocument()
+    await waitFor(() => {
+      expect(metricsCatalogApi.getGeneratedSql).toHaveBeenCalledWith('demo', 'metric-1')
+    })
+  })
+
+  it('shows an explicit next update for active scheduled metrics', () => {
+    renderCard(
+      factDefinition({
+        next_collection_at: '2026-07-15T12:30:00Z',
+        collection_due: false,
+      }),
+    )
+
+    expect(screen.getByText(/Next update/)).toHaveTextContent('2026')
+  })
+
+  it('shows due and unscheduled states explicitly', () => {
+    const { rerender } = renderCard(
+      factDefinition({ next_collection_at: null, collection_due: true }),
+    )
+    expect(screen.getByText('Due now')).toBeInTheDocument()
+
+    rerender(
+      <QueryClientProvider client={new QueryClient()}>
+        <MemoryRouter>
+          <MetricDefinitionCard
+            slug="demo"
+            definition={factDefinition({ status: 'draft', collection_due: false })}
+          />
+        </MemoryRouter>
+      </QueryClientProvider>,
+    )
+    expect(screen.getByText('Not scheduled')).toBeInTheDocument()
   })
 })

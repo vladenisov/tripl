@@ -5,7 +5,7 @@ import { MemoryRouter } from 'react-router-dom'
 import { ApiError } from '@/api/client'
 import { metricsCatalogApi } from '@/api/metricsCatalogApi'
 import { scansApi } from '@/api/scans'
-import type { MetricDefinitionResponse, Project, ScanJob } from '@/types'
+import type { MetricDefinitionDetailResponse, Project, ScanJob } from '@/types'
 import { DemoScenarioProvider } from './DemoScenarioProvider'
 import { useDemoScenario, useDemoScenarioActions } from './demoScenarioContext'
 import { readScenarioState, writeScenarioState, type ScenarioState } from './scenarioModel'
@@ -40,8 +40,8 @@ function scanJob(status: ScanJob['status']): ScanJob {
   }
 }
 
-function metricDefinition(status: string | null): MetricDefinitionResponse {
-  return { id: 'm-1', last_collection_status: status } as MetricDefinitionResponse
+function metricDefinition(status: string | null): MetricDefinitionDetailResponse {
+  return { id: 'm-1', last_collection_status: status } as MetricDefinitionDetailResponse
 }
 
 /** Renders the scenario's live state and wires the notify actions to buttons. */

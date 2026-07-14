@@ -8907,7 +8907,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/MetricDefinitionResponse"
+                  "$ref": "#/components/schemas/MetricDefinitionDetailResponse"
                 }
               }
             }
@@ -9014,6 +9014,59 @@
         "responses": {
           "204": {
             "description": "Successful Response"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/projects/{slug}/metrics/{metric_id}/generated-sql": {
+      "get": {
+        "tags": [
+          "metrics-catalog"
+        ],
+        "summary": "Get Metric Generated Sql",
+        "description": "Return a saved fact metric's primary dependency-batch SQL without running it.",
+        "operationId": "get_metric_generated_sql_api_v1_projects__slug__metrics__metric_id__generated_sql_get",
+        "parameters": [
+          {
+            "name": "slug",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Slug"
+            }
+          },
+          {
+            "name": "metric_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Metric Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MetricGeneratedSqlResponse"
+                }
+              }
+            }
           },
           "422": {
             "description": "Validation Error",
@@ -9308,7 +9361,7 @@
           "metrics-catalog"
         ],
         "summary": "Collect Metric Now",
-        "description": "Trigger an immediate backfill collection for one metric (editor-gated).\n\nDispatches the same Celery collection the scheduler uses, backfilling a\nbounded recent window so the chart is not empty. Returns 202 once queued;\nthe warehouse query runs in the worker. Unknown metric -> 404.",
+        "description": "Trigger an immediate backfill collection from one metric (editor-gated).\n\nSQL/event-composition metrics dispatch alone. A fact metric refreshes every\nfact table reachable through its operands and recalculates all active fact\nmetrics using those tables in shared batches (the clicked metric is included\neven when draft). Returns 202 once queued; warehouse queries run in workers.\nUnknown metric -> 404.",
         "operationId": "collect_metric_now_api_v1_projects__slug__metrics__metric_id__collect_post",
         "parameters": [
           {
@@ -19104,7 +19157,8 @@
           "value": {
             "anyOf": [
               {
-                "type": "string"
+                "type": "string",
+                "maxLength": 4096
               },
               {
                 "type": "integer"
@@ -19119,7 +19173,8 @@
                 "items": {
                   "anyOf": [
                     {
-                      "type": "string"
+                      "type": "string",
+                      "maxLength": 4096
                     },
                     {
                       "type": "integer"
@@ -19132,7 +19187,8 @@
                     }
                   ]
                 },
-                "type": "array"
+                "type": "array",
+                "maxItems": 100
               },
               {
                 "type": "null"
@@ -19241,12 +19297,14 @@
               "type": "string"
             },
             "type": "array",
+            "maxItems": 100,
             "title": "Row Filters"
           },
           "filter_sql": {
             "anyOf": [
               {
                 "type": "string",
+                "maxLength": 32768,
                 "minLength": 1
               },
               {
@@ -19260,6 +19318,7 @@
               "$ref": "#/components/schemas/FactCondition"
             },
             "type": "array",
+            "maxItems": 100,
             "title": "Conditions"
           },
           "numerator": {
@@ -19493,12 +19552,14 @@
               "type": "string"
             },
             "type": "array",
+            "maxItems": 100,
             "title": "Row Filters"
           },
           "filter_sql": {
             "anyOf": [
               {
                 "type": "string",
+                "maxLength": 32768,
                 "minLength": 1
               },
               {
@@ -19512,6 +19573,7 @@
               "$ref": "#/components/schemas/FactCondition"
             },
             "type": "array",
+            "maxItems": 100,
             "title": "Conditions"
           },
           "numerator": {
@@ -19596,12 +19658,14 @@
               "type": "string"
             },
             "type": "array",
+            "maxItems": 100,
             "title": "Row Filters"
           },
           "filter_sql": {
             "anyOf": [
               {
                 "type": "string",
+                "maxLength": 32768,
                 "minLength": 1
               },
               {
@@ -19615,6 +19679,7 @@
               "$ref": "#/components/schemas/FactCondition"
             },
             "type": "array",
+            "maxItems": 100,
             "title": "Conditions"
           }
         },
@@ -19670,6 +19735,19 @@
             "maxLength": 255,
             "minLength": 1,
             "title": "Type"
+          },
+          "native_type": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 255,
+                "minLength": 1
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Native Type"
           }
         },
         "type": "object",
@@ -19678,7 +19756,7 @@
           "type"
         ],
         "title": "FactTableColumnSchema",
-        "description": "A single introspected column descriptor: its name and warehouse type."
+        "description": "An introspected column with UI type plus optional native warehouse type."
       },
       "FactTableCreate": {
         "properties": {
@@ -19747,6 +19825,7 @@
               "$ref": "#/components/schemas/FactTableRowFilter"
             },
             "type": "array",
+            "maxItems": 100,
             "title": "Row Filters"
           }
         },
@@ -20044,6 +20123,7 @@
           },
           "sql": {
             "type": "string",
+            "maxLength": 32768,
             "minLength": 1,
             "title": "Sql"
           }
@@ -20177,7 +20257,8 @@
                 "items": {
                   "$ref": "#/components/schemas/FactTableRowFilter"
                 },
-                "type": "array"
+                "type": "array",
+                "maxItems": 100
               },
               {
                 "type": "null"
@@ -21117,7 +21198,7 @@
           "metric_id"
         ],
         "title": "MetricCollectNowResponse",
-        "description": "202 payload for a manual ``POST /metrics/{id}/collect`` trigger.\n\n``window_from`` / ``window_to`` describe the backfilled [from, to) window for\n``fact`` / ``sql`` metrics; they are ``None`` for ``event_composition``\nmetrics, which have no interval and recompute from the full event-metric\nseries. ``task_id`` is the dispatched Celery task id when the broker returns\none, else ``None``."
+        "description": "202 payload for a manual ``POST /metrics/{id}/collect`` trigger.\n\n``window_from`` / ``window_to`` describe the backfilled [from, to) window for\n``fact`` / ``sql`` metrics; they are ``None`` for ``event_composition``\nmetrics, which have no interval and recompute from the full event-metric\nseries. ``task_id`` is the dispatched Celery task id when the broker returns\none, else ``None``. For a fact metric the task is a shared dependency batch:\nthe response window describes the clicked metric, while each\ndifferent-interval dependent receives its own bounded window in that task."
       },
       "MetricComposition": {
         "type": "string",
@@ -21190,6 +21271,333 @@
           "metric_ids"
         ],
         "title": "MetricDefinitionBulkUpdate"
+      },
+      "MetricDefinitionDetailResponse": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Id"
+          },
+          "project_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Project Id"
+          },
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "display_name": {
+            "type": "string",
+            "title": "Display Name"
+          },
+          "description": {
+            "type": "string",
+            "title": "Description"
+          },
+          "color": {
+            "type": "string",
+            "title": "Color"
+          },
+          "order": {
+            "type": "integer",
+            "title": "Order"
+          },
+          "unit": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Unit"
+          },
+          "status": {
+            "$ref": "#/components/schemas/MetricStatus"
+          },
+          "owner_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Owner Id"
+          },
+          "reviewed": {
+            "type": "boolean",
+            "title": "Reviewed"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/MetricKind"
+          },
+          "aggregation": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/MetricAggregation"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "composition": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/MetricComposition"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "config": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Config"
+          },
+          "fact_table_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Fact Table Id"
+          },
+          "breakdown_columns": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Breakdown Columns"
+          },
+          "breakdown_values_limit": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Breakdown Values Limit"
+          },
+          "app_version_column": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "App Version Column"
+          },
+          "platform_column": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Platform Column"
+          },
+          "data_source_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Data Source Id"
+          },
+          "interval": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ScanInterval"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "replay_chunk_interval": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ScanInterval"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "numerator_event_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Numerator Event Id"
+          },
+          "numerator_event_type_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Numerator Event Type Id"
+          },
+          "denominator_event_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Denominator Event Id"
+          },
+          "denominator_event_type_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Denominator Event Type Id"
+          },
+          "anomaly_detection_enabled": {
+            "type": "boolean",
+            "title": "Anomaly Detection Enabled"
+          },
+          "last_collected_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Collected At"
+          },
+          "last_collection_status": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Collection Status"
+          },
+          "last_collection_error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Collection Error"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Updated At"
+          },
+          "next_collection_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Collection At"
+          },
+          "collection_due": {
+            "type": "boolean",
+            "title": "Collection Due",
+            "default": false
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "project_id",
+          "name",
+          "display_name",
+          "description",
+          "color",
+          "order",
+          "unit",
+          "status",
+          "owner_id",
+          "reviewed",
+          "kind",
+          "aggregation",
+          "composition",
+          "config",
+          "fact_table_id",
+          "breakdown_columns",
+          "breakdown_values_limit",
+          "app_version_column",
+          "platform_column",
+          "data_source_id",
+          "interval",
+          "replay_chunk_interval",
+          "numerator_event_id",
+          "numerator_event_type_id",
+          "denominator_event_id",
+          "denominator_event_type_id",
+          "anomaly_detection_enabled",
+          "last_collected_at",
+          "last_collection_status",
+          "last_collection_error",
+          "created_at",
+          "updated_at"
+        ],
+        "title": "MetricDefinitionDetailResponse",
+        "description": "Metric detail plus exact read-time scheduler state."
       },
       "MetricDefinitionListItem": {
         "properties": {
@@ -21959,6 +22367,89 @@
         "type": "object",
         "title": "MetricDefinitionUpdate",
         "description": "Partial update of presentation, lifecycle, dimension and monitoring fields,\nplus an optional ``definition`` block that re-defines the metric's kind +\ncollection config.\n\nThe internal ``name`` is the stable query identifier and stays IMMUTABLE: it\nhas no update field and is ignored if supplied. The optional ``definition``\nblock mirrors the create discriminated union (minus ``name`` and the other\npresentation fields, which keep their own update fields here); when present it\nis re-validated EXACTLY like creation and the service overwrites the metric's\n``kind`` / ``config`` / collection binding from it. A ``kind`` change clears\nthe metric's previously collected values (see the service)."
+      },
+      "MetricGeneratedSqlQuery": {
+        "properties": {
+          "role": {
+            "type": "string",
+            "const": "primary",
+            "title": "Role",
+            "default": "primary"
+          },
+          "label": {
+            "type": "string",
+            "title": "Label"
+          },
+          "fact_table_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Fact Table Id"
+          },
+          "fact_table_name": {
+            "type": "string",
+            "title": "Fact Table Name"
+          },
+          "interval": {
+            "type": "string",
+            "title": "Interval"
+          },
+          "window_from": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Window From"
+          },
+          "window_to": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Window To"
+          },
+          "metric_ids": {
+            "items": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "type": "array",
+            "title": "Metric Ids"
+          },
+          "sql": {
+            "type": "string",
+            "title": "Sql"
+          }
+        },
+        "type": "object",
+        "required": [
+          "label",
+          "fact_table_id",
+          "fact_table_name",
+          "interval",
+          "window_from",
+          "window_to",
+          "metric_ids",
+          "sql"
+        ],
+        "title": "MetricGeneratedSqlQuery",
+        "description": "One executable primary query from the shared fact-collection batch.\n\nA batch is grouped by interval and fact table, then optionally split into\nbounded replay chunks. ``metric_ids`` names the dependency-group metrics\nwhose aggregate specs are folded into this statement. Breakdown scans are a\nseparate path and are explicitly excluded by the response flag below."
+      },
+      "MetricGeneratedSqlResponse": {
+        "properties": {
+          "queries": {
+            "items": {
+              "$ref": "#/components/schemas/MetricGeneratedSqlQuery"
+            },
+            "type": "array",
+            "title": "Queries"
+          },
+          "breakdown_queries_omitted": {
+            "type": "boolean",
+            "title": "Breakdown Queries Omitted",
+            "default": true
+          }
+        },
+        "type": "object",
+        "required": [
+          "queries"
+        ],
+        "title": "MetricGeneratedSqlResponse"
       },
       "MetricKind": {
         "type": "string",

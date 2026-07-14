@@ -4,6 +4,12 @@
  * component (react-refresh) and so these pure functions can be unit-tested.
  */
 
+import type { FactTableColumn } from '@/types/factTables'
+import {
+  warehouseColumnValueKind,
+  type WarehouseColumnValueKind,
+} from '@/lib/warehouseColumnType'
+
 /**
  * One row-filter on a fact operand: a NAMED filter (a reusable WHERE fragment
  * defined on the fact table), a free-text SQL WHERE fragment, or a structured
@@ -31,7 +37,7 @@ export type FactConditionOperator =
 export interface FactConditionPayload {
   column: string
   operator: FactConditionOperator
-  value?: string | null
+  value?: string | number | boolean | (string | number | boolean)[] | null
 }
 
 export type FactFilter =
@@ -130,11 +136,15 @@ export function stripRedundantOuterParens(sql: string): string {
  * (`_resolve_combined_filter` in metric_collect.py) — and it keeps the
  * load→save round trip idempotent (tripl-wumc). Empty entries are dropped.
  */
-export function filtersToPayload(filters: FactFilter[]): {
+export function filtersToPayload(
+  filters: FactFilter[],
+  conditionColumns: readonly FactTableColumn[] = [],
+): {
   row_filters: string[]
   filter_sql: string | null
   conditions: FactConditionPayload[]
 } {
+  const columnTypes = new Map(conditionColumns.map(column => [column.name, column.type]))
   const named: string[] = []
   for (const filter of filters) {
     if (filter.kind === 'named' && filter.name && !named.includes(filter.name)) {
@@ -155,7 +165,20 @@ export function filtersToPayload(filters: FactFilter[]): {
       continue
     }
     const value = filter.value.trim()
-    if (value) conditions.push({ column, operator: filter.operator, value })
+    if (!value) continue
+    const kind = warehouseColumnValueKind(columnTypes.get(column))
+    conditions.push({
+      column,
+      operator: filter.operator,
+      value:
+        filter.operator === 'in' || filter.operator === 'not_in'
+          ? value
+              .split(',')
+              .map(part => part.trim())
+              .filter(Boolean)
+              .map(part => parseConditionScalar(part, kind))
+          : parseConditionScalar(value, kind),
+    })
   }
   return {
     row_filters: named,
@@ -167,6 +190,21 @@ export function filtersToPayload(filters: FactFilter[]): {
           : sqlFragments.map(sql => `(${sql})`).join(' AND '),
     conditions,
   }
+}
+
+function parseConditionScalar(
+  value: string,
+  kind: WarehouseColumnValueKind,
+): string | number | boolean {
+  if (kind === 'number') {
+    const parsed = Number(value)
+    return Number.isFinite(parsed) ? parsed : value
+  }
+  if (kind === 'boolean') {
+    if (value.toLowerCase() === 'true') return true
+    if (value.toLowerCase() === 'false') return false
+  }
+  return value
 }
 
 /** Rebuild the editable filter list from a stored operand config. */

@@ -79,7 +79,13 @@ import { useDemoScenarioActions } from '@/demo/demoScenarioContext'
  * route, so navigating mid-run cannot repoint the run at another metric or
  * another project (tripl-htvg).
  */
-type CollectTarget = { slug: string; scope: string; scopeId: string; displayName: string }
+type CollectTarget = {
+  slug: string
+  scope: string
+  scopeId: string
+  displayName: string
+  isFactMetric: boolean
+}
 
 // Stable empty reference so `metaFieldsQuery.data ?? EMPTY_META_FIELDS`
 // doesn't mint a new array each render and bust the memoized lookup map.
@@ -690,6 +696,14 @@ export default function MonitoringDetailPage() {
       queryKey: ['monitoringMetrics', context.slug, context.scope, context.scopeId],
     })
     void queryClient.invalidateQueries({ queryKey: ['metricDefinition', context.slug, metricId] })
+    if (context.isFactMetric) {
+      // A fact collect refreshes every active dependent metric in the shared
+      // source batch, so every dependent series and catalog row may change.
+      void queryClient.invalidateQueries({
+        queryKey: ['monitoringMetrics', context.slug, 'metric'],
+      })
+      void queryClient.invalidateQueries({ queryKey: ['metrics-catalog', context.slug] })
+    }
   })
   const collectMut = useMutation({
     // The target travels WITH the mutation instead of being re-read in onSuccess.
@@ -698,7 +712,11 @@ export default function MonitoringDetailPage() {
     // before the POST resolved attached the watcher to B (tripl-htvg).
     mutationFn: (target: CollectTarget) => metricsCatalogApi.collect(target.slug, target.scopeId),
     onSuccess: (_data, target) => {
-      toast.success('Collection started — you will be notified when it finishes.')
+      toast.success(
+        target.isFactMetric
+          ? 'Source refresh started — current fact data and all active dependent metrics will update in one batch.'
+          : 'Collection started — you will be notified when it finishes.',
+      )
       collectWatcher.watch({
         slug: target.slug,
         metricId: target.scopeId,
@@ -875,17 +893,28 @@ export default function MonitoringDetailPage() {
                         scope,
                         scopeId,
                         displayName: metricDefinition?.display_name ?? 'This metric',
+                        isFactMetric: metricDefinition?.kind === 'fact',
                       })
                     }
-                    disabled={isCollecting}
-                    title="Backfill a recent window now so the chart populates without waiting for the scheduler."
+                    disabled={isCollecting || !metricDefinition}
+                    title={
+                      metricDefinition?.kind === 'fact'
+                        ? "Reread current warehouse data for this metric's fact source(s) and refresh all dependent active metrics in one batch."
+                        : 'Backfill a recent window now so the chart populates without waiting for the scheduler.'
+                    }
                   >
                     {isCollecting ? (
                       <Loader2 className="mr-2 h-4 w-4 animate-spin" />
                     ) : (
                       <RefreshCw className="mr-2 h-4 w-4" />
                     )}
-                    {isCollecting ? 'Collecting…' : 'Collect now'}
+                    {metricDefinition?.kind === 'fact'
+                      ? isCollecting
+                        ? 'Refreshing source metrics…'
+                        : 'Refresh source metrics'
+                      : isCollecting
+                        ? 'Collecting…'
+                        : 'Collect now'}
                   </Button>
                 </ScenarioCoachMark>
                 <Button

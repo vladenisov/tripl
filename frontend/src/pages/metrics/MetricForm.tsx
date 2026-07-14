@@ -205,13 +205,16 @@ function readOperandFromConfig(raw: unknown): FactOperandState {
   }
 }
 
-function toOperandPayload(operand: FactOperandState): FactOperandPayload {
+function toOperandPayload(
+  operand: FactOperandState,
+  conditionColumns: readonly FactTableColumn[] = [],
+): FactOperandPayload {
   return {
     fact_table_id: operand.factTableId,
     aggregation: operand.aggregation,
     measure_column: needsMeasure(operand.aggregation) ? operand.measureColumn || null : null,
     distinct_column: needsDistinct(operand.aggregation) ? operand.distinctColumn || null : null,
-    ...filtersToPayload(operand.filters),
+    ...filtersToPayload(operand.filters, conditionColumns),
   }
 }
 
@@ -248,6 +251,7 @@ interface FactOperandEditorProps {
   factTableOptions: SelectOption[]
   detail: FactTableDetail
   loading: boolean
+  detailError?: boolean
   // Inline validation messages keyed by input DOM id (`${idPrefix}-table` etc.).
   errors?: Record<string, string>
 }
@@ -270,6 +274,7 @@ function FactOperandEditor({
   factTableOptions,
   detail,
   loading,
+  detailError = false,
   errors,
 }: FactOperandEditorProps) {
   // Stateless dry-run of this operand's compiled row filter. Warehouse/compiler
@@ -357,7 +362,7 @@ function FactOperandEditor({
             value={operand.measureColumn}
             onChange={value => set('measureColumn', value)}
             options={columnOptions}
-            disabled={!operand.factTableId}
+            disabled={!operand.factTableId || loading || detailError}
             aria-required
           />
         </MField>
@@ -375,7 +380,7 @@ function FactOperandEditor({
             value={operand.distinctColumn}
             onChange={value => set('distinctColumn', value)}
             options={distinctOptions}
-            disabled={!operand.factTableId}
+            disabled={!operand.factTableId || loading || detailError}
             aria-required
           />
         </MField>
@@ -391,12 +396,13 @@ function FactOperandEditor({
           onChange={filters => set('filters', filters)}
           namedOptions={detail.rowFilters}
           conditionColumns={detail.columns}
-          disabled={!operand.factTableId}
-          // Nothing to compile against without a fact table, so the check is not
-          // offered at all until one is picked.
+          disabled={!operand.factTableId || loading || detailError}
+          // Keep the check visible but disabled while detail metadata is loading
+          // (or failed): serializing before column types resolve changes numbers
+          // into strings and makes the preview disagree with the eventual save.
           onCheck={
             operand.factTableId
-              ? () => checkMut.mutate(toOperandPayload(operand))
+              ? () => checkMut.mutate(toOperandPayload(operand, detail.columns))
               : undefined
           }
           checkPending={checkMut.isPending}
@@ -717,6 +723,18 @@ export function MetricForm({ slug, metric, dataSources, events, onClose }: Metri
     () => toDetail(denominatorDetailQuery.data),
     [denominatorDetailQuery.data],
   )
+  const numeratorDetailLoading =
+    factEnabled && !!numeratorOp.factTableId && numeratorDetailQuery.isPending
+  const denominatorDetailLoading =
+    factEnabled
+    && factComposition === 'ratio'
+    && !!denominatorOp.factTableId
+    && denominatorDetailQuery.isPending
+  const factDetailLoading = numeratorDetailLoading || denominatorDetailLoading
+  const factDetailError = factEnabled
+    ? numeratorDetailQuery.error
+      ?? (factComposition === 'ratio' ? denominatorDetailQuery.error : null)
+    : null
   const hasFactTables = (factTablesQuery.data?.items.length ?? 0) > 0
 
   const dataSourceOptions = useMemo(
@@ -818,8 +836,8 @@ export function MetricForm({ slug, metric, dataSources, events, onClose }: Metri
           kind: 'fact',
           composition: 'ratio',
           interval,
-          numerator: toOperandPayload(numeratorOp),
-          denominator: toOperandPayload(denominatorOp),
+          numerator: toOperandPayload(numeratorOp, numeratorDetail.columns),
+          denominator: toOperandPayload(denominatorOp, denominatorDetail.columns),
           replay_chunk_interval: replayChunkInterval,
         }
       }
@@ -836,7 +854,7 @@ export function MetricForm({ slug, metric, dataSources, events, onClose }: Metri
           ? numeratorOp.distinctColumn || null
           : null,
         replay_chunk_interval: replayChunkInterval,
-        ...filtersToPayload(numeratorOp.filters),
+        ...filtersToPayload(numeratorOp.filters, numeratorDetail.columns),
       }
     }
     if (kind === 'event_composition') {
@@ -897,8 +915,8 @@ export function MetricForm({ slug, metric, dataSources, events, onClose }: Metri
           kind: 'fact',
           composition: 'ratio',
           interval,
-          numerator: toOperandPayload(numeratorOp),
-          denominator: toOperandPayload(denominatorOp),
+          numerator: toOperandPayload(numeratorOp, numeratorDetail.columns),
+          denominator: toOperandPayload(denominatorOp, denominatorDetail.columns),
         }
         return payload
       }
@@ -915,7 +933,7 @@ export function MetricForm({ slug, metric, dataSources, events, onClose }: Metri
         distinct_column: needsDistinct(numeratorOp.aggregation)
           ? numeratorOp.distinctColumn || null
           : null,
-        ...filtersToPayload(numeratorOp.filters),
+        ...filtersToPayload(numeratorOp.filters, numeratorDetail.columns),
       }
       return payload
     }
@@ -961,6 +979,7 @@ export function MetricForm({ slug, metric, dataSources, events, onClose }: Metri
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: ['metrics-catalog', slug] })
       if (metric) void qc.invalidateQueries({ queryKey: ['metricDefinition', slug] })
+      void qc.invalidateQueries({ queryKey: ['metric-generated-sql', slug] })
       onClose()
     },
   })
@@ -1032,6 +1051,7 @@ export function MetricForm({ slug, metric, dataSources, events, onClose }: Metri
   }
 
   const onSubmit = () => {
+    if (factDetailLoading || factDetailError) return
     const errs = validate()
     setFieldErrors(errs)
     const firstKey = Object.keys(errs)[0]
@@ -1414,7 +1434,8 @@ export function MetricForm({ slug, metric, dataSources, events, onClose }: Metri
                 onChange={setNumeratorOp}
                 factTableOptions={factTableOptions}
                 detail={numeratorDetail}
-                loading={numeratorDetailQuery.isFetching}
+                loading={numeratorDetailLoading}
+                detailError={numeratorDetailQuery.isError}
                 errors={fieldErrors}
               />
             </SCard>
@@ -1429,7 +1450,8 @@ export function MetricForm({ slug, metric, dataSources, events, onClose }: Metri
                     onChange={setNumeratorOp}
                     factTableOptions={factTableOptions}
                     detail={numeratorDetail}
-                    loading={numeratorDetailQuery.isFetching}
+                    loading={numeratorDetailLoading}
+                    detailError={numeratorDetailQuery.isError}
                     errors={fieldErrors}
                   />
                 </SCard>
@@ -1443,7 +1465,8 @@ export function MetricForm({ slug, metric, dataSources, events, onClose }: Metri
                     onChange={setDenominatorOp}
                     factTableOptions={factTableOptions}
                     detail={denominatorDetail}
-                    loading={denominatorDetailQuery.isFetching}
+                    loading={denominatorDetailLoading}
+                    detailError={denominatorDetailQuery.isError}
                     errors={fieldErrors}
                   />
                 </SCard>
@@ -1520,6 +1543,16 @@ export function MetricForm({ slug, metric, dataSources, events, onClose }: Metri
           </div>
         )}
 
+        {factDetailError && (
+          <div className="mb-[18px]">
+            <ErrorState
+              compact
+              title="Could not load fact table details"
+              error={factDetailError}
+            />
+          </div>
+        )}
+
         {saveMut.isError && (
           <div className="mb-[18px]">
             <ErrorState compact title="Could not save metric" error={saveMut.error} />
@@ -1537,7 +1570,7 @@ export function MetricForm({ slug, metric, dataSources, events, onClose }: Metri
           </button>
           <button
             type="submit"
-            disabled={saveMut.isPending}
+            disabled={saveMut.isPending || factDetailLoading || !!factDetailError}
             className="inline-flex h-8 items-center gap-[6px] rounded-[7px] px-3 text-[12px] font-medium disabled:opacity-60"
             style={{ background: 'var(--accent)', color: 'var(--accent-fg)' }}
           >

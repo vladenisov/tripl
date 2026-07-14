@@ -903,7 +903,7 @@ class ClickHouseAdapter(BaseAdapter):
             inner = f"{agg.value}If({measure_sql}, {cond})"
         return f"if(countIf({cond}) = 0, NULL, {inner})"
 
-    def get_time_bucketed_multi_aggregate(
+    def build_time_bucketed_multi_aggregate_sql(
         self,
         base_query: str,
         time_column: str,
@@ -913,8 +913,8 @@ class ClickHouseAdapter(BaseAdapter):
         time_to: datetime,
         *,
         limit: int = 100000,
-    ) -> tuple[list[str], list[tuple[object, ...]]]:
-        """Many bucketed aggregates from ONE source scan.
+    ) -> tuple[list[str], str]:
+        """Build the many-aggregate statement without executing it.
 
         Mirrors get_time_bucketed_aggregate's windowing, bucketing, quoting and
         row limit, but emits one (optionally conditional) aggregate column per
@@ -936,6 +936,29 @@ class ClickHouseAdapter(BaseAdapter):
             f"GROUP BY _bucket "
             f"ORDER BY _bucket "
             f"LIMIT {int(limit)}"
+        )
+        return col_names, sql
+
+    def get_time_bucketed_multi_aggregate(
+        self,
+        base_query: str,
+        time_column: str,
+        interval: str,
+        specs: list[AggregateSpec],
+        time_from: datetime,
+        time_to: datetime,
+        *,
+        limit: int = 100000,
+    ) -> tuple[list[str], list[tuple[object, ...]]]:
+        """Many bucketed aggregates from ONE source scan."""
+        col_names, sql = self.build_time_bucketed_multi_aggregate_sql(
+            base_query,
+            time_column,
+            interval,
+            specs,
+            time_from,
+            time_to,
+            limit=limit,
         )
 
         logger.info("CH bucketed multi-aggregate query: %s", sql)

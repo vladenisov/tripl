@@ -1,14 +1,19 @@
-import { useMemo } from 'react'
-import { useQuery } from '@tanstack/react-query'
+import { useMemo, useState } from 'react'
+import { useQueries, useQuery } from '@tanstack/react-query'
 import { BookOpen } from 'lucide-react'
+import { Link } from 'react-router-dom'
 
 import { dataSourcesApi } from '@/api/dataSources'
 import { eventsApi } from '@/api/events'
 import { factTablesApi } from '@/api/factTablesApi'
+import { metricsCatalogApi } from '@/api/metricsCatalogApi'
 import { Chip } from '@/components/primitives/chip'
+import { SqlEditor } from '@/components/sql-editor'
 import { Card, CardContent } from '@/components/ui/card'
+import { formatDateTime } from '@/lib/datetime'
+import { warehouseColumnValueKind } from '@/lib/warehouseColumnType'
 import { METRIC_KIND_LABEL } from '@/types'
-import type { MetricDefinitionResponse } from '@/types'
+import type { MetricDefinitionDetailResponse } from '@/types'
 
 /** Names are best-effort; when a lookup misses we fall back to a short id. */
 const SHORT_ID_LENGTH = 8
@@ -124,12 +129,20 @@ function hasFilters(filters: FactFiltersView): boolean {
   )
 }
 
-function conditionScalarText(value: unknown): string {
-  return typeof value === 'string' ? `'${value}'` : String(value)
+function conditionScalarText(value: unknown, columnType?: string | null): string {
+  if (typeof value !== 'string') return String(value)
+  const kind = warehouseColumnValueKind(columnType)
+  if (kind === 'number' && value.trim() !== '' && Number.isFinite(Number(value))) {
+    return value
+  }
+  if (kind === 'boolean' && /^(?:true|false)$/i.test(value)) {
+    return value.toLowerCase()
+  }
+  return `'${value}'`
 }
 
 /** SQL-ish one-liner for a condition, e.g. `platform = 'ios'` / `plan in ('a', 'b')`. */
-function conditionText(condition: FactConditionView): string {
+function conditionText(condition: FactConditionView, columnType?: string | null): string {
   const operator = CONDITION_OPERATOR_LABEL[condition.operator] ?? condition.operator
   if (
     VALUELESS_CONDITION_OPERATORS.has(condition.operator)
@@ -139,10 +152,12 @@ function conditionText(condition: FactConditionView): string {
     return `${condition.column} ${operator}`
   }
   if (Array.isArray(condition.value)) {
-    const values = condition.value.map(conditionScalarText).join(', ')
+    const values = condition.value
+      .map(value => conditionScalarText(value, columnType))
+      .join(', ')
     return `${condition.column} ${operator} (${values})`
   }
-  return `${condition.column} ${operator} ${conditionScalarText(condition.value)}`
+  return `${condition.column} ${operator} ${conditionScalarText(condition.value, columnType)}`
 }
 
 /**
@@ -176,9 +191,21 @@ function readFactOperand(value: unknown): FactOperandView | null {
   }
 }
 
+function referencedFactTableIds(definition: MetricDefinitionDetailResponse): string[] {
+  if (definition.kind !== 'fact') return []
+  if (definition.composition !== 'ratio') {
+    return definition.fact_table_id ? [definition.fact_table_id] : []
+  }
+  const ids = [
+    readFactOperand(definition.config['numerator'])?.factTableId,
+    readFactOperand(definition.config['denominator'])?.factTableId,
+  ].filter((id): id is string => !!id)
+  return [...new Set(ids)]
+}
+
 interface MetricDefinitionCardProps {
   slug: string
-  definition: MetricDefinitionResponse
+  definition: MetricDefinitionDetailResponse
 }
 
 /**
@@ -209,11 +236,32 @@ export function MetricDefinitionCard({ slug, definition }: MetricDefinitionCardP
     enabled: !!definition.data_source_id,
     staleTime: LOOKUP_STALE_TIME_MS,
   })
+  const factTableIds = useMemo(() => referencedFactTableIds(definition), [definition])
+  const factTableDetailQueries = useQueries({
+    queries: factTableIds.map(id => ({
+      queryKey: ['fact-table', slug, id],
+      queryFn: () => factTablesApi.get(slug, id),
+      staleTime: LOOKUP_STALE_TIME_MS,
+    })),
+  })
 
   const factTableNameById = useMemo(
-    () => new Map((factTablesQuery.data?.items ?? []).map(table => [table.id, table.display_name])),
-    [factTablesQuery.data],
+    () => {
+      const names = new Map(
+        (factTablesQuery.data?.items ?? []).map(table => [table.id, table.display_name]),
+      )
+      for (const query of factTableDetailQueries) {
+        if (query.data) names.set(query.data.id, query.data.display_name)
+      }
+      return names
+    },
+    [factTableDetailQueries, factTablesQuery.data],
   )
+  const factTableColumnType = (factTableId: string | null, column: string): string | null => {
+    if (!factTableId) return null
+    const table = factTableDetailQueries.find(query => query.data?.id === factTableId)?.data
+    return table?.columns.find(candidate => candidate.name === column)?.type ?? null
+  }
   const eventNameById = useMemo(
     () => new Map((eventsQuery.data?.items ?? []).map(event => [event.id, event.name])),
     [eventsQuery.data],
@@ -239,7 +287,12 @@ export function MetricDefinitionCard({ slug, definition }: MetricDefinitionCardP
 
         {kind === 'sql' && <SqlExpression config={config} />}
         {kind === 'fact' && (
-          <FactExpression definition={definition} factTableName={factTableName} />
+          <FactExpression
+            slug={slug}
+            definition={definition}
+            factTableName={factTableName}
+            factTableColumnType={factTableColumnType}
+          />
         )}
         {kind === 'event_composition' && (
           <EventCompositionExpression definition={definition} eventName={eventName} />
@@ -251,6 +304,7 @@ export function MetricDefinitionCard({ slug, definition }: MetricDefinitionCardP
               every {definition.interval}
             </Chip>
           )}
+          <MetricSchedule definition={definition} />
           {dataSourceName && (
             <Chip size="xs" variant="outline">source · {dataSourceName}</Chip>
           )}
@@ -285,9 +339,15 @@ function SqlExpression({ config }: { config: Record<string, unknown> }) {
           <summary className="cursor-pointer select-none px-3 py-1.5 text-xs font-medium text-muted-foreground">
             Show SQL
           </summary>
-          <pre className="max-h-64 overflow-x-auto overflow-y-auto border-t px-3 py-2 font-mono text-xs leading-relaxed">
-            {metricSql}
-          </pre>
+          <div className="border-t p-2">
+            <SqlEditor
+              value={metricSql}
+              onChange={() => undefined}
+              ariaLabel="Metric SQL"
+              minHeight="120px"
+              readOnly
+            />
+          </div>
         </details>
       )}
     </div>
@@ -299,7 +359,13 @@ function SqlExpression({ config }: { config: Record<string, unknown> }) {
  * and the free-text SQL fragment gets its own labelled line, indented under the
  * operand's expression. Renders nothing when the operand is unfiltered.
  */
-function FactFilterLines({ filters }: { filters: FactFiltersView }) {
+function FactFilterLines({
+  filters,
+  columnType,
+}: {
+  filters: FactFiltersView
+  columnType: (column: string) => string | null
+}) {
   if (!hasFilters(filters)) return null
   return (
     <ul className="space-y-0.5 pl-4 text-xs">
@@ -311,13 +377,17 @@ function FactFilterLines({ filters }: { filters: FactFiltersView }) {
       ))}
       {filters.conditions.map((condition, index) => (
         <li key={`condition-${index}`}>
-          <span className="text-muted-foreground">where </span>
-          <code className="font-mono">{conditionText(condition)}</code>
+          <span className="text-muted-foreground">{index === 0 ? 'where' : 'and'} </span>
+          <code className="font-mono">
+            {conditionText(condition, columnType(condition.column))}
+          </code>
         </li>
       ))}
       {filters.filterSql && (
         <li>
-          <span className="text-muted-foreground">where </span>
+          <span className="text-muted-foreground">
+            {filters.conditions.length === 0 ? 'where' : 'and'}{' '}
+          </span>
           <code className="font-mono">{filters.filterSql}</code>
         </li>
       )}
@@ -327,39 +397,72 @@ function FactFilterLines({ filters }: { filters: FactFiltersView }) {
 
 function FactOperandBlock({
   operand,
+  slug,
   factTableName,
+  factTableColumnType,
 }: {
   operand: FactOperandView
+  slug: string
   factTableName: (id: string | null) => string
+  factTableColumnType: (factTableId: string | null, column: string) => string | null
 }) {
   return (
     <div className="space-y-0.5">
       <p className="font-mono text-sm">
         {operand.aggregation}({operand.column ?? '*'})
         <span className="text-muted-foreground"> from </span>
-        {factTableName(operand.factTableId)}
+        {operand.factTableId ? (
+          <Link
+            to={`/p/${slug}/metrics/fact-tables/${operand.factTableId}/edit`}
+            className="underline decoration-muted-foreground/50 underline-offset-2 hover:decoration-current"
+          >
+            {factTableName(operand.factTableId)}
+          </Link>
+        ) : '—'}
       </p>
-      <FactFilterLines filters={operand.filters} />
+      <FactFilterLines
+        filters={operand.filters}
+        columnType={column => factTableColumnType(operand.factTableId, column)}
+      />
     </div>
   )
 }
 
 function FactExpression({
+  slug,
   definition,
   factTableName,
+  factTableColumnType,
 }: {
-  definition: MetricDefinitionResponse
+  slug: string
+  definition: MetricDefinitionDetailResponse
   factTableName: (id: string | null) => string
+  factTableColumnType: (factTableId: string | null, column: string) => string | null
 }) {
   const { config } = definition
   if (definition.composition === 'ratio') {
     const numerator = readFactOperand(config['numerator'])
     const denominator = readFactOperand(config['denominator'])
     return (
-      <div className="space-y-1">
-        {numerator && <FactOperandBlock operand={numerator} factTableName={factTableName} />}
+      <div className="space-y-2">
+        {numerator && (
+          <FactOperandBlock
+            slug={slug}
+            operand={numerator}
+            factTableName={factTableName}
+            factTableColumnType={factTableColumnType}
+          />
+        )}
         <p aria-hidden="true" className="text-sm text-muted-foreground">÷</p>
-        {denominator && <FactOperandBlock operand={denominator} factTableName={factTableName} />}
+        {denominator && (
+          <FactOperandBlock
+            slug={slug}
+            operand={denominator}
+            factTableName={factTableName}
+            factTableColumnType={factTableColumnType}
+          />
+        )}
+        <GeneratedBatchSqlDisclosure slug={slug} metricId={definition.id} />
       </div>
     )
   }
@@ -372,14 +475,106 @@ function FactExpression({
         : configString(config, 'measure_column'),
     filters: readFactFilters(config),
   }
-  return <FactOperandBlock operand={single} factTableName={factTableName} />
+  return (
+    <div className="space-y-2">
+      <FactOperandBlock
+        slug={slug}
+        operand={single}
+        factTableName={factTableName}
+        factTableColumnType={factTableColumnType}
+      />
+      <GeneratedBatchSqlDisclosure slug={slug} metricId={definition.id} />
+    </div>
+  )
+}
+
+function GeneratedBatchSqlDisclosure({ slug, metricId }: { slug: string; metricId: string }) {
+  const [open, setOpen] = useState(false)
+  const query = useQuery({
+    queryKey: ['metric-generated-sql', slug, metricId],
+    queryFn: () => metricsCatalogApi.getGeneratedSql(slug, metricId),
+    enabled: open,
+    staleTime: LOOKUP_STALE_TIME_MS,
+  })
+  const queries = query.data?.queries ?? []
+  return (
+    <details
+      className="rounded-md border"
+      onToggle={event => setOpen(event.currentTarget.open)}
+    >
+      <summary className="cursor-pointer select-none px-3 py-1.5 text-xs font-medium text-muted-foreground">
+        Generated batch SQL
+      </summary>
+      <div className="space-y-2 border-t p-2">
+        <p className="px-1 text-xs text-muted-foreground">
+          Primary queries executed by Collect now. Compatible aggregates from dependent metrics
+          are folded into one query per fact table, interval, and replay chunk.
+        </p>
+        {query.isFetching && <p className="px-1 text-xs text-muted-foreground">Loading SQL…</p>}
+        {query.isError && (
+          <p role="alert" className="px-1 text-xs text-destructive">
+            Could not generate batch SQL.
+          </p>
+        )}
+        {query.isSuccess && queries.length === 0 && (
+          <p className="px-1 text-xs text-muted-foreground">No generated SQL is available.</p>
+        )}
+        {queries.map((item, index) => {
+          const editorLabel = queries.length > 1
+            ? `${item.label} generated batch SQL`
+            : 'Generated batch SQL'
+          return (
+            <div
+              key={`${item.fact_table_id}-${item.interval}-${item.window_from}-${index}`}
+              className="space-y-1"
+            >
+              <p className="px-1 text-[11px] text-muted-foreground">
+                <span className="font-medium text-foreground">{item.label}</span>
+                {' · '}{item.metric_ids.length} metric{item.metric_ids.length === 1 ? '' : 's'}
+                {' · '}{formatDateTime(item.window_from)} → {formatDateTime(item.window_to)}
+              </p>
+              <SqlEditor
+                value={item.sql}
+                onChange={() => undefined}
+                ariaLabel={editorLabel}
+                minHeight="120px"
+                readOnly
+              />
+            </div>
+          )
+        })}
+        {query.data?.breakdown_queries_omitted && (
+          <p className="px-1 text-[11px] text-muted-foreground">
+            Breakdown queries are generated separately and are not shown here.
+          </p>
+        )}
+      </div>
+    </details>
+  )
+}
+
+function MetricSchedule({ definition }: { definition: MetricDefinitionDetailResponse }) {
+  if (definition.status !== 'active' || !definition.interval) {
+    return <span className="text-xs text-muted-foreground">Not scheduled</span>
+  }
+  if (definition.collection_due) {
+    return <span className="text-xs font-medium text-amber-700">Due now</span>
+  }
+  if (definition.next_collection_at) {
+    return (
+      <span className="text-xs text-muted-foreground">
+        Next update {formatDateTime(definition.next_collection_at)}
+      </span>
+    )
+  }
+  return <span className="text-xs text-muted-foreground">Not scheduled</span>
 }
 
 function EventCompositionExpression({
   definition,
   eventName,
 }: {
-  definition: MetricDefinitionResponse
+  definition: MetricDefinitionDetailResponse
   eventName: (id: string | null) => string
 }) {
   const numerator = eventName(definition.numerator_event_id)

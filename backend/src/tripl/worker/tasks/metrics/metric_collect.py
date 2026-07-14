@@ -65,6 +65,7 @@ from tripl.core.adapters.measure_validator import (
     validate_select_sql,
     validate_sql_fragment,
 )
+from tripl.core.bucketing import floor_to_bucket, to_utc
 from tripl.core.intervals import IntervalSpec, get_interval
 from tripl.core.warehouse_types import TimeKind
 from tripl.models.data_source import DataSource
@@ -84,7 +85,6 @@ from tripl.worker.celery_app import celery_app
 from tripl.worker.tasks._errors import ScanError, user_facing_error
 from tripl.worker.tasks.metrics._helpers import (
     _build_adapter,
-    _floor_to_interval,
     _get_sync_session,
     _parse_task_datetime,
 )
@@ -200,7 +200,7 @@ def _resolve_value_window(
     session: Session,
     *,
     metric_definition_id: uuid.UUID,
-    delta: timedelta,
+    interval_code: str,
 ) -> tuple[datetime, datetime]:
     """Resolve the [from, to) collection window for a fact/sql metric.
 
@@ -209,16 +209,30 @@ def _resolve_value_window(
     falls back to ``DEFAULT_COLLECTION_BUCKETS`` intervals on first collection.
     Kept here (not in ``_helpers``) so tests can monkey-patch this module global.
     """
-    now = datetime.now(UTC)
-    time_to = _floor_to_interval(now, delta)
+    delta = get_interval(interval_code).delta
+    time_to = floor_to_bucket(datetime.now(UTC), interval_code)
     last_bucket = session.execute(
         select(sa_func.max(MetricValue.bucket)).where(
             MetricValue.metric_definition_id == metric_definition_id,
             MetricValue.scan_config_id.is_(None),
         )
     ).scalar()
-    if last_bucket is not None:
-        time_from = last_bucket - delta
+    definition = session.get(MetricDefinition, metric_definition_id)
+    value_progress_to = to_utc(last_bucket) + delta if last_bucket is not None else None
+    watermark = (
+        to_utc(definition.last_collection_window_to)
+        if definition is not None and definition.last_collection_window_to is not None
+        else None
+    )
+    progress_to = max(
+        (candidate for candidate in (value_progress_to, watermark) if candidate is not None),
+        default=None,
+    )
+    if progress_to is not None:
+        # Preserve the historical two-bucket overlap: the latest completed
+        # bucket and the one immediately before it are recomputed for late data.
+        effective_progress_to = min(progress_to, time_to)
+        time_from = effective_progress_to - delta * 2
     else:
         time_from = time_to - delta * DEFAULT_COLLECTION_BUCKETS
     return time_from, time_to
@@ -235,7 +249,7 @@ def compute_manual_collect_window(interval_code: str) -> tuple[datetime, datetim
     stored bucket so a re-trigger always backfills the same recent window.
     """
     delta = get_interval(interval_code).delta
-    time_to = _floor_to_interval(datetime.now(UTC), delta)
+    time_to = floor_to_bucket(datetime.now(UTC), interval_code)
     max_buckets = max(1, int(MANUAL_COLLECT_MAX_WINDOW / delta))
     buckets = min(MANUAL_COLLECT_BACKFILL_BUCKETS, max_buckets)
     time_from = time_to - delta * buckets
@@ -246,7 +260,7 @@ def _effective_value_window(
     session: Session,
     *,
     metric_definition_id: uuid.UUID,
-    delta: timedelta,
+    interval_code: str,
     window_override: tuple[datetime, datetime] | None,
 ) -> tuple[datetime, datetime]:
     """Use an explicit ``window_override`` when given, else the resume window.
@@ -256,7 +270,11 @@ def _effective_value_window(
     """
     if window_override is not None:
         return window_override
-    return _resolve_value_window(session, metric_definition_id=metric_definition_id, delta=delta)
+    return _resolve_value_window(
+        session,
+        metric_definition_id=metric_definition_id,
+        interval_code=interval_code,
+    )
 
 
 def _parse_window_override(
@@ -461,6 +479,7 @@ def _condition_scalar_literal(
     *,
     dialect: SqlDialect,
     time_kind: TimeKind,
+    column_type: str | None,
 ) -> str:
     """One comparison literal, typed as a timestamp when the column is a time column.
 
@@ -478,6 +497,34 @@ def _condition_scalar_literal(
         moment = parse_utc_timestamp(value)
         if moment is not None:
             return quote_timestamp_literal(moment, dialect, kind=time_kind)
+
+    normalized_type = column_type.strip().lower() if column_type is not None else None
+    if normalized_type == "number":
+        if isinstance(value, bool):
+            msg = "numeric column requires a numeric value, not a boolean"
+            raise ScanError(msg)
+        literal = _condition_literal(value, dialect)
+        if isinstance(value, str) and literal.startswith("'"):
+            msg = "numeric column requires a numeric value"
+            raise ScanError(msg)
+        return literal
+    if normalized_type == "bool":
+        if isinstance(value, bool):
+            return _condition_literal(value, dialect)
+        if isinstance(value, str) and value.strip().lower() in {"true", "false"}:
+            return _condition_literal(value, dialect)
+        msg = "boolean column requires true or false"
+        raise ScanError(msg)
+    if normalized_type == "string":
+        if not _is_sql_literal_value(value):
+            msg = "fact operand condition value must be a scalar"
+            raise ScanError(msg)
+        text = str(value).lower() if isinstance(value, bool) else str(value)
+        try:
+            return quote_sql_string_literal(text, dialect)
+        except ValueError as exc:
+            msg = f"fact operand condition value is invalid: {exc}"
+            raise ScanError(msg) from exc
     return _condition_literal(value, dialect)
 
 
@@ -501,6 +548,7 @@ def _condition_list_literals(
     *,
     dialect: SqlDialect,
     time_kind: TimeKind,
+    column_type: str | None,
 ) -> list[str]:
     values: list[object]
     if isinstance(value, list):
@@ -511,7 +559,12 @@ def _condition_list_literals(
         values = [value]
 
     literals = [
-        _condition_scalar_literal(item, dialect=dialect, time_kind=time_kind)
+        _condition_scalar_literal(
+            item,
+            dialect=dialect,
+            time_kind=time_kind,
+            column_type=column_type,
+        )
         for item in values
         if not (isinstance(item, str) and not item)
     ]
@@ -550,6 +603,7 @@ def _resolve_condition_fragment(
     operator = condition.operator
     value = condition.value
     time_kind = time_kind_of(condition.column, column_types)
+    column_type = column_types.get(condition.column) if column_types is not None else None
 
     if operator == "is_null":
         return f"{quoted} IS NULL"
@@ -564,7 +618,18 @@ def _resolve_condition_fragment(
         if value is None:
             msg = f"fact operand condition {operator!r} requires a value"
             raise ScanError(msg)
-        literal = _condition_scalar_literal(value, dialect=dialect, time_kind=time_kind)
+        try:
+            literal = _condition_scalar_literal(
+                value,
+                dialect=dialect,
+                time_kind=time_kind,
+                column_type=column_type,
+            )
+        except ScanError as exc:
+            if column_type is not None and str(exc).startswith("numeric column"):
+                msg = f"numeric column {condition.column!r} requires a numeric value"
+                raise ScanError(msg) from exc
+            raise
         return f"{quoted} {_CONDITION_BINARY_OPERATORS[operator]} {literal}"
 
     if operator in _CONDITION_MULTI_VALUE_OPERATORS:
@@ -572,7 +637,18 @@ def _resolve_condition_fragment(
             msg = f"fact operand condition {operator!r} requires a value"
             raise ScanError(msg)
         keyword = "NOT IN" if operator == "not_in" else "IN"
-        literals = _condition_list_literals(value, dialect=dialect, time_kind=time_kind)
+        try:
+            literals = _condition_list_literals(
+                value,
+                dialect=dialect,
+                time_kind=time_kind,
+                column_type=column_type,
+            )
+        except ScanError as exc:
+            if column_type is not None and str(exc).startswith("numeric column"):
+                msg = f"numeric column {condition.column!r} requires numeric values"
+                raise ScanError(msg) from exc
+            raise
         return f"{quoted} {keyword} ({', '.join(literals)})"
 
     if operator in {"like", "not_like", "contains", "not_contains"}:
@@ -715,7 +791,6 @@ def _aggregate_fact_window(
     operand: _FactOperand,
     dialect: SqlDialect,
     interval_code: str,
-    delta: timedelta,
     chunk_from: datetime,
     chunk_to: datetime,
 ) -> tuple[dict[datetime, float], str, str | None]:
@@ -755,7 +830,7 @@ def _aggregate_fact_window(
         chunk_to,
         limit=METRIC_QUERY_ROW_LIMIT,
     )
-    values = {_coerce_bucket(row[0], delta): _coerce_value(row[-1]) for row in rows}
+    values = {_coerce_bucket(row[0], interval_code): _coerce_value(row[-1]) for row in rows}
     return values, base_query, measure
 
 
@@ -790,7 +865,7 @@ def _append_ratio_breakdown_rows(
     *,
     definition: MetricDefinition,
     rows: list[tuple[object, ...]],
-    delta: timedelta,
+    interval_code: str,
     time_from: datetime,
     time_to: datetime,
     breakdown_column: str,
@@ -801,7 +876,7 @@ def _append_ratio_breakdown_rows(
     compare_from = _coerce_compare_bound(time_from)
     compare_to = _coerce_compare_bound(time_to)
     for row in rows:
-        bucket = _coerce_bucket(row[0], delta)
+        bucket = _coerce_bucket(row[0], interval_code)
         if not (compare_from <= bucket < compare_to):
             continue
         value = _ratio_breakdown_value(row[numerator_index], row[denominator_index])
@@ -868,7 +943,7 @@ def _collect_fact_breakdown_rows(
                     "id": uuid.uuid4(),
                     "metric_definition_id": definition.id,
                     "scan_config_id": None,
-                    "bucket": cast(datetime, row[0]),
+                    "bucket": _coerce_bucket(row[0], interval_code),
                     "breakdown_column": column,
                     "breakdown_value": str(row[1])[:MAX_BREAKDOWN_VALUE_LENGTH],
                     "is_other": bool(row[2]),
@@ -896,7 +971,6 @@ def _collect_fact_ratio_breakdown_rows(
     denominator_op: _FactOperand,
     dialect: SqlDialect,
     interval_code: str,
-    delta: timedelta,
     chunk_from: datetime,
     chunk_to: datetime,
 ) -> int:
@@ -948,7 +1022,7 @@ def _collect_fact_ratio_breakdown_rows(
             rows_out,
             definition=definition,
             rows=list(rows),
-            delta=delta,
+            interval_code=interval_code,
             time_from=chunk_from,
             time_to=chunk_to,
             breakdown_column=column,
@@ -995,11 +1069,14 @@ def _collect_fact(
     interval_spec = get_interval(definition.interval)
     delta = interval_spec.delta
     time_from, time_to = _effective_value_window(
-        session, metric_definition_id=definition.id, delta=delta, window_override=window
+        session,
+        metric_definition_id=definition.id,
+        interval_code=interval_spec.code,
+        window_override=window,
     )
     composition = _resolve_fact_composition(definition)
     if composition is MetricComposition.ratio:
-        return _collect_fact_ratio(
+        summary = _collect_fact_ratio(
             session,
             definition=definition,
             interval_spec=interval_spec,
@@ -1007,14 +1084,19 @@ def _collect_fact(
             time_from=time_from,
             time_to=time_to,
         )
-    return _collect_fact_single(
-        session,
-        definition=definition,
-        interval_spec=interval_spec,
-        delta=delta,
-        time_from=time_from,
-        time_to=time_to,
-    )
+    else:
+        summary = _collect_fact_single(
+            session,
+            definition=definition,
+            interval_spec=interval_spec,
+            delta=delta,
+            time_from=time_from,
+            time_to=time_to,
+        )
+    # Private orchestration metadata: the task removes it before returning its
+    # public summary and persists it as source-grid progress even for zero rows.
+    summary["_collection_window_to"] = time_to
+    return summary
 
 
 def _collect_fact_single(
@@ -1068,7 +1150,6 @@ def _collect_fact_single(
                 operand=operand,
                 dialect=dialect,
                 interval_code=interval_code,
-                delta=delta,
                 chunk_from=chunk_from,
                 chunk_to=chunk_to,
             )
@@ -1173,7 +1254,6 @@ def _collect_fact_ratio(
                     operand=numerator_op,
                     dialect=numerator_dialect,
                     interval_code=interval_code,
-                    delta=delta,
                     chunk_from=chunk_from,
                     chunk_to=chunk_to,
                 )
@@ -1183,7 +1263,6 @@ def _collect_fact_ratio(
                     operand=denominator_op,
                     dialect=denominator_dialect,
                     interval_code=interval_code,
-                    delta=delta,
                     chunk_from=chunk_from,
                     chunk_to=chunk_to,
                 )
@@ -1215,7 +1294,6 @@ def _collect_fact_ratio(
                         denominator_op=denominator_op,
                         dialect=numerator_dialect,
                         interval_code=interval_code,
-                        delta=delta,
                         chunk_from=chunk_from,
                         chunk_to=chunk_to,
                     )
@@ -1383,7 +1461,7 @@ def _resolve_batch_operand(
 
 
 def _index_multi_aggregate(
-    col_names: list[str], rows: list[tuple[object, ...]], delta: timedelta
+    col_names: list[str], rows: list[tuple[object, ...]], interval_code: str
 ) -> dict[str, dict[datetime, float]]:
     """Index a multi-aggregate result into ``{spec_key: {bucket: value}}``.
 
@@ -1394,7 +1472,7 @@ def _index_multi_aggregate(
     """
     out: dict[str, dict[datetime, float]] = {name: {} for name in col_names[1:]}
     for row in rows:
-        bucket = _coerce_bucket(row[0], delta)
+        bucket = _coerce_bucket(row[0], interval_code)
         for index, name in enumerate(col_names[1:], start=1):
             cell = row[index]
             if cell is None:
@@ -1447,9 +1525,19 @@ def _batch_chunk_interval_code(definitions: list[MetricDefinition]) -> str | Non
     return min(deltas, key=lambda item: item[1])[0]
 
 
-def _stamp_metric_success(session: Session, definition: MetricDefinition) -> None:
-    """Mark a metric collected successfully and commit (per-metric isolation)."""
+def _stamp_metric_success(
+    session: Session,
+    definition: MetricDefinition,
+    *,
+    window_to: datetime | None = None,
+) -> None:
+    """Mark a metric successful and persist its source-window watermark."""
     definition.last_collected_at = datetime.now(UTC)
+    if window_to is not None and (
+        definition.last_collection_window_to is None
+        or to_utc(window_to) > to_utc(definition.last_collection_window_to)
+    ):
+        definition.last_collection_window_to = window_to
     definition.last_collection_status = COLLECTION_STATUS_SUCCESS
     definition.last_collection_error = None
     session.commit()
@@ -1685,7 +1773,7 @@ def _assemble_single_metric(
     plan: _SingleMetricPlan,
     results: Mapping[uuid.UUID, Mapping[str, dict[datetime, float]]],
     breakdown_results: Mapping[_BreakdownScanKey, tuple[dict[str, int], list[tuple[object, ...]]]],
-    delta: timedelta,
+    interval_code: str,
 ) -> tuple[int, int]:
     """Write one single metric's values + breakdowns from the shared scan results.
 
@@ -1720,7 +1808,7 @@ def _assemble_single_metric(
         index_by_key, rows = entry
         value_index = index_by_key[breakdown.spec_key]
         for row in rows:
-            bucket = _coerce_bucket(row[0], delta)
+            bucket = _coerce_bucket(row[0], interval_code)
             if not (time_from <= bucket < time_to):
                 continue
             cell = row[value_index]
@@ -1757,7 +1845,7 @@ def _assemble_ratio_metric(
     plan: _RatioMetricPlan,
     results: Mapping[uuid.UUID, Mapping[str, dict[datetime, float]]],
     breakdown_results: Mapping[_BreakdownScanKey, tuple[dict[str, int], list[tuple[object, ...]]]],
-    delta: timedelta,
+    interval_code: str,
 ) -> tuple[int, int]:
     """Write one ratio metric's values + same-table breakdowns from shared scans."""
     definition = plan.definition
@@ -1801,7 +1889,7 @@ def _assemble_ratio_metric(
             breakdown_rows,
             definition=definition,
             rows=rows,
-            delta=delta,
+            interval_code=interval_code,
             time_from=time_from,
             time_to=time_to,
             breakdown_column=breakdown.column,
@@ -1827,6 +1915,8 @@ def _run_fact_interval_group(
     definitions: list[MetricDefinition],
     interval_spec: IntervalSpec,
     window_override: tuple[datetime, datetime] | None = None,
+    completion_metric_id: uuid.UUID | None = None,
+    prior_errors: int = 0,
 ) -> dict[str, int]:
     """Collect every fact metric of one interval group in shared warehouse scans.
 
@@ -1846,6 +1936,7 @@ def _run_fact_interval_group(
         bd_registries: dict[_BreakdownScanKey, _SpecRegistry] = {}
         single_plans: list[_SingleMetricPlan] = []
         ratio_plans: list[_RatioMetricPlan] = []
+        completion_planning_error: tuple[MetricDefinition, Exception] | None = None
 
         for definition in definitions:
             totals["metrics"] += 1
@@ -1853,7 +1944,7 @@ def _run_fact_interval_group(
                 window = _effective_value_window(
                     session,
                     metric_definition_id=definition.id,
-                    delta=delta,
+                    interval_code=interval_code,
                     window_override=window_override,
                 )
                 if _resolve_fact_composition(definition) is MetricComposition.ratio:
@@ -1878,11 +1969,16 @@ def _run_fact_interval_group(
                     )
             except Exception as exc:
                 logger.exception("Batch planning failed for metric %s", definition.id)
-                _stamp_metric_error(session, definition, exc)
+                if definition.id == completion_metric_id:
+                    completion_planning_error = (definition, exc)
+                else:
+                    _stamp_metric_error(session, definition, exc)
                 totals["errors"] += 1
 
         windows = [plan.window for plan in single_plans] + [plan.window for plan in ratio_plans]
         if not windows:
+            if completion_planning_error is not None:
+                _stamp_metric_error(session, *completion_planning_error)
             return totals
         covering_from = min(window[0] for window in windows)
         covering_to = max(window[1] for window in windows)
@@ -1927,7 +2023,7 @@ def _run_fact_interval_group(
                     )
                     _merge_multi_aggregate(
                         results.setdefault(fact_table_id, {}),
-                        _index_multi_aggregate(col_names, rows, delta),
+                        _index_multi_aggregate(col_names, rows, interval_code),
                     )
                 except Exception as exc:  # noqa: BLE001 - attributed per metric below
                     logger.exception(
@@ -1964,25 +2060,64 @@ def _run_fact_interval_group(
                     logger.exception("Batch breakdown scan failed for %s", scan_key)
                     breakdown_errors[scan_key] = exc
 
-        for plan in single_plans:
+        plans: list[_SingleMetricPlan | _RatioMetricPlan] = [*single_plans, *ratio_plans]
+        plans.sort(
+            key=lambda plan: (
+                plan.definition.id == completion_metric_id,
+                str(plan.definition.id),
+            )
+        )
+        for plan in plans:
             try:
-                fact_error = fact_errors.get(plan.fact_table_id)
-                if fact_error is not None:
-                    raise fact_error
-                for breakdown in plan.breakdowns:
-                    bd_error = breakdown_errors.get(
-                        (plan.fact_table_id, breakdown.column, breakdown.values_limit)
+                if isinstance(plan, _SingleMetricPlan):
+                    fact_error = fact_errors.get(plan.fact_table_id)
+                    if fact_error is not None:
+                        raise fact_error
+                    for breakdown in plan.breakdowns:
+                        bd_error = breakdown_errors.get(
+                            (plan.fact_table_id, breakdown.column, breakdown.values_limit)
+                        )
+                        if bd_error is not None:
+                            raise bd_error
+                    values_written, breakdown_written = _assemble_single_metric(
+                        session,
+                        plan=plan,
+                        results=results,
+                        breakdown_results=breakdown_results,
+                        interval_code=interval_code,
                     )
-                    if bd_error is not None:
-                        raise bd_error
-                values_written, breakdown_written = _assemble_single_metric(
-                    session,
-                    plan=plan,
-                    results=results,
-                    breakdown_results=breakdown_results,
-                    delta=delta,
-                )
-                _stamp_metric_success(session, plan.definition)
+                else:
+                    for fact_table_id in (
+                        plan.numerator_fact_table_id,
+                        plan.denominator_fact_table_id,
+                    ):
+                        fact_error = fact_errors.get(fact_table_id)
+                        if fact_error is not None:
+                            raise fact_error
+                    for ratio_breakdown in plan.breakdowns:
+                        bd_error = breakdown_errors.get(
+                            (
+                                plan.numerator_fact_table_id,
+                                ratio_breakdown.column,
+                                ratio_breakdown.values_limit,
+                            )
+                        )
+                        if bd_error is not None:
+                            raise bd_error
+                    values_written, breakdown_written = _assemble_ratio_metric(
+                        session,
+                        plan=plan,
+                        results=results,
+                        breakdown_results=breakdown_results,
+                        interval_code=interval_code,
+                    )
+
+                if plan.definition.id == completion_metric_id and (
+                    prior_errors + totals["errors"] > 0
+                ):
+                    msg = "One or more dependent metrics failed during the shared collection batch"
+                    raise ScanError(msg)
+                _stamp_metric_success(session, plan.definition, window_to=plan.window[1])
                 totals["collected"] += 1
                 totals["values"] += values_written
                 totals["breakdown_values"] += breakdown_written
@@ -1991,40 +2126,8 @@ def _run_fact_interval_group(
                 _stamp_metric_error(session, plan.definition, exc)
                 totals["errors"] += 1
 
-        for ratio_plan in ratio_plans:
-            try:
-                for fact_table_id in (
-                    ratio_plan.numerator_fact_table_id,
-                    ratio_plan.denominator_fact_table_id,
-                ):
-                    fact_error = fact_errors.get(fact_table_id)
-                    if fact_error is not None:
-                        raise fact_error
-                for ratio_breakdown in ratio_plan.breakdowns:
-                    bd_error = breakdown_errors.get(
-                        (
-                            ratio_plan.numerator_fact_table_id,
-                            ratio_breakdown.column,
-                            ratio_breakdown.values_limit,
-                        )
-                    )
-                    if bd_error is not None:
-                        raise bd_error
-                values_written, breakdown_written = _assemble_ratio_metric(
-                    session,
-                    plan=ratio_plan,
-                    results=results,
-                    breakdown_results=breakdown_results,
-                    delta=delta,
-                )
-                _stamp_metric_success(session, ratio_plan.definition)
-                totals["collected"] += 1
-                totals["values"] += values_written
-                totals["breakdown_values"] += breakdown_written
-            except Exception as exc:
-                logger.exception("Batch assembly failed for metric %s", ratio_plan.definition.id)
-                _stamp_metric_error(session, ratio_plan.definition, exc)
-                totals["errors"] += 1
+        if completion_planning_error is not None:
+            _stamp_metric_error(session, *completion_planning_error)
 
         return totals
     finally:
@@ -2071,7 +2174,10 @@ def _collect_sql(
         interval_spec = get_interval(definition.interval)
         delta = interval_spec.delta
         time_from, time_to = _effective_value_window(
-            session, metric_definition_id=definition.id, delta=delta, window_override=window
+            session,
+            metric_definition_id=definition.id,
+            interval_code=interval_spec.code,
+            window_override=window,
         )
         chunks = _iter_window_chunks(
             time_from,
@@ -2095,7 +2201,7 @@ def _collect_sql(
             time_idx = index_by_name[time_column]
             values: dict[datetime, float] = {}
             for row in rows:
-                bucket = _coerce_bucket(row[time_idx], delta)
+                bucket = _coerce_bucket(row[time_idx], interval_spec.code)
                 values[bucket] = _coerce_value(row[value_idx])
             value_rows = _build_metric_value_rows(
                 metric_definition_id=definition.id,
@@ -2114,15 +2220,15 @@ def _collect_sql(
     finally:
         adapter.close()
 
-    return {"values": total_values}
+    return {"values": total_values, "_collection_window_to": time_to}
 
 
-def _coerce_bucket(raw: object, delta: timedelta) -> datetime:
+def _coerce_bucket(raw: object, interval_code: str) -> datetime:
     """Coerce a projected time cell to an interval-floored aware datetime."""
     dt = raw if isinstance(raw, datetime) else _parse_task_datetime(str(raw))
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=UTC)
-    return _floor_to_interval(dt, delta)
+    return floor_to_bucket(dt, interval_code)
 
 
 def _collect_distinct_user_series(
@@ -2177,7 +2283,7 @@ def _collect_distinct_user_series(
     # bucket read back from event_metrics, and every per_distinct_user metric on a
     # ClickHouse source died with "can't compare offset-naive and offset-aware
     # datetimes". _coerce_bucket stamps UTC and floors to the interval (tripl-ju0d).
-    return {_coerce_bucket(row[0], interval_spec.delta): _coerce_value(row[-1]) for row in rows}
+    return {_coerce_bucket(row[0], interval_spec.code): _coerce_value(row[-1]) for row in rows}
 
 
 def _collect_event_composition(
@@ -2353,11 +2459,9 @@ def collect_metric_definitions(
             msg = f"Metric collection is not implemented for kind {kind.value!r}"
             raise NotImplementedError(msg)
         summary = collector(session, definition=definition, window=window)
-
-        definition.last_collected_at = datetime.now(UTC)
-        definition.last_collection_status = COLLECTION_STATUS_SUCCESS
-        definition.last_collection_error = None
-        session.commit()
+        raw_window_to = summary.pop("_collection_window_to", None)
+        collection_window_to = raw_window_to if isinstance(raw_window_to, datetime) else None
+        _stamp_metric_success(session, definition, window_to=collection_window_to)
         return {"metric_definition_id": metric_definition_id, "kind": kind.value, **summary}
 
     except Exception as exc:
@@ -2389,6 +2493,8 @@ def _run_fact_metrics_batch(
     *,
     definitions: list[MetricDefinition],
     window_override: tuple[datetime, datetime] | None = None,
+    manual_backfill_all: bool = False,
+    completion_metric_id: uuid.UUID | None = None,
 ) -> dict[str, int]:
     """Group fact metrics by interval and collect each group in shared scans.
 
@@ -2396,7 +2502,10 @@ def _run_fact_metrics_batch(
     by interval before dispatch), but grouping here as well keeps the collector
     correct if a caller mixes intervals: each interval has its own bucket grid /
     ``interval_code``, so it gets its own set of shared scans. ``window_override``
-    (a manual backfill window) is forwarded to every group.
+    is forwarded to every group for legacy explicit-window callers. A manual
+    fact-table refresh sets ``manual_backfill_all`` instead: each interval group
+    receives its own bounded backfill window, so a clicked 1h metric never forces
+    a dependent 1d/1w metric onto the wrong bucket grid.
     """
     totals = {"metrics": 0, "collected": 0, "errors": 0, "values": 0, "breakdown_values": 0}
     by_interval: dict[str, list[MetricDefinition]] = {}
@@ -2408,12 +2517,38 @@ def _run_fact_metrics_batch(
             continue
         by_interval.setdefault(str(definition.interval), []).append(definition)
 
-    for interval_code, group in by_interval.items():
+    completion_interval = next(
+        (
+            str(definition.interval)
+            for definition in definitions
+            if definition.id == completion_metric_id and definition.interval is not None
+        ),
+        None,
+    )
+    ordered_groups = sorted(
+        by_interval.items(),
+        key=lambda item: (item[0] == completion_interval, item[0]),
+    )
+    for interval_code, raw_group in ordered_groups:
+        group = sorted(
+            raw_group,
+            key=lambda definition: (
+                definition.id == completion_metric_id,
+                str(definition.id),
+            ),
+        )
+        group_window = (
+            compute_manual_collect_window(interval_code) if manual_backfill_all else window_override
+        )
         group_totals = _run_fact_interval_group(
             session,
             definitions=group,
             interval_spec=get_interval(interval_code),
-            window_override=window_override,
+            window_override=group_window,
+            completion_metric_id=(
+                completion_metric_id if interval_code == completion_interval else None
+            ),
+            prior_errors=totals["errors"],
         )
         for key, value in group_totals.items():
             totals[key] += value
@@ -2433,6 +2568,8 @@ def collect_fact_metrics_batch(
     window_from: str | None = None,
     window_to: str | None = None,
     force: bool = False,
+    manual_backfill_all: bool = False,
+    completion_metric_id: str | None = None,
 ) -> dict[str, int]:
     """Collect a batch of fact metrics, sharing one warehouse scan per fact table.
 
@@ -2441,7 +2578,10 @@ def collect_fact_metrics_batch(
     stamping and error capture happen inside the collector, so one metric failing
     never aborts the others; this wrapper only owns the session lifecycle. An
     optional ``window_from`` / ``window_to`` pair (ISO strings) backfills an
-    explicit recent window for a manual "collect now" of a single fact metric.
+    explicit common window for legacy callers. ``manual_backfill_all`` is used
+    when collect-now expands to all fact-table dependants: every compatible
+    interval group computes its own bounded manual window, while all metrics on
+    the same fact table and interval still share one multi-aggregate query.
 
     ``force`` is set only by the manual "collect now" trigger: it keeps non-active
     (draft/archived) fact metrics in the batch so a freshly-created metric still
@@ -2457,15 +2597,26 @@ def collect_fact_metrics_batch(
             .scalars()
             .all()
         )
-        definitions = [
-            definition
-            for definition in loaded
-            if (force or definition.status == MetricStatus.active)
-            and _metric_kind(definition) is MetricKind.fact
-        ]
+        definitions = sorted(
+            (
+                definition
+                for definition in loaded
+                if (force or definition.status == MetricStatus.active)
+                and _metric_kind(definition) is MetricKind.fact
+            ),
+            key=lambda definition: str(definition.id),
+        )
         if not definitions:
             return {"metrics": 0, "collected": 0, "errors": 0, "values": 0, "breakdown_values": 0}
-        return _run_fact_metrics_batch(session, definitions=definitions, window_override=window)
+        return _run_fact_metrics_batch(
+            session,
+            definitions=definitions,
+            window_override=window,
+            manual_backfill_all=manual_backfill_all,
+            completion_metric_id=(
+                uuid.UUID(completion_metric_id) if completion_metric_id is not None else None
+            ),
+        )
     except Exception:
         logger.exception("Batch fact metric collection failed for %s", metric_ids)
         session.rollback()

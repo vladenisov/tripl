@@ -88,6 +88,7 @@ class _BatchAdapter:
         self._columns = columns
         self.multi_calls = 0
         self.breakdown_calls = 0
+        self.seen_multi_intervals: list[str] = []
         self.seen_specs: list[list[AggregateSpec]] = []
         self.seen_breakdown_specs: list[list[AggregateSpec]] = []
 
@@ -114,6 +115,7 @@ class _BatchAdapter:
         limit: int = 100000,
     ) -> tuple[list[str], list[tuple[object, ...]]]:
         self.multi_calls += 1
+        self.seen_multi_intervals.append(interval)
         self.seen_specs.append(list(specs))
         col_names = ["bucket", *[spec.key for spec in specs]]
         buckets = sorted({bucket for spec in specs for bucket in self._values(base_query, spec)})
@@ -303,6 +305,118 @@ def test_two_single_metrics_share_one_scan(
     with sync_session_factory() as session:
         assert _values_for(session, sum_id) == {(B10, 12.5), (B11, 7.0)}
         assert _values_for(session, count_id) == {(B10, 3.0), (B11, 4.0)}
+
+
+def test_successful_empty_batch_advances_every_metric_watermark(
+    sync_session_factory: sessionmaker[Session],
+    monkeypatch: MonkeyPatch,
+) -> None:
+    with sync_session_factory() as session:
+        project, data_source = _seed_project_and_ds(session)
+        fact_table = _seed_fact_table(session, project, data_source)
+        first = _make_single_metric(
+            session,
+            project,
+            fact_table,
+            aggregation=MetricAggregation.sum,
+            config={"measure_column": "amount"},
+        )
+        second = _make_single_metric(
+            session,
+            project,
+            fact_table,
+            aggregation=MetricAggregation.count,
+            config={},
+        )
+        metric_ids = [first.id, second.id]
+
+    adapter = _BatchAdapter(spec_values={})
+    _patch(monkeypatch, sync_session_factory, adapter)
+
+    result = metric_collect.collect_fact_metrics_batch.run(
+        [str(metric_id) for metric_id in metric_ids]
+    )
+
+    assert result["collected"] == 2
+    assert result["values"] == 0
+    with sync_session_factory() as session:
+        for metric_id in metric_ids:
+            definition = session.get(MetricDefinition, metric_id)
+            assert definition is not None
+            assert definition.last_collection_status == "success"
+            # SQLite drops timezone information from DateTime round-trips.
+            assert definition.last_collection_window_to == WINDOW_TO.replace(tzinfo=None)
+
+
+def test_manual_dependency_batch_uses_one_scan_per_compatible_interval_group(
+    sync_session_factory: sessionmaker[Session],
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """Different grids split explicitly; metrics on each grid still batch together."""
+    with sync_session_factory() as session:
+        project, data_source = _seed_project_and_ds(session)
+        fact_table = _seed_fact_table(session, project, data_source)
+        sql = fact_table.sql
+        hourly = _make_single_metric(
+            session,
+            project,
+            fact_table,
+            aggregation=MetricAggregation.sum,
+            config={"measure_column": "amount"},
+        )
+        daily = _make_single_metric(
+            session,
+            project,
+            fact_table,
+            aggregation=MetricAggregation.count,
+            config={},
+        )
+        daily.interval = ScanInterval.d1
+        session.commit()
+        hourly_id, daily_id = hourly.id, daily.id
+
+    adapter = _BatchAdapter(
+        spec_values={
+            (sql, MetricAggregation.sum, "amount", None): {B10: 12.5},
+            (sql, MetricAggregation.count, None, None): {B10: 3.0},
+        }
+    )
+    _patch(monkeypatch, sync_session_factory, adapter)
+    computed: list[str] = []
+
+    def manual_window(interval_code: str) -> tuple[datetime, datetime]:
+        computed.append(interval_code)
+        return WINDOW_FROM, WINDOW_TO
+
+    monkeypatch.setattr(metric_collect, "compute_manual_collect_window", manual_window)
+    stamped: list[uuid.UUID] = []
+    original_stamp_success = metric_collect._stamp_metric_success
+
+    def record_success(
+        session: Session,
+        definition: MetricDefinition,
+        *,
+        window_to: datetime | None = None,
+    ) -> None:
+        stamped.append(definition.id)
+        original_stamp_success(session, definition, window_to=window_to)
+
+    monkeypatch.setattr(metric_collect, "_stamp_metric_success", record_success)
+
+    result = metric_collect.collect_fact_metrics_batch.run(
+        [str(hourly_id), str(daily_id)],
+        None,
+        None,
+        False,
+        True,
+        str(hourly_id),
+    )
+
+    assert set(computed) == {"1h", "1d"}
+    assert sorted(adapter.seen_multi_intervals) == ["1d", "1h"]
+    assert adapter.multi_calls == 2
+    assert result["collected"] == 2
+    assert stamped[-1] == hourly_id
 
 
 # (b) two metrics with DIFFERENT row filters -> conditional aggregates, ONE call

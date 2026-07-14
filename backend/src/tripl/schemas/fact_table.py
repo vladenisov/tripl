@@ -31,10 +31,16 @@ def _validate_identifier_list(value: list[str]) -> list[str]:
 
 
 class FactTableColumnSchema(BaseModel):
-    """A single introspected column descriptor: its name and warehouse type."""
+    """An introspected column with UI type plus optional native warehouse type."""
 
     name: str = Field(min_length=1, max_length=255)
     type: str = Field(min_length=1, max_length=255)
+    native_type: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=255,
+        exclude_if=lambda value: value is None,
+    )
 
 
 class FactTableRowFilter(BaseModel):
@@ -46,7 +52,7 @@ class FactTableRowFilter(BaseModel):
     """
 
     name: str = Field(min_length=1, max_length=255)
-    sql: str = Field(min_length=1)
+    sql: str = Field(min_length=1, max_length=32768)
 
     @field_validator("sql")
     @classmethod
@@ -78,7 +84,7 @@ class FactTableCreate(BaseModel):
     timestamp_column: str = Field(min_length=1, max_length=255)
     columns: list[FactTableColumnSchema] = Field(default_factory=list)
     identifier_columns: list[str] = Field(default_factory=list)
-    row_filters: list[FactTableRowFilter] = Field(default_factory=list)
+    row_filters: list[FactTableRowFilter] = Field(default_factory=list, max_length=100)
 
     @field_validator("sql")
     @classmethod
@@ -132,7 +138,7 @@ class FactTableUpdate(BaseModel):
     timestamp_column: str | None = Field(default=None, min_length=1, max_length=255)
     columns: list[FactTableColumnSchema] | None = None
     identifier_columns: list[str] | None = None
-    row_filters: list[FactTableRowFilter] | None = None
+    row_filters: list[FactTableRowFilter] | None = Field(default=None, max_length=100)
 
     @field_validator("order")
     @classmethod

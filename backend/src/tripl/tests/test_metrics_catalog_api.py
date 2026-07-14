@@ -13,10 +13,12 @@ from tripl.main import app
 from tripl.models.domain_enums import AnomalyDirection, MetricScopeType, UserRole
 from tripl.models.fact_table import FactTable
 from tripl.models.metric_anomaly import MetricAnomaly
+from tripl.models.metric_definition import MetricDefinition
 from tripl.models.metric_value import MetricValue
 from tripl.models.metric_value_breakdown import MetricValueBreakdown
 from tripl.models.scan_config import ScanConfig
 from tripl.models.user import User
+from tripl.services import metric_definition_service
 from tripl.tests.conftest import TestSessionLocal
 
 
@@ -735,6 +737,78 @@ class TestConfigValidation:
         )
         assert resp.status_code == 422, resp.text
 
+    async def test_fact_condition_value_type_rejected_before_collection(
+        self, client: AsyncClient, project: dict, fact_table: dict
+    ):
+        resp = await client.post(
+            _metrics_url(project["slug"]),
+            json={
+                "kind": "fact",
+                "name": "invalid_numeric_condition",
+                "display_name": "Invalid numeric condition",
+                "composition": "single",
+                "fact_table_id": fact_table["id"],
+                "aggregation": "count",
+                "interval": "1h",
+                "conditions": [{"column": "amount", "operator": "gt", "value": "many"}],
+            },
+        )
+        assert resp.status_code == 422, resp.text
+        assert "numeric value" in resp.json()["detail"]
+
+    async def test_fact_condition_operator_must_match_column_type(
+        self, client: AsyncClient, project: dict, fact_table: dict
+    ):
+        resp = await client.post(
+            _metrics_url(project["slug"]),
+            json={
+                "kind": "fact",
+                "name": "invalid_numeric_operator",
+                "display_name": "Invalid numeric operator",
+                "composition": "single",
+                "fact_table_id": fact_table["id"],
+                "aggregation": "count",
+                "interval": "1h",
+                "conditions": [{"column": "amount", "operator": "contains", "value": "1"}],
+            },
+        )
+        assert resp.status_code == 422, resp.text
+        assert "operator 'contains'" in resp.json()["detail"]
+
+    async def test_fact_boolean_condition_rejects_non_boolean_value(
+        self, client: AsyncClient, project: dict
+    ):
+        fact_response = await client.post(
+            f"/api/v1/projects/{project['slug']}/fact-tables",
+            json={
+                "name": "boolean_condition_ft",
+                "display_name": "Boolean conditions",
+                "sql": "SELECT created_at, is_active FROM subscriptions",
+                "timestamp_column": "created_at",
+                "columns": [
+                    {"name": "created_at", "type": "timestamp"},
+                    {"name": "is_active", "type": "bool"},
+                ],
+            },
+        )
+        assert fact_response.status_code == 201, fact_response.text
+
+        resp = await client.post(
+            _metrics_url(project["slug"]),
+            json={
+                "kind": "fact",
+                "name": "invalid_boolean_condition",
+                "display_name": "Invalid boolean condition",
+                "composition": "single",
+                "fact_table_id": fact_response.json()["id"],
+                "aggregation": "count",
+                "interval": "1h",
+                "conditions": [{"column": "is_active", "operator": "eq", "value": "yes"}],
+            },
+        )
+        assert resp.status_code == 422, resp.text
+        assert "true or false" in resp.json()["detail"]
+
     async def test_fact_nonexistent_fact_table_rejected(self, client: AsyncClient, project: dict):
         resp = await client.post(
             _metrics_url(project["slug"]),
@@ -1214,6 +1288,31 @@ def dispatch_recorder(
 
 
 class TestCollectNow:
+    async def test_collect_returns_conflict_when_scheduler_holds_dispatch_lock(
+        self,
+        client: AsyncClient,
+        project: dict,
+        dispatch_recorder: dict[str, _DispatchRecorder],
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        async def lock_busy(_session: object) -> bool:
+            return False
+
+        monkeypatch.setattr(
+            metric_definition_service,
+            "_try_acquire_metric_dispatch_transaction_lock",
+            lock_busy,
+        )
+
+        response = await client.post(f"{_metrics_url(project['slug'])}/{uuid.uuid4()}/collect")
+
+        # The non-blocking lock check precedes even the metric lookup, so a
+        # scheduler tick can never make this API request hang behind its lock.
+        assert response.status_code == 409, response.text
+        assert response.json()["detail"] == "Metric collection dispatcher is busy"
+        assert dispatch_recorder["sql"].calls == []
+        assert dispatch_recorder["fact"].calls == []
+
     async def test_sql_metric_dispatches_with_backfill_window(
         self,
         client: AsyncClient,
@@ -1297,6 +1396,124 @@ class TestCollectNow:
         assert fact_calls[0][3] is True
         assert dispatch_recorder["sql"].calls == []
 
+    async def test_fact_metric_collect_dispatches_all_active_dependents(
+        self,
+        client: AsyncClient,
+        project: dict,
+        fact_table: dict,
+        dispatch_recorder: dict[str, _DispatchRecorder],
+    ):
+        other_resp = await client.post(
+            f"/api/v1/projects/{project['slug']}/fact-tables",
+            json={
+                "name": "sessions_collect_ft",
+                "display_name": "Sessions",
+                "sql": "SELECT created_at, amount, user_id FROM sessions",
+                "timestamp_column": "created_at",
+                "columns": [
+                    {"name": "created_at", "type": "timestamp"},
+                    {"name": "amount", "type": "number"},
+                    {"name": "user_id", "type": "string"},
+                ],
+                "identifier_columns": ["user_id"],
+            },
+        )
+        assert other_resp.status_code == 201, other_resp.text
+        other_fact_table = other_resp.json()
+
+        async def create_metric(payload: dict[str, object]) -> dict:
+            response = await client.post(_metrics_url(project["slug"]), json=payload)
+            assert response.status_code == 201, response.text
+            return response.json()
+
+        clicked = await create_metric(
+            {
+                "kind": "fact",
+                "name": "collect_clicked_draft",
+                "display_name": "Clicked draft",
+                "composition": "single",
+                "fact_table_id": fact_table["id"],
+                "aggregation": "count",
+                "interval": "1h",
+            }
+        )
+        active_single = await create_metric(
+            {
+                "kind": "fact",
+                "name": "collect_active_single",
+                "display_name": "Active single",
+                "status": "active",
+                "composition": "single",
+                "fact_table_id": fact_table["id"],
+                "aggregation": "sum",
+                "measure_column": "amount",
+                "interval": "1h",
+            }
+        )
+        active_ratio = await create_metric(
+            {
+                "kind": "fact",
+                "name": "collect_active_ratio_denominator",
+                "display_name": "Active ratio denominator",
+                "status": "active",
+                "composition": "ratio",
+                "interval": "1h",
+                "numerator": {
+                    "fact_table_id": other_fact_table["id"],
+                    "aggregation": "count",
+                },
+                "denominator": {
+                    "fact_table_id": fact_table["id"],
+                    "aggregation": "count",
+                },
+            }
+        )
+        transitive_active = await create_metric(
+            {
+                "kind": "fact",
+                "name": "collect_transitive_active",
+                "display_name": "Transitive active",
+                "status": "active",
+                "composition": "single",
+                "fact_table_id": other_fact_table["id"],
+                "aggregation": "count",
+                "interval": "1h",
+            }
+        )
+        inactive_sibling = await create_metric(
+            {
+                "kind": "fact",
+                "name": "collect_inactive_sibling",
+                "display_name": "Inactive sibling",
+                "composition": "single",
+                "fact_table_id": fact_table["id"],
+                "aggregation": "count",
+                "interval": "1h",
+            }
+        )
+
+        response = await client.post(f"{_metrics_url(project['slug'])}/{clicked['id']}/collect")
+        assert response.status_code == 202, response.text
+        fact_calls = dispatch_recorder["fact"].calls
+        assert len(fact_calls) == 1
+        dispatched_ids = set(fact_calls[0][0])
+        assert dispatched_ids == {
+            clicked["id"],
+            active_single["id"],
+            active_ratio["id"],
+            transitive_active["id"],
+        }
+        assert inactive_sibling["id"] not in dispatched_ids
+        # The batch computes a bounded manual window per interval group, so a
+        # cross-interval dependent never inherits the clicked metric's grid.
+        assert fact_calls[0][4] is True
+        # The clicked metric is the shared batch completion marker watched by UI.
+        assert fact_calls[0][5] == clicked["id"]
+
+        for metric_id in dispatched_ids:
+            got = await client.get(f"{_metrics_url(project['slug'])}/{metric_id}")
+            assert got.json()["last_collection_status"] == "running"
+
     async def test_collect_marks_metric_running(
         self,
         client: AsyncClient,
@@ -1311,6 +1528,48 @@ class TestCollectNow:
         # Stamped running before dispatch so the scheduler won't double-dispatch.
         got = await client.get(f"{_metrics_url(project['slug'])}/{metric['id']}")
         assert got.json()["last_collection_status"] == "running"
+
+    async def test_fact_collect_rejects_when_any_dependent_is_already_running(
+        self,
+        client: AsyncClient,
+        project: dict,
+        fact_table: dict,
+        dispatch_recorder: dict[str, _DispatchRecorder],
+    ):
+        async def create_metric(name: str, *, status: str = "draft") -> dict:
+            response = await client.post(
+                _metrics_url(project["slug"]),
+                json={
+                    "kind": "fact",
+                    "name": name,
+                    "display_name": name,
+                    "status": status,
+                    "composition": "single",
+                    "fact_table_id": fact_table["id"],
+                    "aggregation": "count",
+                    "interval": "1h",
+                },
+            )
+            assert response.status_code == 201, response.text
+            return response.json()
+
+        clicked = await create_metric("collect_conflict_clicked")
+        sibling = await create_metric("collect_conflict_running", status="active")
+        async with TestSessionLocal() as session:
+            running = await session.get(MetricDefinition, uuid.UUID(sibling["id"]))
+            assert running is not None
+            running.last_collection_status = "running"
+            await session.commit()
+
+        response = await client.post(f"{_metrics_url(project['slug'])}/{clicked['id']}/collect")
+
+        assert response.status_code == 409, response.text
+        assert response.json()["detail"] == "Metric collection is already running"
+        assert dispatch_recorder["fact"].calls == []
+        async with TestSessionLocal() as session:
+            untouched = await session.get(MetricDefinition, uuid.UUID(clicked["id"]))
+            assert untouched is not None
+            assert untouched.last_collection_status is None
 
     async def test_dispatch_failure_returns_503_and_stamps_error(
         self,
@@ -1371,6 +1630,269 @@ class TestCollectNow:
         assert resp.status_code == 403, resp.text
         assert dispatch_recorder["sql"].calls == []
         assert dispatch_recorder["fact"].calls == []
+
+
+class TestMetricCollectionSchedule:
+    async def test_detail_exposes_due_and_next_scheduled_collection(
+        self,
+        client: AsyncClient,
+        project: dict,
+        data_source: dict,
+    ):
+        metric = await _create_sql_metric(
+            client,
+            project["slug"],
+            data_source["id"],
+            "schedule_detail",
+            status="active",
+        )
+
+        due = await client.get(f"{_metrics_url(project['slug'])}/{metric['id']}")
+        assert due.status_code == 200, due.text
+        assert due.json()["collection_due"] is True
+        assert due.json()["next_collection_at"] is not None
+
+        now = datetime.now(UTC)
+        current_day = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        latest_complete = current_day - timedelta(days=1)
+        async with TestSessionLocal() as session:
+            session.add(
+                MetricValue(
+                    metric_definition_id=uuid.UUID(metric["id"]),
+                    bucket=latest_complete,
+                    value=1.0,
+                )
+            )
+            await session.commit()
+
+        scheduled = await client.get(f"{_metrics_url(project['slug'])}/{metric['id']}")
+        assert scheduled.status_code == 200, scheduled.text
+        body = scheduled.json()
+        assert body["collection_due"] is False
+        assert datetime.fromisoformat(body["next_collection_at"]) == current_day + timedelta(days=1)
+
+    async def test_zero_row_collection_watermark_advances_schedule(
+        self,
+        client: AsyncClient,
+        project: dict,
+        data_source: dict,
+    ):
+        metric = await _create_sql_metric(
+            client,
+            project["slug"],
+            data_source["id"],
+            "schedule_empty_success",
+            status="active",
+        )
+        now = datetime.now(UTC)
+        current_day = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        async with TestSessionLocal() as session:
+            row = await session.get(MetricDefinition, uuid.UUID(metric["id"]))
+            assert row is not None
+            row.last_collection_window_to = current_day
+            row.last_collection_status = "success"
+            await session.commit()
+
+        scheduled = await client.get(f"{_metrics_url(project['slug'])}/{metric['id']}")
+
+        assert scheduled.status_code == 200, scheduled.text
+        body = scheduled.json()
+        assert body["collection_due"] is False
+        assert datetime.fromisoformat(body["next_collection_at"]) == current_day + timedelta(days=1)
+
+
+class TestGeneratedFactSql:
+    async def test_returns_shared_primary_batch_sql_without_executing_warehouse(
+        self,
+        client: AsyncClient,
+        project: dict,
+        bound_fact_table: dict,
+    ):
+        created = await client.post(
+            _metrics_url(project["slug"]),
+            json={
+                "kind": "fact",
+                "name": "generated_source_sql",
+                "display_name": "Generated source SQL",
+                "composition": "single",
+                "fact_table_id": bound_fact_table["id"],
+                "aggregation": "sum",
+                "measure_column": "amount",
+                "interval": "1d",
+                "row_filters": ["exclude_test"],
+                "conditions": [
+                    {"column": "amount", "operator": "gt", "value": "1"},
+                    {"column": "amount", "operator": "lt", "value": 10},
+                ],
+            },
+        )
+        assert created.status_code == 201, created.text
+        metric = created.json()
+
+        sibling_response = await client.post(
+            _metrics_url(project["slug"]),
+            json={
+                "kind": "fact",
+                "name": "generated_source_count",
+                "display_name": "Generated source count",
+                "composition": "single",
+                "fact_table_id": bound_fact_table["id"],
+                "aggregation": "count",
+                "interval": "1d",
+                "status": "active",
+                "conditions": [{"column": "is_test", "operator": "eq", "value": 0}],
+            },
+        )
+        assert sibling_response.status_code == 201, sibling_response.text
+        sibling = sibling_response.json()
+
+        response = await client.get(f"{_metrics_url(project['slug'])}/{metric['id']}/generated-sql")
+        assert response.status_code == 200, response.text
+        body = response.json()
+        assert body["breakdown_queries_omitted"] is True
+        assert len(body["queries"]) == 1
+        query = body["queries"][0]
+        assert query["role"] == "primary"
+        assert query["label"] == "Bound Orders · 1d"
+        assert query["fact_table_id"] == bound_fact_table["id"]
+        assert query["fact_table_name"] == "Bound Orders"
+        assert query["interval"] == "1d"
+        assert set(query["metric_ids"]) == {metric["id"], sibling["id"]}
+        assert datetime.fromisoformat(query["window_from"]) < datetime.fromisoformat(
+            query["window_to"]
+        )
+        sql = query["sql"]
+        assert sql.count("FROM (SELECT created_at, amount, user_id, is_test FROM orders)") == 1
+        assert "sumIf(`amount`, (is_test = 0) AND (`amount` > 1) AND (`amount` < 10))" in sql
+        assert "countIf((`is_test` = 0))" in sql
+        assert "GROUP BY _bucket ORDER BY _bucket" in sql
+
+    async def test_rejects_oversized_legacy_operand_row_filters_before_compilation(
+        self,
+        client: AsyncClient,
+        project: dict,
+        bound_fact_table: dict,
+    ):
+        created = await client.post(
+            _metrics_url(project["slug"]),
+            json={
+                "kind": "fact",
+                "name": "generated_legacy_filters",
+                "display_name": "Generated legacy filters",
+                "composition": "single",
+                "fact_table_id": bound_fact_table["id"],
+                "aggregation": "count",
+                "interval": "1d",
+                "row_filters": ["exclude_test"],
+            },
+        )
+        assert created.status_code == 201, created.text
+        metric_id = created.json()["id"]
+
+        # Simulate a row saved before request-schema collection limits existed.
+        # Repeating one valid name must be rejected before it is expanded into
+        # an attacker-amplified ``AND`` expression.
+        async with TestSessionLocal() as session:
+            row = await session.get(MetricDefinition, uuid.UUID(metric_id))
+            assert row is not None
+            row.config = {
+                **dict(row.config or {}),
+                "row_filters": ["exclude_test"] * 101,
+            }
+            await session.commit()
+
+        response = await client.get(f"{_metrics_url(project['slug'])}/{metric_id}/generated-sql")
+
+        assert response.status_code == 422, response.text
+        assert "filters exceed the 100-item preview limit" in response.json()["detail"]
+
+    async def test_caps_repeated_metric_id_metadata(
+        self,
+        client: AsyncClient,
+        project: dict,
+        bound_fact_table: dict,
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        first = await client.post(
+            _metrics_url(project["slug"]),
+            json={
+                "kind": "fact",
+                "name": "generated_metadata_first",
+                "display_name": "Generated metadata first",
+                "composition": "single",
+                "fact_table_id": bound_fact_table["id"],
+                "aggregation": "count",
+                "interval": "1d",
+            },
+        )
+        assert first.status_code == 201, first.text
+        second = await client.post(
+            _metrics_url(project["slug"]),
+            json={
+                "kind": "fact",
+                "name": "generated_metadata_second",
+                "display_name": "Generated metadata second",
+                "composition": "single",
+                "fact_table_id": bound_fact_table["id"],
+                "aggregation": "count",
+                "interval": "1d",
+                "status": "active",
+            },
+        )
+        assert second.status_code == 201, second.text
+        monkeypatch.setattr(
+            "tripl.services.metric_preview_service.MAX_GENERATED_METRIC_ID_REFERENCES",
+            1,
+        )
+
+        response = await client.get(
+            f"{_metrics_url(project['slug'])}/{first.json()['id']}/generated-sql"
+        )
+
+        assert response.status_code == 422, response.text
+        assert "metric-reference preview limit" in response.json()["detail"]
+
+    async def test_ratio_operands_share_one_primary_query(
+        self,
+        client: AsyncClient,
+        project: dict,
+        bound_fact_table: dict,
+    ):
+        created = await client.post(
+            _metrics_url(project["slug"]),
+            json={
+                "kind": "fact",
+                "name": "generated_ratio_sql",
+                "display_name": "Generated ratio SQL",
+                "composition": "ratio",
+                "interval": "1h",
+                "numerator": {
+                    "fact_table_id": bound_fact_table["id"],
+                    "aggregation": "sum",
+                    "measure_column": "amount",
+                    "conditions": [{"column": "amount", "operator": "gt", "value": 0}],
+                },
+                "denominator": {
+                    "fact_table_id": bound_fact_table["id"],
+                    "aggregation": "count",
+                    "conditions": [{"column": "is_test", "operator": "eq", "value": 0}],
+                },
+            },
+        )
+        assert created.status_code == 201, created.text
+
+        response = await client.get(
+            f"{_metrics_url(project['slug'])}/{created.json()['id']}/generated-sql"
+        )
+        assert response.status_code == 200, response.text
+        queries = response.json()["queries"]
+        assert len(queries) == 1
+        query = queries[0]
+        assert query["role"] == "primary"
+        assert query["fact_table_id"] == bound_fact_table["id"]
+        assert query["metric_ids"] == [created.json()["id"]]
+        assert "sumIf(`amount`, (`amount` > 0))" in query["sql"]
+        assert "countIf((`is_test` = 0))" in query["sql"]
 
 
 async def _seed_collected_data(metric_id: str) -> None:
@@ -1547,6 +2069,41 @@ class TestUpdateDefinition:
         )
         assert resp.status_code == 422, resp.text
 
+    async def test_edit_fact_condition_value_type_rejected_before_collection(
+        self, client: AsyncClient, project: dict, fact_table: dict
+    ):
+        slug = project["slug"]
+        created = await client.post(
+            _metrics_url(slug),
+            json={
+                "kind": "fact",
+                "name": "edit_fact_condition_type",
+                "display_name": "Edit fact condition type",
+                "composition": "single",
+                "fact_table_id": fact_table["id"],
+                "aggregation": "count",
+                "interval": "1h",
+                "conditions": [{"column": "amount", "operator": "gt", "value": "3"}],
+            },
+        )
+        assert created.status_code == 201, created.text
+
+        resp = await client.patch(
+            f"{_metrics_url(slug)}/{created.json()['id']}",
+            json={
+                "definition": {
+                    "kind": "fact",
+                    "composition": "single",
+                    "fact_table_id": fact_table["id"],
+                    "aggregation": "count",
+                    "interval": "1h",
+                    "conditions": [{"column": "amount", "operator": "lte", "value": "a lot"}],
+                }
+            },
+        )
+        assert resp.status_code == 422, resp.text
+        assert "numeric value" in resp.json()["detail"]
+
     async def test_change_kind_sql_to_fact_clears_values_and_stores_config(
         self, client: AsyncClient, project: dict, data_source: dict, fact_table: dict
     ):
@@ -1561,6 +2118,7 @@ class TestUpdateDefinition:
             assert row is not None
             row.last_collection_status = "ok"
             row.last_collected_at = datetime(2026, 1, 1, tzinfo=UTC)
+            row.last_collection_window_to = datetime(2026, 1, 2, tzinfo=UTC)
             await session.commit()
         assert await _count_collected_data(metric["id"]) == (1, 1, 1)
 
@@ -1589,6 +2147,12 @@ class TestUpdateDefinition:
         # Collection stamp reset.
         assert data["last_collection_status"] is None
         assert data["last_collected_at"] is None
+        async with TestSessionLocal() as session:
+            from tripl.models.metric_definition import MetricDefinition
+
+            cleared = await session.get(MetricDefinition, uuid.UUID(metric["id"]))
+            assert cleared is not None
+            assert cleared.last_collection_window_to is None
         # Every incompatible collected row was cleared.
         assert await _count_collected_data(metric["id"]) == (0, 0, 0)
 
@@ -1605,6 +2169,7 @@ class TestUpdateDefinition:
             assert row is not None
             row.last_collection_status = "ok"
             row.last_collected_at = datetime(2026, 1, 1, tzinfo=UTC)
+            row.last_collection_window_to = datetime(2026, 1, 2, tzinfo=UTC)
             await session.commit()
 
         resp = await client.patch(
@@ -1626,6 +2191,12 @@ class TestUpdateDefinition:
         assert data["config"]["metric_sql"].endswith("FROM e2")
         assert data["last_collection_status"] is None
         assert data["last_collected_at"] is None
+        async with TestSessionLocal() as session:
+            from tripl.models.metric_definition import MetricDefinition
+
+            cleared = await session.get(MetricDefinition, uuid.UUID(metric["id"]))
+            assert cleared is not None
+            assert cleared.last_collection_window_to is None
         assert await _count_collected_data(metric["id"]) == (0, 0, 0)
 
     async def test_same_definition_presentation_edit_keeps_collected_values(

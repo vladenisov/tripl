@@ -305,8 +305,8 @@ class TestPreview:
 
         canned = SimpleNamespace(
             columns=[
-                SimpleNamespace(name="amount", type="number"),
-                SimpleNamespace(name="user_id", type="string"),
+                SimpleNamespace(name="amount", type="number", native_type="Float64"),
+                SimpleNamespace(name="user_id", type="string", native_type="String"),
             ],
             identifier_candidates=["user_id"],
             sample_rows=[{"amount": 1, "user_id": "u1"}],
@@ -331,8 +331,8 @@ class TestPreview:
         assert resp.status_code == 200, resp.text
         body = resp.json()
         assert body["columns"] == [
-            {"name": "amount", "type": "number"},
-            {"name": "user_id", "type": "string"},
+            {"name": "amount", "type": "number", "native_type": "Float64"},
+            {"name": "user_id", "type": "string", "native_type": "String"},
         ]
         assert body["identifier_candidates"] == ["user_id"]
         assert body["sample_rows"] == [{"amount": 1, "user_id": "u1"}]

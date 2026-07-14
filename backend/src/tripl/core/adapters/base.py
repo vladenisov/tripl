@@ -465,6 +465,27 @@ class BaseAdapter(abc.ABC):
         """
         ...
 
+    def build_time_bucketed_multi_aggregate_sql(
+        self,
+        base_query: str,
+        time_column: str,
+        interval: str,
+        specs: list[AggregateSpec],
+        time_from: datetime,
+        time_to: datetime,
+        *,
+        limit: int = 100000,
+    ) -> tuple[list[str], str]:
+        """Build the primary multi-aggregate statement without executing it.
+
+        Real SQL-backed adapters override this with the same builder used by
+        :meth:`get_time_bucketed_multi_aggregate`. Adapters without an SQL
+        representation (currently the in-memory synthetic adapter) deliberately
+        keep the default error.
+        """
+        del base_query, time_column, interval, specs, time_from, time_to, limit
+        raise NotImplementedError("Adapter does not generate warehouse SQL")
+
     @abc.abstractmethod
     def get_time_bucketed_multi_aggregate_breakdown(
         self,

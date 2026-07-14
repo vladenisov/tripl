@@ -123,6 +123,31 @@ def test_multi_aggregate_emits_one_column_per_spec() -> None:
     assert col_names == ["bucket", "k_count", "k_sum", "k_distinct"]
 
 
+def test_multi_aggregate_sql_can_be_built_without_executing_query() -> None:
+    adapter, client = _adapter()
+
+    col_names, sql = adapter.build_time_bucketed_multi_aggregate_sql(
+        "SELECT time, event_name FROM events",
+        time_column="time",
+        interval="1d",
+        specs=[
+            AggregateSpec(key="k_count", aggregation=MetricAggregation.count),
+            AggregateSpec(
+                key="k_filtered",
+                aggregation=MetricAggregation.count,
+                filter_sql="event_name = 'signup'",
+            ),
+        ],
+        time_from=_FROM,
+        time_to=_TO,
+    )
+
+    assert col_names == ["bucket", "k_count", "k_filtered"]
+    assert "count(*) AS `k_count`" in sql
+    assert "countIf(event_name = 'signup')" in sql
+    assert client.sql == []
+
+
 def test_multi_aggregate_conditional_filter_uses_if_variants() -> None:
     adapter, client = _adapter()
 

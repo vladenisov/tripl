@@ -260,11 +260,11 @@ async def test_introspect_buckets_columns_and_identifiers(
     )
 
     assert result.columns == [
-        FactTableColumn(name="amount", type="number"),
-        FactTableColumn(name="user_id", type="string"),
-        FactTableColumn(name="is_active", type="bool"),
-        FactTableColumn(name="created_at", type="timestamp"),
-        FactTableColumn(name="event_id", type="string"),
+        FactTableColumn(name="amount", type="number", native_type="Float64"),
+        FactTableColumn(name="user_id", type="string", native_type="String"),
+        FactTableColumn(name="is_active", type="bool", native_type="Bool"),
+        FactTableColumn(name="created_at", type="timestamp", native_type="DateTime"),
+        FactTableColumn(name="event_id", type="string", native_type="UUID"),
     ]
     # Id-like string columns, in projection order, excluding the timestamp
     # column: ``user_id`` by name, ``event_id`` by name and UUID type.
