@@ -12,6 +12,7 @@ from tripl.services.metric_preview_service import (
     MAX_GENERATED_AGGREGATE_SPECS,
     MAX_GENERATED_SQL_CHARS,
     MAX_GENERATED_SQL_QUERIES,
+    MAX_SAVED_FACT_FILTERS,
     _consume_generated_sql_size,
     _ensure_generated_sql_compile_budget,
     _ensure_generated_sql_query_capacity,
@@ -129,6 +130,15 @@ def test_fact_table_named_filters_are_bounded_before_sql_assembly() -> None:
         _ensure_saved_fact_filter_input_budget(
             legacy_table,
             operand_filter_sql=None,
+            named_filter_count=0,
+            condition_count=0,
+        )
+
+    with pytest.raises(ValueError, match="Fact metric filters exceed"):
+        _ensure_saved_fact_filter_input_budget(
+            FactTable(row_filters=[row_filter]),
+            operand_filter_sql=None,
+            named_filter_count=MAX_SAVED_FACT_FILTERS + 1,
             condition_count=0,
         )
 
