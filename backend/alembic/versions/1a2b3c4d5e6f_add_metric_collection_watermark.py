@@ -84,34 +84,53 @@ def upgrade() -> None:
             """
         )
     )
-    op.create_index(
-        "uq_metric_value_catalog_bucket",
-        "metric_values",
-        ["metric_definition_id", "bucket"],
-        unique=True,
-        postgresql_where=sa.text("scan_config_id IS NULL"),
-    )
-    op.create_index(
-        "uq_metric_value_breakdown_catalog_bucket_value",
-        "metric_value_breakdowns",
-        [
-            "metric_definition_id",
-            "bucket",
-            "breakdown_column",
-            "breakdown_value",
-            "is_other",
-        ],
-        unique=True,
-        postgresql_where=sa.text("scan_config_id IS NULL"),
-    )
+    # ``metric_values`` / ``metric_value_breakdowns`` are the hottest write path in
+    # the system: every collection cycle appends to them. A plain CREATE UNIQUE
+    # INDEX holds a lock that blocks those writers for the whole build, so build
+    # CONCURRENTLY instead. That cannot run inside a transaction, hence the
+    # autocommit block — which also commits the dedup DELETEs above first.
+    #
+    # A concurrent build validates rows inserted while it runs, so a collector
+    # writing a duplicate catalog bucket in the window between the dedup and the
+    # build leaves the index INVALID rather than corrupting data. Recovery is to
+    # drop the invalid index and re-run, ideally with collection paused.
+    with op.get_context().autocommit_block():
+        op.create_index(
+            "uq_metric_value_catalog_bucket",
+            "metric_values",
+            ["metric_definition_id", "bucket"],
+            unique=True,
+            postgresql_where=sa.text("scan_config_id IS NULL"),
+            postgresql_concurrently=True,
+        )
+        op.create_index(
+            "uq_metric_value_breakdown_catalog_bucket_value",
+            "metric_value_breakdowns",
+            [
+                "metric_definition_id",
+                "bucket",
+                "breakdown_column",
+                "breakdown_value",
+                "is_other",
+            ],
+            unique=True,
+            postgresql_where=sa.text("scan_config_id IS NULL"),
+            postgresql_concurrently=True,
+        )
 
 
 def downgrade() -> None:
     if op.get_bind().dialect.name != "postgresql":
         return
-    op.drop_index(
-        "uq_metric_value_breakdown_catalog_bucket_value",
-        table_name="metric_value_breakdowns",
-    )
-    op.drop_index("uq_metric_value_catalog_bucket", table_name="metric_values")
+    with op.get_context().autocommit_block():
+        op.drop_index(
+            "uq_metric_value_breakdown_catalog_bucket_value",
+            table_name="metric_value_breakdowns",
+            postgresql_concurrently=True,
+        )
+        op.drop_index(
+            "uq_metric_value_catalog_bucket",
+            table_name="metric_values",
+            postgresql_concurrently=True,
+        )
     op.drop_column("metric_definitions", "last_collection_window_to")

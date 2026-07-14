@@ -178,10 +178,10 @@ describe('filtersToPayload', () => {
           makeConditionFilter('postal_code', 'eq', '00123'),
         ],
         [
-          { name: 'amount', type: 'Nullable(Float64)' },
-          { name: 'quantity', type: 'integer' },
-          { name: 'is_trial', type: 'Boolean' },
-          { name: 'postal_code', type: 'String' },
+          { name: 'amount', type: 'number' },
+          { name: 'quantity', type: 'number' },
+          { name: 'is_trial', type: 'bool' },
+          { name: 'postal_code', type: 'string' },
         ],
       ).conditions,
     ).toEqual([
@@ -196,7 +196,7 @@ describe('filtersToPayload', () => {
     expect(
       filtersToPayload(
         [makeConditionFilter('plan', 'in', 'pro, team')],
-        [{ name: 'plan', type: 'varchar' }],
+        [{ name: 'plan', type: 'string' }],
       ).conditions,
     ).toEqual([{ column: 'plan', operator: 'in', value: ['pro', 'team'] }])
   })

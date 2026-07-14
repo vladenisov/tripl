@@ -11,7 +11,7 @@ import { Chip } from '@/components/primitives/chip'
 import { SqlEditor } from '@/components/sql-editor'
 import { Card, CardContent } from '@/components/ui/card'
 import { formatDateTime } from '@/lib/datetime'
-import { warehouseColumnValueKind } from '@/lib/warehouseColumnType'
+import { factColumnValueKind } from '@/lib/factColumnValueKind'
 import { METRIC_KIND_LABEL } from '@/types'
 import type { MetricDefinitionDetailResponse } from '@/types'
 
@@ -131,7 +131,7 @@ function hasFilters(filters: FactFiltersView): boolean {
 
 function conditionScalarText(value: unknown, columnType?: string | null): string {
   if (typeof value !== 'string') return String(value)
-  const kind = warehouseColumnValueKind(columnType)
+  const kind = factColumnValueKind(columnType)
   if (kind === 'number' && value.trim() !== '' && Number.isFinite(Number(value))) {
     return value
   }

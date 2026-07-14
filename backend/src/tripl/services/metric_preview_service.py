@@ -568,6 +568,7 @@ async def get_saved_fact_metric_sql(
     generated_sql_chars = 0
     generated_metric_id_references = 0
     saved_column_types: dict[uuid.UUID, dict[str, str]] = {}
+    saved_fact_tables: dict[uuid.UUID, FactTable] = {}
     for interval_code, raw_definitions in by_interval.items():
         definitions = sorted(raw_definitions, key=lambda definition: str(definition.id))
         registries: dict[uuid.UUID, _SpecRegistry] = {}
@@ -615,7 +616,15 @@ async def get_saved_fact_metric_sql(
             try:
                 for raw in raw_operands:
                     operand = _operand_from_config(raw)
-                    fact_table = await get_fact_table(session, slug, operand.fact_table_id)
+                    # Metrics land in one batch precisely BECAUSE they share fact
+                    # tables, so the same table is reached once per metric here. Cache
+                    # it like the data sources and column types below do
+                    # (``get_fact_table`` costs two round trips: the slug lookup plus
+                    # the table select).
+                    fact_table = saved_fact_tables.get(operand.fact_table_id)
+                    if fact_table is None:
+                        fact_table = await get_fact_table(session, slug, operand.fact_table_id)
+                        saved_fact_tables[operand.fact_table_id] = fact_table
                     _ensure_saved_fact_filter_input_budget(
                         fact_table,
                         operand_filter_sql=operand.filter_sql,

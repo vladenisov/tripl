@@ -262,19 +262,40 @@ def _effective_value_window(
     metric_definition_id: uuid.UUID,
     interval_code: str,
     window_override: tuple[datetime, datetime] | None,
+    manual_backfill: bool = False,
 ) -> tuple[datetime, datetime]:
     """Use an explicit ``window_override`` when given, else the resume window.
 
     Keeps the override-vs-default choice in one place so every fact/sql
     collection path honours a manually-requested window identically.
+
+    ``manual_backfill`` marks the bounded window a "collect now" click derives
+    from ``compute_manual_collect_window``. That window is applied to every
+    metric the click sweeps in — the whole fact-table dependency closure, not
+    just the clicked one — so it may only ever reach FURTHER BACK than a metric's
+    own resume point, never ahead of it. A metric lagging by more than the manual
+    window (it had been failing, or was just reactivated) would otherwise collect
+    only the recent slice while ``_stamp_metric_success`` advanced its watermark
+    to the window end, stranding the un-queried buckets in between where no later
+    resume reaches them. A legacy explicit replay window (``window_from`` /
+    ``window_to`` on the task) is a deliberate request for one exact range and is
+    still honoured verbatim.
     """
-    if window_override is not None:
+    if window_override is None:
+        return _resolve_value_window(
+            session,
+            metric_definition_id=metric_definition_id,
+            interval_code=interval_code,
+        )
+    if not manual_backfill:
         return window_override
-    return _resolve_value_window(
+    resume_from, _ = _resolve_value_window(
         session,
         metric_definition_id=metric_definition_id,
         interval_code=interval_code,
     )
+    manual_from, manual_to = window_override
+    return min(manual_from, resume_from), manual_to
 
 
 def _parse_window_override(
@@ -1543,6 +1564,23 @@ def _stamp_metric_success(
     session.commit()
 
 
+def _stamp_batch_dependency_error(session: Session, definition: MetricDefinition) -> None:
+    """Report a sibling's batch failure on the clicked metric WITHOUT dropping its data.
+
+    The clicked metric is what the UI's collection watcher polls, so a partially
+    failed shared batch has to surface through it. Its own scan succeeded and was
+    already committed by ``_stamp_metric_success``; routing this through
+    ``_stamp_metric_error`` would roll that commit's successor transaction back
+    and discard correct rows because an unrelated metric failed. Overwrite the
+    status only, leaving the collected values and the watermark in place.
+    """
+    definition.last_collection_status = COLLECTION_STATUS_ERROR
+    definition.last_collection_error = (
+        "One or more dependent metrics failed during the shared collection batch"
+    )
+    session.commit()
+
+
 def _stamp_metric_error(session: Session, definition: MetricDefinition, exc: Exception) -> None:
     """Roll back any partial writes for one metric and persist a sanitized error."""
     try:
@@ -1915,6 +1953,7 @@ def _run_fact_interval_group(
     definitions: list[MetricDefinition],
     interval_spec: IntervalSpec,
     window_override: tuple[datetime, datetime] | None = None,
+    manual_backfill: bool = False,
     completion_metric_id: uuid.UUID | None = None,
     prior_errors: int = 0,
 ) -> dict[str, int]:
@@ -1923,8 +1962,10 @@ def _run_fact_interval_group(
     Builds dedup'd ``AggregateSpec`` lists per fact table (and per breakdown
     dimension), runs ONE multi-aggregate scan per fact table plus one per
     breakdown scan over a covering window, then assembles each metric over its
-    OWN window with isolated per-metric error capture. ``window_override`` (a
-    manual backfill window) replaces each metric's resume window when set.
+    OWN window with isolated per-metric error capture. ``window_override``
+    replaces each metric's resume window when set; with ``manual_backfill`` it
+    only widens it (see ``_effective_value_window``), so a swept-in metric that
+    is further behind than the manual window keeps its backlog.
     """
     delta = interval_spec.delta
     interval_code = interval_spec.code
@@ -1946,6 +1987,7 @@ def _run_fact_interval_group(
                     metric_definition_id=definition.id,
                     interval_code=interval_code,
                     window_override=window_override,
+                    manual_backfill=manual_backfill,
                 )
                 if _resolve_fact_composition(definition) is MetricComposition.ratio:
                     ratio_plans.append(
@@ -2112,15 +2154,18 @@ def _run_fact_interval_group(
                         interval_code=interval_code,
                     )
 
-                if plan.definition.id == completion_metric_id and (
-                    prior_errors + totals["errors"] > 0
-                ):
-                    msg = "One or more dependent metrics failed during the shared collection batch"
-                    raise ScanError(msg)
                 _stamp_metric_success(session, plan.definition, window_to=plan.window[1])
                 totals["collected"] += 1
                 totals["values"] += values_written
                 totals["breakdown_values"] += breakdown_written
+                # The clicked metric carries the batch's outcome to the UI, but its
+                # own rows are already committed above and stay that way: a sibling
+                # metric failing is not a reason to discard data this metric
+                # collected correctly.
+                if plan.definition.id == completion_metric_id and (
+                    prior_errors + totals["errors"] > 0
+                ):
+                    _stamp_batch_dependency_error(session, plan.definition)
             except Exception as exc:
                 logger.exception("Batch assembly failed for metric %s", plan.definition.id)
                 _stamp_metric_error(session, plan.definition, exc)
@@ -2545,6 +2590,7 @@ def _run_fact_metrics_batch(
             definitions=group,
             interval_spec=get_interval(interval_code),
             window_override=group_window,
+            manual_backfill=manual_backfill_all,
             completion_metric_id=(
                 completion_metric_id if interval_code == completion_interval else None
             ),

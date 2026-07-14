@@ -97,8 +97,8 @@ const FACT_TABLE_DETAIL = {
   name: 'orders',
   display_name: 'Orders',
   columns: [
-    { name: 'amount', type: 'numeric' },
-    { name: 'user_id', type: 'text' },
+    { name: 'amount', type: 'number' },
+    { name: 'user_id', type: 'string' },
   ],
   identifier_columns: ['user_id'],
   row_filters: [{ name: 'completed', sql: 'status = $1' }],

@@ -6,9 +6,9 @@
 
 import type { FactTableColumn } from '@/types/factTables'
 import {
-  warehouseColumnValueKind,
-  type WarehouseColumnValueKind,
-} from '@/lib/warehouseColumnType'
+  factColumnValueKind,
+  type FactColumnValueKind,
+} from '@/lib/factColumnValueKind'
 
 /**
  * One row-filter on a fact operand: a NAMED filter (a reusable WHERE fragment
@@ -166,7 +166,7 @@ export function filtersToPayload(
     }
     const value = filter.value.trim()
     if (!value) continue
-    const kind = warehouseColumnValueKind(columnTypes.get(column))
+    const kind = factColumnValueKind(columnTypes.get(column))
     conditions.push({
       column,
       operator: filter.operator,
@@ -194,7 +194,7 @@ export function filtersToPayload(
 
 function parseConditionScalar(
   value: string,
-  kind: WarehouseColumnValueKind,
+  kind: FactColumnValueKind,
 ): string | number | boolean {
   if (kind === 'number') {
     const parsed = Number(value)

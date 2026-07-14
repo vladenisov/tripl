@@ -1026,7 +1026,7 @@ describe('MonitoringDetailPage catalog-metric drilldown', () => {
           data_source_id: null,
           timestamp_column: 'created_at',
           sql: 'SELECT * FROM orders',
-          columns: [{ name: 'created_at', type: 'DateTime' }],
+          columns: [{ name: 'created_at', type: 'timestamp' }],
           identifier_columns: [],
           row_filters: [],
           created_at: '2026-01-01T00:00:00Z',

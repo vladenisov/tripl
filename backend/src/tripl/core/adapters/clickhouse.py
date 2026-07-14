@@ -258,6 +258,19 @@ class ClickHouseAdapter(BaseAdapter):
 
         return samples_by_column
 
+    def _validate_alias(self, alias: str) -> str:
+        """Validate a caller-supplied output column alias before interpolation.
+
+        ``AggregateSpec.key`` is machine-generated today, but this builder is now
+        shared (``multi_aggregate_sql``) and both other dialects already escape
+        (Postgres) or validate (BigQuery) the alias. Closing the gap keeps a
+        future caller from turning a spec key into an injection point.
+        """
+        if not _IDENTIFIER_PART_RE.match(alias):
+            msg = f"Invalid aggregate key alias: {alias!r}"
+            raise ValueError(msg)
+        return alias
+
     def _validate_column(self, column: str) -> str:
         if not _IDENTIFIER_RE.match(column):
             msg = f"Invalid column name: {column}"
@@ -926,7 +939,9 @@ class ClickHouseAdapter(BaseAdapter):
         select_parts = [f"{bucket_sql} AS _bucket"]
         col_names: list[str] = ["bucket"]
         for spec in specs:
-            select_parts.append(f"{self._spec_aggregate_sql(spec)} AS `{spec.key}`")
+            select_parts.append(
+                f"{self._spec_aggregate_sql(spec)} AS `{self._validate_alias(spec.key)}`"
+            )
             col_names.append(spec.key)
 
         where_clause = self._time_window_where_clause(tc, time_from, time_to)
@@ -1011,7 +1026,9 @@ class ClickHouseAdapter(BaseAdapter):
         ]
         col_names: list[str] = ["bucket", "breakdown_value", "is_other"]
         for spec in specs:
-            select_parts.append(f"{self._spec_aggregate_sql(spec)} AS `{spec.key}`")
+            select_parts.append(
+                f"{self._spec_aggregate_sql(spec)} AS `{self._validate_alias(spec.key)}`"
+            )
             col_names.append(spec.key)
 
         where_clause = self._time_window_where_clause(tc, time_from, time_to)

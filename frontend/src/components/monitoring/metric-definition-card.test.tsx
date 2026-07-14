@@ -123,12 +123,12 @@ function renderCard(definition: MetricDefinitionDetailResponse) {
       sql: `SELECT * FROM ${item.name}`,
       columns: id === FACT_TABLE_ID
         ? [
-            { name: 'days_available', type: 'Int64' },
-            { name: 'platform', type: 'String' },
-            { name: 'plan', type: 'String' },
-            { name: 'deleted_at', type: 'DateTime' },
+            { name: 'days_available', type: 'number' },
+            { name: 'platform', type: 'string' },
+            { name: 'plan', type: 'string' },
+            { name: 'deleted_at', type: 'timestamp' },
           ]
-        : [{ name: 'created_at', type: 'DateTime' }],
+        : [{ name: 'created_at', type: 'timestamp' }],
       identifier_columns: [],
       row_filters: [],
     }
