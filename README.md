@@ -141,6 +141,10 @@ Then open the app, create the first account on the sign-in page, and click
 **Generate demo project** to explore — or connect your own warehouse under
 **Settings → Data sources**.
 
+For a guided first session — the demo scenario, connecting your own warehouse,
+your first scan, metrics, and a working alert — follow the
+**[Quick Start guide](website/docs/quick-start.md)**.
+
 | Where | URL |
 |---|---|
 | App | http://localhost:5173 |
@@ -164,6 +168,8 @@ release is one command (`bin/release.sh`). See the **[deployment guide](website/
 
 New to tripl? Start at the top and work down:
 
+- **[Quick Start](website/docs/quick-start.md)** — from `docker compose up` to
+  a scanned plan, your own metrics, and a first alert.
 - **[Concepts](website/docs/use/concepts.md)** — the ideas behind tripl in plain
   language: tracking plans, events, branches, monitors, and how they fit
   together. Read this first.

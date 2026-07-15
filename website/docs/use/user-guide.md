@@ -10,7 +10,9 @@ analysts. It follows the same four-step shape the product is built around —
 **Plan → Observe → Govern → Connect** — and takes you from an empty screen to a
 working, tuned alert.
 
-It assumes the app is already running and reachable in your browser. If a term
+It assumes the app is already running and reachable in your browser — if it
+isn't yet, the [Quick Start](../quick-start.md) gets you from zero to a running
+instance and a first working alert. If a term
 here is unfamiliar, the [Concepts](./concepts) page explains every idea in plain
 language; this guide focuses on *doing* rather than *defining*.
 
