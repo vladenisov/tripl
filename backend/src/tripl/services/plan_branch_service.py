@@ -263,7 +263,9 @@ async def _deep_copy_plan(
 ) -> None:
     """Copy every design-time entity from source branch into target branch.
 
-    New ids are minted up front so FK remaps need no intermediate flush.
+    New ids are minted up front so FK remaps need no intermediate flush. The
+    one exception is photo comments, which are flushed after their photos
+    because no ORM relationship orders that insert (see below).
     Child tables (field_definitions, event_field_values, event_meta_values,
     event_tags) inherit their branch from the parent and carry no branch_id.
     """
@@ -522,6 +524,15 @@ async def _deep_copy_plan(
                 )
             )
         if photo_id_map:
+            # EventPhotoComment.photo_id references EventPhoto, but the two
+            # models share no ORM relationship, so the unit of work — which
+            # orders inserts by relationship, not by raw FK columns — may emit a
+            # comment INSERT before its photo. Flush the queued photos first so
+            # the comments below satisfy the FK. It is immediate and
+            # non-deferrable on Postgres too, not only under the test PRAGMA.
+            session.add_all(new_objs)
+            await session.flush()
+            new_objs = []
             comments = (
                 (
                     await session.execute(

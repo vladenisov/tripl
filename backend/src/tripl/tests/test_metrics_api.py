@@ -102,6 +102,10 @@ async def _seed_group_metrics(project_id: str, event_rows: list[EventMetricSeedR
             interval="1h",
         )
         session.add_all([data_source, scan_config])
+        # Flush parents first: SQLite enforces FK per-statement and the unit of
+        # work has no ORM relationship linking scan_config to its metric/anomaly
+        # rows, so without this the children can be inserted before scan_configs.
+        await session.flush()
 
         for event_row in event_rows:
             for bucket, count in zip(buckets, event_row["counts"], strict=True):
@@ -172,6 +176,8 @@ async def _seed_monitoring_metrics(
                 ),
             ]
         )
+        # Flush parents before their metric/anomaly children (see _seed_group_metrics).
+        await session.flush()
         session.add_all(
             [
                 EventMetric(
@@ -286,6 +292,8 @@ async def _seed_recent_monitoring_metrics(
                 ),
             ]
         )
+        # Flush parents before their metric/anomaly children (see _seed_group_metrics).
+        await session.flush()
         session.add_all(
             [
                 EventMetric(
@@ -648,6 +656,10 @@ async def test_get_event_metric_breakdowns_returns_series(client: AsyncClient) -
             interval="1h",
         )
         session.add_all([data_source, scan_config])
+        # Flush parents first: SQLite enforces FK per-statement and the unit of
+        # work has no ORM relationship linking scan_config to its metric/anomaly
+        # rows, so without this the children can be inserted before scan_configs.
+        await session.flush()
         for bucket, country, count, is_other in [
             (datetime(2026, 1, 1, 10, tzinfo=UTC), "US", 10, False),
             (datetime(2026, 1, 1, 11, tzinfo=UTC), "US", 12, False),
@@ -785,6 +797,10 @@ async def test_get_app_version_series_returns_semver_ordered_versions(
             interval="1h",
         )
         session.add_all([data_source, scan_config])
+        # Flush parents first: SQLite enforces FK per-statement and the unit of
+        # work has no ORM relationship linking scan_config to its metric/anomaly
+        # rows, so without this the children can be inserted before scan_configs.
+        await session.flush()
         for bucket, version, count, is_other in [
             (datetime(2026, 1, 1, 10, tzinfo=UTC), "2.9.0", 90, False),
             (datetime(2026, 1, 1, 10, tzinfo=UTC), "2.10.0", 100, False),
@@ -914,6 +930,10 @@ async def test_get_app_version_series_retention_is_window_stable(
             interval="1h",
         )
         session.add_all([data_source, scan_config])
+        # Flush parents first: SQLite enforces FK per-statement and the unit of
+        # work has no ORM relationship linking scan_config to its metric/anomaly
+        # rows, so without this the children can be inserted before scan_configs.
+        await session.flush()
         # Every version stored verbatim (is_other=False), as the write path now does.
         # 2.0.0 (newest) appears only in the first bucket; 1.0.0 dominates both.
         for bucket, version, count in [
@@ -983,6 +1003,10 @@ async def test_get_app_version_adoption_returns_project_totals(client: AsyncClie
             interval="1h",
         )
         session.add_all([data_source, scan_config])
+        # Flush parents first: SQLite enforces FK per-statement and the unit of
+        # work has no ORM relationship linking scan_config to its metric/anomaly
+        # rows, so without this the children can be inserted before scan_configs.
+        await session.flush()
         for bucket, version, count, is_other in [
             (datetime(2026, 1, 1, 10, tzinfo=UTC), "2.9.0", 9, False),
             (datetime(2026, 1, 1, 10, tzinfo=UTC), "2.10.0", 10, False),
@@ -1051,6 +1075,10 @@ async def test_get_app_version_endpoints_are_empty_without_version_column(
             interval="1h",
         )
         session.add_all([data_source, scan_config])
+        # Flush parents first: SQLite enforces FK per-statement and the unit of
+        # work has no ORM relationship linking scan_config to its metric/anomaly
+        # rows, so without this the children can be inserted before scan_configs.
+        await session.flush()
         await session.commit()
         scan_config_id = str(scan_config.id)
 
@@ -1112,6 +1140,10 @@ async def test_get_release_regressions_lists_missing_first(client: AsyncClient) 
             interval="1h",
         )
         session.add_all([data_source, scan_config])
+        # Flush parents first: SQLite enforces FK per-statement and the unit of
+        # work has no ORM relationship linking scan_config to its metric/anomaly
+        # rows, so without this the children can be inserted before scan_configs.
+        await session.flush()
         # A volume_drop (event-type scope) and a missing event — missing should
         # sort first regardless of insertion order.
         session.add(
@@ -1214,6 +1246,10 @@ async def test_get_release_regressions_empty_without_version_column(client: Asyn
             interval="1h",
         )
         session.add_all([data_source, scan_config])
+        # Flush parents first: SQLite enforces FK per-statement and the unit of
+        # work has no ORM relationship linking scan_config to its metric/anomaly
+        # rows, so without this the children can be inserted before scan_configs.
+        await session.flush()
         await session.commit()
         scan_config_id = str(scan_config.id)
 
@@ -1366,6 +1402,10 @@ async def test_get_top_movers_ranks_regular_breakdowns_and_excludes_app_versions
             interval="1h",
         )
         session.add_all([data_source, scan_config])
+        # Flush parents first: SQLite enforces FK per-statement and the unit of
+        # work has no ORM relationship linking scan_config to its metric/anomaly
+        # rows, so without this the children can be inserted before scan_configs.
+        await session.flush()
         # Two anomalies on the same bucket; one with a much bigger |z|. A third
         # row on a different bucket is added as noise that must NOT be returned.
         for value, z, count, expected in [
@@ -1479,6 +1519,10 @@ async def test_distribution_drifts_endpoint_filters_by_event_type(client: AsyncC
             interval="1h",
         )
         session.add_all([data_source, scan_config])
+        # Flush parents first: SQLite enforces FK per-statement and the unit of
+        # work has no ORM relationship linking scan_config to its metric/anomaly
+        # rows, so without this the children can be inserted before scan_configs.
+        await session.flush()
         session.add(
             DistributionDrift(
                 id=uuid.uuid4(),
@@ -1579,6 +1623,10 @@ async def test_seasonality_heatmap_aggregates_by_weekday_hour(client: AsyncClien
             interval="1h",
         )
         session.add_all([data_source, scan_config])
+        # Flush parents first: SQLite enforces FK per-statement and the unit of
+        # work has no ORM relationship linking scan_config to its metric/anomaly
+        # rows, so without this the children can be inserted before scan_configs.
+        await session.flush()
 
         for bucket, count in [
             (monday_9, 30),
@@ -1679,6 +1727,10 @@ async def test_breakdown_timeline_returns_per_bucket_counts(client: AsyncClient)
             interval="1h",
         )
         session.add_all([data_source, scan_config])
+        # Flush parents first: SQLite enforces FK per-statement and the unit of
+        # work has no ORM relationship linking scan_config to its metric/anomaly
+        # rows, so without this the children can be inserted before scan_configs.
+        await session.flush()
 
         buckets = [
             datetime(2026, 1, 1, 10, tzinfo=UTC),
@@ -1777,6 +1829,10 @@ async def test_overview_top_events_ranks_by_volume(client: AsyncClient):
             interval="1h",
         )
         session.add_all([data_source, scan_config])
+        # Flush parents first: SQLite enforces FK per-statement and the unit of
+        # work has no ORM relationship linking scan_config to its metric/anomaly
+        # rows, so without this the children can be inserted before scan_configs.
+        await session.flush()
         session.add_all(
             [
                 EventMetric(
@@ -1823,7 +1879,21 @@ async def test_data_source_stats_aggregates_recent_metrics(client: AsyncClient):
     recent = datetime.now(UTC) - timedelta(hours=1)
     old = datetime.now(UTC) - timedelta(days=10)
     ds_id = uuid.uuid4()
-    ev1, ev2 = uuid.uuid4(), uuid.uuid4()
+
+    async def _event(name: str) -> uuid.UUID:
+        resp = await client.post(
+            "/api/v1/projects/ds-stats/events",
+            json={
+                "event_type_id": ctx["page_type_id"],
+                "name": name,
+                "field_values": [{"field_definition_id": ctx["page_field_id"], "value": "x"}],
+            },
+        )
+        assert resp.status_code == 201
+        return uuid.UUID(resp.json()["id"])
+
+    # Real events so event_metrics.event_id satisfies its FK (matches Postgres).
+    ev1, ev2 = await _event("Ev1"), await _event("Ev2")
 
     async with TestSessionLocal() as session:
         data_source = DataSource(
@@ -1849,6 +1919,10 @@ async def test_data_source_stats_aggregates_recent_metrics(client: AsyncClient):
             interval="1h",
         )
         session.add_all([data_source, scan_config])
+        # Flush parents first: SQLite enforces FK per-statement and the unit of
+        # work has no ORM relationship linking scan_config to its metric/anomaly
+        # rows, so without this the children can be inserted before scan_configs.
+        await session.flush()
         session.add_all(
             [
                 EventMetric(
@@ -1956,6 +2030,10 @@ async def _seed_platform_scan(
             platform_column=platform_column,
         )
         session.add_all([data_source, scan_config])
+        # Flush parents first: SQLite enforces FK per-statement and the unit of
+        # work has no ORM relationship linking scan_config to its metric/anomaly
+        # rows, so without this the children can be inserted before scan_configs.
+        await session.flush()
         scan_config_id = str(scan_config.id)
         await session.commit()
     return scan_config_id, events

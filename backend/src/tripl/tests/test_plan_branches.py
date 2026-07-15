@@ -354,6 +354,10 @@ async def test_submit_auto_assigns_touched_owners_as_reviewers(client: AsyncClie
                 role="editor",
             )
         )
+        # Flush the user before the owner row that FKs to it — the unit of work
+        # has no ORM relationship ordering them, so a single commit can insert
+        # the owner first and trip the FK under SQLite (matches Postgres).
+        await session.flush()
         # Own the LIVE (main) "track" event type — owners attach to main only.
         session.add(EventTypeOwner(event_type_id=uuid.UUID(et_id), user_id=owner_id))
         await session.commit()

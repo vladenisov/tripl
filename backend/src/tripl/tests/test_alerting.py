@@ -520,7 +520,14 @@ async def test_alert_delivery_list_and_detail(client: AsyncClient) -> None:
             details_path="http://localhost:5173/p/alert-audit/monitoring/event/event-1",
             monitoring_path="http://localhost:5173/p/alert-audit/monitoring/event/event-1",
         )
-        session.add_all([data_source, scan_config, destination, rule, delivery, item])
+        # Flush each FK level before its children (parents -> delivery -> item);
+        # the unit of work has no ORM relationship ordering them, so a single
+        # flush inserts children first and trips the FK under SQLite.
+        session.add_all([data_source, scan_config, destination, rule])
+        await session.flush()
+        session.add(delivery)
+        await session.flush()
+        session.add(item)
         await session.commit()
         delivery_id = str(delivery.id)
         destination_id = str(destination.id)
@@ -3676,7 +3683,12 @@ async def _seed_destination_rule_delivery(
             error_message=error_message,
             dispatch_attempts=dispatch_attempts,
         )
-        session.add_all([data_source, scan_config, destination, rule, delivery])
+        session.add_all([data_source, scan_config, destination, rule])
+        # Flush parents before the delivery child: the unit of work has no ORM
+        # relationship ordering the delivery after its scan_config, so a single
+        # flush inserts it first and trips the FK under SQLite (matches Postgres).
+        await session.flush()
+        session.add(delivery)
         await session.commit()
         return str(delivery.id), str(destination.id), str(rule.id)
 
