@@ -1,6 +1,6 @@
 # AGENTS.md
 
-_Last updated: 2026-07-10._
+_Last updated: 2026-07-15._
 
 ## What This Repo Is
 
@@ -536,6 +536,50 @@ Compose:
 
 Useful when changing DB schema:
 - `uv run alembic upgrade head`
+
+### Sandbox execution (read this first if commands fail)
+
+If your shell runs inside a restricted sandbox — Codex's managed sandbox does by
+default — the friction you hit here is almost always the **environment**, not the
+code or the tests. Do **not** rewrite code, edit `conftest.py`, or "fix" the test
+setup to work around these. Known cases, with the exact workaround:
+
+- **`~/.cache/uv` is read-only.** `uv` / `make` / `./bin/*.sh` die with
+  `Could not create temporary file … Read-only file system (os error 30)`
+  (this breaks `make sync-types`, `dump-openapi.sh`, and any `uv run`). Redirect
+  the cache to a writable dir: prefix the command with `UV_CACHE_DIR=/tmp/uv-cache`,
+  e.g. `UV_CACHE_DIR=/tmp/uv-cache make sync-types`.
+- **Backend `pytest` hangs forever inside the sandbox.** The asyncio loop never
+  wakes after the `aiosqlite` worker-thread callback, so the async in-memory
+  SQLite suite stalls indefinitely — it is **not** a deadlock in the code, and the
+  same tests pass outside the sandbox. Run backend tests with escalated
+  permissions (outside the seccomp/landlock sandbox). In Codex that is
+  `exec_command(…, sandbox_permissions: "require_escalated")`. Adding an
+  `event_loop` fixture or `asyncio_mode` override does **not** fix this and breaks
+  the shared session loop (see the pytest-asyncio note above) — escalate instead.
+- **`.git` is read-only in the sandbox.** `git add/commit/pull/push` and `bd`'s
+  auto-export (it runs `git add` after every mutation) fail with
+  `.git/index.lock: Read-only file system`. Run all `git` and `bd` write commands
+  with escalated permissions.
+- **Docker is unavailable.** `docker compose config` / `up` fail with
+  `permission denied … /var/run/docker.sock`. You cannot validate Compose from
+  inside the sandbox — say you skipped it, don't claim it passed.
+- **Benign startup noise on every backend command.** Expect
+  `Startup service-override apply skipped: app_settings read failed` followed by a
+  SQLAlchemy `Traceback` reaching for local Postgres. This is normal: the app
+  probes runtime settings in Postgres, fails, and tests continue on in-memory
+  SQLite. Do not investigate it.
+- **New branches need an upstream.** After the first commit, push with
+  `git push -u origin <branch>` (escalated). Otherwise `git pull --rebase` fails
+  with `no tracking information for the current branch`.
+
+The cleaner alternative, if the harness allows it, is to grant the sandbox write
+access to `.git`, `~/.cache/uv`, and the Docker socket up front — then none of the
+above bites.
+
+Cadence for long tasks: the full backend `make check` is slow (many minutes to
+crawl to 100%). Run it (escalated) only after a big iteration; between iterations
+use targeted runs — `make test-be ARGS="-k <name>"` / `make test-fe ARGS=<Name>`.
 
 ## Validation Expectations
 
