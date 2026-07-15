@@ -5,6 +5,7 @@ from collections.abc import AsyncGenerator, Iterator
 import httpx
 import pytest
 from httpx import ASGITransport, AsyncClient
+from sqlalchemy import event
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from tripl.config import settings
@@ -22,6 +23,21 @@ TEST_DATABASE_URL = "sqlite+aiosqlite:///:memory:"
 
 engine = create_async_engine(TEST_DATABASE_URL)
 TestSessionLocal = async_sessionmaker(engine, expire_on_commit=False)
+
+
+@event.listens_for(engine.sync_engine, "connect")
+def _enable_sqlite_foreign_keys(dbapi_connection: object, _record: object) -> None:
+    """Enforce ON DELETE CASCADE in tests, matching production Postgres.
+
+    SQLite ignores foreign-key constraints unless ``PRAGMA foreign_keys=ON`` is
+    set per connection, so without this the in-memory test DB leaves orphaned
+    child rows on a parent delete (e.g. deleting a FieldDefinition strands its
+    event_field_values), which then crashes the search reindexer on a NULL
+    parent deref. StaticPool keeps one connection, so this fires once. (tripl-mdix)
+    """
+    cursor = dbapi_connection.cursor()  # type: ignore[attr-defined]
+    cursor.execute("PRAGMA foreign_keys=ON")
+    cursor.close()
 
 
 @pytest.fixture(scope="session", autouse=True)

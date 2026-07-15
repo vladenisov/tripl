@@ -2,11 +2,14 @@ import uuid
 
 import pytest
 from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 import tripl.alerting_validation as av
 from tripl.crypto import encrypt_value
 from tripl.models.event import Event, EventStatus
+from tripl.models.event_type import EventType
 from tripl.models.implementation_ticket import ImplementationTicket
+from tripl.models.plan_branch import PlanBranch
 from tripl.models.project import Project
 from tripl.models.project_tracker_config import ProjectTrackerConfig
 from tripl.tests.conftest import TestSessionLocal
@@ -36,12 +39,43 @@ def _tracker_config(project_id: uuid.UUID) -> ProjectTrackerConfig:
     )
 
 
-def _event(project_id: uuid.UUID, branch_id: uuid.UUID, name: str, status: EventStatus) -> Event:
+async def _seed_event_parents(
+    session: AsyncSession, project_id: uuid.UUID, branch_id: uuid.UUID
+) -> uuid.UUID:
+    """Create the PlanBranch + EventType that ``Event`` rows FK to.
+
+    ``Event.branch_id`` and ``Event.event_type_id`` are non-null FKs; production
+    Postgres rejects the fabricated ids these tests used, so seed real parents
+    and flush them before their child events. Returns the event_type_id to use.
+    """
+    session.add(PlanBranch(id=branch_id, project_id=project_id, name="feature"))
+    await session.flush()
+    event_type_id = uuid.uuid4()
+    session.add(
+        EventType(
+            id=event_type_id,
+            project_id=project_id,
+            branch_id=branch_id,
+            name="impl-tickets",
+            display_name="Impl Tickets",
+        )
+    )
+    await session.flush()
+    return event_type_id
+
+
+def _event(
+    project_id: uuid.UUID,
+    branch_id: uuid.UUID,
+    event_type_id: uuid.UUID,
+    name: str,
+    status: EventStatus,
+) -> Event:
     return Event(
         id=uuid.uuid4(),
         project_id=project_id,
         branch_id=branch_id,
-        event_type_id=uuid.uuid4(),
+        event_type_id=event_type_id,
         name=name,
         status=status.value,
     )
@@ -58,7 +92,10 @@ async def test_create_implementation_ticket_creates_row_and_is_idempotent(
     async with TestSessionLocal() as session:
         session.add(Project(id=project_id, name="Tick", slug="tick", description=""))
         session.add(_tracker_config(project_id))
-        event = _event(project_id, branch_id, "purchase:success", EventStatus.ready_for_dev)
+        event_type_id = await _seed_event_parents(session, project_id, branch_id)
+        event = _event(
+            project_id, branch_id, event_type_id, "purchase:success", EventStatus.ready_for_dev
+        )
         session.add(event)
         await session.commit()
     event_id = str(event.id)
@@ -142,8 +179,9 @@ async def test_sync_implementation_tickets_closes_and_marks_implemented(
     async with TestSessionLocal() as session:
         session.add(Project(id=project_id, name="Sync", slug="sync", description=""))
         session.add(_tracker_config(project_id))
-        ready = _event(project_id, branch_id, "ready-evt", EventStatus.ready_for_dev)
-        live = _event(project_id, branch_id, "live-evt", EventStatus.live)
+        event_type_id = await _seed_event_parents(session, project_id, branch_id)
+        ready = _event(project_id, branch_id, event_type_id, "ready-evt", EventStatus.ready_for_dev)
+        live = _event(project_id, branch_id, event_type_id, "live-evt", EventStatus.live)
         session.add_all([ready, live])
         await session.flush()
         ready_id, live_id = ready.id, live.id
@@ -199,7 +237,8 @@ async def test_sync_implementation_tickets_leaves_open_when_not_done(
     async with TestSessionLocal() as session:
         session.add(Project(id=project_id, name="Open", slug="open", description=""))
         session.add(_tracker_config(project_id))
-        evt = _event(project_id, branch_id, "still-open", EventStatus.ready_for_dev)
+        event_type_id = await _seed_event_parents(session, project_id, branch_id)
+        evt = _event(project_id, branch_id, event_type_id, "still-open", EventStatus.ready_for_dev)
         session.add(evt)
         await session.flush()
         evt_id = evt.id

@@ -15,6 +15,7 @@ from httpx import AsyncClient
 from tripl.models.data_source import DataSource
 from tripl.models.domain_enums import MetricComposition, MetricKind
 from tripl.models.event_metric_breakdown import EventMetricBreakdown
+from tripl.models.event_type import EventType
 from tripl.models.metric_anomaly import MetricAnomaly
 from tripl.models.metric_definition import MetricDefinition
 from tripl.models.metric_value import MetricValue
@@ -235,13 +236,28 @@ async def _seed_project_version_totals(
     rows: list[tuple[str, datetime, int]],
 ) -> None:
     async with TestSessionLocal() as session:
+        # The project-total version query keys off (event_id IS NULL,
+        # event_type_id IS NOT NULL) rows (see metric_series_service), so the
+        # breakdown needs a real event type — a bare uuid4 dangles the FK. It's
+        # grouped by breakdown_value/bucket, not event_type_id, so one shared type
+        # in the scan's project suffices. Flush it before its child breakdown rows.
+        scan_config = await session.get(ScanConfig, scan_config_id)
+        assert scan_config is not None
+        event_type = EventType(
+            id=uuid.uuid4(),
+            project_id=scan_config.project_id,
+            name=f"version-totals-{uuid.uuid4().hex[:8]}",
+            display_name="Version Totals",
+        )
+        session.add(event_type)
+        await session.flush()
         for version, bucket, count in rows:
             session.add(
                 EventMetricBreakdown(
                     id=uuid.uuid4(),
                     scan_config_id=scan_config_id,
                     event_id=None,
-                    event_type_id=uuid.uuid4(),
+                    event_type_id=event_type.id,
                     bucket=bucket,
                     breakdown_column="app_version",
                     breakdown_value=version,
