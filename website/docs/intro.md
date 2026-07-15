@@ -20,6 +20,9 @@ nothing to re-instrument.
 
 ## Where to go next
 
+- **[Quick Start](./quick-start)** — run tripl, explore the demo project, then
+  connect your own warehouse, scan it into a plan, add metrics, and wire up
+  your first alert.
 - **[Using tripl](./use/concepts)** — what a tracking plan, branch, and monitor
   are, and how to walk from an empty screen to a working alert.
 - **[Variables & templates](./use/variables-and-templates)** — document reusable

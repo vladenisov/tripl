@@ -1,6 +1,6 @@
 {
   "label": "API & Integrations",
-  "position": 7,
+  "position": 8,
   "link": {
     "type": "generated-index",
     "description": "Drive tripl programmatically from scripts and LLM agents."
