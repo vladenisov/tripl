@@ -68,7 +68,7 @@ docstring of `backend/src/tripl/tests/conformance/test_bigquery_analysis.py`
 (service account, scopes, repository secrets, fork-safe gating, cost bound). It
 is **deliberately unwired**: the project has no GCP credentials, and a
 half-configured secret gate reporting green is worse than an honest gap. Tracked
-by [tripl-l2so].
+by [tripl-uxa2].
 
 The CI job is `conformance` in `.github/workflows/ci.yml`. It fails if a
 conformance test **skips** — a gate that quietly skips because a warehouse was
@@ -430,8 +430,8 @@ that is already in flight. What each warehouse does with the in-flight query:
 In none of the three does pressing **Stop** in the UI kill a single long-running
 query mid-flight; it takes effect at the next chunk boundary.
 
-**[13] PostgreSQL TLS is configurable — and the default is `prefer`, which does
-not guarantee encryption.** `sslmode` used to be hard-coded and `extra_params`
+**[13] PostgreSQL TLS is configurable — and an unset mode is resolved per
+host.** `sslmode` used to be hard-coded and `extra_params`
 was silently ignored. It is now a typed connection setting (`disable`, `allow`,
 `prefer`, `require`, `verify-ca`, `verify-full`) alongside a CA certificate,
 client certificate and client private key (PEM content, the key stored encrypted
@@ -439,12 +439,15 @@ and never returned by the API) and a `search_path`. Inapplicable combinations ar
 rejected rather than swallowed: certificate material on `sslmode=disable`, a
 verifying mode with no CA, half of a client-certificate pair.
 
-**The default when you do not choose one is `prefer`**, which negotiates TLS if
-the server offers it and **silently falls back to plaintext if it does not** — a
-stripped connection is then indistinguishable from a healthy one. If you need the
-link to actually be encrypted, choose `require`; if you need it to be
-*authenticated*, choose `verify-full` and supply the CA. Do not read "we support
-TLS" as "your connection is encrypted".
+**When you do not choose a mode, a remote host gets `require`** — a server
+without TLS is a loud connection failure, not a silent downgrade — **and
+localhost gets `prefer`** (dev and Docker servers rarely have a certificate,
+and the traffic never leaves the machine). An explicit `prefer` still means
+what it always did: TLS if the server offers it, **plaintext if it does not**,
+and a stripped connection is then indistinguishable from a healthy one.
+`require` encrypts but does not check the certificate; if you need the link to
+be *authenticated* as well, choose `verify-full` and supply the CA. Do not read
+"we support TLS" as "your connection is verified".
 → [tripl-64n8.17]
 
 ---
@@ -469,7 +472,7 @@ TLS" as "your connection is encrypted".
 | Default port | 5432 |
 | Credentials | host, port, database, username, password |
 | Privileges | `CONNECT` on the database, `USAGE` on the schemas, `SELECT` on the scanned tables. A read-only role is the right choice. |
-| Source-specific settings | **SSL mode** (default `prefer` — see caveat [13]), **CA certificate**, **client certificate**, **client private key** (all PEM *content*, not paths; the key is stored encrypted and never returned), **search path** (comma-separated plain identifiers). |
+| Source-specific settings | **SSL mode** (unset → `require` for remote hosts, `prefer` for localhost — see caveat [13]), **CA certificate**, **client certificate**, **client private key** (all PEM *content*, not paths; the key is stored encrypted and never returned), **search path** (comma-separated plain identifiers). |
 | Session | tripl pins `timezone=UTC` and a `statement_timeout` derived from the source's timeout on every connection. |
 
 ### BigQuery
@@ -658,9 +661,10 @@ your server is older than 14, that is very likely what happened.
 
 ### PostgreSQL: TLS is not doing what you think
 
-The default `sslmode` is `prefer`, which falls back to **plaintext** without
-complaining if the server does not offer TLS. Set `require` to force encryption,
-or `verify-full` (plus a CA certificate) to also authenticate the server. Other
+An unset `sslmode` resolves to `require` for a remote host and `prefer` for
+localhost. An explicit `prefer` falls back to **plaintext** without complaining
+if the server does not offer TLS, and `require` encrypts without authenticating —
+use `verify-full` (plus a CA certificate) to also verify the server. Other
 errors you may see are deliberate:
 
 - *"sslmode=disable never negotiates TLS, so … cannot be applied"* — remove the
@@ -803,8 +807,9 @@ For the record, so the matrix above is not read as static. Every item below was 
   `dataset.table` qualification.
 - **PostgreSQL's `sslmode` was hard-coded to `prefer`** and stored `extra_params`
   were silently ignored. TLS is now a typed setting with CA and client
-  certificates, alongside `search_path`. (The *default* is still `prefer` — see
-  caveat [13].)
+  certificates, alongside `search_path` — and an unset mode now resolves
+  host-aware: `require` for remote hosts, `prefer` only for localhost (caveat
+  [13]).
 - **The SQL starter template emitted one `date_trunc` form for every warehouse.**
   GoogleSQL has no `date_trunc(text, timestamp)`, so BigQuery users were handed a
   starter query that could not run. Templates are per-dialect now, and a
@@ -813,28 +818,43 @@ For the record, so the matrix above is not read as static. Every item below was 
   passes whether or not the SQL is valid — which is precisely how `TIMESTAMP_BIN`
   and `GROUP BY <array>` shipped and stayed green for so long. CI now **executes**
   the generated SQL against real PostgreSQL and ClickHouse containers and
-  **analyzes** it with real ZetaSQL for BigQuery.
+  **analyzes** it with real ZetaSQL for BigQuery. That coverage since grew from
+  single adapter calls to the whole pipeline: a fourth conformance gate runs a
+  real scan → event generation → replay → event, fact, ratio and batched
+  metrics → drift and anomaly recalculation on both executing warehouses,
+  compares every series against the pure-Python reference, and requires
+  PostgreSQL and ClickHouse to agree with each other. BigQuery runs the same
+  pipeline analysis-only.
+- **The data-source *edit* dialog showed ClickHouse/PostgreSQL fields for a
+  BigQuery source.** The create and edit dialogs now share one per-warehouse
+  field set, so a BigQuery source is edited with its project ID, default dataset
+  and service-account key — and stored secrets are never prefilled into the
+  form, only sent when actually retyped.
 
 ## What is still open
 
 | Gap | Issue |
 | --- | --- |
-| BigQuery bucket **values** and contract **values** are analyzed, never executed | [tripl-l2so] |
-| Scan/replay, event generation, fact metrics and drift are not yet covered against real warehouses | [tripl-l2so] |
-| ClickHouse JSON discovery drops null-valued leaf paths | [tripl-foo3] |
-| PostgreSQL's default `sslmode` is `prefer`, not the `require` the adapter documents | [tripl-64n8.17] |
-| The data-source **edit** dialog shows ClickHouse/PostgreSQL fields for a BigQuery source | [tripl-64n8.16] |
-| ClickHouse `Tuple`/`Map` have no nested extractor | [tripl-64n8.4] |
+| BigQuery bucket **values** and contract **values** are analyzed, never executed. The credentialed conformance job is fully specified in `test_bigquery_analysis.py` and deliberately unwired — the project has no GCP credentials. | [tripl-uxa2] |
+| ClickHouse `Tuple`/`Map` columns are classified but have **no nested extractor** (caveat [8]) | [tripl-bc1u] |
+| A fact-metric breakdown group whose aggregate is all-`NULL` crashes the collector with a `TypeError` instead of being recorded as absent | [tripl-s2m7] |
 
-[tripl-64n8.4]: https://github.com/vladenisov/tripl/issues?q=tripl-64n8.4
+The rest of what this table used to list has landed: scan/replay, event
+generation, fact metrics and drift now execute against real warehouses in the
+pipeline gate; an unset PostgreSQL `sslmode` resolves to `require` for remote
+hosts (caveat [13]); the BigQuery **edit** dialog shows BigQuery fields; and the
+ClickHouse null-leaf divergence is pinned by the conformance gate as a
+[documented intentional difference](#clickhouse-cannot-discover-a-key-whose-only-value-is-json-null)
+rather than silently accepted. Details in
+[What was broken and is now fixed](#what-was-broken-and-is-now-fixed).
+
 [tripl-64n8.11]: https://github.com/vladenisov/tripl/issues?q=tripl-64n8.11
 [tripl-64n8.12]: https://github.com/vladenisov/tripl/issues?q=tripl-64n8.12
-[tripl-64n8.14]: https://github.com/vladenisov/tripl/issues?q=tripl-64n8.14
-[tripl-64n8.15]: https://github.com/vladenisov/tripl/issues?q=tripl-64n8.15
-[tripl-64n8.16]: https://github.com/vladenisov/tripl/issues?q=tripl-64n8.16
 [tripl-64n8.17]: https://github.com/vladenisov/tripl/issues?q=tripl-64n8.17
+[tripl-bc1u]: https://github.com/vladenisov/tripl/issues?q=tripl-bc1u
 [tripl-foo3]: https://github.com/vladenisov/tripl/issues?q=tripl-foo3
-[tripl-l2so]: https://github.com/vladenisov/tripl/issues?q=tripl-l2so
+[tripl-s2m7]: https://github.com/vladenisov/tripl/issues?q=tripl-s2m7
+[tripl-uxa2]: https://github.com/vladenisov/tripl/issues?q=tripl-uxa2
 
 ---
 

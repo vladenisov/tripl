@@ -56,9 +56,9 @@ def _validate_host_format(value: str | None) -> str | None:
 # ``password_encrypted``, and is never part of a response model — the response
 # only carries ``sslkey_set: bool``.
 
-# psql's sslmode ladder. "prefer" is the server-side default for PostgreSQL:
-# it matches libpq's own default and keeps loopback/dev connections working,
-# while "require"/"verify-ca"/"verify-full" opt into real TLS enforcement.
+# psql's sslmode ladder. Unset (None) is resolved host-aware by the adapter:
+# "require" for remote hosts, "prefer" for localhost (see adapters/postgres.py
+# _resolve_sslmode), while explicit modes are passed through as chosen.
 PostgresSslMode = Literal["disable", "allow", "prefer", "require", "verify-ca", "verify-full"]
 
 # Storage key for the Fernet-encrypted PostgreSQL client private key. Never the
