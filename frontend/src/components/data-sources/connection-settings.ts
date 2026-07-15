@@ -35,9 +35,10 @@ export const EMPTY_CONNECTION_SETTINGS_FORM: ConnectionSettingsForm = {
   searchPath: '',
 }
 
-// '' means "use the server-side default", which for PostgreSQL is 'prefer'.
+// '' lets the backend resolve a host-aware default: 'require' for remote hosts,
+// 'prefer' for localhost (dev/docker servers rarely have a certificate).
 export const SSL_MODE_OPTIONS: { value: PostgresSslMode | ''; label: string }[] = [
-  { value: '', label: 'Default (prefer)' },
+  { value: '', label: 'Default — require for remote hosts, prefer for localhost' },
   { value: 'disable', label: 'disable — never use TLS' },
   { value: 'allow', label: 'allow — TLS only if the server insists' },
   { value: 'prefer', label: 'prefer — TLS if available, plaintext otherwise' },

@@ -121,9 +121,9 @@ events.
 2. Add a connection and fill in the details for your warehouse:
    - **ClickHouse** — host, port (8123), database, username, password.
    - **PostgreSQL** — host, port (5432), database, username, password.
-     **Version 14 or newer is required.** If the connection must actually be
-     encrypted, set SSL mode to `require` or `verify-full` — the default
-     `prefer` silently falls back to plaintext.
+     **Version 14 or newer is required.** SSL mode left unset resolves to
+     `require` for remote hosts (`prefer` for localhost); choose `verify-full`
+     with a CA certificate to also authenticate the server.
    - **BigQuery** — GCP project ID, a default dataset, and a service-account
      JSON key pasted into the form. A **max billed bytes** guard (100 GiB by
      default) caps query cost.

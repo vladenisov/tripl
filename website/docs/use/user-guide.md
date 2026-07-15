@@ -146,11 +146,12 @@ capability, what is proven, what is merely believed, and what is bounded — plu
 per-warehouse setup requirements, permissions and dialect-correct SQL examples.
 :::
 
-:::caution PostgreSQL TLS defaults to `prefer`
-`prefer` uses TLS if the server offers it and **silently falls back to plaintext
-if it does not**. If you need the connection to actually be encrypted, choose
-`require`; to also authenticate the server, choose `verify-full` and supply a CA
-certificate.
+:::caution PostgreSQL TLS: know what your mode does
+Left unset, **SSL mode** resolves to `require` for remote hosts and `prefer`
+for localhost. An explicit `prefer` uses TLS if the server offers it and
+**silently falls back to plaintext if it does not**, and `require` encrypts
+without checking the certificate — to also authenticate the server, choose
+`verify-full` and supply a CA certificate.
 :::
 
 :::warning Only owners manage data sources
