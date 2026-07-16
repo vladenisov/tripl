@@ -79,6 +79,15 @@ Deps staged in `.ds-sync/node_modules` (esbuild, ts-morph, @types/react, @tailwi
 ### Floor-card RESCUE paths (for a future re-sync, if desired)
 - The 8 data composites need a bundle-provided provider so context identity matches: author a small wrapper exported from `frontend/.ds-entry.tsx` that wraps children in `QueryClientProvider` + `MemoryRouter` using the BUNDLE's own react-query/react-router, set `cfg.provider` to it. Even then most show loading/empty without a backend → likely still floor cards. SettingsLayout additionally needs `AuthContext` exported from the barrel + a mock auth value. Verdict: low ROI; floor cards are the honest baseline.
 
+## RE-SYNC LOG — 2026-07-16 (no source changes; pipeline churn only)
+- All 55 sourceKeys unchanged despite ~50 frontend commits since 2026-06-20 (none touched mapped component sources). Verdict: 0 changed/added/removed; uploaded 48 churned components + bundle/styling/docs (new converter version → scriptsSha/artifact churn).
+- **New converter check `[GRID_OVERFLOW]`** flagged 29 components → `cfg.overrides` now sets `cardMode: "single"` (7 portal/overlay: AlertDialog, Dialog, DropdownMenu, Popover, Sheet, Tooltip, VariableValueContextTrigger w/ primaryStory OpenPanel) and `cardMode: "column"` (22 wide ones). Presentation-only; grades carried.
+- **Playwright chromium cache (~/.cache/ms-playwright) had been wiped** — reinstall via `.ds-sync/node_modules/.bin/playwright install chromium` (staged playwright 1.61.0 pins build 1228). Expect this on re-sync; treat as routine setup, not a new decision.
+- Spot-checks (EmptyState, Toaster, ScrollArea, Panel, Textarea + re-graded ConfirmDialog) all confirmed good. Render check 55/55 clean, 0 warns remaining.
+- conventions.md: dropped the brittle "(239 tokens)" count (fresh build counts differ); all other names still verify.
+- The project now also contains a user/app-created `mockups/` dir (13 files) — NOT sync-managed; never delete it in reconciliation.
+- Known render warns: none.
+
 ## Re-sync risks (forward-looking)
 - `frontend/.ds-styles.css` is gitignored & regenerated — re-sync MUST re-run cfg.buildCmd first.
 - The two tsconfig gotchas are converter-lib behavior; if the bundled lib is updated, re-verify the alias plugin still needs the comment-free tsconfig.
