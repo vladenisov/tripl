@@ -8,7 +8,7 @@ Components are real compiled React, imported by name from the design-system pack
 - **Data-bound composites** — `AppSidebar`, `TopBar`, `BranchSwitcher`, `EventPhotosSection`, `SettingsLayout`, and the monitoring panels (`TopMoversPanel`, `ReleaseRegressionPanel`, `SeasonalityHeatmap`) — need react-query + react-router context and live data. They ship a floor card here; use them only inside an app shell that provides those.
 
 ## Styling idiom
-Prefer composing components through their **props** — `<Button variant="danger" size="sm">`, `<Chip tone="success" variant="soft">`, `<Badge variant="outline">`, `<MiniStat tone="success">`. For any custom styling or layout glue, use the design tokens as **CSS variables** — all are defined in `:root` (239 tokens), so they always resolve in a rendered design:
+Prefer composing components through their **props** — `<Button variant="danger" size="sm">`, `<Chip tone="success" variant="soft">`, `<Badge variant="outline">`, `<MiniStat tone="success">`. For any custom styling or layout glue, use the design tokens as **CSS variables** — all are defined in `:root`, so they always resolve in a rendered design:
 - surfaces: `var(--bg)` `var(--bg-elevated)` `var(--bg-sunken)` `var(--surface)` `var(--surface-hover)` `var(--surface-active)`
 - text: `var(--fg)` `var(--fg-muted)` `var(--fg-subtle)` `var(--fg-faint)`
 - borders: `var(--border)` `var(--border-strong)` `var(--border-subtle)`; radii `var(--radius)` `var(--radius-sm)` `var(--radius-lg)`

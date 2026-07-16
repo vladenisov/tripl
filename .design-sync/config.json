@@ -127,6 +127,35 @@
     "SeasonalityHeatmap": "slug: string; scanConfigId: string; scopeType: string; scopeRef: string; from: string; to: string; color?: string;"
   },
   "overrides": {
-    "ConfirmDialog": { "cardMode": "single", "viewport": "760x620" }
+    "ConfirmDialog": { "cardMode": "single", "viewport": "760x620" },
+    "AlertDialog": { "cardMode": "single", "primaryStory": "Default" },
+    "Dialog": { "cardMode": "single", "primaryStory": "Default" },
+    "DropdownMenu": { "cardMode": "single", "primaryStory": "Default" },
+    "Popover": { "cardMode": "single", "primaryStory": "Default" },
+    "Sheet": { "cardMode": "single", "primaryStory": "Default" },
+    "Tooltip": { "cardMode": "single", "primaryStory": "Default" },
+    "VariableValueContextTrigger": { "cardMode": "single", "primaryStory": "OpenPanel" },
+    "Card": { "cardMode": "column" },
+    "EmptyState": { "cardMode": "column" },
+    "ErrorState": { "cardMode": "column" },
+    "MetricsChart": { "cardMode": "column" },
+    "MetricsMultiSeriesChart": { "cardMode": "column" },
+    "Switch": { "cardMode": "column" },
+    "Table": { "cardMode": "column" },
+    "Tabs": { "cardMode": "column" },
+    "Textarea": { "cardMode": "column" },
+    "Toaster": { "cardMode": "column" },
+    "MiniStat": { "cardMode": "column" },
+    "Field": { "cardMode": "column" },
+    "InfoRow": { "cardMode": "column" },
+    "PageHead": { "cardMode": "column" },
+    "Panel": { "cardMode": "column" },
+    "RadioCards": { "cardMode": "column" },
+    "SCard": { "cardMode": "column" },
+    "SHeader": { "cardMode": "column" },
+    "TextArea": { "cardMode": "column" },
+    "TextInput": { "cardMode": "column" },
+    "Toggle": { "cardMode": "column" },
+    "ToggleRow": { "cardMode": "column" }
   }
 }
