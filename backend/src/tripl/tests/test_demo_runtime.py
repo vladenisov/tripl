@@ -20,6 +20,7 @@ from pathlib import Path
 
 import pytest
 from sqlalchemy import create_engine, func, select
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session, sessionmaker
 
 from tripl.models import Base
@@ -535,6 +536,151 @@ def test_paused_demo_is_skipped_and_resumes_on_access(
     with factory() as session:
         resumed = _bucket_set(session, seeded.scan_config_id)
         assert resumed - before, "resumed demo advanced after access"
+
+
+# ── Deadlock resilience (tripl-q7i1.2) ───────────────────────────────────────
+
+
+def test_persistent_deadlock_gives_up_and_skips_demo(
+    factory: sessionmaker[Session], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A deadlock that recurs on EVERY attempt: ``advance_demos`` retries the whole
+    per-demo advance a bounded number of times, then SKIPS this demo — never aborts
+    the sweep, never leaks the exception, never spins unbounded.
+
+    The loop is monkeypatched at ``_advance_demo`` (the whole per-demo unit) rather
+    than at ``_recompute_anomalies`` so the retry contract is asserted on its own:
+    injecting the failure mid-``_advance_demo`` would entangle it with the partial
+    ``_append_buckets`` writes and SQLite savepoint semantics the loop does not
+    depend on. The re-raise discrimination inside ``_recompute_anomalies`` is pinned
+    separately by ``test_recompute_anomalies_reraises_dbapi_error``.
+    """
+    seed_now = _floor(datetime.now(UTC)) - timedelta(days=1)
+    with factory() as session:
+        seeded = _seed_demo(session, seed_now=seed_now, history_hours=72)
+        before = _bucket_set(session, seeded.scan_config_id)
+
+    attempts = 0
+
+    def _always_deadlock(*_args: object, **_kwargs: object) -> None:
+        nonlocal attempts
+        attempts += 1
+        raise OperationalError("UPDATE metric_anomalies", {}, Exception("deadlock detected"))
+
+    monkeypatch.setattr(demo_runtime, "_advance_demo", _always_deadlock)
+
+    tick = seed_now + timedelta(hours=3)
+    result = _run_tick(factory, monkeypatch, tick)
+
+    # Bounded retries, then skip; the sweep returned without raising.
+    assert result["advanced"] == 0
+    assert result["skipped"] == 1
+    assert attempts == demo_runtime.DEMO_ADVANCE_MAX_RETRIES
+
+    with factory() as session:
+        after = _bucket_set(session, seeded.scan_config_id)
+        assert after == before  # nothing committed for this demo
+        project = session.get(Project, seeded.project_id)
+        assert project is not None and project.demo_last_tick_at is None
+
+
+def test_transient_deadlock_retries_then_advances(
+    factory: sessionmaker[Session], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A deadlock that CLEARS on retry (Postgres kills one side of the row race): the
+    per-demo advance is retried and the demo advances normally — not skipped. This is
+    the recovery the P0 fix restores; the old code rolled the whole tick back and left
+    the demo frozen.
+    """
+    seed_now = _floor(datetime.now(UTC)) - timedelta(days=1)
+    with factory() as session:
+        seeded = _seed_demo(session, seed_now=seed_now, history_hours=72)
+
+    real_advance = demo_runtime._advance_demo
+    calls = 0
+
+    def _deadlock_once(*args: object, **kwargs: object) -> None:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise OperationalError("UPDATE metric_anomalies", {}, Exception("deadlock detected"))
+        real_advance(*args, **kwargs)
+
+    monkeypatch.setattr(demo_runtime, "_advance_demo", _deadlock_once)
+
+    tick = seed_now + timedelta(hours=3)
+    result = _run_tick(factory, monkeypatch, tick)
+
+    # Retried once, then the real advance ran and the demo advanced.
+    assert result["advanced"] == 1
+    assert result["skipped"] == 0
+    assert calls == 2
+
+    with factory() as session:
+        project = session.get(Project, seeded.project_id)
+        assert project is not None and project.demo_last_tick_at is not None
+
+
+def test_non_db_error_in_recompute_is_swallowed_and_tick_commits(
+    factory: sessionmaker[Session], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A detector/logic bug (a non-DBAPI exception) raises before any DB write.
+
+    It leaves the session clean, so ``_recompute_anomalies`` logs and swallows it:
+    a detector bug must not kill the tick. The appended series still commits and the
+    demo advances normally.
+    """
+    seed_now = _floor(datetime.now(UTC)) - timedelta(days=1)
+    with factory() as session:
+        seeded = _seed_demo(session, seed_now=seed_now, history_hours=72)
+        before = _bucket_set(session, seeded.scan_config_id)
+
+    def _detector_bug(*_args: object, **_kwargs: object) -> None:
+        raise ValueError("detector logic bug")
+
+    # ``detect_anomalies`` runs inside ``_recompute_anomalies`` BEFORE any
+    # ``session.execute``, so the raise leaves the transaction clean.
+    monkeypatch.setattr(demo_runtime, "detect_anomalies", _detector_bug)
+
+    tick = seed_now + timedelta(hours=3)
+    result = _run_tick(factory, monkeypatch, tick)
+
+    # The tick still advanced: the detector bug was swallowed, not propagated.
+    assert result["advanced"] == 1
+    assert result["skipped"] == 0
+
+    with factory() as session:
+        after = _bucket_set(session, seeded.scan_config_id)
+        assert after - before, "appended buckets committed despite the detector bug"
+        project = session.get(Project, seeded.project_id)
+        assert project is not None and project.demo_last_tick_at is not None
+
+
+def test_recompute_anomalies_reraises_dbapi_error() -> None:
+    """A DBAPI error from ``session.execute`` (a real deadlock) POISONS the tick's
+    transaction, so ``_recompute_anomalies`` must RE-RAISE it rather than swallow it.
+
+    Swallowing would let ``_advance_demo`` fall through to ``_prune_retention``, whose
+    next execute raises ``InFailedSqlTransaction`` and rolls back the whole tick — the
+    exact P0 that froze the demo. This pins the except-clause discrimination directly
+    on ``_recompute_anomalies`` (the retry path in ``advance_demos`` is covered
+    separately); a non-DBAPI detector bug is still swallowed, see
+    ``test_non_db_error_in_recompute_is_swallowed_and_tick_commits``.
+    """
+
+    class _BoomSession:
+        def execute(self, *_args: object, **_kwargs: object) -> None:
+            raise OperationalError(
+                "SELECT project_anomaly_settings", {}, Exception("deadlock detected")
+            )
+
+    with pytest.raises(OperationalError):
+        demo_runtime._recompute_anomalies(
+            _BoomSession(),  # type: ignore[arg-type]
+            uuid.uuid4(),
+            uuid.uuid4(),
+            datetime.now(UTC),
+        )
 
 
 # ── Feature flag off ─────────────────────────────────────────────────────────

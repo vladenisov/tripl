@@ -57,7 +57,7 @@ from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import delete, select, text
 from sqlalchemy import func as sa_func
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import DBAPIError, IntegrityError, OperationalError
 from sqlalchemy.orm import Session
 
 from tripl import cache, realtime
@@ -101,6 +101,11 @@ DEMO_TICK_FAILED_EVENT = "demo.runtime.tick_failed"
 # worker time. The next access (``demo_last_accessed_at`` touched on GET / reset)
 # resumes it and the next tick catches it up.
 DEMO_IDLE_PAUSE_MINUTES = 6 * 60
+# A per-demo advance runs in ONE transaction that can lose a Postgres deadlock race
+# against a concurrent metric-collection run over the same ``metric_anomalies`` rows.
+# A deadlock poisons that transaction, so the only recovery is to roll back and
+# retry the whole advance — bounded, so one hot demo can't stall the sweep.
+DEMO_ADVANCE_MAX_RETRIES = 3
 # Rolling retention window for a demo's time-series/signal history. Matches the
 # seeded history length (``DEMO_HISTORY_DAYS``) so the window stays constant-size:
 # every tick prunes anything older, capping per-demo DB growth. Kept >= the
@@ -166,17 +171,46 @@ def advance_demos(now: datetime | None = None) -> dict[str, object]:
             if _is_paused(seeded_at, last_accessed, tick_now, idle_threshold):
                 skipped += 1
                 continue
-            try:
-                _advance_demo(session, project_id, slug, tick_now)
-                advanced += 1
-            except Exception:
-                # One demo's failure must not abort the whole sweep. Stable event
-                # name so the failure is observable in aggregated logs.
-                logger.exception("%s slug=%s", DEMO_TICK_FAILED_EVENT, slug)
-                session.rollback()
+            # Deadlock-resilient advance. A demo-project metric collection racing
+            # this tick over the same ``metric_anomalies`` rows can deadlock; the
+            # loser's transaction is poisoned, so we roll back and retry the whole
+            # advance a bounded number of times, then skip THIS demo — never abort
+            # the sweep. Deeper mitigation (out of scope for this P0): have demo
+            # metric collection take the same per-project ``pg_advisory_xact_lock``
+            # as ``_acquire_project_xact_lock`` so the two paths serialise instead
+            # of racing the rows.
+            for attempt in range(1, DEMO_ADVANCE_MAX_RETRIES + 1):
+                try:
+                    _advance_demo(session, project_id, slug, tick_now)
+                    advanced += 1
+                    break
+                except OperationalError:
+                    session.rollback()
+                    logger.warning(
+                        "advance_demos: deadlock advancing demo slug=%s (attempt %d/%d)",
+                        slug,
+                        attempt,
+                        DEMO_ADVANCE_MAX_RETRIES,
+                    )
+                    if attempt == DEMO_ADVANCE_MAX_RETRIES:
+                        logger.error(
+                            "advance_demos: giving up on demo slug=%s after %d deadlock retries",
+                            slug,
+                            DEMO_ADVANCE_MAX_RETRIES,
+                        )
+                        skipped += 1
+                except Exception:
+                    # Non-retryable failure (incl. a non-deadlock DBAPIError re-raised
+                    # by _recompute_anomalies): one demo's failure must not abort the
+                    # whole sweep. Roll back, count it as skipped for this tick (it did
+                    # not advance), and move on. Stable event name so it's observable.
+                    logger.exception("%s slug=%s", DEMO_TICK_FAILED_EVENT, slug)
+                    session.rollback()
+                    skipped += 1
+                    break
 
         logger.info(
-            "advance_demos: %d demos advanced, %d skipped (paused/inactive)",
+            "advance_demos: %d demos advanced, %d skipped (paused, deadlocked, or failed)",
             advanced,
             skipped,
         )
@@ -579,7 +613,19 @@ def _recompute_anomalies(
             eval_start=eval_start,
             eval_end=eval_end,
         )
+    except OperationalError, DBAPIError:
+        # A DBAPI-level failure (deadlock, lost connection) inside ``session.execute``
+        # has POISONED the transaction: it can no longer be committed, and swallowing
+        # it here would let ``_advance_demo`` fall through to ``_prune_retention``
+        # whose next execute raises ``InFailedSqlTransaction`` and rolls back the whole
+        # tick. Re-raise so ``advance_demos`` can abandon + retry this demo's
+        # transaction. (``OperationalError`` is the deadlock case; it subclasses
+        # ``DBAPIError``, which also covers disconnects — either way the txn is doomed.)
+        raise
     except Exception:
+        # A genuine detector/logic bug raises BEFORE any ``session.execute`` and leaves
+        # the session clean, so we log and swallow it: a detector bug must not be able
+        # to kill the whole tick.
         logger.exception("advance_demos: anomaly recompute failed for %s", scan_config_id)
 
 
