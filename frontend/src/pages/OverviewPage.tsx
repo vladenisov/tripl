@@ -126,6 +126,7 @@ export default function OverviewPage() {
           slug={slug}
           summary={summary}
           sourceCount={countRealSources(sources)}
+          isDemo={projectQuery.data?.is_demo}
         />
       )}
 

@@ -11,11 +11,13 @@ Shares series with the monitoring builder through the context (``home_series`` a
 
 from __future__ import annotations
 
+import re
 import uuid
 from datetime import datetime
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from tripl.core.adapters.synthetic import SYNTHETIC_EVENT_NAMES
 from tripl.models.data_source import DataSource
 from tripl.models.event_metric import EventMetric
 from tripl.models.event_metric_breakdown import EventMetricBreakdown
@@ -28,6 +30,33 @@ from tripl.services.project_service import demo_data_source_name
 # The single-bucket spike is injected on this event's newest bucket; it is the
 # only deviation the real detector turns into an anomaly per scope.
 SPIKE_EVENT_NAME = "Home Screen View"
+
+
+def _synthetic_event_group_rules() -> list[dict[str, object]]:
+    """One anchored group rule per distinct synthetic ``event_name``.
+
+    Without these, a Run now / Replay over the synthetic source derives a raw
+    ``col=value | col=value`` identity for every synthetic row and floods the
+    catalog with ~21 pipe-named draft events (bd tripl-q7i1.6). Each rule keys on
+    the synthetic ``event_name`` column with an anchored, escaped pattern
+    (``^<name>$``) and renames the derived identity to the matching curated
+    event name — which already exists in the catalog — so ``generate_events``
+    dedups the row onto the curated event and creates 0 new events.
+
+    Generated from :data:`SYNTHETIC_EVENT_NAMES` so the rule set is exhaustive:
+    a new ``_EVENT_DEFS`` row automatically gets a fold rule and can never
+    silently reintroduce a pipe-named draft.
+    """
+    return [
+        {
+            "name": name,
+            "condition_logic": "all",
+            "conditions": [
+                {"field": "event_name", "pattern": f"^{re.escape(name)}$"},
+            ],
+        }
+        for name in SYNTHETIC_EVENT_NAMES
+    ]
 
 
 async def build_warehouse(session: AsyncSession, ctx: DemoContext) -> None:
@@ -71,6 +100,10 @@ async def _build_scan_config(session: AsyncSession, ctx: DemoContext) -> None:
         # (screen_view/click/purchase) so a real Run now / Replay over the
         # synthetic source scans and reconciles against the authored plan.
         event_type_column="event_type",
+        # Fold every synthetic identity back onto its curated catalog event so a
+        # rescan creates 0 new events instead of ~21 raw pipe-named drafts
+        # (bd tripl-q7i1.6). Exhaustive over the synthetic event names.
+        event_group_rules=_synthetic_event_group_rules(),
         interval="1h",
         replay_chunk_interval="6h",
         anomaly_detection_enabled=True,

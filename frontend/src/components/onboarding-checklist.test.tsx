@@ -47,6 +47,7 @@ function renderChecklist(props: {
   summary: ProjectSummary | undefined
   sourceCount?: number
   slug?: string
+  isDemo?: boolean
 }) {
   return render(
     <MemoryRouter>
@@ -54,6 +55,7 @@ function renderChecklist(props: {
         slug={props.slug ?? 'demo'}
         summary={props.summary}
         sourceCount={props.sourceCount ?? 0}
+        isDemo={props.isDemo}
       />
     </MemoryRouter>,
   )
@@ -233,6 +235,44 @@ describe('OnboardingChecklist', () => {
     })
 
     expect(screen.getByText(/1 step left: Set up alerting/)).toBeInTheDocument()
+  })
+
+  it('renders nothing for a demo project even when a step is outstanding (tripl-q7i1.7)', () => {
+    // A demo's only source is synthetic (excluded from sourceCount), so the
+    // "Connect a data source" step could never complete — this otherwise yields
+    // "4 of 5" and a permanent "Almost set up" bar. Demos own their onboarding
+    // (DemoWelcomePanel + coach), so the checklist must render nothing.
+    const { container } = renderChecklist({
+      summary: makeSummary({
+        event_type_count: 4,
+        latest_scan_job: executedJob(),
+        implemented_event_count: 3,
+      }),
+      sourceCount: 1,
+      isDemo: true,
+    })
+
+    expect(screen.queryByText('Get started')).not.toBeInTheDocument()
+    expect(screen.queryByText(/Almost set up/)).not.toBeInTheDocument()
+    expect(screen.queryByText('Connect a data source')).not.toBeInTheDocument()
+    expect(container).toBeEmptyDOMElement()
+  })
+
+  it('still shows the compact bar for a non-demo project with the same "4 of 5" state', () => {
+    // Regression guard: the isDemo hide must not swallow real projects. The same
+    // summary that a demo hides renders the "Almost set up" bar when not a demo.
+    renderChecklist({
+      summary: makeSummary({
+        event_type_count: 4,
+        latest_scan_job: executedJob(),
+        implemented_event_count: 3,
+      }),
+      sourceCount: 1,
+      isDemo: false,
+    })
+
+    expect(screen.getByText('4 of 5')).toBeInTheDocument()
+    expect(screen.getByText(/Almost set up/)).toBeInTheDocument()
   })
 
   it('renders nothing while the summary is still loading', () => {

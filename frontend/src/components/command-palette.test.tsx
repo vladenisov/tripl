@@ -222,6 +222,25 @@ describe('CommandPalette', () => {
     expect(await screen.findByPlaceholderText(/Search projects/i)).toBeInTheDocument()
   })
 
+  it('toggles via Ctrl+K on non-Mac platforms', async () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = String(input)
+      if (url.endsWith('/api/v1/projects')) return mockJsonResponse([])
+      if (url.endsWith('/api/v1/projects/demo/event-types')) return mockJsonResponse([])
+      throw new Error(`Unhandled fetch: ${url}`)
+    })
+
+    renderHarness('/p/demo/events')
+
+    expect(screen.queryByPlaceholderText(/Search projects/i)).toBeNull()
+
+    // The keydown handler is intentionally permissive (Meta OR Ctrl) so the
+    // shortcut works on Linux/Windows where there is no Meta key.
+    fireEvent.keyDown(window, { key: 'k', ctrlKey: true })
+
+    expect(await screen.findByPlaceholderText(/Search projects/i)).toBeInTheDocument()
+  })
+
   it('shows typed knowledge search results and navigates to their route', async () => {
     vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
       const url = String(input)

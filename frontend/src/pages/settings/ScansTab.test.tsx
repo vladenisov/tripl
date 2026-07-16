@@ -264,6 +264,22 @@ describe('ScansTab', () => {
     expect(runCalls[0].url).toContain('/projects/demo/scans/scan-1/run')
   })
 
+  it('runs a scan from the config row via the manual trigger endpoint', async () => {
+    const runCalls: { method: string; url: string }[] = []
+    setupFetchWithJobs([], runCalls)
+    renderTab()
+
+    // Every config row exposes a "Run now" control on the list itself — the
+    // surface the demo coach's step-1 CTA opens (tripl-q7i1.5).
+    const runButton = await screen.findByRole('button', { name: 'Run Main events scan now' })
+    expect(runButton).toHaveTextContent('Run now')
+    fireEvent.click(runButton)
+
+    await waitFor(() => expect(runCalls.length).toBeGreaterThanOrEqual(1))
+    expect(runCalls[0].method).toBe('POST')
+    expect(runCalls[0].url).toContain('/projects/demo/scans/scan-1/run')
+  })
+
   it('navigates to detail by URL (not the in-place create view)', async () => {
     setupFetch()
     renderTab()
@@ -301,6 +317,7 @@ describe('ScansTab', () => {
 
 describe('ScansTab — coached demo scenario', () => {
   const SLUG = 'demo'
+  const RUN_SCAN_INSTRUCTION = buildScenarioSteps(SLUG, initialScenarioState())[0].instruction
   const WATCH_SCAN_INSTRUCTION = buildScenarioSteps(SLUG, initialScenarioState())[1].instruction
 
   function demoProject(overrides: Partial<Project> = {}): Project {
@@ -375,6 +392,35 @@ describe('ScansTab — coached demo scenario', () => {
       scanConfigId: 'scan-1',
       scanJobId: 'job-new',
     })
+  })
+
+  it('runs from the config row and binds the scenario to the returned ScanJob', async () => {
+    const runCalls: string[] = []
+    setupDemoFetch([], runCalls)
+    renderInScenario(demoProject())
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Run Main events scan now' }))
+
+    await waitFor(() => expect(readScenarioState(SLUG).step).toBe('watch-scan'))
+    expect(runCalls[0]).toBe('POST')
+    // The artifact is the job the POST returned (notifyScanRunStarted), never a
+    // job already in the feed.
+    expect(readScenarioState(SLUG).scan).toMatchObject({
+      scanConfigId: 'scan-1',
+      scanJobId: 'job-new',
+    })
+  })
+
+  it('points the run-scan coach mark at the first config row for a ready demo', async () => {
+    setupDemoFetch([])
+    renderInScenario(demoProject())
+
+    // The step-1 coach mark renders on the surface the CTA opens (the list),
+    // anchored to the first config row's Run control — exactly one note.
+    await waitFor(() =>
+      expect(screen.getByRole('note')).toHaveTextContent(RUN_SCAN_INSTRUCTION),
+    )
+    expect(screen.getAllByRole('note')).toHaveLength(1)
   })
 
   it('marks only the recent-run row of the job the scenario is watching', async () => {

@@ -160,10 +160,11 @@ export function ScansTab({ slug }: { slug: string }) {
     return total
   }, [scanConfigs, jobQueries, mountedAtMs])
 
-  // "Run again" reuses the manual-scan trigger (POST /scans/{id}/run). On success
-  // we refetch that scan's jobs so the new pending run appears in the feed.
+  // Both the per-row "Run now" and the failed-row "Run again" reuse the manual
+  // scan trigger (POST /scans/{id}/run). On success we refetch that scan's jobs
+  // so the new pending run appears in the feed.
   const queryClient = useQueryClient()
-  const runAgain = useMutation({
+  const runScan = useMutation({
     mutationFn: (scanId: string) => scansApi.run(slug, scanId),
     onSuccess: (job, scanId) => {
       // Only the job this POST returned can advance the coached demo scenario:
@@ -253,7 +254,7 @@ export function ScansTab({ slug }: { slug: string }) {
               </tr>
             </thead>
             <tbody>
-              {scanConfigs.map((sc: ScanConfig) => (
+              {scanConfigs.map((sc: ScanConfig, index: number) => (
                 <ScanListRow
                   key={sc.id}
                   sc={sc}
@@ -261,6 +262,11 @@ export function ScansTab({ slug }: { slug: string }) {
                   runInfo={runInfoById.get(sc.id) ?? deriveScanRunInfo([])}
                   intervalLabel={INTERVAL_LABEL}
                   onNavigate={() => navigate(`/p/${slug}/settings/scans/${sc.id}`)}
+                  onRun={() => runScan.mutate(sc.id)}
+                  runPending={runScan.isPending && runScan.variables === sc.id}
+                  // The step-1 CTA opens this list; point the coach at the first
+                  // row's Run control (inert unless the demo scenario is active).
+                  runCoachMark={index === 0}
                   onReviewEvents={() => navigate(reviewEventsHref(sc))}
                 />
               ))}
@@ -323,8 +329,8 @@ export function ScansTab({ slug }: { slug: string }) {
                         <Button
                           size="xs"
                           variant="outline"
-                          disabled={runAgain.isPending}
-                          onClick={() => runAgain.mutate(run.scanId)}
+                          disabled={runScan.isPending}
+                          onClick={() => runScan.mutate(run.scanId)}
                         >
                           <RotateCw className="size-3" aria-hidden="true" />
                           Run again

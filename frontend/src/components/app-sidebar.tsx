@@ -30,6 +30,7 @@ import {
 } from '@/components/ui/dropdown-menu'
 import { useActiveBranchId } from '@/hooks/useBranch'
 import { buildNavGroups, type NavGroup, type NavItem, type NavTone } from '@/lib/navigation'
+import { commandPaletteShortcutLabel } from '@/lib/platform'
 import type { EventType, Project } from '@/types'
 
 const SIDEBAR_STORAGE_KEY = 'tripl-sidebar-collapsed'
@@ -230,7 +231,7 @@ export function AppSidebar() {
         >
           <Search className="h-3.5 w-3.5" />
           <span className="flex-1 truncate">Search or jump…</span>
-          <Kbd>⌘K</Kbd>
+          <Kbd>{commandPaletteShortcutLabel()}</Kbd>
         </button>
       </div>
 
@@ -567,7 +568,7 @@ function CollapsedSidebar({
       </Link>
       <button
         type="button"
-        aria-label="Search or jump — ⌘K"
+        aria-label={`Search or jump — ${commandPaletteShortcutLabel()}`}
         onClick={onOpenPalette}
         className="flex h-8 w-8 items-center justify-center rounded-md transition-colors hover:bg-[var(--surface-hover)]"
         style={{ color: 'var(--fg-muted)' }}

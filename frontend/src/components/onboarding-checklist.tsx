@@ -57,6 +57,13 @@ interface OnboardingChecklistProps {
   summary: ProjectSummary | undefined
   /** Number of connected data sources (the Overview already lists these). */
   sourceCount: number
+  /**
+   * Demo projects own their own onboarding (DemoWelcomePanel + coach), and a
+   * demo's only source is synthetic — excluded from `sourceCount` — so the
+   * "Connect a data source" step could never complete and the checklist would
+   * be stuck at "4 of 5" forever. Hide the checklist entirely for demos.
+   */
+  isDemo?: boolean
 }
 
 function storageKey(slug: string): string {
@@ -130,13 +137,18 @@ function coverageRatio(summary: ProjectSummary): number {
   return summary.implemented_event_count / summary.active_event_count
 }
 
-export function OnboardingChecklist({ slug, summary, sourceCount }: OnboardingChecklistProps) {
+export function OnboardingChecklist({ slug, summary, sourceCount, isDemo }: OnboardingChecklistProps) {
   // A tick to force a re-render (and thus a re-read of localStorage) after
   // dismissal. Reading dismissal on render also means a slug change is picked up
   // automatically, with no stale per-project state.
   const [, setDismissTick] = useState(0)
   // Ephemeral: when the slim collapsed bar is expanded back to the full card.
   const [expanded, setExpanded] = useState(false)
+
+  // Demo projects have their own onboarding (DemoWelcomePanel + coach). Their
+  // only source is synthetic, so "Connect a data source" can never complete and
+  // the checklist would be stuck at "4 of 5" forever (tripl-q7i1.7) — hide it.
+  if (isDemo) return null
 
   // Not loaded yet — render nothing rather than a checklist full of false
   // "incomplete" steps that would flip to done a moment later.
