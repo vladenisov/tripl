@@ -86,10 +86,26 @@ describe('formatDateTime', () => {
 })
 
 describe('formatTimestamp', () => {
-  it('produces a non-empty locale string for a valid instant', () => {
+  it('renders an explicit date+time (never the bare US toLocaleString default)', () => {
     const out = formatTimestamp('2026-06-21T08:05:00Z')
-    expect(out).toBeTruthy()
-    expect(typeof out).toBe('string')
+    expect(out).toContain('2026')
+    expect(out).toContain('21')
+    // A ':' proves the time component is present.
+    expect(out).toMatch(/\d:\d{2}|\d{2}:\d{2}/)
+    // The bare `toLocaleString()` default renders a numeric `m/d/yyyy` date;
+    // our explicit options must not, so that string form should be absent.
+    // (Asserted locale-agnostically — no reliance on a localized month name.)
+    expect(out).not.toMatch(/\d{1,2}\/\d{1,2}\/\d{4}/)
+  })
+
+  it('omits seconds by default', () => {
+    const out = formatTimestamp('2026-06-21T08:05:07Z')
+    expect(out).not.toMatch(/:\d{2}:\d{2}/)
+  })
+
+  it('includes seconds when { seconds: true } is passed', () => {
+    const out = formatTimestamp('2026-06-21T08:05:07Z', { seconds: true })
+    expect(out).toMatch(/:\d{2}:\d{2}/)
   })
 })
 

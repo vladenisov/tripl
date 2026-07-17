@@ -28,9 +28,20 @@ export function formatDateTime(value: string) {
   })
 }
 
-// Default locale-formatted date+time, used for raw bucket timestamps.
-export function formatTimestamp(value: string) {
-  return new Date(value).toLocaleString()
+// Locale-aware date+time for raw timestamps (metric buckets, "first seen",
+// delivery times). Passes explicit field options so it renders a full,
+// unambiguous date+time in the viewer's locale instead of the bare
+// `toLocaleString()` host default (US `m/d/yyyy, h:mm:ss AM` on many machines).
+// Pass `{ seconds: true }` where second-level precision matters (e.g. audit log).
+export function formatTimestamp(value: string, options: { seconds?: boolean } = {}) {
+  return new Date(value).toLocaleString(undefined, {
+    year: 'numeric',
+    month: 'short',
+    day: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
+    ...(options.seconds ? { second: '2-digit' } : {}),
+  })
 }
 
 export function formatRelativeTime(iso: string | null | undefined, now: number = Date.now()): string {

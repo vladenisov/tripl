@@ -95,8 +95,10 @@ Then look around in roughly this order:
 - **Plan → Events** — the catalog. Open an event to see its fields, values,
   tags, status, and change history.
 - **Observe → Live activity** — the health of the whole project at a glance.
-- **Observe → Monitors** — open a monitor showing a signal and study the volume
-  chart, forecast, heatmap, and the breakdown of what moved.
+- **Observe → Monitors** — the monitor on each event, with its current state and
+  the condition it watches for. To study a signal's volume chart, forecast,
+  heatmap, and the breakdown of what moved, open the event (or click its
+  signal) — that opens the monitoring detail.
 - **Govern → Reconciliation** — what is documented-but-dead and
   live-but-undocumented.
 
@@ -180,9 +182,11 @@ and day-of-week patterns) and raises a **signal** on an unexpected spike, drop,
 or change of shape.
 
 - **Observe → Live activity** — the whole project at a glance.
-- **Observe → Monitors** — open any event's monitor: volume chart with a short
-  forecast, heatmap by hour and weekday, value-distribution drift, and
-  breakdowns of which slice moved.
+- **Observe → Monitors** — every monitor with its current state and the condition
+  it watches for. Open an event (or one of its signals) for the full drilldown:
+  volume chart with a short forecast, heatmap by hour and weekday,
+  value-distribution drift, and breakdowns of which slice moved. (Where a firing
+  signal *routes* is Alerting's job — see Step 8.)
 
 :::note "No data yet" is normal at first
 These views read from collected metrics, so they stay empty until scans have

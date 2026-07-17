@@ -4,6 +4,7 @@ import { ChevronDown, Loader2, RotateCcw } from "lucide-react"
 import type { AlertDelivery, AlertDeliveryItem } from "@/types"
 import { alertingApi } from "@/api/alerting"
 import { getErrorMessage } from "@/lib/utils"
+import { formatDateTime } from "@/lib/datetime"
 import { Badge } from "@/components/ui/badge"
 import { LocalDeliveryBadge } from "@/demo/capabilityBadges"
 import { Button } from "@/components/ui/button"
@@ -56,7 +57,7 @@ export function AlertDeliveryRow({ slug, delivery }: { slug: string; delivery: A
   return (
     <>
       <TableRow>
-        <TableCell className="text-xs">{new Date(delivery.created_at).toLocaleString()}</TableCell>
+        <TableCell className="text-xs">{formatDateTime(delivery.created_at)}</TableCell>
         <TableCell>
           <div className="flex flex-wrap items-center gap-1.5">
             <Badge variant={delivery.status === 'failed' ? 'destructive' : delivery.status === 'sent' ? 'default' : 'secondary'} className="text-[10px]">{delivery.status}</Badge>
@@ -133,7 +134,7 @@ export function AlertDeliveryRow({ slug, delivery }: { slug: string; delivery: A
                 )}
                 {detail.sent_at && (
                   <Badge variant="outline" className="text-[10px]">
-                    sent {new Date(detail.sent_at).toLocaleString()}
+                    sent {formatDateTime(detail.sent_at)}
                   </Badge>
                 )}
               </div>

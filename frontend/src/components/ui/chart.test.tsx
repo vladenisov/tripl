@@ -92,7 +92,7 @@ describe('MetricsChart', () => {
     expect(marker.textContent).toContain('v1.4 deploy')
   })
 
-  it('exposes forecast points in the sr-only summary when provided', () => {
+  it('summarizes forecast points as a humanized range in the sr-only summary', () => {
     render(
       <MetricsChart
         granularity="hour"
@@ -113,13 +113,87 @@ describe('MetricsChart', () => {
             expected_count: 12,
             stddev: 2,
           },
+          {
+            bucket: '2026-01-01T12:00:00Z',
+            expected_count: 13,
+            stddev: 2,
+          },
         ]}
       />,
     )
 
     const marker = screen.getByTestId('forecast-point')
-    expect(marker.textContent).toContain('2026-01-01T11:00:00Z')
-    expect(marker.textContent).toContain('12')
+    // Collapsed into a start/end range, humanized — never one raw-ISO span per bucket.
+    expect(marker.textContent).toContain('Forecast from')
+    expect(marker.textContent).toContain('to')
+    expect(marker.textContent).toContain('Jan 1')
+    expect(marker.textContent).not.toMatch(/\d{4}-\d{2}-\d{2}T/)
+  })
+
+  it('pluralizes the anomaly count and humanizes buckets in the sr-only summary', () => {
+    const { rerender } = render(
+      <MetricsChart
+        granularity="day"
+        data={[
+          {
+            bucket: '2026-01-01T10:00:00Z',
+            count: 10,
+            expected_count: null,
+            stddev: null,
+            is_anomaly: false,
+            anomaly_direction: null,
+            z_score: null,
+          },
+          {
+            bucket: '2026-01-02T10:00:00Z',
+            count: 0,
+            expected_count: 10,
+            stddev: 2,
+            is_anomaly: true,
+            anomaly_direction: 'drop',
+            z_score: -10,
+          },
+        ]}
+      />,
+    )
+
+    const singular = screen.getByTestId('anomaly-dot')
+    // Singular wording for exactly one anomaly — never "1 anomalies".
+    expect(singular.textContent).toContain('1 anomaly detected')
+    expect(singular.textContent).not.toContain('1 anomalies')
+    // Bucket is humanized, not a raw ISO instant abutting the sentence.
+    expect(singular.textContent).toContain('Jan 2, 2026')
+    expect(singular.textContent).not.toMatch(/\d{4}-\d{2}-\d{2}T/)
+
+    rerender(
+      <MetricsChart
+        granularity="day"
+        data={[
+          {
+            bucket: '2026-01-01T10:00:00Z',
+            count: 0,
+            expected_count: 10,
+            stddev: 2,
+            is_anomaly: true,
+            anomaly_direction: 'drop',
+            z_score: -10,
+          },
+          {
+            bucket: '2026-01-02T10:00:00Z',
+            count: 0,
+            expected_count: 10,
+            stddev: 2,
+            is_anomaly: true,
+            anomaly_direction: 'drop',
+            z_score: -10,
+          },
+        ]}
+      />,
+    )
+
+    const plural = screen.getByTestId('anomaly-dot')
+    expect(plural.textContent).toContain('2 anomalies detected')
+    expect(plural.textContent).not.toMatch(/\d{4}-\d{2}-\d{2}T/)
   })
 })
 

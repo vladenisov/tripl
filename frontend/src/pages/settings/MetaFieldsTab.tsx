@@ -303,7 +303,7 @@ export function MetaFieldsTab({ slug }: { slug: string }) {
       </Dialog>
 
       <Panel
-        title="Meta fields"
+        title="Schema & fields"
         subtitle={`${metaFields.length} field${metaFields.length === 1 ? '' : 's'}`}
         right={
           <Button size="sm" onClick={() => setShowForm(true)}>

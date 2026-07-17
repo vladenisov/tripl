@@ -132,7 +132,7 @@ export default function MonitorsPage() {
             <EmptyState
               icon={Activity}
               title="No monitors yet"
-              description="Monitors are alert rules attached to a destination. Create one to start watching your events for spikes and drops."
+              description="A monitor watches an event's normal rhythm and alerts you when it spikes or drops. Create one to start watching your events."
               action={
                 slug ? (
                   <Button asChild size="sm">
@@ -153,7 +153,7 @@ export default function MonitorsPage() {
             </div>
           ) : monitors.length === 0 ? (
             <div className="px-4 py-6 text-[12px]" style={{ color: 'var(--fg-subtle)' }}>
-              No monitors yet. Monitors are alert rules attached to a destination — create one in{' '}
+              No monitors yet. Monitors watch your events for spikes and drops and alert you when something looks off — create one in{' '}
               {slug ? (
                 <Link
                   to={`/p/${slug}/settings/alerting`}

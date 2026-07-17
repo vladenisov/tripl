@@ -3,6 +3,7 @@ import { LogOut, RefreshCw } from 'lucide-react'
 import { Chip } from '@/components/primitives/chip'
 import { Button } from '@/components/ui/button'
 import { Field, SCard, SHeader, TextInput, Toggle } from '@/components/settings/kit'
+import { PASSWORD_POLICY_HINT } from '@/lib/passwordPolicy'
 
 type SessionRow = {
   device: string
@@ -50,7 +51,7 @@ export default function SecuritySection() {
         </Field>
         <Field
           label="New password"
-          hint="At least 12 characters, with a number and symbol."
+          hint={PASSWORD_POLICY_HINT}
           last
         >
           <TextInput value={next} onChange={setNext} type="password" placeholder="••••••••••" />

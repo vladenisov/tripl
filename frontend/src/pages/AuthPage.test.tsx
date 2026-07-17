@@ -1,8 +1,35 @@
-import { fireEvent, render, screen } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { MemoryRouter } from 'react-router-dom'
-import { describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import AuthPage from './AuthPage'
+
+function jsonResponse(data: unknown, status = 200) {
+  return new Response(JSON.stringify(data), {
+    status,
+    headers: { 'Content-Type': 'application/json' },
+  })
+}
+
+function urlOf(input: RequestInfo | URL) {
+  return typeof input === 'string'
+    ? input
+    : input instanceof URL
+      ? input.toString()
+      : input.url
+}
+
+// Default the unauthenticated /auth/status probe to a provisioned instance so the
+// owner note stays hidden unless a test opts into the fresh-instance response.
+function mockStatus(hasUsers: boolean) {
+  vi.spyOn(globalThis, 'fetch').mockImplementation((input: RequestInfo | URL) => {
+    const url = urlOf(input)
+    if (url.endsWith('/api/v1/auth/status')) {
+      return Promise.resolve(jsonResponse({ has_users: hasUsers }))
+    }
+    return Promise.reject(new Error(`Unexpected request: ${url}`))
+  })
+}
 
 function renderAuth() {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
@@ -16,6 +43,14 @@ function renderAuth() {
 }
 
 describe('AuthPage', () => {
+  beforeEach(() => {
+    mockStatus(true)
+  })
+
+  afterEach(() => {
+    vi.restoreAllMocks()
+  })
+
   it('shows sign-in copy in the card header by default (login mode)', () => {
     renderAuth()
 
@@ -27,11 +62,11 @@ describe('AuthPage', () => {
     ).toBeInTheDocument()
   })
 
-  it('updates the card title and subtitle to registration copy when Create Account is active (UX-22)', () => {
+  it('updates the card title and subtitle to registration copy when the register tab is active (UX-22)', () => {
     renderAuth()
 
-    // The register tab is the only "Create Account" control while login mode is active.
-    fireEvent.click(screen.getByRole('button', { name: 'Create Account' }))
+    // The register tab is the only "Create account" control while login mode is active.
+    fireEvent.click(screen.getByRole('button', { name: 'Create account' }))
 
     expect(
       screen.getByRole('heading', { name: 'Create your tripl account' }),
@@ -50,7 +85,7 @@ describe('AuthPage', () => {
   it('restores the sign-in copy when switching back to Existing Account', () => {
     renderAuth()
 
-    fireEvent.click(screen.getByRole('button', { name: 'Create Account' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Create account' }))
     fireEvent.click(screen.getByRole('button', { name: 'Existing Account' }))
 
     expect(
@@ -58,6 +93,65 @@ describe('AuthPage', () => {
     ).toBeInTheDocument()
     expect(
       screen.queryByRole('heading', { name: 'Create your tripl account' }),
+    ).not.toBeInTheDocument()
+  })
+
+  it('gives the register tab and submit button distinct accessible names (UX .23)', () => {
+    renderAuth()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Create account' }))
+
+    // Tab and submit no longer collide on the same accessible name.
+    expect(screen.getByRole('button', { name: 'Create account' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Create your account' })).toBeInTheDocument()
+  })
+
+  it('advertises the unified password policy on the register form (UX .11)', () => {
+    renderAuth()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Create account' }))
+
+    const password = screen.getByLabelText('Password') as HTMLInputElement
+    expect(password.minLength).toBe(12)
+    expect(
+      screen.getByText('At least 12 characters, with a number and symbol.'),
+    ).toBeInTheDocument()
+  })
+
+  it('shows the forgot-password hint in the login footer (UX .13)', () => {
+    renderAuth()
+
+    expect(
+      screen.getByText('Forgot your password? Contact your instance owner to reset it.'),
+    ).toBeInTheDocument()
+  })
+
+  it('shows the first-account owner note only on a fresh instance in register mode (UX .13)', async () => {
+    mockStatus(false)
+    renderAuth()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Create account' }))
+
+    expect(
+      await screen.findByText(/The first account on a new instance becomes the owner/),
+    ).toBeInTheDocument()
+
+    // The note is register-only: it disappears back in login mode.
+    fireEvent.click(screen.getByRole('button', { name: 'Existing Account' }))
+    expect(
+      screen.queryByText(/The first account on a new instance becomes the owner/),
+    ).not.toBeInTheDocument()
+  })
+
+  it('hides the owner note on a provisioned instance (UX .13)', async () => {
+    renderAuth()
+
+    // Let the /auth/status query settle (defaults to has_users: true).
+    await waitFor(() => expect(globalThis.fetch).toHaveBeenCalled())
+    fireEvent.click(screen.getByRole('button', { name: 'Create account' }))
+
+    expect(
+      screen.queryByText(/The first account on a new instance becomes the owner/),
     ).not.toBeInTheDocument()
   })
 })

@@ -58,6 +58,32 @@ describe('DemoProvisioningDialog', () => {
     expect(onRetry).toHaveBeenCalledTimes(1)
   })
 
+  it('surfaces the backend request id as a support reference on failure (.15)', () => {
+    // The 500 carries a request id (echoed on the response header -> ApiError);
+    // the dialog shows it so the user can quote it to support.
+    renderDialog({
+      status: 'error',
+      error: new ApiError('Demo provisioning failed', 500, 'req-abc123'),
+    })
+
+    const alert = screen.getByRole('alert')
+    expect(alert).toHaveTextContent('Demo provisioning failed')
+    expect(alert).toHaveTextContent('Reference: req-abc123')
+  })
+
+  it('announces the failure once — no duplicate title/status/alert copy (.15)', () => {
+    // Regression: the failure sentence used to appear in the title, a polite
+    // status region, AND the alert, so screen readers read it repeatedly. Now
+    // the assertive alert is the only live region on the error path.
+    renderDialog({
+      status: 'error',
+      error: new ApiError('Demo provisioning failed and was rolled back.', 500),
+    })
+
+    expect(screen.queryByRole('status')).not.toBeInTheDocument()
+    expect(screen.getByRole('alert')).toHaveTextContent('rolled back')
+  })
+
   it('does not claim a rollback when the request merely timed out', () => {
     // A timeout aborts OUR request; the server may still be seeding. Promising
     // "nothing was left behind" here would be a lie.

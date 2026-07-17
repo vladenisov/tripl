@@ -64,6 +64,10 @@ export interface ConnectionSettingsResponse {
 
 export interface DataSource {
   id: string
+  // Ownership scope: null = workspace-global (shared across projects); a non-null
+  // owner scopes the source to one project (e.g. a demo's synthetic warehouse).
+  // Lets project surfaces filter out sources owned by other projects.
+  project_id?: string | null
   name: string
   db_type: DbType
   is_synthetic: boolean

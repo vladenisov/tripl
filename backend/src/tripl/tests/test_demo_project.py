@@ -1,6 +1,7 @@
 """Tests for the demo project generator endpoint."""
 
 import uuid
+from datetime import UTC, datetime
 
 import pytest
 from httpx import AsyncClient
@@ -9,12 +10,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from tripl.core.analyzers.anomaly_detector import SCOPE_EVENT
 from tripl.core.analyzers.distribution_drift import PSI_BAND_MINOR, PSI_BAND_SIGNIFICANT
+from tripl.models.data_source import DataSource, TestStatus
 from tripl.models.distribution_drift import DistributionDrift
 from tripl.models.event_metric import EventMetric
 from tripl.models.metric_anomaly import MetricAnomaly
 from tripl.models.project import Project
 from tripl.models.project_anomaly_settings import ProjectAnomalySettings
 from tripl.models.scan_config import ScanConfig
+from tripl.services.demo import noise
 from tripl.tests.conftest import TestSessionLocal
 
 
@@ -56,6 +59,34 @@ async def test_demo_project_has_events(client: AsyncClient) -> None:
     # At least one event should have field values
     has_field_values = any(len(ev.get("field_values", [])) > 0 for ev in items)
     assert has_field_values, "Expected at least one event with field values"
+
+
+@pytest.mark.asyncio
+async def test_demo_events_first_seen_matches_history_window(client: AsyncClient) -> None:
+    # "First seen" (created_at) must line up with the start of the seeded ~23-day
+    # metric history, not the provisioning instant, so it agrees with the charts
+    # (tripl-2su6 .21). A brand-new demo used to stamp every event "just now".
+    resp = await client.post("/api/v1/projects/demo")
+    assert resp.status_code == 201
+    slug = resp.json()["slug"]
+
+    events_resp = await client.get(f"/api/v1/projects/{slug}/events")
+    assert events_resp.status_code == 200
+    data = events_resp.json()
+    items = data["items"] if isinstance(data, dict) else data
+    assert items
+
+    now = datetime.now(tz=UTC)
+    for ev in items:
+        created = datetime.fromisoformat(ev["created_at"])
+        # The API may serialize created_at without an offset; treat naive as UTC so
+        # the subtraction below doesn't mix naive/aware datetimes.
+        if created.tzinfo is None:
+            created = created.replace(tzinfo=UTC)
+        age_days = (now - created).total_seconds() / 86400
+        assert age_days >= noise.DEMO_HISTORY_DAYS - 1, (
+            f"{ev['name']} first seen only {age_days:.1f}d ago — not backdated to history window"
+        )
 
 
 @pytest.mark.asyncio
@@ -112,6 +143,31 @@ async def test_demo_project_has_fact_table_with_named_filter(client: AsyncClient
     detail = detail_resp.json()
     filter_names = {row_filter["name"] for row_filter in detail["row_filters"]}
     assert "completed" in filter_names, filter_names
+
+
+@pytest.mark.asyncio
+async def test_demo_data_source_is_tested_healthy(client: AsyncClient) -> None:
+    """The synthetic warehouse is stamped tested-healthy at seed time (issue .14).
+
+    The in-memory adapter always answers, so a never-checked source would read as
+    "untested" and drop out of the HEALTHY count / Overview badge for no real
+    reason. Provisioning sets last_test_status=success (with last_test_at), and
+    the source stays project-scoped so the Overview rail can filter it per project.
+    """
+    resp = await client.post("/api/v1/projects/demo")
+    assert resp.status_code == 201
+    slug = resp.json()["slug"]
+
+    async with TestSessionLocal() as session:
+        project_id = await _project_id_for_slug(session, slug)
+        source = (
+            await session.execute(select(DataSource).where(DataSource.project_id == project_id))
+        ).scalar_one()
+
+    assert source.db_type == "synthetic"
+    assert source.last_test_status == TestStatus.success
+    assert source.last_test_at is not None
+    assert source.project_id == project_id
 
 
 @pytest.mark.asyncio

@@ -157,13 +157,18 @@ describe('App', () => {
         return Promise.resolve(jsonResponse({ detail: 'Authentication required' }, 401))
       }
 
+      if (url.endsWith('/api/v1/auth/status')) {
+        return Promise.resolve(jsonResponse({ has_users: true }))
+      }
+
       return Promise.reject(new Error(`Unexpected request: ${url}`))
     })
 
     renderApp()
 
     expect(await screen.findByText('Sign in to tripl')).toBeInTheDocument()
-    expect(screen.getByText('Create Account')).toBeInTheDocument()
+    // The register tab ("Create account") is distinct from the submit button.
+    expect(screen.getByText('Create account')).toBeInTheDocument()
   })
 
   it('redirects the legacy event-detail URL to the canonical monitoring route', async () => {

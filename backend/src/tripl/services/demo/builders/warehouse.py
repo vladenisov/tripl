@@ -18,7 +18,7 @@ from datetime import datetime
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from tripl.core.adapters.synthetic import SYNTHETIC_EVENT_NAMES
-from tripl.models.data_source import DataSource
+from tripl.models.data_source import DataSource, TestStatus
 from tripl.models.event_metric import EventMetric
 from tripl.models.event_metric_breakdown import EventMetricBreakdown
 from tripl.models.scan_config import ScanConfig
@@ -81,6 +81,13 @@ async def _build_data_source(session: AsyncSession, ctx: DemoContext) -> None:
         database_name="synthetic",
         username="",
         password_encrypted="",
+        # Stamp the synthetic source as tested-healthy at seed time. The adapter is
+        # a local in-memory dataset that always answers, so a never-checked source
+        # would read as "untested" and drop out of the HEALTHY count / Overview
+        # badge for no real reason (issue .14). Deterministic via ctx.now.
+        last_test_status=TestStatus.success,
+        last_test_at=ctx.now,
+        last_test_message="Synthetic warehouse (demo)",
     )
     session.add(data_source)
     await session.flush()

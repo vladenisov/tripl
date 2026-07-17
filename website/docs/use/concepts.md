@@ -268,6 +268,12 @@ only drops, or both), by how big the change is, and it can stay quiet for a
 over. It also defines the **message template** — what the notification actually
 says.
 
+An alert rule is a different thing from a [monitor](#monitor--signal), and the
+two work in sequence: a **monitor** decides *whether* something looks wrong (it
+watches an event and raises signals), while an **alert rule** decides *whether a
+signal is worth telling you about* and *where to send it*. In short, a rule
+routes a monitor's signals to a [destination](#alert-destination).
+
 ### Simulator
 
 Before you switch a rule on, the **simulator** replays the last several days of

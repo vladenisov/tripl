@@ -10,6 +10,7 @@
  */
 
 import { Check, Loader2 } from 'lucide-react'
+import { ApiError } from '@/api/client'
 import { Button } from '@/components/ui/button'
 import {
   Dialog,
@@ -46,8 +47,16 @@ export function DemoProvisioningDialog({
   const isProvisioning = status === 'provisioning'
   const isError = status === 'error'
 
+  const errorMessage = getErrorMessage(error)
+  // A support reference the user can quote. The backend echoes the request id on
+  // the response header, so ApiError carries it for the demo 500 path.
+  const requestId = error instanceof ApiError ? error.requestId : undefined
+
+  // On failure the role="alert" block below is the single live announcer, so the
+  // polite status region stays silent — otherwise a screen reader reads the same
+  // "failed" sentence twice (once assertive via the alert, once polite here).
   const announcement = isError
-    ? `Demo generation failed: ${getErrorMessage(error)}`
+    ? null
     : status === 'success'
       ? 'Demo workspace is ready.'
       : `Generating demo workspace — ${PROVISIONING_PHASES[phaseIndex]?.label ?? 'Working'}`
@@ -81,18 +90,26 @@ export function DemoProvisioningDialog({
           </DialogDescription>
         </DialogHeader>
 
-        {/* Single polite live region so screen readers hear progress + result. */}
-        <p className="sr-only" aria-live="polite" role="status">
-          {announcement}
-        </p>
+        {/* Polite live region for progress + success; the failure path is
+            announced once by the role="alert" block below (never both). */}
+        {announcement !== null && (
+          <p className="sr-only" aria-live="polite" role="status">
+            {announcement}
+          </p>
+        )}
 
         {isError ? (
           <div
             role="alert"
-            className="rounded-lg border px-3 py-2.5 text-[12.5px] leading-[1.45]"
+            className="space-y-1 rounded-lg border px-3 py-2.5 text-[12.5px] leading-[1.45]"
             style={{ background: 'var(--danger-soft)', borderColor: 'var(--danger)', color: 'var(--fg)' }}
           >
-            {getErrorMessage(error)}
+            <p>{errorMessage}</p>
+            {requestId ? (
+              <p className="font-mono text-[11px]" style={{ color: 'var(--fg-faint)' }}>
+                Reference: {requestId}
+              </p>
+            ) : null}
           </div>
         ) : (
           <ol className="space-y-1.5">

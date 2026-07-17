@@ -19,6 +19,44 @@ async def test_register_creates_user_and_session_cookie(anon_client: AsyncClient
 
 
 @pytest.mark.asyncio
+async def test_register_rejects_weak_password(anon_client: AsyncClient):
+    # Under the unified policy a register password must be >= 12 chars with a
+    # number and a symbol; "password" (8 chars, no digit, no symbol) is rejected
+    # at the schema boundary before any user is stored.
+    response = await anon_client.post(
+        "/api/v1/auth/register",
+        json={
+            "email": "weak@example.com",
+            "password": "password",
+        },
+    )
+
+    assert response.status_code == 422
+    body = response.json()
+    assert any("password" in error.get("loc", []) for error in body["detail"])
+
+
+@pytest.mark.asyncio
+async def test_status_reports_empty_instance_then_populated(anon_client: AsyncClient):
+    fresh = await anon_client.get("/api/v1/auth/status")
+    assert fresh.status_code == 200
+    assert fresh.json() == {"has_users": False}
+
+    register = await anon_client.post(
+        "/api/v1/auth/register",
+        json={
+            "email": "owner@example.com",
+            "password": "Password123!",
+        },
+    )
+    assert register.status_code == 201
+
+    populated = await anon_client.get("/api/v1/auth/status")
+    assert populated.status_code == 200
+    assert populated.json() == {"has_users": True}
+
+
+@pytest.mark.asyncio
 async def test_login_returns_cookie_and_me(anon_client: AsyncClient):
     await anon_client.post(
         "/api/v1/auth/register",

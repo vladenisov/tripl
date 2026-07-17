@@ -11,7 +11,7 @@ import { Chip } from "@/components/primitives/chip"
 import { ErrorState } from "@/components/error-state"
 import { getErrorMessage } from '@/lib/utils'
 import { friendlyScanError } from '@/lib/scanError'
-import { formatRelativeTime } from '@/lib/datetime'
+import { formatDateTime, formatRelativeTime } from '@/lib/datetime'
 import {
   KV,
   NoneTag,
@@ -80,7 +80,7 @@ function ReplayChunkProgress({ summary, compact = false }: { summary: ScanJobRes
           {phaseLabel && <span>{phaseLabel}</span>}
           {progress.currentFrom && progress.currentTo && (
             <span>
-              {new Date(progress.currentFrom).toLocaleString()} - {new Date(progress.currentTo).toLocaleString()}
+              {formatDateTime(progress.currentFrom)} - {formatDateTime(progress.currentTo)}
             </span>
           )}
         </div>
@@ -612,7 +612,7 @@ function JobDetails({ job }: { job: ScanJob }) {
                 {summary.mode === 'metrics_replay' ? 'Replay period' : 'Collection period'}
               </span>
               {summary.time_from && summary.time_to && (
-                <span> · {new Date(summary.time_from).toLocaleString()} - {new Date(summary.time_to).toLocaleString()}</span>
+                <span> · {formatDateTime(summary.time_from)} - {formatDateTime(summary.time_to)}</span>
               )}
             </div>
           )}

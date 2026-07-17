@@ -229,6 +229,7 @@ def _reject_synthetic_conversion(ds: DataSource, update_dict: dict[str, object])
 def _to_response(ds: DataSource) -> DataSourceResponse:
     return DataSourceResponse(
         id=ds.id,
+        project_id=ds.project_id,
         name=ds.name,
         db_type=ds.db_type,
         is_synthetic=ds.db_type == DBType.synthetic,

@@ -5,6 +5,7 @@ visible demo), synthetic-DataSource ownership/cleanup, and reset-in-place. The
 full owner/editor/viewer permission matrix and browser E2E live in tripl-2su6.10.
 """
 
+import logging
 import uuid
 
 import pytest
@@ -141,6 +142,35 @@ async def test_injected_seed_failure_leaves_no_visible_demo(
             .all()
         )
         assert event_types == []
+
+
+@pytest.mark.asyncio
+async def test_provision_failure_logs_traceback_and_request_id(
+    client: AsyncClient,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    # A failed seed must be diagnosable: the warning carries the traceback
+    # (exc_info), the per-request id, and the failing detail — not a bare
+    # error=<ExceptionType> (tripl-2su6 .15).
+    async def _boom(*args: object, **kwargs: object) -> None:
+        raise RuntimeError("injected seed failure")
+
+    monkeypatch.setattr(demo_service, "_seed_demo_content", _boom)
+
+    with caplog.at_level(logging.WARNING, logger="tripl.services.demo_service"):
+        resp = await client.post("/api/v1/projects/demo")
+    assert resp.status_code == 500
+
+    failures = [
+        r for r in caplog.records if demo_service.DEMO_PROVISION_FAILED_EVENT in r.getMessage()
+    ]
+    assert failures, "expected a demo.provision.failed warning"
+    record = failures[0]
+    assert record.exc_info is not None  # full traceback attached for debugging
+    message = record.getMessage()
+    assert "request_id=" in message  # correlatable with the client's report
+    assert "injected seed failure" in message  # underlying detail surfaced
 
 
 @pytest.mark.asyncio

@@ -25,6 +25,7 @@ from tripl.models.event_type_owner import EventTypeOwner
 from tripl.models.event_type_relation import EventTypeRelation
 from tripl.models.field_definition import FieldDefinition
 from tripl.models.meta_field_definition import MetaFieldDefinition
+from tripl.services.demo import noise
 from tripl.services.demo.scenario import DemoContext
 
 # ---------------------------------------------------------------------------
@@ -410,6 +411,12 @@ async def _build_meta_fields(session: AsyncSession, ctx: DemoContext) -> None:
 
 async def _build_events(session: AsyncSession, ctx: DemoContext) -> None:
     specs = event_specs(ctx.now)
+    # "First seen" (the event's created_at) must line up with the start of the
+    # seeded ~23-day metric history, not the provisioning instant — otherwise a
+    # brand-new demo shows every event as first seen "just now" while its charts
+    # span three weeks. Derive the window start from the same source of truth the
+    # warehouse builder seeds from, so the history span has one definition.
+    history_start = noise.hour_buckets(ctx.now, days=noise.DEMO_HISTORY_DAYS)[0]
     events: list[tuple[EventSpec, Event]] = []
     for order, spec in enumerate(specs):
         ev = Event(
@@ -422,6 +429,7 @@ async def _build_events(session: AsyncSession, ctx: DemoContext) -> None:
             status=spec.status,
             sunset_at=spec.sunset_at,
             last_seen_at=spec.last_seen_at,
+            created_at=history_start,
             metric_breakdown_columns=list(spec.metric_breakdown_columns),
         )
         session.add(ev)

@@ -39,6 +39,16 @@ async def _get_user_by_email(session: AsyncSession, email: str) -> User | None:
     return cast(User | None, await session.scalar(statement))
 
 
+async def has_any_users(session: AsyncSession) -> bool:
+    """Whether the instance has at least one registered user.
+
+    Single source of truth for the "fresh instance" check: powers both the
+    first-user-becomes-owner rule and the unauthenticated /auth/status endpoint.
+    """
+    user_count = await session.scalar(select(func.count()).select_from(User))
+    return bool(user_count)
+
+
 async def _create_user_session(session: AsyncSession, user_id: uuid.UUID) -> str:
     session_token = new_session_token()
     session.add(
@@ -63,8 +73,7 @@ async def register_user(session: AsyncSession, data: RegisterRequest) -> tuple[U
 
     # First registered user becomes owner so the instance always has at least
     # one operator who can manage roles; subsequent users default to editor.
-    user_count = await session.scalar(select(func.count()).select_from(User))
-    role = "owner" if not user_count else "editor"
+    role = "owner" if not await has_any_users(session) else "editor"
 
     user = User(
         email=email,
