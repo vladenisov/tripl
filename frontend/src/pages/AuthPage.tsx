@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { useMutation, useQueryClient } from '@tanstack/react-query'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useLocation, useNavigate } from 'react-router-dom'
 import { ArrowRight, LockKeyhole, Radar, UserPlus } from 'lucide-react'
 import { authApi } from '@/api/auth'
@@ -8,6 +8,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { cn } from '@/lib/utils'
+import { PASSWORD_MIN_LENGTH, PASSWORD_POLICY_HINT } from '@/lib/passwordPolicy'
 import type { AuthUser } from '@/types'
 
 type AuthMode = 'login' | 'register'
@@ -25,6 +26,14 @@ export default function AuthPage() {
     location.state as { from?: { pathname?: string } } | null
   )?.from?.pathname ?? '/'
 
+  // Unauthenticated bootstrap check so the "first account becomes owner" note
+  // only shows on a brand-new instance with no users yet.
+  const statusQuery = useQuery({
+    queryKey: ['auth', 'status'],
+    queryFn: authApi.status,
+  })
+  const isFreshInstance = statusQuery.data?.has_users === false
+
   const authMutation = useMutation({
     mutationFn: () =>
       mode === 'login'
@@ -41,7 +50,10 @@ export default function AuthPage() {
     },
   })
 
-  const submitLabel = mode === 'login' ? 'Sign In' : 'Create Account'
+  // The register tab reads "Create account"; the submit button reads "Create your
+  // account" so the mode toggle and the submit control have distinct accessible
+  // names (UX .23).
+  const submitLabel = mode === 'login' ? 'Sign In' : 'Create your account'
   const cardTitle = mode === 'login' ? 'Sign in to tripl' : 'Create your tripl account'
   const cardDescription =
     mode === 'login'
@@ -128,7 +140,7 @@ export default function AuthPage() {
                 )}
                 onClick={() => setMode('register')}
               >
-                Create Account
+                Create account
               </button>
             </div>
 
@@ -180,12 +192,27 @@ export default function AuthPage() {
                   autoComplete={mode === 'login' ? 'current-password' : 'new-password'}
                   value={password}
                   onChange={event => setPassword(event.target.value)}
-                  placeholder="Minimum 8 characters"
+                  placeholder={mode === 'register' ? PASSWORD_POLICY_HINT : 'Enter your password'}
                   required
-                  minLength={8}
+                  // Register enforces the shared policy; login stays lenient so
+                  // pre-policy accounts can still sign in.
+                  minLength={mode === 'register' ? PASSWORD_MIN_LENGTH : 1}
+                  aria-describedby={mode === 'register' ? 'auth-password-hint' : undefined}
                   className="border-white/10 bg-white/5 text-white placeholder:text-slate-500"
                 />
+                {mode === 'register' && (
+                  <p id="auth-password-hint" className="text-xs leading-5 text-slate-400">
+                    {PASSWORD_POLICY_HINT}
+                  </p>
+                )}
               </div>
+
+              {mode === 'register' && isFreshInstance && (
+                <p className="rounded-lg border border-teal-400/20 bg-teal-400/5 px-3 py-2 text-sm leading-6 text-teal-100/90">
+                  The first account on a new instance becomes the owner and can manage
+                  members and instance settings.
+                </p>
+              )}
 
               {authMutation.isError && (
                 <div
@@ -207,11 +234,16 @@ export default function AuthPage() {
               </Button>
             </form>
 
-            <p className="text-sm leading-6 text-slate-400">
-              {mode === 'login'
-                ? 'Use the same account across catalog, monitoring, and alerting workflows.'
-                : 'New accounts are created inside this tripl workspace and receive access immediately.'}
-            </p>
+            {mode === 'login' ? (
+              <div className="space-y-1 text-sm leading-6 text-slate-400">
+                <p>Use the same account across catalog, monitoring, and alerting workflows.</p>
+                <p>Forgot your password? Contact your instance owner to reset it.</p>
+              </div>
+            ) : (
+              <p className="text-sm leading-6 text-slate-400">
+                New accounts are created inside this tripl workspace and receive access immediately.
+              </p>
+            )}
           </CardContent>
         </Card>
       </div>

@@ -16,7 +16,11 @@ settings.rate_limit_enabled = False
 
 from tripl.database import get_session  # noqa: E402
 from tripl.main import app  # noqa: E402
-from tripl.middleware.rate_limit import login_rate_limiter, register_rate_limiter  # noqa: E402
+from tripl.middleware.rate_limit import (  # noqa: E402
+    login_rate_limiter,
+    register_rate_limiter,
+    status_rate_limiter,
+)
 from tripl.models import Base  # noqa: E402
 
 TEST_DATABASE_URL = "sqlite+aiosqlite:///:memory:"
@@ -67,6 +71,7 @@ def _reset_rate_limiters() -> None:
     """Drop accumulated bucket state between tests so order is irrelevant."""
     login_rate_limiter.reset()
     register_rate_limiter.reset()
+    status_rate_limiter.reset()
 
 
 async def override_get_session() -> AsyncGenerator[AsyncSession]:

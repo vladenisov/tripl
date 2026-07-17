@@ -22,23 +22,13 @@ import {
 import { Badge } from '@/components/ui/badge'
 import type { AlertRule, AlertRuleSimulateResponse } from '@/types'
 import { getErrorMessage } from '@/lib/utils'
+import { formatDateTime } from '@/lib/datetime'
 
 const DAYS_OPTIONS = [1, 3, 7, 14, 30] as const
 
 type ReplayResult = {
   saved: AlertRuleSimulateResponse
   override: AlertRuleSimulateResponse | null
-}
-
-function formatBucket(iso: string) {
-  const date = new Date(iso)
-  if (Number.isNaN(date.getTime())) return iso
-  return date.toLocaleString(undefined, {
-    month: 'short',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-  })
 }
 
 function formatPercent(value: number) {
@@ -243,7 +233,7 @@ export function RuleReplayDialog({
                       <tbody>
                         {displayResult.firings.map((firing) => (
                           <tr key={firing.anomaly_id} className="border-t">
-                            <td className="px-3 py-1.5 font-mono">{formatBucket(firing.bucket)}</td>
+                            <td className="px-3 py-1.5 font-mono">{formatDateTime(firing.bucket)}</td>
                             <td className="px-3 py-1.5 truncate" title={firing.scope_name}>
                               <span className="text-muted-foreground">{firing.scope_type}</span>{' '}
                               {firing.scope_name}

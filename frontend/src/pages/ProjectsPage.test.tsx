@@ -1,6 +1,6 @@
-import { fireEvent, render, screen, within } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { MemoryRouter } from 'react-router-dom'
+import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { AuthContext, type AuthContextValue } from '@/components/auth-context'
 import ProjectsPage from './ProjectsPage'
@@ -544,5 +544,102 @@ describe('ProjectsPage', () => {
     expect(await screen.findByText('Failed to load projects')).toBeInTheDocument()
     expect(screen.getByText('Backend is unavailable. Check that the API server is running and try again.')).toBeInTheDocument()
     expect(screen.queryByText('No projects yet')).not.toBeInTheDocument()
+  })
+
+  it('enters the new project after creating it instead of staying on the workspace (tripl-q7i1.8)', async () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(
+      (input: RequestInfo | URL, init?: RequestInit) => {
+        const url =
+          typeof input === 'string'
+            ? input
+            : input instanceof URL
+              ? input.toString()
+              : input.url
+        const method = (init?.method ?? 'GET').toUpperCase()
+
+        if (url.endsWith('/api/v1/projects') && method === 'POST') {
+          return Promise.resolve(
+            jsonResponse(
+              {
+                id: 'proj-new',
+                name: 'My Project',
+                // The server assigns a slug that DIFFERS from the client-derived
+                // 'my-project' (e.g. collision handling appends a suffix), so the
+                // assertion below proves navigation uses the server's returned slug
+                // rather than the value the user typed (tripl-q7i1.8).
+                slug: 'my-project-2',
+                description: '',
+                created_at: '2026-07-16T09:00:00Z',
+                updated_at: '2026-07-16T09:00:00Z',
+                summary: {
+                  event_type_count: 0,
+                  event_count: 0,
+                  active_event_count: 0,
+                  implemented_event_count: 0,
+                  review_pending_event_count: 0,
+                  archived_event_count: 0,
+                  variable_count: 0,
+                  scan_count: 0,
+                  alert_destination_count: 0,
+                  monitoring_signal_count: 0,
+                  failing_scan_config_count: 0,
+                  latest_scan_job: null,
+                  latest_signal: null,
+                },
+              },
+              201,
+            ),
+          )
+        }
+
+        if (url.endsWith('/api/v1/projects')) {
+          return Promise.resolve(jsonResponse([]))
+        }
+
+        if (url.endsWith('/api/v1/data-sources')) {
+          return Promise.resolve(jsonResponse([]))
+        }
+
+        return Promise.reject(new Error(`Unexpected request: ${url}`))
+      },
+    )
+
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    })
+
+    function LocationProbe() {
+      const location = useLocation()
+      return <div data-testid="location">{location.pathname}</div>
+    }
+
+    render(
+      <QueryClientProvider client={queryClient}>
+        <AuthContext.Provider value={authValue('owner')}>
+          <MemoryRouter initialEntries={['/workspace']}>
+            <Routes>
+              <Route path="/workspace" element={<ProjectsPage />} />
+              <Route path="/p/:slug/overview" element={<LocationProbe />} />
+            </Routes>
+          </MemoryRouter>
+        </AuthContext.Provider>
+      </QueryClientProvider>,
+    )
+
+    // Wait for the empty workspace to settle, then open the create dialog.
+    expect(await screen.findByText('No projects yet')).toBeInTheDocument()
+    fireEvent.click(screen.getAllByRole('button', { name: /New project/i })[0])
+
+    // Filling the name auto-derives the slug; submit the form.
+    fireEvent.change(screen.getByLabelText(/project name/i), {
+      target: { value: 'My Project' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Create' }))
+
+    // On success the user is routed into the new project's overview, not left
+    // stranded on /workspace.
+    await waitFor(() => {
+      expect(screen.getByTestId('location')).toHaveTextContent('/p/my-project-2/overview')
+    })
   })
 })

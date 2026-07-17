@@ -6,15 +6,20 @@ warehouse-facing data path (Preview / Run now / Replay) works over the synthetic
 source with no network. Full Celery worker-transition E2E lives in tripl-2su6.10.
 """
 
+import uuid
 from datetime import UTC, datetime, timedelta
 
 import pytest
 from httpx import AsyncClient
 from sqlalchemy import select
+from sqlalchemy.orm import Session
 
 from tripl.core.adapters.registry import build_adapter
 from tripl.models.data_source import DataSource, DBType
+from tripl.models.event import Event
+from tripl.models.scan_config import ScanConfig
 from tripl.tests.conftest import TestSessionLocal
+from tripl.worker.tasks.scan import _scan_with_grouping
 
 
 async def _demo_slug(client: AsyncClient) -> str:
@@ -130,3 +135,90 @@ async def test_demo_warehouse_path_runs_over_synthetic_no_network(client: AsyncC
     adapter.close()
     # Sanity: the demo slug and source resolve without any real host.
     assert slug.startswith("demo-")
+
+
+def _non_archived(items: list[dict]) -> list[dict]:
+    return [item for item in items if item["status"] != "archived"]
+
+
+@pytest.mark.asyncio
+async def test_demo_rescan_folds_synthetic_events_without_flooding_catalog(
+    client: AsyncClient,
+) -> None:
+    """A Run now / Replay over the synthetic source creates 0 new events.
+
+    Regression for bd tripl-q7i1.6: the demo ScanConfig used to seed
+    ``event_type_column`` but no ``event_group_rules``, so ``generate_events``
+    derived a raw ``col=value | col=value`` identity for every synthetic row and
+    flooded the catalog with ~21 pipe-named draft events (17 -> 38). The demo now
+    ships one anchored ``event_name`` group rule per distinct synthetic event
+    name, so every synthetic identity folds back onto its curated catalog event.
+    """
+    slug = await _demo_slug(client)
+    scan_id = await _scan_id(client, slug)
+
+    # Baseline catalog + reconciliation coverage before the rescan.
+    events_before = (await client.get(f"/api/v1/projects/{slug}/events")).json()["items"]
+    catalog_before = len(_non_archived(events_before))
+    assert catalog_before == 17, "demo seeds 17 curated (non-archived) events"
+
+    cov_before = (await client.get(f"/api/v1/projects/{slug}/reconciliation/coverage")).json()
+    matched_before = cov_before["summary"]["matched_count"]
+    assert matched_before > 0
+
+    # Run the real grouped-scan path (what Run now / Replay traverse) over the
+    # synthetic source. generate_events needs a sync Session, so bridge into the
+    # same in-memory DB via ``run_sync`` (the SQLAlchemy-sanctioned async->sync
+    # bridge) exactly as the worker's run_scan would drive it.
+    async with TestSessionLocal() as session:
+        ds = (
+            await session.execute(select(DataSource).where(DataSource.db_type == DBType.synthetic))
+        ).scalar_one()
+        project_id = ds.project_id
+        adapter = build_adapter(ds)
+
+        def _rescan(sync_session: Session) -> object:
+            config = sync_session.get(ScanConfig, uuid.UUID(scan_id))
+            assert config is not None
+            # The demo rules must be present — this is the fix under test.
+            assert config.event_group_rules, "demo scan config must ship event_group_rules"
+            columns = [
+                column
+                for column in adapter.get_columns(config.base_query)
+                if column.name != config.time_column
+            ]
+            result, _groups, _rows, _truncated = _scan_with_grouping(
+                sync_session,
+                config.project_id,
+                config,
+                adapter,
+                columns,
+                scan_window=None,  # scan the whole bounded dataset
+                row_limit=100000,
+            )
+            return result
+
+        result = await session.run_sync(_rescan)
+        await session.commit()
+        adapter.close()
+
+    # Every synthetic identity folded onto an existing curated event: nothing new
+    # was created, and the rows were grouped rather than turned into fresh drafts.
+    assert result.events_created == 0
+    assert result.events_grouped > 0
+
+    # No raw pipe-named draft leaked into the catalog.
+    async with TestSessionLocal() as session:
+        names = (
+            (await session.execute(select(Event.name).where(Event.project_id == project_id)))
+            .scalars()
+            .all()
+        )
+    assert all(" | " not in name for name in names), names
+
+    # Catalog and reconciliation coverage are unchanged by the rescan.
+    events_after = (await client.get(f"/api/v1/projects/{slug}/events")).json()["items"]
+    assert len(_non_archived(events_after)) == catalog_before
+
+    cov_after = (await client.get(f"/api/v1/projects/{slug}/reconciliation/coverage")).json()
+    assert cov_after["summary"]["matched_count"] == matched_before

@@ -25,6 +25,7 @@ from tripl.models.event_type_owner import EventTypeOwner
 from tripl.models.event_type_relation import EventTypeRelation
 from tripl.models.field_definition import FieldDefinition
 from tripl.models.meta_field_definition import MetaFieldDefinition
+from tripl.services.demo import noise
 from tripl.services.demo.scenario import DemoContext
 
 # ---------------------------------------------------------------------------
@@ -350,6 +351,53 @@ _META_VALUES: dict[str, dict[str, str]] = {
     "Purchase Completed": {"jira": "PAY-1234", "owner_team": "Payments"},
 }
 
+# "First seen" stagger shape (PR #51 follow-up to tripl-2su6 .21). Core-tagged
+# events anchor the start of the seeded history; the rest ramp in between
+# ``_STAGGER_OLDEST_AGE_DAYS`` and ``_STAGGER_YOUNGEST_AGE_DAYS`` before now.
+# The youngest floor sits ~2 days back (jitter included) so nothing reads as
+# first seen "just now", while enough of the catalog lands inside the Overview
+# KPI's 14-day lookback that the "active events" sparkline shows a gentle ramp.
+_CORE_TAG = "core"
+_CORE_ANCHOR_JITTER_HOURS = 12
+_STAGGER_OLDEST_AGE_DAYS = 21.0
+_STAGGER_YOUNGEST_AGE_DAYS = 2.5
+_STAGGER_JITTER_HOURS = 6
+
+
+def staggered_created_ats(specs: list[EventSpec], *, now: datetime, seed: int) -> list[datetime]:
+    """Deterministic per-event "first seen" timestamps across the history window.
+
+    Returns one ``created_at`` per spec, in spec order. Core-tagged events (the
+    always-live backbone like Home Screen View / Purchase Completed) sit within
+    hours of the seeded history start, so the oldest events still anchor the
+    ~3-week window; the remaining catalog ramps in over the following weeks in
+    spec order, with roughly a third landing inside the last 14 days and nothing
+    younger than ~2 days. Every offset derives from ``(seed, event name)`` via
+    :func:`noise.derive_seed` — same recipe, same clock, same timestamps.
+    """
+    # Same source of truth the warehouse builder seeds from, so the history span
+    # keeps a single definition (~23 days, hour-aligned).
+    history_start = noise.hour_buckets(now, days=noise.DEMO_HISTORY_DAYS)[0]
+    non_core_count = sum(1 for spec in specs if _CORE_TAG not in spec.tags)
+    last_rank = max(non_core_count - 1, 1)
+    age_span_days = _STAGGER_OLDEST_AGE_DAYS - _STAGGER_YOUNGEST_AGE_DAYS
+
+    created_ats: list[datetime] = []
+    rank = 0
+    for spec in specs:
+        jitter_seed = noise.derive_seed(seed, f"first_seen:{spec.name}")
+        if _CORE_TAG in spec.tags:
+            anchor_jitter = timedelta(hours=jitter_seed % _CORE_ANCHOR_JITTER_HOURS)
+            created_ats.append(history_start + anchor_jitter)
+            continue
+        age_days = _STAGGER_OLDEST_AGE_DAYS - (rank / last_rank) * age_span_days
+        rank += 1
+        # Symmetric +/- jitter off the linear ramp so first-seen dates don't sit
+        # on a perfect grid; the youngest event stays >= ~2 days old.
+        jitter_hours = jitter_seed % (2 * _STAGGER_JITTER_HOURS + 1) - _STAGGER_JITTER_HOURS
+        created_ats.append(now - timedelta(days=age_days, hours=jitter_hours))
+    return created_ats
+
 
 async def build_plan(session: AsyncSession, ctx: DemoContext) -> None:
     await _build_event_types(session, ctx)
@@ -410,6 +458,12 @@ async def _build_meta_fields(session: AsyncSession, ctx: DemoContext) -> None:
 
 async def _build_events(session: AsyncSession, ctx: DemoContext) -> None:
     specs = event_specs(ctx.now)
+    # "First seen" (the event's created_at) is STAGGERED across the seeded
+    # ~23-day metric history, not stamped uniformly — a single shared timestamp
+    # makes every event first seen the same instant (and leaves the Overview
+    # 14-day "active events" sparkline a flat zero), while the provisioning
+    # instant makes everything first seen "just now". See staggered_created_ats.
+    created_ats = staggered_created_ats(specs, now=ctx.now, seed=ctx.seed)
     events: list[tuple[EventSpec, Event]] = []
     for order, spec in enumerate(specs):
         ev = Event(
@@ -422,6 +476,7 @@ async def _build_events(session: AsyncSession, ctx: DemoContext) -> None:
             status=spec.status,
             sunset_at=spec.sunset_at,
             last_seen_at=spec.last_seen_at,
+            created_at=created_ats[order],
             metric_breakdown_columns=list(spec.metric_breakdown_columns),
         )
         session.add(ev)

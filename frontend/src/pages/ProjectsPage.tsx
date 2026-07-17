@@ -1,6 +1,6 @@
 import { type ElementType, type ReactNode, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Link } from 'react-router-dom'
+import { Link, useNavigate } from 'react-router-dom'
 import { dataSourcesApi } from '@/api/dataSources'
 import { projectsApi } from '@/api/projects'
 import { useAuth } from '@/components/auth-context'
@@ -61,6 +61,7 @@ import {
 
 export default function MainPage() {
   const queryClient = useQueryClient()
+  const navigate = useNavigate()
   const { user } = useAuth()
   const [showForm, setShowForm] = useState(false)
   const [name, setName] = useState('')
@@ -145,13 +146,16 @@ export default function MainPage() {
 
   const createMut = useMutation({
     mutationFn: () => projectsApi.create({ name, slug, description }),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['projects'] })
+    onSuccess: (created) => {
+      void queryClient.invalidateQueries({ queryKey: ['projects'] })
       setShowForm(false)
       setName('')
       setSlug('')
       setSlugTouched(false)
       setDescription('')
+      // Enter the freshly-created project instead of stranding the user on the
+      // workspace list — mirrors the demo path's success routing (tripl-q7i1.8).
+      void navigate(`/p/${created.slug}/overview`)
     },
   })
 

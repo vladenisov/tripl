@@ -235,13 +235,18 @@ recent activity, and source health.
 
 ### Monitors
 
-**Where:** Observe › Monitors. A list of monitors with status (firing / warning /
-healthy), condition, and a firing count; muted monitors are flagged. Open a
-monitor for its detail.
+**Where:** Observe › Monitors. A list of monitors — each an alert **rule**
+attached to a scope — showing the **condition** it watches for (spike/drop
+direction, threshold, cooldown), the **destination** it routes alerts to, and its
+**state** (firing / warning / healthy); a firing count sits above the list and
+muted monitors are flagged. Open a monitor for its detail — the condition, the
+destination, mute controls, and its fired/delivery history. This is distinct from the **Monitoring detail** below: the per-scope
+volume drilldown (chart, forecast, heatmap) is reached from an event or a signal,
+not from a monitor row.
 
 ### Monitoring detail
 
-**Where:** reached from a monitor, an event signal, or a catalog row. Renders
+**Where:** reached from an event, an event signal, or a catalog row. Renders
 per-scope metrics for an `event`, `event_type`, or `project_total` scope, with
 tabs: **Volume** (series plus the latest signal — bucket / actual / expected /
 band), **By version** with version-adoption (only when the scan config defines an

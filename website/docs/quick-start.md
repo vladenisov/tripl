@@ -14,7 +14,7 @@ This guide takes you from nothing to a working tripl setup:
    product working on realistic data, no warehouse needed (~10 minutes).
 4. [Connect your own warehouse](#step-4--connect-your-warehouse) and
    [scan it into a plan](#step-5--create-your-first-scan).
-5. [Watch monitors come to life](#step-6--watch-the-monitors),
+5. [Watch detection come to life](#step-6--watch-the-monitors),
    [add your own metrics](#step-7--define-your-own-metrics), and
    [wire up your first alert](#step-8--set-up-your-first-alert).
 
@@ -95,8 +95,10 @@ Then look around in roughly this order:
 - **Plan → Events** — the catalog. Open an event to see its fields, values,
   tags, status, and change history.
 - **Observe → Live activity** — the health of the whole project at a glance.
-- **Observe → Monitors** — open a monitor showing a signal and study the volume
-  chart, forecast, heatmap, and the breakdown of what moved.
+- **Observe → Monitors** — the demo's alert rules, each with its current state
+  and the condition it watches for. To study a signal's volume chart, forecast,
+  heatmap, and the breakdown of what moved, open the event (or click its
+  signal) — that opens the monitoring detail.
 - **Govern → Reconciliation** — what is documented-but-dead and
   live-but-undocumented.
 
@@ -174,15 +176,18 @@ changes on **plan branches** with review, like pull requests.
 
 ## Step 6 — Watch the monitors
 
-With a scan collecting on a schedule, monitoring comes to life on its own — every
-event gets a **monitor** that learns its normal rhythm (including time-of-day
-and day-of-week patterns) and raises a **signal** on an unexpected spike, drop,
-or change of shape.
+With a scan collecting on a schedule, detection comes to life on its own — tripl
+learns every event's normal rhythm (including time-of-day and day-of-week
+patterns) and raises a **signal** on an unexpected spike, drop, or change of
+shape. There is nothing to set up.
 
 - **Observe → Live activity** — the whole project at a glance.
-- **Observe → Monitors** — open any event's monitor: volume chart with a short
-  forecast, heatmap by hour and weekday, value-distribution drift, and
-  breakdowns of which slice moved.
+- **Observe → Monitors** — each **monitor** here is an alert rule attached to a
+  scope, listed with the condition it watches for, where it routes, and its
+  current state. Open an event (or one of its signals) for the full drilldown —
+  the **monitoring detail**: volume chart with a short forecast, heatmap by hour
+  and weekday, value-distribution drift, and breakdowns of which slice moved.
+  (Where a firing signal *routes* is Alerting's job — see Step 8.)
 
 :::note "No data yet" is normal at first
 These views read from collected metrics, so they stay empty until scans have
@@ -191,7 +196,7 @@ message like *"run a scan to start collecting volume metrics"* means exactly
 that, not that something is broken.
 :::
 
-If a monitor is too twitchy or too quiet, tune the thresholds in the project's
+If detection is too twitchy or too quiet, tune the thresholds in the project's
 monitoring settings — [How anomaly detection works](./use/anomaly-detection.md)
 explains what each knob does.
 
@@ -217,11 +222,11 @@ A metric starts as a **draft** and is only collected while **active**, so
 activate it when the definition looks right. Press **Collect now** to get a
 first data point without waiting for the schedule, then open the metric — its
 drilldown has the same tabs (volume, heatmap, distribution, breakdowns) as any
-event monitor.
+event's monitoring detail.
 
 ## Step 8 — Set up your first alert
 
-A monitor only helps if someone hears about it. Open **Observe → Alerting**:
+A signal only helps if someone hears about it. Open **Observe → Alerting**:
 
 1. **Add a destination** — where alerts go: Slack, Telegram, email, a generic
    webhook, Jira, or Linear. Mark it **enabled**.
@@ -240,7 +245,7 @@ incident at once. The full rule syntax and routing options are in
 ## You're set up
 
 You now have the full loop running: a plan drafted from real data, scans
-keeping it honest on a schedule, monitors learning what normal looks like, your
+keeping it honest on a schedule, detection learning what normal looks like, your
 own metrics collecting, and an alert rule that tells the right person when the
 numbers move. From here:
 

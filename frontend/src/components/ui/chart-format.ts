@@ -79,6 +79,48 @@ export function formatTooltipLabel(dateStr: string, granularity: MetricsGranular
   }
 }
 
+// Pluralization-aware anomaly-count sentence shared by every chart sr-only
+// summary (single-series, multi-series, compact) so the singular/plural split is
+// defined once. "1 anomaly detected" vs "N anomalies detected" — never the
+// broken "1 anomalies detected".
+export function formatAnomalyCount(count: number): string {
+  return count === 1 ? '1 anomaly detected' : `${count} anomalies detected`
+}
+
+// Cap for how many humanized bucket labels a screen-reader summary enumerates
+// before collapsing the tail into "and N more". Keeps the sr-only text from
+// reading out dozens of timestamps one by one.
+const BUCKET_PREVIEW_LIMIT = 5
+
+// Humanize a list of bucket instants into a short, comma-separated preview for
+// sr-only text. Reuses formatTooltipLabel so raw ISO strings never surface, and
+// bounds the enumeration to the first BUCKET_PREVIEW_LIMIT entries, appending
+// "and N more" for the remainder.
+export function summarizeBuckets(
+  buckets: string[],
+  granularity: MetricsGranularity,
+  max: number = BUCKET_PREVIEW_LIMIT,
+): string {
+  if (buckets.length === 0) return ''
+  const shown = buckets.slice(0, max).map(bucket => formatTooltipLabel(bucket, granularity))
+  const remaining = buckets.length - shown.length
+  const preview = shown.join(', ')
+  return remaining > 0 ? `${preview}, and ${remaining} more` : preview
+}
+
+// Collapse a forecast series (one bucket per point) into a single humanized
+// range ("Forecast from <start> to <end>") instead of one span per bucket.
+export function summarizeForecastRange(
+  buckets: string[],
+  granularity: MetricsGranularity,
+): string {
+  if (buckets.length === 0) return ''
+  const start = formatTooltipLabel(buckets[0], granularity)
+  if (buckets.length === 1) return `Forecast for ${start}`
+  const end = formatTooltipLabel(buckets[buckets.length - 1], granularity)
+  return `Forecast from ${start} to ${end}`
+}
+
 // Compact axis/tick labels that never blow out the reserved Y-axis width:
 // 380000 -> "380k", 1_500_000 -> "1.5M", 1_000_000 -> "1M". Whole numbers at
 // >= 100 of a unit, one decimal (trailing .0 stripped) below, so a label stays

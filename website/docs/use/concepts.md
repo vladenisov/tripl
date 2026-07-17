@@ -176,15 +176,23 @@ monitoring — and event-composition [metrics](#metric) — needs.
 
 ### Monitor & signal
 
-A **monitor** learns what "normal" looks like for an event — including the fact
-that traffic is higher at lunchtime than at 3am, and higher on weekdays than
-weekends — and raises a **signal** when the real numbers stray too far from that
-expectation. Signals come in flavours: a sudden **spike**, an unexpected
-**drop**, or a change in **shape**.
+tripl itself learns what "normal" looks like for every event — including the
+fact that traffic is higher at lunchtime than at 3am, and higher on weekdays
+than weekends — and raises a **signal** when the real numbers stray too far
+from that expectation. Signals come in flavours: a sudden **spike**, an
+unexpected **drop**, or a change in **shape**. This detection is automatic;
+there is nothing to set up.
 
-You can monitor at three levels: the **whole project**, an **event type**, or a
-single **event** — and each active **metric** is watched the same way, as its own
-scope.
+A **monitor** is an [alert rule](#alert-rule) attached to a scope, together
+with its live state — firing, warning, or healthy (a monitor can also be
+muted, which is an independent flag). The **Observe → Monitors**
+page lists them. A monitor doesn't detect anything itself: it decides which
+signals matter and where they go.
+
+Detection watches three levels: the **whole project**, an **event type**, or a
+single **event** — and each active **metric** is watched the same way, as its
+own scope. The per-event volume drilldown — chart, forecast, heatmap — is the
+**monitoring detail**, reached from an event or one of its signals.
 
 ### Schema drift
 
@@ -267,6 +275,14 @@ only drops, or both), by how big the change is, and it can stay quiet for a
 **cooldown** period so the same underlying problem doesn't page you over and
 over. It also defines the **message template** — what the notification actually
 says.
+
+An alert rule and a [monitor](#monitor--signal) are two views of the same
+thing: the rule is the configuration, and the monitor is that rule as you see
+it live on the Monitors page, together with its current state. Detection and
+rules work in sequence: tripl's automatic detection decides *whether* something
+looks wrong (it raises signals), while an **alert rule** decides *whether a
+signal is worth telling you about* and *where to send it* — it routes signals
+to a [destination](#alert-destination).
 
 ### Simulator
 

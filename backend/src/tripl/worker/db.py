@@ -41,6 +41,30 @@ def _ensure_initialized() -> sessionmaker[Session]:
     return _session_local
 
 
+def dispose_engine() -> None:
+    """Drop the inherited engine + pool so the current process rebuilds its own.
+
+    Fork-safety (canonical SQLAlchemy + Celery prefork pattern): the Celery
+    parent (MainProcess) may initialize ``_engine`` before prefork forks the
+    worker children (e.g. a startup read through ``SyncSessionLocal``). Forked
+    children inherit that engine and its live TCP socket, so tasks running in
+    different children would interleave protocol traffic on ONE shared Postgres
+    connection and read each other's results. Calling this in each child
+    (``worker_process_init``) discards the inherited pool; the next
+    ``SyncSessionLocal`` then lazily rebuilds a fresh engine+pool owned by the
+    current process.
+
+    ``dispose(close=False)`` releases the pool's references WITHOUT closing the
+    inherited fd — the parent still owns that socket, so we must not close it
+    from a child. A no-op when the engine was never initialized.
+    """
+    global _engine, _session_local
+    if _engine is not None:
+        _engine.dispose(close=False)
+    _engine = None
+    _session_local = None
+
+
 def SyncSessionLocal() -> Session:  # noqa: N802  — emulates sessionmaker() call shape
     """Return a new sync Session from the shared engine pool."""
     return _ensure_initialized()()

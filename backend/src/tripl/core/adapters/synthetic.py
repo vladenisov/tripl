@@ -118,6 +118,18 @@ _EVENT_DEFS: tuple[tuple[str, str, str, str | None, str | None], ...] = (
     ("purchase", "Purchase Completed", "paywall", None, "prod_pro_monthly"),
     ("purchase", "Trial Started", "paywall", None, "prod_trial"),
 )
+
+# Distinct ``event_name`` values the synthetic adapter can emit — the single
+# source of truth for callers that must enumerate every identity in the dataset.
+# The demo scan's ``event_group_rules`` are generated from this tuple so a rescan
+# folds each synthetic identity back into its curated catalog event (0 new
+# events); adding a new ``_EVENT_DEFS`` row automatically extends the rule set,
+# so a new synthetic name can never silently reintroduce raw pipe-named drafts.
+# ``dict.fromkeys`` de-dupes while preserving first-seen order.
+SYNTHETIC_EVENT_NAMES: tuple[str, ...] = tuple(
+    dict.fromkeys(event_name for _, event_name, _, _, _ in _EVENT_DEFS)
+)
+
 _PLATFORMS = ("ios", "android", "web")
 _APP_VERSIONS = ("1.2.0", "1.3.0", "1.4.0")
 _CURRENCIES = ("USD", "EUR")

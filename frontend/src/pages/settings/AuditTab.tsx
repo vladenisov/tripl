@@ -8,6 +8,7 @@ import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
+import { formatTimestamp } from '@/lib/datetime'
 
 const ACTION_TONE: Record<string, string> = {
   create: 'bg-emerald-500/15 text-emerald-700',
@@ -81,19 +82,6 @@ function displayTarget(entry: { target_name?: string | null; target_type: string
   const name = entry.target_name
   if (!name) return entry.target_type
   return UUID_RE.test(name) ? name.slice(0, 8) : name
-}
-
-function formatTimestamp(iso: string) {
-  const date = new Date(iso)
-  if (Number.isNaN(date.getTime())) return iso
-  return date.toLocaleString(undefined, {
-    year: 'numeric',
-    month: 'short',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-    second: '2-digit',
-  })
 }
 
 function toIsoOrUndef(localDateTime: string, endOfDay = false): string | undefined {
@@ -273,7 +261,7 @@ export function AuditTab({ slug }: { slug: string }) {
                         <ChevronRight className="mt-0.5 h-3.5 w-3.5 shrink-0 text-muted-foreground" />
                       )}
                       <span className="tnum text-[10px] text-muted-foreground w-36 shrink-0">
-                        {formatTimestamp(entry.created_at)}
+                        {formatTimestamp(entry.created_at, { seconds: true })}
                       </span>
                       <Badge className={`${actionTone(entry.action)} text-[10px] shrink-0`}>
                         {entry.action}
