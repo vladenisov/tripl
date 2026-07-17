@@ -123,6 +123,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/auth/status": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Status */
+        get: operations["get_status_api_v1_auth_status_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/data-sources": {
         parameters: {
             query?: never;
@@ -3906,6 +3923,11 @@ export interface components {
             /** Total */
             total: number;
         };
+        /** AuthStatusResponse */
+        AuthStatusResponse: {
+            /** Has Users */
+            has_users: boolean;
+        };
         /** AuthUserResponse */
         AuthUserResponse: {
             /**
@@ -4328,6 +4350,8 @@ export interface components {
             password_set: boolean;
             /** Port */
             port: number;
+            /** Project Id */
+            project_id?: string | null;
             /** Timeout Seconds */
             timeout_seconds?: number | null;
             /**
@@ -9291,6 +9315,26 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_status_api_v1_auth_status_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AuthStatusResponse"];
                 };
             };
         };
