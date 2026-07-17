@@ -7,6 +7,7 @@ import {
   ChevronLeft,
   ChevronRight,
   ChevronsUpDown,
+  Database,
   Folder,
   LayoutDashboard,
   LogOut,
@@ -30,10 +31,45 @@ import {
 } from '@/components/ui/dropdown-menu'
 import { useActiveBranchId } from '@/hooks/useBranch'
 import { buildNavGroups, type NavGroup, type NavItem, type NavTone } from '@/lib/navigation'
+import { commandPaletteShortcutLabel } from '@/lib/platform'
 import type { EventType, Project } from '@/types'
 
 const SIDEBAR_STORAGE_KEY = 'tripl-sidebar-collapsed'
 const LAST_SLUG_STORAGE_KEY = 'tripl-last-project-slug'
+
+/**
+ * Workspace-scoped nav shown on global routes (no `:slug` in the URL, e.g.
+ * `/workspace` or `/settings`). It replaces the per-project Plan/Observe/Govern
+ * groups so the multi-project dashboard is not decorated with the last visited
+ * project's counts and event-type tree. Reuses the same NavGroup/NavItem shape
+ * so it renders through NavGroupSection / CollapsedSidebar unchanged.
+ */
+const WORKSPACE_NAV_GROUP: NavGroup = {
+  label: 'Workspace',
+  items: [
+    {
+      id: 'all-projects',
+      label: 'All projects',
+      icon: LayoutDashboard,
+      href: '/workspace',
+      match: (p) => p === '/workspace' || p === '/',
+    },
+    {
+      id: 'data-sources',
+      label: 'Data sources',
+      icon: Database,
+      href: '/settings/data-sources',
+      match: (p) => p.startsWith('/settings/data-sources'),
+    },
+    {
+      id: 'workspace-settings',
+      label: 'Settings',
+      icon: Settings,
+      href: '/settings',
+      match: (p) => p.startsWith('/settings') && !p.startsWith('/settings/data-sources'),
+    },
+  ],
+}
 
 function toneColor(tone: NavTone | undefined, active: boolean): string {
   if (active) return 'var(--accent)'
@@ -93,30 +129,20 @@ function useSidebarCollapsed() {
 }
 
 /**
- * Resolve the project the grouped nav should target. Prefer the slug in the
- * URL; otherwise fall back to the last project visited (persisted) so global
- * routes like `/` or `/settings` still offer a way back into a project.
+ * Persist the last-visited project slug whenever the URL carries one. The
+ * sidebar renders strictly from the real route slug now, so it no longer *reads*
+ * this value — but other surfaces (e.g. the settings area's default-project
+ * resolution) still depend on it being kept up to date here.
  */
-function useResolvedSlug(slug: string | undefined, projects: Project[]): string | undefined {
+function usePersistLastSlug(slug: string | undefined): void {
   useEffect(() => {
-    if (slug) {
-      try {
-        localStorage.setItem(LAST_SLUG_STORAGE_KEY, slug)
-      } catch {
-        /* ignore */
-      }
+    if (!slug) return
+    try {
+      localStorage.setItem(LAST_SLUG_STORAGE_KEY, slug)
+    } catch {
+      /* ignore */
     }
   }, [slug])
-
-  if (slug) return slug
-  let last: string | null = null
-  try {
-    last = localStorage.getItem(LAST_SLUG_STORAGE_KEY)
-  } catch {
-    /* ignore */
-  }
-  if (last && projects.some((p) => p.slug === last)) return last
-  return projects[0]?.slug
 }
 
 export function AppSidebar() {
@@ -133,22 +159,29 @@ export function AppSidebar() {
     queryFn: projectsApi.list,
   })
   const projects = projectsQuery.data ?? []
-  const navSlug = useResolvedSlug(slug, projects)
-  const navProject = projects.find((p) => p.slug === navSlug)
-  const navGroups = navSlug ? buildNavGroups(navSlug, navProject?.summary) : []
+
+  // Keep the persisted last-slug fresh, but render the nav from the REAL route
+  // slug only — so `/workspace` shows a workspace-scoped nav, not the last
+  // project's Plan/Observe/Govern groups.
+  usePersistLastSlug(slug)
+
+  const project = slug ? projects.find((p) => p.slug === slug) : undefined
+  const navGroups: NavGroup[] = slug
+    ? buildNavGroups(slug, project?.summary)
+    : [WORKSPACE_NAV_GROUP]
   const eventTypesQuery = useQuery({
-    queryKey: ['eventTypes', navSlug, branchId],
-    queryFn: () => eventTypesApi.list(navSlug!, branchId),
-    enabled: !!navSlug,
+    queryKey: ['eventTypes', slug, branchId],
+    queryFn: () => eventTypesApi.list(slug!, branchId),
+    enabled: !!slug,
   })
   const eventTypes = eventTypesQuery.data ?? []
   const currentPath = location.pathname
   const userInitials = initialsFrom(auth.user?.name ?? auth.user?.email ?? '')
   const projectSettingsActive =
-    !!navSlug
-    && (currentPath === `/p/${navSlug}/settings`
-      || currentPath === `/p/${navSlug}/settings/general`)
-  const conceptsActive = !!navSlug && currentPath === `/p/${navSlug}/concepts`
+    !!slug
+    && (currentPath === `/p/${slug}/settings`
+      || currentPath === `/p/${slug}/settings/general`)
+  const conceptsActive = !!slug && currentPath === `/p/${slug}/concepts`
 
   if (collapsed) {
     return (
@@ -201,7 +234,7 @@ export function AppSidebar() {
           project-scoped rather than as the service logo. */}
       <div className="px-3 pb-2">
         <ProjectSwitcher
-          activeProject={navProject}
+          activeProject={project}
           projects={projects}
           loading={projectsQuery.isLoading}
           onPick={(project) => navigate(`/p/${project.slug}/events`)}
@@ -230,7 +263,7 @@ export function AppSidebar() {
         >
           <Search className="h-3.5 w-3.5" />
           <span className="flex-1 truncate">Search or jump…</span>
-          <Kbd>⌘K</Kbd>
+          <Kbd>{commandPaletteShortcutLabel()}</Kbd>
         </button>
       </div>
 
@@ -243,13 +276,13 @@ export function AppSidebar() {
               group={group}
               currentPath={currentPath}
               eventTypes={eventTypes}
-              navSlug={navSlug}
+              navSlug={slug}
             />
           ))
         ) : (
           <EmptyNav loading={projectsQuery.isLoading || projectsQuery.isError} />
         )}
-        {navSlug && (
+        {slug && (
           <div className="mt-1 border-t pt-2" style={{ borderColor: 'var(--border-subtle)' }}>
             <Link
               to="/settings/project/general"
@@ -279,9 +312,9 @@ export function AppSidebar() {
           workspace settings + sign out. The Concepts link teaches the domain
           model (Plan / Observe / Govern) to newcomers. */}
       <div className="px-3 py-3 border-t" style={{ borderColor: 'var(--border-subtle)' }}>
-        {navSlug && (
+        {slug && (
           <Link
-            to={`/p/${navSlug}/concepts`}
+            to={`/p/${slug}/concepts`}
             className="mb-2 flex items-center gap-2 rounded-[5px] px-1.5 py-1.5 text-[12px] font-medium no-underline transition-colors"
             style={{
               background: conceptsActive ? 'var(--surface-hover)' : 'transparent',
@@ -567,7 +600,7 @@ function CollapsedSidebar({
       </Link>
       <button
         type="button"
-        aria-label="Search or jump — ⌘K"
+        aria-label={`Search or jump — ${commandPaletteShortcutLabel()}`}
         onClick={onOpenPalette}
         className="flex h-8 w-8 items-center justify-center rounded-md transition-colors hover:bg-[var(--surface-hover)]"
         style={{ color: 'var(--fg-muted)' }}

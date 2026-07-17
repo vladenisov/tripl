@@ -14,9 +14,12 @@ import {
 import { cn } from '@/lib/utils'
 import {
   axisWidthForValues,
+  formatAnomalyCount,
   formatCount,
   formatTick,
   formatTooltipLabel,
+  summarizeBuckets,
+  summarizeForecastRange,
 } from '@/components/ui/chart-format'
 import type { MetricsGranularity } from '@/lib/metrics'
 import { useTheme, type ChartStyle } from '@/components/theme-provider'
@@ -394,7 +397,9 @@ export function MetricsChart({
     )
   }
 
-  const anomalyCount = data.filter(point => point.is_anomaly).length
+  const anomalyBuckets = data.filter(point => point.is_anomaly).map(point => point.bucket)
+  const anomalyCount = anomalyBuckets.length
+  const forecastBuckets = (forecast ?? []).map(point => point.bucket)
 
   return (
     <div
@@ -406,17 +411,19 @@ export function MetricsChart({
       style={{ height }}
     >
       <div id={descId} className="sr-only">
-        {data.length} data points.{anomalyCount > 0 ? ` ${anomalyCount} anomalies detected.` : ''}
-        {data.filter(point => point.is_anomaly).map(point => (
-          <span key={point.bucket} data-testid="anomaly-dot">
-            {point.bucket}
+        {data.length} data points.
+        {anomalyCount > 0 && (
+          <span data-testid="anomaly-dot">
+            {' '}
+            {formatAnomalyCount(anomalyCount)}: {summarizeBuckets(anomalyBuckets, granularity)}.
           </span>
-        ))}
-        {(forecast ?? []).map(point => (
-          <span key={point.bucket} data-testid="forecast-point">
-            {point.bucket}: {Math.round(point.expected_count)}
+        )}
+        {forecastBuckets.length > 0 && (
+          <span data-testid="forecast-point">
+            {' '}
+            {summarizeForecastRange(forecastBuckets, granularity)}.
           </span>
-        ))}
+        )}
         {snappedAnnotations.map(annotation => (
           <span key={annotation.id} data-testid="chart-annotation">
             {annotation.bucket}: {annotation.label}
@@ -606,7 +613,7 @@ export function MetricsMultiSeriesChart({
         {chartSeries.map(item => {
           const anomalies = item.data.filter(point => point.is_anomaly)
           return anomalies.length > 0 ? (
-            <p key={item.key}>{item.label}: {anomalies.length} anomalies detected.</p>
+            <p key={item.key}>{item.label}: {formatAnomalyCount(anomalies.length)}.</p>
           ) : null
         })}
       </div>
@@ -793,7 +800,7 @@ export function MiniMetricsChart({
       style={{ height }}
     >
       <span className="sr-only">
-        {chartLabel}: {data.length} data points{anomalyCount > 0 ? `, ${anomalyCount} anomalies` : ''}.
+        {chartLabel}: {data.length} data points{anomalyCount > 0 ? `, ${formatAnomalyCount(anomalyCount)}` : ''}.
       </span>
       <ResponsiveContainer width="100%" height="100%">
         <ComposedChart data={data} margin={{ top: 4, right: 2, bottom: 2, left: 2 }}>

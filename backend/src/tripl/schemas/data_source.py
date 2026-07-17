@@ -365,6 +365,10 @@ class DataSourceUpdate(BaseModel):
 
 class DataSourceResponse(BaseModel):
     id: uuid.UUID
+    # Ownership scope: None = workspace-global source (shared across projects); a
+    # non-None owner scopes it to one project (e.g. a demo's synthetic warehouse).
+    # Exposed so project surfaces can filter out sources owned by other projects.
+    project_id: uuid.UUID | None = None
     name: str
     db_type: DBType
     # True when this is a local, in-memory synthetic warehouse (demo data). The

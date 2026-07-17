@@ -110,7 +110,7 @@ export default function MonitorDetailPage() {
                   style={{ color: 'var(--fg-muted)' }}
                 >
                   <Settings2 className="h-3.5 w-3.5" />
-                  Edit rule
+                  Edit monitor
                 </Link>
               ) : undefined
             }
@@ -123,7 +123,7 @@ export default function MonitorDetailPage() {
             </Chip>
             {!monitor.rule_enabled && (
               <Chip tone="neutral" size="sm">
-                Rule off
+                Monitor off
               </Chip>
             )}
             {monitor.muted && monitor.muted_until && (

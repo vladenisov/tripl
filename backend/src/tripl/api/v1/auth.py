@@ -2,8 +2,18 @@ from fastapi import APIRouter, Depends, Request, Response, status
 
 from tripl.api.deps import CurrentUserDep, SessionDep
 from tripl.config import settings
-from tripl.middleware.rate_limit import enforce, login_rate_limiter, register_rate_limiter
-from tripl.schemas.auth import AuthUserResponse, LoginRequest, RegisterRequest
+from tripl.middleware.rate_limit import (
+    enforce,
+    login_rate_limiter,
+    register_rate_limiter,
+    status_rate_limiter,
+)
+from tripl.schemas.auth import (
+    AuthStatusResponse,
+    AuthUserResponse,
+    LoginRequest,
+    RegisterRequest,
+)
 from tripl.services import auth_service
 
 router = APIRouter(prefix="/auth", tags=["auth"])
@@ -29,6 +39,19 @@ def _clear_session_cookie(response: Response) -> None:
         secure=settings.session_cookie_secure,
         path="/",
     )
+
+
+@router.get(
+    "/status",
+    response_model=AuthStatusResponse,
+    dependencies=[Depends(enforce(status_rate_limiter))],
+)
+async def get_status(session: SessionDep) -> AuthStatusResponse:
+    # Unauthenticated on purpose: the login/register screen queries this before
+    # anyone is signed in to decide whether to show the first-account note.
+    # Rate limited on its own bucket (never shares login/register quota) so an
+    # unauthenticated caller can't hammer the COUNT(*) behind it.
+    return AuthStatusResponse(has_users=await auth_service.has_any_users(session))
 
 
 @router.post(

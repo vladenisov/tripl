@@ -7,6 +7,7 @@ import { Card, CardContent } from '@/components/ui/card'
 import { Dialog, DialogContent, DialogTitle } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
 import { Frame, ImagePlus, Loader2, MessageCircle, Trash2, Upload, X } from 'lucide-react'
+import { formatDateTime } from '@/lib/datetime'
 
 interface Props {
   slug: string
@@ -491,7 +492,7 @@ function CommentItem({
     <div className="space-y-2">
       <div className="rounded-md border bg-muted/30 px-2 py-1.5">
         <div className="flex items-center justify-between gap-2 text-xs text-muted-foreground">
-          <span>{new Date(comment.created_at).toLocaleString()}</span>
+          <span>{formatDateTime(comment.created_at)}</span>
           <div className="flex items-center gap-2">
             <button
               type="button"
@@ -517,7 +518,7 @@ function CommentItem({
           {replies.map(reply => (
             <div key={reply.id} className="rounded-md border bg-muted/20 px-2 py-1.5">
               <div className="flex items-center justify-between gap-2 text-xs text-muted-foreground">
-                <span>{new Date(reply.created_at).toLocaleString()}</span>
+                <span>{formatDateTime(reply.created_at)}</span>
                 <button
                   type="button"
                   aria-label="Delete comment"

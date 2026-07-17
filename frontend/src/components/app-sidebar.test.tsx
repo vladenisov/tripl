@@ -129,6 +129,9 @@ function renderSidebar(initialEntry = '/p/demo/events') {
             <Route path="/p/:slug/events/:tab/:eventId" element={<AppSidebar />} />
             <Route path="/p/:slug/settings" element={<AppSidebar />} />
             <Route path="/p/:slug/settings/:tab" element={<AppSidebar />} />
+            {/* Global/workspace route: no `:slug`, so the sidebar must render
+                its workspace-scoped nav rather than the last project's nav. */}
+            <Route path="/workspace" element={<AppSidebar />} />
           </Routes>
         </MemoryRouter>
       </AuthContext.Provider>
@@ -272,5 +275,36 @@ describe('AppSidebar', () => {
     renderSidebar('/p/demo/settings/monitoring')
     const monitors = await screen.findByRole('link', { name: /Monitors/ })
     expect(monitors).toHaveStyle({ background: 'var(--surface-hover)' })
+  })
+
+  it('renders a workspace-scoped nav on /workspace instead of the last project', async () => {
+    mockProjectsFetch()
+    // Even with a persisted last project, /workspace must NOT resurrect that
+    // project's Plan/Observe/Govern groups — it is a portfolio route.
+    try {
+      localStorage.setItem('tripl-last-project-slug', 'demo')
+    } catch {
+      /* ignore */
+    }
+
+    renderSidebar('/workspace')
+
+    // The workspace section renders.
+    expect(await screen.findByRole('link', { name: 'All projects' })).toHaveAttribute(
+      'href',
+      '/workspace',
+    )
+    expect(screen.getByText('Workspace')).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: 'Data sources' })).toHaveAttribute(
+      'href',
+      '/settings/data-sources',
+    )
+
+    // The per-project job groups and their contents do NOT render.
+    for (const absent of ['Plan', 'Observe', 'Govern', 'Reconciliation', 'Page view']) {
+      expect(screen.queryByText(absent)).not.toBeInTheDocument()
+    }
+    // The project-scoped footer affordances are suppressed too.
+    expect(screen.queryByText('Concepts')).not.toBeInTheDocument()
   })
 })

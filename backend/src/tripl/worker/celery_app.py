@@ -102,6 +102,22 @@ celery_app.conf.beat_schedule = {
     },
 }
 
+# Fork-safety: apply_startup_service_overrides() above reads the DB in the
+# parent (MainProcess), which lazily builds the shared sync Engine + pool BEFORE
+# prefork forks the worker children. Forked children would otherwise inherit that
+# engine and its live Postgres socket, interleaving protocol traffic on ONE
+# shared connection across tasks. Disposing the inherited engine in each child
+# forces the next SyncSessionLocal() to rebuild a fresh, process-owned pool.
+from celery.signals import worker_process_init  # noqa: E402
+
+from tripl.worker.db import dispose_engine  # noqa: E402
+
+
+@worker_process_init.connect  # type: ignore[untyped-decorator]
+def _reset_sync_engine_after_fork(**_kwargs: object) -> None:
+    dispose_engine()
+
+
 # Import tasks so they are registered with the celery app
 import tripl.worker.tasks.alerts  # noqa: F401, E402
 import tripl.worker.tasks.demo_runtime  # noqa: F401, E402

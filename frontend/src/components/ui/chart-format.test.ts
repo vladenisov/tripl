@@ -1,5 +1,13 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { axisWidthForValues, formatCount, formatTick, formatTooltipLabel } from './chart-format'
+import {
+  axisWidthForValues,
+  formatAnomalyCount,
+  formatCount,
+  formatTick,
+  formatTooltipLabel,
+  summarizeBuckets,
+  summarizeForecastRange,
+} from './chart-format'
 
 /**
  * Axis and tooltip labels name a UTC bucket start, so they must render in UTC.
@@ -131,5 +139,68 @@ describe('axisWidthForValues', () => {
     expect(axisWidthForValues([0, Infinity, NaN, 2_300_000], formatCount)).toBeLessThanOrEqual(80)
     const huge = (v: number) => `${v}`.padStart(40, '0')
     expect(axisWidthForValues([0, 1, 2], huge)).toBe(80)
+  })
+})
+
+describe('formatAnomalyCount', () => {
+  it('uses the singular for exactly one anomaly', () => {
+    expect(formatAnomalyCount(1)).toBe('1 anomaly detected')
+  })
+
+  it('uses the plural for zero and for many', () => {
+    expect(formatAnomalyCount(0)).toBe('0 anomalies detected')
+    expect(formatAnomalyCount(2)).toBe('2 anomalies detected')
+    expect(formatAnomalyCount(13)).toBe('13 anomalies detected')
+  })
+})
+
+// Consecutive UTC day buckets; formatTooltipLabel renders these in UTC (see the
+// "bucket labels render in UTC" suite above), so the humanized strings are stable.
+const DAY_BUCKETS = [
+  '2026-06-08T00:00:00.000Z',
+  '2026-06-09T00:00:00.000Z',
+  '2026-06-10T00:00:00.000Z',
+  '2026-06-11T00:00:00.000Z',
+  '2026-06-12T00:00:00.000Z',
+  '2026-06-13T00:00:00.000Z',
+]
+
+describe('summarizeBuckets', () => {
+  it('returns an empty string when there are no buckets', () => {
+    expect(summarizeBuckets([], 'day')).toBe('')
+  })
+
+  it('humanizes bucket instants instead of leaking raw ISO', () => {
+    expect(summarizeBuckets(DAY_BUCKETS.slice(0, 2), 'day')).toBe('Jun 8, 2026, Jun 9, 2026')
+  })
+
+  it('caps the enumeration at 5 and collapses the tail into "and N more"', () => {
+    const summary = summarizeBuckets(DAY_BUCKETS, 'day') // 6 buckets
+    expect(summary).toBe(
+      'Jun 8, 2026, Jun 9, 2026, Jun 10, 2026, Jun 11, 2026, Jun 12, 2026, and 1 more',
+    )
+    expect(summary).not.toContain('2026-06-13') // never reads out the raw tail
+  })
+
+  it('shows every bucket with no "more" suffix at exactly the cap', () => {
+    const summary = summarizeBuckets(DAY_BUCKETS.slice(0, 5), 'day')
+    expect(summary).not.toContain('more')
+    expect(summary.endsWith('Jun 12, 2026')).toBe(true)
+  })
+})
+
+describe('summarizeForecastRange', () => {
+  it('returns an empty string when there is no forecast', () => {
+    expect(summarizeForecastRange([], 'day')).toBe('')
+  })
+
+  it('names a single forecast bucket', () => {
+    expect(summarizeForecastRange(['2026-06-08T00:00:00.000Z'], 'day')).toBe('Forecast for Jun 8, 2026')
+  })
+
+  it('collapses a multi-bucket forecast into a single range', () => {
+    expect(
+      summarizeForecastRange(['2026-06-08T00:00:00.000Z', '2026-06-12T00:00:00.000Z'], 'day'),
+    ).toBe('Forecast from Jun 8, 2026 to Jun 12, 2026')
   })
 })

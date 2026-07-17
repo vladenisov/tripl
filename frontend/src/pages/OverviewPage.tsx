@@ -9,9 +9,12 @@ import {
   type LucideIcon,
 } from 'lucide-react'
 import { activityApi } from '@/api/activity'
+import { ApiError } from '@/api/client'
 import { dataSourcesApi } from '@/api/dataSources'
 import { metricsApi } from '@/api/metrics'
+import { metricsCatalogApi } from '@/api/metricsCatalogApi'
 import { projectsApi } from '@/api/projects'
+import NotFoundPage from '@/pages/NotFoundPage'
 import { ErrorState } from '@/components/error-state'
 import { OnboardingChecklist } from '@/components/onboarding-checklist'
 import { countRealSources } from '@/components/onboarding-utils'
@@ -54,37 +57,50 @@ export default function OverviewPage() {
     queryFn: () => projectsApi.get(slug!),
     enabled: !!slug,
   })
+  // The project query is the single authority on whether the slug exists. Gate
+  // the five project-scoped widget queries on its success so they never fan out
+  // 404s against a nonexistent project (issue .9).
   const volumeQuery = useQuery({
     queryKey: ['overview', 'volume', slug],
     queryFn: () => metricsApi.getProjectTotalMetrics(slug!),
-    enabled: !!slug,
+    enabled: !!slug && projectQuery.isSuccess,
     staleTime: 60_000,
   })
   const topEventsQuery = useQuery({
     queryKey: ['overview', 'top-events', slug],
     queryFn: () => metricsApi.getTopEvents(slug!, { windowHours: 48, limit: 6 }),
-    enabled: !!slug,
+    enabled: !!slug && projectQuery.isSuccess,
     staleTime: 60_000,
   })
   const kpiSeriesQuery = useQuery({
     queryKey: ['overview', 'kpi-series', slug],
     queryFn: () => metricsApi.getOverviewKpiSeries(slug!, 14),
-    enabled: !!slug,
+    enabled: !!slug && projectQuery.isSuccess,
     staleTime: 60_000,
   })
   const signalsQuery = useQuery({
     queryKey: ['overview', 'signals', slug],
     queryFn: () => metricsApi.getActiveSignals(slug!),
-    enabled: !!slug,
+    enabled: !!slug && projectQuery.isSuccess,
     staleTime: 30_000,
     refetchInterval,
   })
   const activityQuery = useQuery({
     queryKey: ['activity', slug ?? 'workspace'],
     queryFn: () => activityApi.list({ slug, limit: ACTIVITY_LIMIT }),
-    enabled: !!slug,
+    enabled: !!slug && projectQuery.isSuccess,
     staleTime: 30_000,
     refetchInterval,
+  })
+  // Metric-scope signals carry only the definition id; the catalog list resolves
+  // it to a display name for the signals rail (issue .17). Shares the
+  // 'metrics-catalog' key prefix so catalog mutations invalidate this copy too.
+  // Purely additive — a failed/pending fetch just leaves the short-ref fallback.
+  const metricsCatalogQuery = useQuery({
+    queryKey: ['metrics-catalog', slug, 'names'],
+    queryFn: () => metricsCatalogApi.list(slug!),
+    enabled: !!slug && projectQuery.isSuccess,
+    staleTime: 60_000,
   })
   const sourcesQuery = useQuery({
     queryKey: ['dataSources'],
@@ -92,13 +108,25 @@ export default function OverviewPage() {
   })
 
   const summary = projectQuery.data?.summary
+  const projectId = projectQuery.data?.id
   const volumePoints = volumeQuery.data?.data ?? []
   const volumeCounts = volumePoints.map((p) => p.count)
   const topEvents = topEventsQuery.data ?? []
   const maxTopVolume = topEvents.reduce((m, e) => Math.max(m, e.total_count), 0)
   const signals = signalsQuery.data ?? []
   const activity = activityQuery.data ?? []
-  const sources = sourcesQuery.data ?? []
+  // Resolve metric-scope signals to their catalog display name (issue .17).
+  const metricNames: ReadonlyMap<string, string> = new Map(
+    (metricsCatalogQuery.data?.items ?? []).map((m) => [m.id, m.display_name]),
+  )
+  // Scope the Source-health rail to this project: workspace-global sources
+  // (project_id == null) plus sources owned by the current project. Without this
+  // a demo project's project-scoped synthetic source leaks into unrelated
+  // projects (issue .14). Falls back to the full list until the project loads.
+  const allSources = sourcesQuery.data ?? []
+  const sources = projectId
+    ? allSources.filter((s) => s.project_id == null || s.project_id === projectId)
+    : allSources
 
   // "Open signals" must come from the SAME array the panel below renders, so the
   // headline can never disagree with the list (issue H1).
@@ -110,6 +138,14 @@ export default function OverviewPage() {
     ? planCoverageRatio(summary.implemented_event_count, summary.active_event_count) * 100
     : undefined
   const activeEventsSeries = kpiSeriesQuery.data?.active_events ?? []
+
+  // A nonexistent slug is a 404 on the project query itself: replace the whole
+  // widget grid with the app's full-page not-found (issue .9). Non-404 project
+  // failures (500/503) keep the compact KPI-strip ErrorState below so a transient
+  // outage is not misreported as a missing project.
+  if (projectQuery.error instanceof ApiError && projectQuery.error.status === 404) {
+    return <NotFoundPage />
+  }
 
   return (
     <div className="min-w-0 space-y-8 pb-12">
@@ -126,6 +162,7 @@ export default function OverviewPage() {
           slug={slug}
           summary={summary}
           sourceCount={countRealSources(sources)}
+          isDemo={projectQuery.data?.is_demo}
         />
       )}
 
@@ -344,7 +381,12 @@ export default function OverviewPage() {
         {signals.length > 0 && slug && (
           <div className="divide-y" style={{ borderColor: 'var(--border-subtle)' }}>
             {signals.slice(0, SIGNAL_LIMIT).map((signal) => (
-              <SignalRow key={`${signal.scope_type}:${signal.scope_ref}`} slug={slug} signal={signal} />
+              <SignalRow
+                key={`${signal.scope_type}:${signal.scope_ref}`}
+                slug={slug}
+                signal={signal}
+                metricNames={metricNames}
+              />
             ))}
           </div>
         )}
@@ -434,17 +476,38 @@ function activeTrendLabel(counts: number[]): string {
   return `Active events over the last 14 days. Latest ${latest.toLocaleString()}, range ${min.toLocaleString()} to ${max.toLocaleString()}.`
 }
 
-function signalScopeLabel(signal: MonitoringSignal): string {
+/** Metric definition id → catalog display name, for labelling metric signals. */
+type MetricNameMap = ReadonlyMap<string, string>
+
+// Mirrors AnomaliesPage's copy (issue .17): a metric anomaly must read
+// "Metric · <display name>" instead of falling through to a raw "Event <uuid8>".
+function signalScopeLabel(signal: MonitoringSignal, metricNames: MetricNameMap): string {
   if (signal.scope_type === 'project_total') return 'Project total'
   const ref = signal.scope_ref.slice(0, 8)
-  return signal.scope_type === 'event_type' ? `Event type ${ref}` : `Event ${ref}`
+  if (signal.scope_type === 'event_type') return `Event type ${ref}`
+  if (signal.scope_type === 'event') return `Event ${ref}`
+  if (signal.scope_type === 'metric') {
+    // Resolved from the metrics catalog; fall back to the short ref while the
+    // catalog loads or when the definition is gone (e.g. deleted metric).
+    const name = metricNames.get(signal.scope_ref)
+    return name ? `Metric · ${name}` : `Metric ${ref}`
+  }
+  return `${signal.scope_type} ${ref}`
 }
 
-function SignalRow({ slug, signal }: { slug: string; signal: MonitoringSignal }) {
+function SignalRow({
+  slug,
+  signal,
+  metricNames,
+}: {
+  slug: string
+  signal: MonitoringSignal
+  metricNames: MetricNameMap
+}) {
   // Full text drives both the visible label and its hover tooltip so a long
   // scope name (e.g. page_value_question_page_value_…) stays readable when the
   // row ellipsizes.
-  const signalSummary = `${signal.direction === 'drop' ? 'Drop' : 'Spike'} on ${signalScopeLabel(signal)}`
+  const signalSummary = `${signal.direction === 'drop' ? 'Drop' : 'Spike'} on ${signalScopeLabel(signal, metricNames)}`
   return (
     <Link
       to={getMonitoringPath(slug, signal)}

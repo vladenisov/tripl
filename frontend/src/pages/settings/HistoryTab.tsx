@@ -21,6 +21,7 @@ import type {
   PlanRevisionSummary,
 } from '@/types'
 import { getErrorMessage } from '@/lib/utils'
+import { formatDateTime } from '@/lib/datetime'
 
 const KIND_TONE: Record<PlanDiffEntry['kind'], { label: string; chip: string }> = {
   added: { label: 'added', chip: 'bg-emerald-500/15 text-emerald-700' },
@@ -35,18 +36,6 @@ const ENTITY_LABEL: Record<PlanDiffEntry['entity_type'], string> = {
   variable: 'Variable',
   meta_field: 'Meta field',
   relation: 'Relation',
-}
-
-function formatTimestamp(iso: string) {
-  const date = new Date(iso)
-  if (Number.isNaN(date.getTime())) return iso
-  return date.toLocaleString(undefined, {
-    year: 'numeric',
-    month: 'short',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-  })
 }
 
 export function HistoryTab({ slug }: { slug: string }) {
@@ -210,7 +199,7 @@ function RevisionRow({
             {rev.summary || <span className="text-muted-foreground">(no summary)</span>}
           </div>
           <div className="text-[10px] text-muted-foreground tnum">
-            {formatTimestamp(rev.created_at)}
+            {formatDateTime(rev.created_at)}
             {' · '}
             {rev.entity_counts.event_types} types · {rev.entity_counts.fields} fields ·{' '}
             {rev.entity_counts.events} events

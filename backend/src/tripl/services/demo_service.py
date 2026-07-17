@@ -20,6 +20,7 @@ from fastapi import HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from tripl import cache
+from tripl.middleware.request_id import current_request_id
 from tripl.models.domain_enums import ProjectGenerationStatus
 from tripl.models.project import Project
 from tripl.schemas.project import ProjectResponse
@@ -108,13 +109,18 @@ async def create_demo_project(
             created_by=created_by,
         )
     except Exception as exc:
-        # Observable failure: a stable event name + the exception type (never
-        # internals) so a spike in failed demo provisioning is alertable.
+        # Diagnosable failure: a stable event name plus the full traceback, the
+        # per-request id (so an operator can pivot straight from the user's
+        # report), and the failing DB statement/constraint — none of which leaks
+        # to the client, which still receives only a generic 500.
         logger.warning(
-            "%s slug=%s error=%s",
+            "%s slug=%s request_id=%s error=%s detail=%s",
             DEMO_PROVISION_FAILED_EVENT,
             slug,
+            current_request_id() or "-",
             type(exc).__name__,
+            _db_failure_detail(exc),
+            exc_info=exc,
         )
         await session.rollback()
         failed = await session.get(Project, project_id)
@@ -182,10 +188,13 @@ async def reset_demo_project(
         await session.commit()
     except Exception as exc:
         logger.warning(
-            "%s slug=%s error=%s",
+            "%s slug=%s request_id=%s error=%s detail=%s",
             DEMO_RESET_FAILED_EVENT,
             slug,
+            current_request_id() or "-",
             type(exc).__name__,
+            _db_failure_detail(exc),
+            exc_info=exc,
         )
         await session.rollback()
         raise HTTPException(
@@ -201,6 +210,23 @@ async def reset_demo_project(
 def _safe_generation_error(exc: Exception) -> str:
     """Short, user-safe failure summary — never internals (SQL, secrets, trace)."""
     return f"Demo provisioning failed during seeding ({type(exc).__name__})."
+
+
+def _db_failure_detail(exc: Exception) -> str:
+    """Server-only diagnostics for a seed failure: the failing DB statement and,
+    when present, the violated constraint.
+
+    SQLAlchemy wraps the driver error on ``.orig``; asyncpg exposes the offending
+    constraint via ``.orig.diag.constraint_name``. Falls back to the exception's
+    own text for non-DB failures. Logged only — never returned to a client.
+    """
+    orig = getattr(exc, "orig", None)
+    if orig is None:
+        return str(exc)
+    constraint = getattr(getattr(orig, "diag", None), "constraint_name", None)
+    if constraint:
+        return f"{orig} [constraint={constraint}]"
+    return str(orig)
 
 
 async def _seed_demo_content(

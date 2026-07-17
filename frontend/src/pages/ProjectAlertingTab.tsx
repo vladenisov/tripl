@@ -29,6 +29,7 @@ import {
   type DestinationFormState,
 } from './alerting/constants'
 import { getErrorMessage } from '@/lib/utils'
+import { formatDateTime } from '@/lib/datetime'
 
 // Channel catalogue — drives both the per-channel sections and the compact
 // add-channel affordance, so every type stays addable from one place.
@@ -442,7 +443,7 @@ export default function ProjectAlertingTab({ slug }: { slug: string }) {
                             </Badge>
                             <span className="font-medium">{group.item_count} items</span>
                             <span className="text-muted-foreground">
-                              {new Date(group.latest_delivery_at).toLocaleString()}
+                              {formatDateTime(group.latest_delivery_at)}
                             </span>
                           </div>
                           <div className="mt-1 truncate text-muted-foreground" title={group.scope_names.join(', ')}>
@@ -484,7 +485,7 @@ export default function ProjectAlertingTab({ slug }: { slug: string }) {
                       </div>
                       {group.muted_until && (
                         <div className="mt-2 text-[10px] text-muted-foreground">
-                          muted until {new Date(group.muted_until).toLocaleString()}
+                          muted until {formatDateTime(group.muted_until)}
                         </div>
                       )}
                     </div>

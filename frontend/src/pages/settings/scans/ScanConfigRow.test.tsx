@@ -42,3 +42,24 @@ describe('ScanListRow review-events action (tripl-7l83.11.3)', () => {
     expect(screen.queryByRole('button', { name: /Review events/ })).toBeNull()
   })
 })
+
+describe('ScanListRow run action (tripl-q7i1.5)', () => {
+  it('omits Run now when no onRun handler is provided', () => {
+    renderRow()
+    expect(screen.queryByRole('button', { name: /Run Orders scan now/ })).toBeNull()
+  })
+
+  it('runs without opening the scan detail (stops propagation)', () => {
+    const onRun = vi.fn()
+    const { onNavigate } = renderRow({ onRun })
+    fireEvent.click(screen.getByRole('button', { name: 'Run Orders scan now' }))
+    expect(onRun).toHaveBeenCalledTimes(1)
+    // stopPropagation keeps the row's own navigate from firing.
+    expect(onNavigate).not.toHaveBeenCalled()
+  })
+
+  it('disables Run now while a run is pending', () => {
+    renderRow({ onRun: vi.fn(), runPending: true })
+    expect(screen.getByRole('button', { name: 'Run Orders scan now' })).toBeDisabled()
+  })
+})

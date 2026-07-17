@@ -968,6 +968,35 @@ describe('ProjectSettingsPage', () => {
     expect(await screen.findByText('Link: https://tracker.example.com/issues/${value}')).toBeInTheDocument()
   })
 
+  it('titles the meta-fields panel to match the "Schema & fields" sidebar entry', async () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const url = String(input)
+      if (url.endsWith('/api/v1/projects/demo/meta-fields') && (!init || !init.method || init.method === 'GET')) {
+        return mockJsonResponse([])
+      }
+      throw new Error(`Unhandled fetch: ${url}`)
+    })
+
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    })
+    render(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter initialEntries={['/p/demo/settings/meta-fields']}>
+          <Routes>
+            <Route path="/p/:slug/settings/:tab/:itemId" element={<ProjectSettingsPage />} />
+            <Route path="/p/:slug/settings/:tab" element={<ProjectSettingsPage />} />
+            <Route path="/p/:slug/settings" element={<ProjectSettingsPage />} />
+          </Routes>
+        </MemoryRouter>
+      </QueryClientProvider>,
+    )
+
+    // The heading confirms the destination to the user who clicked the
+    // "Schema & fields" sidebar item, rather than the old "Meta fields" label.
+    expect(await screen.findByText('Schema & fields')).toBeInTheDocument()
+  })
+
   it('creates a scan config from preview-driven picks', async () => {
     const postBodies: unknown[] = []
 

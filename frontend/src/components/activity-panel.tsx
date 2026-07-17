@@ -13,6 +13,7 @@ import { useQuery } from '@tanstack/react-query'
 import { activityApi } from '@/api/activity'
 import { Dot } from '@/components/primitives/dot'
 import { useAdaptiveRefetchInterval } from '@/realtime/streamContext'
+import { formatRelativeTime } from '@/lib/datetime'
 import type { ActivityItem, ActivityItemSeverity, ActivityItemType } from '@/types'
 
 const ACTIVITY_LIMIT = 20
@@ -217,19 +218,4 @@ function ActivitySkeleton() {
       ))}
     </div>
   )
-}
-
-function formatRelativeTime(value: string) {
-  const timestamp = new Date(value).getTime()
-  const diffMs = Date.now() - timestamp
-  if (!Number.isFinite(diffMs) || diffMs < 30_000) return 'just now'
-
-  const minutes = Math.floor(diffMs / 60_000)
-  if (minutes < 60) return `${minutes}m ago`
-
-  const hours = Math.floor(minutes / 60)
-  if (hours < 48) return `${hours}h ago`
-
-  const days = Math.floor(hours / 24)
-  return `${days}d ago`
 }

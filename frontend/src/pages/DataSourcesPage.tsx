@@ -50,6 +50,7 @@ import {
 } from 'lucide-react'
 import { dataSourceHealthLexeme } from '@/lib/statusLexicon'
 import { getErrorMessage } from '@/lib/utils'
+import { formatDate } from '@/lib/datetime'
 
 const EMPTY_DATA_SOURCES: DataSource[] = []
 
@@ -598,10 +599,6 @@ function DataSourceCard({
       )}
     </div>
   )
-}
-
-function formatDate(iso: string): string {
-  return new Date(iso).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })
 }
 
 function formatRelative(iso: string): string {

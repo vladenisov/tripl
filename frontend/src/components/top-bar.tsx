@@ -17,6 +17,7 @@ import { alertingApi } from '@/api/alerting'
 import { metricsApi } from '@/api/metrics'
 import { getErrorMessage } from '@/lib/utils'
 import { getMonitoringPath } from '@/lib/monitoring'
+import { commandPaletteShortcutLabel } from '@/lib/platform'
 import { useCommandPalette } from '@/components/command-palette-context'
 import { Kbd } from '@/components/primitives/kbd'
 import { Dot } from '@/components/primitives/dot'
@@ -84,7 +85,7 @@ export function TopBar({
         >
           <Search className="h-[13px] w-[13px]" aria-hidden="true" />
           <span className="hidden sm:inline-flex">
-            <Kbd>⌘K</Kbd>
+            <Kbd>{commandPaletteShortcutLabel()}</Kbd>
           </span>
         </button>
         {onToggleActivity && (

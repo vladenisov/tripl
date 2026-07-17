@@ -1,9 +1,10 @@
 import type { DataSource, ScanConfig } from '@/types'
 import { Chip } from '@/components/primitives/chip'
-import { Ban, CheckCircle2, Clock, Loader2, MinusCircle, XCircle, type LucideIcon } from 'lucide-react'
+import { Ban, CheckCircle2, Clock, Loader2, MinusCircle, Play, XCircle, type LucideIcon } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { friendlyScanError } from '@/lib/scanError'
 import { SCAN_RUN_STATUS } from '@/lib/statusLexicon'
+import { ScenarioCoachMark } from '@/demo/ScenarioCoachMark'
 import { SrcIcon } from './scanLayout'
 import { type RunPillStatus } from './scanRunStatus'
 import type { ScanRunInfo } from './scanUtils'
@@ -73,6 +74,9 @@ export function ScanListRow({
   runInfo,
   intervalLabel,
   onNavigate,
+  onRun,
+  runPending,
+  runCoachMark,
   onReviewEvents,
 }: {
   sc: ScanConfig
@@ -80,6 +84,12 @@ export function ScanListRow({
   runInfo: ScanRunInfo
   intervalLabel: Record<string, string>
   onNavigate: () => void
+  /** Trigger a manual scan run for this row (POST /scans/{id}/run). */
+  onRun?: () => void
+  /** Disable the Run control while this row's run is in flight. */
+  runPending?: boolean
+  /** Point the coached demo's run-scan mark at this row's Run control. */
+  runCoachMark?: boolean
   /** Jump into the review queue for the events this scan produces. */
   onReviewEvents?: () => void
 }) {
@@ -94,6 +104,25 @@ export function ScanListRow({
   const failedMessage = runInfo.status === 'failed'
     ? friendlyScanError(runInfo.lastJob?.error_message).message
     : null
+
+  // The list is the surface the demo coach's step-1 CTA opens, so the Run
+  // control must live here — not only on the detail page. Reuses the detail
+  // page's Play icon; stopPropagation keeps the row's own navigate from firing
+  // (tripl-q7i1.5).
+  const runButton = onRun ? (
+    <button
+      type="button"
+      aria-label={`Run ${sc.name} now`}
+      disabled={runPending}
+      className="inline-flex items-center gap-1 whitespace-nowrap rounded border px-2 py-1 text-[11px] font-medium transition-colors hover:bg-[var(--surface-hover)] disabled:cursor-not-allowed disabled:opacity-50"
+      style={{ borderColor: 'var(--border-strong)', color: 'var(--fg-muted)' }}
+      onClick={e => { e.stopPropagation(); onRun() }}
+      onKeyDown={e => e.stopPropagation()}
+    >
+      <Play className="size-3" aria-hidden="true" />
+      {runPending ? 'Starting…' : 'Run now'}
+    </button>
+  ) : null
 
   return (
     <tr
@@ -145,6 +174,13 @@ export function ScanListRow({
       </td>
       <td className="px-3.5 py-2.5 align-middle text-right">
         <div className="flex items-center justify-end gap-2">
+          {runButton && (runCoachMark ? (
+            <ScenarioCoachMark step="run-scan" side="bottom" align="end">
+              {runButton}
+            </ScenarioCoachMark>
+          ) : (
+            runButton
+          ))}
           {onReviewEvents && (
             <button
               type="button"
@@ -152,6 +188,7 @@ export function ScanListRow({
               className="whitespace-nowrap rounded border px-2 py-1 text-[11px] font-medium transition-colors hover:bg-[var(--surface-hover)]"
               style={{ borderColor: 'var(--border-strong)', color: 'var(--fg-muted)' }}
               onClick={e => { e.stopPropagation(); onReviewEvents() }}
+              onKeyDown={e => e.stopPropagation()}
             >
               Review events
             </button>

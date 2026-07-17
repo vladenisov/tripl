@@ -55,7 +55,9 @@ class TestDataSourcesCRUD:
         assert data["timeout_seconds"] == 90
         assert "password" not in data
         assert "password_encrypted" not in data
-        assert "project_id" not in data
+        # project_id is now exposed so the UI can scope Source health to the current
+        # project (tripl-q7i1.14); a workspace-wide source (created here) reports null.
+        assert data["project_id"] is None
         # Unset by default — the CH adapter falls back to "dynamic" discovery.
         assert data["json_path_discovery"] is None
 
