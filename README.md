@@ -81,10 +81,11 @@ tripl is organised around three jobs in the project navigation — **Plan**,
 ### 📊 Observe — watch the real data
 
 - An **Overview** that shows the health of a project at a glance.
-- **Monitors** that learn the normal rhythm of each event (including time-of-day
-  and day-of-week patterns) and raise a signal when something spikes, drops, or
-  changes shape. A short forecast shows where the next data point is expected to
-  land.
+- Automatic **anomaly detection** that learns the normal rhythm of each event
+  (including time-of-day and day-of-week patterns) and raises a signal when
+  something spikes, drops, or changes shape. A short forecast shows where the
+  next data point is expected to land. **Monitors** — alert rules with live
+  state — decide which signals matter and where they go.
 - A project-wide **metrics catalog** for SQL, reusable fact-table aggregations,
   ratios, and event-composition metrics, with the same monitoring drilldowns as
   event volume.

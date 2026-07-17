@@ -1,6 +1,9 @@
 import pytest
 from httpx import AsyncClient
 
+from tripl.services import auth_service
+from tripl.tests.conftest import TestSessionLocal
+
 
 @pytest.mark.asyncio
 async def test_register_creates_user_and_session_cookie(anon_client: AsyncClient):
@@ -54,6 +57,18 @@ async def test_status_reports_empty_instance_then_populated(anon_client: AsyncCl
     populated = await anon_client.get("/api/v1/auth/status")
     assert populated.status_code == 200
     assert populated.json() == {"has_users": True}
+
+
+@pytest.mark.asyncio
+async def test_first_owner_lock_is_noop_off_postgres():
+    # The first-owner TOCTOU guard is a constant-key pg_advisory_xact_lock taken
+    # before the has_any_users() check; PostgreSQL serialises concurrent first
+    # registrations there. On SQLite (this suite) the helper must be a silent
+    # no-op — it must not emit SQL the dialect can't parse or raise. The
+    # behavioural race itself is untestable here: the suite runs on a single
+    # in-memory connection, so two registrations can never interleave.
+    async with TestSessionLocal() as session:
+        await auth_service._acquire_first_owner_xact_lock(session)
 
 
 @pytest.mark.asyncio

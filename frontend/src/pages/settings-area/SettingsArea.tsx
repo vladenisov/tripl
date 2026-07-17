@@ -20,8 +20,9 @@ const LAST_SLUG_STORAGE_KEY = 'tripl-last-project-slug'
 /**
  * Resolve the project the Project-scoped settings target. Prefer the slug in the
  * URL (when a section route carries one), otherwise the last project visited,
- * otherwise the first project. Mirrors the sidebar's useResolvedSlug so the two
- * stay consistent.
+ * otherwise the first project. The sidebar's usePersistLastSlug writes the
+ * last-visited slug to this same localStorage key on every project route; we
+ * only read it here.
  */
 function useSettingsSlug(): string | undefined {
   const { slug: urlSlug } = useParams<{ slug?: string }>()

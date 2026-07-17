@@ -46,6 +46,14 @@ describe('formatDate', () => {
     const out = formatDate('2026-06-21')
     expect(out).toContain('2026')
   })
+
+  it('returns an empty string for an unparseable input', () => {
+    expect(formatDate('not-a-date')).toBe('')
+  })
+
+  it('returns an empty string for an empty input', () => {
+    expect(formatDate('')).toBe('')
+  })
 })
 
 describe('formatIsoDate', () => {
@@ -83,6 +91,14 @@ describe('formatDateTime', () => {
     // Minutes are zero-padded ('05'); a bare date string would not contain ':'.
     expect(out).toMatch(/\d:\d{2}|\d{2}:\d{2}/)
   })
+
+  it('returns an empty string for an unparseable input', () => {
+    expect(formatDateTime('not-a-date')).toBe('')
+  })
+
+  it('returns an empty string for an empty input', () => {
+    expect(formatDateTime('')).toBe('')
+  })
 })
 
 describe('formatTimestamp', () => {
@@ -106,6 +122,14 @@ describe('formatTimestamp', () => {
   it('includes seconds when { seconds: true } is passed', () => {
     const out = formatTimestamp('2026-06-21T08:05:07Z', { seconds: true })
     expect(out).toMatch(/:\d{2}:\d{2}/)
+  })
+
+  it('returns an empty string for an unparseable input', () => {
+    expect(formatTimestamp('not-a-date')).toBe('')
+  })
+
+  it('returns an empty string for an empty input', () => {
+    expect(formatTimestamp('')).toBe('')
   })
 })
 

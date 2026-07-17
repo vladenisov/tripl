@@ -1,8 +1,9 @@
 """In-process token-bucket rate limiter for auth endpoints.
 
 Scope: protect ``/auth/login`` and ``/auth/register`` from credential-stuffing
-and signup abuse from a single source IP. Each limiter is keyed on the client
-IP plus the endpoint name so the two routes share no quota.
+and signup abuse, and the unauthenticated ``/auth/status`` read from scraping,
+from a single source IP. Each limiter is keyed on the client IP plus the
+endpoint name so the routes share no quota.
 
 This implementation is per-worker. For multi-worker deployments behind a
 reverse proxy, terminate rate limiting at the proxy (or replace this with a
@@ -142,6 +143,16 @@ login_rate_limiter = _limiter_for(
 register_rate_limiter = _limiter_for(
     settings.rate_limit_register_per_hour, per_seconds=3600.0, name="register"
 )
+
+# ``/auth/status`` is an unauthenticated read the login screen queries before
+# anyone signs in, so it gets a modest fixed per-IP limit. A module constant
+# rather than an env knob on purpose: the endpoint only guards a cheap COUNT(*)
+# and there is no operational reason to tune it. It is a SEPARATE limiter with
+# its own "status" key prefix, so probing /auth/status can never consume
+# login/register quota (and vice versa).
+STATUS_RATE_LIMIT_PER_MINUTE = 30
+
+status_rate_limiter = _limiter_for(STATUS_RATE_LIMIT_PER_MINUTE, per_seconds=60.0, name="status")
 
 
 def enforce(limiter: TokenBucketLimiter) -> Callable[[Request], Awaitable[None]]:

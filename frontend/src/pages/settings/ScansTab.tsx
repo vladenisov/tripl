@@ -173,6 +173,11 @@ export function ScansTab({ slug }: { slug: string }) {
       void queryClient.invalidateQueries({ queryKey: ['scanJobs', slug, scanId] })
     },
   })
+  // The UI tracks one visibly-pending manual run via this shared mutation's
+  // variables; a rapid second click on another row moves the busy indicator to
+  // the newest request. Both the row-level "Run now" and the failed-row
+  // "Run again" derive their busy state from this id.
+  const pendingScanId = runScan.isPending ? runScan.variables : undefined
 
   if (view === 'new') {
     return <ScanCreatePage slug={slug} onBack={() => setView('list')} />
@@ -263,7 +268,7 @@ export function ScansTab({ slug }: { slug: string }) {
                   intervalLabel={INTERVAL_LABEL}
                   onNavigate={() => navigate(`/p/${slug}/settings/scans/${sc.id}`)}
                   onRun={() => runScan.mutate(sc.id)}
-                  runPending={runScan.isPending && runScan.variables === sc.id}
+                  runPending={pendingScanId === sc.id}
                   // The step-1 CTA opens this list; point the coach at the first
                   // row's Run control (inert unless the demo scenario is active).
                   runCoachMark={index === 0}
@@ -329,11 +334,11 @@ export function ScansTab({ slug }: { slug: string }) {
                         <Button
                           size="xs"
                           variant="outline"
-                          disabled={runScan.isPending}
+                          disabled={pendingScanId === run.scanId}
                           onClick={() => runScan.mutate(run.scanId)}
                         >
                           <RotateCw className="size-3" aria-hidden="true" />
-                          Run again
+                          {pendingScanId === run.scanId ? 'Starting…' : 'Run again'}
                         </Button>
                       </div>
                     ) : (

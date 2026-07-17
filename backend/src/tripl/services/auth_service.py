@@ -5,7 +5,7 @@ from datetime import UTC, datetime, timedelta
 from typing import cast
 
 from fastapi import HTTPException, status
-from sqlalchemy import delete, func, select
+from sqlalchemy import delete, func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -21,6 +21,13 @@ from tripl.config import settings
 from tripl.models.user import User
 from tripl.models.user_session import UserSession
 from tripl.schemas.auth import LoginRequest, RegisterRequest
+
+# Advisory-lock key serialising the first-user-becomes-owner decision. Constant
+# (not per-row) on purpose: the thing being serialised is the global "is the
+# users table empty?" check. Derived from a fixed 8-byte tag so it is stable
+# across releases and unlikely to collide with the per-project locks (which
+# derive their keys from UUID bytes, see demo_runtime._acquire_project_xact_lock).
+_FIRST_OWNER_LOCK_KEY = int.from_bytes(b"trplown1", "big", signed=True)
 
 
 def _normalize_name(value: str | None) -> str | None:
@@ -62,6 +69,26 @@ async def _create_user_session(session: AsyncSession, user_id: uuid.UUID) -> str
     return session_token
 
 
+async def _acquire_first_owner_xact_lock(session: AsyncSession) -> None:
+    """Serialise the first-user-becomes-owner decision across concurrent registrations.
+
+    Takes a constant-key transaction advisory lock BEFORE the ``has_any_users``
+    check so two concurrent first registrations can't both observe an empty
+    users table and both become owner (TOCTOU). PostgreSQL-only, same idiom as
+    ``demo_runtime._acquire_project_xact_lock``: SQLite (tests) has no advisory
+    locks, so this is a no-op there — the suite runs on a single in-memory
+    connection where the race cannot occur, so tests are unaffected. The lock
+    auto-releases when the surrounding transaction commits or rolls back.
+    """
+    bind = session.get_bind()
+    if bind.dialect.name != "postgresql":
+        return
+    await session.execute(
+        text("SELECT pg_advisory_xact_lock(:key)"),
+        {"key": _FIRST_OWNER_LOCK_KEY},
+    )
+
+
 async def register_user(session: AsyncSession, data: RegisterRequest) -> tuple[User, str]:
     email = normalize_email(data.email)
     existing = await _get_user_by_email(session, email)
@@ -73,6 +100,10 @@ async def register_user(session: AsyncSession, data: RegisterRequest) -> tuple[U
 
     # First registered user becomes owner so the instance always has at least
     # one operator who can manage roles; subsequent users default to editor.
+    # The advisory lock closes the TOCTOU window: taken before the empty-table
+    # check and held until this registration's commit, so a concurrent first
+    # registration waits and then observes this user — exactly one owner.
+    await _acquire_first_owner_xact_lock(session)
     role = "owner" if not await has_any_users(session) else "editor"
 
     user = User(

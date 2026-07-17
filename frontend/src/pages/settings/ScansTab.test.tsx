@@ -264,6 +264,35 @@ describe('ScansTab', () => {
     expect(runCalls[0].url).toContain('/projects/demo/scans/scan-1/run')
   })
 
+  it('marks only the pending row busy while its re-run is in flight', async () => {
+    const scanConfig2 = { ...scanConfig, id: 'scan-2', name: 'Backfill scan' }
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async input => {
+      const url = String(input)
+      if (url.includes('/data-sources/') && url.includes('/schema')) return mockJsonResponse({ tables: [] })
+      if (url.endsWith('/api/v1/data-sources')) return mockJsonResponse([dataSource])
+      if (url.endsWith('/api/v1/projects/demo/scans')) return mockJsonResponse([scanConfig, scanConfig2])
+      // Hold the POST open so the mutation stays pending for the assertion window.
+      if (url.includes('/scans/scan-1/run')) return new Promise<Response>(() => {})
+      if (url.includes('/scans/scan-1/jobs')) return mockJsonResponse([failedJob('job-a1', '2026-01-02T00:00:00Z')])
+      if (url.includes('/scans/scan-2/jobs')) {
+        return mockJsonResponse([{ ...failedJob('job-b1', '2026-01-01T00:00:00Z'), scan_config_id: 'scan-2' }])
+      }
+      if (url.includes('/eventTypes') || url.includes('/event-types')) return mockJsonResponse([])
+      throw new Error(`Unhandled fetch: ${url}`)
+    })
+    renderTab()
+
+    // Recent runs sort newest-first: scan-1's failure (Jan 2) renders above
+    // scan-2's (Jan 1), so the first Run again belongs to scan-1.
+    const runAgainButtons = await screen.findAllByRole('button', { name: /Run again/i })
+    expect(runAgainButtons).toHaveLength(2)
+    fireEvent.click(runAgainButtons[0])
+
+    // Only the clicked row's button goes busy; the other scan's stays live.
+    expect(await screen.findByRole('button', { name: 'Starting…' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: /Run again/i })).not.toBeDisabled()
+  })
+
   it('runs a scan from the config row via the manual trigger endpoint', async () => {
     const runCalls: { method: string; url: string }[] = []
     setupFetchWithJobs([], runCalls)

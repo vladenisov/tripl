@@ -18,6 +18,8 @@ from tripl.models.project import Project
 from tripl.models.project_anomaly_settings import ProjectAnomalySettings
 from tripl.models.scan_config import ScanConfig
 from tripl.services.demo import noise
+from tripl.services.demo.builders import plan
+from tripl.services.demo.scenario import DEMO_SEED
 from tripl.tests.conftest import TestSessionLocal
 
 
@@ -63,9 +65,11 @@ async def test_demo_project_has_events(client: AsyncClient) -> None:
 
 @pytest.mark.asyncio
 async def test_demo_events_first_seen_matches_history_window(client: AsyncClient) -> None:
-    # "First seen" (created_at) must line up with the start of the seeded ~23-day
-    # metric history, not the provisioning instant, so it agrees with the charts
-    # (tripl-2su6 .21). A brand-new demo used to stamp every event "just now".
+    # "First seen" (created_at) is STAGGERED across the seeded ~23-day metric
+    # history (tripl-2su6 .21 / PR #51 follow-up): core events anchor the window
+    # start, the rest ramp in, and nothing is younger than ~2 days. A uniform
+    # history_start stamp left the Overview 14-day "active events" sparkline a
+    # flat zero; the provisioning instant made everything first seen "just now".
     resp = await client.post("/api/v1/projects/demo")
     assert resp.status_code == 201
     slug = resp.json()["slug"]
@@ -77,16 +81,43 @@ async def test_demo_events_first_seen_matches_history_window(client: AsyncClient
     assert items
 
     now = datetime.now(tz=UTC)
+    ages_by_name: dict[str, float] = {}
     for ev in items:
         created = datetime.fromisoformat(ev["created_at"])
         # The API may serialize created_at without an offset; treat naive as UTC so
         # the subtraction below doesn't mix naive/aware datetimes.
         if created.tzinfo is None:
             created = created.replace(tzinfo=UTC)
-        age_days = (now - created).total_seconds() / 86400
-        assert age_days >= noise.DEMO_HISTORY_DAYS - 1, (
-            f"{ev['name']} first seen only {age_days:.1f}d ago — not backdated to history window"
-        )
+        ages_by_name[ev["name"]] = (now - created).total_seconds() / 86400
+
+    # (a) Nothing reads as first seen "just now" — the stagger floor is ~2 days;
+    # assert >= 1 day to leave deterministic-jitter slack.
+    for name, age_days in ages_by_name.items():
+        assert age_days >= 1, f"{name} first seen only {age_days:.1f}d ago — reads as brand new"
+
+    # (b) The oldest (core) events still anchor the full ~23-day history window.
+    assert max(ages_by_name.values()) >= noise.DEMO_HISTORY_DAYS - 1, ages_by_name
+    assert ages_by_name["Home Screen View"] >= noise.DEMO_HISTORY_DAYS - 1, ages_by_name[
+        "Home Screen View"
+    ]
+
+    # (c) Part of the catalog falls INSIDE the Overview KPI's 14-day lookback so
+    # the "active events" sparkline is not a flat zero. (< 13d is always >= the
+    # route's midnight-aligned time_from for days=14.)
+    inside_14d = [name for name, age_days in ages_by_name.items() if age_days < 13]
+    assert inside_14d, "no event first seen inside the last 14 days — sparkline is a flat zero"
+
+
+def test_demo_event_first_seen_stagger_is_deterministic() -> None:
+    # (d) Same recipe (clock + seed) -> identical first-seen timestamps: the
+    # stagger derives from noise.derive_seed(seed, event name), never from
+    # random state or the wall clock at call time.
+    fixed_now = datetime(2026, 7, 1, 10, 30, tzinfo=UTC)
+    specs = plan.event_specs(fixed_now)
+    first = plan.staggered_created_ats(specs, now=fixed_now, seed=DEMO_SEED)
+    second = plan.staggered_created_ats(specs, now=fixed_now, seed=DEMO_SEED)
+    assert first == second
+    assert len(first) == len(specs)
 
 
 @pytest.mark.asyncio

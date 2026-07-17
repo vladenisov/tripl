@@ -52,7 +52,7 @@ needs no warehouse, so you can learn the product before wiring up any data.
 :::
 
 A **project** is one tracking plan and everything around it — its own events,
-scans, monitors, metrics, and alert rules. Membership roles and data-source
+scans, metrics, and alert rules. Membership roles and data-source
 connections are workspace-wide, although API keys can be bound to one project.
 A company with an
 iOS app, an Android app, and a website that share analytics is usually *one*
@@ -93,8 +93,10 @@ Then a good order to look around:
 - **Plan → Events** — browse the catalog. Open an event to see its fields,
   values, tags, status, and recent change history.
 - **Observe → Live activity** — the health of the whole project at a glance.
-- **Observe → Monitors** — open a monitor that is showing a signal and study the
-  volume chart, the forecast, the heatmap, and the breakdown of what moved.
+- **Observe → Monitors** — see which alert rules are firing and where they
+  route. Then open an event that is showing a signal and study its monitoring
+  detail: the volume chart, the forecast, the heatmap, and the breakdown of
+  what moved.
 - **Govern → Reconciliation** — see what is documented-but-dead and
   live-but-undocumented.
 
@@ -345,12 +347,14 @@ If something lands on main that shouldn't have:
 
 ## Observe: watch the data
 
-With a plan in place and metrics collecting, monitoring comes to life.
+With a plan in place and metrics collecting, monitoring comes to life: tripl
+learns the normal rhythm of every event — including time-of-day and weekday
+patterns — and raises a **signal** on an unexpected spike, drop, or change of
+shape. That detection is automatic and needs no setup.
 
 - **Live activity** — start here for the state of the whole project.
-- **Monitors** — each monitor learns the normal rhythm of an event, including
-  time-of-day and weekday patterns, and raises a **signal** on an unexpected
-  spike, drop, or change of shape.
+- **Monitors** — the list of your alert rules, each attached to a scope, with
+  the condition it watches for, where it routes, and its live state.
 - **Metrics** — define project-wide SQL metrics, event compositions, or fact
   metrics. Fact tables keep a reusable read-only query, introspected columns,
   and named filters; a fact metric applies an aggregate or ratio to them. Active
@@ -361,7 +365,8 @@ With a plan in place and metrics collecting, monitoring comes to life.
   active metrics on that fact table in the same multi-aggregate batch rather
   than scanning it once per metric.
 
-Open a monitor (or an event's monitoring detail) to see, across tabs:
+Open an event's **monitoring detail** (from the event or one of its signals) to
+see, across tabs:
 
 - **Volume** — event, event-type, and project-total charts open on the last 7
   days at hourly granularity. The chart includes a short **forecast** of where
@@ -400,7 +405,7 @@ metrics data available — run a scan to start collecting volume metrics"* on th
 volume chart, a similar prompt on the heatmap, and *"No breakdown groups yet"* on
 Breakdowns. None of these mean anything is broken — they mean metrics haven't
 landed for that scope yet. Connect a source, run a scan, and give it time to
-collect before judging a monitor.
+collect before judging what detection shows.
 :::
 
 To use Breakdowns, edit the event and add a column under **Metric breakdowns**,
@@ -414,7 +419,7 @@ counts as "abnormal" in the project's monitoring settings.
 
 ## Alerting: get the right person notified
 
-A monitor only helps if someone hears about it. Open **Observe → Alerting**. It
+A signal only helps if someone hears about it. Open **Observe → Alerting**. It
 has three parts: **destinations**, **rules**, and a record of what was sent.
 
 ### 1. Add a destination
@@ -499,8 +504,8 @@ If you're rolling tripl out on real data, this order tends to work well:
 1. **Day 1** — connect your warehouse and run a scan to draft the plan.
 2. **Days 2–3** — clean up the draft: descriptions, types, sensitive-data flags,
    value lists. Invite your team.
-3. **Day 4** — let metrics collect, then open Monitors and tune sensitivity on
-   the events you care about most.
+3. **Day 4** — let metrics collect, then review the first signals and tune
+   detection sensitivity on the events you care about most.
 4. **Day 5** — add alert destinations and a couple of rules, replay them, and
    turn them on.
 5. **Ongoing** — make plan changes on branches with review, and run

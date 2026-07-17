@@ -1,5 +1,7 @@
+// Returns '' for an empty or unparseable input (never the literal "Invalid Date").
 export function formatDate(value: string) {
   const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return ''
   return date.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })
 }
 
@@ -17,8 +19,10 @@ export function formatIsoDate(value: string): string {
   return `${year}-${month}-${day}`
 }
 
+// Returns '' for an empty or unparseable input (never the literal "Invalid Date").
 export function formatDateTime(value: string) {
   const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return ''
   return date.toLocaleString(undefined, {
     month: 'short',
     day: 'numeric',
@@ -33,8 +37,11 @@ export function formatDateTime(value: string) {
 // unambiguous date+time in the viewer's locale instead of the bare
 // `toLocaleString()` host default (US `m/d/yyyy, h:mm:ss AM` on many machines).
 // Pass `{ seconds: true }` where second-level precision matters (e.g. audit log).
+// Returns '' for an empty or unparseable input (never the literal "Invalid Date").
 export function formatTimestamp(value: string, options: { seconds?: boolean } = {}) {
-  return new Date(value).toLocaleString(undefined, {
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return ''
+  return date.toLocaleString(undefined, {
     year: 'numeric',
     month: 'short',
     day: 'numeric',

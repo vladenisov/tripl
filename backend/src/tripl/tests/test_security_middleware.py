@@ -6,12 +6,14 @@ from starlette.datastructures import Headers
 
 from tripl.config import settings
 from tripl.middleware.rate_limit import (
+    STATUS_RATE_LIMIT_PER_MINUTE,
     RateLimitExceeded,
     TokenBucketLimiter,
     _client_key,
     _limiter_for,
     login_rate_limiter,
     register_rate_limiter,
+    status_rate_limiter,
 )
 
 
@@ -155,3 +157,36 @@ async def test_login_endpoint_returns_429_when_limit_exceeded(
         settings.rate_limit_enabled = False
         login_rate_limiter.reset()
         register_rate_limiter.reset()
+
+
+@pytest.mark.asyncio
+async def test_status_endpoint_returns_429_without_consuming_login_quota(
+    anon_client: AsyncClient,
+) -> None:
+    settings.rate_limit_enabled = True
+    status_rate_limiter.reset()
+    login_rate_limiter.reset()
+    try:
+        # Exhaust the status bucket. /auth/status is unauthenticated by design
+        # (the login screen polls it), so this limiter is its only abuse guard.
+        attempts = STATUS_RATE_LIMIT_PER_MINUTE + 1
+        last_status = 200
+        for _ in range(attempts):
+            response = await anon_client.get("/api/v1/auth/status")
+            last_status = response.status_code
+            if last_status == 429:
+                break
+        assert last_status == 429
+
+        # Separate bucket: exhausting /auth/status must not have consumed the
+        # login limiter. The next login attempt is judged on credentials
+        # (401 for a nonexistent user), not rejected with 429.
+        login_response = await anon_client.post(
+            "/api/v1/auth/login",
+            json={"email": "ghost@example.com", "password": "wrong-password"},
+        )
+        assert login_response.status_code == 401
+    finally:
+        settings.rate_limit_enabled = False
+        status_rate_limiter.reset()
+        login_rate_limiter.reset()
