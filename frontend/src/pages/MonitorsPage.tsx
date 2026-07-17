@@ -132,7 +132,7 @@ export default function MonitorsPage() {
             <EmptyState
               icon={Activity}
               title="No monitors yet"
-              description="A monitor watches an event's normal rhythm and alerts you when it spikes or drops. Create one to start watching your events."
+              description="tripl already watches every event's rhythm and raises signals on spikes and drops. A monitor is an alert rule that decides which signals matter and where they go — create one to start routing them."
               action={
                 slug ? (
                   <Button asChild size="sm">
@@ -153,7 +153,7 @@ export default function MonitorsPage() {
             </div>
           ) : monitors.length === 0 ? (
             <div className="px-4 py-6 text-[12px]" style={{ color: 'var(--fg-subtle)' }}>
-              No monitors yet. Monitors watch your events for spikes and drops and alert you when something looks off — create one in{' '}
+              No monitors yet. Detection already raises signals on spikes and drops; a monitor decides which signals matter and where they go — create one in{' '}
               {slug ? (
                 <Link
                   to={`/p/${slug}/settings/alerting`}
