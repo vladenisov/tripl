@@ -3,6 +3,7 @@ import { useMutation } from '@tanstack/react-query'
 import { AlertTriangle, History } from 'lucide-react'
 
 import { alertingApi } from '@/api/alerting'
+import { useDemoScenarioActions } from '@/demo/demoScenarioContext'
 import { Button } from '@/components/ui/button'
 import {
   Dialog,
@@ -77,6 +78,7 @@ export function RuleReplayDialog({
   const [days, setDays] = useState<number>(7)
   const [overrideText, setOverrideText] = useState<string>('')
   const [result, setResult] = useState<ReplayResult | null>(null)
+  const { notifyStepCompleted } = useDemoScenarioActions()
 
   const overrideValue =
     overrideText.trim() === '' ? null : Math.max(0, Number(overrideText.trim()))
@@ -97,7 +99,12 @@ export function RuleReplayDialog({
       ])
       return { saved, override: overrideResp } satisfies ReplayResult
     },
-    onSuccess: (data) => setResult(data),
+    onSuccess: (data) => {
+      setResult(data)
+      // A finished replay lands the alerting chapter's simulate step — inert
+      // outside the demo scenario (the reducer drops every other step).
+      notifyStepCompleted('alerting/simulate')
+    },
   })
 
   const handleOpenChange = (value: boolean) => {

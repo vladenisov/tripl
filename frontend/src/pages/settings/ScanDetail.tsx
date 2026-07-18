@@ -517,7 +517,7 @@ function JobRow({
     <Fragment>
       {/* The mark anchors onto the <tr> itself: the Popover root renders no DOM
           and the content is portalled, so nothing invalid lands in <tbody>. */}
-      <ScenarioCoachMark step="watch-scan" when={watched} side="top" align="start">
+      <ScenarioCoachMark step="live-loop/watch-scan" when={watched}>
         <tr className="border-t" style={{ borderColor: 'var(--border-subtle)' }}>
           <td className="px-4 py-2.5 text-xs" style={{ color: 'var(--fg-muted)' }}>
             {job.started_at ? formatRelativeTime(job.started_at) : '—'}

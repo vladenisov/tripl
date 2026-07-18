@@ -2,9 +2,13 @@ import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { createElement, type ReactNode } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import type { Event as TEvent, EventType, Variable } from '@/types'
+import { MemoryRouter } from 'react-router-dom'
+import type { Event as TEvent, EventType, Project, Variable } from '@/types'
 import { eventsApi } from '@/api/events'
 import { scansApi } from '@/api/scans'
+import { DemoScenarioProvider } from '@/demo/DemoScenarioProvider'
+import { readScenarioState, writeScenarioState } from '@/demo/scenarioModel'
+import { chapterState } from '@/demo/scenarioTestState'
 import { EventForm } from './EventForm'
 
 vi.mock('@/api/events', () => ({
@@ -295,5 +299,57 @@ describe('EventForm save and add another', () => {
     expect(screen.getByLabelText('Variant')).toHaveValue('b2')
     expect(screen.getByLabelText('Payload')).toHaveValue('{"source":"cta"}')
     expect(screen.getByText('critical')).toBeInTheDocument()
+  })
+})
+
+describe('EventForm — coached demo scenario (tripl-odrj.4)', () => {
+  const SLUG = 'demo'
+
+  const demoProject = {
+    id: 'p-1',
+    name: 'Demo',
+    slug: SLUG,
+    created_at: '2026-07-01T00:00:00Z',
+    updated_at: '2026-07-01T00:00:00Z',
+    is_demo: true,
+    generation_status: 'ready',
+  } as unknown as Project
+
+  afterEach(() => {
+    window.localStorage.clear()
+  })
+
+  it("completes the edit-event chapter's save step through the real save mutation", async () => {
+    writeScenarioState(SLUG, chapterState('edit-event', 'edit-event/save'))
+    vi.mocked(eventsApi.update).mockResolvedValue({} as never)
+
+    render(
+      createElement(
+        QueryClientProvider,
+        { client: queryClient },
+        createElement(
+          MemoryRouter,
+          { initialEntries: [`/p/${SLUG}/events/all/ev-1/edit`] },
+          createElement(
+            DemoScenarioProvider,
+            { project: demoProject, pollIntervalMs: 10_000, children: null },
+            createElement(EventForm, {
+              slug: SLUG,
+              eventTypes: [EVENT_TYPE],
+              metaFields: [],
+              projectVariables: [],
+              event: EXISTING_EVENT,
+              onClose: () => {},
+            }),
+          ),
+        ),
+      ),
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: /Save event/i }))
+
+    await waitFor(() =>
+      expect(readScenarioState(SLUG).chapters['edit-event']?.status).toBe('completed'),
+    )
   })
 })

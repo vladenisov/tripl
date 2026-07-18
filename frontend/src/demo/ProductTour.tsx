@@ -19,10 +19,12 @@
 
 import { useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
-import { ArrowLeft, ArrowRight, Compass, Play } from 'lucide-react'
+import { ArrowLeft, ArrowRight, Compass } from 'lucide-react'
 import { Chip } from '@/components/primitives/chip'
 import { Button } from '@/components/ui/button'
+import { ChapterPicker } from './ChapterPicker'
 import { useDemoScenario, useDemoScenarioActions } from './demoScenarioContext'
+import type { ChapterListEntry } from './scenarioModel'
 import {
   Dialog,
   DialogContent,
@@ -67,8 +69,8 @@ export function ProductTour({ slug, open, onOpenChange }: ProductTourProps) {
   const steps = buildTourSteps(slug)
   const blocks = buildMetricBuildingBlocks(slug)
   const navigate = useNavigate()
-  const { available: scenarioAvailable, steps: scenarioSteps } = useDemoScenario()
-  const { restart: restartScenario } = useDemoScenarioActions()
+  const { available: scenarioAvailable, chapters } = useDemoScenario()
+  const { startChapter } = useDemoScenarioActions()
   const [index, setIndexState] = useState(() => readStoredStep(slug, steps.length))
   const step = steps[Math.min(index, steps.length - 1)]
   const isFirst = index === 0
@@ -102,13 +104,14 @@ export function ProductTour({ slug, open, onOpenChange }: ProductTourProps) {
   }
 
   /**
-   * The tour shows the surfaces; the scenario makes one thing happen on them.
-   * Starting it hands the user over to the strip, which coaches from here on.
+   * The tour shows the surfaces; a scenario chapter makes one thing happen on
+   * them. Picking one hands the user over to the strip, which coaches from
+   * here on, and drops them on the chapter's first surface.
    */
-  const startScenario = () => {
-    restartScenario()
+  const openChapter = (chapterEntry: ChapterListEntry) => {
+    startChapter(chapterEntry.id)
     onOpenChange(false)
-    navigate(scenarioSteps[0].to)
+    navigate(chapterEntry.to)
   }
 
   return (
@@ -169,20 +172,20 @@ export function ProductTour({ slug, open, onOpenChange }: ProductTourProps) {
         </div>
 
         {/* Reading about a surface is not the same as making it do something.
-            This hands off to the coached scenario, which runs a scan, watches it
-            land, collects a metric and moves the chart. */}
+            Each chapter hands off to the coached scenario on one product area;
+            click = start (or resume) it and land on its first surface. */}
         {scenarioAvailable && (
           <div
-            className="flex flex-wrap items-center justify-between gap-2 rounded-lg border p-3"
+            className="rounded-lg border p-3"
             style={{ background: 'var(--accent-soft)', borderColor: 'var(--border-subtle)' }}
           >
-            <p className="text-[12px]" style={{ color: 'var(--fg-muted)' }}>
-              Rather do it than read it?
+            <p className="mb-2 text-[12px] font-medium">
+              Try it hands-on{' '}
+              <span className="font-normal" style={{ color: 'var(--fg-muted)' }}>
+                — pick a chapter, the strip coaches you through it.
+              </span>
             </p>
-            <Button type="button" size="sm" onClick={startScenario}>
-              <Play className="h-3.5 w-3.5" />
-              Try it hands-on
-            </Button>
+            <ChapterPicker chapters={chapters} onPick={openChapter} />
           </div>
         )}
 

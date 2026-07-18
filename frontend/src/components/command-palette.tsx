@@ -38,6 +38,7 @@ import {
   CommandPaletteContext,
   useCommandPalette,
 } from '@/components/command-palette-context'
+import { useDemoScenarioActions } from '@/demo/demoScenarioContext'
 import { useActiveBranchId } from '@/hooks/useBranch'
 import { useAiStatus } from '@/hooks/useAiStatus'
 import { SEARCH_DEBOUNCE_MS, useDebouncedValue } from '@/hooks/useDebouncedValue'
@@ -48,6 +49,14 @@ import type { SearchEntityType, SearchResult } from '@/types'
 
 export function CommandPaletteProvider({ children }: { children: ReactNode }) {
   const [open, setOpen] = useState(false)
+  const { notifyStepCompleted } = useDemoScenarioActions()
+
+  // Opening the palette IS using search — the explore chapter's last step.
+  // Inert outside a ready demo (the actions context defaults to noops), and
+  // the reducer drops the notify unless this is the current step.
+  useEffect(() => {
+    if (open) notifyStepCompleted('explore/use-search')
+  }, [open, notifyStepCompleted])
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {

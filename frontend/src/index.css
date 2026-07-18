@@ -375,10 +375,27 @@
 @keyframes pulse-dot { 0%, 100% { opacity: 1; transform: scale(1); } 50% { opacity: 0.5; transform: scale(1.25); } }
 .pulse-dot { animation: pulse-dot 1.8s ease-in-out infinite; }
 
+/* The coach mark's beacon: a soft ring that breathes outward around the exact
+   control the demo scenario wants clicked (tripl-odrj.2). */
+@keyframes coach-ring {
+  from { box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 45%, transparent); }
+  to { box-shadow: 0 0 0 8px color-mix(in srgb, var(--accent) 12%, transparent); }
+}
+.coach-ring {
+  pointer-events: none;
+  border-radius: 8px;
+  animation: coach-ring 1.8s ease-in-out infinite;
+}
+
 /* The pulse says "still running". Reduced motion means it must say so without
-   moving: the dot stays, the animation goes (tripl-2su6.21.6). */
+   moving: the dot stays, the animation goes (tripl-2su6.21.6). The coach ring
+   likewise keeps pointing — statically — instead of disappearing. */
 @media (prefers-reduced-motion: reduce) {
   .pulse-dot { animation: none; }
+  .coach-ring {
+    animation: none;
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 45%, transparent);
+  }
 }
 
 /* ── Scrollbar ─────────────────────────────────────────────────────────── */

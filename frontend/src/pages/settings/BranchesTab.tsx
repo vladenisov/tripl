@@ -1,4 +1,4 @@
-import { Fragment, useId, useMemo, useState, type ReactNode } from 'react'
+import { Fragment, useEffect, useId, useMemo, useState, type ReactNode } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { useMutation, useQueries, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
@@ -18,6 +18,9 @@ import { branchSettingsApi } from '@/api/branchSettings'
 import { ApiError } from '@/api/client'
 import { planBranchesApi } from '@/api/planBranches'
 import { usersApi } from '@/api/users'
+import { ScenarioCoachMark } from '@/demo/ScenarioCoachMark'
+import { useDemoScenarioActions } from '@/demo/demoScenarioContext'
+import { SCENARIO_SEEDED } from '@/demo/scenarioModel'
 import { TrackerConfigDialog } from './TrackerConfigDialog'
 import { useBranchLinkProps } from '@/hooks/useBranch'
 import { useConfirm } from '@/hooks/useConfirm'
@@ -332,8 +335,13 @@ function BranchList({
           const isMain = branch.kind === 'main'
           const Icon = isMain ? GitBranch : GitCompare
           return (
-            <button
+            <ScenarioCoachMark
               key={branch.id}
+              step="branches/open-branch"
+              // Exactly one row: the seeded feature branch with the pending change.
+              when={branch.name === SCENARIO_SEEDED.branchName}
+            >
+            <button
               type="button"
               onClick={() => onSelect(branch)}
               className="flex w-full items-center gap-2.5 border-t px-4 py-2.5 text-left transition-colors hover:bg-[var(--surface-hover)]"
@@ -360,6 +368,7 @@ function BranchList({
                 </span>
               )}
             </button>
+            </ScenarioCoachMark>
           )
         })}
       </div>
@@ -418,6 +427,16 @@ interface FeatureBranchDetailProps {
 function FeatureBranchDetail({ slug, branch, diff, confirm }: FeatureBranchDetailProps) {
   const qc = useQueryClient()
   const usersById = useUsersById()
+  const { notifyStepCompleted } = useDemoScenarioActions()
+
+  // Opening the seeded branch's detail completes open-branch, whether the user
+  // clicked the list row or followed a deep link. Inert outside the demo's
+  // branches chapter — the reducer drops everything but the current step.
+  useEffect(() => {
+    if (branch.name === SCENARIO_SEEDED.branchName) {
+      notifyStepCompleted('branches/open-branch')
+    }
+  }, [branch.id, branch.name, notifyStepCompleted])
 
   // Approvals live on the detail response; the required quota on the project's
   // merge policy. Together they drive the "Approvals n/N" chip.
@@ -444,7 +463,11 @@ function FeatureBranchDetail({ slug, branch, diff, confirm }: FeatureBranchDetai
       action === 'merge'
         ? planBranchesApi.merge(slug, branch.id)
         : planBranchesApi.transition(slug, branch.id, action),
-    onSuccess: invalidate,
+    onSuccess: (_data, action) => {
+      // An approval counts as review feedback, exactly like a posted comment.
+      if (action === 'approve') notifyStepCompleted('branches/comment')
+      invalidate()
+    },
   })
 
   const deleteMut = useMutation({
@@ -698,6 +721,7 @@ function ChangeRow({ slug, branchId, entry, onRevert, reverting }: ChangeRowProp
   const [open, setOpen] = useState(false)
   const detailId = useId()
   const branchLink = useBranchLinkProps()
+  const { notifyStepCompleted } = useDemoScenarioActions()
   const meta = KIND_META[entry.kind]
   // Removed entities only exist on the base side; everything else shows the
   // branch-side (current) state.
@@ -722,9 +746,19 @@ function ChangeRow({ slug, branchId, entry, onRevert, reverting }: ChangeRowProp
         background: `color-mix(in oklab, var(--${meta.tone}) 6%, transparent)`,
       }}
     >
+      <ScenarioCoachMark
+        step="branches/review-diff"
+        // The seeded diff carries exactly one modified event; only its row coaches.
+        when={entry.kind === 'changed' && entry.name === SCENARIO_SEEDED.changedEventName}
+      >
       <button
         type="button"
-        onClick={() => setOpen((value) => !value)}
+        onClick={() => {
+          // Expanding the change IS reviewing the diff — before/after unfold.
+          // Outside the updater: updaters must stay pure under StrictMode.
+          if (!open) notifyStepCompleted('branches/review-diff')
+          setOpen((value) => !value)
+        }}
         aria-expanded={open}
         aria-controls={open ? detailId : undefined}
         className="flex w-full items-center gap-3 px-4 py-2.5 text-left transition-colors hover:bg-[var(--surface-hover)]"
@@ -750,6 +784,7 @@ function ChangeRow({ slug, branchId, entry, onRevert, reverting }: ChangeRowProp
           {meta.label}
         </Chip>
       </button>
+      </ScenarioCoachMark>
       {open ? (
         <div
           id={detailId}
@@ -1140,6 +1175,7 @@ function CommentsPanel({
 }) {
   const qc = useQueryClient()
   const [commentBody, setCommentBody] = useState('')
+  const { notifyStepCompleted } = useDemoScenarioActions()
 
   const { data: comments } = useQuery({
     queryKey: ['planBranchComments', slug, branchId],
@@ -1151,6 +1187,8 @@ function CommentsPanel({
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['planBranchComments', slug, branchId] })
       setCommentBody('')
+      // Posting review feedback lands the branches chapter's last step.
+      notifyStepCompleted('branches/comment')
     },
   })
 
@@ -1187,9 +1225,11 @@ function CommentsPanel({
             onChange={(event) => setCommentBody(event.target.value)}
             placeholder="Write a comment…"
           />
-          <Button type="submit" disabled={createCommentMut.isPending || !commentBody.trim()}>
-            Post
-          </Button>
+          <ScenarioCoachMark step="branches/comment">
+            <Button type="submit" disabled={createCommentMut.isPending || !commentBody.trim()}>
+              Post
+            </Button>
+          </ScenarioCoachMark>
         </form>
       </div>
     </Panel>

@@ -1,40 +1,115 @@
 /**
- * The coached demo scenario — pure model (tripl-2su6.21.1).
+ * The coached demo scenario — pure model, v2: chapters (tripl-odrj.4).
  *
- * The product tour deep-links to a surface and lets go. This model is the thing
- * that keeps hold: a four-step chain — run a scan, watch it land, collect a
- * metric, see the chart move — that the strip and the on-surface coach marks
- * both read from.
+ * v1 (tripl-2su6.21.1) was a single four-step chain. v2 turns the scenario into
+ * an ordered set of CHAPTERS — live-loop, edit-event, variables, branches,
+ * reconcile, alerting, explore — each a short step chain over one product area.
+ * One chapter is active at a time; per-chapter progress, dismissal and restart
+ * are all first-class, and the strip offers the next chapter when one lands.
  *
- * The load-bearing constraint: an active demo advances itself. The runtime tick
- * (tripl-2su6.7) is constantly creating real scan jobs and real collections, so
- * "a completed job exists" says nothing about whether the *user* did anything.
- * Progress is therefore bound to artifacts the user's own action produced — the
- * ScanJob returned by their run, the metric id they collected — and a step only
- * lands when that specific artifact settles. Those ids are persisted, so a
- * reload mid-scan resumes the watch instead of losing it.
+ * Completion semantics differ by chapter, deliberately:
+ * - live-loop keeps its artifact-bound watches (the runtime tick manufactures
+ *   real jobs constantly, so only the artifact the user's own action produced
+ *   can advance it — see the v1 rationale below).
+ * - every other chapter advances on DIRECT notifications: either a route visit
+ *   (deep-link steps, the explore chapter) or a `stepCompleted` fired from the
+ *   exact mutation the user performed (save event, post comment, accept drift…).
+ *   No polling is added for them.
  *
- * Kept free of React so every transition is unit-testable without rendering,
- * following `tourSteps.ts` and `components/onboarding-utils.ts`.
+ * The persisted shape shares the v1 localStorage key; a valid v1 blob migrates
+ * onto chapters['live-loop'], anything else reads fresh. Kept free of React so
+ * every transition is unit-testable without rendering.
  */
 
 import { getMetricMonitoringPath } from '@/lib/monitoring'
 
-export type ScenarioStepId = 'run-scan' | 'watch-scan' | 'collect-metric' | 'see-chart'
+export type ChapterId =
+  | 'live-loop'
+  | 'edit-event'
+  | 'variables'
+  | 'branches'
+  | 'reconcile'
+  | 'alerting'
+  | 'explore'
 
-export type ScenarioStatus = 'active' | 'completed' | 'dismissed'
-
-/** Why the scenario went backwards. Surfaced as copy, never as a silent reset. */
-export type ScenarioHint = 'scan-failed' | 'scan-stale' | 'collect-failed' | 'watch-timeout'
-
-export const SCENARIO_STEP_IDS: readonly ScenarioStepId[] = [
-  'run-scan',
-  'watch-scan',
-  'collect-metric',
-  'see-chart',
+export const CHAPTER_IDS: readonly ChapterId[] = [
+  'live-loop',
+  'edit-event',
+  'variables',
+  'branches',
+  'reconcile',
+  'alerting',
+  'explore',
 ]
 
-const SCENARIO_STATUSES: readonly ScenarioStatus[] = ['active', 'completed', 'dismissed']
+export type ChapterStatus = 'not_started' | 'active' | 'completed' | 'dismissed'
+
+/** Step ids are chapter-scoped ('chapter/step') so one flat set covers the app. */
+export type ScenarioStepId =
+  | 'live-loop/run-scan'
+  | 'live-loop/watch-scan'
+  | 'live-loop/collect-metric'
+  | 'live-loop/see-chart'
+  | 'edit-event/open-editor'
+  | 'edit-event/set-value'
+  | 'edit-event/save'
+  | 'variables/open-variables'
+  | 'variables/inspect-values'
+  | 'variables/see-drift'
+  | 'branches/open-branches'
+  | 'branches/open-branch'
+  | 'branches/review-diff'
+  | 'branches/comment'
+  | 'reconcile/open-reconciliation'
+  | 'reconcile/accept-shadow'
+  | 'reconcile/review-drift'
+  | 'alerting/open-alerting'
+  | 'alerting/create-rule'
+  | 'alerting/simulate'
+  | 'explore/visit-coverage'
+  | 'explore/visit-anomaly'
+  | 'explore/use-search'
+
+export const CHAPTER_STEP_IDS: Record<ChapterId, readonly ScenarioStepId[]> = {
+  'live-loop': [
+    'live-loop/run-scan',
+    'live-loop/watch-scan',
+    'live-loop/collect-metric',
+    'live-loop/see-chart',
+  ],
+  'edit-event': ['edit-event/open-editor', 'edit-event/set-value', 'edit-event/save'],
+  variables: ['variables/open-variables', 'variables/inspect-values', 'variables/see-drift'],
+  branches: [
+    'branches/open-branches',
+    'branches/open-branch',
+    'branches/review-diff',
+    'branches/comment',
+  ],
+  reconcile: ['reconcile/open-reconciliation', 'reconcile/accept-shadow', 'reconcile/review-drift'],
+  alerting: ['alerting/open-alerting', 'alerting/create-rule', 'alerting/simulate'],
+  explore: ['explore/visit-coverage', 'explore/visit-anomaly', 'explore/use-search'],
+}
+
+const ALL_STEP_IDS: readonly ScenarioStepId[] = CHAPTER_IDS.flatMap(
+  (chapter) => CHAPTER_STEP_IDS[chapter],
+)
+
+/** The chapter a step id belongs to. Step ids are 'chapter/step' by contract. */
+export function stepChapter(step: ScenarioStepId): ChapterId {
+  return step.slice(0, step.indexOf('/')) as ChapterId
+}
+
+export type ScenarioStatus = ChapterStatus
+
+/** Why a chapter went backwards. Surfaced as copy, never as a silent reset. */
+export type ScenarioHint = 'scan-failed' | 'scan-stale' | 'collect-failed' | 'watch-timeout'
+
+const CHAPTER_STATUSES: readonly ChapterStatus[] = [
+  'not_started',
+  'active',
+  'completed',
+  'dismissed',
+]
 
 const SCENARIO_HINTS: readonly ScenarioHint[] = [
   'scan-failed',
@@ -51,7 +126,7 @@ export const SCENARIO_HINT_COPY: Record<ScenarioHint, string> = {
   'watch-timeout': 'That run is taking longer than usual. Check on it, or start it again.',
 }
 
-/** The ScanJob the user's own "Run" produced — the only job this scenario trusts. */
+/** The ScanJob the user's own "Run" produced — the only job live-loop trusts. */
 export interface ScenarioScanArtifact {
   scanConfigId: string
   scanJobId: string
@@ -65,21 +140,37 @@ export interface ScenarioMetricArtifact {
 }
 
 /**
- * The persisted shape. `v` is checked on read: an unknown version is treated as
- * unreadable rather than coerced, so a future v2 can change the shape freely.
+ * Per-chapter progress. `step` is the step the user is on while active, and the
+ * last step reached otherwise. Artifacts are a flat string record so the shape
+ * stays chapter-agnostic; live-loop's typed artifacts are encoded into it via
+ * the helpers below.
  */
-export interface ScenarioState {
-  v: 1
-  status: ScenarioStatus
+export interface ChapterState {
+  status: ChapterStatus
   step: ScenarioStepId
-  scan?: ScenarioScanArtifact
-  metric?: ScenarioMetricArtifact
+  artifacts?: Record<string, string>
   hint?: ScenarioHint
 }
 
+/**
+ * The persisted shape. `v` is checked on read: v1 migrates onto
+ * chapters['live-loop']; any other unknown version reads fresh.
+ */
+export interface ScenarioState {
+  v: 2
+  activeChapter: ChapterId | null
+  chapters: Partial<Record<ChapterId, ChapterState>>
+}
+
 export type ScenarioEvent =
-  | { type: 'restart' }
-  | { type: 'dismiss' }
+  | { type: 'startChapter'; chapter: ChapterId }
+  | { type: 'restartChapter'; chapter: ChapterId }
+  | { type: 'dismissChapter'; chapter: ChapterId }
+  /** A notify-driven or visit-driven step landed. Ignored unless it is the
+   *  active chapter's CURRENT step, so stray notifies can never skip ahead.
+   *  `path` is the pathname that completed a visit-driven step, when one did —
+   *  edit-event remembers it so later steps can deep-link back into the editor. */
+  | { type: 'stepCompleted'; step: ScenarioStepId; path?: string }
   | { type: 'scanRunStarted'; scanConfigId: string; scanJobId: string; at: number }
   | { type: 'scanSettled'; outcome: 'completed' | 'failed' | 'cancelled' | 'stale' }
   | { type: 'collectStarted'; metricId: string; at: number }
@@ -87,13 +178,82 @@ export type ScenarioEvent =
   | { type: 'chartVisited'; metricId: string }
   | { type: 'watchTimedOut' }
 
-export function initialScenarioState(): ScenarioState {
-  return { v: 1, status: 'active', step: 'run-scan' }
+function freshChapterState(chapter: ChapterId): ChapterState {
+  return { status: 'active', step: CHAPTER_STEP_IDS[chapter][0] }
 }
 
-/** Zero-based position of the current step, for the strip's progress segments. */
+/** A fresh scenario opens on the first chapter, exactly as v1 opened active. */
+export function initialScenarioState(): ScenarioState {
+  return {
+    v: 2,
+    activeChapter: 'live-loop',
+    chapters: { 'live-loop': freshChapterState('live-loop') },
+  }
+}
+
+export function chapterStatus(state: ScenarioState, chapter: ChapterId): ChapterStatus {
+  return state.chapters[chapter]?.status ?? 'not_started'
+}
+
+export function activeChapterState(state: ScenarioState): ChapterState | undefined {
+  return state.activeChapter ? state.chapters[state.activeChapter] : undefined
+}
+
+/** True while a chapter is running — the strip's "coach me" condition. */
+export function isScenarioActive(state: ScenarioState): boolean {
+  return activeChapterState(state)?.status === 'active'
+}
+
+/** Zero-based position of the active chapter's step, for progress segments. */
 export function scenarioStepIndex(state: ScenarioState): number {
-  return SCENARIO_STEP_IDS.indexOf(state.step)
+  const chapter = state.activeChapter
+  const chapterState = activeChapterState(state)
+  if (!chapter || !chapterState) return 0
+  return Math.max(0, CHAPTER_STEP_IDS[chapter].indexOf(chapterState.step))
+}
+
+/**
+ * The chapter to offer once one completes: the next in order that has not been
+ * completed, wrapping past the end. Null when every chapter is done.
+ */
+export function nextChapterId(state: ScenarioState): ChapterId | null {
+  const from = state.activeChapter ? CHAPTER_IDS.indexOf(state.activeChapter) : -1
+  for (let offset = 1; offset <= CHAPTER_IDS.length; offset += 1) {
+    const candidate = CHAPTER_IDS[(from + offset) % CHAPTER_IDS.length]
+    if (candidate === state.activeChapter) continue
+    if (chapterStatus(state, candidate) !== 'completed') return candidate
+  }
+  return null
+}
+
+/** live-loop's typed scan artifact, decoded from the flat artifact record. */
+export function scenarioScanArtifact(state: ScenarioState): ScenarioScanArtifact | undefined {
+  const artifacts = state.chapters['live-loop']?.artifacts
+  if (!artifacts) return undefined
+  const { scanConfigId, scanJobId, scanStartedAt } = artifacts
+  if (!scanConfigId || !scanJobId || !scanStartedAt) return undefined
+  const startedAt = Number(scanStartedAt)
+  if (!Number.isFinite(startedAt)) return undefined
+  return { scanConfigId, scanJobId, startedAt }
+}
+
+/** live-loop's typed metric artifact, decoded from the flat artifact record. */
+export function scenarioMetricArtifact(state: ScenarioState): ScenarioMetricArtifact | undefined {
+  const artifacts = state.chapters['live-loop']?.artifacts
+  if (!artifacts) return undefined
+  const { metricId, metricStartedAt } = artifacts
+  if (!metricId || !metricStartedAt) return undefined
+  const startedAt = Number(metricStartedAt)
+  if (!Number.isFinite(startedAt)) return undefined
+  return { metricId, startedAt }
+}
+
+function encodeScanArtifact(artifact: ScenarioScanArtifact): Record<string, string> {
+  return {
+    scanConfigId: artifact.scanConfigId,
+    scanJobId: artifact.scanJobId,
+    scanStartedAt: String(artifact.startedAt),
+  }
 }
 
 /**
@@ -101,108 +261,214 @@ export function scenarioStepIndex(state: ScenarioState): number {
  * pulses on this; it is never true just because the demo's own tick is busy.
  */
 export function isScenarioWatching(state: ScenarioState): boolean {
-  if (state.status !== 'active') return false
-  if (state.step === 'watch-scan') return state.scan !== undefined
-  if (state.step === 'collect-metric') return state.metric !== undefined
+  if (state.activeChapter !== 'live-loop') return false
+  const chapter = state.chapters['live-loop']
+  if (!chapter || chapter.status !== 'active') return false
+  if (chapter.step === 'live-loop/watch-scan') return scenarioScanArtifact(state) !== undefined
+  if (chapter.step === 'live-loop/collect-metric') {
+    return scenarioMetricArtifact(state) !== undefined
+  }
   return false
+}
+
+function withChapter(
+  state: ScenarioState,
+  chapterId: ChapterId,
+  chapter: ChapterState,
+): ScenarioState {
+  return { ...state, chapters: { ...state.chapters, [chapterId]: chapter } }
 }
 
 /**
  * Every transition. Immutable: each case returns a new state.
  *
- * Failures never strand the user on a step that can no longer complete — they
- * regress to the action step that can be retried, drop the dead artifact, and
- * leave a hint explaining why. Nothing but `restart` acts on a scenario that is
- * finished or dismissed: a background poll resolving after the user walked away
- * must not drag the strip back onto the screen.
+ * Chapter lifecycle events act on any chapter; progress events act only on the
+ * ACTIVE chapter while it is running, so a background poll resolving after the
+ * user walked away (or switched chapters) cannot drag the strip back. live-loop
+ * failures regress to a retryable step with a hint, exactly as in v1.
  */
 export function scenarioReducer(state: ScenarioState, event: ScenarioEvent): ScenarioState {
-  if (event.type === 'restart') return initialScenarioState()
+  switch (event.type) {
+    case 'startChapter': {
+      const existing = state.chapters[event.chapter]
+      // Resume an in-flight or dismissed chapter where it left off; a
+      // completed (or never-started) one starts from its first step.
+      const chapter =
+        existing && (existing.status === 'active' || existing.status === 'dismissed')
+          ? { ...existing, status: 'active' as const }
+          : freshChapterState(event.chapter)
+      const chapters = { ...state.chapters, [event.chapter]: chapter }
+      // Pause the chapter being switched away from (progress kept), so only
+      // one chapter ever holds status 'active' — the picker keys on it.
+      const outgoingId = state.activeChapter
+      if (outgoingId && outgoingId !== event.chapter) {
+        const outgoing = state.chapters[outgoingId]
+        if (outgoing?.status === 'active') {
+          chapters[outgoingId] = { ...outgoing, status: 'dismissed' }
+        }
+      }
+      return { v: 2, activeChapter: event.chapter, chapters }
+    }
 
-  // Dismissal is the one thing a finished scenario still accepts: the victory
-  // lap has to be putawayable, or the strip becomes permanent chrome.
-  if (event.type === 'dismiss') {
-    return state.status === 'dismissed' ? state : { ...state, status: 'dismissed' }
+    case 'restartChapter':
+      return {
+        v: 2,
+        activeChapter: event.chapter,
+        chapters: { ...state.chapters, [event.chapter]: freshChapterState(event.chapter) },
+      }
+
+    case 'dismissChapter': {
+      const existing = state.chapters[event.chapter]
+      const activeChapter = state.activeChapter === event.chapter ? null : state.activeChapter
+      // A completed chapter stays completed: dismissing its victory strip only
+      // clears the pointer, so the picker and nextChapterId keep seeing it done.
+      if (!existing || existing.status === 'dismissed' || existing.status === 'completed') {
+        return activeChapter === state.activeChapter ? state : { ...state, activeChapter }
+      }
+      return {
+        v: 2,
+        activeChapter,
+        chapters: { ...state.chapters, [event.chapter]: { ...existing, status: 'dismissed' } },
+      }
+    }
+
+    default:
+      break
   }
 
-  if (state.status !== 'active') return state
+  const chapterId = state.activeChapter
+  if (!chapterId) return state
+  const chapter = state.chapters[chapterId]
+  if (!chapter || chapter.status !== 'active') return state
+
+  if (event.type === 'stepCompleted') {
+    if (stepChapter(event.step) !== chapterId || chapter.step !== event.step) return state
+    const steps = CHAPTER_STEP_IDS[chapterId]
+    const next = steps[steps.indexOf(event.step) + 1]
+    // The editor the user actually opened is where the remaining edit-event
+    // controls live — remember it so set-value/save deep-link back inside.
+    const artifacts =
+      event.step === 'edit-event/open-editor' && event.path
+        ? { ...chapter.artifacts, editorPath: event.path }
+        : chapter.artifacts
+    const updated: ChapterState = next
+      ? { ...chapter, step: next, artifacts, hint: undefined }
+      : { ...chapter, status: 'completed', artifacts, hint: undefined }
+    return withChapter(state, chapterId, updated)
+  }
+
+  // Everything below is live-loop's artifact machinery.
+  if (chapterId !== 'live-loop') return state
 
   switch (event.type) {
     case 'scanRunStarted':
       // A second run before the first lands replaces the artifact: the user is
       // watching the run they just fired, not the one they abandoned.
-      return {
-        v: 1,
+      return withChapter(state, 'live-loop', {
         status: 'active',
-        step: 'watch-scan',
-        scan: {
+        step: 'live-loop/watch-scan',
+        artifacts: encodeScanArtifact({
           scanConfigId: event.scanConfigId,
           scanJobId: event.scanJobId,
           startedAt: event.at,
-        },
-      }
+        }),
+      })
 
     case 'scanSettled': {
-      if (state.step !== 'watch-scan' || !state.scan) return state
+      if (chapter.step !== 'live-loop/watch-scan' || !scenarioScanArtifact(state)) return state
       if (event.outcome === 'completed') {
         // The scan artifact survives the step: it is the record of what landed,
         // and the strip links back to it while the user collects a metric.
-        return { v: 1, status: 'active', step: 'collect-metric', scan: state.scan }
+        return withChapter(state, 'live-loop', {
+          status: 'active',
+          step: 'live-loop/collect-metric',
+          artifacts: chapter.artifacts,
+        })
       }
-      return {
-        v: 1,
+      return withChapter(state, 'live-loop', {
         status: 'active',
-        step: 'run-scan',
+        step: 'live-loop/run-scan',
         hint: event.outcome === 'stale' ? 'scan-stale' : 'scan-failed',
-      }
+      })
     }
 
-    case 'collectStarted':
-      if (state.step !== 'collect-metric') return state
-      return {
-        ...state,
-        metric: { metricId: event.metricId, startedAt: event.at },
+    case 'collectStarted': {
+      if (chapter.step !== 'live-loop/collect-metric') return state
+      return withChapter(state, 'live-loop', {
+        ...chapter,
+        artifacts: {
+          ...chapter.artifacts,
+          metricId: event.metricId,
+          metricStartedAt: String(event.at),
+        },
         hint: undefined,
-      }
+      })
+    }
 
     case 'collectSettled': {
-      if (state.step !== 'collect-metric' || !state.metric) return state
+      if (chapter.step !== 'live-loop/collect-metric' || !scenarioMetricArtifact(state)) {
+        return state
+      }
       if (event.outcome === 'success') {
-        return { v: 1, status: 'active', step: 'see-chart', scan: state.scan, metric: state.metric }
+        return withChapter(state, 'live-loop', {
+          status: 'active',
+          step: 'live-loop/see-chart',
+          artifacts: chapter.artifacts,
+        })
       }
-      return {
-        v: 1,
+      const scan = scenarioScanArtifact(state)
+      return withChapter(state, 'live-loop', {
         status: 'active',
-        step: 'collect-metric',
-        scan: state.scan,
+        step: 'live-loop/collect-metric',
+        ...(scan ? { artifacts: encodeScanArtifact(scan) } : {}),
         hint: 'collect-failed',
-      }
+      })
     }
 
-    case 'chartVisited':
-      // Only the chart of the metric they actually collected finishes the chain;
-      // wandering onto some other metric's chart is not the payoff.
-      if (state.step !== 'see-chart' || state.metric?.metricId !== event.metricId) return state
-      return { ...state, status: 'completed', hint: undefined }
+    case 'chartVisited': {
+      // Only the chart of the metric they actually collected finishes the
+      // chapter; wandering onto some other metric's chart is not the payoff.
+      if (chapter.step !== 'live-loop/see-chart') return state
+      if (scenarioMetricArtifact(state)?.metricId !== event.metricId) return state
+      return withChapter(state, 'live-loop', { ...chapter, status: 'completed', hint: undefined })
+    }
 
     case 'watchTimedOut': {
-      // The run may well still be going — we simply stop claiming to be watching
-      // it, and hand the user back the action they can repeat.
-      if (state.step === 'watch-scan' && state.scan) {
-        return { v: 1, status: 'active', step: 'run-scan', hint: 'watch-timeout' }
-      }
-      if (state.step === 'collect-metric' && state.metric) {
-        return {
-          v: 1,
+      // The run may well still be going — we simply stop claiming to be
+      // watching it, and hand the user back the action they can repeat.
+      if (chapter.step === 'live-loop/watch-scan' && scenarioScanArtifact(state)) {
+        return withChapter(state, 'live-loop', {
           status: 'active',
-          step: 'collect-metric',
-          scan: state.scan,
+          step: 'live-loop/run-scan',
           hint: 'watch-timeout',
-        }
+        })
+      }
+      if (chapter.step === 'live-loop/collect-metric' && scenarioMetricArtifact(state)) {
+        const scan = scenarioScanArtifact(state)
+        return withChapter(state, 'live-loop', {
+          status: 'active',
+          step: 'live-loop/collect-metric',
+          ...(scan ? { artifacts: encodeScanArtifact(scan) } : {}),
+          hint: 'watch-timeout',
+        })
       }
       return state
     }
   }
+
+  return state
+}
+
+/**
+ * How a step's coach mark sits on its anchor. Owned by the model so every
+ * surface that anchors the same step agrees on placement, and pages stop
+ * hardcoding side/align at each call site.
+ */
+export interface ScenarioCoachPlacement {
+  side: 'top' | 'right' | 'bottom' | 'left'
+  align: 'start' | 'center' | 'end'
+  /** 'ring' draws the pulsing beacon around the anchor; 'none' keeps only the card. */
+  emphasis: 'ring' | 'none'
 }
 
 export interface ScenarioStep {
@@ -213,51 +479,352 @@ export interface ScenarioStep {
   /** Where the action lives. Deep links follow the persisted artifacts. */
   to: string
   ctaLabel: string
+  /** Absent on deep-link / visit steps that have no on-surface anchor at all. */
+  coach?: ScenarioCoachPlacement
+}
+
+export interface ScenarioChapter {
+  id: ChapterId
+  title: string
+  /** One line of what this chapter demonstrates — the picker's subtitle. */
+  blurb: string
+  steps: ScenarioStep[]
+}
+
+export const CHAPTER_TITLES: Record<ChapterId, string> = {
+  'live-loop': 'Run the live loop',
+  'edit-event': 'Edit an event',
+  variables: 'Variables & value drift',
+  branches: 'Review a branch',
+  reconcile: 'Reconcile the plan',
+  alerting: 'Route an alert',
+  explore: 'Explore the rest',
+}
+
+export const CHAPTER_BLURBS: Record<ChapterId, string> = {
+  'live-loop': 'Run a scan, watch it land, collect a metric, see the chart move.',
+  'edit-event': 'Open a planned event, template a field with a variable, save it.',
+  variables: 'Compare observed values against the documented list and review a drift.',
+  branches: 'Open the seeded feature branch, read its diff, leave a comment.',
+  reconcile: 'Accept a shadow event and resolve a schema drift.',
+  alerting: 'Create a rule on the local demo sink and simulate a firing.',
+  explore: 'Coverage, the anomaly drilldown, and search — the rest of the map.',
+}
+
+/** The names the demo seeder guarantees. Coach marks key on these to highlight
+ *  exactly one deterministic example row per anchor (single-example rule). */
+export const SCENARIO_SEEDED = {
+  editedEventName: 'Home Screen View',
+  templatedFieldName: 'platform',
+  driftVariableName: 'product_id',
+  branchName: 'feature/checkout-funnel',
+  changedEventName: 'Buy Button Click',
+  shadowCandidateName: 'app_heartbeat_v1',
+  schemaDriftEventName: 'Purchase Completed',
+  firingRuleName: 'Spike & drift watch (demo)',
+} as const
+
+/**
+ * A chapter's steps, links resolved against the state collected so far (the
+ * live-loop deep links follow the persisted artifacts, exactly as in v1).
+ */
+export function buildChapterSteps(
+  slug: string,
+  chapterId: ChapterId,
+  state: ScenarioState,
+): ScenarioStep[] {
+  const base = `/p/${slug}`
+  const scans = `${base}/settings/scans`
+  switch (chapterId) {
+    case 'live-loop': {
+      const scan = scenarioScanArtifact(state)
+      const metric = scenarioMetricArtifact(state)
+      return [
+        {
+          id: 'live-loop/run-scan',
+          title: 'Run a scan',
+          instruction: 'Run a scan to pull fresh volume from the demo warehouse.',
+          to: scans,
+          ctaLabel: 'Open Scans',
+          coach: { side: 'bottom', align: 'end', emphasis: 'ring' },
+        },
+        {
+          id: 'live-loop/watch-scan',
+          title: 'Watch it land',
+          instruction: 'Your scan is running. Watch it complete and see what it changed.',
+          to: scan ? `${scans}/${scan.scanConfigId}` : scans,
+          ctaLabel: 'Open the run',
+          coach: { side: 'top', align: 'start', emphasis: 'ring' },
+        },
+        {
+          id: 'live-loop/collect-metric',
+          title: 'Collect a metric',
+          instruction: 'Pick a metric and collect it now — the same worker a real project uses.',
+          to: `${base}/metrics`,
+          ctaLabel: 'Open Metrics',
+          coach: { side: 'bottom', align: 'end', emphasis: 'ring' },
+        },
+        {
+          id: 'live-loop/see-chart',
+          title: 'See the chart move',
+          instruction: 'Open the metric to see the point your collection just added.',
+          to: metric ? getMetricMonitoringPath(slug, metric.metricId) : `${base}/metrics`,
+          ctaLabel: 'Open the chart',
+          coach: { side: 'bottom', align: 'start', emphasis: 'ring' },
+        },
+      ]
+    }
+    case 'edit-event': {
+      // Once open-editor lands, the recorded editor pathname is the surface the
+      // remaining steps' controls live on — deep-link there, not at the list.
+      const editorPath = state.chapters['edit-event']?.artifacts?.editorPath
+      const editor = editorPath ?? `${base}/events`
+      const editorCta = editorPath ? 'Open the editor' : 'Open Events'
+      return [
+        {
+          id: 'edit-event/open-editor',
+          title: 'Open an event',
+          instruction: `Open ${SCENARIO_SEEDED.editedEventName} in the events catalog to edit it.`,
+          to: `${base}/events`,
+          ctaLabel: 'Open Events',
+          coach: { side: 'bottom', align: 'start', emphasis: 'ring' },
+        },
+        {
+          id: 'edit-event/set-value',
+          title: 'Template the platform field',
+          instruction:
+            'Point the Platform field at the ${platform} token — documented values come from Variables.',
+          to: editor,
+          ctaLabel: editorCta,
+          coach: { side: 'right', align: 'center', emphasis: 'ring' },
+        },
+        {
+          id: 'edit-event/save',
+          title: 'Save the event',
+          instruction: 'Save the event — the tracking plan updates immediately.',
+          to: editor,
+          ctaLabel: editorCta,
+          coach: { side: 'top', align: 'end', emphasis: 'ring' },
+        },
+      ]
+    }
+    case 'variables':
+      return [
+        {
+          id: 'variables/open-variables',
+          title: 'Open Variables',
+          instruction: 'Open the Variables settings — the templating layer behind field values.',
+          to: `${base}/settings/variables`,
+          ctaLabel: 'Open Variables',
+        },
+        {
+          id: 'variables/inspect-values',
+          title: 'Inspect product_id',
+          instruction: `Open ${SCENARIO_SEEDED.driftVariableName} to compare observed values against the documented list.`,
+          to: `${base}/settings/variables`,
+          ctaLabel: 'Open Variables',
+          coach: { side: 'left', align: 'center', emphasis: 'ring' },
+        },
+        {
+          id: 'variables/see-drift',
+          title: 'Review the value drift',
+          instruction:
+            'A scan saw prod_weekly outside the documented values — review the drift row.',
+          to: `${base}/settings/variables`,
+          ctaLabel: 'Open Variables',
+          coach: { side: 'top', align: 'start', emphasis: 'ring' },
+        },
+      ]
+    case 'branches':
+      return [
+        {
+          id: 'branches/open-branches',
+          title: 'Open Branches',
+          instruction: 'Open plan branches — version control for the tracking plan.',
+          to: `${base}/settings/branches`,
+          ctaLabel: 'Open Branches',
+        },
+        {
+          id: 'branches/open-branch',
+          title: 'Open the feature branch',
+          instruction: `Open ${SCENARIO_SEEDED.branchName} to review its pending change.`,
+          to: `${base}/settings/branches`,
+          ctaLabel: 'Open Branches',
+          coach: { side: 'right', align: 'center', emphasis: 'ring' },
+        },
+        {
+          id: 'branches/review-diff',
+          title: 'Review the diff',
+          instruction: `Expand the change to ${SCENARIO_SEEDED.changedEventName} — one modified event, before and after.`,
+          to: `${base}/settings/branches`,
+          ctaLabel: 'Open Branches',
+          coach: { side: 'top', align: 'start', emphasis: 'ring' },
+        },
+        {
+          id: 'branches/comment',
+          title: 'Leave a comment',
+          instruction: 'Post a review comment (or approve) — merging stays your call.',
+          to: `${base}/settings/branches`,
+          ctaLabel: 'Open Branches',
+          coach: { side: 'top', align: 'end', emphasis: 'ring' },
+        },
+      ]
+    case 'reconcile':
+      return [
+        {
+          id: 'reconcile/open-reconciliation',
+          title: 'Open Reconciliation',
+          instruction: 'Open Reconciliation — what the warehouse sees vs what the plan says.',
+          to: `${base}/reconciliation`,
+          ctaLabel: 'Open Reconciliation',
+        },
+        {
+          id: 'reconcile/accept-shadow',
+          title: 'Accept a shadow event',
+          instruction: `Accept ${SCENARIO_SEEDED.shadowCandidateName} — warehouse traffic with no planned event.`,
+          to: `${base}/reconciliation`,
+          ctaLabel: 'Open Reconciliation',
+          coach: { side: 'left', align: 'center', emphasis: 'ring' },
+        },
+        {
+          id: 'reconcile/review-drift',
+          title: 'Resolve a schema drift',
+          instruction: `Open the drift badge on ${SCENARIO_SEEDED.schemaDriftEventName} and accept the amount type change.`,
+          to: `${base}/events`,
+          ctaLabel: 'Open Events',
+          coach: { side: 'bottom', align: 'start', emphasis: 'ring' },
+        },
+      ]
+    case 'alerting':
+      return [
+        {
+          id: 'alerting/open-alerting',
+          title: 'Open Alerting',
+          instruction: 'Open alerting — destinations, rules and the local demo sink.',
+          to: `${base}/settings/alerting`,
+          ctaLabel: 'Open Alerting',
+        },
+        {
+          id: 'alerting/create-rule',
+          title: 'Create a rule',
+          instruction:
+            'Add a rule on the local demo sink — deliveries render locally, nothing is sent.',
+          to: `${base}/settings/alerting`,
+          ctaLabel: 'Open Alerting',
+          coach: { side: 'left', align: 'center', emphasis: 'ring' },
+        },
+        {
+          id: 'alerting/simulate',
+          title: 'Simulate a firing',
+          instruction: `Replay ${SCENARIO_SEEDED.firingRuleName} to preview a delivery over real anomalies.`,
+          to: `${base}/settings/alerting`,
+          ctaLabel: 'Open Alerting',
+          coach: { side: 'left', align: 'center', emphasis: 'ring' },
+        },
+      ]
+    case 'explore':
+      return [
+        {
+          id: 'explore/visit-coverage',
+          title: 'Check coverage',
+          instruction: 'Open Coverage — which platforms and event types actually report.',
+          to: `${base}/coverage`,
+          ctaLabel: 'Open Coverage',
+        },
+        {
+          id: 'explore/visit-anomaly',
+          title: 'Drill into the spike',
+          instruction: `Open Anomalies and drill into the ${SCENARIO_SEEDED.editedEventName} spike.`,
+          to: `${base}/anomalies`,
+          ctaLabel: 'Open Anomalies',
+        },
+        {
+          id: 'explore/use-search',
+          title: 'Search everything',
+          instruction: 'Press Ctrl K (or ⌘K) — the command palette searches the whole project.',
+          to: `${base}/overview`,
+          ctaLabel: 'Open Overview',
+        },
+      ]
+  }
+}
+
+/** One row of the chapter picker: status plus the first step's deep link. */
+export interface ChapterListEntry {
+  id: ChapterId
+  title: string
+  blurb: string
+  status: ChapterStatus
+  to: string
+}
+
+/** Every chapter in order, resolved for the picker (tour / welcome / strip). */
+export function buildChapterList(slug: string, state: ScenarioState): ChapterListEntry[] {
+  return CHAPTER_IDS.map((chapterId) => ({
+    id: chapterId,
+    title: CHAPTER_TITLES[chapterId],
+    blurb: CHAPTER_BLURBS[chapterId],
+    status: chapterStatus(state, chapterId),
+    to: buildChapterSteps(slug, chapterId, state)[0].to,
+  }))
+}
+
+export function buildChapter(
+  slug: string,
+  chapterId: ChapterId,
+  state: ScenarioState,
+): ScenarioChapter {
+  return {
+    id: chapterId,
+    title: CHAPTER_TITLES[chapterId],
+    blurb: CHAPTER_BLURBS[chapterId],
+    steps: buildChapterSteps(slug, chapterId, state),
+  }
+}
+
+/** The active chapter's current step (first step of live-loop as a fallback,
+ *  so consumers never hold a null step — mirrors v1's activeScenarioStep). */
+export function activeScenarioStep(slug: string, state: ScenarioState): ScenarioStep {
+  const chapterId = state.activeChapter ?? 'live-loop'
+  const steps = buildChapterSteps(slug, chapterId, state)
+  const stepId = state.chapters[chapterId]?.step
+  return steps.find((step) => step.id === stepId) ?? steps[0]
 }
 
 /**
- * The four steps, with links resolved against the artifacts collected so far:
- * "watch it land" points at the scan config that is actually running, and "see
- * the chart move" at the metric the user actually collected.
+ * Deep-link and explore steps complete by ARRIVING somewhere, mirroring how
+ * see-chart completes on a route visit. One pure predicate so the provider's
+ * route watcher and the tests agree on what counts as arrival.
  */
-export function buildScenarioSteps(slug: string, state: ScenarioState): ScenarioStep[] {
+export function stepCompletedByPath(
+  slug: string,
+  step: ScenarioStepId,
+  pathname: string,
+): boolean {
   const base = `/p/${slug}`
-  const scans = `${base}/settings/scans`
-  return [
-    {
-      id: 'run-scan',
-      title: 'Run a scan',
-      instruction: 'Run a scan to pull fresh volume from the demo warehouse.',
-      to: scans,
-      ctaLabel: 'Open Scans',
-    },
-    {
-      id: 'watch-scan',
-      title: 'Watch it land',
-      instruction: 'Your scan is running. Watch it complete and see what it changed.',
-      to: state.scan ? `${scans}/${state.scan.scanConfigId}` : scans,
-      ctaLabel: 'Open the run',
-    },
-    {
-      id: 'collect-metric',
-      title: 'Collect a metric',
-      instruction: 'Pick a metric and collect it now — the same worker a real project uses.',
-      to: `${base}/metrics`,
-      ctaLabel: 'Open Metrics',
-    },
-    {
-      id: 'see-chart',
-      title: 'See the chart move',
-      instruction: 'Open the metric to see the point your collection just added.',
-      to: state.metric ? getMetricMonitoringPath(slug, state.metric.metricId) : `${base}/metrics`,
-      ctaLabel: 'Open the chart',
-    },
-  ]
-}
-
-export function activeScenarioStep(slug: string, state: ScenarioState): ScenarioStep {
-  const steps = buildScenarioSteps(slug, state)
-  return steps[scenarioStepIndex(state)] ?? steps[0]
+  switch (step) {
+    case 'edit-event/open-editor':
+      // /p/:slug/events/:tab/:eventId/edit — the editor for ANY event counts;
+      // the coach mark steers towards the seeded one, but the model cannot
+      // know event ids, and editing anything still teaches the surface.
+      return pathname.startsWith(`${base}/events/`) && pathname.endsWith('/edit')
+    case 'variables/open-variables':
+      return pathname.startsWith(`${base}/settings/variables`)
+    case 'branches/open-branches':
+      return pathname.startsWith(`${base}/settings/branches`)
+    case 'reconcile/open-reconciliation':
+      return pathname.startsWith(`${base}/reconciliation`)
+    case 'alerting/open-alerting':
+      return pathname.startsWith(`${base}/settings/alerting`)
+    case 'explore/visit-coverage':
+      return pathname.startsWith(`${base}/coverage`)
+    case 'explore/visit-anomaly':
+      // The anomalies list links into /monitoring/:scope/:id — the drilldown
+      // is the destination that completes the step.
+      return pathname.startsWith(`${base}/monitoring/`)
+    default:
+      return false
+  }
 }
 
 const STORAGE_PREFIX = 'tripl-demo-scenario:'
@@ -278,6 +845,68 @@ function isMetricArtifact(value: unknown): value is ScenarioMetricArtifact {
   return typeof artifact.metricId === 'string' && typeof artifact.startedAt === 'number'
 }
 
+const V1_STEP_TO_V2: Record<string, ScenarioStepId> = {
+  'run-scan': 'live-loop/run-scan',
+  'watch-scan': 'live-loop/watch-scan',
+  'collect-metric': 'live-loop/collect-metric',
+  'see-chart': 'live-loop/see-chart',
+}
+
+/** A valid v1 blob becomes chapters['live-loop']; anything half-trusted reads
+ *  fresh — a step whose artifact failed validation could never complete. */
+function migrateV1(candidate: Record<string, unknown>): ScenarioState | null {
+  const status = candidate.status
+  if (status !== 'active' && status !== 'completed' && status !== 'dismissed') return null
+  const step = V1_STEP_TO_V2[candidate.step as string]
+  if (!step) return null
+  if (candidate.scan !== undefined && !isScanArtifact(candidate.scan)) return null
+  if (candidate.metric !== undefined && !isMetricArtifact(candidate.metric)) return null
+  if (candidate.hint !== undefined && !SCENARIO_HINTS.includes(candidate.hint as ScenarioHint)) {
+    return null
+  }
+
+  const artifacts: Record<string, string> = {}
+  if (candidate.scan) {
+    Object.assign(artifacts, encodeScanArtifact(candidate.scan as ScenarioScanArtifact))
+  }
+  if (candidate.metric) {
+    const metric = candidate.metric as ScenarioMetricArtifact
+    artifacts.metricId = metric.metricId
+    artifacts.metricStartedAt = String(metric.startedAt)
+  }
+
+  return {
+    v: 2,
+    // A dismissed v1 run stays put away; anything else keeps coaching.
+    activeChapter: status === 'dismissed' ? null : 'live-loop',
+    chapters: {
+      'live-loop': {
+        status,
+        step,
+        ...(Object.keys(artifacts).length > 0 ? { artifacts } : {}),
+        ...(candidate.hint ? { hint: candidate.hint as ScenarioHint } : {}),
+      },
+    },
+  }
+}
+
+function isChapterState(chapterId: ChapterId, value: unknown): value is ChapterState {
+  if (typeof value !== 'object' || value === null) return false
+  const candidate = value as Record<string, unknown>
+  if (!CHAPTER_STATUSES.includes(candidate.status as ChapterStatus)) return false
+  if (!CHAPTER_STEP_IDS[chapterId].includes(candidate.step as ScenarioStepId)) return false
+  if (candidate.artifacts !== undefined) {
+    if (typeof candidate.artifacts !== 'object' || candidate.artifacts === null) return false
+    if (Object.values(candidate.artifacts).some((entry) => typeof entry !== 'string')) {
+      return false
+    }
+  }
+  if (candidate.hint !== undefined && !SCENARIO_HINTS.includes(candidate.hint as ScenarioHint)) {
+    return false
+  }
+  return true
+}
+
 /**
  * Anything we cannot fully vouch for reads as a fresh scenario. A half-trusted
  * state is worse than none: a step whose artifact failed validation can never
@@ -288,23 +917,23 @@ function parseScenarioState(raw: string): ScenarioState | null {
   if (typeof parsed !== 'object' || parsed === null) return null
   const candidate = parsed as Record<string, unknown>
 
-  if (candidate.v !== 1) return null
-  if (!SCENARIO_STATUSES.includes(candidate.status as ScenarioStatus)) return null
-  if (!SCENARIO_STEP_IDS.includes(candidate.step as ScenarioStepId)) return null
-  if (candidate.scan !== undefined && !isScanArtifact(candidate.scan)) return null
-  if (candidate.metric !== undefined && !isMetricArtifact(candidate.metric)) return null
-  if (candidate.hint !== undefined && !SCENARIO_HINTS.includes(candidate.hint as ScenarioHint)) {
-    return null
-  }
+  if (candidate.v === 1) return migrateV1(candidate)
+  if (candidate.v !== 2) return null
 
-  return {
-    v: 1,
-    status: candidate.status as ScenarioStatus,
-    step: candidate.step as ScenarioStepId,
-    ...(candidate.scan ? { scan: candidate.scan as ScenarioScanArtifact } : {}),
-    ...(candidate.metric ? { metric: candidate.metric as ScenarioMetricArtifact } : {}),
-    ...(candidate.hint ? { hint: candidate.hint as ScenarioHint } : {}),
+  const activeChapter = candidate.activeChapter
+  if (activeChapter !== null && !CHAPTER_IDS.includes(activeChapter as ChapterId)) return null
+  if (typeof candidate.chapters !== 'object' || candidate.chapters === null) return null
+
+  const chapters: Partial<Record<ChapterId, ChapterState>> = {}
+  for (const [key, value] of Object.entries(candidate.chapters)) {
+    if (!CHAPTER_IDS.includes(key as ChapterId)) return null
+    if (!isChapterState(key as ChapterId, value)) return null
+    chapters[key as ChapterId] = value
   }
+  // An active pointer at a chapter with no state would coach towards nothing.
+  if (activeChapter !== null && !chapters[activeChapter as ChapterId]) return null
+
+  return { v: 2, activeChapter: activeChapter as ChapterId | null, chapters }
 }
 
 export function readScenarioState(slug: string): ScenarioState {
@@ -326,3 +955,6 @@ export function writeScenarioState(slug: string, state: ScenarioState): void {
     /* ignore — a scenario that cannot remember its place still coaches this session */
   }
 }
+
+/** Every step id, exported for exhaustive checks in tests. */
+export const SCENARIO_STEP_IDS: readonly ScenarioStepId[] = ALL_STEP_IDS

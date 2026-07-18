@@ -2,7 +2,7 @@ import { Fragment, memo } from 'react'
 import type { ReactNode } from 'react'
 import { useSortable } from '@dnd-kit/sortable'
 import { CSS } from '@dnd-kit/utilities'
-import { Check, GripVertical } from 'lucide-react'
+import { Check, GripVertical, Pencil } from 'lucide-react'
 import type {
   EventListItem,
   EventMetricPoint,
@@ -24,6 +24,9 @@ import { SIGNAL_LEVEL, rowSignalLevel } from '@/lib/statusLexicon'
 import { resolveMetaFieldHref } from '@/lib/metaFields'
 import { VariableValueContextTrigger } from '@/components/variable-value-contexts'
 import { EventName } from '@/components/event-name'
+import { ScenarioCoachMark } from '@/demo/ScenarioCoachMark'
+import { useDemoScenario } from '@/demo/demoScenarioContext'
+import { SCENARIO_SEEDED } from '@/demo/scenarioModel'
 import { EventDriftBadge } from './EventDriftBadge'
 import { EventWindowMetricsCell } from './EventWindowMetricsCell'
 import { computeWindowDelta, formatRelativeTime, splitTemplateValue } from './utils'
@@ -155,6 +158,17 @@ export const EventRow = memo(function EventRow({
       : null
   const statusTone = EVENT_STATUS_DOT_TONE[(ev.status as EventStatus) ?? 'draft'] ?? 'neutral'
 
+  // The edit affordance is hover-revealed like the drag handle, but the row the
+  // coached scenario points at must not hide its own click target — so it stays
+  // visible while the edit-event chapter's mark is on it (context bypasses the
+  // memo, and outside a demo the inert context never matches).
+  const { active: scenarioActive, step: scenarioStep, hintsMuted } = useDemoScenario()
+  const coachEdit =
+    scenarioActive &&
+    !hintsMuted &&
+    scenarioStep.id === 'edit-event/open-editor' &&
+    ev.name === SCENARIO_SEEDED.editedEventName
+
   return (
     <TableRow
       ref={setNodeRef}
@@ -206,8 +220,29 @@ export const EventRow = memo(function EventRow({
             )}
           </Tooltip>
           {ev.drift_count > 0 && (
-            <EventDriftBadge slug={slug} eventTypeId={ev.event_type_id} count={ev.drift_count} />
+            <ScenarioCoachMark
+              step="reconcile/review-drift"
+              when={ev.name === SCENARIO_SEEDED.schemaDriftEventName}
+            >
+              {/* A span, not the badge itself: the badge's own root is a Radix
+                  PopoverTrigger slot, which must keep its ref. */}
+              <span className="inline-flex">
+                <EventDriftBadge slug={slug} eventTypeId={ev.event_type_id} count={ev.drift_count} />
+              </span>
+            </ScenarioCoachMark>
           )}
+          <ScenarioCoachMark step="edit-event/open-editor" when={coachEdit}>
+            <button
+              type="button"
+              onClick={() => onRowAction('edit', ev)}
+              aria-label={`Edit ${ev.name}`}
+              className={`flex h-6 w-6 shrink-0 items-center justify-center rounded text-muted-foreground transition-opacity hover:bg-muted focus-visible:opacity-100 group-hover/row:opacity-100 group-focus-within/row:opacity-100 ${
+                coachEdit ? 'opacity-100' : 'opacity-0'
+              }`}
+            >
+              <Pencil className="h-3 w-3" aria-hidden="true" />
+            </button>
+          </ScenarioCoachMark>
         </div>
       </TableCell>
       {!hideType && (

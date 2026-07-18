@@ -4,11 +4,12 @@ import { MemoryRouter } from 'react-router-dom'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { DemoScenarioProvider } from '@/demo/DemoScenarioProvider'
 import {
-  buildScenarioSteps,
+  buildChapterSteps,
   initialScenarioState,
   readScenarioState,
   writeScenarioState,
 } from '@/demo/scenarioModel'
+import { liveLoopState } from '@/demo/scenarioTestState'
 import type { Project, ScanConfig } from '@/types'
 import { ScanDetail } from './ScanDetail'
 
@@ -318,7 +319,7 @@ describe('ScanDetail', () => {
 
 describe('ScanDetail — coached demo scenario', () => {
   const SLUG = 'demo'
-  const WATCH_SCAN_INSTRUCTION = buildScenarioSteps(SLUG, initialScenarioState())[1].instruction
+  const WATCH_SCAN_INSTRUCTION = buildChapterSteps(SLUG, 'live-loop', initialScenarioState())[1].instruction
 
   function demoProject(overrides: Partial<Project> = {}): Project {
     return {
@@ -386,9 +387,9 @@ describe('ScanDetail — coached demo scenario', () => {
 
     fireEvent.click(await screen.findByRole('button', { name: 'Retry scan' }))
 
-    await waitFor(() => expect(readScenarioState(SLUG).step).toBe('watch-scan'))
+    await waitFor(() => expect(readScenarioState(SLUG).chapters['live-loop']?.step).toBe('live-loop/watch-scan'))
     expect(runCalls[0]).toBe('POST')
-    expect(readScenarioState(SLUG).scan).toMatchObject({
+    expect(readScenarioState(SLUG).chapters['live-loop']?.artifacts).toMatchObject({
       scanConfigId: 'scan-1',
       scanJobId: 'job-new',
     })
@@ -396,12 +397,12 @@ describe('ScanDetail — coached demo scenario', () => {
 
   it('marks the row of the watched job, and no row when the watched job is not in the feed', async () => {
     setupFetch()
-    writeScenarioState(SLUG, {
-      v: 1,
-      status: 'active',
-      step: 'watch-scan',
-      scan: { scanConfigId: 'scan-1', scanJobId: 'job-tick', startedAt: Date.now() },
-    })
+    writeScenarioState(
+      SLUG,
+      liveLoopState('live-loop/watch-scan', {
+        scan: { scanConfigId: 'scan-1', scanJobId: 'job-tick', startedAt: Date.now() },
+      }),
+    )
     const marked = renderInScenario(demoProject())
 
     // Exactly one of the two feed rows is coached — the watched one.
@@ -410,12 +411,12 @@ describe('ScanDetail — coached demo scenario', () => {
     marked.unmount()
 
     // A job the feed does not carry marks nothing at all.
-    writeScenarioState(SLUG, {
-      v: 1,
-      status: 'active',
-      step: 'watch-scan',
-      scan: { scanConfigId: 'scan-1', scanJobId: 'job-elsewhere', startedAt: Date.now() },
-    })
+    writeScenarioState(
+      SLUG,
+      liveLoopState('live-loop/watch-scan', {
+        scan: { scanConfigId: 'scan-1', scanJobId: 'job-elsewhere', startedAt: Date.now() },
+      }),
+    )
     renderInScenario(demoProject())
 
     expect(await screen.findByText('Recent jobs')).toBeInTheDocument()
