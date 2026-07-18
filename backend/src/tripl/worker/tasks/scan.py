@@ -30,6 +30,7 @@ from tripl.observability.metrics import scan_runs_total
 from tripl.services import app_settings_service
 from tripl.worker.celery_app import celery_app
 from tripl.worker.db import _build_adapter, _get_sync_session
+from tripl.worker.plan_scope import main_branch_id
 from tripl.worker.search_reindex import reindex_main_branch_from_worker
 from tripl.worker.tasks._errors import ScanError, user_facing_error
 from tripl.worker.utils.query_windows import TimeWindow, resolve_lookback_window
@@ -348,11 +349,16 @@ def _scan_with_grouping(
     combined = GenerationResult()
     per_group_results: dict[str, GenerationResult] = {}
 
+    # Scans operate on the main plan; a working branch deep-copies event types
+    # under the same names, so the by-name lookup must be branch-scoped.
+    plan_branch = main_branch_id(session, project_id)
+
     for et_value in group_values:
         # Find or skip event type by name
         et = session.execute(
             select(EventType).where(
                 EventType.project_id == project_id,
+                EventType.branch_id == plan_branch,
                 EventType.name == et_value,
             )
         ).scalar_one_or_none()
