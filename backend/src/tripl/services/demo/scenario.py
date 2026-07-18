@@ -24,7 +24,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 # and a feature-branch journey), so demos seeded under recipe "1" are semantically
 # older. Reset re-runs the current recipe, so re-seeding yields equivalent
 # semantics with no duplicate rows (every id is minted fresh per run).
-DEMO_RECIPE_VERSION = "3"
+# Bumped to "4" for tripl-odrj.3: the feature branch now carries a REAL pending
+# change (the main plan is deep-copied onto it and one event description is
+# edited, so the branch diff / merge preview are non-empty) and one open
+# variable-value drift is seeded on product_id (Trial Started).
+DEMO_RECIPE_VERSION = "4"
 
 # Default scenario seed. Fixed so the seeded metrics/anomalies/drift are
 # reproducible for a given clock; overridable per DemoContext for tests.
@@ -105,7 +109,8 @@ def build_default_scenario() -> DemoScenario:
             # 1. Plan schema: event types, fields, meta fields, events, tags,
             #    field/meta values, one relation, one owner.
             plan.build_plan,
-            # 2. Variables + observed values + one authored per-event override.
+            # 2. Variables + observed values + one authored per-event override
+            #    + one open variable-value drift outside that override's list.
             variables.build_variables,
             # 3. Activity: event change history + a figma spec (no stored bytes).
             activity.build_activity,
@@ -126,7 +131,9 @@ def build_default_scenario() -> DemoScenario:
             #    catalog so it can reference the seeded metrics/anomalies. Emits
             #    zero network side effects.
             alerts.build_alerts,
-            # 9. A small feature-branch journey (revision + branch + comment).
+            # 9. Feature-branch journey: revision + branch + comment, plus a
+            #    deep copy of the main plan onto the branch with exactly one
+            #    branch-side edit (a real pending change for diff/merge preview).
             branches.build_branches,
             # 10. Search reindex (last).
             search.build_search,

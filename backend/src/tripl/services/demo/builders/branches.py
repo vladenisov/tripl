@@ -1,24 +1,31 @@
 """Feature-branch journey builder.
 
-Seeds a minimal but API-visible collaboration story: a base ``PlanRevision``
-snapshot, one working ``PlanBranch`` (a feature branch — the kind enum is
-main/working, so a working branch with a feature-style name), and a top-level
-``PlanBranchComment``. Reachable via ``/branches``, ``/branches/{id}/comments``,
-and ``/revisions``.
+Seeds an API-visible collaboration story: a base ``PlanRevision`` snapshot, one
+working ``PlanBranch`` (a feature branch — the kind enum is main/working, so a
+working branch with a feature-style name), a top-level ``PlanBranchComment``,
+and — new in recipe 4 — a REAL pending change: the main plan is deep-copied
+onto the branch and exactly one branch-side edit is applied, so
+``/branches/{id}/diff`` shows one modified event and the merge preview is
+non-empty. Reachable via ``/branches``, ``/branches/{id}/comments``,
+``/branches/{id}/diff``, and ``/revisions``.
 
 The ORM writes mirror ``plan_branch_service.create_branch`` inline because that
 service commits internally, which would break the seeder's single end-of-function
-commit. No plan deep-copy is done — the branch is intentionally minimal.
+commit; the plan copy itself reuses the service's non-committing
+``deep_copy_plan_to_branch`` helper so the two paths cannot drift.
 """
 
 from __future__ import annotations
 
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from tripl.models.event import Event
 from tripl.models.plan_branch import BranchKind, BranchStatus, PlanBranch
 from tripl.models.plan_branch_comment import PlanBranchComment
 from tripl.models.plan_revision import PlanRevision
 from tripl.services.demo.scenario import DemoContext
+from tripl.services.plan_branch_service import deep_copy_plan_to_branch
 from tripl.services.plan_revision_service import build_plan_snapshot
 
 _BRANCH_NAME = "feature/checkout-funnel"
@@ -26,6 +33,15 @@ _BRANCH_DESCRIPTION = "Redesign the checkout funnel: paywall copy and Buy CTA pl
 _COMMENT_BODY = (
     "Kicking off the checkout funnel redesign. First pass tightens the paywall "
     "copy and moves the Buy CTA above the fold — see the linked Figma spec."
+)
+
+# The single branch-side edit (the pending change). Keyed by event name so the
+# diff reports exactly one changed event; the copy matches the branch's story —
+# the paywall CTA copy moves from "Buy now" to "Start free trial".
+CHANGED_EVENT_NAME = "Buy Button Click"
+CHANGED_EVENT_DESCRIPTION = (
+    "User taps the primary CTA on the paywall. Checkout-funnel redesign: CTA "
+    "copy changes from 'Buy now' to 'Start free trial', moved above the fold."
 )
 
 
@@ -52,6 +68,26 @@ async def build_branches(session: AsyncSession, ctx: DemoContext) -> None:
     )
     session.add(branch)
     await session.flush()
+
+    # Isolated branch copy of the whole plan, then ONE modification on the copy,
+    # so the branch diff is exactly one changed event and nothing else.
+    await deep_copy_plan_to_branch(
+        session,
+        project_id=ctx.project_id,
+        source_branch_id=ctx.branch_id,
+        target_branch_id=branch.id,
+    )
+    await session.flush()
+    branch_event = (
+        await session.execute(
+            select(Event).where(
+                Event.project_id == ctx.project_id,
+                Event.branch_id == branch.id,
+                Event.name == CHANGED_EVENT_NAME,
+            )
+        )
+    ).scalar_one()
+    branch_event.description = CHANGED_EVENT_DESCRIPTION
 
     session.add(
         PlanBranchComment(
