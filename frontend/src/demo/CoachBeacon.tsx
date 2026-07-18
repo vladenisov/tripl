@@ -44,17 +44,19 @@ export function CoachBeacon({ anchor }: { anchor: HTMLElement }) {
       })
     }
     refresh()
-    const observer = new ResizeObserver(refresh)
-    observer.observe(anchor)
+    // Older browsers / constrained webviews may lack ResizeObserver — degrade
+    // to the resize + scroll listeners below instead of throwing.
+    const observer = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(refresh)
+    observer?.observe(anchor)
     // The body too: layout shifts that MOVE the anchor without resizing it
     // (a diff row collapsing above it, form hints appearing) change the body's
     // height, so this catches them without any polling loop.
-    observer.observe(document.body)
+    observer?.observe(document.body)
     window.addEventListener('resize', refresh)
     // Capture: the anchor may live inside any scroll container, not just the page.
     window.addEventListener('scroll', refresh, { capture: true, passive: true })
     return () => {
-      observer.disconnect()
+      observer?.disconnect()
       window.removeEventListener('resize', refresh)
       window.removeEventListener('scroll', refresh, { capture: true })
     }

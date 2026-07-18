@@ -79,14 +79,16 @@ See **[The demo workspace](./demo-workspace.md)** for exactly what is synthetic,
 what is really executed, and what is intentionally unavailable.
 :::
 
-**Start with the scenario.** The welcome panel offers **Run the scenario**, which
-coaches you through the product's core loop end to end — run a scan, watch it land,
-collect a metric, see the chart move. A strip under the demo banner tracks where you
-are and links to the next action, and a callout points at the button that performs
-it. It advances on **your** actions only: the demo's background clock is running
-scans and collections of its own, and those never tick it forward. Dismiss or
-restart it whenever you like. (Prefer to read first? **Take the tour** walks the
-same surfaces without asking you to do anything.)
+**Start with the coached chapters.** The welcome panel lists **Coached
+chapters** — short hands-on lessons, one per product area: run the live loop
+(scan → metric → chart), edit an event, variables & value drift, review a
+branch, reconcile the plan, route an alert, and a closing explore chapter. A
+strip under the demo banner tracks which chapter and step you are on and links
+to the next action, and a callout rings the button that performs it. Chapters
+advance on **your** actions only: the demo's background clock is running scans
+and collections of its own, and those never tick a chapter forward. Dismiss or
+restart any chapter whenever you like. (Prefer to read first? **Take the
+tour** walks the same surfaces without asking you to do anything.)
 
 Then a good order to look around:
 

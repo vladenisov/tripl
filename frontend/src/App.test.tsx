@@ -137,9 +137,9 @@ describe('App', () => {
 
     renderApp()
 
-    // No projects in this fixture, so the grouped nav shows its empty state
+    // No projects in this fixture, so the workspace opens on the welcome hero
     // while the footer still renders the signed-in user and sign-out action.
-    expect(await screen.findByText('No projects yet')).toBeInTheDocument()
+    expect(await screen.findByText('Keep your product analytics honest')).toBeInTheDocument()
     expect(screen.getAllByText('Owner').length).toBeGreaterThan(0)
     expect(screen.getByRole('button', { name: 'Sign out' })).toBeInTheDocument()
   })
