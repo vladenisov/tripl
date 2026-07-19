@@ -116,7 +116,7 @@ export function ProductTour({ slug, open, onOpenChange }: ProductTourProps) {
 
   return (
     <Dialog open={open} onOpenChange={(next) => (next ? onOpenChange(true) : dismiss())}>
-      <DialogContent className="max-w-lg">
+      <DialogContent className="min-w-0 max-w-lg overflow-x-hidden">
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
             <Compass className="h-4 w-4" style={{ color: 'var(--accent)' }} />
@@ -176,7 +176,7 @@ export function ProductTour({ slug, open, onOpenChange }: ProductTourProps) {
             click = start (or resume) it and land on its first surface. */}
         {scenarioAvailable && (
           <div
-            className="rounded-lg border p-3"
+            className="min-w-0 rounded-lg border p-3"
             style={{ background: 'var(--accent-soft)', borderColor: 'var(--border-subtle)' }}
           >
             <p className="mb-2 text-[12px] font-medium">
@@ -191,7 +191,7 @@ export function ProductTour({ slug, open, onOpenChange }: ProductTourProps) {
 
         {/* Direct index — every surface + the metric building blocks are one
             click away, regardless of the stepper position. */}
-        <div className="border-t pt-3" style={{ borderColor: 'var(--border-subtle)' }}>
+        <div className="min-w-0 border-t pt-3" style={{ borderColor: 'var(--border-subtle)' }}>
           <p className="mb-2 text-[10px] font-semibold uppercase tracking-[0.07em]" style={{ color: 'var(--fg-faint)' }}>
             Jump to any surface
           </p>

@@ -1,5 +1,5 @@
 /**
- * Test-only constructors for v2 scenario states (tripl-odrj.4). Page tests seed
+ * Test-only constructors for v3 scenario states (tripl-odrj.4). Page tests seed
  * localStorage with these instead of hand-writing the nested chapter record —
  * one place to change if the persisted shape moves again.
  */
@@ -21,7 +21,7 @@ interface LiveLoopOptions {
   status?: ChapterState['status']
 }
 
-/** A v2 state with only the live-loop chapter, on `step`, active by default. */
+/** A v3 state with only the live-loop chapter, on `step`, active by default. */
 export function liveLoopState(
   step: ScenarioStepId,
   { scan, metric, hint, status = 'active' }: LiveLoopOptions = {},
@@ -37,7 +37,7 @@ export function liveLoopState(
     artifacts.metricStartedAt = String(metric.startedAt)
   }
   return {
-    v: 2,
+    v: 3,
     activeChapter: status === 'dismissed' ? null : 'live-loop',
     chapters: {
       'live-loop': {
@@ -50,14 +50,14 @@ export function liveLoopState(
   }
 }
 
-/** A v2 state with one arbitrary chapter active on `step`. */
+/** A v3 state with one arbitrary chapter active on `step`. */
 export function chapterState(
   chapter: ChapterId,
   step: ScenarioStepId,
   status: ChapterState['status'] = 'active',
 ): ScenarioState {
   return {
-    v: 2,
+    v: 3,
     activeChapter: status === 'dismissed' ? null : chapter,
     chapters: { [chapter]: { status, step } },
   }

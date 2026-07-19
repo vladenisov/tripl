@@ -105,8 +105,8 @@ describe('DemoScenarioStrip — the active chapter', () => {
     renderStrip(chapterState('edit-event', 'edit-event/set-value'))
 
     expect(screen.getByText(CHAPTER_TITLES['edit-event'])).toBeInTheDocument()
-    expect(screen.getByText('Step 2 of 3')).toBeInTheDocument()
-    expect(screen.getByText('Template the platform field')).toBeInTheDocument()
+    expect(screen.getByText('Step 2 of 4')).toBeInTheDocument()
+    expect(screen.getByText('Try a documented product ID')).toBeInTheDocument()
   })
 
   it('links watch-scan at the run the user started', () => {
@@ -171,7 +171,7 @@ describe('DemoScenarioStrip — dismissal and completion', () => {
     // Clicking starts the offered chapter, so the strip flips to coaching it.
     fireEvent.click(next)
     expect(screen.getByText(CHAPTER_TITLES['edit-event'])).toBeInTheDocument()
-    expect(screen.getByText('Step 1 of 3')).toBeInTheDocument()
+    expect(screen.getByText('Step 1 of 4')).toBeInTheDocument()
     expect(readScenarioState(SLUG).activeChapter).toBe('edit-event')
   })
 

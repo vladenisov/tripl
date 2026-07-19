@@ -18,7 +18,7 @@ import { variablesApi } from '@/api/variables'
 import { useActiveBranchId } from '@/hooks/useBranch'
 import { useAiStatus } from '@/hooks/useAiStatus'
 import { ScenarioCoachMark } from '@/demo/ScenarioCoachMark'
-import { useDemoScenarioActions } from '@/demo/demoScenarioContext'
+import { useDemoScenario, useDemoScenarioActions } from '@/demo/demoScenarioContext'
 import { SCENARIO_SEEDED } from '@/demo/scenarioModel'
 import { EVENT_STATUS_LABELS, EVENT_STATUSES } from '@/lib/eventStatus'
 import { META_FIELD_LINK_PLACEHOLDER } from '@/lib/metaFields'
@@ -305,6 +305,7 @@ export function EventForm({
   const qc = useQueryClient()
   const branchId = useActiveBranchId()
   const aiEnabled = useAiStatus(slug)
+  const { step: scenarioStep } = useDemoScenario()
   const { notifyStepCompleted } = useDemoScenarioActions()
   const formRef = useRef<HTMLFormElement>(null)
   const isNew = !event
@@ -334,6 +335,11 @@ export function EventForm({
     [selectedEt],
   )
   const varSuggestions = projectVariables
+  const editedField = sortedFields.find(field => field.name === SCENARIO_SEEDED.editedFieldName)
+  const editedFieldValue = editedField ? (fieldValues[editedField.id] ?? '') : ''
+  const editFieldCoachStep = scenarioStep.id === 'edit-event/set-token'
+    ? 'edit-event/set-token'
+    : 'edit-event/set-value'
 
   // Scan naming rule: when a scan config generates names for this event type,
   // manual creation must use the SAME template or the event never merges with
@@ -409,9 +415,15 @@ export function EventForm({
       if (event) qc.invalidateQueries({ queryKey: ['event', slug] })
       // Direct scenario completion — inert unless the demo's edit-event chapter
       // is sitting on exactly this step (the reducer drops everything else).
-      // set-value first: a user who saved without templating still performed
-      // the save, and the chapter must not dead-end on the skipped step.
-      notifyStepCompleted('edit-event/set-value')
+      // A save may be the mutation that lands one of the coached field states;
+      // notify only states the persisted value actually satisfies. The reducer
+      // drops out-of-order notices, so neither step can be skipped accidentally.
+      if (editedFieldValue === SCENARIO_SEEDED.editedFieldValue) {
+        notifyStepCompleted('edit-event/set-value')
+      }
+      if (editedFieldValue === SCENARIO_SEEDED.editedFieldToken) {
+        notifyStepCompleted('edit-event/set-token')
+      }
       notifyStepCompleted('edit-event/save')
       if (closeAfterSave) onClose()
     },
@@ -617,8 +629,8 @@ export function EventForm({
                 {/* The div is the mark's anchor: FieldValueControl is a plain
                     function component and would swallow the cloned ref. */}
                 <ScenarioCoachMark
-                  step="edit-event/set-value"
-                  when={f.name === SCENARIO_SEEDED.templatedFieldName}
+                  step={editFieldCoachStep}
+                  when={f.name === SCENARIO_SEEDED.editedFieldName}
                 >
                   <div>
                     <FieldValueControl
@@ -628,12 +640,18 @@ export function EventForm({
                       onChange={v => {
                         setFieldValues({ ...fieldValues, [f.id]: v })
                         // The step is done the moment the field actually holds
-                        // the token, not on save — the mark moves on to Save.
+                        // the coached value, not on save — the mark moves on to Save.
                         if (
-                          f.name === SCENARIO_SEEDED.templatedFieldName &&
-                          v.includes(`\${${SCENARIO_SEEDED.templatedFieldName}}`)
+                          f.name === SCENARIO_SEEDED.editedFieldName &&
+                          v === SCENARIO_SEEDED.editedFieldValue
                         ) {
                           notifyStepCompleted('edit-event/set-value')
+                        }
+                        if (
+                          f.name === SCENARIO_SEEDED.editedFieldName &&
+                          v === SCENARIO_SEEDED.editedFieldToken
+                        ) {
+                          notifyStepCompleted('edit-event/set-token')
                         }
                       }}
                       variables={varSuggestions}

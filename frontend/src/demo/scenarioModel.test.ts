@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 import {
   CHAPTER_IDS,
   CHAPTER_STEP_IDS,
+  SCENARIO_SEEDED,
   SCENARIO_STEP_IDS,
   activeScenarioStep,
   buildChapterList,
@@ -63,6 +64,37 @@ describe('the chapter/step id contract', () => {
     expect(SCENARIO_STEP_IDS).toHaveLength(
       CHAPTER_IDS.reduce((total, chapter) => total + CHAPTER_STEP_IDS[chapter].length, 0),
     )
+  })
+})
+
+describe('scenario chapter browser contracts', () => {
+  it('places the chart coach above its row so it does not cover the catalog below', () => {
+    const seeChart = buildChapterSteps(SLUG, 'live-loop', initialScenarioState()).find(
+      step => step.id === 'live-loop/see-chart',
+    )
+
+    expect(seeChart?.coach).toEqual({ side: 'top', align: 'start', emphasis: 'ring' })
+  })
+
+  it('edits the seeded product field to a documented value without changing the anomaly target', () => {
+    const editSteps = buildChapterSteps(SLUG, 'edit-event', initialScenarioState())
+    const exploreSteps = buildChapterSteps(SLUG, 'explore', initialScenarioState())
+
+    expect(SCENARIO_SEEDED.editedEventName).toBe('Trial Started')
+    expect(SCENARIO_SEEDED.editedFieldName).toBe('product_id')
+    expect(SCENARIO_SEEDED.editedFieldValue).toBe('prod_monthly')
+    expect(SCENARIO_SEEDED.editedFieldToken).toBe('${product_id}')
+    expect(SCENARIO_SEEDED.anomalyEventName).toBe('Home Screen View')
+    expect(editSteps[0].instruction).toContain('Trial Started')
+    expect(editSteps[1]).toMatchObject({
+      title: 'Try a documented product ID',
+      instruction: expect.stringContaining('prod_monthly'),
+    })
+    expect(editSteps[2]).toMatchObject({
+      title: 'Restore the variable template',
+      instruction: expect.stringContaining('${product_id}'),
+    })
+    expect(exploreSteps[1].instruction).toContain('Home Screen View')
   })
 })
 
@@ -153,6 +185,9 @@ describe('scenarioReducer — stepCompleted', () => {
     expect(state.chapters['edit-event']?.step).toBe('edit-event/set-value')
 
     state = scenarioReducer(state, { type: 'stepCompleted', step: 'edit-event/set-value' })
+    expect(state.chapters['edit-event']?.step).toBe('edit-event/set-token')
+
+    state = scenarioReducer(state, { type: 'stepCompleted', step: 'edit-event/set-token' })
     expect(state.chapters['edit-event']?.step).toBe('edit-event/save')
 
     state = scenarioReducer(state, { type: 'stepCompleted', step: 'edit-event/save' })
@@ -445,7 +480,7 @@ describe('persistence', () => {
       }),
     )
     const migrated = readScenarioState(SLUG)
-    expect(migrated.v).toBe(2)
+    expect(migrated.v).toBe(3)
     expect(migrated.activeChapter).toBe('live-loop')
     expect(migrated.chapters['live-loop']?.step).toBe('live-loop/watch-scan')
     expect(migrated.chapters['live-loop']?.hint).toBe('watch-timeout')
@@ -464,6 +499,59 @@ describe('persistence', () => {
     const migrated = readScenarioState(SLUG)
     expect(migrated.activeChapter).toBeNull()
     expect(migrated.chapters['live-loop']?.status).toBe('dismissed')
+  })
+
+  it('restarts legacy v2 edit progress without losing other chapters', () => {
+    window.localStorage.setItem(
+      KEY,
+      JSON.stringify({
+        v: 2,
+        activeChapter: 'edit-event',
+        chapters: {
+          'edit-event': {
+            status: 'active',
+            step: 'edit-event/set-value',
+            artifacts: { editorPath: `/p/${SLUG}/events/all/home-screen-view/edit` },
+          },
+          variables: { status: 'completed', step: 'variables/see-drift' },
+        },
+      }),
+    )
+
+    expect(readScenarioState(SLUG)).toEqual({
+      v: 3,
+      activeChapter: 'edit-event',
+      chapters: {
+        'edit-event': { status: 'active', step: 'edit-event/open-editor' },
+        variables: { status: 'completed', step: 'variables/see-drift' },
+      },
+    })
+  })
+
+  it('clears completed legacy v2 edit progress that still owns the pointer', () => {
+    window.localStorage.setItem(
+      KEY,
+      JSON.stringify({
+        v: 2,
+        activeChapter: 'edit-event',
+        chapters: {
+          'edit-event': {
+            status: 'completed',
+            step: 'edit-event/save',
+            artifacts: { editorPath: `/p/${SLUG}/events/all/home-screen-view/edit` },
+          },
+          variables: { status: 'completed', step: 'variables/see-drift' },
+        },
+      }),
+    )
+
+    expect(readScenarioState(SLUG)).toEqual({
+      v: 3,
+      activeChapter: null,
+      chapters: {
+        variables: { status: 'completed', step: 'variables/see-drift' },
+      },
+    })
   })
 
   it.each([

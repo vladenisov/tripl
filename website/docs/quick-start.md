@@ -90,8 +90,10 @@ with **Run the live loop**, the product's core loop end to end:
 
 That loop — *scan the warehouse, collect metrics, watch the charts* — is the
 same loop your real project will run on a schedule. The other chapters walk
-the rest hands-on: **Edit an event**, **Variables & value drift**, **Review a
-branch**, **Reconcile the plan**, **Route an alert**, and **Explore the rest**.
+the rest hands-on: **Edit an event** (try the documented `prod_monthly` Product
+ID on `Trial Started`, then restore its `${product_id}` template), **Variables &
+value drift**, **Review a branch**, **Reconcile the plan**, **Route an alert**,
+and **Explore the rest**.
 (Prefer to read first? **Take the tour** walks the same surfaces without
 asking you to do anything.)
 
