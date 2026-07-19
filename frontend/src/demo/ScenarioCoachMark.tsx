@@ -152,12 +152,12 @@ export function ScenarioCoachMark({
         onOpenAutoFocus={(event) => event.preventDefault()}
         onCloseAutoFocus={(event) => event.preventDefault()}
         className="w-64 rounded-lg border p-3 shadow-sm motion-reduce:animate-none"
-        style={{ background: 'var(--accent-soft)', borderColor: 'var(--border-subtle)' }}
+        style={{ background: 'var(--bg-elevated)', borderColor: 'var(--accent)' }}
       >
         <PopoverArrow
           width={12}
           height={6}
-          style={{ fill: 'var(--accent-soft)', stroke: 'var(--border-subtle)' }}
+          style={{ fill: 'var(--bg-elevated)', stroke: 'var(--accent)' }}
         />
         <p
           className="text-[10px] font-semibold uppercase tracking-[0.07em]"

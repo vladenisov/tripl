@@ -140,7 +140,7 @@ async def _build_coverage(session: AsyncSession, ctx: DemoContext) -> None:
 async def _build_shadow_candidates(session: AsyncSession, ctx: DemoContext) -> None:
     """Warehouse identities with no plan event. Names are OUTSIDE the authored
     plan so accepting one cannot collide with an existing source identity."""
-    screen_view_type_id = ctx.event_type_ids.get("screen_view")
+    click_type_id = ctx.event_type_ids.get("click")
     recent = ctx.now - timedelta(hours=2)
     week_ago = ctx.now - timedelta(days=7)
 
@@ -148,7 +148,10 @@ async def _build_shadow_candidates(session: AsyncSession, ctx: DemoContext) -> N
         ShadowEventCandidate(
             project_id=ctx.project_id,
             scan_config_id=ctx.scan_config_id,
-            event_type_id=screen_view_type_id,
+            # Keep the coached one-click Accept path valid: unlike screen_view,
+            # the click type has no required field whose value the warehouse
+            # candidate cannot supply.
+            event_type_id=click_type_id,
             event_name="app_heartbeat_v1",
             observed_count=1840,
             first_seen_at=week_ago,

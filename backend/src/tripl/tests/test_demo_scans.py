@@ -94,6 +94,24 @@ async def test_demo_has_shadow_candidates_outside_plan(client: AsyncClient) -> N
 
 
 @pytest.mark.asyncio
+async def test_demo_shadow_candidate_can_be_accepted(client: AsyncClient) -> None:
+    slug = await _demo_slug(client)
+    listed = await client.get(f"/api/v1/projects/{slug}/reconciliation/shadow-events")
+    assert listed.status_code == 200
+    candidate = next(
+        item for item in listed.json()["items"] if item["event_name"] == "app_heartbeat_v1"
+    )
+
+    accepted = await client.post(
+        f"/api/v1/projects/{slug}/reconciliation/shadow-events/{candidate['id']}/accept",
+        json={},
+    )
+
+    assert accepted.status_code == 200
+    assert accepted.json()["status"] == "accepted"
+
+
+@pytest.mark.asyncio
 async def test_demo_synthetic_source_is_labeled_and_never_real(client: AsyncClient) -> None:
     await _demo_slug(client)
     ds_resp = await client.get("/api/v1/data-sources")

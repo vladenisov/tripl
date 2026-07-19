@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState, type ReactNode } from 'react'
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import type {
@@ -341,6 +341,23 @@ export function EventForm({
     ? 'edit-event/set-token'
     : 'edit-event/set-value'
 
+  // Reconcile the coach with the controlled value. A restored form, browser
+  // autofill, or a missed input callback must not leave a satisfied step stuck.
+  useEffect(() => {
+    const value = editedFieldValue.trim()
+    if (
+      scenarioStep.id === 'edit-event/set-value' &&
+      value === SCENARIO_SEEDED.editedFieldValue
+    ) {
+      notifyStepCompleted('edit-event/set-value')
+    } else if (
+      scenarioStep.id === 'edit-event/set-token' &&
+      value === SCENARIO_SEEDED.editedFieldToken
+    ) {
+      notifyStepCompleted('edit-event/set-token')
+    }
+  }, [editedFieldValue, notifyStepCompleted, scenarioStep.id])
+
   // Scan naming rule: when a scan config generates names for this event type,
   // manual creation must use the SAME template or the event never merges with
   // its scan-generated counterpart (identity keys on the formatted name).
@@ -418,10 +435,10 @@ export function EventForm({
       // A save may be the mutation that lands one of the coached field states;
       // notify only states the persisted value actually satisfies. The reducer
       // drops out-of-order notices, so neither step can be skipped accidentally.
-      if (editedFieldValue === SCENARIO_SEEDED.editedFieldValue) {
+      if (editedFieldValue.trim() === SCENARIO_SEEDED.editedFieldValue) {
         notifyStepCompleted('edit-event/set-value')
       }
-      if (editedFieldValue === SCENARIO_SEEDED.editedFieldToken) {
+      if (editedFieldValue.trim() === SCENARIO_SEEDED.editedFieldToken) {
         notifyStepCompleted('edit-event/set-token')
       }
       notifyStepCompleted('edit-event/save')
@@ -639,20 +656,6 @@ export function EventForm({
                       value={fieldValues[f.id] ?? ''}
                       onChange={v => {
                         setFieldValues({ ...fieldValues, [f.id]: v })
-                        // The step is done the moment the field actually holds
-                        // the coached value, not on save — the mark moves on to Save.
-                        if (
-                          f.name === SCENARIO_SEEDED.editedFieldName &&
-                          v === SCENARIO_SEEDED.editedFieldValue
-                        ) {
-                          notifyStepCompleted('edit-event/set-value')
-                        }
-                        if (
-                          f.name === SCENARIO_SEEDED.editedFieldName &&
-                          v === SCENARIO_SEEDED.editedFieldToken
-                        ) {
-                          notifyStepCompleted('edit-event/set-token')
-                        }
                       }}
                       variables={varSuggestions}
                     />
