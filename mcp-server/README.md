@@ -5,8 +5,9 @@ agent-safe toolset over a **running tripl instance**. It is a pure HTTP client
 of the tripl REST API (`/api/v1`) — it imports no backend code and is not
 mounted into the FastAPI app.
 
-- 14 curated tools: plan search, event read/write, event types & fields,
-  variables, branches & diffs, scans, monitors, reconciliation, projects.
+- 17 curated tools (14 read, 3 write): plan search, event read/write, event
+  types & fields, variables, branches & diffs, scans, monitors, reconciliation,
+  projects.
 - Read tools carry `readOnlyHint`; write tools require a `tk_w_` API key.
 - Plan-mutating tools **require `branch_id`** so an agent never edits the live
   main plan by accident. Operators can override with `TRIPL_MCP_ALLOW_MAIN=1`.
@@ -46,7 +47,7 @@ agents explicitly allowed to edit the plan.
 ## streamable-http (shared server)
 
 ```bash
-TRIPL_BASE_URL=https://tripl.example.com tripl-mcp --transport streamable-http --port 8848
+TRIPL_BASE_URL=https://tripl.example.com tripl-mcp --transport streamable-http --port 8765
 ```
 
 In this mode the server holds **no credentials**. Every incoming MCP request

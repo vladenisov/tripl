@@ -50,7 +50,7 @@ def main() -> None:
         help="stdio (default, env-configured key) or streamable-http (per-request Bearer)",
     )
     parser.add_argument("--host", default="127.0.0.1", help="streamable-http bind host")
-    parser.add_argument("--port", type=int, default=8848, help="streamable-http bind port")
+    parser.add_argument("--port", type=int, default=8765, help="streamable-http bind port")
     args = parser.parse_args()
 
     base_url = os.environ.get("TRIPL_BASE_URL", "").strip()

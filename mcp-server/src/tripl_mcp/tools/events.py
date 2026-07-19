@@ -7,7 +7,7 @@ from typing import Any
 from mcp.server.fastmcp import Context, FastMCP
 
 from tripl_mcp.client import with_mutation_warnings
-from tripl_mcp.runtime import client_for, require_branch_id
+from tripl_mcp.runtime import client_for, ensure_branch_not_main, require_branch_id
 from tripl_mcp.tools._common import EVENT_LIST_FIELDS, READ_ONLY, WRITE, WRITE_UPDATE, trim
 
 
@@ -72,6 +72,8 @@ async def create_event(
     meta_values: list[dict[str, Any]] | None = None,
 ) -> Any:
     require_branch_id(branch_id)
+    client = client_for(ctx)
+    await ensure_branch_not_main(client, slug, branch_id)
     body: dict[str, Any] = {"event_type_id": event_type_id, "name": name}
     for key, value in (
         ("description", description),
@@ -82,7 +84,6 @@ async def create_event(
     ):
         if value is not None:
             body[key] = value
-    client = client_for(ctx)
     data = await client.post(
         f"/projects/{slug}/events", params={"branch": branch_id}, json_body=body
     )
@@ -98,6 +99,7 @@ async def update_event(
 ) -> Any:
     require_branch_id(branch_id)
     client = client_for(ctx)
+    await ensure_branch_not_main(client, slug, branch_id)
     data = await client.patch(
         f"/projects/{slug}/events/{event_id}",
         params={"branch": branch_id},

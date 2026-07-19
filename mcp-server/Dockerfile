@@ -11,7 +11,8 @@ RUN uv sync --frozen --no-dev
 
 ENV PATH="/app/.venv/bin:$PATH"
 
-# stdio by default; compose sidecars typically override with:
-#   tripl-mcp --transport streamable-http --host 0.0.0.0 --port 8848
-EXPOSE 8848
+# stdio by default; compose sidecars override the command with flags only
+# (the ENTRYPOINT below already provides the `tripl-mcp` executable):
+#   command: ["--transport", "streamable-http", "--host", "0.0.0.0", "--port", "8765"]
+EXPOSE 8765
 ENTRYPOINT ["tripl-mcp"]

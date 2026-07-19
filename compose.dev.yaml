@@ -244,6 +244,29 @@ services:
         - action: rebuild
           path: ./frontend/Dockerfile
 
+  # OPTIONAL MCP server for agent runtimes — profile-gated, never starts by
+  # default. Streamable-HTTP transport with per-request Authorization
+  # pass-through (keys are never stored server-side); see
+  # website/docs/integrate/mcp-server.md. Enable with:
+  #   docker compose -f compose.dev.yaml --profile mcp up
+  mcp:
+    build:
+      context: ./mcp-server
+    # The image ENTRYPOINT is already `tripl-mcp`, so command holds flags only.
+    # --host 0.0.0.0 is required for the published port to be reachable.
+    command: ["--transport", "streamable-http", "--host", "0.0.0.0", "--port", "8765"]
+    profiles: [mcp]
+    ports:
+      - "8765:8765"
+    environment:
+      TRIPL_BASE_URL: http://api:8000
+      TRIPL_MCP_ALLOW_MAIN: ${TRIPL_MCP_ALLOW_MAIN:-0}
+    depends_on:
+      api:
+        condition: service_healthy
+    mem_limit: 256m
+    mem_reservation: 128m
+
 volumes:
   pgdata18:
   chdata:

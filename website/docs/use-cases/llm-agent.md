@@ -16,6 +16,14 @@ This page covers the REST surface, authentication, and the
 events, see [Searching events](./searching-events.md). For an end-to-end worked
 example, see the [Agent API guide](../integrate/agent-api-guide.md).
 
+:::tip
+Agents running in an MCP-capable runtime (Claude Code, Claude Desktop, or
+another MCP client) should prefer the first-party
+[MCP server](../integrate/mcp-server.md), which wraps this API in curated,
+safety-annotated tools. The REST recipes below remain the right path for
+direct HTTP integrations.
+:::
+
 ## Getting an API key
 
 Create keys in the app under **Account → API keys**. The full token is shown

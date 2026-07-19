@@ -69,6 +69,11 @@ async def test_read_tool_search_plan_end_to_end(stdio_runtime: Runtime) -> None:
 @respx.mock
 async def test_write_tool_update_event_end_to_end(stdio_runtime: Runtime) -> None:
     # Arrange
+    respx.get(f"{API_BASE}/projects/demo/branches/b-42").mock(
+        return_value=httpx.Response(
+            200, json={"id": "b-42", "name": "wip", "kind": "working", "status": "open"}
+        )
+    )
     route = respx.patch(f"{API_BASE}/projects/demo/events/e1").mock(
         return_value=httpx.Response(
             200,
@@ -137,6 +142,68 @@ async def test_create_event_without_branch_id_is_blocked(
     assert is_error
     assert "branch_id is required" in text
     assert not respx.calls
+
+
+@respx.mock
+async def test_update_event_with_main_branch_id_is_blocked(
+    stdio_runtime: Runtime, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Arrange: the main branch's own UUID passes the truthy check but must
+    # still be refused — otherwise the write lands on the live main plan.
+    monkeypatch.delenv(ALLOW_MAIN_ENV, raising=False)
+    respx.get(f"{API_BASE}/projects/demo/branches/b-main").mock(
+        return_value=httpx.Response(
+            200, json={"id": "b-main", "name": "main", "kind": "main", "status": "merged"}
+        )
+    )
+    patch_route = respx.patch(f"{API_BASE}/projects/demo/events/e1").mock(
+        return_value=httpx.Response(200, json={"id": "e1", "warnings": []})
+    )
+
+    # Act
+    is_error, text = await call_tool(
+        "update_event",
+        {
+            "slug": "demo",
+            "event_id": "e1",
+            "branch_id": "b-main",
+            "patch": {"reviewed": True},
+        },
+    )
+
+    # Assert
+    assert is_error
+    assert "MAIN branch" in text
+    assert not patch_route.called  # the mutation never reached the API
+
+
+@respx.mock
+async def test_create_event_with_main_branch_id_is_blocked(
+    stdio_runtime: Runtime, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv(ALLOW_MAIN_ENV, raising=False)
+    respx.get(f"{API_BASE}/projects/demo/branches/b-main").mock(
+        return_value=httpx.Response(
+            200, json={"id": "b-main", "name": "main", "kind": "main", "status": "merged"}
+        )
+    )
+    post_route = respx.post(f"{API_BASE}/projects/demo/events").mock(
+        return_value=httpx.Response(201, json={"id": "e9", "warnings": []})
+    )
+
+    is_error, text = await call_tool(
+        "create_event",
+        {
+            "slug": "demo",
+            "branch_id": "b-main",
+            "event_type_id": "t1",
+            "name": "checkout:completed",
+        },
+    )
+
+    assert is_error
+    assert "MAIN branch" in text
+    assert not post_route.called
 
 
 @respx.mock

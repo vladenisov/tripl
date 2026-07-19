@@ -6,16 +6,23 @@ from collections.abc import Iterator
 from dataclasses import dataclass, field
 from typing import Any
 
+import httpx
 import pytest
+import respx
+from mcp.server.fastmcp import Context
 from mcp.server.fastmcp.exceptions import ToolError
+from mcp.shared.context import RequestContext
+from starlette.requests import Request
 
-from tests.conftest import BASE_URL, STDIO_KEY
+from tests.conftest import API_BASE, BASE_URL, STDIO_KEY
 from tripl_mcp import runtime as runtime_module
+from tripl_mcp.client import TriplClient
 from tripl_mcp.runtime import (
     ALLOW_MAIN_ENV,
     TRANSPORT_STREAMABLE_HTTP,
     Runtime,
     configure,
+    ensure_branch_not_main,
     extract_bearer_token,
     require_branch_id,
     resolve_api_key,
@@ -90,6 +97,82 @@ class TestResolveApiKey:
     ) -> None:
         with pytest.raises(ToolError, match="Authorization: Bearer"):
             resolve_api_key(_StubContext())
+
+    def test_http_forwards_bearer_from_real_fastmcp_context(
+        self, http_runtime: Runtime
+    ) -> None:
+        """Drift guard: exercise the ctx.request_context.request.headers path
+        against the REAL FastMCP/mcp/starlette classes instead of stubs, so an
+        mcp dependency bump that moves the request attribute fails this test
+        instead of silently breaking http-mode credential forwarding."""
+        # Arrange: the exact object shape the streamable-http transport builds —
+        # a starlette Request placed at RequestContext.request.
+        request = Request(
+            {
+                "type": "http",
+                "method": "POST",
+                "path": "/mcp",
+                "query_string": b"",
+                "headers": [(b"authorization", b"Bearer tk_r_real")],
+            }
+        )
+        request_context = RequestContext(
+            request_id=1,
+            meta=None,
+            session=None,
+            lifespan_context=None,
+            request=request,
+        )
+        ctx = Context(request_context=request_context)  # type: ignore[type-arg,var-annotated]
+
+        # Act / Assert
+        assert resolve_api_key(ctx) == "tk_r_real"
+
+
+class TestEnsureBranchNotMain:
+    """The gate must also refuse the main branch's *explicit* id — the backend
+    accepts any project branch UUID, main included."""
+
+    @respx.mock
+    async def test_working_branch_passes(self, stdio_runtime: Runtime) -> None:
+        respx.get(f"{API_BASE}/projects/demo/branches/b-1").mock(
+            return_value=httpx.Response(200, json={"id": "b-1", "kind": "working"})
+        )
+        client = TriplClient(base_url=BASE_URL, api_key=STDIO_KEY)
+
+        await ensure_branch_not_main(client, "demo", "b-1")
+
+    @respx.mock
+    async def test_main_branch_id_is_blocked(
+        self, stdio_runtime: Runtime, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.delenv(ALLOW_MAIN_ENV, raising=False)
+        respx.get(f"{API_BASE}/projects/demo/branches/b-main").mock(
+            return_value=httpx.Response(200, json={"id": "b-main", "kind": "main"})
+        )
+        client = TriplClient(base_url=BASE_URL, api_key=STDIO_KEY)
+
+        with pytest.raises(ToolError, match="MAIN branch"):
+            await ensure_branch_not_main(client, "demo", "b-main")
+
+    @respx.mock
+    async def test_allow_main_env_skips_lookup(
+        self, stdio_runtime: Runtime, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv(ALLOW_MAIN_ENV, "1")
+        client = TriplClient(base_url=BASE_URL, api_key=STDIO_KEY)
+
+        await ensure_branch_not_main(client, "demo", "b-main")
+
+        assert not respx.calls  # opt-in mode adds no per-write round trip
+
+    @respx.mock
+    async def test_missing_branch_id_is_a_noop(self, stdio_runtime: Runtime) -> None:
+        client = TriplClient(base_url=BASE_URL, api_key=STDIO_KEY)
+
+        await ensure_branch_not_main(client, "demo", None)
+
+        assert not respx.calls  # require_branch_id owns the missing-id case
 
 
 class TestRequireBranchId:

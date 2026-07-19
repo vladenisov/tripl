@@ -114,3 +114,27 @@ def require_branch_id(branch_id: str | None) -> None:
         "a working branch id. If editing main is truly intended, the server operator "
         f"must set {ALLOW_MAIN_ENV}=1 in the tripl-mcp environment."
     )
+
+
+async def ensure_branch_not_main(
+    client: TriplClient, slug: str, branch_id: str | None
+) -> None:
+    """Refuse plan mutations that target the main branch via its explicit id.
+
+    ``require_branch_id`` catches the *missing* branch_id path; this closes the
+    second path onto the live plan: the backend accepts any branch UUID that
+    belongs to the project — including the ``kind="main"`` branch that
+    ``list_branches`` returns — so passing main's id would silently write to
+    the live main plan. Costs one branch lookup per write; skipped entirely
+    when the operator opted in via the env override.
+    """
+    if not branch_id or is_main_write_allowed():
+        return
+    branch = await client.get(f"/projects/{slug}/branches/{branch_id}")
+    if isinstance(branch, dict) and branch.get("kind") == "main":
+        raise ToolError(
+            "branch_id resolves to the project's MAIN branch: this write would land "
+            "on the LIVE main plan. Pass a working branch id instead (see "
+            "list_branches). If editing main is truly intended, the server operator "
+            f"must set {ALLOW_MAIN_ENV}=1 in the tripl-mcp environment."
+        )
