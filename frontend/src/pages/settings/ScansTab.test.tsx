@@ -4,11 +4,12 @@ import { MemoryRouter } from 'react-router-dom'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { DemoScenarioProvider } from '@/demo/DemoScenarioProvider'
 import {
-  buildScenarioSteps,
+  buildChapterSteps,
   initialScenarioState,
   readScenarioState,
   writeScenarioState,
 } from '@/demo/scenarioModel'
+import { liveLoopState } from '@/demo/scenarioTestState'
 import type { Project } from '@/types'
 import { ScansTab } from './ScansTab'
 
@@ -346,8 +347,8 @@ describe('ScansTab', () => {
 
 describe('ScansTab — coached demo scenario', () => {
   const SLUG = 'demo'
-  const RUN_SCAN_INSTRUCTION = buildScenarioSteps(SLUG, initialScenarioState())[0].instruction
-  const WATCH_SCAN_INSTRUCTION = buildScenarioSteps(SLUG, initialScenarioState())[1].instruction
+  const RUN_SCAN_INSTRUCTION = buildChapterSteps(SLUG, 'live-loop', initialScenarioState())[0].instruction
+  const WATCH_SCAN_INSTRUCTION = buildChapterSteps(SLUG, 'live-loop', initialScenarioState())[1].instruction
 
   function demoProject(overrides: Partial<Project> = {}): Project {
     return {
@@ -414,10 +415,10 @@ describe('ScansTab — coached demo scenario', () => {
 
     fireEvent.click(await screen.findByRole('button', { name: /Run again/i }))
 
-    await waitFor(() => expect(readScenarioState(SLUG).step).toBe('watch-scan'))
+    await waitFor(() => expect(readScenarioState(SLUG).chapters['live-loop']?.step).toBe('live-loop/watch-scan'))
     expect(runCalls[0]).toBe('POST')
     // The artifact is the job the POST returned, never a job already in the feed.
-    expect(readScenarioState(SLUG).scan).toMatchObject({
+    expect(readScenarioState(SLUG).chapters['live-loop']?.artifacts).toMatchObject({
       scanConfigId: 'scan-1',
       scanJobId: 'job-new',
     })
@@ -430,11 +431,11 @@ describe('ScansTab — coached demo scenario', () => {
 
     fireEvent.click(await screen.findByRole('button', { name: 'Run Main events scan now' }))
 
-    await waitFor(() => expect(readScenarioState(SLUG).step).toBe('watch-scan'))
+    await waitFor(() => expect(readScenarioState(SLUG).chapters['live-loop']?.step).toBe('live-loop/watch-scan'))
     expect(runCalls[0]).toBe('POST')
     // The artifact is the job the POST returned (notifyScanRunStarted), never a
     // job already in the feed.
-    expect(readScenarioState(SLUG).scan).toMatchObject({
+    expect(readScenarioState(SLUG).chapters['live-loop']?.artifacts).toMatchObject({
       scanConfigId: 'scan-1',
       scanJobId: 'job-new',
     })
@@ -457,12 +458,12 @@ describe('ScansTab — coached demo scenario', () => {
       completedJob('job-b', '2026-01-02T00:00:00Z'),
       completedJob('job-a', '2026-01-01T00:00:00Z'),
     ])
-    writeScenarioState(SLUG, {
-      v: 1,
-      status: 'active',
-      step: 'watch-scan',
-      scan: { scanConfigId: 'scan-1', scanJobId: 'job-b', startedAt: Date.now() },
-    })
+    writeScenarioState(
+      SLUG,
+      liveLoopState('live-loop/watch-scan', {
+        scan: { scanConfigId: 'scan-1', scanJobId: 'job-b', startedAt: Date.now() },
+      }),
+    )
     renderInScenario(demoProject())
 
     // Both runs render; only the user's own run is coached — the demo's tick

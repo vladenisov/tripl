@@ -32,6 +32,7 @@ from tripl.models.scan_config import ScanConfig
 from tripl.models.scan_job import ScanJob, ScanJobStatus
 from tripl.models.variable import Variable
 from tripl.models.variable_value import VariableValue, VariableValueKind
+from tripl.worker.plan_scope import main_branch_id
 from tripl.worker.tasks.metrics.metric_rows import _get_scan_json_value_path_map
 
 logger = logging.getLogger(__name__)
@@ -83,9 +84,12 @@ def _ensure_event_type_with_fields(
     skip_columns: set[str],
 ) -> EventType:
     """Find or auto-create an EventType with FieldDefinitions for all columns."""
+    # Metrics collection targets the main plan; a working branch deep-copies
+    # event types under the same names, so the lookup must be branch-scoped.
     et = session.execute(
         select(EventType).where(
             EventType.project_id == project_id,
+            EventType.branch_id == main_branch_id(session, project_id),
             EventType.name == et_name,
         )
     ).scalar_one_or_none()

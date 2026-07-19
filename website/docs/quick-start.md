@@ -77,8 +77,10 @@ no connection is made anywhere, but the product is not faked around it: real
 scans, metric collection, anomaly detection, and reconciliation run over that
 synthetic source, and a background clock keeps it fresh.
 
-**Run the coached scenario.** The welcome panel offers **Run the scenario**,
-which walks you through the product's core loop end to end:
+**Run the coached chapters.** The welcome panel lists **Coached chapters** —
+short hands-on lessons, one per product area, each coached by a strip under
+the demo banner and a callout that rings the exact button to press. Start
+with **Run the live loop**, the product's core loop end to end:
 
 1. **Run a scan** — press **Run now** on any scan.
 2. **Watch it land** — the run completes and shows what it changed.
@@ -87,8 +89,11 @@ which walks you through the product's core loop end to end:
    added.
 
 That loop — *scan the warehouse, collect metrics, watch the charts* — is the
-same loop your real project will run on a schedule. (Prefer to read first?
-**Take the tour** walks the same surfaces without asking you to do anything.)
+same loop your real project will run on a schedule. The other chapters walk
+the rest hands-on: **Edit an event**, **Variables & value drift**, **Review a
+branch**, **Reconcile the plan**, **Route an alert**, and **Explore the rest**.
+(Prefer to read first? **Take the tour** walks the same surfaces without
+asking you to do anything.)
 
 Then look around in roughly this order:
 

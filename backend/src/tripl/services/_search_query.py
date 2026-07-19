@@ -27,6 +27,7 @@ from tripl.schemas.search import (
     SearchResult,
 )
 from tripl.services import app_settings_service
+from tripl.services.demo.search_embeddings import demo_query_embedding
 from tripl.services.embedding_service import embed_query
 
 # How strongly a matching event type lifts the events that belong to it.
@@ -58,6 +59,7 @@ async def postgres_search(
     entity_types: list[SearchEntityType] | None,
     include_archived: bool,
     limit: int,
+    project_is_demo: bool = False,
 ) -> tuple[list[SearchResult], bool]:
     lexical_results = await postgres_lexical_search(
         session,
@@ -80,6 +82,24 @@ async def postgres_search(
                 project_id=project_id,
                 branch_id=branch_id,
                 embedding=query_embedding,
+                entity_types=entity_types,
+                include_archived=include_archived,
+                limit=limit,
+            )
+
+    # Keyless demo fallback: when the live semantic leg is unavailable
+    # (embeddings disabled, or the embed call failed/returned empty), a demo
+    # project can still run the semantic leg with a canned query vector from
+    # the precomputed fixture. Non-demo projects are unaffected.
+    if not semantic_used and project_is_demo and len(query) >= 3:
+        demo_embedding = demo_query_embedding(query)
+        if demo_embedding:
+            semantic_used = True
+            semantic_results = await postgres_semantic_search(
+                session,
+                project_id=project_id,
+                branch_id=branch_id,
+                embedding=demo_embedding,
                 entity_types=entity_types,
                 include_archived=include_archived,
                 limit=limit,

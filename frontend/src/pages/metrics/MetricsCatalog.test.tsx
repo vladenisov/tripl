@@ -20,12 +20,13 @@ import type {
 } from '@/types'
 import { DemoScenarioProvider } from '@/demo/DemoScenarioProvider'
 import {
-  buildScenarioSteps,
+  buildChapterSteps,
   initialScenarioState,
   readScenarioState,
   writeScenarioState,
   type ScenarioState,
 } from '@/demo/scenarioModel'
+import { liveLoopState } from '@/demo/scenarioTestState'
 import { MetricsCatalog } from './MetricsCatalog'
 
 vi.mock('@/api/metricsCatalogApi', () => ({
@@ -48,7 +49,7 @@ import { metricsCatalogApi } from '@/api/metricsCatalogApi'
 const SLUG = 'demo'
 const POLL_MS = 10
 
-const STEPS = buildScenarioSteps(SLUG, initialScenarioState())
+const STEPS = buildChapterSteps(SLUG, 'live-loop', initialScenarioState())
 const COLLECT_INSTRUCTION = STEPS[2].instruction
 const SEE_CHART_INSTRUCTION = STEPS[3].instruction
 
@@ -105,21 +106,13 @@ const TWO_METRICS: MetricDefinitionListResponse = {
 
 /** The collect-metric step, reached the way the user reaches it: a scan landed. */
 function collectMetricState(): ScenarioState {
-  return {
-    v: 1,
-    status: 'active',
-    step: 'collect-metric',
+  return liveLoopState('live-loop/collect-metric', {
     scan: { scanConfigId: 'sc-1', scanJobId: 'job-1', startedAt: Date.now() },
-  }
+  })
 }
 
 function seeChartState(metricId: string): ScenarioState {
-  return {
-    v: 1,
-    status: 'active',
-    step: 'see-chart',
-    metric: { metricId, startedAt: Date.now() },
-  }
+  return liveLoopState('live-loop/see-chart', { metric: { metricId, startedAt: Date.now() } })
 }
 
 function renderCatalog(project: Project | undefined = demoProject()) {
@@ -184,7 +177,7 @@ describe('MetricsCatalog — the collect the user fired advances the scenario', 
 
     await waitFor(() => expect(metricsCatalogApi.collect).toHaveBeenCalledWith(SLUG, 'm-2'))
     // The scenario now follows m-2 — not the first row, not the tick's own runs.
-    await waitFor(() => expect(readScenarioState(SLUG).metric?.metricId).toBe('m-2'))
+    await waitFor(() => expect(readScenarioState(SLUG).chapters['live-loop']?.artifacts?.metricId).toBe('m-2'))
   })
 
   it('leaves a non-demo project with no scenario at all', async () => {

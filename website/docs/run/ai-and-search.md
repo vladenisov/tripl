@@ -35,7 +35,11 @@ The `/search` response then reports `semantic_used: true`.
 
 When **disabled** — the default — `/search` still works. It transparently falls
 back to keyword/substring matching and returns `semantic_used: false`. No text
-leaves the instance.
+leaves the instance. The one exception is the **demo project**: it ships with
+precomputed embedding vectors for its own content, so demo searches can report
+`semantic_used: true` without any provider configured — still with no text
+leaving the instance, since those vectors are computed by maintainers ahead of
+time and bundled with the release.
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
@@ -90,9 +94,10 @@ This is precisely why both default to **OFF**: you opt in knowingly.
 
 :::warning
 With embeddings disabled, search is **not** broken — it degrades gracefully to
-keyword/substring matching (`semantic_used: false`). Many deployments run this
-way indefinitely. Only enable embeddings if you accept sending tracking-plan
-text to the provider in exchange for semantic relevance.
+keyword/substring matching (`semantic_used: false`, except in the demo project,
+which uses bundled precomputed vectors). Many deployments run this way
+indefinitely. Only enable embeddings if you accept sending tracking-plan text
+to the provider in exchange for semantic relevance.
 :::
 
 If your provider is a self-hosted or in-VPC OpenAI-compatible endpoint, you can

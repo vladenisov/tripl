@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { AlertTriangle } from 'lucide-react'
 
 import { eventTypesApi } from '@/api/eventTypes'
+import { useDemoScenarioActions } from '@/demo/demoScenarioContext'
 import { Button } from '@/components/ui/button'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { getErrorMessage } from '@/lib/utils'
@@ -40,6 +41,7 @@ export function EventDriftBadge({
 }) {
   const [open, setOpen] = useState(false)
   const qc = useQueryClient()
+  const { notifyStepCompleted } = useDemoScenarioActions()
 
   const driftsQuery = useQuery({
     queryKey: ['eventTypeDrifts', slug, eventTypeId],
@@ -61,10 +63,13 @@ export function EventDriftBadge({
         ...(action === 'snooze' ? { snoozed_until: snoozedUntil } : {}),
       })
     },
-    onSuccess: () => {
+    onSuccess: (_data, { action }) => {
       qc.invalidateQueries({ queryKey: ['eventTypeDrifts', slug, eventTypeId] })
       qc.invalidateQueries({ queryKey: ['eventTypes', slug] })
       qc.invalidateQueries({ queryKey: ['events', slug] })
+      // Accepting a schema drift lands the reconcile chapter's last step —
+      // inert outside the demo scenario (the reducer drops other steps).
+      if (action === 'accept') notifyStepCompleted('reconcile/review-drift')
     },
   })
 

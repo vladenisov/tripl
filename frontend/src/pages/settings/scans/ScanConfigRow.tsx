@@ -175,7 +175,7 @@ export function ScanListRow({
       <td className="px-3.5 py-2.5 align-middle text-right">
         <div className="flex items-center justify-end gap-2">
           {runButton && (runCoachMark ? (
-            <ScenarioCoachMark step="run-scan" side="bottom" align="end">
+            <ScenarioCoachMark step="live-loop/run-scan">
               {runButton}
             </ScenarioCoachMark>
           ) : (
