@@ -740,8 +740,9 @@ export function buildChapterSteps(
         },
         {
           id: 'explore/use-search',
-          title: 'Search everything',
-          instruction: 'Press Ctrl K (or ⌘K) — the command palette searches the whole project.',
+          title: 'Search by meaning',
+          instruction:
+            'Press Ctrl K (or ⌘K) and try "purchase funnel" or "money back" — search matches meaning, not just names.',
           to: `${base}/overview`,
           ctaLabel: 'Open Overview',
         },

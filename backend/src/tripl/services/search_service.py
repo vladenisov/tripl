@@ -17,6 +17,7 @@ from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from tripl.config import settings
+from tripl.models.project import Project
 from tripl.models.search_document import SearchDocument
 from tripl.schemas.search import (
     SearchEntityType,
@@ -147,14 +148,23 @@ def _embedding_state_reusable(
     model: str | None,
     enabled: bool,
     current_model: str,
+    demo_fixture_model: str | None = None,
 ) -> bool:
     """Whether a content-unchanged row's embedding state fits the current config.
 
     See :func:`_reindex_branch_documents` for the full reasoning; in short,
     ``failed`` rows are never reused (so every reindex retries them) and
     ``ready`` rows are reused only under the same model.
+
+    ``demo_fixture_model`` is set only for the keyless demo (embeddings
+    disabled, demo project, fixture present): fixture-stamped rows are
+    ``ready`` under the fixture's model, and dropping them on every reindex
+    would defeat the incremental diff and open a committed window with no
+    semantic-eligible rows.
     """
     if not enabled:
+        if status == "ready" and demo_fixture_model is not None:
+            return model == demo_fixture_model
         return status == "disabled"
     return status == "pending" or (status == "ready" and model == current_model)
 
@@ -197,6 +207,7 @@ async def _reindex_branch_documents(
     project_slug = slug or await _project_slug(session, project_id)
     documents = await _build_documents(session, project_id, branch_id, project_slug)
     ai_config = await app_settings_service.get_ai_config(session)
+    demo_fixture_model = await _demo_fixture_model(session, project_id, ai_config)
 
     existing_rows = (
         await session.execute(
@@ -227,6 +238,7 @@ async def _reindex_branch_documents(
                 model=row.embedding_model,
                 enabled=ai_config.search_embeddings_enabled,
                 current_model=ai_config.search_embedding_model,
+                demo_fixture_model=demo_fixture_model,
             )
         ):
             keep_ids.add(row.id)
@@ -271,9 +283,81 @@ async def reindex_project_branch(
     )
     await session.commit()
 
+    if await _apply_demo_search_embeddings(
+        session,
+        project_id=project_id,
+        branch_id=branch_id,
+        ai_config=ai_config,
+    ):
+        await session.commit()
+
     if schedule_embeddings:
         _queue_embedding_refresh(project_id, branch_id, ai_config=ai_config)
     return count
+
+
+async def _demo_fixture_model(
+    session: AsyncSession,
+    project_id: uuid.UUID,
+    ai_config: AiConfig,
+) -> str | None:
+    """Fixture model whose stamped rows the incremental reindex may reuse.
+
+    Non-``None`` only for the keyless demo case (embeddings disabled, Postgres,
+    demo project, fixture present) — everywhere else the plain
+    :func:`_embedding_state_reusable` rules apply unchanged.
+    """
+    if ai_config.search_embeddings_enabled or not _is_postgres(session):
+        return None
+    is_demo = await session.scalar(select(Project.is_demo).where(Project.id == project_id))
+    if not is_demo:
+        return None
+    from tripl.services.demo.search_embeddings import load_demo_embedding_fixture
+
+    fixture = load_demo_embedding_fixture()
+    return fixture.model if fixture is not None else None
+
+
+async def _apply_demo_search_embeddings(
+    session: AsyncSession,
+    *,
+    project_id: uuid.UUID,
+    branch_id: uuid.UUID,
+    ai_config: AiConfig,
+) -> int:
+    """Keyless demo semantic search: stamp precomputed fixture vectors.
+
+    Postgres + demo projects only. Covers every path through
+    :func:`reindex_project_branch` — demo provisioning/reset, the lazily built
+    demo feature-branch index, and manual reindex. A missing or stale fixture
+    makes this a no-op and the demo stays lexical-only, exactly as before.
+
+    When live embeddings are enabled under a model DIFFERENT from the
+    fixture's, stamping is skipped entirely: flipping the freshly inserted
+    ``pending`` rows to ``ready`` with fixture vectors would hide them from
+    the embedding worker and cosine-rank live query vectors against another
+    model's vector space. The queued worker embeds them instead.
+    """
+    if not _is_postgres(session):
+        return 0
+    is_demo = await session.scalar(select(Project.is_demo).where(Project.id == project_id))
+    if not is_demo:
+        return 0
+    from tripl.services.demo.search_embeddings import (
+        apply_demo_embedding_fixture,
+        load_demo_embedding_fixture,
+    )
+
+    fixture = load_demo_embedding_fixture()
+    if fixture is None:
+        return 0
+    if ai_config.search_embeddings_enabled and ai_config.search_embedding_model != fixture.model:
+        return 0
+    return await apply_demo_embedding_fixture(
+        session,
+        project_id=project_id,
+        branch_id=branch_id,
+    )
 
 
 async def search_project(
@@ -303,6 +387,9 @@ async def search_project(
         candidate_limit = _safe_limit(capped_limit + 24)
 
     if _is_postgres(session):
+        project_is_demo = bool(
+            await session.scalar(select(Project.is_demo).where(Project.id == project_id))
+        )
         items, semantic_used = await _postgres_search(
             session,
             project_id=project_id,
@@ -311,6 +398,7 @@ async def search_project(
             entity_types=entity_types,
             include_archived=include_archived,
             limit=candidate_limit,
+            project_is_demo=project_is_demo,
         )
     else:
         items = await _sqlite_search(

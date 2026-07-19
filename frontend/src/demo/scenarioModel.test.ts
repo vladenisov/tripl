@@ -369,6 +369,15 @@ describe('buildChapterSteps and the seeded deep links', () => {
     }
   })
 
+  it('coaches meaning-first search with the curated examples (tripl-odrj.5)', () => {
+    const steps = buildChapterSteps(SLUG, 'explore', initialScenarioState())
+    const useSearch = steps.find((step) => step.id === 'explore/use-search')
+    expect(useSearch?.instruction).toContain('Ctrl K')
+    expect(useSearch?.instruction).toContain('⌘K')
+    expect(useSearch?.instruction).toContain('purchase funnel')
+    expect(useSearch?.instruction).toContain('money back')
+  })
+
   it('activeScenarioStep returns the active chapter’s current step', () => {
     expect(activeScenarioStep(SLUG, watching()).id).toBe('live-loop/watch-scan')
     const branches = scenarioReducer(initialScenarioState(), {

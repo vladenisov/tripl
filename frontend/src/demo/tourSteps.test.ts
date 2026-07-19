@@ -35,6 +35,16 @@ describe('buildTourSteps', () => {
     expect(byId.get('branches')).toBe('/p/acme/settings/branches')
     expect(byId.get('alerting')).toBe('/p/acme/settings/alerting')
   })
+
+  it('demos meaning-first search with the curated examples (tripl-odrj.5)', () => {
+    const search = steps.find((step) => step.id === 'search')
+    expect(search).toBeDefined()
+    expect(search?.blurb).toContain('Ctrl K')
+    expect(search?.blurb).toContain('⌘K')
+    expect(search?.blurb).toContain('purchase funnel')
+    expect(search?.blurb).toContain('money back')
+    expect(search?.to).toBe('/p/acme/overview')
+  })
 })
 
 describe('buildMetricBuildingBlocks', () => {
