@@ -91,10 +91,11 @@ The demo offers two guides, and they do different jobs.
   4. **See the chart move** — open that metric and find the point your collection
      added.
 
-  The other chapters walk one area apiece: **Edit an event**, **Variables &
-  value drift**, **Review a branch** (up to the merge preview — merging stays
-  your call), **Reconcile the plan**, **Route an alert** (against the local
-  demo sink), and **Explore the rest**.
+  The other chapters walk one area apiece: **Edit an event** (try the documented
+  `prod_monthly` Product ID on `Trial Started`, then restore its `${product_id}`
+  template), **Variables & value drift**, **Review a branch** (up to the merge
+  preview — merging stays your call), **Reconcile the plan**, **Route an alert**
+  (against the local demo sink), and **Explore the rest**.
 
   A strip below the demo banner tracks which chapter and step you are on and
   links to where the next action lives; a callout points at — and visibly

@@ -98,6 +98,41 @@ const TEMPLATE_VARIABLE: Variable = {
   bindings: ['payload.variant'],
 }
 
+const EDIT_EVENT_TYPE = {
+  ...EVENT_TYPE,
+  name: 'purchase',
+  display_name: 'Purchase',
+  field_definitions: [
+    {
+      id: 'field-product-id',
+      event_type_id: 'et-1',
+      name: 'product_id',
+      display_name: 'Product ID',
+      field_type: 'string',
+      is_required: false,
+      enum_options: null,
+      order: 0,
+    },
+  ],
+} as unknown as EventType
+
+const EDIT_EVENT = {
+  ...EXISTING_EVENT,
+  name: 'Trial Started',
+  field_values: [{ field_definition_id: 'field-product-id', value: '${product_id}' }],
+} as unknown as TEvent
+
+const PRODUCT_ID_VARIABLE: Variable = {
+  id: 'var-product-id',
+  project_id: 'project-1',
+  name: 'product_id',
+  source_name: 'product_id',
+  variable_type: 'string',
+  description: 'Store product / SKU identifier.',
+  allowed_values: [],
+  bindings: [],
+}
+
 let queryClient: QueryClient
 
 function wrapper({ children }: { children: ReactNode }) {
@@ -317,6 +352,51 @@ describe('EventForm — coached demo scenario (tripl-odrj.4)', () => {
 
   afterEach(() => {
     window.localStorage.clear()
+  })
+
+  it('coaches a documented Product ID and then restores the seeded variable token', async () => {
+    writeScenarioState(SLUG, chapterState('edit-event', 'edit-event/set-value'))
+
+    render(
+      createElement(
+        QueryClientProvider,
+        { client: queryClient },
+        createElement(
+          MemoryRouter,
+          { initialEntries: [`/p/${SLUG}/events/purchase/ev-1/edit`] },
+          createElement(
+            DemoScenarioProvider,
+            { project: demoProject, pollIntervalMs: 10_000, children: null },
+            createElement(EventForm, {
+              slug: SLUG,
+              eventTypes: [EDIT_EVENT_TYPE],
+              metaFields: [],
+              projectVariables: [PRODUCT_ID_VARIABLE],
+              event: EDIT_EVENT,
+              onClose: () => {},
+            }),
+          ),
+        ),
+      ),
+    )
+
+    const productId = screen.getByLabelText('Product ID')
+    expect(productId).toHaveAttribute('role', 'combobox')
+    expect(productId).toHaveValue('${product_id}')
+    fireEvent.change(productId, { target: { value: 'prod_monthly' } })
+
+    await waitFor(() =>
+      expect(readScenarioState(SLUG).chapters['edit-event']?.step).toBe('edit-event/set-token'),
+    )
+    expect(screen.getByText(/pick the variable suggestion/)).toBeInTheDocument()
+
+    fireEvent.change(productId, { target: { value: '${product_id}' } })
+
+    await waitFor(() =>
+      expect(readScenarioState(SLUG).chapters['edit-event']?.step).toBe('edit-event/save'),
+    )
+    expect(productId).toHaveValue('${product_id}')
+    expect(screen.getByText('Save the event — the tracking plan updates immediately.')).toBeInTheDocument()
   })
 
   it("completes the edit-event chapter's save step through the real save mutation", async () => {

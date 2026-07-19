@@ -1,5 +1,5 @@
 /**
- * The coached demo scenario — pure model, v2: chapters (tripl-odrj.4).
+ * The coached demo scenario — pure model, v3: chapters (tripl-odrj.4).
  *
  * v1 (tripl-2su6.21.1) was a single four-step chain. v2 turns the scenario into
  * an ordered set of CHAPTERS — live-loop, edit-event, variables, branches,
@@ -16,9 +16,10 @@
  *   exact mutation the user performed (save event, post comment, accept drift…).
  *   No polling is added for them.
  *
- * The persisted shape shares the v1 localStorage key; a valid v1 blob migrates
- * onto chapters['live-loop'], anything else reads fresh. Kept free of React so
- * every transition is unit-testable without rendering.
+ * The persisted shape shares the v1 localStorage key. Valid v1/v2 blobs migrate
+ * forward; v2 edit-event progress restarts because its deterministic target
+ * changed. Unknown/malformed versions read fresh. Kept free of React so every
+ * transition is unit-testable without rendering.
  */
 
 import { getMetricMonitoringPath } from '@/lib/monitoring'
@@ -52,6 +53,7 @@ export type ScenarioStepId =
   | 'live-loop/see-chart'
   | 'edit-event/open-editor'
   | 'edit-event/set-value'
+  | 'edit-event/set-token'
   | 'edit-event/save'
   | 'variables/open-variables'
   | 'variables/inspect-values'
@@ -77,7 +79,12 @@ export const CHAPTER_STEP_IDS: Record<ChapterId, readonly ScenarioStepId[]> = {
     'live-loop/collect-metric',
     'live-loop/see-chart',
   ],
-  'edit-event': ['edit-event/open-editor', 'edit-event/set-value', 'edit-event/save'],
+  'edit-event': [
+    'edit-event/open-editor',
+    'edit-event/set-value',
+    'edit-event/set-token',
+    'edit-event/save',
+  ],
   variables: ['variables/open-variables', 'variables/inspect-values', 'variables/see-drift'],
   branches: [
     'branches/open-branches',
@@ -153,11 +160,11 @@ export interface ChapterState {
 }
 
 /**
- * The persisted shape. `v` is checked on read: v1 migrates onto
- * chapters['live-loop']; any other unknown version reads fresh.
+ * The persisted shape. `v` is checked on read: v1/v2 migrate forward; any other
+ * unknown version reads fresh.
  */
 export interface ScenarioState {
-  v: 2
+  v: 3
   activeChapter: ChapterId | null
   chapters: Partial<Record<ChapterId, ChapterState>>
 }
@@ -185,7 +192,7 @@ function freshChapterState(chapter: ChapterId): ChapterState {
 /** A fresh scenario opens on the first chapter, exactly as v1 opened active. */
 export function initialScenarioState(): ScenarioState {
   return {
-    v: 2,
+    v: 3,
     activeChapter: 'live-loop',
     chapters: { 'live-loop': freshChapterState('live-loop') },
   }
@@ -307,12 +314,12 @@ export function scenarioReducer(state: ScenarioState, event: ScenarioEvent): Sce
           chapters[outgoingId] = { ...outgoing, status: 'dismissed' }
         }
       }
-      return { v: 2, activeChapter: event.chapter, chapters }
+      return { v: 3, activeChapter: event.chapter, chapters }
     }
 
     case 'restartChapter':
       return {
-        v: 2,
+        v: 3,
         activeChapter: event.chapter,
         chapters: { ...state.chapters, [event.chapter]: freshChapterState(event.chapter) },
       }
@@ -326,7 +333,7 @@ export function scenarioReducer(state: ScenarioState, event: ScenarioEvent): Sce
         return activeChapter === state.activeChapter ? state : { ...state, activeChapter }
       }
       return {
-        v: 2,
+        v: 3,
         activeChapter,
         chapters: { ...state.chapters, [event.chapter]: { ...existing, status: 'dismissed' } },
       }
@@ -503,7 +510,7 @@ export const CHAPTER_TITLES: Record<ChapterId, string> = {
 
 export const CHAPTER_BLURBS: Record<ChapterId, string> = {
   'live-loop': 'Run a scan, watch it land, collect a metric, see the chart move.',
-  'edit-event': 'Open a planned event, template a field with a variable, save it.',
+  'edit-event': 'Open a planned event, set a documented field value, save it.',
   variables: 'Compare observed values against the documented list and review a drift.',
   branches: 'Open the seeded feature branch, read its diff, leave a comment.',
   reconcile: 'Accept a shadow event and resolve a schema drift.',
@@ -514,8 +521,11 @@ export const CHAPTER_BLURBS: Record<ChapterId, string> = {
 /** The names the demo seeder guarantees. Coach marks key on these to highlight
  *  exactly one deterministic example row per anchor (single-example rule). */
 export const SCENARIO_SEEDED = {
-  editedEventName: 'Home Screen View',
-  templatedFieldName: 'platform',
+  editedEventName: 'Trial Started',
+  editedFieldName: 'product_id',
+  editedFieldValue: 'prod_monthly',
+  editedFieldToken: '${product_id}',
+  anomalyEventName: 'Home Screen View',
   driftVariableName: 'product_id',
   branchName: 'feature/checkout-funnel',
   changedEventName: 'Buy Button Click',
@@ -570,7 +580,7 @@ export function buildChapterSteps(
           instruction: 'Open the metric to see the point your collection just added.',
           to: metric ? getMetricMonitoringPath(slug, metric.metricId) : `${base}/metrics`,
           ctaLabel: 'Open the chart',
-          coach: { side: 'bottom', align: 'start', emphasis: 'ring' },
+          coach: { side: 'top', align: 'start', emphasis: 'ring' },
         },
       ]
     }
@@ -591,9 +601,18 @@ export function buildChapterSteps(
         },
         {
           id: 'edit-event/set-value',
-          title: 'Template the platform field',
+          title: 'Try a documented product ID',
           instruction:
-            'Point the Platform field at the ${platform} token — documented values come from Variables.',
+            'Set Product ID to prod_monthly — one of the values documented in Variables.',
+          to: editor,
+          ctaLabel: editorCta,
+          coach: { side: 'right', align: 'center', emphasis: 'ring' },
+        },
+        {
+          id: 'edit-event/set-token',
+          title: 'Restore the variable template',
+          instruction:
+            'Type ${product_id} and pick the variable suggestion so the plan stays reusable across products.',
           to: editor,
           ctaLabel: editorCta,
           coach: { side: 'right', align: 'center', emphasis: 'ring' },
@@ -734,7 +753,7 @@ export function buildChapterSteps(
         {
           id: 'explore/visit-anomaly',
           title: 'Drill into the spike',
-          instruction: `Open Anomalies and drill into the ${SCENARIO_SEEDED.editedEventName} spike.`,
+          instruction: `Open Anomalies and drill into the ${SCENARIO_SEEDED.anomalyEventName} spike.`,
           to: `${base}/anomalies`,
           ctaLabel: 'Open Anomalies',
         },
@@ -877,7 +896,7 @@ function migrateV1(candidate: Record<string, unknown>): ScenarioState | null {
   }
 
   return {
-    v: 2,
+    v: 3,
     // A dismissed v1 run stays put away; anything else keeps coaching.
     activeChapter: status === 'dismissed' ? null : 'live-loop',
     chapters: {
@@ -913,14 +932,9 @@ function isChapterState(chapterId: ChapterId, value: unknown): value is ChapterS
  * state is worse than none: a step whose artifact failed validation can never
  * complete, so the user would be coached towards a dead end.
  */
-function parseScenarioState(raw: string): ScenarioState | null {
-  const parsed: unknown = JSON.parse(raw)
-  if (typeof parsed !== 'object' || parsed === null) return null
-  const candidate = parsed as Record<string, unknown>
-
-  if (candidate.v === 1) return migrateV1(candidate)
-  if (candidate.v !== 2) return null
-
+function parseStoredChapters(
+  candidate: Record<string, unknown>,
+): Omit<ScenarioState, 'v'> | null {
   const activeChapter = candidate.activeChapter
   if (activeChapter !== null && !CHAPTER_IDS.includes(activeChapter as ChapterId)) return null
   if (typeof candidate.chapters !== 'object' || candidate.chapters === null) return null
@@ -934,7 +948,38 @@ function parseScenarioState(raw: string): ScenarioState | null {
   // An active pointer at a chapter with no state would coach towards nothing.
   if (activeChapter !== null && !chapters[activeChapter as ChapterId]) return null
 
-  return { v: 2, activeChapter: activeChapter as ChapterId | null, chapters }
+  return { activeChapter: activeChapter as ChapterId | null, chapters }
+}
+
+function migrateV2(candidate: Record<string, unknown>): ScenarioState | null {
+  const stored = parseStoredChapters(candidate)
+  if (!stored) return null
+
+  const legacyEdit = stored.chapters['edit-event']
+  if (!legacyEdit) return { v: 3, ...stored }
+
+  const chapters = { ...stored.chapters }
+  if (stored.activeChapter === 'edit-event' && legacyEdit.status === 'active') {
+    chapters['edit-event'] = freshChapterState('edit-event')
+    return { v: 3, activeChapter: 'edit-event', chapters }
+  } else {
+    delete chapters['edit-event']
+  }
+  const activeChapter = stored.activeChapter === 'edit-event' ? null : stored.activeChapter
+  return { v: 3, activeChapter, chapters }
+}
+
+function parseScenarioState(raw: string): ScenarioState | null {
+  const parsed: unknown = JSON.parse(raw)
+  if (typeof parsed !== 'object' || parsed === null) return null
+  const candidate = parsed as Record<string, unknown>
+
+  if (candidate.v === 1) return migrateV1(candidate)
+  if (candidate.v === 2) return migrateV2(candidate)
+  if (candidate.v !== 3) return null
+
+  const stored = parseStoredChapters(candidate)
+  return stored ? { v: 3, ...stored } : null
 }
 
 export function readScenarioState(slug: string): ScenarioState {

@@ -40,13 +40,13 @@ interface ChapterPickerProps {
 
 export function ChapterPicker({ chapters, onPick, compact = false }: ChapterPickerProps) {
   return (
-    <ol className="flex flex-col gap-1" aria-label="Scenario chapters">
+    <ol className="flex min-w-0 flex-col gap-1" aria-label="Scenario chapters">
       {chapters.map((chapter, index) => (
-        <li key={chapter.id}>
+        <li key={chapter.id} className="min-w-0">
           <button
             type="button"
             onClick={() => onPick(chapter)}
-            className="flex w-full items-center gap-2 rounded-md border px-2.5 py-1.5 text-left transition-colors hover:bg-[var(--surface-hover)]"
+            className="flex w-full min-w-0 items-center gap-2 rounded-md border px-2.5 py-1.5 text-left transition-colors hover:bg-[var(--surface-hover)]"
             style={{ background: 'var(--surface)', borderColor: 'var(--border-subtle)' }}
           >
             <span

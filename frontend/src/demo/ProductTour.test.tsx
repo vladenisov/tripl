@@ -70,6 +70,12 @@ describe('ProductTour — progress survives the navigation it asks for (tripl-2s
 })
 
 describe('ProductTour', () => {
+  it('contains wide chapter content without creating a horizontal scroll gutter', () => {
+    renderTour()
+
+    expect(screen.getByRole('dialog')).toHaveClass('min-w-0', 'overflow-x-hidden')
+  })
+
   it('opens on the first step and links it to the real surface', () => {
     renderTour()
 
