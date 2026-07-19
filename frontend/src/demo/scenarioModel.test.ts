@@ -87,12 +87,14 @@ describe('scenario chapter browser contracts', () => {
     expect(SCENARIO_SEEDED.anomalyEventName).toBe('Home Screen View')
     expect(editSteps[0].instruction).toContain('Trial Started')
     expect(editSteps[1]).toMatchObject({
-      title: 'Try a documented product ID',
-      instruction: expect.stringContaining('prod_monthly'),
+      title: 'Enter a sample Product ID',
+      instruction:
+        'Replace the current Product ID value with prod_monthly. The guide advances automatically — do not save yet.',
     })
     expect(editSteps[2]).toMatchObject({
       title: 'Restore the variable template',
-      instruction: expect.stringContaining('${product_id}'),
+      instruction:
+        'Replace prod_monthly: type $ in Product ID, choose ${product_id}, then follow the guide to Save.',
     })
     expect(exploreSteps[1].instruction).toContain('Home Screen View')
   })

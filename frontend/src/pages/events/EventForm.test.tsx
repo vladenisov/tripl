@@ -383,19 +383,29 @@ describe('EventForm — coached demo scenario (tripl-odrj.4)', () => {
     const productId = screen.getByLabelText('Product ID')
     expect(productId).toHaveAttribute('role', 'combobox')
     expect(productId).toHaveValue('${product_id}')
+    expect(
+      screen.getByText(
+        'Replace the current Product ID value with prod_monthly. The guide advances automatically — do not save yet.',
+      ),
+    ).toBeInTheDocument()
     fireEvent.change(productId, { target: { value: 'prod_monthly' } })
 
     await waitFor(() =>
       expect(readScenarioState(SLUG).chapters['edit-event']?.step).toBe('edit-event/set-token'),
     )
-    expect(screen.getByText(/pick the variable suggestion/)).toBeInTheDocument()
+    expect(
+      screen.getByText(
+        'Replace prod_monthly: type $ in Product ID, choose ${product_id}, then follow the guide to Save.',
+      ),
+    ).toBeInTheDocument()
 
-    fireEvent.change(productId, { target: { value: '${product_id}' } })
+    fireEvent.change(productId, { target: { value: '$' } })
+    fireEvent.mouseDown(screen.getByRole('option', { name: /\$\{product_id\}/ }))
 
-    await waitFor(() =>
-      expect(readScenarioState(SLUG).chapters['edit-event']?.step).toBe('edit-event/save'),
-    )
-    expect(productId).toHaveValue('${product_id}')
+    await waitFor(() => {
+      expect(readScenarioState(SLUG).chapters['edit-event']?.step).toBe('edit-event/save')
+      expect(screen.getByLabelText('Product ID')).toHaveValue('${product_id}')
+    })
     expect(screen.getByText('Save the event — the tracking plan updates immediately.')).toBeInTheDocument()
   })
 

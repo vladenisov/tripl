@@ -601,9 +601,8 @@ export function buildChapterSteps(
         },
         {
           id: 'edit-event/set-value',
-          title: 'Try a documented product ID',
-          instruction:
-            'Set Product ID to prod_monthly — one of the values documented in Variables.',
+          title: 'Enter a sample Product ID',
+          instruction: `Replace the current Product ID value with ${SCENARIO_SEEDED.editedFieldValue}. The guide advances automatically — do not save yet.`,
           to: editor,
           ctaLabel: editorCta,
           coach: { side: 'right', align: 'center', emphasis: 'ring' },
@@ -611,8 +610,7 @@ export function buildChapterSteps(
         {
           id: 'edit-event/set-token',
           title: 'Restore the variable template',
-          instruction:
-            'Type ${product_id} and pick the variable suggestion so the plan stays reusable across products.',
+          instruction: `Replace ${SCENARIO_SEEDED.editedFieldValue}: type $ in Product ID, choose ${SCENARIO_SEEDED.editedFieldToken}, then follow the guide to Save.`,
           to: editor,
           ctaLabel: editorCta,
           coach: { side: 'right', align: 'center', emphasis: 'ring' },
