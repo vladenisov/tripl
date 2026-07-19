@@ -106,7 +106,7 @@ describe('DemoScenarioStrip — the active chapter', () => {
 
     expect(screen.getByText(CHAPTER_TITLES['edit-event'])).toBeInTheDocument()
     expect(screen.getByText('Step 2 of 4')).toBeInTheDocument()
-    expect(screen.getByText('Try a documented product ID')).toBeInTheDocument()
+    expect(screen.getByText('Enter a sample Product ID')).toBeInTheDocument()
   })
 
   it('links watch-scan at the run the user started', () => {
