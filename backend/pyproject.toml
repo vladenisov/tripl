@@ -22,6 +22,7 @@ dependencies = [
     "brotli-asgi>=1.6",
     "prometheus-client>=0.25.0",
     "email-validator>=2.3.0",
+    "numpy>=2.5.0",
 ]
 
 [project.optional-dependencies]

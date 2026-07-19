@@ -45,6 +45,13 @@ synthetic source:
   active demo fresh over time (new buckets, jobs and signals), with retention caps
   so it never grows without bound. Inactive demos pause and resume on your next
   visit. This can be disabled with the `demo_runtime_enabled` flag.
+- **Semantic search** — the demo bundles precomputed embedding vectors for its
+  own content and a few suggested queries (try `purchase funnel` or `money back`
+  in the command palette), so smart search ranks by meaning and marks semantic
+  matches even on instances with **no embedding provider configured**. No API
+  key is used and no text leaves the instance; the vectors ship with the
+  release. Outside the demo project, semantic ranking still requires an
+  embedding provider ([AI and search configuration](../run/ai-and-search.md)).
 
 ## What is preview‑only / local‑simulated
 
