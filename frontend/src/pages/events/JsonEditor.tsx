@@ -226,7 +226,7 @@ export function JsonEditor({
                 onMouseDown={e => { e.preventDefault(); insertVar(v.name) }}
                 className={`flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-xs ${i === highlightIdx ? 'bg-accent text-accent-foreground' : 'text-popover-foreground hover:bg-accent/50'}`}
               >
-                <SuggestionRow suggestion={v} />
+                <SuggestionRow suggestion={v} selected={i === highlightIdx} />
               </button>
             ))}
           </div>

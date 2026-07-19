@@ -408,14 +408,7 @@ export function VariablesTab({ slug, focusId }: { slug: string; focusId?: string
                   </div>
                   <ul className="space-y-1.5">
                     {activeDrifts.map((drift, driftIndex) => (
-                      <ScenarioCoachMark
-                        key={drift.id}
-                        step="variables/see-drift"
-                        // Deterministically the first drift row — for the seeded
-                        // demo that is the prod_weekly drift on Trial Started.
-                        when={driftIndex === 0 && editingVar?.name === SCENARIO_SEEDED.driftVariableName}
-                      >
-                        <li className="rounded border bg-background px-2 py-1.5">
+                      <li key={drift.id} className="rounded border bg-background px-2 py-1.5">
                         <div className="flex flex-wrap items-center justify-between gap-2">
                           <div className="min-w-0">
                             <div className="text-xs font-medium">
@@ -430,23 +423,29 @@ export function VariablesTab({ slug, focusId }: { slug: string; focusId?: string
                               ))}
                             </div>
                           </div>
-                          <div className="flex shrink-0 flex-wrap gap-1">
-                            <Button type="button" size="sm" variant="outline" className="h-6 px-2 text-[11px]" disabled={driftActionMut.isPending} onClick={() => driftActionMut.mutate({ driftId: drift.id, action: 'accept', scope: 'global' })}>
-                              Accept
-                            </Button>
-                            <Button type="button" size="sm" variant="outline" className="h-6 px-2 text-[11px]" disabled={driftActionMut.isPending} onClick={() => driftActionMut.mutate({ driftId: drift.id, action: 'accept', scope: 'event' })}>
-                              Accept for event
-                            </Button>
-                            <Button type="button" size="sm" variant="ghost" className="h-6 px-2 text-[11px]" disabled={driftActionMut.isPending} onClick={() => snoozeDrift(drift.id)}>
-                              Snooze 7d
-                            </Button>
-                            <Button type="button" size="sm" variant="ghost" className="h-6 px-2 text-[11px] text-muted-foreground" disabled={driftActionMut.isPending} onClick={() => driftActionMut.mutate({ driftId: drift.id, action: 'false_positive' })}>
-                              False positive
-                            </Button>
-                          </div>
+                          <ScenarioCoachMark
+                            step="variables/see-drift"
+                            // The action group is the useful target; anchoring the
+                            // whole row makes the callout cover the form above it.
+                            when={driftIndex === 0 && editingVar?.name === SCENARIO_SEEDED.driftVariableName}
+                          >
+                            <div className="flex shrink-0 flex-wrap gap-1">
+                              <Button type="button" size="sm" variant="outline" className="h-6 px-2 text-[11px]" disabled={driftActionMut.isPending} onClick={() => driftActionMut.mutate({ driftId: drift.id, action: 'accept', scope: 'global' })}>
+                                Accept
+                              </Button>
+                              <Button type="button" size="sm" variant="outline" className="h-6 px-2 text-[11px]" disabled={driftActionMut.isPending} onClick={() => driftActionMut.mutate({ driftId: drift.id, action: 'accept', scope: 'event' })}>
+                                Accept for event
+                              </Button>
+                              <Button type="button" size="sm" variant="ghost" className="h-6 px-2 text-[11px]" disabled={driftActionMut.isPending} onClick={() => snoozeDrift(drift.id)}>
+                                Snooze 7d
+                              </Button>
+                              <Button type="button" size="sm" variant="ghost" className="h-6 px-2 text-[11px] text-muted-foreground" disabled={driftActionMut.isPending} onClick={() => driftActionMut.mutate({ driftId: drift.id, action: 'false_positive' })}>
+                                False positive
+                              </Button>
+                            </div>
+                          </ScenarioCoachMark>
                         </div>
-                        </li>
-                      </ScenarioCoachMark>
+                      </li>
                     ))}
                   </ul>
                   {driftActionMut.isError && (

@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { createElement, type ReactNode } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -213,8 +213,14 @@ describe('EventForm template authoring', () => {
     const input = screen.getByLabelText('Variant')
     fireEvent.change(input, { target: { value: '${' } })
 
-    expect(screen.getByRole('option', { name: /\$\{variant\}/ })).toBeInTheDocument()
-    expect(screen.getByText('Experiment variant')).toBeInTheDocument()
+    const selectedSuggestion = screen.getByRole('option', { name: /\$\{variant\}/ })
+    expect(selectedSuggestion).toBeInTheDocument()
+    expect(within(selectedSuggestion).getByText('${variant}')).toHaveClass(
+      'text-accent-foreground',
+    )
+    expect(within(selectedSuggestion).getByText('Experiment variant')).toHaveClass(
+      'text-accent-foreground/80',
+    )
     expect(screen.getByText('payload.variant')).toBeInTheDocument()
     expect(screen.getByText('control · treatment · holdout')).toBeInTheDocument()
 
@@ -350,14 +356,8 @@ describe('EventForm — coached demo scenario (tripl-odrj.4)', () => {
     generation_status: 'ready',
   } as unknown as Project
 
-  afterEach(() => {
-    window.localStorage.clear()
-  })
-
-  it('coaches a documented Product ID and then restores the seeded variable token', async () => {
-    writeScenarioState(SLUG, chapterState('edit-event', 'edit-event/set-value'))
-
-    render(
+  function renderCoachedEditEvent(event: TEvent = EDIT_EVENT) {
+    return render(
       createElement(
         QueryClientProvider,
         { client: queryClient },
@@ -372,13 +372,23 @@ describe('EventForm — coached demo scenario (tripl-odrj.4)', () => {
               eventTypes: [EDIT_EVENT_TYPE],
               metaFields: [],
               projectVariables: [PRODUCT_ID_VARIABLE],
-              event: EDIT_EVENT,
+              event,
               onClose: () => {},
             }),
           ),
         ),
       ),
     )
+  }
+
+  afterEach(() => {
+    window.localStorage.clear()
+  })
+
+  it('coaches a documented Product ID and then restores the seeded variable token', async () => {
+    writeScenarioState(SLUG, chapterState('edit-event', 'edit-event/set-value'))
+
+    renderCoachedEditEvent()
 
     const productId = screen.getByLabelText('Product ID')
     expect(productId).toHaveAttribute('role', 'combobox')
@@ -407,6 +417,19 @@ describe('EventForm — coached demo scenario (tripl-odrj.4)', () => {
       expect(screen.getByLabelText('Product ID')).toHaveValue('${product_id}')
     })
     expect(screen.getByText('Save the event — the tracking plan updates immediately.')).toBeInTheDocument()
+  })
+
+  it('catches up when the rendered Product ID already satisfies the active step', async () => {
+    writeScenarioState(SLUG, chapterState('edit-event', 'edit-event/set-value'))
+    renderCoachedEditEvent({
+      ...EDIT_EVENT,
+      field_values: [{ field_definition_id: 'field-product-id', value: 'prod_monthly' }],
+    } as TEvent)
+
+    await waitFor(() =>
+      expect(readScenarioState(SLUG).chapters['edit-event']?.step).toBe('edit-event/set-token'),
+    )
+    expect(screen.getByText(/type \$ in Product ID/)).toBeInTheDocument()
   })
 
   it("completes the edit-event chapter's save step through the real save mutation", async () => {

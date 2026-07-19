@@ -10,21 +10,32 @@ export interface VariableSuggestion {
   allowed_values?: string[]
 }
 
-export function SuggestionRow({ suggestion }: { suggestion: VariableSuggestion }) {
+export function SuggestionRow({
+  suggestion,
+  selected = false,
+}: {
+  suggestion: VariableSuggestion
+  selected?: boolean
+}) {
   const bindings = suggestion.bindings ?? []
   const values = suggestion.allowed_values ?? []
+  const detailClassName = selected ? 'text-accent-foreground/80' : 'text-muted-foreground/80'
   return (
     <>
-      <code className="shrink-0 font-mono text-primary">{`\${${suggestion.name}}`}</code>
+      <code className={`shrink-0 font-mono ${selected ? 'text-accent-foreground' : 'text-primary'}`}>
+        {`\${${suggestion.name}}`}
+      </code>
       <span className="flex min-w-0 flex-col items-start gap-0.5 text-left">
         {suggestion.description && (
-          <span className="truncate text-muted-foreground">{suggestion.description}</span>
+          <span className={`truncate ${selected ? 'text-accent-foreground/80' : 'text-muted-foreground'}`}>
+            {suggestion.description}
+          </span>
         )}
         {bindings.length > 0 && (
-          <span className="truncate font-mono text-[10px] text-muted-foreground/80">{bindings.join(' · ')}</span>
+          <span className={`truncate font-mono text-[10px] ${detailClassName}`}>{bindings.join(' · ')}</span>
         )}
         {values.length > 0 && (
-          <span className="truncate font-mono text-[10px] text-muted-foreground/80">{values.slice(0, 3).join(' · ')}</span>
+          <span className={`truncate font-mono text-[10px] ${detailClassName}`}>{values.slice(0, 3).join(' · ')}</span>
         )}
       </span>
     </>
@@ -149,7 +160,7 @@ export function VariableInput({
               onMouseDown={e => { e.preventDefault(); insert(v.name) }}
               className={`flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-xs ${i === highlightIdx ? 'bg-accent text-accent-foreground' : 'text-popover-foreground hover:bg-accent/50'}`}
             >
-              <SuggestionRow suggestion={v} />
+              <SuggestionRow suggestion={v} selected={i === highlightIdx} />
             </button>
           ))}
         </div>

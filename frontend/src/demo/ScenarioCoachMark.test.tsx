@@ -163,6 +163,20 @@ describe('ScenarioCoachMark — on the active step', () => {
     expect(runButton()).toBeInTheDocument()
   })
 
+  it('uses an opaque elevated surface so nearby page text cannot bleed through', () => {
+    renderMark(
+      <ScenarioCoachMark step="live-loop/run-scan">
+        <button type="button">Run scan</button>
+      </ScenarioCoachMark>,
+    )
+
+    expect(callout()?.getAttribute('style')).toContain('background: var(--bg-elevated)')
+    expect(callout()?.getAttribute('style')).toContain('border-color: var(--accent)')
+    expect(callout()?.querySelector('svg')?.getAttribute('style')).toContain(
+      'fill: var(--bg-elevated)',
+    )
+  })
+
   it('counts a later step from the scenario chain rather than a fixed length', () => {
     writeScenarioState(SLUG, collectMetricState())
     renderMark(

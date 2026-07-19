@@ -649,7 +649,7 @@ export function buildChapterSteps(
             'A scan saw prod_weekly outside the documented values — review the drift row.',
           to: `${base}/settings/variables`,
           ctaLabel: 'Open Variables',
-          coach: { side: 'top', align: 'start', emphasis: 'ring' },
+          coach: { side: 'bottom', align: 'end', emphasis: 'ring' },
         },
       ]
     case 'branches':
@@ -675,7 +675,7 @@ export function buildChapterSteps(
           instruction: `Expand the change to ${SCENARIO_SEEDED.changedEventName} — one modified event, before and after.`,
           to: `${base}/settings/branches`,
           ctaLabel: 'Open Branches',
-          coach: { side: 'top', align: 'start', emphasis: 'ring' },
+          coach: { side: 'bottom', align: 'start', emphasis: 'ring' },
         },
         {
           id: 'branches/comment',
@@ -701,7 +701,7 @@ export function buildChapterSteps(
           instruction: `Accept ${SCENARIO_SEEDED.shadowCandidateName} — warehouse traffic with no planned event.`,
           to: `${base}/reconciliation`,
           ctaLabel: 'Open Reconciliation',
-          coach: { side: 'left', align: 'center', emphasis: 'ring' },
+          coach: { side: 'bottom', align: 'end', emphasis: 'ring' },
         },
         {
           id: 'reconcile/review-drift',

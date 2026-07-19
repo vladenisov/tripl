@@ -100,8 +100,9 @@ The demo offers two guides, and they do different jobs.
 
   A strip below the demo banner tracks which chapter and step you are on and
   links to where the next action lives; a callout points at — and visibly
-  rings — the button that performs it. Both are demo-only and never appear in a
-  real project.
+  rings — the button that performs it. Callouts use an opaque raised surface and
+  open away from the nearby content they explain, so labels and controls stay
+  readable. Both are demo-only and never appear in a real project.
 
   The chapters follow **your** actions, not the demo's. The runtime clock is
   producing real scans and collections of its own in the background, so a step

@@ -76,6 +76,18 @@ describe('scenario chapter browser contracts', () => {
     expect(seeChart?.coach).toEqual({ side: 'top', align: 'start', emphasis: 'ring' })
   })
 
+  it.each([
+    ['variables', 'variables/see-drift', { side: 'bottom', align: 'end', emphasis: 'ring' }],
+    ['branches', 'branches/review-diff', { side: 'bottom', align: 'start', emphasis: 'ring' }],
+    ['reconcile', 'reconcile/accept-shadow', { side: 'bottom', align: 'end', emphasis: 'ring' }],
+  ] as const)('keeps the %s action coach clear of nearby content', (chapter, stepId, placement) => {
+    const step = buildChapterSteps(SLUG, chapter, initialScenarioState()).find(
+      candidate => candidate.id === stepId,
+    )
+
+    expect(step?.coach).toEqual(placement)
+  })
+
   it('edits the seeded product field to a documented value without changing the anomaly target', () => {
     const editSteps = buildChapterSteps(SLUG, 'edit-event', initialScenarioState())
     const exploreSteps = buildChapterSteps(SLUG, 'explore', initialScenarioState())
