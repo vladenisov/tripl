@@ -26,6 +26,7 @@ from tripl.models.event_type import EventType
 from tripl.models.field_definition import FieldDefinition
 from tripl.models.scan_config import ScanConfig
 from tripl.models.variable import Variable
+from tripl.worker.plan_scope import main_branch_id
 from tripl.worker.tasks.metrics.generation import (
     _build_variable_lookup,
     _ensure_event_type_with_fields,
@@ -171,10 +172,14 @@ def sync_catalog(
             raise ValueError(msg)
         logger.info(f"Grouped scan: {len(group_values)} groups for {config.event_type_column!r}")
 
+        # Catalog sync targets the main plan; a working branch deep-copies
+        # event types under the same names, so lookups must be branch-scoped.
+        plan_branch = main_branch_id(session, config.project_id)
         for et_name in group_values:
             existing_et = session.execute(
                 select(EventType).where(
                     EventType.project_id == config.project_id,
+                    EventType.branch_id == plan_branch,
                     EventType.name == et_name,
                 )
             ).scalar_one_or_none()

@@ -17,6 +17,9 @@ import { metaFieldsApi } from '@/api/metaFields'
 import { variablesApi } from '@/api/variables'
 import { useActiveBranchId } from '@/hooks/useBranch'
 import { useAiStatus } from '@/hooks/useAiStatus'
+import { ScenarioCoachMark } from '@/demo/ScenarioCoachMark'
+import { useDemoScenarioActions } from '@/demo/demoScenarioContext'
+import { SCENARIO_SEEDED } from '@/demo/scenarioModel'
 import { EVENT_STATUS_LABELS, EVENT_STATUSES } from '@/lib/eventStatus'
 import { META_FIELD_LINK_PLACEHOLDER } from '@/lib/metaFields'
 import { ErrorState } from '@/components/error-state'
@@ -302,6 +305,7 @@ export function EventForm({
   const qc = useQueryClient()
   const branchId = useActiveBranchId()
   const aiEnabled = useAiStatus(slug)
+  const { notifyStepCompleted } = useDemoScenarioActions()
   const formRef = useRef<HTMLFormElement>(null)
   const isNew = !event
   const [etId, setEtId] = useState(
@@ -403,6 +407,12 @@ export function EventForm({
       qc.invalidateQueries({ queryKey: ['events', slug, branchId] })
       qc.invalidateQueries({ queryKey: ['eventTags', slug, branchId] })
       if (event) qc.invalidateQueries({ queryKey: ['event', slug] })
+      // Direct scenario completion — inert unless the demo's edit-event chapter
+      // is sitting on exactly this step (the reducer drops everything else).
+      // set-value first: a user who saved without templating still performed
+      // the save, and the chapter must not dead-end on the skipped step.
+      notifyStepCompleted('edit-event/set-value')
+      notifyStepCompleted('edit-event/save')
       if (closeAfterSave) onClose()
     },
   })
@@ -604,13 +614,32 @@ export function EventForm({
                 hint={<span className="mono">{f.name} · {f.field_type}</span>}
                 last={i === sortedFields.length - 1}
               >
-                <FieldValueControl
-                  field={f}
-                  inputId={`field-${f.id}`}
-                  value={fieldValues[f.id] ?? ''}
-                  onChange={v => setFieldValues({ ...fieldValues, [f.id]: v })}
-                  variables={varSuggestions}
-                />
+                {/* The div is the mark's anchor: FieldValueControl is a plain
+                    function component and would swallow the cloned ref. */}
+                <ScenarioCoachMark
+                  step="edit-event/set-value"
+                  when={f.name === SCENARIO_SEEDED.templatedFieldName}
+                >
+                  <div>
+                    <FieldValueControl
+                      field={f}
+                      inputId={`field-${f.id}`}
+                      value={fieldValues[f.id] ?? ''}
+                      onChange={v => {
+                        setFieldValues({ ...fieldValues, [f.id]: v })
+                        // The step is done the moment the field actually holds
+                        // the token, not on save — the mark moves on to Save.
+                        if (
+                          f.name === SCENARIO_SEEDED.templatedFieldName &&
+                          v.includes(`\${${SCENARIO_SEEDED.templatedFieldName}}`)
+                        ) {
+                          notifyStepCompleted('edit-event/set-value')
+                        }
+                      }}
+                      variables={varSuggestions}
+                    />
+                  </div>
+                </ScenarioCoachMark>
                 <FieldTemplateHints value={fieldValues[f.id] ?? ''} variables={projectVariables} />
               </EvField>
             ))}
@@ -666,17 +695,19 @@ export function EventForm({
               Save and add another
             </button>
           )}
-          <button
-            type="submit"
-            disabled={saveMut.isPending || (generatedName ? generatedName.missing.length > 0 : false)}
-            className="inline-flex h-8 items-center gap-[6px] rounded-[7px] px-3 text-[12px] font-medium disabled:opacity-60"
-            style={{ background: 'var(--accent)', color: 'var(--accent-fg)' }}
-          >
-            {saveMut.isPending
-              ? <Loader2 className="animate-spin" size={12} />
-              : isNew ? <Plus size={12} /> : <Save size={12} />}
-            {isNew ? 'Create event' : 'Save event'}
-          </button>
+          <ScenarioCoachMark step="edit-event/save" when={!isNew}>
+            <button
+              type="submit"
+              disabled={saveMut.isPending || (generatedName ? generatedName.missing.length > 0 : false)}
+              className="inline-flex h-8 items-center gap-[6px] rounded-[7px] px-3 text-[12px] font-medium disabled:opacity-60"
+              style={{ background: 'var(--accent)', color: 'var(--accent-fg)' }}
+            >
+              {saveMut.isPending
+                ? <Loader2 className="animate-spin" size={12} />
+                : isNew ? <Plus size={12} /> : <Save size={12} />}
+              {isNew ? 'Create event' : 'Save event'}
+            </button>
+          </ScenarioCoachMark>
         </div>
       </form>
     </div>

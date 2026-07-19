@@ -38,16 +38,26 @@ import {
   CommandPaletteContext,
   useCommandPalette,
 } from '@/components/command-palette-context'
+import { useDemoScenarioActions } from '@/demo/demoScenarioContext'
 import { useActiveBranchId } from '@/hooks/useBranch'
 import { useAiStatus } from '@/hooks/useAiStatus'
 import { SEARCH_DEBOUNCE_MS, useDebouncedValue } from '@/hooks/useDebouncedValue'
 import { Dialog, DialogContent, DialogTitle } from '@/components/ui/dialog'
+import { Chip } from '@/components/primitives/chip'
 import { Kbd } from '@/components/primitives/kbd'
 import type { AiAskResponse } from '@/api/ai'
 import type { SearchEntityType, SearchResult } from '@/types'
 
 export function CommandPaletteProvider({ children }: { children: ReactNode }) {
   const [open, setOpen] = useState(false)
+  const { notifyStepCompleted } = useDemoScenarioActions()
+
+  // Opening the palette IS using search — the explore chapter's last step.
+  // Inert outside a ready demo (the actions context defaults to noops), and
+  // the reducer drops the notify unless this is the current step.
+  useEffect(() => {
+    if (open) notifyStepCompleted('explore/use-search')
+  }, [open, notifyStepCompleted])
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
@@ -462,6 +472,7 @@ function CommandPalette() {
                               hint={result.subtitle || undefined}
                               description={result.description || result.snippet || undefined}
                               confidence={result.confidence}
+                              semantic={result.semantic_used}
                               keywords={[
                                 debouncedQuery,
                                 result.title,
@@ -545,6 +556,7 @@ function Item({
   hint,
   description,
   confidence,
+  semantic,
   active,
   keywords,
 }: {
@@ -555,6 +567,7 @@ function Item({
   hint?: string
   description?: string
   confidence?: number
+  semantic?: boolean
   active?: boolean
   keywords?: string[]
 }) {
@@ -578,6 +591,11 @@ function Item({
           </span>
         )}
       </span>
+      {semantic && (
+        <Chip tone="neutral" size="xs" title="Matched by meaning (semantic search)">
+          semantic
+        </Chip>
+      )}
       {showConfidence && <ConfidenceBadge confidence={confidence} />}
       {active && (
         <span className="shrink-0 text-[10px] uppercase tracking-[0.08em]" style={{ color: 'var(--fg-faint)' }}>

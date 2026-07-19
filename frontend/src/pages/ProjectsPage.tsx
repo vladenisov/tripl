@@ -4,7 +4,6 @@ import { Link, useNavigate } from 'react-router-dom'
 import { dataSourcesApi } from '@/api/dataSources'
 import { projectsApi } from '@/api/projects'
 import { useAuth } from '@/components/auth-context'
-import { EmptyState } from '@/components/empty-state'
 import { ErrorState } from '@/components/error-state'
 import { Chip } from '@/components/primitives/chip'
 import { Dot } from '@/components/primitives/dot'
@@ -32,6 +31,7 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Skeleton } from '@/components/ui/skeleton'
 import { Textarea } from '@/components/ui/textarea'
+import { WorkspaceWelcome } from '@/components/workspace-welcome'
 import { DemoProvisioningDialog } from '@/demo/DemoProvisioningDialog'
 import { useDemoProvisioning } from '@/demo/useDemoProvisioning'
 import { useConfirm } from '@/hooks/useConfirm'
@@ -50,7 +50,6 @@ import {
   AlertTriangle,
   ArrowRight,
   BellRing,
-  FolderKanban,
   MoreHorizontal,
   PlayCircle,
   Plus,
@@ -187,6 +186,11 @@ export default function MainPage() {
   const isOwner = user?.role === 'owner'
   const canCreateProject = user?.role === 'owner' || user?.role === 'editor'
   const canDeleteProject = isOwner
+  // Loaded-and-empty workspace: the welcome hero replaces the header CTA pair,
+  // the all-zero stat band, and the old EmptyState until the first project
+  // exists. Loading and error states render exactly as before (tripl-odrj.1).
+  const isEmptyWorkspace =
+    !projectsQuery.isLoading && !projectsQuery.isError && projects.length === 0
 
   return (
     <div className="space-y-6">
@@ -214,7 +218,7 @@ export default function MainPage() {
             scan and alerting coverage exists across the workspace.
           </p>
         </div>
-        {canCreateProject && (
+        {canCreateProject && !isEmptyWorkspace && (
           <div className="flex items-center gap-2">
             <Button
               size="sm"
@@ -310,7 +314,16 @@ export default function MainPage() {
         />
       )}
 
-      {!projectsQuery.isLoading && !projectsQuery.isError && (
+      {isEmptyWorkspace && (
+        <WorkspaceWelcome
+          canCreateProject={canCreateProject}
+          isProvisioningDemo={isProvisioningDemo}
+          onGenerateDemo={() => provisioning.start()}
+          onCreateProject={() => setShowForm(true)}
+        />
+      )}
+
+      {!projectsQuery.isLoading && !projectsQuery.isError && projects.length > 0 && (
         <>
           {/* One consolidated stat row: calm STATE metrics on the left, then a
               divider, then attention-worthy ACTION-NEEDED cards on the right.
@@ -417,53 +430,29 @@ export default function MainPage() {
             </div>
           </div>
 
-          {projects.length > 0 ? (
-            <section className="space-y-3">
-              <div className="flex items-end justify-between gap-3">
-                <div>
-                  <h2 className="text-[14px] font-semibold tracking-tight">Project portfolio</h2>
-                  <p className="text-[11.5px]" style={{ color: 'var(--fg-subtle)' }}>
-                    Recently updated projects with planning, review, scan, and alerting coverage.
-                  </p>
-                </div>
-                <Chip size="sm">{projects.length} tracked</Chip>
+          <section className="space-y-3">
+            <div className="flex items-end justify-between gap-3">
+              <div>
+                <h2 className="text-[14px] font-semibold tracking-tight">Project portfolio</h2>
+                <p className="text-[11.5px]" style={{ color: 'var(--fg-subtle)' }}>
+                  Recently updated projects with planning, review, scan, and alerting coverage.
+                </p>
               </div>
+              <Chip size="sm">{projects.length} tracked</Chip>
+            </div>
 
-              <div className="grid gap-3">
-                {projects.map((project) => (
-                  <ProjectCard
-                    key={project.id}
-                    project={project}
-                    canDelete={canDeleteProject}
-                    isOwner={isOwner}
-                    onDelete={() => { void handleDelete(project) }}
-                  />
-                ))}
-              </div>
-            </section>
-          ) : (
-            <EmptyState
-              icon={FolderKanban}
-              title="No projects yet"
-              description="Create your first project to start building a richer tracking-plan workspace with event coverage, scans, and monitoring."
-              action={canCreateProject ? (
-                <div className="flex gap-2">
-                  <Button
-                    variant="outline"
-                    onClick={() => provisioning.start()}
-                    disabled={isProvisioningDemo}
-                  >
-                    <Sparkles className="h-3.5 w-3.5" />
-                    {isProvisioningDemo ? 'Generating…' : 'Generate demo project'}
-                  </Button>
-                  <Button onClick={() => setShowForm(true)}>
-                    <Plus className="h-3.5 w-3.5" />
-                    New project
-                  </Button>
-                </div>
-              ) : undefined}
-            />
-          )}
+            <div className="grid gap-3">
+              {projects.map((project) => (
+                <ProjectCard
+                  key={project.id}
+                  project={project}
+                  canDelete={canDeleteProject}
+                  isOwner={isOwner}
+                  onDelete={() => { void handleDelete(project) }}
+                />
+              ))}
+            </div>
+          </section>
         </>
       )}
     </div>

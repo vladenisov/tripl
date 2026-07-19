@@ -71,7 +71,7 @@ import { toast } from 'sonner'
 import { useConfirm } from '@/hooks/useConfirm'
 import { useMetricCollectionWatcher } from '@/hooks/useMetricCollectionWatcher'
 import { ScenarioCoachMark } from '@/demo/ScenarioCoachMark'
-import { useDemoScenarioActions } from '@/demo/demoScenarioContext'
+import { useDemoScenarioActions, useScenarioArtifacts } from '@/demo/demoScenarioContext'
 
 /**
  * Everything a manual collect needs, captured when the button is pressed and
@@ -681,6 +681,7 @@ export default function MonitoringDetailPage() {
     },
   })
   const { notifyMetricCollectStarted } = useDemoScenarioActions()
+  const { metricId: scenarioMetricId } = useScenarioArtifacts()
   // Manual "collect now": backfill a recent window for this metric so its chart
   // populates without waiting for the scheduler. Collection runs in the worker;
   // the watcher polls the persisted last_collection_status until the run
@@ -892,8 +893,10 @@ export default function MonitoringDetailPage() {
                   Edit
                 </Button>
                 {/* No see-chart mark on this page: the scenario completes that step
-                    on arrival here, so a mark would never be read. */}
-                <ScenarioCoachMark step="collect-metric">
+                    on arrival here, so a mark would never be read. Collect-metric
+                    only coaches until the user's own collect is in flight — after
+                    that, every metric detail page would otherwise shout. */}
+                <ScenarioCoachMark step="live-loop/collect-metric" when={scenarioMetricId === null}>
                   <Button
                     variant="outline"
                     size="sm"

@@ -254,7 +254,7 @@ async def get_branch(
     return await _to_detail(session, branch)
 
 
-async def _deep_copy_plan(
+async def deep_copy_plan_to_branch(
     session: AsyncSession,
     *,
     project_id: uuid.UUID,
@@ -268,6 +268,10 @@ async def _deep_copy_plan(
     because no ORM relationship orders that insert (see below).
     Child tables (field_definitions, event_field_values, event_meta_values,
     event_tags) inherit their branch from the parent and carry no branch_id.
+
+    Never commits or flushes beyond the photo-comment ordering flush, so it can
+    run inside a caller-owned transaction — ``create_branch`` below and the demo
+    seeder's branches builder both reuse it.
     """
     event_types = (
         (
@@ -621,7 +625,7 @@ async def create_branch(
     session.add(branch)
     await session.flush()
 
-    await _deep_copy_plan(
+    await deep_copy_plan_to_branch(
         session,
         project_id=project.id,
         source_branch_id=main_branch_id,

@@ -289,7 +289,7 @@ export function ScansTab({ slug }: { slug: string }) {
               return (
                 <ScenarioCoachMark
                   key={run.jobId}
-                  step="watch-scan"
+                  step="live-loop/watch-scan"
                   // Exactly one row: the run the user's own action started.
                   when={run.jobId === scanJobId}
                   side="top"

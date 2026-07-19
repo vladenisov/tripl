@@ -8,6 +8,9 @@ import type {
   EventType,
 } from "@/types"
 import { alertingApi } from "@/api/alerting"
+import { ScenarioCoachMark } from "@/demo/ScenarioCoachMark"
+import { useDemoScenarioActions } from "@/demo/demoScenarioContext"
+import { SCENARIO_SEEDED } from "@/demo/scenarioModel"
 import { useConfirm } from "@/hooks/useConfirm"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
@@ -53,6 +56,7 @@ export function DestinationCard({
 }) {
   const qc = useQueryClient()
   const { confirm, dialog } = useConfirm()
+  const { notifyStepCompleted } = useDemoScenarioActions()
   const [ruleDialogOpen, setRuleDialogOpen] = useState(false)
   const [editingRule, setEditingRule] = useState<AlertRule | null>(null)
   const [replayingRule, setReplayingRule] = useState<AlertRule | null>(null)
@@ -71,6 +75,9 @@ export function DestinationCard({
       setRuleDialogOpen(false)
       setEditingRule(null)
       setRuleForm(defaultRuleForm())
+      // A created rule lands the alerting chapter's step — inert outside the
+      // demo scenario (the reducer drops every other step).
+      notifyStepCompleted('alerting/create-rule')
     },
   })
 
@@ -170,10 +177,14 @@ export function DestinationCard({
 
           <div className="flex justify-between items-center">
             <Label className="text-sm">Rules</Label>
-            <Button size="sm" variant="outline" onClick={openNewRule}>
-              <Plus className="mr-2 h-4 w-4" />
-              Add Rule
-            </Button>
+            {/* Exactly one card coaches: the local demo sink, where a delivery
+                renders locally and nothing external is touched. */}
+            <ScenarioCoachMark step="alerting/create-rule" when={!!destination.is_local}>
+              <Button size="sm" variant="outline" onClick={openNewRule}>
+                <Plus className="mr-2 h-4 w-4" />
+                Add Rule
+              </Button>
+            </ScenarioCoachMark>
           </div>
 
           {destination.rules.length === 0 ? (
@@ -215,16 +226,23 @@ export function DestinationCard({
                         onCheckedChange={checked => alertingApi.updateRule(slug, destination.id, rule.id, { enabled: checked }).then(() => qc.invalidateQueries({ queryKey: ['alertDestinations', slug] }))}
                         aria-label={`Toggle ${rule.name}`}
                       />
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        className="h-8 w-8"
-                        onClick={() => setReplayingRule(rule)}
-                        title="Replay last N days"
-                        aria-label={`Replay ${rule.name}`}
+                      {/* Exactly one rule coaches the simulate step: the seeded
+                          firing rule, whose window is guaranteed to hold anomalies. */}
+                      <ScenarioCoachMark
+                        step="alerting/simulate"
+                        when={rule.name === SCENARIO_SEEDED.firingRuleName}
                       >
-                        <History className="h-4 w-4" />
-                      </Button>
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          className="h-8 w-8"
+                          onClick={() => setReplayingRule(rule)}
+                          title="Replay last N days"
+                          aria-label={`Replay ${rule.name}`}
+                        >
+                          <History className="h-4 w-4" />
+                        </Button>
+                      </ScenarioCoachMark>
                       <Button variant="ghost" size="icon" className="h-8 w-8" aria-label={`Edit rule ${rule.name}`} onClick={() => openEditRule(rule)}>
                         <Pencil aria-hidden="true" className="h-4 w-4" />
                       </Button>

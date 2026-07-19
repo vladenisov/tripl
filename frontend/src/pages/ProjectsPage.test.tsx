@@ -543,7 +543,7 @@ describe('ProjectsPage', () => {
 
     expect(await screen.findByText('Failed to load projects')).toBeInTheDocument()
     expect(screen.getByText('Backend is unavailable. Check that the API server is running and try again.')).toBeInTheDocument()
-    expect(screen.queryByText('No projects yet')).not.toBeInTheDocument()
+    expect(screen.queryByText('Keep your product analytics honest')).not.toBeInTheDocument()
   })
 
   it('enters the new project after creating it instead of staying on the workspace (tripl-q7i1.8)', async () => {
@@ -626,8 +626,8 @@ describe('ProjectsPage', () => {
       </QueryClientProvider>,
     )
 
-    // Wait for the empty workspace to settle, then open the create dialog.
-    expect(await screen.findByText('No projects yet')).toBeInTheDocument()
+    // Wait for the empty workspace welcome to settle, then open the create dialog.
+    expect(await screen.findByText('Keep your product analytics honest')).toBeInTheDocument()
     fireEvent.click(screen.getAllByRole('button', { name: /New project/i })[0])
 
     // Filling the name auto-derives the slug; submit the form.
@@ -641,5 +641,100 @@ describe('ProjectsPage', () => {
     await waitFor(() => {
       expect(screen.getByTestId('location')).toHaveTextContent('/p/my-project-2/overview')
     })
+  })
+
+  function mockEmptyWorkspace() {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(
+      (input: RequestInfo | URL, init?: RequestInit) => {
+        const url =
+          typeof input === 'string'
+            ? input
+            : input instanceof URL
+              ? input.toString()
+              : input.url
+        const method = (init?.method ?? 'GET').toUpperCase()
+
+        if (url.endsWith('/api/v1/projects/demo') && method === 'POST') {
+          // Never settles: keeps the page in its provisioning state so tests can
+          // observe the disabled/Generating… CTA without a fake clock.
+          return new Promise<Response>(() => {})
+        }
+        if (url.endsWith('/api/v1/projects')) {
+          return Promise.resolve(jsonResponse([]))
+        }
+        if (url.endsWith('/api/v1/data-sources')) {
+          return Promise.resolve(jsonResponse([]))
+        }
+        return Promise.reject(new Error(`Unexpected request: ${url}`))
+      },
+    )
+  }
+
+  it('welcomes an empty workspace with the product hero instead of zero stats (tripl-odrj.1)', async () => {
+    mockEmptyWorkspace()
+
+    renderProjectsPage('owner')
+
+    expect(await screen.findByText('Keep your product analytics honest')).toBeInTheDocument()
+    // The h1 stays, but the duplicate header CTA pair is gone — each CTA now
+    // exists exactly once, inside the hero.
+    expect(screen.getByText('Analytics workspace')).toBeInTheDocument()
+    expect(screen.getAllByRole('button', { name: /Generate demo project/i })).toHaveLength(1)
+    expect(screen.getAllByRole('button', { name: /New project/i })).toHaveLength(1)
+    // The all-zero stat band is hidden until the first project exists.
+    expect(screen.queryByText('Coverage')).not.toBeInTheDocument()
+    expect(screen.queryByText('Review queue')).not.toBeInTheDocument()
+    expect(screen.queryByText('Automation')).not.toBeInTheDocument()
+    // The old bare EmptyState copy is retired in favour of the hero.
+    expect(screen.queryByText('No projects yet')).not.toBeInTheDocument()
+  })
+
+  it('starts demo provisioning from the hero CTA and disables it while running (tripl-odrj.1)', async () => {
+    mockEmptyWorkspace()
+
+    renderProjectsPage('owner')
+
+    const demoButton = await screen.findByRole('button', { name: /Generate demo project/i })
+    fireEvent.click(demoButton)
+
+    // The click dispatched POST /projects/demo (held pending by the mock) and
+    // opened the modal provisioning dialog, which aria-hides the page behind
+    // it — so the swapped CTA must be queried with hidden: true.
+    expect(await screen.findByRole('dialog')).toBeInTheDocument()
+    const generating = await screen.findByRole('button', { name: /Generating…/, hidden: true })
+    expect(generating).toBeDisabled()
+  })
+
+  it('shows viewers the pillars and an ask-an-owner note without create buttons (tripl-odrj.1)', async () => {
+    mockEmptyWorkspace()
+
+    renderProjectsPage('viewer')
+
+    expect(await screen.findByText('Keep your product analytics honest')).toBeInTheDocument()
+    expect(screen.getByText('Design what should be tracked')).toBeInTheDocument()
+    expect(screen.getByText('Watch the real data')).toBeInTheDocument()
+    expect(screen.getByText('Stay in control')).toBeInTheDocument()
+    expect(
+      screen.getByText(/Ask a workspace owner or editor to create the first project/),
+    ).toBeInTheDocument()
+    expect(
+      screen.queryByRole('button', { name: /Generate demo project/i }),
+    ).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /New project/i })).not.toBeInTheDocument()
+  })
+
+  it('returns the stat band and header CTAs once the first project exists (tripl-odrj.1)', async () => {
+    mockSingleProject()
+
+    renderProjectsPage('owner')
+
+    expect(await screen.findByText('Beta')).toBeInTheDocument()
+    expect(screen.queryByText('Keep your product analytics honest')).not.toBeInTheDocument()
+    // Stat band is back.
+    expect(screen.getByText('Coverage')).toBeInTheDocument()
+    expect(screen.getByText('Review queue')).toBeInTheDocument()
+    // Header CTA pair is back — one instance of each, in the header only.
+    expect(screen.getAllByRole('button', { name: /Generate demo project/i })).toHaveLength(1)
+    expect(screen.getAllByRole('button', { name: /New project/i })).toHaveLength(1)
   })
 })

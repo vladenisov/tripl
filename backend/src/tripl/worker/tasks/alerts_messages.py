@@ -39,6 +39,7 @@ from tripl.models.event import Event, EventStatus
 from tripl.models.event_type import EventType
 from tripl.models.metric_anomaly import MetricAnomaly
 from tripl.models.metric_definition import MetricDefinition
+from tripl.models.plan_branch import BranchKind, PlanBranch
 from tripl.models.project import Project
 from tripl.models.scan_config import ScanConfig
 from tripl.models.schema_drift import SchemaDrift
@@ -493,6 +494,16 @@ def _build_plan_digest_message(
     window_from = now - timedelta(days=DIGEST_WINDOW_DAYS)
     dead_cutoff = now - timedelta(days=DEAD_EVENT_DAYS)
 
+    # Event counts are scoped to the MAIN plan branch, mirroring the API read
+    # paths (resolve_branch_id): an open working branch deep-copies every event
+    # row, so an unscoped count reports each event once per branch.
+    main_branch_id = session.scalar(
+        select(PlanBranch.id).where(
+            PlanBranch.project_id == project.id,
+            PlanBranch.kind == BranchKind.main.value,
+        )
+    )
+
     schema_drifts = session.execute(
         select(func.count(SchemaDrift.id))
         .join(EventType, EventType.id == SchemaDrift.event_type_id)
@@ -522,12 +533,14 @@ def _build_plan_digest_message(
     total_events = session.execute(
         select(func.count(Event.id)).where(
             Event.project_id == project.id,
+            Event.branch_id == main_branch_id,
             Event.status != "archived",
         )
     ).scalar_one()
     live_events = session.execute(
         select(func.count(Event.id)).where(
             Event.project_id == project.id,
+            Event.branch_id == main_branch_id,
             Event.status != "archived",
             Event.last_seen_at.is_not(None),
         )
@@ -535,6 +548,7 @@ def _build_plan_digest_message(
     dead_events = session.execute(
         select(func.count(Event.id)).where(
             Event.project_id == project.id,
+            Event.branch_id == main_branch_id,
             Event.status != "archived",
             Event.status.in_(["implemented", "live"]),
             (Event.last_seen_at.is_(None)) | (Event.last_seen_at < dead_cutoff),
@@ -543,6 +557,7 @@ def _build_plan_digest_message(
     sunset_overdue = session.execute(
         select(func.count(Event.id)).where(
             Event.project_id == project.id,
+            Event.branch_id == main_branch_id,
             Event.status == EventStatus.deprecated,
             Event.sunset_at.is_not(None),
             Event.sunset_at < now,

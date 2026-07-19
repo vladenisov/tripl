@@ -1,7 +1,9 @@
 /**
- * The two ways into the coached scenario (tripl-2su6.21.6): the welcome panel a
- * fresh demo lands on, and the tour — which shows the surfaces but makes nothing
- * happen on them.
+ * The two ways into the coached scenario (tripl-2su6.21.6, chapter picker in
+ * tripl-odrj.4): the welcome panel a fresh demo lands on, and the tour — which
+ * shows the surfaces but makes nothing happen on them. Both list every chapter
+ * with its status; picking one starts (or resumes) it and navigates to its
+ * first surface.
  *
  * Both must be invisible outside a ready demo: they are rendered in unit tests
  * and in real projects, where there is no scenario to start.
@@ -9,7 +11,7 @@
 
 import type { ReactNode } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { fireEvent, render, screen } from '@testing-library/react'
+import { fireEvent, render, screen, within } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom'
 import { metricsCatalogApi } from '@/api/metricsCatalogApi'
@@ -18,7 +20,8 @@ import type { MetricDefinitionDetailResponse, Project, ScanJob } from '@/types'
 import { DemoScenarioProvider } from './DemoScenarioProvider'
 import { DemoWelcomePanel } from './DemoWelcomePanel'
 import { ProductTour } from './ProductTour'
-import { readScenarioState, writeScenarioState, type ScenarioState } from './scenarioModel'
+import { CHAPTER_IDS, CHAPTER_TITLES, readScenarioState, writeScenarioState } from './scenarioModel'
+import { chapterState, liveLoopState } from './scenarioTestState'
 
 const SLUG = 'acme'
 
@@ -80,6 +83,11 @@ function renderWithScenario(ui: ReactNode, project: Project | undefined) {
 
 const path = () => screen.getByTestId('path').textContent
 
+/** The chapter picker rows, scoped so both hosts share the queries. */
+const picker = () => screen.getAllByRole('list', { name: 'Scenario chapters' })[0]
+const chapterRow = (title: string) =>
+  within(picker()).getByRole('button', { name: new RegExp(title) })
+
 beforeEach(() => {
   vi.spyOn(scansApi, 'getJob').mockResolvedValue(scanJob())
   vi.spyOn(metricsCatalogApi, 'get').mockResolvedValue({
@@ -93,57 +101,68 @@ afterEach(() => {
   window.localStorage.clear()
 })
 
-describe('DemoWelcomePanel — starting the scenario', () => {
-  it('starts the chain and lands the user on the first step', () => {
+describe('DemoWelcomePanel — the chapter picker', () => {
+  it('lists every chapter in order', () => {
     renderWithScenario(<DemoWelcomePanel project={demoProject()} />, demoProject())
 
-    fireEvent.click(screen.getByRole('button', { name: /Run the scenario/ }))
-
-    expect(path()).toBe(`/p/${SLUG}/settings/scans`)
-    expect(readScenarioState(SLUG)).toMatchObject({ status: 'active', step: 'run-scan' })
+    const rows = within(picker()).getAllByRole('button')
+    expect(rows).toHaveLength(CHAPTER_IDS.length)
+    expect(rows[0]).toHaveTextContent(CHAPTER_TITLES['live-loop'])
+    expect(rows[rows.length - 1]).toHaveTextContent(CHAPTER_TITLES.explore)
   })
 
-  it('restarts a scenario the user had already finished', () => {
-    const done: ScenarioState = { v: 1, status: 'completed', step: 'see-chart' }
-    writeScenarioState(SLUG, done)
+  it('shows each chapter’s status', () => {
+    writeScenarioState(SLUG, liveLoopState('live-loop/see-chart', { status: 'completed' }))
     renderWithScenario(<DemoWelcomePanel project={demoProject()} />, demoProject())
 
-    fireEvent.click(screen.getByRole('button', { name: /Run the scenario/ }))
-
-    expect(readScenarioState(SLUG)).toMatchObject({ status: 'active', step: 'run-scan' })
+    expect(chapterRow(CHAPTER_TITLES['live-loop'])).toHaveTextContent('Completed')
+    expect(chapterRow(CHAPTER_TITLES['edit-event'])).toHaveTextContent('Not started')
   })
 
-  it('restarts a scenario the user had dismissed', () => {
-    writeScenarioState(SLUG, { v: 1, status: 'dismissed', step: 'collect-metric' })
+  it('starts a chapter and lands the user on its first surface', () => {
     renderWithScenario(<DemoWelcomePanel project={demoProject()} />, demoProject())
 
-    fireEvent.click(screen.getByRole('button', { name: /Run the scenario/ }))
+    fireEvent.click(chapterRow(CHAPTER_TITLES.variables))
 
-    expect(readScenarioState(SLUG)).toMatchObject({ status: 'active', step: 'run-scan' })
+    expect(path()).toBe(`/p/${SLUG}/settings/variables`)
+    expect(readScenarioState(SLUG).activeChapter).toBe('variables')
+    expect(readScenarioState(SLUG).chapters.variables?.status).toBe('active')
   })
 
-  it('offers no scenario when there is none to run', () => {
+  it('resumes a dismissed chapter where it left off', () => {
+    writeScenarioState(SLUG, chapterState('branches', 'branches/review-diff', 'dismissed'))
+    renderWithScenario(<DemoWelcomePanel project={demoProject()} />, demoProject())
+
+    fireEvent.click(chapterRow(CHAPTER_TITLES.branches))
+
+    expect(readScenarioState(SLUG).chapters.branches).toMatchObject({
+      status: 'active',
+      step: 'branches/review-diff',
+    })
+  })
+
+  it('offers no chapters when there is no scenario', () => {
     renderWithScenario(
       <DemoWelcomePanel project={demoProject()} />,
       demoProject({ is_demo: false }),
     )
 
-    expect(screen.queryByRole('button', { name: /Run the scenario/ })).toBeNull()
+    expect(screen.queryByRole('list', { name: 'Scenario chapters' })).toBeNull()
     // The tour is still the way in.
     expect(screen.getByRole('button', { name: /Take the tour/ })).toBeInTheDocument()
   })
 })
 
-describe('ProductTour — handing off to the scenario', () => {
-  it('closes the dialog, starts the chain and opens the first step', () => {
+describe('ProductTour — handing off to a chapter', () => {
+  it('closes the dialog, starts the picked chapter and opens its first surface', () => {
     const onOpenChange = vi.fn()
     renderWithScenario(<ProductTour slug={SLUG} open onOpenChange={onOpenChange} />, demoProject())
 
-    fireEvent.click(screen.getByRole('button', { name: /Try it hands-on/ }))
+    fireEvent.click(chapterRow(CHAPTER_TITLES.reconcile))
 
     expect(onOpenChange).toHaveBeenCalledWith(false)
-    expect(path()).toBe(`/p/${SLUG}/settings/scans`)
-    expect(readScenarioState(SLUG)).toMatchObject({ status: 'active', step: 'run-scan' })
+    expect(path()).toBe(`/p/${SLUG}/reconciliation`)
+    expect(readScenarioState(SLUG).activeChapter).toBe('reconcile')
   })
 
   it('does not offer the hand-off outside a demo', () => {
@@ -152,7 +171,7 @@ describe('ProductTour — handing off to the scenario', () => {
       demoProject({ is_demo: false }),
     )
 
-    expect(screen.queryByRole('button', { name: /Try it hands-on/ })).toBeNull()
+    expect(screen.queryByRole('list', { name: 'Scenario chapters' })).toBeNull()
     // The tour itself is unchanged — the stepper still works.
     expect(screen.getByRole('button', { name: /Next/ })).toBeInTheDocument()
   })

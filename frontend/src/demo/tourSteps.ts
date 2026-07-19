@@ -150,5 +150,13 @@ export function buildTourSteps(slug: string): TourStep[] {
       blurb: 'Route anomalies to destinations and preview a simulated firing.',
       to: `${base}/settings/alerting`,
     },
+    {
+      id: 'search',
+      area: 'Observe',
+      title: 'Search by meaning',
+      blurb:
+        'Press Ctrl K (or ⌘K) and try "purchase funnel" or "money back" — semantic matches are marked.',
+      to: `${base}/overview`,
+    },
   ]
 }

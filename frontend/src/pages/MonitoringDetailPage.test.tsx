@@ -5,12 +5,13 @@ import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 import type { EventMetricPoint, Project } from '@/types'
 import { DemoScenarioProvider } from '@/demo/DemoScenarioProvider'
 import {
-  buildScenarioSteps,
+  buildChapterSteps,
   initialScenarioState,
   readScenarioState,
   writeScenarioState,
   type ScenarioState,
 } from '@/demo/scenarioModel'
+import { liveLoopState } from '@/demo/scenarioTestState'
 import MonitoringDetailPage from './MonitoringDetailPage'
 
 const { toastSuccess, toastError } = vi.hoisted(() => ({
@@ -1483,7 +1484,7 @@ describe('MonitoringDetailPage catalog-metric drilldown', () => {
   describe('coached demo scenario', () => {
     const SLUG = 'demo'
     const POLL_MS = 10
-    const STEPS = buildScenarioSteps(SLUG, initialScenarioState())
+    const STEPS = buildChapterSteps(SLUG, 'live-loop', initialScenarioState())
     const COLLECT_INSTRUCTION = STEPS[2].instruction
 
     function demoProject(overrides: Partial<Project> = {}): Project {
@@ -1500,12 +1501,9 @@ describe('MonitoringDetailPage catalog-metric drilldown', () => {
     }
 
     function collectMetricState(): ScenarioState {
-      return {
-        v: 1,
-        status: 'active',
-        step: 'collect-metric',
+      return liveLoopState('live-loop/collect-metric', {
         scan: { scanConfigId: 'sc-1', scanJobId: 'job-1', startedAt: Date.now() },
-      }
+      })
     }
 
     function renderWithScenario(project: Project) {
@@ -1542,7 +1540,7 @@ describe('MonitoringDetailPage catalog-metric drilldown', () => {
 
       fireEvent.click(await collectButton())
 
-      await waitFor(() => expect(readScenarioState(SLUG).metric?.metricId).toBe('metric-1'))
+      await waitFor(() => expect(readScenarioState(SLUG).chapters['live-loop']?.artifacts?.metricId).toBe('metric-1'))
     })
 
     it('marks Collect now while the collect step is the active one', async () => {
@@ -1563,7 +1561,7 @@ describe('MonitoringDetailPage catalog-metric drilldown', () => {
 
       // The collect still runs; the notify is inert and no mark is mounted.
       await waitFor(() => expect(screen.getByText('Collecting…')).toBeInTheDocument())
-      expect(readScenarioState(SLUG).metric).toBeUndefined()
+      expect(readScenarioState(SLUG).chapters['live-loop']?.artifacts?.metricId).toBeUndefined()
       expect(callouts()).toHaveLength(0)
       expect(screen.queryByText(COLLECT_INSTRUCTION)).not.toBeInTheDocument()
     })
