@@ -1,0 +1,159 @@
+"""Event catalog tools: list, fetch, create, update."""
+
+from __future__ import annotations
+
+from typing import Any
+
+from mcp.server.fastmcp import Context, FastMCP
+
+from tripl_mcp.client import with_mutation_warnings
+from tripl_mcp.runtime import client_for, require_branch_id
+from tripl_mcp.tools._common import EVENT_LIST_FIELDS, READ_ONLY, WRITE, WRITE_UPDATE, trim
+
+
+async def list_events(
+    slug: str,
+    ctx: Context,  # type: ignore[type-arg]
+    search: str | None = None,
+    status: list[str] | None = None,
+    tag: str | None = None,
+    meta_value: str | None = None,
+    event_type_id: str | None = None,
+    silent_since_days: int | None = None,
+    offset: int | None = None,
+    limit: int | None = None,
+    branch_id: str | None = None,
+) -> dict[str, Any]:
+    client = client_for(ctx)
+    data = await client.get(
+        f"/projects/{slug}/events",
+        params={
+            "search": search,
+            "status": status,
+            "tag": tag,
+            "meta_value": meta_value,
+            "event_type_id": event_type_id,
+            "silent_since_days": silent_since_days,
+            "offset": offset,
+            "limit": limit,
+            "branch": branch_id,
+        },
+    )
+    items = data.get("items", []) if isinstance(data, dict) else []
+    return {
+        "items": [trim(item, EVENT_LIST_FIELDS) for item in items],
+        "total": data.get("total") if isinstance(data, dict) else None,
+        "note": "Items are trimmed; use get_event for field/meta values and full detail.",
+    }
+
+
+async def get_event(
+    slug: str,
+    event_id: str,
+    ctx: Context,  # type: ignore[type-arg]
+    branch_id: str | None = None,
+) -> Any:
+    client = client_for(ctx)
+    return await client.get(
+        f"/projects/{slug}/events/{event_id}", params={"branch": branch_id}
+    )
+
+
+async def create_event(
+    slug: str,
+    branch_id: str | None,
+    event_type_id: str,
+    name: str,
+    ctx: Context,  # type: ignore[type-arg]
+    description: str | None = None,
+    status: str | None = None,
+    tags: list[str] | None = None,
+    field_values: list[dict[str, Any]] | None = None,
+    meta_values: list[dict[str, Any]] | None = None,
+) -> Any:
+    require_branch_id(branch_id)
+    body: dict[str, Any] = {"event_type_id": event_type_id, "name": name}
+    for key, value in (
+        ("description", description),
+        ("status", status),
+        ("tags", tags),
+        ("field_values", field_values),
+        ("meta_values", meta_values),
+    ):
+        if value is not None:
+            body[key] = value
+    client = client_for(ctx)
+    data = await client.post(
+        f"/projects/{slug}/events", params={"branch": branch_id}, json_body=body
+    )
+    return with_mutation_warnings(data)
+
+
+async def update_event(
+    slug: str,
+    event_id: str,
+    branch_id: str | None,
+    patch: dict[str, Any],
+    ctx: Context,  # type: ignore[type-arg]
+) -> Any:
+    require_branch_id(branch_id)
+    client = client_for(ctx)
+    data = await client.patch(
+        f"/projects/{slug}/events/{event_id}",
+        params={"branch": branch_id},
+        json_body=patch,
+    )
+    return with_mutation_warnings(data)
+
+
+def register(mcp: FastMCP) -> None:
+    mcp.tool(
+        name="list_events",
+        annotations=READ_ONLY,
+        description=(
+            "List catalog events with structured filters (substring 'search' over "
+            "name/description, repeatable lifecycle 'status' values draft/in_review/"
+            "ready_for_dev/implemented/live/deprecated/archived, exact 'tag', "
+            "'meta_value' e.g. a ticket key, 'event_type_id', 'silent_since_days'). "
+            "Returns trimmed items + total; follow up with get_event for full detail. "
+            "Requires a tk_r_ or tk_w_ key."
+        ),
+    )(list_events)
+    mcp.tool(
+        name="get_event",
+        annotations=READ_ONLY,
+        description=(
+            "Fetch one event's full canonical detail by id: field values, meta values, "
+            "tags, lifecycle state, event type brief, and variable value contexts. "
+            "Use after search_plan/list_events; treat the returned name/id as "
+            "canonical. Requires a tk_r_ or tk_w_ key."
+        ),
+    )(get_event)
+    mcp.tool(
+        name="create_event",
+        annotations=WRITE,
+        description=(
+            "WRITE: create an event (needs a tk_w_ key backed by an editor/owner). "
+            "branch_id is REQUIRED so the draft lands on a working branch, never on "
+            "the live main plan by accident (list_branches to find one). Read the "
+            "response: when a scan naming rule governs the event type, the server "
+            "derives the canonical name from field values and may ignore yours with "
+            "a warning — adopt the returned name/id. Dry-run mindset: read the "
+            "catalog first and prefer updating an existing event over creating a "
+            "near-duplicate."
+        ),
+    )(create_event)
+    mcp.tool(
+        name="update_event",
+        annotations=WRITE_UPDATE,
+        description=(
+            "WRITE: partially update an event (needs a tk_w_ key backed by an "
+            "editor/owner). branch_id is REQUIRED to avoid accidental edits to the "
+            "live main plan. 'patch' takes any subset of: name, description, status, "
+            "sunset_at, owner_id, reviewed, metric_breakdown_columns, tags, "
+            "field_values, meta_values. WARNING: 'field_values' and 'meta_values' "
+            "are FULL-LIST REPLACEMENTS — sending a partial list deletes the missing "
+            "entries. For narrow edits patch only description/name/tags/state. Read "
+            "response warnings and adopt the server-canonical name/id."
+        ),
+    )(update_event)
