@@ -86,7 +86,7 @@ Add the same block under `mcpServers` in `claude_desktop_config.json`:
 Running from a source checkout instead of an installed package:
 
 ```bash
-uv run --directory /path/to/tripl/mcp-server tripl-mcp --transport stdio
+uv run --project /path/to/tripl/mcp-server tripl-mcp --transport stdio
 ```
 
 ## Running over streamable HTTP
@@ -124,13 +124,13 @@ treat them as safe to auto-approve.
 |------|-----------|-----------|
 | `search_plan` | `slug, q, types?, limit?, branch_id?` | `GET /projects/{slug}/search` |
 | `list_events` | `slug, search?, status?, tag?, meta_value?, event_type_id?, silent_since_days?, offset?, limit?, branch_id?` | `GET /projects/{slug}/events` |
-| `get_event` | `slug, event_id, branch_id?` | `GET /projects/{slug}/events/{id}` |
+| `get_event` | `slug, event_id, branch_id?` | `GET /projects/{slug}/events/{event_id}` |
 | `list_event_types` | `slug` | `GET /projects/{slug}/event-types` |
 | `get_event_type_fields` | `slug, event_type_id` | Event type + its field definitions, merged |
 | `list_variables` | `slug, branch_id?` | `GET /projects/{slug}/variables` |
 | `get_variable_values` | `slug, variable_id, branch_id?` | Variable values + event overrides |
 | `list_branches` | `slug` | `GET /projects/{slug}/branches` |
-| `get_branch_diff` | `slug, branch_id` | `GET /projects/{slug}/branches/{id}/diff` |
+| `get_branch_diff` | `slug, branch_id` | `GET /projects/{slug}/branches/{branch_id}/diff` |
 | `list_scans` | `slug` | `GET /projects/{slug}/scans` |
 | `get_scan_status` | `slug, scan_id, job_id?` | Scan job listing, or one job when `job_id` is given |
 | `monitors_summary` | `slug` | Monitors summary + top anomaly signals, combined |
@@ -151,7 +151,7 @@ Every write tool states in its description that it needs a `tk_w_` key; with a
 | Tool | Arguments | Backed by |
 |------|-----------|-----------|
 | `create_event` | `slug, branch_id, event_type_id, name, description?, status?, tags?, field_values?, meta_values?` | `POST /projects/{slug}/events` |
-| `update_event` | `slug, event_id, branch_id, patch{...}` | `PATCH /projects/{slug}/events/{id}` |
+| `update_event` | `slug, event_id, branch_id, patch{...}` | `PATCH /projects/{slug}/events/{event_id}` |
 | `trigger_scan` | `slug, scan_id` | `POST /projects/{slug}/scans/{scan_id}/run` |
 
 :::warning
