@@ -120,15 +120,15 @@ export function RuleReplayDialog({
 
   return (
     <Dialog open={open} onOpenChange={handleOpenChange}>
-      <DialogContent className="max-w-2xl">
-        <DialogHeader>
+      <DialogContent className="flex max-h-[calc(100vh-2rem)] w-[calc(100vw-2rem)] max-w-4xl min-w-0 flex-col overflow-hidden">
+        <DialogHeader className="shrink-0">
           <DialogTitle className="flex items-center gap-2">
             <History className="h-4 w-4" />
             Replay rule “{rule.name}”
           </DialogTitle>
         </DialogHeader>
 
-        <div className="space-y-3">
+        <div className="min-h-0 min-w-0 flex-1 space-y-3 overflow-y-auto pr-1">
           <div className="flex flex-wrap items-end gap-3">
             <div className="space-y-1">
               <div className="text-[11px] uppercase tracking-wide text-muted-foreground" aria-hidden="true">
@@ -225,23 +225,28 @@ export function RuleReplayDialog({
                 </div>
               ) : (
                 displayResult && (
-                  <div className="max-h-72 overflow-auto rounded-md border">
-                    <table className="w-full text-left text-xs">
+                  // A focusable named scroll region lets keyboard users reach columns
+                  // that sit beyond a narrow viewport.
+                  // eslint-disable-next-line jsx-a11y/no-noninteractive-tabindex -- Intentional scroll target.
+                  <div role="region" aria-label="Replay firings" tabIndex={0}
+                    className="max-h-72 min-w-0 max-w-full overflow-x-auto overflow-y-auto rounded-md border"
+                  >
+                    <table className="w-full min-w-[720px] table-fixed text-left text-xs">
                       <thead className="bg-muted/50 text-muted-foreground">
                         <tr>
-                          <th className="px-3 py-2 font-medium">When</th>
-                          <th className="px-3 py-2 font-medium">Scope</th>
-                          <th className="px-3 py-2 font-medium">Dir</th>
-                          <th className="px-3 py-2 text-right font-medium">Actual</th>
-                          <th className="px-3 py-2 text-right font-medium">Expected</th>
-                          <th className="px-3 py-2 text-right font-medium">Δ%</th>
+                          <th className="w-40 px-3 py-2 font-medium">When</th>
+                          <th className="w-64 px-3 py-2 font-medium">Scope</th>
+                          <th className="w-20 px-3 py-2 font-medium">Dir</th>
+                          <th className="w-20 px-3 py-2 text-right font-medium">Actual</th>
+                          <th className="w-24 px-3 py-2 text-right font-medium">Expected</th>
+                          <th className="w-16 px-3 py-2 text-right font-medium">Δ%</th>
                         </tr>
                       </thead>
                       <tbody>
                         {displayResult.firings.map((firing) => (
                           <tr key={firing.anomaly_id} className="border-t">
-                            <td className="px-3 py-1.5 font-mono">{formatDateTime(firing.bucket)}</td>
-                            <td className="px-3 py-1.5 truncate" title={firing.scope_name}>
+                            <td className="whitespace-nowrap px-3 py-1.5 font-mono">{formatDateTime(firing.bucket)}</td>
+                            <td className="truncate px-3 py-1.5" title={firing.scope_name}>
                               <span className="text-muted-foreground">{firing.scope_type}</span>{' '}
                               {firing.scope_name}
                               {firing.drift_field && (
@@ -274,11 +279,11 @@ export function RuleReplayDialog({
               )}
 
               {displayResult?.rendered_message && (
-                <div className="space-y-1">
+                <div className="min-w-0 space-y-1">
                   <div className="text-[11px] uppercase tracking-wide text-muted-foreground">
                     Preview (as it would render to {result.saved.firings[0]?.scope_type ? 'destination' : 'Slack/Telegram'})
                   </div>
-                  <pre className="max-h-48 overflow-auto whitespace-pre-wrap rounded-md border bg-muted/30 px-3 py-2 font-mono text-[11px]">
+                  <pre className="max-h-48 min-w-0 max-w-full overflow-auto whitespace-pre-wrap rounded-md border bg-muted/30 px-3 py-2 font-mono text-[11px] [overflow-wrap:anywhere]">
                     {displayResult.rendered_message}
                   </pre>
                 </div>
@@ -287,7 +292,7 @@ export function RuleReplayDialog({
           )}
         </div>
 
-        <DialogFooter>
+        <DialogFooter className="shrink-0">
           <Button variant="outline" onClick={() => handleOpenChange(false)}>
             Close
           </Button>

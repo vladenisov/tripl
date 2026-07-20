@@ -340,6 +340,8 @@ export function EventForm({
   const editFieldCoachStep = scenarioStep.id === 'edit-event/set-token'
     ? 'edit-event/set-token'
     : 'edit-event/set-value'
+  const editFieldCoachActive =
+    scenarioStep.id === 'edit-event/set-value' || scenarioStep.id === 'edit-event/set-token'
 
   // Reconcile the coach with the controlled value. A restored form, browser
   // autofill, or a missed input callback must not leave a satisfied step stuck.
@@ -649,7 +651,13 @@ export function EventForm({
                   step={editFieldCoachStep}
                   when={f.name === SCENARIO_SEEDED.editedFieldName}
                 >
-                  <div>
+                  <div
+                    className={
+                      editFieldCoachActive && f.name === SCENARIO_SEEDED.editedFieldName
+                        ? 'max-w-[320px]'
+                        : undefined
+                    }
+                  >
                     <FieldValueControl
                       field={f}
                       inputId={`field-${f.id}`}

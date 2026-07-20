@@ -87,6 +87,22 @@ const JSON_TEMPLATE_EVENT_TYPE = {
   ],
 } as unknown as EventType
 
+const JSON_PRODUCT_ID_EVENT_TYPE = {
+  ...EVENT_TYPE,
+  field_definitions: [
+    {
+      id: 'field-json-product-id',
+      event_type_id: 'et-1',
+      name: 'product_id',
+      display_name: 'Product ID',
+      field_type: 'json',
+      is_required: false,
+      enum_options: null,
+      order: 0,
+    },
+  ],
+} as unknown as EventType
+
 const TEMPLATE_VARIABLE: Variable = {
   id: 'var-1',
   project_id: 'project-1',
@@ -199,6 +215,14 @@ describe('EventForm name field', () => {
 })
 
 describe('EventForm template authoring', () => {
+  it('does not constrain an uncoached JSON field merely because it is named product_id', () => {
+    renderForm(null, { eventTypes: [JSON_PRODUCT_ID_EVENT_TYPE] })
+
+    expect(
+      screen.getByLabelText('Product ID').closest('[class~="max-w-[320px]"]'),
+    ).toBeNull()
+  })
+
   it('shows rich ${ suggestions, inline unknown-token warnings, and copyable documented values', () => {
     const writeText = vi.fn().mockResolvedValue(undefined)
     Object.defineProperty(navigator, 'clipboard', {
@@ -393,6 +417,10 @@ describe('EventForm — coached demo scenario (tripl-odrj.4)', () => {
     const productId = screen.getByLabelText('Product ID')
     expect(productId).toHaveAttribute('role', 'combobox')
     expect(productId).toHaveValue('${product_id}')
+    const coachTarget = productId.closest('[data-coach-target="edit-event/set-value"]')
+    expect(coachTarget).not.toBeNull()
+    expect(coachTarget).toHaveClass('max-w-[320px]')
+    expect(coachTarget).toContainElement(productId)
     expect(
       screen.getByText(
         'Replace the current Product ID value with prod_monthly. The guide advances automatically — do not save yet.',
