@@ -20,6 +20,27 @@ DEFAULT_TIMEOUT_SECONDS = 30.0
 USER_AGENT = f"tripl-mcp/{__version__}"
 
 
+def create_http_client(
+    base_url: str,
+    api_key: str,
+    timeout: float = DEFAULT_TIMEOUT_SECONDS,
+) -> httpx.AsyncClient:
+    """Create one configured transport client.
+
+    Stdio owns this client for the FastMCP server lifespan. Streamable HTTP and
+    direct ``TriplClient`` callers create it for one invocation instead.
+    """
+    return httpx.AsyncClient(
+        base_url=base_url.rstrip("/") + API_PREFIX,
+        headers={
+            "Authorization": f"Bearer {api_key}",
+            "User-Agent": USER_AGENT,
+        },
+        timeout=timeout,
+        follow_redirects=True,
+    )
+
+
 def _detail_of(response: httpx.Response) -> Any:
     """Best-effort extraction of FastAPI's ``detail`` from an error body."""
     try:
@@ -83,20 +104,37 @@ def with_mutation_warnings(data: Any) -> Any:
 
 
 class TriplClient:
-    """One-invocation client: base URL + Authorization header injection."""
+    """REST wrapper that can borrow a lifespan-owned HTTP connection pool."""
 
     def __init__(
         self,
         base_url: str,
         api_key: str,
         timeout: float = DEFAULT_TIMEOUT_SECONDS,
+        http_client: httpx.AsyncClient | None = None,
     ) -> None:
-        self._base_url = base_url.rstrip("/") + API_PREFIX
-        self._headers = {
-            "Authorization": f"Bearer {api_key}",
-            "User-Agent": USER_AGENT,
-        }
+        self._root_url = base_url.rstrip("/")
+        self._base_url = self._root_url + API_PREFIX
+        self._api_key = api_key
         self._timeout = timeout
+        self._http_client = http_client
+
+    async def _send(
+        self,
+        method: str,
+        path: str,
+        *,
+        params: dict[str, Any],
+        json_body: Any | None,
+    ) -> httpx.Response:
+        if self._http_client is not None:
+            return await self._http_client.request(method, path, params=params, json=json_body)
+        async with create_http_client(
+            base_url=self._root_url,
+            api_key=self._api_key,
+            timeout=self._timeout,
+        ) as client:
+            return await client.request(method, path, params=params, json=json_body)
 
     async def request(
         self,
@@ -108,15 +146,7 @@ class TriplClient:
     ) -> Any:
         clean_params = {k: v for k, v in (params or {}).items() if v is not None}
         try:
-            async with httpx.AsyncClient(
-                base_url=self._base_url,
-                headers=self._headers,
-                timeout=self._timeout,
-                follow_redirects=True,
-            ) as client:
-                response = await client.request(
-                    method, path, params=clean_params, json=json_body
-                )
+            response = await self._send(method, path, params=clean_params, json_body=json_body)
         except httpx.HTTPError as exc:
             raise ToolError(
                 f"Could not reach the tripl API at {self._base_url}: {exc!r}. "

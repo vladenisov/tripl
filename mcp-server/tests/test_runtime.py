@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, cast
 
 import httpx
 import pytest
@@ -21,6 +21,7 @@ from tripl_mcp.runtime import (
     ALLOW_MAIN_ENV,
     TRANSPORT_STREAMABLE_HTTP,
     Runtime,
+    client_for,
     configure,
     ensure_branch_not_main,
     extract_bearer_token,
@@ -92,15 +93,11 @@ class TestResolveApiKey:
         with pytest.raises(ToolError, match="Authorization: Bearer"):
             resolve_api_key(ctx)
 
-    def test_http_without_request_object_gets_clear_error(
-        self, http_runtime: Runtime
-    ) -> None:
+    def test_http_without_request_object_gets_clear_error(self, http_runtime: Runtime) -> None:
         with pytest.raises(ToolError, match="Authorization: Bearer"):
             resolve_api_key(_StubContext())
 
-    def test_http_forwards_bearer_from_real_fastmcp_context(
-        self, http_runtime: Runtime
-    ) -> None:
+    def test_http_forwards_bearer_from_real_fastmcp_context(self, http_runtime: Runtime) -> None:
         """Drift guard: exercise the ctx.request_context.request.headers path
         against the REAL FastMCP/mcp/starlette classes instead of stubs, so an
         mcp dependency bump that moves the request attribute fails this test
@@ -116,17 +113,43 @@ class TestResolveApiKey:
                 "headers": [(b"authorization", b"Bearer tk_r_real")],
             }
         )
-        request_context = RequestContext(
+        request_context: RequestContext[Any, None, Request] = RequestContext(
             request_id=1,
             meta=None,
-            session=None,
+            session=cast(Any, None),
             lifespan_context=None,
             request=request,
         )
-        ctx = Context(request_context=request_context)  # type: ignore[type-arg,var-annotated]
+        ctx: Context[Any, None, Request] = Context(request_context=request_context)
 
         # Act / Assert
         assert resolve_api_key(ctx) == "tk_r_real"
+
+
+class TestClientFor:
+    def test_http_mode_keeps_per_invocation_clients(self, http_runtime: Runtime) -> None:
+        first = client_for(
+            _StubContext(
+                request_context=_StubRequestContext(
+                    request=_StubRequest(headers={"authorization": "Bearer tk_r_first"})
+                )
+            )
+        )
+        second = client_for(
+            _StubContext(
+                request_context=_StubRequestContext(
+                    request=_StubRequest(headers={"authorization": "Bearer tk_r_second"})
+                )
+            )
+        )
+
+        assert first is not second
+        assert first._http_client is None
+        assert second._http_client is None
+
+    def test_stdio_mode_requires_lifespan_client(self, stdio_runtime: Runtime) -> None:
+        with pytest.raises(ToolError, match="server lifespan"):
+            client_for(_StubContext())
 
 
 class TestEnsureBranchNotMain:
@@ -190,9 +213,7 @@ class TestRequireBranchId:
 
         require_branch_id(None)
 
-    def test_allow_main_falsy_values_still_block(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_allow_main_falsy_values_still_block(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv(ALLOW_MAIN_ENV, "0")
 
         with pytest.raises(ToolError, match="branch_id is required"):

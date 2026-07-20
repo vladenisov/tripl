@@ -16,6 +16,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 
+import httpx
 from mcp.server.fastmcp.exceptions import ToolError
 
 from tripl_mcp.client import TriplClient
@@ -33,6 +34,13 @@ class Runtime:
     base_url: str
     transport: str
     api_key: str | None = None
+
+
+@dataclass(frozen=True)
+class RuntimeLifespan:
+    """Resources owned by one FastMCP server lifespan."""
+
+    stdio_http_client: httpx.AsyncClient | None = None
 
 
 _runtime: Runtime | None = None
@@ -90,9 +98,25 @@ def resolve_api_key(ctx: Any) -> str:
 
 
 def client_for(ctx: Any) -> TriplClient:
-    """Build a client bound to this invocation's credentials."""
+    """Build a REST wrapper around the transport-appropriate HTTP client."""
     runtime = get_runtime()
-    return TriplClient(base_url=runtime.base_url, api_key=resolve_api_key(ctx))
+    api_key = resolve_api_key(ctx)
+    http_client: httpx.AsyncClient | None = None
+    if runtime.transport == TRANSPORT_STDIO:
+        try:
+            lifespan = ctx.request_context.lifespan_context
+        except (AttributeError, ValueError) as exc:
+            raise ToolError(
+                "The stdio HTTP client is unavailable outside the FastMCP server lifespan."
+            ) from exc
+        http_client = getattr(lifespan, "stdio_http_client", None)
+        if not isinstance(http_client, httpx.AsyncClient):
+            raise ToolError("The stdio HTTP client was not initialized by the server lifespan.")
+    return TriplClient(
+        base_url=runtime.base_url,
+        api_key=api_key,
+        http_client=http_client,
+    )
 
 
 def is_main_write_allowed() -> bool:
@@ -116,9 +140,7 @@ def require_branch_id(branch_id: str | None) -> None:
     )
 
 
-async def ensure_branch_not_main(
-    client: TriplClient, slug: str, branch_id: str | None
-) -> None:
+async def ensure_branch_not_main(client: TriplClient, slug: str, branch_id: str | None) -> None:
     """Refuse plan mutations that target the main branch via its explicit id.
 
     ``require_branch_id`` catches the *missing* branch_id path; this closes the

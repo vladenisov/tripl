@@ -54,9 +54,7 @@ async def get_event(
     branch_id: str | None = None,
 ) -> Any:
     client = client_for(ctx)
-    return await client.get(
-        f"/projects/{slug}/events/{event_id}", params={"branch": branch_id}
-    )
+    return await client.get(f"/projects/{slug}/events/{event_id}", params={"branch": branch_id})
 
 
 async def create_event(

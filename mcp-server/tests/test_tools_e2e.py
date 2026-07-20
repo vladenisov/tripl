@@ -11,6 +11,7 @@ import respx
 from mcp.shared.memory import create_connected_server_and_client_session
 
 from tests.conftest import API_BASE
+from tripl_mcp import server as server_module
 from tripl_mcp.runtime import ALLOW_MAIN_ENV, Runtime
 from tripl_mcp.server import build_server
 
@@ -18,14 +19,59 @@ from tripl_mcp.server import build_server
 async def call_tool(name: str, arguments: dict[str, Any]) -> tuple[bool, str]:
     """Call one tool over an in-memory client/server session pair."""
     mcp = build_server()
-    async with create_connected_server_and_client_session(
-        mcp._mcp_server
-    ) as client_session:
+    async with create_connected_server_and_client_session(mcp._mcp_server) as client_session:
         result = await client_session.call_tool(name, arguments)
-    text = "\n".join(
-        block.text for block in result.content if hasattr(block, "text")
-    )
+    text = "\n".join(block.text for block in result.content if hasattr(block, "text"))
     return bool(result.isError), text
+
+
+@respx.mock
+async def test_stdio_lifespan_reuses_one_http_client(
+    stdio_runtime: Runtime, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """One stdio server session owns one pool and closes it on shutdown."""
+    clients: list[httpx.AsyncClient] = []
+
+    def create_tracking_client(base_url: str, api_key: str, timeout: float) -> httpx.AsyncClient:
+        client = httpx.AsyncClient(
+            base_url=f"{base_url.rstrip('/')}/api/v1",
+            headers={"Authorization": f"Bearer {api_key}"},
+            timeout=timeout,
+            follow_redirects=True,
+        )
+        clients.append(client)
+        return client
+
+    monkeypatch.setattr(server_module, "create_http_client", create_tracking_client)
+    route = respx.get(f"{API_BASE}/projects").mock(
+        return_value=httpx.Response(200, json=[{"slug": "demo"}])
+    )
+
+    mcp = build_server()
+    async with create_connected_server_and_client_session(mcp._mcp_server) as client_session:
+        first = await client_session.call_tool("list_projects", {})
+        second = await client_session.call_tool("list_projects", {})
+
+        assert not first.isError
+        assert not second.isError
+        assert len(clients) == 1
+        assert not clients[0].is_closed
+        assert route.call_count == 2
+
+    assert clients[0].is_closed
+
+    second_server = build_server()
+    async with create_connected_server_and_client_session(
+        second_server._mcp_server
+    ) as client_session:
+        result = await client_session.call_tool("list_projects", {})
+
+        assert not result.isError
+        assert len(clients) == 2
+        assert clients[1] is not clients[0]
+        assert not clients[1].is_closed
+
+    assert all(client.is_closed for client in clients)
 
 
 @respx.mock
@@ -52,9 +98,7 @@ async def test_read_tool_search_plan_end_to_end(stdio_runtime: Runtime) -> None:
     )
 
     # Act
-    is_error, text = await call_tool(
-        "search_plan", {"slug": "demo", "q": "purchase", "limit": 5}
-    )
+    is_error, text = await call_tool("search_plan", {"slug": "demo", "q": "purchase", "limit": 5})
 
     # Assert
     assert not is_error
@@ -102,9 +146,7 @@ async def test_write_tool_update_event_end_to_end(stdio_runtime: Runtime) -> Non
     assert "scan naming rule" in text
     request = route.calls.last.request
     assert "branch=b-42" in str(request.url)
-    assert json.loads(request.content) == {
-        "description": "Fired after checkout succeeds."
-    }
+    assert json.loads(request.content) == {"description": "Fired after checkout succeeds."}
 
 
 @respx.mock
@@ -235,9 +277,7 @@ async def test_allow_main_env_permits_branchless_write(
 @respx.mock
 async def test_403_surfaces_scope_guidance_through_mcp(stdio_runtime: Runtime) -> None:
     respx.get(f"{API_BASE}/projects").mock(
-        return_value=httpx.Response(
-            403, json={"detail": "API key is scoped to a single project"}
-        )
+        return_value=httpx.Response(403, json={"detail": "API key is scoped to a single project"})
     )
 
     is_error, text = await call_tool("list_projects", {})

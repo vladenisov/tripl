@@ -23,8 +23,7 @@ OPENAPI_PATH = Path(__file__).resolve().parents[2] / "backend" / "openapi.json"
 @pytest.fixture(scope="module")
 def openapi_paths() -> dict[str, Any]:
     assert OPENAPI_PATH.exists(), (
-        f"Committed OpenAPI snapshot missing at {OPENAPI_PATH}; "
-        "the contract test cannot run."
+        f"Committed OpenAPI snapshot missing at {OPENAPI_PATH}; the contract test cannot run."
     )
     spec = json.loads(OPENAPI_PATH.read_text())
     return dict(spec["paths"])

@@ -9,15 +9,20 @@ from __future__ import annotations
 import argparse
 import os
 import sys
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 
 from mcp.server.fastmcp import FastMCP
 
 from tripl_mcp import __version__
+from tripl_mcp.client import DEFAULT_TIMEOUT_SECONDS, create_http_client
 from tripl_mcp.runtime import (
     TRANSPORT_STDIO,
     TRANSPORT_STREAMABLE_HTTP,
     Runtime,
+    RuntimeLifespan,
     configure,
+    get_runtime,
 )
 from tripl_mcp.tools import register_all
 
@@ -32,8 +37,26 @@ INSTRUCTIONS = (
 )
 
 
-def build_server() -> FastMCP:
-    mcp = FastMCP(name="tripl", instructions=INSTRUCTIONS)
+@asynccontextmanager
+async def server_lifespan(
+    _: FastMCP[RuntimeLifespan],
+) -> AsyncIterator[RuntimeLifespan]:
+    runtime = get_runtime()
+    if runtime.transport != TRANSPORT_STDIO:
+        yield RuntimeLifespan()
+        return
+    if runtime.api_key is None:
+        raise RuntimeError("TRIPL_API_KEY is required for the stdio server lifespan")
+    async with create_http_client(
+        runtime.base_url, runtime.api_key, DEFAULT_TIMEOUT_SECONDS
+    ) as http_client:
+        yield RuntimeLifespan(stdio_http_client=http_client)
+
+
+def build_server() -> FastMCP[RuntimeLifespan]:
+    mcp: FastMCP[RuntimeLifespan] = FastMCP(
+        name="tripl", instructions=INSTRUCTIONS, lifespan=server_lifespan
+    )
     register_all(mcp)
     return mcp
 

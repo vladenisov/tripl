@@ -59,9 +59,7 @@ async def test_401_maps_to_invalid_key_error() -> None:
 @respx.mock
 async def test_403_maps_to_scope_error_with_api_detail() -> None:
     respx.get(f"{API_BASE}/projects").mock(
-        return_value=httpx.Response(
-            403, json={"detail": "API key is scoped to a single project"}
-        )
+        return_value=httpx.Response(403, json={"detail": "API key is scoped to a single project"})
     )
 
     with pytest.raises(ToolError, match="scoped to a single project"):
@@ -80,9 +78,7 @@ async def test_404_carries_api_detail() -> None:
 
 @respx.mock
 async def test_422_carries_validation_detail_verbatim() -> None:
-    detail = [
-        {"loc": ["body", "name"], "msg": "field required", "type": "value_error.missing"}
-    ]
+    detail = [{"loc": ["body", "name"], "msg": "field required", "type": "value_error.missing"}]
     respx.post(f"{API_BASE}/projects/demo/events").mock(
         return_value=httpx.Response(422, json={"detail": detail})
     )
