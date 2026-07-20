@@ -25,12 +25,12 @@
 
 import { useCallback, useMemo, useState, type ReactNode } from 'react'
 import { useLocation } from 'react-router-dom'
-import { useQuery } from '@tanstack/react-query'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { ApiError } from '@/api/client'
 import { metricsCatalogApi } from '@/api/metricsCatalogApi'
 import { scansApi } from '@/api/scans'
 import { getMetricMonitoringPath } from '@/lib/monitoring'
-import type { Project } from '@/types'
+import type { Project, ScanJob } from '@/types'
 import {
   CoachPresenceContext,
   DemoScenarioActionsContext,
@@ -87,6 +87,14 @@ function isNotFound(error: unknown): boolean {
   return error instanceof ApiError && error.status === 404
 }
 
+function syncWatchedJob(current: ScanJob[] | undefined, job: ScanJob): ScanJob[] {
+  if (!current) return [job]
+  const found = current.some(candidate => candidate.id === job.id)
+  return found
+    ? current.map(candidate => candidate.id === job.id ? job : candidate)
+    : [job, ...current]
+}
+
 export function DemoScenarioProvider({
   project,
   pollIntervalMs,
@@ -94,6 +102,7 @@ export function DemoScenarioProvider({
 }: DemoScenarioProviderProps) {
   const slug = project?.slug
   const location = useLocation()
+  const queryClient = useQueryClient()
 
   // A demo that is still seeding has nothing to coach yet; a project that is not
   // a demo never does. `generation_status` is absent on older payloads, where a
@@ -154,6 +163,20 @@ export function DemoScenarioProvider({
       if (!slug || !scanTarget) return null
       try {
         const job = await scansApi.getJob(slug, scanTarget.scanConfigId, scanTarget.scanJobId)
+        // The scan page renders a separate list query whose fallback polling is
+        // intentionally disabled while realtime is live. Mirror this exact-job
+        // response into that cache so a missed terminal SSE event cannot leave
+        // the same tab showing Running after the coach has already advanced.
+        const terminal =
+          job.status === 'completed' || job.status === 'failed' || job.status === 'cancelled'
+        if (terminal) {
+          const listKey = ['scanJobs', slug, scanTarget.scanConfigId] as const
+          queryClient.setQueryData<ScanJob[]>(listKey, current => syncWatchedJob(current, job))
+          // Populate an absent cache immediately, then refresh the complete list
+          // from the now-committed backend state. This also cancels any older
+          // in-flight snapshot that could otherwise land as Running afterwards.
+          void queryClient.invalidateQueries({ queryKey: listKey, exact: true })
+        }
         if (job.status === 'completed') dispatch({ type: 'scanSettled', outcome: 'completed' })
         else if (job.status === 'failed') dispatch({ type: 'scanSettled', outcome: 'failed' })
         else if (job.status === 'cancelled') dispatch({ type: 'scanSettled', outcome: 'cancelled' })

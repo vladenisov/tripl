@@ -139,6 +139,26 @@ describe('useProjectEventStream', () => {
     expect(MockEventSource.instances[1].url).toContain('last_event_id=9')
   })
 
+  it('starts a fresh cursor and event sequence after switching projects', () => {
+    const { wrapper, invalidateSpy } = makeWrapper()
+    const { rerender } = renderHook(({ slug }) => useProjectEventStream(slug), {
+      wrapper,
+      initialProps: { slug: 'demo-a' },
+    })
+    const first = MockEventSource.instances[0]
+
+    act(() => first.emit('scan_job.updated', '{}', '9'))
+    rerender({ slug: 'demo-b' })
+
+    expect(first.closed).toBe(true)
+    const second = MockEventSource.instances[1]
+    expect(second.url).toContain('/api/v1/projects/demo-b/events/stream')
+    expect(second.url).not.toContain('last_event_id=9')
+
+    act(() => second.emit('scan_job.updated', '{}', '1'))
+    expect(invalidateCallsFor(invalidateSpy, ['scans', 'demo-b'])).toBe(1)
+  })
+
   it('closes the stream on unmount', () => {
     const { wrapper } = makeWrapper()
     const { unmount } = renderHook(() => useProjectEventStream('demo'), { wrapper })
