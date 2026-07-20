@@ -46,6 +46,26 @@ def _is_sensitive(sensitivity: str | None) -> bool:
     return (sensitivity or "none") != "none"
 
 
+# Cap on the text embedded per document. The embedding model accepts 8191
+# tokens; 6000 characters stays safely under that even for Cyrillic-heavy
+# content (low chars-per-token). The 16k per-text cap in embedding_service
+# remains as a backstop.
+EMBED_TEXT_MAX_CHARS = 6000
+
+
+def embed_text_for(*, title: str, subtitle: str, keywords: str, body: str) -> str:
+    """Build the text that gets embedded for one search document.
+
+    Single source of truth for the embed-text recipe — the worker task and the
+    demo embedding fixture pipeline both call this, so the two can never drift.
+    Keywords come BEFORE the potentially huge body so that truncation drops
+    the low-signal text first, and the joined text is capped at
+    ``EMBED_TEXT_MAX_CHARS`` characters.
+    """
+    joined = "\n".join([title, subtitle, keywords, body]).strip()
+    return joined[:EMBED_TEXT_MAX_CHARS]
+
+
 @dataclass(frozen=True)
 class BuiltDocument:
     entity_type: SearchEntityType
@@ -140,7 +160,11 @@ async def build_documents(
         .scalars()
         .all()
     )
-    variable_values = list(
+    # Sorted deterministically: the demo embedding fixture keys documents by
+    # sha256(embed_text), so text joined from these rows must not depend on
+    # dialect-specific row order (SQLite fixture generation vs Postgres
+    # runtime) — the query itself has no ORDER BY.
+    variable_values = sorted(
         (
             await session.execute(
                 select(VariableValue)
@@ -156,7 +180,8 @@ async def build_documents(
             )
         )
         .scalars()
-        .all()
+        .all(),
+        key=_variable_value_sort_key,
     )
     contexts_by_event_field: dict[tuple[uuid.UUID, uuid.UUID], list[VariableValue]] = {}
     contexts_by_variable: dict[uuid.UUID, list[VariableValue]] = {}
@@ -315,6 +340,16 @@ def _meta_field_document(meta_field: MetaFieldDefinition, slug: str) -> BuiltDoc
     )
 
 
+def _variable_value_sort_key(context: VariableValue) -> tuple[str, str, str, str, str]:
+    return (
+        _clean(context.variable.name),
+        _clean(context.event.name),
+        _clean(context.field_definition.name),
+        _clean(context.source_column),
+        _clean(context.value_kind),
+    )
+
+
 def _event_document(
     event: Event,
     event_type: EventType | None,
@@ -324,7 +359,13 @@ def _event_document(
     field_names: list[str] = []
     safe_values: list[str] = []
     variable_context_text: list[str] = []
-    for field_value in event.field_values:
+    # field_values / meta_values / tags are selectin relationships with no
+    # order_by; iterate them sorted so the embed text (and therefore the demo
+    # fixture's sha256 key) is identical across dialects.
+    for field_value in sorted(
+        event.field_values,
+        key=lambda item: (item.field_definition.order, item.field_definition.name),
+    ):
         field = field_value.field_definition
         field_names.extend([field.name, field.display_name, field.description])
         if not _is_sensitive(field.sensitivity):
@@ -338,13 +379,13 @@ def _event_document(
 
     meta_names: list[str] = []
     safe_meta_values: list[str] = []
-    for meta_value in event.meta_values:
+    for meta_value in sorted(event.meta_values, key=lambda item: item.meta_field_definition.name):
         meta_field = meta_value.meta_field_definition
         meta_names.extend([meta_field.name, meta_field.display_name])
         if not _is_sensitive(meta_field.sensitivity):
             safe_meta_values.append(meta_value.value)
 
-    tag_names = [tag.name for tag in event.tags]
+    tag_names = sorted(tag.name for tag in event.tags)
     event_type_names = []
     if event_type is not None:
         event_type_names = [event_type.name, event_type.display_name, event_type.description]

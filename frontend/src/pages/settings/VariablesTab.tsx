@@ -15,6 +15,9 @@ import { Label } from "@/components/ui/label"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { EmptyState } from "@/components/empty-state"
 import { Panel } from "@/components/settings/kit"
+import { ScenarioCoachMark } from "@/demo/ScenarioCoachMark"
+import { useDemoScenarioActions } from "@/demo/demoScenarioContext"
+import { SCENARIO_SEEDED } from "@/demo/scenarioModel"
 import { VariablesBulkBar } from "./VariablesBulkBar"
 import { getErrorMessage } from '@/lib/utils'
 
@@ -87,6 +90,7 @@ export function VariablesTab({ slug, focusId }: { slug: string; focusId?: string
   const [overrideValues, setOverrideValues] = useState<string[]>([])
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
   const { confirm, dialog } = useConfirm()
+  const { notifyStepCompleted } = useDemoScenarioActions()
 
   // IDs for create dialog
   const createNameId = useId()
@@ -180,6 +184,9 @@ export function VariablesTab({ slug, focusId }: { slug: string; focusId?: string
       qc.invalidateQueries({ queryKey: ['variable-drifts', slug, branchId, editingVar?.id] })
       qc.invalidateQueries({ queryKey: ['variables', slug, branchId] })
       qc.invalidateQueries({ queryKey: ['variable-overrides', slug, branchId, editingVar?.id] })
+      // Any drift action is reviewing the drift — inert outside the demo's
+      // variables chapter (the reducer drops every other step).
+      notifyStepCompleted('variables/see-drift')
     },
   })
 
@@ -256,6 +263,11 @@ export function VariablesTab({ slug, focusId }: { slug: string; focusId?: string
   }
 
   const startEdit = (v: Variable) => {
+    // Opening the seeded variable IS inspecting its values — the edit dialog
+    // shows documented vs observed side by side.
+    if (v.name === SCENARIO_SEEDED.driftVariableName) {
+      notifyStepCompleted('variables/inspect-values')
+    }
     setEditingVar(v)
     setEditVarName(v.name)
     setEditVarType(v.variable_type)
@@ -395,7 +407,7 @@ export function VariablesTab({ slug, focusId }: { slug: string; focusId?: string
                     Value drift — observed values outside the documented list
                   </div>
                   <ul className="space-y-1.5">
-                    {activeDrifts.map(drift => (
+                    {activeDrifts.map((drift, driftIndex) => (
                       <li key={drift.id} className="rounded border bg-background px-2 py-1.5">
                         <div className="flex flex-wrap items-center justify-between gap-2">
                           <div className="min-w-0">
@@ -411,20 +423,27 @@ export function VariablesTab({ slug, focusId }: { slug: string; focusId?: string
                               ))}
                             </div>
                           </div>
-                          <div className="flex shrink-0 flex-wrap gap-1">
-                            <Button type="button" size="sm" variant="outline" className="h-6 px-2 text-[11px]" disabled={driftActionMut.isPending} onClick={() => driftActionMut.mutate({ driftId: drift.id, action: 'accept', scope: 'global' })}>
-                              Accept
-                            </Button>
-                            <Button type="button" size="sm" variant="outline" className="h-6 px-2 text-[11px]" disabled={driftActionMut.isPending} onClick={() => driftActionMut.mutate({ driftId: drift.id, action: 'accept', scope: 'event' })}>
-                              Accept for event
-                            </Button>
-                            <Button type="button" size="sm" variant="ghost" className="h-6 px-2 text-[11px]" disabled={driftActionMut.isPending} onClick={() => snoozeDrift(drift.id)}>
-                              Snooze 7d
-                            </Button>
-                            <Button type="button" size="sm" variant="ghost" className="h-6 px-2 text-[11px] text-muted-foreground" disabled={driftActionMut.isPending} onClick={() => driftActionMut.mutate({ driftId: drift.id, action: 'false_positive' })}>
-                              False positive
-                            </Button>
-                          </div>
+                          <ScenarioCoachMark
+                            step="variables/see-drift"
+                            // The action group is the useful target; anchoring the
+                            // whole row makes the callout cover the form above it.
+                            when={driftIndex === 0 && editingVar?.name === SCENARIO_SEEDED.driftVariableName}
+                          >
+                            <div className="flex shrink-0 flex-wrap gap-1">
+                              <Button type="button" size="sm" variant="outline" className="h-6 px-2 text-[11px]" disabled={driftActionMut.isPending} onClick={() => driftActionMut.mutate({ driftId: drift.id, action: 'accept', scope: 'global' })}>
+                                Accept
+                              </Button>
+                              <Button type="button" size="sm" variant="outline" className="h-6 px-2 text-[11px]" disabled={driftActionMut.isPending} onClick={() => driftActionMut.mutate({ driftId: drift.id, action: 'accept', scope: 'event' })}>
+                                Accept for event
+                              </Button>
+                              <Button type="button" size="sm" variant="ghost" className="h-6 px-2 text-[11px]" disabled={driftActionMut.isPending} onClick={() => snoozeDrift(drift.id)}>
+                                Snooze 7d
+                              </Button>
+                              <Button type="button" size="sm" variant="ghost" className="h-6 px-2 text-[11px] text-muted-foreground" disabled={driftActionMut.isPending} onClick={() => driftActionMut.mutate({ driftId: drift.id, action: 'false_positive' })}>
+                                False positive
+                              </Button>
+                            </div>
+                          </ScenarioCoachMark>
                         </div>
                       </li>
                     ))}
@@ -669,7 +688,14 @@ export function VariablesTab({ slug, focusId }: { slug: string; focusId?: string
                   </TableCell>
                   <TableCell>
                     <div className="flex gap-1 justify-end">
-                      <Button variant="ghost" size="icon" className="h-7 w-7" aria-label={`Edit variable ${v.name}`} onClick={() => startEdit(v)}><Pencil className="h-3 w-3" aria-hidden="true" /></Button>
+                      {/* Exactly one row carries the inspect mark: the seeded
+                          drifting variable, so the coaching reads as an example. */}
+                      <ScenarioCoachMark
+                        step="variables/inspect-values"
+                        when={v.name === SCENARIO_SEEDED.driftVariableName}
+                      >
+                        <Button variant="ghost" size="icon" className="h-7 w-7" aria-label={`Edit variable ${v.name}`} onClick={() => startEdit(v)}><Pencil className="h-3 w-3" aria-hidden="true" /></Button>
+                      </ScenarioCoachMark>
                       <Button variant="ghost" size="icon" className="h-7 w-7 text-muted-foreground hover:text-amber-600" aria-label={`Exclude variable ${v.name} from scans`} onClick={() => handleExclude(v)}><Ban className="h-3 w-3" aria-hidden="true" /></Button>
                       <Button variant="ghost" size="icon" className="h-7 w-7 text-muted-foreground hover:text-destructive" aria-label={`Delete variable ${v.name}`} onClick={() => handleDelete(v)}><Trash2 className="h-3 w-3" aria-hidden="true" /></Button>
                     </div>

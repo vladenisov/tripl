@@ -850,7 +850,7 @@ function MetricRow({
           // The scenario completes see-chart the moment the chart route opens, so
           // a mark on the chart itself would never be read: it points here, at the
           // link to the metric the user just collected.
-          <ScenarioCoachMark step="see-chart" when={isScenarioMetric} align="start">
+          <ScenarioCoachMark step="live-loop/see-chart" when={isScenarioMetric}>
             <Link
               to={href}
               onClick={event => event.stopPropagation()}
@@ -979,7 +979,7 @@ function MetricRowMenu({ metric, slug, existingNames, isCoachTarget }: MetricRow
       {/* One row carries the collect mark, so the coaching reads as an example
           rather than a per-row instruction. Anchoring the trigger (not the menu)
           keeps the mark visible while the menu is still closed. */}
-      <ScenarioCoachMark step="collect-metric" when={isCoachTarget} align="end">
+      <ScenarioCoachMark step="live-loop/collect-metric" when={isCoachTarget}>
         <DropdownMenuTrigger asChild>
           <button
             type="button"

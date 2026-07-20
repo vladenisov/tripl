@@ -1,30 +1,54 @@
 /**
- * The persistent scenario strip (tripl-2su6.21.3).
+ * The persistent scenario strip (tripl-2su6.21.3, chapters in tripl-odrj.4).
  *
- * Mounted beside the demo banner on every surface, so the four-step chain — run
- * a scan, watch it land, collect a metric, see the chart move — stays visible
- * while the user walks the app. It renders nothing but what the context already
- * decided: the step, the deep link, whether a watch is in flight, and why the
- * scenario went backwards.
+ * Mounted beside the demo banner on every surface, so the active chapter's
+ * step chain stays visible while the user walks the app. It renders nothing but
+ * what the context already decided: the chapter, the step, the deep link,
+ * whether a watch is in flight, and why live-loop went backwards. When a
+ * chapter lands it offers the next one in order, beside Restart and a
+ * per-chapter Dismiss.
  */
 
-import type { CSSProperties } from 'react'
-import { Link } from 'react-router-dom'
+import { useEffect, useState, type CSSProperties } from 'react'
+import { Link, useLocation } from 'react-router-dom'
 import { ArrowRight, RotateCcw, X } from 'lucide-react'
 import { Chip } from '@/components/primitives/chip'
 import { Dot } from '@/components/primitives/dot'
 import { Button } from '@/components/ui/button'
-import { useDemoScenario, useDemoScenarioActions } from './demoScenarioContext'
+import { useCoachPresence, useDemoScenario, useDemoScenarioActions } from './demoScenarioContext'
 import {
+  CHAPTER_TITLES,
   SCENARIO_HINT_COPY,
-  SCENARIO_STEP_IDS,
   scenarioStepIndex,
+  type ChapterId,
+  type ChapterListEntry,
   type ScenarioHint,
   type ScenarioStep,
 } from './scenarioModel'
 
 const REGION_LABEL = 'Demo scenario'
-const TOTAL_STEPS = SCENARIO_STEP_IDS.length
+
+/**
+ * How long the user must sit on the step's route with no coach mark mounted
+ * before the strip says so. Route transitions unmount one surface's mark before
+ * the next surface mounts its own, so an instant message would flicker.
+ */
+const MISSING_TARGET_DELAY_MS = 1000
+
+const MISSING_TARGET_COPY =
+  "The highlighted control isn't visible — it may be filtered out, below the fold, or already handled. Resetting the demo project restores every guided example."
+
+/** True only after `value` has held true for `delayMs` without interruption. */
+function useDeferredFlag(value: boolean, delayMs: number): boolean {
+  const [deferred, setDeferred] = useState(false)
+  useEffect(() => {
+    // A zero-delay timer (rather than a sync set) also handles the reset, so
+    // the effect never calls setState synchronously.
+    const timer = window.setTimeout(() => setDeferred(value), value ? delayMs : 0)
+    return () => window.clearTimeout(timer)
+  }, [value, delayMs])
+  return value && deferred
+}
 
 const SHELL_CLASS = 'mb-4 rounded-lg border px-3.5 py-2.5'
 const SHELL_STYLE: CSSProperties = {
@@ -32,12 +56,12 @@ const SHELL_STYLE: CSSProperties = {
   borderColor: 'var(--border-subtle)',
 }
 
-function ScenarioProgress({ index }: { index: number }) {
+function ChapterProgress({ index, total }: { index: number; total: number }) {
   return (
     <div className="flex items-center gap-1" aria-hidden="true">
-      {SCENARIO_STEP_IDS.map((id, position) => (
+      {Array.from({ length: total }, (_, position) => (
         <span
-          key={id}
+          key={position}
           className="h-1 w-5 rounded-full motion-safe:transition-colors"
           style={{ background: position <= index ? 'var(--accent)' : 'var(--border-subtle)' }}
         />
@@ -47,18 +71,34 @@ function ScenarioProgress({ index }: { index: number }) {
 }
 
 interface ActiveStripProps {
+  chapter: ChapterId
   step: ScenarioStep
   index: number
+  total: number
   hint?: ScenarioHint
   isWatching: boolean
+  /** The user is on the step's surface but no coach mark is mounted there. */
+  targetMissing: boolean
   onDismiss: () => void
 }
 
-function ActiveStrip({ step, index, hint, isWatching, onDismiss }: ActiveStripProps) {
+function ActiveStrip({
+  chapter,
+  step,
+  index,
+  total,
+  hint,
+  isWatching,
+  targetMissing,
+  onDismiss,
+}: ActiveStripProps) {
   return (
     <section aria-label={REGION_LABEL} className={SHELL_CLASS} style={SHELL_STYLE}>
       <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
-        <ScenarioProgress index={index} />
+        <Chip tone="accent" size="xs">
+          {CHAPTER_TITLES[chapter]}
+        </Chip>
+        <ChapterProgress index={index} total={total} />
 
         <div
           aria-live="polite"
@@ -69,7 +109,7 @@ function ActiveStrip({ step, index, hint, isWatching, onDismiss }: ActiveStripPr
             {step.title}
           </span>
           <Chip tone="neutral" size="xs">
-            Step {index + 1} of {TOTAL_STEPS}
+            Step {index + 1} of {total}
           </Chip>
           <span className="text-[11.5px] leading-[1.45]" style={{ color: 'var(--fg-muted)' }}>
             {step.instruction}
@@ -77,7 +117,9 @@ function ActiveStrip({ step, index, hint, isWatching, onDismiss }: ActiveStripPr
         </div>
 
         <div className="ml-auto flex items-center gap-1.5">
-          <Button asChild size="xs">
+          {/* When the on-surface mark is missing, the CTA is the only pointer
+              left — pulse it so the eye lands somewhere. */}
+          <Button asChild size="xs" className={targetMissing ? 'pulse-dot' : undefined}>
             <Link to={step.to}>
               {step.ctaLabel}
               <ArrowRight className="h-3 w-3" />
@@ -103,30 +145,57 @@ function ActiveStrip({ step, index, hint, isWatching, onDismiss }: ActiveStripPr
           {SCENARIO_HINT_COPY[hint]}
         </p>
       )}
+
+      {targetMissing && (
+        <p className="mt-1.5 text-[11.5px]" style={{ color: 'var(--fg-muted)' }}>
+          {MISSING_TARGET_COPY}
+        </p>
+      )}
     </section>
   )
 }
 
 interface CompletedStripProps {
+  chapter: ChapterId
+  nextChapter: ChapterListEntry | null
+  onStartNext: (chapter: ChapterId) => void
   onRestart: () => void
   onDismiss: () => void
 }
 
-function CompletedStrip({ onRestart, onDismiss }: CompletedStripProps) {
+function CompletedStrip({
+  chapter,
+  nextChapter,
+  onStartNext,
+  onRestart,
+  onDismiss,
+}: CompletedStripProps) {
   return (
     <section aria-label={REGION_LABEL} className={SHELL_CLASS} style={SHELL_STYLE}>
       <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
         <Dot tone="success" />
         <p aria-live="polite" className="text-[12px] font-medium">
-          You ran the whole loop.{' '}
+          Chapter complete: {CHAPTER_TITLES[chapter]}.{' '}
           <span className="font-normal" style={{ color: 'var(--fg-muted)' }}>
-            Scan, collect, chart — end to end, on real workers.
+            {nextChapter
+              ? 'Keep going — the next chapter picks up from here.'
+              : 'That was the last one — you have walked the whole product.'}
           </span>
         </p>
         <div className="ml-auto flex items-center gap-1.5">
+          {nextChapter && (
+            <Button asChild size="xs">
+              {/* Starting on click, before the Link navigates, so the user lands
+                  on the new chapter's surface with its first step already live. */}
+              <Link to={nextChapter.to} onClick={() => onStartNext(nextChapter.id)}>
+                Next: {nextChapter.title}
+                <ArrowRight className="h-3 w-3" />
+              </Link>
+            </Button>
+          )}
           <Button type="button" variant="outline" size="xs" onClick={onRestart}>
             <RotateCcw className="h-3 w-3" />
-            Restart the scenario
+            Restart chapter
           </Button>
           <Button
             type="button"
@@ -145,33 +214,62 @@ function CompletedStrip({ onRestart, onDismiss }: CompletedStripProps) {
 }
 
 /**
- * Renders on exactly two conditions: the scenario is active, or it was completed
- * and the user has not dismissed it. Everything else — dismissed, still seeding,
- * not a demo, no provider at all — is nothing.
+ * Renders on exactly two conditions: a chapter is active, or the chapter the
+ * user was in completed and has not been dismissed. Everything else —
+ * dismissed, still seeding, not a demo, no provider at all — is nothing.
  *
- * The two branches cannot leak into a non-demo project: outside a ready demo the
- * context is inert, which means `active` is false and its state is a fresh
- * 'active' one, never 'completed'. Dismissal is likewise unambiguous — the model
- * has one status, so 'dismissed' can never also be 'completed'.
+ * The two branches cannot leak into a non-demo project: outside a ready demo
+ * the context is inert, which means `active` is false and `activeChapter` is
+ * null. Dismissing the completed strip keeps the chapter's status 'completed'
+ * and only clears the active pointer, so the branch below simply stops
+ * rendering without demoting a finished chapter.
  */
 export function DemoScenarioStrip() {
-  const { active, state, step, isWatching } = useDemoScenario()
-  const { dismiss, restart } = useDemoScenarioActions()
+  const { active, state, activeChapter, step, steps, nextChapter, isWatching, hintsMuted } =
+    useDemoScenario()
+  const { startChapter, restartChapter, dismissChapter } = useDemoScenarioActions()
+  const { present } = useCoachPresence()
+  const location = useLocation()
 
-  if (active) {
+  // The user is standing on the step's own surface (query params aside), yet no
+  // coach mark for the step is mounted — the control is filtered out, on another
+  // tab, or not rendered at all. Muting hints silences this too: it keys off the
+  // same visibility the marks themselves report. Steps without an on-surface
+  // anchor (deep-link and explore steps) expect no mark, so they stay quiet.
+  const stepPath = step.to.split('?')[0]
+  const targetMissing =
+    active &&
+    !hintsMuted &&
+    step.coach !== undefined &&
+    location.pathname.startsWith(stepPath) &&
+    !present.has(step.id)
+  const showTargetMissing = useDeferredFlag(targetMissing, MISSING_TARGET_DELAY_MS)
+
+  if (active && activeChapter) {
     return (
       <ActiveStrip
+        chapter={activeChapter}
         step={step}
         index={scenarioStepIndex(state)}
-        hint={state.hint}
+        total={steps.length}
+        hint={state.chapters[activeChapter]?.hint}
         isWatching={isWatching}
-        onDismiss={dismiss}
+        targetMissing={showTargetMissing}
+        onDismiss={() => dismissChapter(activeChapter)}
       />
     )
   }
 
-  if (state.status === 'completed') {
-    return <CompletedStrip onRestart={restart} onDismiss={dismiss} />
+  if (activeChapter && state.chapters[activeChapter]?.status === 'completed') {
+    return (
+      <CompletedStrip
+        chapter={activeChapter}
+        nextChapter={nextChapter}
+        onStartNext={startChapter}
+        onRestart={() => restartChapter(activeChapter)}
+        onDismiss={() => dismissChapter(activeChapter)}
+      />
+    )
   }
 
   return null

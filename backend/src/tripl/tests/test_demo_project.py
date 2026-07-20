@@ -5,19 +5,25 @@ from datetime import UTC, datetime
 
 import pytest
 from httpx import AsyncClient
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from tripl.core.analyzers.anomaly_detector import SCOPE_EVENT
 from tripl.core.analyzers.distribution_drift import PSI_BAND_MINOR, PSI_BAND_SIGNIFICANT
 from tripl.models.data_source import DataSource, TestStatus
 from tripl.models.distribution_drift import DistributionDrift
+from tripl.models.domain_enums import ProjectGenerationStatus
+from tripl.models.event import Event
 from tripl.models.event_metric import EventMetric
 from tripl.models.metric_anomaly import MetricAnomaly
+from tripl.models.plan_branch import BranchKind, PlanBranch
 from tripl.models.project import Project
 from tripl.models.project_anomaly_settings import ProjectAnomalySettings
 from tripl.models.scan_config import ScanConfig
-from tripl.services.demo import noise
+from tripl.models.schema_drift import SCHEMA_DRIFT_STATUS_OPEN
+from tripl.models.variable_value_drift import VariableValueDrift
+from tripl.services import plan_branch_service
+from tripl.services.demo import DemoContext, noise, seed_demo_content
 from tripl.services.demo.builders import plan
 from tripl.services.demo.scenario import DEMO_SEED
 from tripl.tests.conftest import TestSessionLocal
@@ -413,3 +419,249 @@ async def test_demo_project_distribution_drift_is_real_psi(client: AsyncClient) 
         assert drift.top_movers
         mover_values = {mover["value"] for mover in drift.top_movers}
         assert {"web", "ios"} <= mover_values
+
+
+# ---------------------------------------------------------------------------
+# Recipe 4: real pending branch change + variable-value drift (tripl-odrj.3)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_demo_recipe_version_is_pinned_to_4(client: AsyncClient) -> None:
+    # The literal is deliberate: bumping the recipe must be a conscious edit here
+    # too, so a stale demo (recipe < 4) is never mistaken for the current shape.
+    resp = await client.post("/api/v1/projects/demo")
+    assert resp.status_code == 201
+    assert resp.json()["demo_recipe_version"] == "4"
+
+
+async def _working_branch(session: AsyncSession, project_id: uuid.UUID) -> PlanBranch:
+    return (
+        await session.execute(
+            select(PlanBranch).where(
+                PlanBranch.project_id == project_id,
+                PlanBranch.kind == BranchKind.working.value,
+            )
+        )
+    ).scalar_one()
+
+
+@pytest.mark.asyncio
+async def test_demo_branch_diff_is_exactly_one_modified_event(client: AsyncClient) -> None:
+    # The seeded feature branch carries a REAL pending change: the plan is
+    # deep-copied onto it and exactly one event description is edited, so the
+    # diff (the merge preview's content) is non-empty and precisely scoped.
+    resp = await client.post("/api/v1/projects/demo")
+    assert resp.status_code == 201
+    slug = resp.json()["slug"]
+
+    branches = (await client.get(f"/api/v1/projects/{slug}/branches")).json()["items"]
+    feature = next(b for b in branches if b["name"] == "feature/checkout-funnel")
+
+    diff_resp = await client.get(f"/api/v1/projects/{slug}/branches/{feature['id']}/diff")
+    assert diff_resp.status_code == 200
+    diff = diff_resp.json()
+    assert diff["summary"] == {"added": 0, "removed": 0, "changed": 1}
+    assert len(diff["entries"]) == 1, diff["entries"]
+
+    entry = diff["entries"][0]
+    assert entry["entity_type"] == "event"
+    assert entry["kind"] == "changed"
+    assert entry["name"] == "Buy Button Click"
+    assert {fc["field"] for fc in entry["field_changes"]} == {"description"}
+    # Main has not moved since the branch was cut.
+    assert diff["behind_base"] is False
+
+    # The branch holds a full plan copy (not just the one edited row), so a
+    # merge preview has real content behind it: every main event has a branch
+    # counterpart.
+    async with TestSessionLocal() as session:
+        project_id = await _project_id_for_slug(session, slug)
+        branch = await _working_branch(session, project_id)
+        main_count = (
+            await session.execute(
+                select(func.count(Event.id)).where(
+                    Event.project_id == project_id,
+                    Event.branch_id != branch.id,
+                )
+            )
+        ).scalar_one()
+        branch_count = (
+            await session.execute(select(func.count(Event.id)).where(Event.branch_id == branch.id))
+        ).scalar_one()
+    assert branch_count == main_count
+    assert branch_count > 0
+
+
+@pytest.mark.asyncio
+async def test_demo_seeds_one_open_variable_value_drift(client: AsyncClient) -> None:
+    # prod_weekly is observed OUTSIDE the documented override list for
+    # product_id on Trial Started ([prod_monthly, prod_annual]), so the
+    # variables drift UI (list_value_drifts / open drift counts / event drift
+    # badge) has a real open row behind it. It never feeds the firing rule's
+    # replay — candidates come from MetricAnomaly + schema/distribution drifts.
+    resp = await client.post("/api/v1/projects/demo")
+    assert resp.status_code == 201
+    slug = resp.json()["slug"]
+
+    async with TestSessionLocal() as session:
+        project_id = await _project_id_for_slug(session, slug)
+        drifts = (
+            (
+                await session.execute(
+                    select(VariableValueDrift).where(VariableValueDrift.project_id == project_id)
+                )
+            )
+            .scalars()
+            .all()
+        )
+        assert len(drifts) == 1, drifts
+        drift = drifts[0]
+        assert drift.status == SCHEMA_DRIFT_STATUS_OPEN
+        assert drift.observed_values == ["prod_weekly"]
+        assert drift.variable_name == "product_id"
+        assert drift.event_name == "Trial Started"
+        # The observed value sits outside the documented override list.
+        assert not set(drift.observed_values) & {"prod_monthly", "prod_annual"}
+        assert drift.resolved_at is None
+        assert drift.detected_at is not None
+
+
+# A fixed clock for the determinism fixtures (mirrors test_demo_scenario).
+_FIXED_NOW = datetime(2026, 6, 1, 12, 0, 0, tzinfo=UTC)
+
+
+async def _seed_fixture(session: AsyncSession, slug: str) -> uuid.UUID:
+    """Provision a demo shell + seed the full scenario at a fixed clock/seed."""
+    project = Project(
+        name="Demo Project",
+        slug=slug,
+        description="determinism fixture",
+        is_demo=True,
+        generation_status=ProjectGenerationStatus.seeding.value,
+        generation_stage="init",
+    )
+    session.add(project)
+    await session.flush()
+    branch_id = await plan_branch_service.ensure_main_branch_id(session, project.id)
+    await session.commit()
+    ctx = DemoContext(
+        project_id=project.id,
+        branch_id=branch_id,
+        slug=slug,
+        now=_FIXED_NOW,
+        seed=DEMO_SEED,
+    )
+    await seed_demo_content(session, ctx)
+    await session.commit()
+    return project.id
+
+
+async def _drift_shape(session: AsyncSession, project_id: uuid.UUID) -> list[tuple]:
+    rows = (
+        (
+            await session.execute(
+                select(VariableValueDrift).where(VariableValueDrift.project_id == project_id)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    return sorted(
+        (
+            drift.variable_name,
+            drift.event_name,
+            tuple(drift.observed_values),
+            drift.status,
+            drift.detected_at,
+        )
+        for drift in rows
+    )
+
+
+async def _branch_diff_shape(session: AsyncSession, slug: str, project_id: uuid.UUID) -> tuple:
+    branch = await _working_branch(session, project_id)
+    diff = await plan_branch_service.diff_branch(session, slug, branch.id)
+    entries = sorted(
+        (entry.entity_type, entry.kind, entry.parent, entry.name, tuple(entry.changes))
+        for entry in diff.entries
+    )
+    return entries, diff.summary, diff.behind_base
+
+
+@pytest.mark.asyncio
+async def test_demo_branch_change_and_drift_are_deterministic() -> None:
+    # Same clock + seed => identical drift rows and an identical branch diff:
+    # the pending change and the drift derive from the recipe, never from
+    # per-run randomness.
+    async with TestSessionLocal() as session:
+        first_id = await _seed_fixture(session, "demo-branchA")
+        second_id = await _seed_fixture(session, "demo-branchB")
+
+        first_drift = await _drift_shape(session, first_id)
+        second_drift = await _drift_shape(session, second_id)
+        assert first_drift == second_drift
+        assert len(first_drift) == 1
+
+        first_diff = await _branch_diff_shape(session, "demo-branchA", first_id)
+        second_diff = await _branch_diff_shape(session, "demo-branchB", second_id)
+        assert first_diff == second_diff
+        entries, summary, behind_base = first_diff
+        assert summary == {"added": 0, "removed": 0, "changed": 1}
+        assert entries[0][1] == "changed"
+        assert entries[0][3] == "Buy Button Click"
+        assert behind_base is False
+
+
+@pytest.mark.asyncio
+async def test_reset_purges_branch_plan_entities_and_drift(client: AsyncClient) -> None:
+    # Reset drops the old demo in full — including the branch-side plan copy and
+    # the variable-value drift — and re-seeds the same shape under a fresh id.
+    resp = await client.post("/api/v1/projects/demo")
+    assert resp.status_code == 201
+    slug = resp.json()["slug"]
+
+    async with TestSessionLocal() as session:
+        old_project_id = await _project_id_for_slug(session, slug)
+        old_branch = await _working_branch(session, old_project_id)
+        old_branch_id = old_branch.id
+        old_branch_events = (
+            await session.execute(
+                select(func.count(Event.id)).where(Event.branch_id == old_branch_id)
+            )
+        ).scalar_one()
+        assert old_branch_events > 0
+
+    reset_resp = await client.post(f"/api/v1/projects/demo/{slug}/reset")
+    assert reset_resp.status_code == 200
+
+    async with TestSessionLocal() as session:
+        new_project_id = await _project_id_for_slug(session, slug)
+        assert new_project_id != old_project_id
+
+        # Old rows are gone: branches, their plan copies, and the drift.
+        for count_query in (
+            select(func.count(PlanBranch.id)).where(PlanBranch.project_id == old_project_id),
+            select(func.count(Event.id)).where(Event.branch_id == old_branch_id),
+            select(func.count(VariableValueDrift.id)).where(
+                VariableValueDrift.project_id == old_project_id
+            ),
+        ):
+            assert (await session.execute(count_query)).scalar_one() == 0
+
+        # And the fresh seed carries the same recipe-4 shape again.
+        new_branch = await _working_branch(session, new_project_id)
+        new_branch_events = (
+            await session.execute(
+                select(func.count(Event.id)).where(Event.branch_id == new_branch.id)
+            )
+        ).scalar_one()
+        assert new_branch_events > 0
+        new_drifts = (
+            await session.execute(
+                select(func.count(VariableValueDrift.id)).where(
+                    VariableValueDrift.project_id == new_project_id
+                )
+            )
+        ).scalar_one()
+        assert new_drifts == 1

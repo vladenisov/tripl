@@ -1,51 +1,64 @@
 /**
- * The stateful home of the coached demo scenario (tripl-2su6.21.2).
+ * The stateful home of the coached demo scenario (tripl-2su6.21.2, chapters in
+ * tripl-odrj.4).
  *
- * Mounted once in Layout, so the scenario survives every navigation the chain
- * requires: the scan the user started keeps being watched while they walk to
+ * Mounted once in Layout, so the scenario survives every navigation the chains
+ * require: the scan the user started keeps being watched while they walk to
  * the metrics catalog, and a reload mid-run picks the watch back up from the
  * persisted job id.
  *
- * The watches are deliberately its own, and deliberately silent:
+ * Completion is deliberately split by chapter:
  *
- * - Its own, because the SSE stream (tripl-2su6.8) hands components no event
- *   payloads — only query invalidation — and because a page's job query dies
- *   with the page. The scenario must keep watching one specific job across
- *   routes, so it polls that job by id.
- * - Silent, because both metric surfaces already run `useMetricCollectionWatcher`
- *   and toast the outcome. A second toasting watcher would double-report.
+ * - live-loop keeps its own SILENT polls. The SSE stream (tripl-2su6.8) hands
+ *   components no event payloads — only query invalidation — and a page's job
+ *   query dies with the page, so the scenario polls the one job the user's own
+ *   action produced, by id. Silent, because both metric surfaces already run
+ *   `useMetricCollectionWatcher` and toast the outcome.
+ * - every other chapter advances on DIRECT notifications: a route visit
+ *   (`stepCompletedByPath`, checked here) or a `notifyStepCompleted` fired from
+ *   the exact mutation the user performed. No polling for them.
  *
  * Nothing here trusts the demo's own runtime tick (tripl-2su6.7): it manufactures
  * real scan jobs and real collections continuously, so only the artifacts the
- * user's own action produced can move the scenario forward.
+ * user's own action produced can move live-loop forward.
  */
 
 import { useCallback, useMemo, useState, type ReactNode } from 'react'
 import { useLocation } from 'react-router-dom'
-import { useQuery } from '@tanstack/react-query'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { ApiError } from '@/api/client'
 import { metricsCatalogApi } from '@/api/metricsCatalogApi'
 import { scansApi } from '@/api/scans'
 import { getMetricMonitoringPath } from '@/lib/monitoring'
-import type { Project } from '@/types'
+import type { Project, ScanJob } from '@/types'
 import {
+  CoachPresenceContext,
   DemoScenarioActionsContext,
   DemoScenarioContext,
   INERT_ACTIONS,
   INERT_SCENARIO,
+  type CoachPresence,
   type DemoScenarioActions,
   type DemoScenarioValue,
 } from './demoScenarioContext'
 import {
+  activeChapterState,
   activeScenarioStep,
-  buildScenarioSteps,
+  buildChapterList,
+  buildChapterSteps,
   initialScenarioState,
+  isScenarioActive,
   isScenarioWatching,
+  nextChapterId,
   readScenarioState,
+  scenarioMetricArtifact,
   scenarioReducer,
+  scenarioScanArtifact,
+  stepCompletedByPath,
   writeScenarioState,
   type ScenarioEvent,
   type ScenarioState,
+  type ScenarioStepId,
 } from './scenarioModel'
 
 /** How often to re-check the artifact the user is waiting on. */
@@ -74,6 +87,14 @@ function isNotFound(error: unknown): boolean {
   return error instanceof ApiError && error.status === 404
 }
 
+function syncWatchedJob(current: ScanJob[] | undefined, job: ScanJob): ScanJob[] {
+  if (!current) return [job]
+  const found = current.some(candidate => candidate.id === job.id)
+  return found
+    ? current.map(candidate => candidate.id === job.id ? job : candidate)
+    : [job, ...current]
+}
+
 export function DemoScenarioProvider({
   project,
   pollIntervalMs,
@@ -81,6 +102,7 @@ export function DemoScenarioProvider({
 }: DemoScenarioProviderProps) {
   const slug = project?.slug
   const location = useLocation()
+  const queryClient = useQueryClient()
 
   // A demo that is still seeding has nothing to coach yet; a project that is not
   // a demo never does. `generation_status` is absent on older payloads, where a
@@ -117,9 +139,17 @@ export function DemoScenarioProvider({
     [slug],
   )
 
-  const running = isDemoReady && state.status === 'active'
-  const scanTarget = running && state.step === 'watch-scan' ? state.scan : undefined
-  const metricTarget = running && state.step === 'collect-metric' ? state.metric : undefined
+  const running = isDemoReady && isScenarioActive(state)
+  const chapter = activeChapterState(state)
+  const onLiveLoop = running && state.activeChapter === 'live-loop'
+  const scanTarget =
+    onLiveLoop && chapter?.step === 'live-loop/watch-scan'
+      ? scenarioScanArtifact(state)
+      : undefined
+  const metricTarget =
+    onLiveLoop && chapter?.step === 'live-loop/collect-metric'
+      ? scenarioMetricArtifact(state)
+      : undefined
 
   // Watch the job the user's own run created — by id, so the tick's own jobs
   // (and any job some other tab started) are invisible to the scenario.
@@ -133,6 +163,20 @@ export function DemoScenarioProvider({
       if (!slug || !scanTarget) return null
       try {
         const job = await scansApi.getJob(slug, scanTarget.scanConfigId, scanTarget.scanJobId)
+        // The scan page renders a separate list query whose fallback polling is
+        // intentionally disabled while realtime is live. Mirror this exact-job
+        // response into that cache so a missed terminal SSE event cannot leave
+        // the same tab showing Running after the coach has already advanced.
+        const terminal =
+          job.status === 'completed' || job.status === 'failed' || job.status === 'cancelled'
+        if (terminal) {
+          const listKey = ['scanJobs', slug, scanTarget.scanConfigId] as const
+          queryClient.setQueryData<ScanJob[]>(listKey, current => syncWatchedJob(current, job))
+          // Populate an absent cache immediately, then refresh the complete list
+          // from the now-committed backend state. This also cancels any older
+          // in-flight snapshot that could otherwise land as Running afterwards.
+          void queryClient.invalidateQueries({ queryKey: listKey, exact: true })
+        }
         if (job.status === 'completed') dispatch({ type: 'scanSettled', outcome: 'completed' })
         else if (job.status === 'failed') dispatch({ type: 'scanSettled', outcome: 'failed' })
         else if (job.status === 'cancelled') dispatch({ type: 'scanSettled', outcome: 'cancelled' })
@@ -199,11 +243,44 @@ export function DemoScenarioProvider({
   // Checked at render rather than on a route change: the collection can settle
   // while the user is *already standing on* the chart, and no navigation would
   // follow to notice.
+  const seeChartMetric =
+    onLiveLoop && chapter?.step === 'live-loop/see-chart'
+      ? scenarioMetricArtifact(state)
+      : undefined
   const chartPath =
-    slug && state.metric ? getMetricMonitoringPath(slug, state.metric.metricId) : null
-  if (running && state.step === 'see-chart' && state.metric && chartPath === location.pathname) {
-    dispatch({ type: 'chartVisited', metricId: state.metric.metricId })
+    slug && seeChartMetric ? getMetricMonitoringPath(slug, seeChartMetric.metricId) : null
+  if (seeChartMetric && chartPath === location.pathname) {
+    dispatch({ type: 'chartVisited', metricId: seeChartMetric.metricId })
   }
+
+  // Deep-link and explore steps complete by ARRIVING somewhere. Same render-time
+  // check as the chart above; the reducer advances at most one step per render,
+  // and no two consecutive steps share an arrival path.
+  const currentStepId = running ? chapter?.step : undefined
+  if (slug && currentStepId && stepCompletedByPath(slug, currentStepId, location.pathname)) {
+    // The pathname rides along so edit-event can remember which editor the
+    // user opened and deep-link its later steps back into it.
+    dispatch({ type: 'stepCompleted', step: currentStepId, path: location.pathname })
+  }
+
+  // Which steps have a visible coach mark mounted right now. A Set, not a
+  // counter: marks for one step live on one surface and unmount together.
+  const [presentSteps, setPresentSteps] = useState<ReadonlySet<ScenarioStepId>>(() => new Set())
+
+  const reportCoachPresence = useCallback((step: ScenarioStepId, mounted: boolean) => {
+    setPresentSteps((prev) => {
+      if (prev.has(step) === mounted) return prev
+      const next = new Set(prev)
+      if (mounted) next.add(step)
+      else next.delete(step)
+      return next
+    })
+  }, [])
+
+  const presence = useMemo<CoachPresence>(
+    () => ({ present: presentSteps, report: reportCoachPresence }),
+    [presentSteps, reportCoachPresence],
+  )
 
   const actions = useMemo<DemoScenarioActions>(
     () => ({
@@ -216,11 +293,13 @@ export function DemoScenarioProvider({
         }),
       notifyMetricCollectStarted: (metricId) =>
         dispatch({ type: 'collectStarted', metricId, at: Date.now() }),
-      dismiss: () => dispatch({ type: 'dismiss' }),
-      restart: () => {
+      notifyStepCompleted: (step) => dispatch({ type: 'stepCompleted', step }),
+      startChapter: (chapterId) => dispatch({ type: 'startChapter', chapter: chapterId }),
+      restartChapter: (chapterId) => {
         setHintsMuted(false)
-        dispatch({ type: 'restart' })
+        dispatch({ type: 'restartChapter', chapter: chapterId })
       },
+      dismissChapter: (chapterId) => dispatch({ type: 'dismissChapter', chapter: chapterId }),
       muteHints: () => setHintsMuted(true),
     }),
     [dispatch],
@@ -228,12 +307,17 @@ export function DemoScenarioProvider({
 
   const value = useMemo<DemoScenarioValue>(() => {
     if (!isDemoReady || !slug) return INERT_SCENARIO
+    const chapters = buildChapterList(slug, state)
+    const nextId = nextChapterId(state)
     return {
       available: true,
-      active: state.status === 'active',
+      active: isScenarioActive(state),
       state,
+      activeChapter: state.activeChapter,
       step: activeScenarioStep(slug, state),
-      steps: buildScenarioSteps(slug, state),
+      steps: buildChapterSteps(slug, state.activeChapter ?? 'live-loop', state),
+      chapters,
+      nextChapter: nextId ? (chapters.find((entry) => entry.id === nextId) ?? null) : null,
       isWatching: isScenarioWatching(state),
       hintsMuted,
     }
@@ -242,7 +326,7 @@ export function DemoScenarioProvider({
   return (
     <DemoScenarioContext.Provider value={value}>
       <DemoScenarioActionsContext.Provider value={isDemoReady ? actions : INERT_ACTIONS}>
-        {children}
+        <CoachPresenceContext.Provider value={presence}>{children}</CoachPresenceContext.Provider>
       </DemoScenarioActionsContext.Provider>
     </DemoScenarioContext.Provider>
   )

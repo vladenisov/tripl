@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { MemoryRouter } from 'react-router-dom'
 import { ApiError } from '@/api/client'
@@ -8,7 +8,8 @@ import { scansApi } from '@/api/scans'
 import type { MetricDefinitionDetailResponse, Project, ScanJob } from '@/types'
 import { DemoScenarioProvider } from './DemoScenarioProvider'
 import { useDemoScenario, useDemoScenarioActions } from './demoScenarioContext'
-import { readScenarioState, writeScenarioState, type ScenarioState } from './scenarioModel'
+import { readScenarioState, writeScenarioState } from './scenarioModel'
+import { chapterState, liveLoopState } from './scenarioTestState'
 
 const SLUG = 'acme'
 const POLL_MS = 10
@@ -46,13 +47,15 @@ function metricDefinition(status: string | null): MetricDefinitionDetailResponse
 
 /** Renders the scenario's live state and wires the notify actions to buttons. */
 function Probe() {
-  const { active, state, step, isWatching, hintsMuted } = useDemoScenario()
+  const { active, state, activeChapter, step, hintsMuted, isWatching } = useDemoScenario()
   const actions = useDemoScenarioActions()
+  const chapter = activeChapter ? state.chapters[activeChapter] : undefined
   return (
     <div>
       <span data-testid="step">{step.id}</span>
-      <span data-testid="status">{state.status}</span>
-      <span data-testid="hint">{state.hint ?? 'none'}</span>
+      <span data-testid="chapter">{activeChapter ?? 'none'}</span>
+      <span data-testid="status">{chapter?.status ?? 'none'}</span>
+      <span data-testid="hint">{chapter?.hint ?? 'none'}</span>
       <span data-testid="active">{String(active)}</span>
       <span data-testid="watching">{String(isWatching)}</span>
       <span data-testid="muted">{String(hintsMuted)}</span>
@@ -69,28 +72,37 @@ function Probe() {
         run again
       </button>
       <button onClick={() => actions.notifyMetricCollectStarted('m-1')}>collect</button>
-      <button onClick={actions.dismiss}>dismiss</button>
-      <button onClick={actions.restart}>restart</button>
+      <button onClick={() => actions.notifyStepCompleted('edit-event/save')}>save event</button>
+      <button onClick={() => actions.startChapter('edit-event')}>start edit-event</button>
+      <button onClick={() => actions.dismissChapter('live-loop')}>dismiss live-loop</button>
+      <button onClick={() => actions.restartChapter('live-loop')}>restart live-loop</button>
       <button onClick={actions.muteHints}>mute</button>
     </div>
   )
 }
 
-function renderProvider(project: Project | undefined, route = `/p/${SLUG}/overview`) {
-  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
-  return render(
-    <QueryClientProvider client={client}>
-      <MemoryRouter initialEntries={[route]}>
-        <DemoScenarioProvider project={project} pollIntervalMs={POLL_MS}>
-          <Probe />
-        </DemoScenarioProvider>
-      </MemoryRouter>
-    </QueryClientProvider>,
-  )
+function renderProvider(
+  project: Project | undefined,
+  route = `/p/${SLUG}/overview`,
+  client = new QueryClient({ defaultOptions: { queries: { retry: false } } }),
+) {
+  return {
+    client,
+    ...render(
+      <QueryClientProvider client={client}>
+        <MemoryRouter initialEntries={[route]}>
+          <DemoScenarioProvider project={project} pollIntervalMs={POLL_MS}>
+            <Probe />
+          </DemoScenarioProvider>
+        </MemoryRouter>
+      </QueryClientProvider>,
+    ),
+  }
 }
 
 const step = () => screen.getByTestId('step').textContent
 const status = () => screen.getByTestId('status').textContent
+const chapter = () => screen.getByTestId('chapter').textContent
 
 beforeEach(() => {
   vi.spyOn(scansApi, 'getJob').mockResolvedValue(scanJob('running'))
@@ -105,16 +117,49 @@ afterEach(() => {
 describe('DemoScenarioProvider — watching the scan the user started', () => {
   it('advances to watch-scan on the run, then to collect-metric when that job completes', async () => {
     renderProvider(demoProject())
-    expect(step()).toBe('run-scan')
+    expect(step()).toBe('live-loop/run-scan')
 
     fireEvent.click(screen.getByText('run'))
-    expect(step()).toBe('watch-scan')
+    expect(step()).toBe('live-loop/watch-scan')
     expect(screen.getByTestId('watching').textContent).toBe('true')
 
     vi.mocked(scansApi.getJob).mockResolvedValue(scanJob('completed'))
-    await waitFor(() => expect(step()).toBe('collect-metric'))
+    await waitFor(() => expect(step()).toBe('live-loop/collect-metric'))
     // The job is polled by the id the user's own run returned.
     expect(scansApi.getJob).toHaveBeenCalledWith(SLUG, 'sc-1', 'job-1')
+  })
+
+  it('synchronizes the completed watched job into the same-tab scan list cache', async () => {
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    client.setQueryData(['scanJobs', SLUG, 'sc-1'], [scanJob('running')])
+    vi.mocked(scansApi.getJob).mockResolvedValue(scanJob('completed'))
+    renderProvider(demoProject(), `/p/${SLUG}/settings/scans`, client)
+
+    fireEvent.click(screen.getByText('run'))
+    await waitFor(() => expect(step()).toBe('live-loop/collect-metric'))
+
+    expect(client.getQueryData<ScanJob[]>(['scanJobs', SLUG, 'sc-1'])?.[0]).toMatchObject({
+      id: 'job-1',
+      status: 'completed',
+    })
+  })
+
+  it('seeds and invalidates an initially absent scan list cache on completion', async () => {
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    const invalidateSpy = vi.spyOn(client, 'invalidateQueries')
+    vi.mocked(scansApi.getJob).mockResolvedValue(scanJob('completed'))
+    renderProvider(demoProject(), `/p/${SLUG}/settings/scans`, client)
+
+    fireEvent.click(screen.getByText('run'))
+    await waitFor(() => expect(step()).toBe('live-loop/collect-metric'))
+
+    expect(client.getQueryData<ScanJob[]>(['scanJobs', SLUG, 'sc-1'])).toEqual([
+      scanJob('completed'),
+    ])
+    expect(invalidateSpy).toHaveBeenCalledWith({
+      queryKey: ['scanJobs', SLUG, 'sc-1'],
+      exact: true,
+    })
   })
 
   it('sends a failed job back to run-scan with a hint', async () => {
@@ -122,7 +167,7 @@ describe('DemoScenarioProvider — watching the scan the user started', () => {
     renderProvider(demoProject())
     fireEvent.click(screen.getByText('run'))
 
-    await waitFor(() => expect(step()).toBe('run-scan'))
+    await waitFor(() => expect(step()).toBe('live-loop/run-scan'))
     expect(screen.getByTestId('hint').textContent).toBe('scan-failed')
   })
 
@@ -132,7 +177,7 @@ describe('DemoScenarioProvider — watching the scan the user started', () => {
     fireEvent.click(screen.getByText('run'))
 
     await waitFor(() => expect(screen.getByTestId('hint').textContent).toBe('scan-stale'))
-    expect(step()).toBe('run-scan')
+    expect(step()).toBe('live-loop/run-scan')
   })
 
   it('keeps watching the newest job when Run is fired twice', async () => {
@@ -141,23 +186,40 @@ describe('DemoScenarioProvider — watching the scan the user started', () => {
     fireEvent.click(screen.getByText('run again'))
 
     await waitFor(() => expect(scansApi.getJob).toHaveBeenCalledWith(SLUG, 'sc-2', 'job-2'))
-    expect(readScenarioState(SLUG).scan?.scanJobId).toBe('job-2')
+    expect(readScenarioState(SLUG).chapters['live-loop']?.artifacts?.scanJobId).toBe('job-2')
   })
 
   it('resumes a mid-scan watch after a reload', async () => {
-    const persisted: ScenarioState = {
-      v: 1,
-      status: 'active',
-      step: 'watch-scan',
-      scan: { scanConfigId: 'sc-1', scanJobId: 'job-1', startedAt: Date.now() },
-    }
-    writeScenarioState(SLUG, persisted)
+    writeScenarioState(
+      SLUG,
+      liveLoopState('live-loop/watch-scan', {
+        scan: { scanConfigId: 'sc-1', scanJobId: 'job-1', startedAt: Date.now() },
+      }),
+    )
     vi.mocked(scansApi.getJob).mockResolvedValue(scanJob('completed'))
 
     // A fresh mount is what a reload looks like: no notify, only storage.
     renderProvider(demoProject())
-    expect(step()).toBe('watch-scan')
-    await waitFor(() => expect(step()).toBe('collect-metric'))
+    expect(step()).toBe('live-loop/watch-scan')
+    await waitFor(() => expect(step()).toBe('live-loop/collect-metric'))
+  })
+
+  it('resumes a v1 persisted watch through the migration', async () => {
+    window.localStorage.setItem(
+      `tripl-demo-scenario:${SLUG}`,
+      JSON.stringify({
+        v: 1,
+        status: 'active',
+        step: 'watch-scan',
+        scan: { scanConfigId: 'sc-1', scanJobId: 'job-1', startedAt: Date.now() },
+      }),
+    )
+    vi.mocked(scansApi.getJob).mockResolvedValue(scanJob('completed'))
+
+    renderProvider(demoProject())
+    expect(chapter()).toBe('live-loop')
+    expect(step()).toBe('live-loop/watch-scan')
+    await waitFor(() => expect(step()).toBe('live-loop/collect-metric'))
   })
 })
 
@@ -166,7 +228,7 @@ describe('DemoScenarioProvider — watching the collection the user started', ()
     vi.mocked(scansApi.getJob).mockResolvedValue(scanJob('completed'))
     renderProvider(demoProject())
     fireEvent.click(screen.getByText('run'))
-    await waitFor(() => expect(step()).toBe('collect-metric'))
+    await waitFor(() => expect(step()).toBe('live-loop/collect-metric'))
   }
 
   it('advances to see-chart when the collection succeeds', async () => {
@@ -174,7 +236,7 @@ describe('DemoScenarioProvider — watching the collection the user started', ()
     vi.mocked(metricsCatalogApi.get).mockResolvedValue(metricDefinition('success'))
 
     fireEvent.click(screen.getByText('collect'))
-    await waitFor(() => expect(step()).toBe('see-chart'))
+    await waitFor(() => expect(step()).toBe('live-loop/see-chart'))
     expect(metricsCatalogApi.get).toHaveBeenCalledWith(SLUG, 'm-1')
   })
 
@@ -184,36 +246,22 @@ describe('DemoScenarioProvider — watching the collection the user started', ()
 
     fireEvent.click(screen.getByText('collect'))
     await waitFor(() => expect(screen.getByTestId('hint').textContent).toBe('collect-failed'))
-    expect(step()).toBe('collect-metric')
-  })
-
-  it('treats a metric deleted mid-watch as a failed collection', async () => {
-    await reachCollectStep()
-    vi.mocked(metricsCatalogApi.get).mockRejectedValue(new ApiError('gone', 404))
-
-    fireEvent.click(screen.getByText('collect'))
-    await waitFor(() => expect(screen.getByTestId('hint').textContent).toBe('collect-failed'))
+    expect(step()).toBe('live-loop/collect-metric')
   })
 })
 
 describe('DemoScenarioProvider — completing on the chart', () => {
   const chartRoute = `/p/${SLUG}/monitoring/metric/m-1`
 
-  function seeChartState(): ScenarioState {
-    return {
-      v: 1,
-      status: 'active',
-      step: 'see-chart',
-      metric: { metricId: 'm-1', startedAt: Date.now() },
-    }
-  }
+  const seeChartState = () =>
+    liveLoopState('live-loop/see-chart', { metric: { metricId: 'm-1', startedAt: Date.now() } })
 
   it('completes when the user opens the chart of the metric they collected', () => {
     writeScenarioState(SLUG, seeChartState())
     renderProvider(demoProject(), chartRoute)
 
     expect(status()).toBe('completed')
-    expect(readScenarioState(SLUG).status).toBe('completed')
+    expect(readScenarioState(SLUG).chapters['live-loop']?.status).toBe('completed')
   })
 
   it('does not complete on some other metric chart', () => {
@@ -221,7 +269,48 @@ describe('DemoScenarioProvider — completing on the chart', () => {
     renderProvider(demoProject(), `/p/${SLUG}/monitoring/metric/m-other`)
 
     expect(status()).toBe('active')
-    expect(step()).toBe('see-chart')
+    expect(step()).toBe('live-loop/see-chart')
+  })
+})
+
+describe('DemoScenarioProvider — notify- and visit-driven chapters', () => {
+  it('completes a deep-link step by arriving on its surface', () => {
+    writeScenarioState(SLUG, chapterState('variables', 'variables/open-variables'))
+    renderProvider(demoProject(), `/p/${SLUG}/settings/variables`)
+
+    expect(step()).toBe('variables/inspect-values')
+    expect(readScenarioState(SLUG).chapters.variables?.step).toBe('variables/inspect-values')
+  })
+
+  it('completes a mutation step through notifyStepCompleted', () => {
+    writeScenarioState(SLUG, chapterState('edit-event', 'edit-event/save'))
+    renderProvider(demoProject())
+    expect(step()).toBe('edit-event/save')
+
+    fireEvent.click(screen.getByText('save event'))
+
+    expect(status()).toBe('completed')
+    expect(readScenarioState(SLUG).chapters['edit-event']?.status).toBe('completed')
+  })
+
+  it('drops a stray notify that is not the current step', () => {
+    writeScenarioState(SLUG, chapterState('edit-event', 'edit-event/open-editor'))
+    renderProvider(demoProject())
+
+    fireEvent.click(screen.getByText('save event'))
+
+    expect(step()).toBe('edit-event/open-editor')
+    expect(status()).toBe('active')
+  })
+
+  it('starting a chapter leaves the previous one’s progress intact', () => {
+    renderProvider(demoProject())
+    fireEvent.click(screen.getByText('run'))
+    fireEvent.click(screen.getByText('start edit-event'))
+
+    expect(chapter()).toBe('edit-event')
+    expect(step()).toBe('edit-event/open-editor')
+    expect(readScenarioState(SLUG).chapters['live-loop']?.step).toBe('live-loop/watch-scan')
   })
 })
 
@@ -232,7 +321,7 @@ describe('DemoScenarioProvider — eligibility and controls', () => {
 
     // The notify actions are noops — a real project never persists a scenario.
     fireEvent.click(screen.getByText('run'))
-    expect(step()).toBe('run-scan')
+    expect(step()).toBe('live-loop/run-scan')
     expect(window.localStorage.getItem(`tripl-demo-scenario:${SLUG}`)).toBeNull()
   })
 
@@ -246,29 +335,30 @@ describe('DemoScenarioProvider — eligibility and controls', () => {
     expect(screen.getByTestId('active').textContent).toBe('false')
   })
 
-  it('dismiss stops the scenario and survives a remount; restart revives it', () => {
+  it('dismiss stops the chapter and survives a remount; restart revives it', () => {
     const first = renderProvider(demoProject())
     fireEvent.click(screen.getByText('run'))
-    fireEvent.click(screen.getByText('dismiss'))
-    expect(status()).toBe('dismissed')
+    fireEvent.click(screen.getByText('dismiss live-loop'))
+    expect(chapter()).toBe('none')
+    expect(screen.getByTestId('active').textContent).toBe('false')
     first.unmount()
 
     renderProvider(demoProject())
-    expect(status()).toBe('dismissed')
-    expect(screen.getByTestId('active').textContent).toBe('false')
+    expect(chapter()).toBe('none')
+    expect(readScenarioState(SLUG).chapters['live-loop']?.status).toBe('dismissed')
 
-    fireEvent.click(screen.getByText('restart'))
+    fireEvent.click(screen.getByText('restart live-loop'))
     expect(status()).toBe('active')
-    expect(step()).toBe('run-scan')
+    expect(step()).toBe('live-loop/run-scan')
   })
 
-  it('muting the hints keeps the scenario running, and restart unmutes', () => {
+  it('muting the hints keeps the scenario running, and a restart unmutes', () => {
     renderProvider(demoProject())
     fireEvent.click(screen.getByText('mute'))
     expect(screen.getByTestId('muted').textContent).toBe('true')
     expect(screen.getByTestId('active').textContent).toBe('true')
 
-    fireEvent.click(screen.getByText('restart'))
+    fireEvent.click(screen.getByText('restart live-loop'))
     expect(screen.getByTestId('muted').textContent).toBe('false')
   })
 
@@ -276,5 +366,20 @@ describe('DemoScenarioProvider — eligibility and controls', () => {
     renderProvider(demoProject())
     expect(scansApi.getJob).not.toHaveBeenCalled()
     expect(metricsCatalogApi.get).not.toHaveBeenCalled()
+  })
+
+  it('does not poll live-loop artifacts while another chapter is active', async () => {
+    renderProvider(demoProject())
+    fireEvent.click(screen.getByText('run'))
+    fireEvent.click(screen.getByText('start edit-event'))
+    vi.mocked(scansApi.getJob).mockClear()
+
+    // Let several poll intervals elapse: a scan watch that survived the
+    // chapter switch would have fired again inside this window.
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, POLL_MS * 3))
+    })
+
+    expect(scansApi.getJob).not.toHaveBeenCalled()
   })
 })

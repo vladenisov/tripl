@@ -308,4 +308,84 @@ describe('CommandPalette', () => {
       expect(screen.getByTestId('location').textContent).toBe('/p/demo/events/detail/event-1')
     })
   })
+
+  it('marks only semantically matched results with a semantic chip (tripl-odrj.5)', async () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = String(input)
+      if (url.endsWith('/api/v1/projects')) {
+        return mockJsonResponse([
+          {
+            id: 'project-1',
+            name: 'Demo',
+            slug: 'demo',
+            description: '',
+            created_at: '2026-01-01T00:00:00Z',
+            updated_at: '2026-01-01T00:00:00Z',
+            summary: {
+              event_type_count: 0,
+              event_count: 0,
+              active_event_count: 0,
+              implemented_event_count: 0,
+              review_pending_event_count: 0,
+              archived_event_count: 0,
+              variable_count: 0,
+              scan_count: 0,
+              alert_destination_count: 0,
+              monitoring_signal_count: 0,
+              latest_scan_job: null,
+              latest_signal: null,
+            },
+          },
+        ])
+      }
+      if (url.endsWith('/api/v1/projects/demo/event-types')) return mockJsonResponse([])
+      if (url.includes('/api/v1/projects/demo/search?')) {
+        return mockJsonResponse({
+          items: [
+            {
+              id: 'doc-sem',
+              entity_type: 'event',
+              entity_id: 'event-1',
+              parent_event_id: 'event-1',
+              title: 'Refund Issued',
+              subtitle: 'Billing',
+              snippet: 'customer got their money back',
+              route_path: '/p/demo/events/detail/event-1',
+              score: 8,
+              highlights: [],
+              semantic_used: true,
+            },
+            {
+              id: 'doc-lex',
+              entity_type: 'event',
+              entity_id: 'event-2',
+              parent_event_id: 'event-2',
+              title: 'Checkout Completed',
+              subtitle: 'Checkout',
+              snippet: 'money back guarantee shown',
+              route_path: '/p/demo/events/detail/event-2',
+              score: 6,
+              highlights: [],
+              semantic_used: false,
+            },
+          ],
+          total: 2,
+          semantic_used: true,
+        })
+      }
+      throw new Error(`Unhandled fetch: ${url}`)
+    })
+
+    renderHarness('/p/demo/events')
+
+    fireEvent.click(screen.getByTestId('open-palette'))
+    fireEvent.change(await screen.findByPlaceholderText(/Search projects/i), {
+      target: { value: 'money back' },
+    })
+
+    expect(await screen.findByText('Refund Issued')).toBeInTheDocument()
+    expect(screen.getByText('Checkout Completed')).toBeInTheDocument()
+    // Exactly the semantic_used row carries the chip — the lexical one does not.
+    expect(screen.getAllByText('semantic')).toHaveLength(1)
+  })
 })

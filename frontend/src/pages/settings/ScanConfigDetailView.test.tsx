@@ -4,7 +4,7 @@ import { MemoryRouter } from 'react-router-dom'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { DemoScenarioProvider } from '@/demo/DemoScenarioProvider'
 import {
-  buildScenarioSteps,
+  buildChapterSteps,
   initialScenarioState,
   readScenarioState,
 } from '@/demo/scenarioModel'
@@ -21,7 +21,7 @@ vi.mock('@/hooks/useBranch', () => ({
 }))
 
 const SLUG = 'demo'
-const STEPS = buildScenarioSteps(SLUG, initialScenarioState())
+const STEPS = buildChapterSteps(SLUG, 'live-loop', initialScenarioState())
 const RUN_SCAN_INSTRUCTION = STEPS[0].instruction
 const WATCH_SCAN_INSTRUCTION = STEPS[1].instruction
 
@@ -141,10 +141,10 @@ describe('ScanConfigDetail — coached demo scenario', () => {
 
     fireEvent.click(await screen.findByRole('button', { name: /Run now/i }))
 
-    await waitFor(() => expect(readScenarioState(SLUG).step).toBe('watch-scan'))
+    await waitFor(() => expect(readScenarioState(SLUG).chapters['live-loop']?.step).toBe('live-loop/watch-scan'))
     expect(runCalls[0].method).toBe('POST')
     // The artifact is the job this POST returned — not any job in the feed.
-    expect(readScenarioState(SLUG).scan).toMatchObject({
+    expect(readScenarioState(SLUG).chapters['live-loop']?.artifacts).toMatchObject({
       scanConfigId: 'scan-1',
       scanJobId: 'job-new',
     })

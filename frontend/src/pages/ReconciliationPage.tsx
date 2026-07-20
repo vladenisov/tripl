@@ -10,6 +10,9 @@ import {
   type ShadowEventStatus,
 } from '@/api/reconciliation'
 import { eventTypesApi } from '@/api/eventTypes'
+import { ScenarioCoachMark } from '@/demo/ScenarioCoachMark'
+import { useDemoScenarioActions } from '@/demo/demoScenarioContext'
+import { SCENARIO_SEEDED } from '@/demo/scenarioModel'
 import { Chip } from '@/components/primitives/chip'
 import { Dot } from '@/components/primitives/dot'
 import { ErrorState } from '@/components/error-state'
@@ -43,6 +46,7 @@ export default function ReconciliationPage() {
   const { slug } = useParams<{ slug: string }>()
   const branchId = useActiveBranchId()
   const qc = useQueryClient()
+  const { notifyStepCompleted } = useDemoScenarioActions()
 
   const [shadowStatus, setShadowStatus] = useState<ShadowEventStatus>('new')
   const [acceptingId, setAcceptingId] = useState<string | null>(null)
@@ -103,6 +107,9 @@ export default function ReconciliationPage() {
     onSuccess: (_data, { id }) => {
       clearRowError(id)
       invalidateShadow()
+      // Accepting a shadow event lands the reconcile chapter's step — inert
+      // outside the demo scenario (the reducer drops every other step).
+      notifyStepCompleted('reconcile/accept-shadow')
     },
     onError: (err: unknown, { id }) => {
       const msg = err instanceof Error ? err.message : 'Accept failed'
@@ -578,9 +585,15 @@ function ShadowRow({
         )}
         {item.status === 'new' && (
           <div className="flex shrink-0 gap-1.5">
-            <Button size="sm" variant="default" disabled={isActing} onClick={onAccept}>
-              Accept
-            </Button>
+            {/* Exactly one row coaches: the seeded shadow candidate. */}
+            <ScenarioCoachMark
+              step="reconcile/accept-shadow"
+              when={item.event_name === SCENARIO_SEEDED.shadowCandidateName}
+            >
+              <Button size="sm" variant="default" disabled={isActing} onClick={onAccept}>
+                Accept
+              </Button>
+            </ScenarioCoachMark>
             <Button size="sm" variant="ghost" disabled={isActing} onClick={onDismiss}>
               Dismiss
             </Button>

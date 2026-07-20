@@ -9,12 +9,14 @@
 
 import { useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
-import { ArrowRight, Compass, Play, Sparkles, X } from 'lucide-react'
+import { ArrowRight, Compass, Sparkles, X } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import type { Project } from '@/types'
 import { DemoDataBadge } from './capabilityBadges'
+import { ChapterPicker } from './ChapterPicker'
 import { useDemoScenario, useDemoScenarioActions } from './demoScenarioContext'
 import { ProductTour } from './ProductTour'
+import type { ChapterListEntry } from './scenarioModel'
 import { buildMetricBuildingBlocks } from './tourSteps'
 
 const DISMISS_PREFIX = 'tripl-demo-welcome-dismissed:'
@@ -35,17 +37,17 @@ export function DemoWelcomePanel({ project }: { project: Project }) {
   const [tourOpen, setTourOpen] = useState(false)
   const [, setTick] = useState(0)
   const navigate = useNavigate()
-  const { available, steps } = useDemoScenario()
-  const { restart } = useDemoScenarioActions()
+  const { available, chapters } = useDemoScenario()
+  const { startChapter } = useDemoScenarioActions()
 
   if (readDismissed(project.slug)) return null
 
   const blocks = buildMetricBuildingBlocks(project.slug)
 
-  /** Start the chain from the top and drop the user on the first step's surface. */
-  function startScenario(): void {
-    restart()
-    navigate(steps[0].to)
+  /** Start (or resume) a chapter and drop the user on its first surface. */
+  function openChapter(chapter: ChapterListEntry): void {
+    startChapter(chapter.id)
+    navigate(chapter.to)
   }
 
   function dismiss(): void {
@@ -87,12 +89,6 @@ export function DemoWelcomePanel({ project }: { project: Project }) {
       </p>
 
       <div className="mt-3 flex flex-wrap gap-2">
-        {available && (
-          <Button size="sm" onClick={startScenario}>
-            <Play className="h-3.5 w-3.5" />
-            Run the scenario
-          </Button>
-        )}
         <Button size="sm" variant={available ? 'outline' : 'default'} onClick={() => setTourOpen(true)}>
           <Compass className="h-3.5 w-3.5" />
           Take the tour
@@ -104,6 +100,15 @@ export function DemoWelcomePanel({ project }: { project: Project }) {
           </Link>
         </Button>
       </div>
+
+      {available && (
+        <div className="mt-4 max-w-xl">
+          <p className="mb-1.5 text-[10px] font-semibold uppercase tracking-[0.07em]" style={{ color: 'var(--fg-faint)' }}>
+            Coached chapters
+          </p>
+          <ChapterPicker chapters={chapters} onPick={openChapter} compact />
+        </div>
+      )}
 
       <div className="mt-4">
         <p className="mb-1.5 text-[10px] font-semibold uppercase tracking-[0.07em]" style={{ color: 'var(--fg-faint)' }}>

@@ -1,0 +1,533 @@
+"""Keyless demo semantic search: fixture loader, recipes, and generator script.
+
+Everything here runs on SQLite with zero network. The Postgres-only pieces
+(the ``CAST(... AS vector)`` UPDATE and the semantic SQL leg) are exercised
+only through their dialect guards, mirroring how the rest of the suite treats
+pgvector-dependent paths.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import importlib.util
+import json
+import sys
+import uuid
+from collections.abc import Iterator
+from dataclasses import replace
+from pathlib import Path
+from types import ModuleType, SimpleNamespace
+from typing import cast
+
+import numpy as np
+import pytest
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from tripl.config import settings
+from tripl.models.plan_branch import PlanBranch
+from tripl.models.search_document import SearchDocument
+from tripl.schemas.search import SearchResult
+from tripl.services._search_documents import (
+    EMBED_TEXT_MAX_CHARS,
+    build_documents,
+    embed_text_for,
+)
+from tripl.services.app_settings_service import env_ai_config
+from tripl.services.demo import search_embeddings
+from tripl.services.demo.scenario import DEMO_RECIPE_VERSION
+from tripl.services.demo.search_embeddings import (
+    apply_demo_embedding_fixture,
+    demo_query_embedding,
+    embed_text_key,
+    load_demo_embedding_fixture,
+    normalize_demo_query,
+)
+from tripl.services.search_service import (
+    _apply_demo_search_embeddings,
+    _embedding_state_reusable,
+)
+from tripl.tests.conftest import TestSessionLocal
+from tripl.worker.tasks import search as search_tasks
+
+# Queries the product copy tells demo users to try (frontend/src/demo/tourSteps.ts
+# and scenarioModel.ts). They must stay in the generator's query list so the
+# shipped fixture always carries their vectors.
+_ADVERTISED_DEMO_QUERIES = ("purchase funnel", "money back")
+
+_DIMS = settings.search_embedding_dimensions
+
+
+def _write_synthetic_fixture(
+    path: Path,
+    *,
+    recipe_version: str = DEMO_RECIPE_VERSION,
+    dimensions: int | None = None,
+    doc_items: dict[str, list[float]] | None = None,
+    query_items: dict[str, list[float]] | None = None,
+) -> None:
+    dims = dimensions if dimensions is not None else _DIMS
+    doc_items = doc_items or {}
+    query_items = query_items or {}
+    manifest = {
+        "recipe_version": recipe_version,
+        "model": "text-embedding-3-small",
+        "dimensions": dims,
+        "doc_keys": list(doc_items),
+        "query_keys": list(query_items),
+    }
+    np.savez_compressed(
+        path,
+        manifest=np.array(json.dumps(manifest)),
+        doc_vectors=np.asarray(list(doc_items.values()), dtype=np.float16).reshape(
+            len(doc_items), dims
+        ),
+        query_vectors=np.asarray(list(query_items.values()), dtype=np.float16).reshape(
+            len(query_items), dims
+        ),
+    )
+
+
+@pytest.fixture
+def fixture_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Path]:
+    """Point the loader at a per-test fixture location and reset its cache."""
+    path = tmp_path / "search_embeddings_v4.npz"
+    monkeypatch.setattr(search_embeddings, "_FIXTURE_PATH", path)
+    search_embeddings._parse_fixture.cache_clear()
+    yield path
+    search_embeddings._parse_fixture.cache_clear()
+
+
+def _load_generator_module() -> ModuleType:
+    script_path = (
+        Path(__file__).resolve().parents[3] / "scripts" / "generate_demo_search_embeddings.py"
+    )
+    spec = importlib.util.spec_from_file_location("_demo_embedding_generator", script_path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    # Register before exec: dataclass annotation resolution looks the module
+    # up in sys.modules while the script body executes.
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_embed_text_helper_matches_worker_recipe() -> None:
+    doc = SearchDocument(
+        title="Purchase Completed",
+        subtitle="Commerce",
+        keywords="purchase revenue",
+        body="B" * 10_000,
+    )
+    text = search_tasks._embed_text(doc)
+    assert text == embed_text_for(
+        title=doc.title,
+        subtitle=doc.subtitle,
+        keywords=doc.keywords,
+        body=doc.body,
+    )
+    assert text.startswith("Purchase Completed\nCommerce\npurchase revenue\nB")
+    assert len(text) == EMBED_TEXT_MAX_CHARS == search_tasks._EMBED_TEXT_MAX_CHARS
+
+
+def test_normalize_demo_query_casefolds_and_collapses_whitespace() -> None:
+    assert normalize_demo_query("  Purchase \t  FUNNEL \n") == "purchase funnel"
+    assert normalize_demo_query("Onboarding Drop-Off") == "onboarding drop-off"
+    assert normalize_demo_query("") == ""
+
+
+def test_embed_text_key_is_sha256_of_utf8_text() -> None:
+    text = "Trial Started\nCommerce\ntrial subscription\nbody"
+    assert embed_text_key(text) == hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def test_loader_returns_none_when_fixture_missing(fixture_path: Path) -> None:
+    assert load_demo_embedding_fixture() is None
+    assert demo_query_embedding("purchase funnel") is None
+
+
+def test_loader_rejects_recipe_version_mismatch(fixture_path: Path) -> None:
+    _write_synthetic_fixture(fixture_path, recipe_version="999")
+    assert load_demo_embedding_fixture() is None
+
+
+def test_loader_rejects_dimension_mismatch(fixture_path: Path) -> None:
+    _write_synthetic_fixture(
+        fixture_path,
+        dimensions=_DIMS + 1,
+        doc_items={"a" * 64: [0.5] * (_DIMS + 1)},
+    )
+    assert load_demo_embedding_fixture() is None
+
+
+def test_loader_rejects_unreadable_file(fixture_path: Path) -> None:
+    fixture_path.write_bytes(b"not an npz archive")
+    assert load_demo_embedding_fixture() is None
+
+
+def test_loader_rejects_truncated_or_corrupt_zip(fixture_path: Path) -> None:
+    """Files with valid zip magic raise BadZipFile (not ValueError) from np.load.
+
+    Simulates an interrupted generator run / partial deploy; the loader's
+    never-raise contract must hold, or every demo search and provisioning
+    request 500s.
+    """
+    _write_synthetic_fixture(fixture_path, query_items={"purchase funnel": [0.25] * _DIMS})
+    raw = fixture_path.read_bytes()
+    fixture_path.write_bytes(raw[: len(raw) * 3 // 5])
+    assert load_demo_embedding_fixture() is None
+
+    search_embeddings._parse_fixture.cache_clear()
+    fixture_path.write_bytes(b"PK\x03\x04" + b"\x00" * 64)
+    assert load_demo_embedding_fixture() is None
+
+
+def test_loader_roundtrips_synthetic_fixture(fixture_path: Path) -> None:
+    doc_key = "d" * 64
+    _write_synthetic_fixture(
+        fixture_path,
+        doc_items={doc_key: [0.5] * _DIMS},
+        query_items={"purchase funnel": [0.25] * _DIMS},
+    )
+    fixture = load_demo_embedding_fixture()
+    assert fixture is not None
+    assert fixture.dimensions == _DIMS
+    assert fixture.model == "text-embedding-3-small"
+    # 0.5 / 0.25 are exactly representable in float16, so the roundtrip is exact.
+    assert fixture.doc_vectors[doc_key] == [0.5] * _DIMS
+
+    # Query lookup normalizes before matching; misses return None.
+    assert demo_query_embedding("  Purchase   FUNNEL ") == [0.25] * _DIMS
+    assert demo_query_embedding("nonexistent query") is None
+
+
+async def test_apply_helper_is_noop_on_sqlite(fixture_path: Path) -> None:
+    _write_synthetic_fixture(
+        fixture_path,
+        query_items={"purchase funnel": [0.25] * _DIMS},
+    )
+    async with TestSessionLocal() as session:
+        applied = await _apply_demo_search_embeddings(
+            session,
+            project_id=uuid.uuid4(),
+            branch_id=uuid.uuid4(),
+            ai_config=env_ai_config(),
+        )
+    assert applied == 0
+
+
+class _StubResult:
+    def __init__(self, rows: list[SimpleNamespace]) -> None:
+        self._rows = rows
+
+    def all(self) -> list[SimpleNamespace]:
+        return self._rows
+
+
+class _StubSession:
+    """Duck-typed AsyncSession: the first execute is the row SELECT, every
+    subsequent parameterized execute is a stamping UPDATE."""
+
+    def __init__(self, rows: list[SimpleNamespace]) -> None:
+        self._rows = rows
+        self.update_params: list[dict[str, object]] = []
+
+    async def execute(
+        self, statement: object, params: dict[str, object] | None = None
+    ) -> _StubResult:
+        if params is None:
+            return _StubResult(self._rows)
+        self.update_params.append(params)
+        return _StubResult([])
+
+
+def _doc_row(
+    *,
+    title: str,
+    subtitle: str = "",
+    keywords: str = "",
+    body: str = "",
+    embedding_status: str = "pending",
+) -> SimpleNamespace:
+    return SimpleNamespace(
+        id=uuid.uuid4(),
+        title=title,
+        subtitle=subtitle,
+        keywords=keywords,
+        body=body,
+        embedding_status=embedding_status,
+    )
+
+
+async def test_apply_fixture_stamps_only_matching_non_ready_rows(fixture_path: Path) -> None:
+    matched = _doc_row(
+        title="Buy Button Click",
+        subtitle="UI Interaction",
+        keywords="buy click",
+        body="User taps the buy button",
+    )
+    already_ready = _doc_row(
+        title="Buy Button Click",
+        subtitle="UI Interaction",
+        keywords="buy click",
+        body="User taps the buy button",
+        embedding_status="ready",
+    )
+    unmatched = _doc_row(title="Not In Fixture", embedding_status="disabled")
+    matched_key = embed_text_key(
+        embed_text_for(
+            title=matched.title,
+            subtitle=matched.subtitle,
+            keywords=matched.keywords,
+            body=matched.body,
+        )
+    )
+    _write_synthetic_fixture(fixture_path, doc_items={matched_key: [0.5] * _DIMS})
+
+    session = _StubSession([matched, already_ready, unmatched])
+    applied = await apply_demo_embedding_fixture(
+        cast(AsyncSession, session),
+        project_id=uuid.uuid4(),
+        branch_id=uuid.uuid4(),
+    )
+
+    # Idempotency: 'ready' rows are skipped; unmatched rows are left untouched.
+    assert applied == 1
+    assert len(session.update_params) == 1
+    params = session.update_params[0]
+    assert params["document_id"] == matched.id
+    assert params["embedding_model"] == "text-embedding-3-small"
+    embedding_param = params["embedding"]
+    assert isinstance(embedding_param, str)
+    assert embedding_param.startswith("[0.50000000,")
+
+
+class _FakePostgresDemoSession:
+    """Postgres-flavored session for exercising _apply_demo_search_embeddings
+    guards; any row access is a test failure."""
+
+    bind = SimpleNamespace(dialect=SimpleNamespace(name="postgresql"))
+
+    async def scalar(self, statement: object) -> bool:
+        return True
+
+    async def execute(self, statement: object, params: dict[str, object] | None = None) -> None:
+        raise AssertionError("must not touch rows when the guard should skip stamping")
+
+
+async def test_apply_helper_skips_stamping_when_live_model_differs(fixture_path: Path) -> None:
+    """Live embeddings under a non-fixture model: stamping would mix vector
+    spaces and hide the pending rows from the embedding worker."""
+    _write_synthetic_fixture(fixture_path, query_items={"purchase funnel": [0.25] * _DIMS})
+    ai_config = replace(
+        env_ai_config(),
+        search_embeddings_enabled=True,
+        search_embedding_model="text-embedding-3-large",
+    )
+    applied = await _apply_demo_search_embeddings(
+        cast(AsyncSession, _FakePostgresDemoSession()),
+        project_id=uuid.uuid4(),
+        branch_id=uuid.uuid4(),
+        ai_config=ai_config,
+    )
+    assert applied == 0
+
+
+def test_embedding_state_reusable_keeps_fixture_stamped_rows_when_disabled() -> None:
+    fixture_model = "text-embedding-3-small"
+    # Keyless demo: a stamped row ('ready' under the fixture's model) survives.
+    assert _embedding_state_reusable(
+        status="ready",
+        model=fixture_model,
+        enabled=False,
+        current_model=fixture_model,
+        demo_fixture_model=fixture_model,
+    )
+    # A ready row under any other model is still dropped.
+    assert not _embedding_state_reusable(
+        status="ready",
+        model="text-embedding-3-large",
+        enabled=False,
+        current_model=fixture_model,
+        demo_fixture_model=fixture_model,
+    )
+    # Without demo fixture context the pre-existing rule is unchanged.
+    assert not _embedding_state_reusable(
+        status="ready",
+        model=fixture_model,
+        enabled=False,
+        current_model=fixture_model,
+        demo_fixture_model=None,
+    )
+    assert _embedding_state_reusable(
+        status="disabled",
+        model=None,
+        enabled=False,
+        current_model=fixture_model,
+        demo_fixture_model=fixture_model,
+    )
+
+
+async def test_postgres_search_demo_fallback_uses_canned_query_vector(
+    fixture_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _write_synthetic_fixture(fixture_path, query_items={"purchase funnel": [0.25] * _DIMS})
+    from tripl.services import _search_query
+
+    semantic_calls: list[list[float]] = []
+
+    async def fake_lexical(session: AsyncSession, **kwargs: object) -> list[SearchResult]:
+        return []
+
+    async def fake_semantic(
+        session: AsyncSession, *, embedding: list[float], **kwargs: object
+    ) -> list[SearchResult]:
+        semantic_calls.append(embedding)
+        return []
+
+    monkeypatch.setattr(_search_query, "postgres_lexical_search", fake_lexical)
+    monkeypatch.setattr(_search_query, "postgres_semantic_search", fake_semantic)
+
+    async def run(query: str, *, project_is_demo: bool) -> bool:
+        async with TestSessionLocal() as session:
+            _, semantic_used = await _search_query.postgres_search(
+                session,
+                project_id=uuid.uuid4(),
+                branch_id=uuid.uuid4(),
+                query=query,
+                entity_types=None,
+                include_archived=False,
+                limit=10,
+                project_is_demo=project_is_demo,
+            )
+        return semantic_used
+
+    # Canned-vector hit: normalization applies, semantic leg runs, flag flips.
+    assert await run("  Purchase   FUNNEL ", project_is_demo=True) is True
+    assert semantic_calls == [[0.25] * _DIMS]
+
+    # Non-demo projects never consult the fixture.
+    semantic_calls.clear()
+    assert await run("purchase funnel", project_is_demo=False) is False
+    assert semantic_calls == []
+
+    # Fixture misses and sub-3-character queries stay lexical-only.
+    assert await run("unknown demo query", project_is_demo=True) is False
+    assert await run("pu", project_is_demo=True) is False
+    assert semantic_calls == []
+
+
+async def test_generator_script_end_to_end_with_fake_embedder(
+    fixture_path: Path,
+) -> None:
+    generator = _load_generator_module()
+
+    calls: list[int] = []
+
+    def fake_embedder(texts: list[str]) -> list[list[float]]:
+        calls.append(len(texts))
+        vectors: list[list[float]] = []
+        for text in texts:
+            seed = int(hashlib.sha256(text.encode("utf-8")).hexdigest()[:8], 16)
+            value = ((seed % 128) - 64) / 128.0
+            vectors.append([value] * _DIMS)
+        return vectors
+
+    result = await generator.generate_fixture(
+        fixture_path,
+        embedder=fake_embedder,
+        model="fake-embedding-model",
+        batch_size=32,
+    )
+    assert result.doc_count > 0
+    assert result.query_count == len(generator.DEMO_SEARCH_QUERIES)
+    assert result.dimensions == _DIMS
+    assert all(batch <= 32 for batch in calls)
+
+    # The written fixture must round-trip through the runtime loader.
+    search_embeddings._parse_fixture.cache_clear()
+    fixture = load_demo_embedding_fixture()
+    assert fixture is not None
+    assert fixture.model == "fake-embedding-model"
+    assert len(fixture.doc_vectors) == result.doc_count
+    assert set(fixture.query_vectors) == {
+        normalize_demo_query(query) for query in generator.DEMO_SEARCH_QUERIES
+    }
+    for query in generator.DEMO_SEARCH_QUERIES:
+        embedding = demo_query_embedding(query)
+        assert embedding is not None
+        assert len(embedding) == _DIMS
+
+
+def test_advertised_demo_queries_are_in_generator_query_list() -> None:
+    """The tour/scenario copy hardcodes queries; the generator list must keep
+    covering them or the advertised flow silently loses its semantic leg."""
+    generator = _load_generator_module()
+    normalized = {normalize_demo_query(query) for query in generator.DEMO_SEARCH_QUERIES}
+    advertised = {normalize_demo_query(query) for query in _ADVERTISED_DEMO_QUERIES}
+    assert advertised <= normalized
+
+
+async def test_shipped_fixture_covers_current_demo_documents() -> None:
+    """CI freshness gate: every demo document's embed text is in the fixture.
+
+    Skips until a maintainer generates the real fixture; once it ships, this
+    fails whenever the demo recipe's searchable text drifts from the fixture,
+    pointing at the regeneration script.
+    """
+    if not search_embeddings.DEFAULT_FIXTURE_PATH.is_file():
+        pytest.skip("fixture not generated yet — run scripts/generate_demo_search_embeddings.py")
+
+    search_embeddings._parse_fixture.cache_clear()
+    fixture = load_demo_embedding_fixture()
+    # The loader already rejects recipe/dimension mismatches; a None here means
+    # the shipped fixture is stale for the current recipe or configuration.
+    assert fixture is not None, (
+        "shipped fixture rejected by loader — regenerate via "
+        "scripts/generate_demo_search_embeddings.py"
+    )
+    assert fixture.dimensions == _DIMS
+    assert fixture.model == settings.search_embedding_model
+
+    # Query-vector freshness: every generator query (a superset of the queries
+    # the tour copy advertises, per the test above) must have a canned vector.
+    generator = _load_generator_module()
+    expected_queries = {normalize_demo_query(query) for query in generator.DEMO_SEARCH_QUERIES}
+    missing_queries = expected_queries - set(fixture.query_vectors)
+    assert not missing_queries, (
+        "demo queries missing from the embedding fixture (regenerate via "
+        f"scripts/generate_demo_search_embeddings.py): {sorted(missing_queries)}"
+    )
+
+    from tripl.services import demo_service
+
+    async with TestSessionLocal() as session:
+        project = await demo_service.create_demo_project(session, slug="demo-fixture-check")
+        branch_ids = list(
+            (
+                await session.execute(
+                    select(PlanBranch.id).where(PlanBranch.project_id == project.id)
+                )
+            )
+            .scalars()
+            .all()
+        )
+        assert len(branch_ids) >= 2  # main + the deep-copied feature branch
+        missing: list[str] = []
+        for branch_id in branch_ids:
+            documents = await build_documents(session, project.id, branch_id, project.slug)
+            for doc in documents:
+                key = embed_text_key(
+                    embed_text_for(
+                        title=doc.title,
+                        subtitle=doc.subtitle,
+                        keywords=doc.keywords,
+                        body=doc.body,
+                    )
+                )
+                if key not in fixture.doc_vectors:
+                    missing.append(f"{doc.entity_type}:{doc.title}")
+    assert not missing, (
+        "demo documents missing from the embedding fixture (regenerate via "
+        f"scripts/generate_demo_search_embeddings.py): {missing}"
+    )

@@ -2,6 +2,11 @@ import { render, screen, fireEvent } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { ProductTour } from './ProductTour'
+import { buildTourSteps } from './tourSteps'
+
+// Derived, not hardcoded: adding a tour step must not break these tests.
+const TOTAL_STEPS = buildTourSteps('acme').length
+const LAST_INDEX = TOTAL_STEPS - 1
 
 function renderTour(onOpenChange: (open: boolean) => void = () => {}) {
   return render(
@@ -45,10 +50,10 @@ describe('ProductTour — progress survives the navigation it asks for (tripl-2s
   })
 
   it('starts over once the tour is finished', () => {
-    window.localStorage.setItem('tripl-tour:acme', '9')
+    window.localStorage.setItem('tripl-tour:acme', String(LAST_INDEX))
     const { unmount } = renderTour()
 
-    expect(screen.getByText(/^Step 10 of/)).toBeInTheDocument()
+    expect(screen.getByText(new RegExp(`^Step ${TOTAL_STEPS} of`))).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: /^finish$/i }))
     expect(window.localStorage.getItem('tripl-tour:acme')).toBe('0')
 
@@ -65,10 +70,18 @@ describe('ProductTour — progress survives the navigation it asks for (tripl-2s
 })
 
 describe('ProductTour', () => {
+  it('contains wide chapter content without creating a horizontal scroll gutter', () => {
+    renderTour()
+
+    expect(screen.getByRole('dialog')).toHaveClass('min-w-0', 'overflow-x-hidden')
+  })
+
   it('opens on the first step and links it to the real surface', () => {
     renderTour()
 
-    expect(screen.getByText('Step 1 of 10 · a quick guided path through tripl.')).toBeInTheDocument()
+    expect(
+      screen.getByText(`Step 1 of ${TOTAL_STEPS} · a quick guided path through tripl.`),
+    ).toBeInTheDocument()
     const open = screen.getByRole('link', { name: /open events & tracking plan/i })
     expect(open).toHaveAttribute('href', '/p/acme/events')
   })
@@ -76,7 +89,7 @@ describe('ProductTour', () => {
   it('advances through the steps', () => {
     renderTour()
     fireEvent.click(screen.getByRole('button', { name: /^next$/i }))
-    expect(screen.getByText(/Step 2 of 10/)).toBeInTheDocument()
+    expect(screen.getByText(new RegExp(`Step 2 of ${TOTAL_STEPS}`))).toBeInTheDocument()
   })
 
   it('exposes a direct index to every surface plus the metric building blocks', () => {
@@ -107,8 +120,8 @@ describe('ProductTour', () => {
 
   it('offers a Finish action on the final step in place of Next', () => {
     renderTour()
-    // Step to the end (10 steps → 9 advances).
-    for (let i = 0; i < 9; i += 1) {
+    // Step to the end (N steps → N-1 advances).
+    for (let i = 0; i < LAST_INDEX; i += 1) {
       fireEvent.click(screen.getByRole('button', { name: /^next$/i }))
     }
     expect(screen.queryByRole('button', { name: /^next$/i })).not.toBeInTheDocument()

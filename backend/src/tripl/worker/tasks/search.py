@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 
 from tripl.models.search_document import SearchDocument
 from tripl.services import app_settings_service
+from tripl.services._search_documents import EMBED_TEXT_MAX_CHARS, embed_text_for
 from tripl.services.app_settings_service import AiConfig
 from tripl.services.embedding_service import embed_texts
 from tripl.services.search_service import sanitize_embedding
@@ -19,11 +20,10 @@ from tripl.worker.db import _get_sync_session
 
 logger = logging.getLogger(__name__)
 
-# Cap on the text embedded per document. The embedding model accepts 8191
-# tokens; 6000 characters stays safely under that even for Cyrillic-heavy
-# content (low chars-per-token). The 16k per-text cap in embedding_service
-# remains as a backstop.
-_EMBED_TEXT_MAX_CHARS = 6000
+# Backwards-compatible alias; the recipe (and its rationale) lives next to the
+# document builders in ``_search_documents`` so the demo fixture pipeline
+# embeds byte-identical text.
+_EMBED_TEXT_MAX_CHARS = EMBED_TEXT_MAX_CHARS
 
 # Delay before retrying a batch whose embedding request failed outright.
 _BATCH_RETRY_COUNTDOWN_SECONDS = 30
@@ -34,14 +34,13 @@ class _BatchEmbeddingFailedError(Exception):
 
 
 def _embed_text(doc: SearchDocument) -> str:
-    """Build the text that gets embedded for one search document.
-
-    Keywords come BEFORE the potentially huge body so that truncation drops
-    the low-signal text first, and the joined text is capped at
-    ``_EMBED_TEXT_MAX_CHARS`` characters.
-    """
-    joined = "\n".join([doc.title, doc.subtitle, doc.keywords, doc.body]).strip()
-    return joined[:_EMBED_TEXT_MAX_CHARS]
+    """Build the text that gets embedded for one search document."""
+    return embed_text_for(
+        title=doc.title,
+        subtitle=doc.subtitle,
+        keywords=doc.keywords,
+        body=doc.body,
+    )
 
 
 def _embed_documents(

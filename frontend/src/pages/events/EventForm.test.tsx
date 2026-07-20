@@ -1,10 +1,14 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { createElement, type ReactNode } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import type { Event as TEvent, EventType, Variable } from '@/types'
+import { MemoryRouter } from 'react-router-dom'
+import type { Event as TEvent, EventType, Project, Variable } from '@/types'
 import { eventsApi } from '@/api/events'
 import { scansApi } from '@/api/scans'
+import { DemoScenarioProvider } from '@/demo/DemoScenarioProvider'
+import { readScenarioState, writeScenarioState } from '@/demo/scenarioModel'
+import { chapterState } from '@/demo/scenarioTestState'
 import { EventForm } from './EventForm'
 
 vi.mock('@/api/events', () => ({
@@ -83,6 +87,22 @@ const JSON_TEMPLATE_EVENT_TYPE = {
   ],
 } as unknown as EventType
 
+const JSON_PRODUCT_ID_EVENT_TYPE = {
+  ...EVENT_TYPE,
+  field_definitions: [
+    {
+      id: 'field-json-product-id',
+      event_type_id: 'et-1',
+      name: 'product_id',
+      display_name: 'Product ID',
+      field_type: 'json',
+      is_required: false,
+      enum_options: null,
+      order: 0,
+    },
+  ],
+} as unknown as EventType
+
 const TEMPLATE_VARIABLE: Variable = {
   id: 'var-1',
   project_id: 'project-1',
@@ -92,6 +112,41 @@ const TEMPLATE_VARIABLE: Variable = {
   description: 'Experiment variant',
   allowed_values: ['control', 'treatment', 'holdout', 'overflow'],
   bindings: ['payload.variant'],
+}
+
+const EDIT_EVENT_TYPE = {
+  ...EVENT_TYPE,
+  name: 'purchase',
+  display_name: 'Purchase',
+  field_definitions: [
+    {
+      id: 'field-product-id',
+      event_type_id: 'et-1',
+      name: 'product_id',
+      display_name: 'Product ID',
+      field_type: 'string',
+      is_required: false,
+      enum_options: null,
+      order: 0,
+    },
+  ],
+} as unknown as EventType
+
+const EDIT_EVENT = {
+  ...EXISTING_EVENT,
+  name: 'Trial Started',
+  field_values: [{ field_definition_id: 'field-product-id', value: '${product_id}' }],
+} as unknown as TEvent
+
+const PRODUCT_ID_VARIABLE: Variable = {
+  id: 'var-product-id',
+  project_id: 'project-1',
+  name: 'product_id',
+  source_name: 'product_id',
+  variable_type: 'string',
+  description: 'Store product / SKU identifier.',
+  allowed_values: [],
+  bindings: [],
 }
 
 let queryClient: QueryClient
@@ -160,6 +215,14 @@ describe('EventForm name field', () => {
 })
 
 describe('EventForm template authoring', () => {
+  it('does not constrain an uncoached JSON field merely because it is named product_id', () => {
+    renderForm(null, { eventTypes: [JSON_PRODUCT_ID_EVENT_TYPE] })
+
+    expect(
+      screen.getByLabelText('Product ID').closest('[class~="max-w-[320px]"]'),
+    ).toBeNull()
+  })
+
   it('shows rich ${ suggestions, inline unknown-token warnings, and copyable documented values', () => {
     const writeText = vi.fn().mockResolvedValue(undefined)
     Object.defineProperty(navigator, 'clipboard', {
@@ -174,10 +237,22 @@ describe('EventForm template authoring', () => {
     const input = screen.getByLabelText('Variant')
     fireEvent.change(input, { target: { value: '${' } })
 
-    expect(screen.getByRole('option', { name: /\$\{variant\}/ })).toBeInTheDocument()
-    expect(screen.getByText('Experiment variant')).toBeInTheDocument()
-    expect(screen.getByText('payload.variant')).toBeInTheDocument()
-    expect(screen.getByText('control · treatment · holdout')).toBeInTheDocument()
+    const selectedSuggestion = screen.getByRole('option', { name: /\$\{variant\}/ })
+    expect(selectedSuggestion).toBeInTheDocument()
+    expect(within(selectedSuggestion).getByText('${variant}')).toHaveClass(
+      'text-accent-foreground',
+    )
+    const description = within(selectedSuggestion).getByText('Experiment variant')
+    expect(description.parentElement).toHaveClass('min-w-0', 'flex-1', 'overflow-hidden')
+    expect(description).toHaveClass('w-full', 'truncate', 'text-accent-foreground/80')
+    expect(within(selectedSuggestion).getByText('payload.variant')).toHaveClass(
+      'w-full',
+      'truncate',
+    )
+    expect(within(selectedSuggestion).getByText('control · treatment · holdout')).toHaveClass(
+      'w-full',
+      'truncate',
+    )
 
     fireEvent.change(input, { target: { value: '${missing}' } })
     expect(screen.getByText('Unknown variable token: ${missing}')).toBeInTheDocument()
@@ -295,5 +370,133 @@ describe('EventForm save and add another', () => {
     expect(screen.getByLabelText('Variant')).toHaveValue('b2')
     expect(screen.getByLabelText('Payload')).toHaveValue('{"source":"cta"}')
     expect(screen.getByText('critical')).toBeInTheDocument()
+  })
+})
+
+describe('EventForm — coached demo scenario (tripl-odrj.4)', () => {
+  const SLUG = 'demo'
+
+  const demoProject = {
+    id: 'p-1',
+    name: 'Demo',
+    slug: SLUG,
+    created_at: '2026-07-01T00:00:00Z',
+    updated_at: '2026-07-01T00:00:00Z',
+    is_demo: true,
+    generation_status: 'ready',
+  } as unknown as Project
+
+  function renderCoachedEditEvent(event: TEvent = EDIT_EVENT) {
+    return render(
+      createElement(
+        QueryClientProvider,
+        { client: queryClient },
+        createElement(
+          MemoryRouter,
+          { initialEntries: [`/p/${SLUG}/events/purchase/ev-1/edit`] },
+          createElement(
+            DemoScenarioProvider,
+            { project: demoProject, pollIntervalMs: 10_000, children: null },
+            createElement(EventForm, {
+              slug: SLUG,
+              eventTypes: [EDIT_EVENT_TYPE],
+              metaFields: [],
+              projectVariables: [PRODUCT_ID_VARIABLE],
+              event,
+              onClose: () => {},
+            }),
+          ),
+        ),
+      ),
+    )
+  }
+
+  afterEach(() => {
+    window.localStorage.clear()
+  })
+
+  it('coaches a documented Product ID and then restores the seeded variable token', async () => {
+    writeScenarioState(SLUG, chapterState('edit-event', 'edit-event/set-value'))
+
+    renderCoachedEditEvent()
+
+    const productId = screen.getByLabelText('Product ID')
+    expect(productId).toHaveAttribute('role', 'combobox')
+    expect(productId).toHaveValue('${product_id}')
+    const coachTarget = productId.closest('[data-coach-target="edit-event/set-value"]')
+    expect(coachTarget).not.toBeNull()
+    expect(coachTarget).toHaveClass('max-w-[320px]')
+    expect(coachTarget).toContainElement(productId)
+    expect(
+      screen.getByText(
+        'Replace the current Product ID value with prod_monthly. The guide advances automatically — do not save yet.',
+      ),
+    ).toBeInTheDocument()
+    fireEvent.change(productId, { target: { value: 'prod_monthly' } })
+
+    await waitFor(() =>
+      expect(readScenarioState(SLUG).chapters['edit-event']?.step).toBe('edit-event/set-token'),
+    )
+    expect(
+      screen.getByText(
+        'Replace prod_monthly: type $ in Product ID, choose ${product_id}, then follow the guide to Save.',
+      ),
+    ).toBeInTheDocument()
+
+    fireEvent.change(productId, { target: { value: '$' } })
+    fireEvent.mouseDown(screen.getByRole('option', { name: /\$\{product_id\}/ }))
+
+    await waitFor(() => {
+      expect(readScenarioState(SLUG).chapters['edit-event']?.step).toBe('edit-event/save')
+      expect(screen.getByLabelText('Product ID')).toHaveValue('${product_id}')
+    })
+    expect(screen.getByText('Save the event — the tracking plan updates immediately.')).toBeInTheDocument()
+  })
+
+  it('catches up when the rendered Product ID already satisfies the active step', async () => {
+    writeScenarioState(SLUG, chapterState('edit-event', 'edit-event/set-value'))
+    renderCoachedEditEvent({
+      ...EDIT_EVENT,
+      field_values: [{ field_definition_id: 'field-product-id', value: 'prod_monthly' }],
+    } as TEvent)
+
+    await waitFor(() =>
+      expect(readScenarioState(SLUG).chapters['edit-event']?.step).toBe('edit-event/set-token'),
+    )
+    expect(screen.getByText(/type \$ in Product ID/)).toBeInTheDocument()
+  })
+
+  it("completes the edit-event chapter's save step through the real save mutation", async () => {
+    writeScenarioState(SLUG, chapterState('edit-event', 'edit-event/save'))
+    vi.mocked(eventsApi.update).mockResolvedValue({} as never)
+
+    render(
+      createElement(
+        QueryClientProvider,
+        { client: queryClient },
+        createElement(
+          MemoryRouter,
+          { initialEntries: [`/p/${SLUG}/events/all/ev-1/edit`] },
+          createElement(
+            DemoScenarioProvider,
+            { project: demoProject, pollIntervalMs: 10_000, children: null },
+            createElement(EventForm, {
+              slug: SLUG,
+              eventTypes: [EVENT_TYPE],
+              metaFields: [],
+              projectVariables: [],
+              event: EXISTING_EVENT,
+              onClose: () => {},
+            }),
+          ),
+        ),
+      ),
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: /Save event/i }))
+
+    await waitFor(() =>
+      expect(readScenarioState(SLUG).chapters['edit-event']?.status).toBe('completed'),
+    )
   })
 })

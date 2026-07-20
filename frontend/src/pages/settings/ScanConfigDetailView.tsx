@@ -137,7 +137,7 @@ export function ScanConfigDetail({ slug, scanConfigId }: { slug: string; scanCon
             Ingests from <span style={{ color: 'var(--fg-muted)' }}>{dataSource?.name ?? 'Unknown source'}</span>
           </p>
         </div>
-        <ScenarioCoachMark step="run-scan" side="bottom" align="end">
+        <ScenarioCoachMark step="live-loop/run-scan">
           <Button variant="secondary" size="sm" disabled={runMut.isPending} onClick={() => runMut.mutate()}>
             <Play className="size-3" />
             {runMut.isPending ? 'Starting…' : 'Run now'}

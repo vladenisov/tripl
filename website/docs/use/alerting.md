@@ -121,7 +121,9 @@ cooldown has elapsed.
 :::tip
 Before saving, use the **simulator** to replay a rule over the last *N* days and
 see how often it would have fired — it flags a rule as noisy past ~50 firings, so
-you can tighten thresholds or cooldown first.
+you can tighten thresholds or cooldown first. Replay keeps the result contained
+and its Close action visible; on a narrow screen, scroll the firing table itself
+to inspect all columns without losing the rest of the dialog.
 :::
 
 ### Example

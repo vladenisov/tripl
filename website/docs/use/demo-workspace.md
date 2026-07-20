@@ -45,6 +45,13 @@ synthetic source:
   active demo fresh over time (new buckets, jobs and signals), with retention caps
   so it never grows without bound. Inactive demos pause and resume on your next
   visit. This can be disabled with the `demo_runtime_enabled` flag.
+- **Semantic search** — the demo bundles precomputed embedding vectors for its
+  own content and a few suggested queries (try `purchase funnel` or `money back`
+  in the command palette), so smart search ranks by meaning and marks semantic
+  matches even on instances with **no embedding provider configured**. No API
+  key is used and no text leaves the instance; the vectors ship with the
+  release. Outside the demo project, semantic ranking still requires an
+  embedding provider ([AI and search configuration](../run/ai-and-search.md)).
 
 ## What is preview‑only / local‑simulated
 
@@ -74,8 +81,9 @@ The demo offers two guides, and they do different jobs.
   Coverage, Reconciliation, Branches and the alert preview. Opening a step's
   surface advances the tour and it remembers where you were, so it can be followed
   across navigations instead of restarting every time.
-- **The coached scenario** (*Run the scenario* on the welcome panel, or *Try it
-  hands-on* from the tour) makes one thing happen end to end:
+- **The coached chapters** (*Coached chapters* on the welcome panel, or *Try it
+  hands-on* from the tour) each make one thing happen end to end. The first,
+  **Run the live loop**, is the core:
 
   1. **Run a scan** — from any scan's *Run now*.
   2. **Watch it land** — the run completes and shows what it changed.
@@ -83,16 +91,29 @@ The demo offers two guides, and they do different jobs.
   4. **See the chart move** — open that metric and find the point your collection
      added.
 
-  A strip below the demo banner tracks which step you are on and links to where the
-  next action lives; a small callout points at the button that performs it. Both are
-  demo-only and never appear in a real project.
+  The other chapters walk one area apiece: **Edit an event** (on `Trial Started`,
+  replace the current Product ID value with `prod_monthly`; the guide advances
+  automatically, then asks you to type `$`, select `${product_id}`, and save),
+  **Variables & value drift**, **Review a branch** (up to the merge preview —
+  merging stays your call), **Reconcile the plan**, **Route an alert** (against
+  the local demo sink), and **Explore the rest**.
 
-  The scenario follows **your** actions, not the demo's. The runtime clock is
+  A strip below the demo banner tracks which chapter and step you are on and
+  links to where the next action lives; a callout points at — and visibly
+  rings — the exact button or input that performs it. Callouts use an opaque
+  raised surface and open away from the nearby content they explain, so labels
+  and controls stay readable. Both are demo-only and never appear in a real
+  project.
+
+  The chapters follow **your** actions, not the demo's. The runtime clock is
   producing real scans and collections of its own in the background, so a step
   advances only when the job or collection **you** started settles — a background
   run never ticks it forward. A run that fails, or that a reset wipes out, sends you
-  back to the action with an explanation rather than leaving you waiting. Progress
-  is remembered per project, so reloading mid-scan resumes the watch.
+  back to the action with an explanation rather than leaving you waiting. The
+  current Scans page also follows that exact job to its terminal status, even if a
+  realtime update is missed, so completing the step never requires a reload.
+  Progress is remembered per project (in your browser), so reloading mid-scan
+  resumes the watch.
 
   Dismiss it at any point — including after finishing — and restart it whenever you
   like from the welcome panel.

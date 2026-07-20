@@ -145,9 +145,17 @@ curl -s \
   to keyword/substring matching. `/search` still works, but it ranks by literal
   token overlap rather than meaning.
 
-Semantic ranking requires an embedding provider. See
+Semantic ranking normally requires an embedding provider. See
 [AI and search configuration](../run/ai-and-search.md) for how to enable it (and what
 the keyword fallback behaves like when it's off).
+
+:::note Demo project exception
+The **demo project** ships with precomputed embedding vectors for its own
+content and a small set of suggested queries, so demo searches can return
+`semantic_used: true` even on an instance with **no** embedding provider
+configured. Don't use demo-project responses to diagnose an instance's
+embedding configuration — check a regular project (or the settings) instead.
+:::
 
 ## When NOT to use smart search
 
