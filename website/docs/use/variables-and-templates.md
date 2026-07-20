@@ -77,8 +77,10 @@ Binding rules:
 
 Event field and meta values can contain `${variable_name}`. The event editor
 offers matching variables as you type and previews their description, bindings,
-and documented values. Unknown tokens are highlighted before save; the API also
-returns advisory `warnings` on event create/update responses.
+and documented values. Long detail lines stay inside the picker on narrow
+editors and are shortened visually rather than expanding the page. Unknown
+tokens are highlighted before save; the API also returns advisory `warnings` on
+event create/update responses.
 
 Example:
 

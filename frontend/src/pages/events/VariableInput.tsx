@@ -25,17 +25,20 @@ export function SuggestionRow({
       <code className={`shrink-0 font-mono ${selected ? 'text-accent-foreground' : 'text-primary'}`}>
         {`\${${suggestion.name}}`}
       </code>
-      <span className="flex min-w-0 flex-col items-start gap-0.5 text-left">
+      <span className="flex min-w-0 flex-1 flex-col gap-0.5 overflow-hidden text-left">
         {suggestion.description && (
-          <span className={`truncate ${selected ? 'text-accent-foreground/80' : 'text-muted-foreground'}`}>
+          <span
+            title={suggestion.description}
+            className={`w-full truncate ${selected ? 'text-accent-foreground/80' : 'text-muted-foreground'}`}
+          >
             {suggestion.description}
           </span>
         )}
         {bindings.length > 0 && (
-          <span className={`truncate font-mono text-[10px] ${detailClassName}`}>{bindings.join(' · ')}</span>
+          <span className={`w-full truncate font-mono text-[10px] ${detailClassName}`}>{bindings.join(' · ')}</span>
         )}
         {values.length > 0 && (
-          <span className={`truncate font-mono text-[10px] ${detailClassName}`}>{values.slice(0, 3).join(' · ')}</span>
+          <span className={`w-full truncate font-mono text-[10px] ${detailClassName}`}>{values.slice(0, 3).join(' · ')}</span>
         )}
       </span>
     </>
