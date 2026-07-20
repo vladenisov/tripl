@@ -32,7 +32,11 @@ import asyncio
 import json
 import logging
 from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
+from contextlib import suppress
 from typing import Any
+
+from redis.exceptions import ConnectionError as RedisConnectionError
+from redis.exceptions import TimeoutError as RedisTimeoutError
 
 from tripl import cache
 
@@ -167,8 +171,10 @@ async def redis_message_iterator(slug: str) -> AsyncIterator[dict[str, Any]]:
     if client is None:
         return
     pubsub = client.pubsub()
-    await pubsub.subscribe(channel(slug))
+    subscribed = False
     try:
+        await pubsub.subscribe(channel(slug))
+        subscribed = True
         async for message in pubsub.listen():
             if message.get("type") != "message":
                 continue
@@ -179,12 +185,17 @@ async def redis_message_iterator(slug: str) -> AsyncIterator[dict[str, Any]]:
                 continue
             if isinstance(envelope, dict):
                 yield envelope
+    except (RedisTimeoutError, RedisConnectionError) as exc:
+        logger.info("realtime subscription %s ended after Redis disconnect: %s", slug, exc)
     finally:
         try:
-            await pubsub.unsubscribe(channel(slug))
-            await pubsub.aclose()  # type: ignore[no-untyped-call]
+            if subscribed:
+                await pubsub.unsubscribe(channel(slug))
         except Exception:  # noqa: BLE001
             pass
+        finally:
+            with suppress(Exception):
+                await pubsub.aclose()  # type: ignore[no-untyped-call]
 
 
 # ── SSE formatting + core stream generator ───────────────────────────────
@@ -241,15 +252,31 @@ async def sse_response_stream(
         return
 
     iterator = messages.__aiter__()
-    while max_messages is None or delivered < max_messages:
-        if is_disconnected is not None and await is_disconnected():
-            return
-        try:
-            envelope = await asyncio.wait_for(iterator.__anext__(), timeout=heartbeat_seconds)
-        except TimeoutError:
-            yield format_sse_comment("heartbeat")
-            continue
-        except StopAsyncIteration:
-            return
-        yield format_sse_event(envelope)
-        delivered += 1
+    pending_message: asyncio.Future[dict[str, Any]] | None = None
+    try:
+        while max_messages is None or delivered < max_messages:
+            if is_disconnected is not None and await is_disconnected():
+                return
+            if pending_message is None:
+                pending_message = asyncio.ensure_future(iterator.__anext__())
+            done, _pending = await asyncio.wait(
+                {pending_message},
+                timeout=heartbeat_seconds,
+            )
+            if not done:
+                yield format_sse_comment("heartbeat")
+                continue
+
+            completed = pending_message
+            pending_message = None
+            try:
+                envelope = completed.result()
+            except StopAsyncIteration:
+                return
+            yield format_sse_event(envelope)
+            delivered += 1
+    finally:
+        if pending_message is not None:
+            pending_message.cancel()
+            with suppress(asyncio.CancelledError, Exception):
+                await pending_message

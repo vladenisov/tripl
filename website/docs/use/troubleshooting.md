@@ -365,7 +365,12 @@ worker).
 :::tip
 Redis is optional. `REDIS_URL` being empty disables caching (every read falls
 through to the database) but does not break anything — so Redis connection
-problems degrade performance, they don't stop scans, metrics, or alerts.
+problems degrade performance, they don't stop scans, metrics, or alerts. A
+transient Redis timeout also closes only the affected live-update stream: the
+browser reconnects automatically and replays buffered updates when Redis is
+available again, while adaptive polling continues as a fallback. If live
+updates stay disconnected, check Redis health; users do not need to reload the
+page after a brief interruption.
 :::
 
 ---

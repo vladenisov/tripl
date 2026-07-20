@@ -14,10 +14,13 @@ tripl-2su6.10.
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import AsyncIterator
 
 import pytest
 from httpx import AsyncClient
+from redis.exceptions import ConnectionError as RedisConnectionError
+from redis.exceptions import TimeoutError as RedisTimeoutError
 
 from tripl import realtime
 
@@ -43,6 +46,17 @@ def _bearer(token: str) -> dict[str, str]:
 async def _fake_messages(items: list[dict]) -> AsyncIterator[dict]:
     for item in items:
         yield item
+
+
+async def _delayed_message(item: dict, delay: float) -> AsyncIterator[dict]:
+    await asyncio.sleep(delay)
+    yield item
+
+
+async def _ending_messages(delay: float) -> AsyncIterator[dict]:
+    await asyncio.sleep(delay)
+    if False:
+        yield {}
 
 
 # ── Endpoint auth + scope ────────────────────────────────────────────────
@@ -105,6 +119,101 @@ async def test_publish_is_noop_without_redis() -> None:
     assert realtime.backend_available() is False
 
 
+class _FailingPubSub:
+    def __init__(
+        self,
+        *,
+        subscribe_error: Exception | None = None,
+        unsubscribe_error: Exception | None = None,
+    ) -> None:
+        self.subscribe_error = subscribe_error
+        self.unsubscribe_error = unsubscribe_error
+        self.subscribed = False
+        self.unsubscribed = False
+        self.closed = False
+
+    async def subscribe(self, _channel: str) -> None:
+        if self.subscribe_error is not None:
+            raise self.subscribe_error
+        self.subscribed = True
+
+    async def listen(self) -> AsyncIterator[dict]:
+        raise RedisTimeoutError("socket read timed out")
+        yield {}
+
+    async def unsubscribe(self, _channel: str) -> None:
+        self.unsubscribed = True
+        if self.unsubscribe_error is not None:
+            raise self.unsubscribe_error
+
+    async def aclose(self) -> None:
+        self.closed = True
+
+
+class _FakeRedisClient:
+    def __init__(self, pubsub: _FailingPubSub) -> None:
+        self._pubsub = pubsub
+
+    def pubsub(self) -> _FailingPubSub:
+        return self._pubsub
+
+
+@pytest.mark.asyncio
+async def test_redis_iterator_ends_cleanly_on_socket_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    pubsub = _FailingPubSub()
+    monkeypatch.setattr(
+        realtime.cache,
+        "get_async_client",
+        lambda: _FakeRedisClient(pubsub),
+    )
+
+    events = [event async for event in realtime.redis_message_iterator("demo")]
+
+    assert events == []
+    assert pubsub.subscribed is True
+    assert pubsub.unsubscribed is True
+    assert pubsub.closed is True
+
+
+@pytest.mark.asyncio
+async def test_redis_iterator_ends_cleanly_when_subscribe_disconnects(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    pubsub = _FailingPubSub(subscribe_error=RedisConnectionError("redis down"))
+    monkeypatch.setattr(
+        realtime.cache,
+        "get_async_client",
+        lambda: _FakeRedisClient(pubsub),
+    )
+
+    events = [event async for event in realtime.redis_message_iterator("demo")]
+
+    assert events == []
+    assert pubsub.subscribed is False
+    assert pubsub.unsubscribed is False
+    assert pubsub.closed is True
+
+
+@pytest.mark.asyncio
+async def test_redis_iterator_closes_pubsub_when_unsubscribe_disconnects(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    pubsub = _FailingPubSub(unsubscribe_error=RedisConnectionError("redis still down"))
+    monkeypatch.setattr(
+        realtime.cache,
+        "get_async_client",
+        lambda: _FakeRedisClient(pubsub),
+    )
+
+    events = [event async for event in realtime.redis_message_iterator("demo")]
+
+    assert events == []
+    assert pubsub.unsubscribed is True
+    assert pubsub.closed is True
+
+
 # ── Core SSE generator ───────────────────────────────────────────────────
 
 
@@ -130,6 +239,56 @@ async def test_generator_delivers_hello_then_live_event() -> None:
     assert f"event: {realtime.EVENT_SCAN_JOB_UPDATED}" in body
     assert '"status": "completed"' in body
     assert "id: 7" in body
+
+
+@pytest.mark.asyncio
+async def test_generator_keeps_live_read_pending_across_heartbeats() -> None:
+    envelope = {
+        "id": 8,
+        "type": realtime.EVENT_SCAN_JOB_UPDATED,
+        "data": {"project_slug": "p", "status": "completed"},
+    }
+    chunks = [
+        chunk
+        async for chunk in realtime.sse_response_stream(
+            hello_payload={"project_slug": "p", "backend": "redis"},
+            replay=[],
+            messages=_delayed_message(envelope, 0.035),
+            heartbeat_seconds=0.01,
+            max_messages=1,
+        )
+    ]
+    body = "".join(chunks)
+    assert body.count(": heartbeat") >= 2
+    assert f"event: {realtime.EVENT_SCAN_JOB_UPDATED}" in body
+    assert "id: 8" in body
+
+
+@pytest.mark.asyncio
+async def test_generator_disconnect_drains_completed_iterator_cleanly() -> None:
+    disconnect_checks = 0
+
+    async def is_disconnected() -> bool:
+        nonlocal disconnect_checks
+        disconnect_checks += 1
+        if disconnect_checks == 1:
+            return False
+        await asyncio.sleep(0.02)
+        return True
+
+    chunks = [
+        chunk
+        async for chunk in realtime.sse_response_stream(
+            hello_payload={"project_slug": "p", "backend": "redis"},
+            replay=[],
+            messages=_ending_messages(0.015),
+            heartbeat_seconds=0.01,
+            is_disconnected=is_disconnected,
+        )
+    ]
+
+    assert "event: hello" in "".join(chunks)
+    assert any(": heartbeat" in chunk for chunk in chunks)
 
 
 @pytest.mark.asyncio

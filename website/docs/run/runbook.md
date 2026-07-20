@@ -120,7 +120,9 @@ Recovery hinges on the durable/ephemeral split:
   volume, so a restart starts empty. The app degrades gracefully: reads fall
   through to PostgreSQL and the cache repopulates. (In `compose.yaml`,
   `REDIS_URL` points at the `redis` service; an empty `REDIS_URL` disables
-  caching entirely, with every read going to the DB.)
+  caching entirely, with every read going to the DB.) Redis timeouts terminate
+  only the affected server-sent-events subscription; browser clients reconnect
+  automatically and retain adaptive polling as a fallback.
 - **RabbitMQ — ephemeral broker.** With no data volume, queued messages do not
   survive a broker restart. Celery is configured with `task_acks_late=True` and
   `task_reject_on_worker_lost=True` (see
