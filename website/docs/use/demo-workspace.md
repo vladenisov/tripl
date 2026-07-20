@@ -108,9 +108,11 @@ The demo offers two guides, and they do different jobs.
   producing real scans and collections of its own in the background, so a step
   advances only when the job or collection **you** started settles — a background
   run never ticks it forward. A run that fails, or that a reset wipes out, sends you
-  back to the action with an explanation rather than leaving you waiting. Progress
-  is remembered per project (in your browser), so reloading mid-scan resumes the
-  watch.
+  back to the action with an explanation rather than leaving you waiting. The
+  current Scans page also follows that exact job to its terminal status, even if a
+  realtime update is missed, so completing the step never requires a reload.
+  Progress is remembered per project (in your browser), so reloading mid-scan
+  resumes the watch.
 
   Dismiss it at any point — including after finishing — and restart it whenever you
   like from the welcome panel.

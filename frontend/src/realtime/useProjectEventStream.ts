@@ -66,6 +66,12 @@ export function useProjectEventStream(slug: string | undefined): StreamStatus {
   const lastProcessedIdRef = useRef(0)
 
   useEffect(() => {
+    // Redis sequences are scoped per project. Carrying a previous project's
+    // cursor into the new stream would make its low-numbered events look like
+    // duplicates and can strand query caches until a full page reload.
+    attemptsRef.current = 0
+    lastEventIdRef.current = null
+    lastProcessedIdRef.current = 0
     if (!slug) return
 
     let disposed = false

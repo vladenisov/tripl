@@ -81,17 +81,23 @@ function Probe() {
   )
 }
 
-function renderProvider(project: Project | undefined, route = `/p/${SLUG}/overview`) {
-  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
-  return render(
-    <QueryClientProvider client={client}>
-      <MemoryRouter initialEntries={[route]}>
-        <DemoScenarioProvider project={project} pollIntervalMs={POLL_MS}>
-          <Probe />
-        </DemoScenarioProvider>
-      </MemoryRouter>
-    </QueryClientProvider>,
-  )
+function renderProvider(
+  project: Project | undefined,
+  route = `/p/${SLUG}/overview`,
+  client = new QueryClient({ defaultOptions: { queries: { retry: false } } }),
+) {
+  return {
+    client,
+    ...render(
+      <QueryClientProvider client={client}>
+        <MemoryRouter initialEntries={[route]}>
+          <DemoScenarioProvider project={project} pollIntervalMs={POLL_MS}>
+            <Probe />
+          </DemoScenarioProvider>
+        </MemoryRouter>
+      </QueryClientProvider>,
+    ),
+  }
 }
 
 const step = () => screen.getByTestId('step').textContent
@@ -121,6 +127,39 @@ describe('DemoScenarioProvider — watching the scan the user started', () => {
     await waitFor(() => expect(step()).toBe('live-loop/collect-metric'))
     // The job is polled by the id the user's own run returned.
     expect(scansApi.getJob).toHaveBeenCalledWith(SLUG, 'sc-1', 'job-1')
+  })
+
+  it('synchronizes the completed watched job into the same-tab scan list cache', async () => {
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    client.setQueryData(['scanJobs', SLUG, 'sc-1'], [scanJob('running')])
+    vi.mocked(scansApi.getJob).mockResolvedValue(scanJob('completed'))
+    renderProvider(demoProject(), `/p/${SLUG}/settings/scans`, client)
+
+    fireEvent.click(screen.getByText('run'))
+    await waitFor(() => expect(step()).toBe('live-loop/collect-metric'))
+
+    expect(client.getQueryData<ScanJob[]>(['scanJobs', SLUG, 'sc-1'])?.[0]).toMatchObject({
+      id: 'job-1',
+      status: 'completed',
+    })
+  })
+
+  it('seeds and invalidates an initially absent scan list cache on completion', async () => {
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    const invalidateSpy = vi.spyOn(client, 'invalidateQueries')
+    vi.mocked(scansApi.getJob).mockResolvedValue(scanJob('completed'))
+    renderProvider(demoProject(), `/p/${SLUG}/settings/scans`, client)
+
+    fireEvent.click(screen.getByText('run'))
+    await waitFor(() => expect(step()).toBe('live-loop/collect-metric'))
+
+    expect(client.getQueryData<ScanJob[]>(['scanJobs', SLUG, 'sc-1'])).toEqual([
+      scanJob('completed'),
+    ])
+    expect(invalidateSpy).toHaveBeenCalledWith({
+      queryKey: ['scanJobs', SLUG, 'sc-1'],
+      exact: true,
+    })
   })
 
   it('sends a failed job back to run-scan with a hint', async () => {
