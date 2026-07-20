@@ -242,11 +242,17 @@ describe('EventForm template authoring', () => {
     expect(within(selectedSuggestion).getByText('${variant}')).toHaveClass(
       'text-accent-foreground',
     )
-    expect(within(selectedSuggestion).getByText('Experiment variant')).toHaveClass(
-      'text-accent-foreground/80',
+    const description = within(selectedSuggestion).getByText('Experiment variant')
+    expect(description.parentElement).toHaveClass('min-w-0', 'flex-1', 'overflow-hidden')
+    expect(description).toHaveClass('w-full', 'truncate', 'text-accent-foreground/80')
+    expect(within(selectedSuggestion).getByText('payload.variant')).toHaveClass(
+      'w-full',
+      'truncate',
     )
-    expect(screen.getByText('payload.variant')).toBeInTheDocument()
-    expect(screen.getByText('control · treatment · holdout')).toBeInTheDocument()
+    expect(within(selectedSuggestion).getByText('control · treatment · holdout')).toHaveClass(
+      'w-full',
+      'truncate',
+    )
 
     fireEvent.change(input, { target: { value: '${missing}' } })
     expect(screen.getByText('Unknown variable token: ${missing}')).toBeInTheDocument()
