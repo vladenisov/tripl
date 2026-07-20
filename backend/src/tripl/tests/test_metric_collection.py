@@ -340,6 +340,46 @@ def test_collect_fact_is_idempotent_on_rerun(
         }
 
 
+def test_collect_fact_drops_all_null_aggregate_and_clears_stale_value(
+    sync_session_factory: sessionmaker[Session],
+    monkeypatch: MonkeyPatch,
+) -> None:
+    bucket = datetime(2026, 1, 1, 10)
+    with sync_session_factory() as session:
+        project, data_source = _seed_project_and_ds(session)
+        fact_table = _seed_fact_table(session, project, data_source)
+        definition = _make_fact_metric(session, project, fact_table)
+        session.add(
+            MetricValue(
+                id=uuid.uuid4(),
+                metric_definition_id=definition.id,
+                scan_config_id=None,
+                bucket=bucket,
+                value=99.0,
+            )
+        )
+        session.commit()
+        def_id = str(definition.id)
+
+    adapter = _FactAdapter([(bucket, None)])
+    monkeypatch.setattr(metric_collect, "_get_sync_session", sync_session_factory)
+    monkeypatch.setattr(metric_collect, "_build_adapter", lambda ds: adapter)
+    monkeypatch.setattr(
+        metric_collect,
+        "_resolve_value_window",
+        lambda *a, **k: (bucket, bucket + timedelta(hours=1)),
+    )
+
+    result = metric_collect.collect_metric_definitions.run(def_id)
+
+    assert result["values"] == 0
+    with sync_session_factory() as session:
+        rows = session.execute(
+            select(MetricValue).where(MetricValue.metric_definition_id == uuid.UUID(def_id))
+        ).scalars()
+        assert list(rows) == []
+
+
 def test_collect_fact_floors_naive_bucket_to_utc(
     sync_session_factory: sessionmaker[Session],
     monkeypatch: MonkeyPatch,
@@ -570,6 +610,34 @@ class _FactBreakdownAdapter(_FactAdapter):
         )
 
 
+class _NullableFactBreakdownAdapter(_FactAdapter):
+    def __init__(
+        self,
+        rows: list[tuple[object, ...]],
+        breakdown_rows: list[tuple[object, ...]],
+    ) -> None:
+        super().__init__(rows)
+        self._breakdown_rows = breakdown_rows
+
+    def get_time_bucketed_aggregate_breakdown(
+        self,
+        base_query: str,
+        time_column: str,
+        interval: str,
+        agg_fn: MetricAggregation,
+        measure_column: str | None,
+        breakdown_column: str,
+        regular_columns: list[str],
+        json_columns: list[str],
+        json_value_paths: dict[str, list[str]] | None,
+        time_from: datetime,
+        time_to: datetime,
+        values_limit: int | None = None,
+        limit: int = 100000,
+    ) -> tuple[list[str], list[str], list[tuple[object, ...]]]:
+        return [breakdown_column], [], self._breakdown_rows
+
+
 def test_collect_fact_writes_breakdown_values(
     sync_session_factory: sessionmaker[Session],
     monkeypatch: MonkeyPatch,
@@ -614,6 +682,64 @@ def test_collect_fact_writes_breakdown_values(
             ("country", "US", False, 8.0),
             ("country", "Other", True, 4.0),
         }
+
+
+def test_collect_fact_drops_all_null_breakdown_and_clears_stale_value(
+    sync_session_factory: sessionmaker[Session],
+    monkeypatch: MonkeyPatch,
+) -> None:
+    bucket = datetime(2026, 1, 1, 10)
+    with sync_session_factory() as session:
+        project, data_source = _seed_project_and_ds(session)
+        fact_table = _seed_fact_table(session, project, data_source)
+        definition = _make_fact_metric(
+            session,
+            project,
+            fact_table,
+            breakdown_columns=["country"],
+        )
+        session.add(
+            MetricValueBreakdown(
+                id=uuid.uuid4(),
+                metric_definition_id=definition.id,
+                scan_config_id=None,
+                bucket=bucket,
+                breakdown_column="country",
+                breakdown_value="stale",
+                is_other=False,
+                value=99.0,
+            )
+        )
+        session.commit()
+        def_id = str(definition.id)
+
+    adapter = _NullableFactBreakdownAdapter(
+        [(bucket, 3.0)],
+        [
+            (bucket, "US", False, "US", None),
+            (bucket, "CA", False, "CA", 3.0),
+        ],
+    )
+    monkeypatch.setattr(metric_collect, "_get_sync_session", sync_session_factory)
+    monkeypatch.setattr(metric_collect, "_build_adapter", lambda ds: adapter)
+    monkeypatch.setattr(
+        metric_collect,
+        "_resolve_value_window",
+        lambda *a, **k: (bucket, bucket + timedelta(hours=1)),
+    )
+
+    result = metric_collect.collect_metric_definitions.run(def_id)
+
+    assert result["breakdown_values"] == 1
+    with sync_session_factory() as session:
+        rows = session.execute(
+            select(MetricValueBreakdown).where(
+                MetricValueBreakdown.metric_definition_id == uuid.UUID(def_id)
+            )
+        ).scalars()
+        assert [(row.breakdown_column, row.breakdown_value, row.value) for row in rows] == [
+            ("country", "CA", 3.0)
+        ]
 
 
 # ── sql ──────────────────────────────────────────────────────────────────────

@@ -198,9 +198,14 @@ Locally, all of the above (except the warehouses) run under Docker Compose:
   next-update state therefore do not rescan an empty window every five minutes.
   A **divide-by-zero** in a `ratio` bucket produces **no value** — a gap, not a
   `0` — so the row is dropped rather than written as zero. Fact-ratio breakdowns
-  are supported when numerator and denominator use the same fact table; each
+  follow the same gap semantics and are supported when numerator and denominator
+  use the same fact table; each
   breakdown row stores that dimension value's numerator / denominator ratio, not
-  a component that sums to the top-line ratio.
+  a component that sums to the top-line ratio. A single fact aggregate whose
+  warehouse result that is `NULL` — for example `sum` / `avg` / `min` / `max`
+  over all-`NULL` source values — is also omitted from the top-line or breakdown
+  series; recollection clears any older stored point in that window instead of
+  retaining stale data.
 - **Surface.** Catalog CRUD lives at `/projects/{slug}/metrics`; a series read
   service feeds the frontend **MetricsPage** (list + kind-aware create/edit form)
   and the metric **drilldown**, which reuses the monitoring detail tabs. The

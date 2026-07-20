@@ -46,11 +46,9 @@ The credentialed path that would close this gap is documented in
 A note on the fixture's NULL measures
 -------------------------------------
 Every ``view`` row carries ``amount = NULL``, so SUM/AVG must skip it while COUNT(*)
-must not. But no breakdown GROUP is left ALL-null: ``_collect_fact_breakdown_rows``
-does ``float(row[-1])`` on the aggregate cell with no ``None`` guard, so an all-NULL
-group would raise ``TypeError`` inside the collector rather than record an absent
-value. That is a production defect, filed separately — this gate does not construct
-it, and must not be "simplified" into constructing it by accident.
+must not. Those rows use a dedicated ``null_only`` platform, creating a real all-NULL
+breakdown group in every bucket. The collector must omit those aggregate cells as
+absent values while preserving the neighbouring finite groups.
 """
 
 from __future__ import annotations
@@ -672,6 +670,7 @@ def test_fact_ratio_drops_the_divide_by_zero_bucket(run: PipelineRun) -> None:
 
 def test_fact_breakdown_rows_match_the_reference(run: PipelineRun) -> None:
     assert run.breakdowns == pipeline_platform_sums()
+    assert all(platform != "null_only" for _bucket, platform in run.breakdowns)
 
 
 # ── fact metrics: the batched collector ───────────────────────────────────────

@@ -847,7 +847,11 @@ def _aggregate_fact_window(
         chunk_to,
         limit=METRIC_QUERY_ROW_LIMIT,
     )
-    values = {_coerce_bucket(row[0], interval_code): _coerce_value(row[-1]) for row in rows}
+    values = {
+        _coerce_bucket(row[0], interval_code): _coerce_value(row[-1])
+        for row in rows
+        if row[-1] is not None
+    }
     return values, base_query, measure
 
 
@@ -955,6 +959,9 @@ def _collect_fact_breakdown_rows(
             limit=METRIC_QUERY_ROW_LIMIT,
         )
         for row in rows:
+            aggregate_cell = row[-1]
+            if aggregate_cell is None:
+                continue
             rows_out.append(
                 {
                     "id": uuid.uuid4(),
@@ -964,7 +971,7 @@ def _collect_fact_breakdown_rows(
                     "breakdown_column": column,
                     "breakdown_value": str(row[1])[:MAX_BREAKDOWN_VALUE_LENGTH],
                     "is_other": bool(row[2]),
-                    "value": _coerce_value(row[-1]),
+                    "value": _coerce_value(aggregate_cell),
                 }
             )
 

@@ -311,9 +311,7 @@ class PipelineRow:
     ts: datetime
     event_name: str
     user_id: str
-    #: NULL on every ``view`` row. SUM/AVG must SKIP it, COUNT(*) must not — and a
-    #: breakdown group must never end up with an all-NULL measure (see the module
-    #: note in test_pipeline_conformance.py).
+    #: NULL on every ``view`` row. SUM/AVG must SKIP it, COUNT(*) must not.
     amount: float | None
     platform: str
 
@@ -344,7 +342,9 @@ def _build_pipeline_rows() -> tuple[PipelineRow, ...]:
                 event_name="view",
                 user_id="u3",
                 amount=None,
-                platform="ios",
+                # A real all-NULL breakdown group. SUM/AVG must omit this
+                # platform rather than crash the collector or store zero.
+                platform="null_only",
             )
         )
         if index > 0:
@@ -447,8 +447,8 @@ def pipeline_distinct_users() -> dict[datetime, float]:
 def pipeline_platform_sums() -> dict[tuple[datetime, str], float]:
     """``{(bucket, platform): sum(amount)}`` — the fact metric's breakdown rows.
 
-    Every platform group holds at least one non-NULL amount by construction; see the
-    all-NULL-group note in the pipeline gate's module docstring.
+    The ``null_only`` platform is deliberately absent: every value in that group
+    is SQL NULL, so it has no metric point.
     """
     sums: dict[tuple[datetime, str], float] = {}
     for bucket, rows in _fold().items():

@@ -284,7 +284,9 @@ then reveals kind-specific config:
   rows are combined with `AND`. Ratio fact metrics can also use breakdowns
   when both operands use the same fact table; each breakdown row is that value's
   numerator divided by that value's denominator, so breakdown ratios do not add
-  up to the top-line ratio.
+  up to the top-line ratio. If a single aggregate returns `NULL` — for example
+  `sum` / `avg` / `min` / `max` over an all-`NULL` bucket or breakdown group —
+  that point is absent rather than stored as zero.
 - **Event composition** — derived from already-collected event series with no
   warehouse query of its own: a **single** event's count, a **ratio** of one event
   to another (A / B), or an event **per distinct user**.
