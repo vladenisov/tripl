@@ -227,7 +227,9 @@ def _seed_clickhouse(adapter: ClickHouseAdapter) -> None:
         "event_name String, "
         "amount Nullable(Float64), "
         "user_id String, "
-        "doc JSON"
+        "doc JSON, "
+        "attrs Tuple(region String, device Tuple(os String, major UInt8)), "
+        "labels Map(String, String)"
         ") ENGINE = MergeTree ORDER BY id",
         settings=settings,
     )
@@ -239,9 +241,19 @@ def _seed_clickhouse(adapter: ClickHouseAdapter) -> None:
         ts = row.ts.strftime("%Y-%m-%d %H:%M:%S.%f+00:00")
         amount = "NULL" if row.amount is None else repr(row.amount)
         doc = json.dumps(row.doc).replace("\\", "\\\\").replace("'", "\\'")
+        os_name = "android" if row.id % 2 else "ios"
+        label_items = [
+            f"'source', '{row.event_name}'",
+            "'bad-key', 'hidden'",
+            "'bad.key', 'hidden'",
+        ]
+        if row.id % 2:
+            label_items.append(f"'cohort', '{row.user_id}'")
+        labels = f"map({', '.join(label_items)})"
         return (
             f"({row.id}, parseDateTime64BestEffort('{ts}', 6, 'UTC'), "
-            f"'{row.event_name}', {amount}, '{row.user_id}', '{doc}')"
+            f"'{row.event_name}', {amount}, '{row.user_id}', '{doc}', "
+            f"('{row.event_name}', ('{os_name}', {row.id})), {labels})"
         )
 
     values = ", ".join(_row_literal(row) for row in ROWS)

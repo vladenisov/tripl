@@ -184,11 +184,13 @@ Path rules:
   are not identifier-safe are rejected, not escaped — the path is interpolated
   into SQL, so the allowlist is also a security boundary.
 - **Dotted nested leaf paths are served by *discovery* on all three warehouses** —
-  ClickHouse via `arraySort(JSONAllPaths(col))`, PostgreSQL via a recursive
-  `jsonb_each` walk, BigQuery via `JSON_KEYS(col, 20)` reduced to its leaf set. All
-  three surface `user.address.city`, not just `user`. This is the enumeration the UI
-  shows you and the one you pick paths from. BigQuery stops at **depth 20** (caveat
-  [5]).
+  ClickHouse uses `JSONAllPaths` for `JSON`, `tupleNames(flattenTuple(...))` for a
+  named `Tuple`, and `mapKeys` for `Map(String, scalar)`; PostgreSQL uses a
+  recursive `jsonb_each` walk; BigQuery uses `JSON_KEYS(col, 20)` reduced to its
+  leaf set. They surface `user.address.city`, not just `user`. This is the
+  enumeration the UI shows you and the one you pick paths from. BigQuery stops
+  at **depth 20** (caveat [5]); ClickHouse's supported `Tuple`/`Map` shapes are
+  stated in caveat [8].
 - **Scan-time *shape grouping* differs, and PostgreSQL is deliberately coarser.**
   The scan groups each row by its path set to count distinct document shapes, so that
   expression runs once per row across the whole window. ClickHouse gets nested paths
@@ -215,10 +217,10 @@ Path rules:
 - Path *discovery* (the preview-time "what keys does this column have" probe) is
   bounded on **all three** by a source-row sample — see caveat [4]. It is a
   different operation from scan-time enumeration, with a different bound.
-- BigQuery `STRUCT`/`RECORD` columns are now extractable via dotted field access,
-  with one exclusion: a leaf underneath a **REPEATED** field needs `UNNEST`, which
-  the adapter does not generate, and is rejected loudly. ClickHouse `Tuple`/`Map`
-  columns are still classified but have **no extractor** (caveat [8]).
+- BigQuery `STRUCT`/`RECORD` columns are extractable via dotted field access, with
+  one exclusion: a leaf underneath a **REPEATED** field needs `UNNEST`, which the
+  adapter does not generate, and is rejected loudly. ClickHouse named `Tuple`
+  leaves and `Map(String, scalar)` keys are extractable too (caveat [8]).
 
 ### Exact versus bounded
 
@@ -256,7 +258,7 @@ is a shipping warehouse.
 | Preview rows (time-windowed) | `get_preview_rows` | full | full | full | full |
 | JSON path discovery (preview probe) | `get_json_path_samples` | **bounded [4]** | **bounded [4]** | **bounded [4]** | bounded [4] |
 | Nested path enumeration (scan) | `get_full_breakdown` | full | **bounded [5]** | **top-level only [6]** | full |
-| Nested value extraction (selected paths) | all bucketed methods | full (JSON), none for `Tuple`/`Map` [8] | full (JSON + STRUCT [5]) | full (JSON) | full |
+| Nested value extraction (selected paths) | all bucketed methods | full (JSON + named Tuple + Map(String, scalar) [8]) | full (JSON + STRUCT [5]) | full (JSON) | full |
 | Scan run / full breakdown | `get_full_breakdown` | full | full | full | full |
 | Scan replay (chunked) | bucketed methods | full | full | full | full |
 | Event generation | bucketed methods | full | full | full | full |
@@ -382,11 +384,19 @@ scan as an opaque "function date_bin(…) does not exist". Two things to know:
   time-of-day column still fails later, inside a worker, instead of at
   configuration time.
 
-**[8] ClickHouse `Tuple`/`Map` are classified but not extractable.**
-`classify_complex` recognizes them as complex kinds, but no ClickHouse extractor
-exists for them. Treat `Tuple` and `Map` columns as not yet usable as nested scan
-fields. (BigQuery `STRUCT`/`RECORD`, which was in the same position, is now
-extractable — see caveat [5] for its one remaining exclusion.)
+**[8] ClickHouse `Tuple`/`Map` extraction supports bounded, safe shapes.**
+A named `Tuple` is flattened to its declared leaf paths and selected through a
+chain of `tupleElement` calls. Positional/unnamed tuples and field names outside
+the identifier allowlist are rejected; expansion is capped at 20 path segments
+and 1,000 leaves, then cached for the introspected source. A `Map` must have
+`String` keys and scalar values; discovery enumerates its real keys and selection
+uses `mapContains` before the subscript so a missing key stays SQL `NULL` instead
+of becoming the value type's default. Map keys outside the same identifier
+allowlist are omitted from discovery and shape grouping; selecting one manually
+is rejected. Nested/array map values and multi-part paths below a map key are
+rejected rather than compiled into ambiguous SQL. The real ClickHouse 25.8
+conformance fixture executes discovery, selected extraction and bucketed grouping
+for both supported shapes.
 
 **[9] Free-text SQL metrics are dialect-specific by definition.**
 A SQL metric runs the user's own query. It is executed through `get_preview_rows`,
@@ -590,6 +600,8 @@ tripl compiles it per dialect:
 | Warehouse | Compiled extraction |
 | --- | --- |
 | ClickHouse | `` `payload`.`user`.`address`.`city` `` (JSON subcolumn access) |
+| ClickHouse (named `Tuple`) | nested `tupleElement(..., 'field')` calls, validated against the declared leaves |
+| ClickHouse (`Map(String, scalar)`) | `if(mapContains(payload, 'key'), payload['key'], NULL)` |
 | PostgreSQL | a `jsonb` path traversal over `payload` |
 | BigQuery (`JSON` column) | ``JSON_QUERY(`payload`, '$.user.address.city')`` |
 | BigQuery (`STRUCT` column) | `` `payload`.`user`.`address`.`city` `` — dotted field access, and only for paths the schema declares |
@@ -836,14 +848,15 @@ For the record, so the matrix above is not read as static. Every item below was 
 | Gap | Issue |
 | --- | --- |
 | BigQuery bucket **values** and contract **values** are analyzed, never executed. The credentialed conformance job is fully specified in `test_bigquery_analysis.py` and deliberately unwired — the project has no GCP credentials. | [tripl-uxa2] |
-| ClickHouse `Tuple`/`Map` columns are classified but have **no nested extractor** (caveat [8]) | [tripl-bc1u] |
-| A fact-metric breakdown group whose aggregate is all-`NULL` crashes the collector with a `TypeError` instead of being recorded as absent | [tripl-s2m7] |
 
 The rest of what this table used to list has landed: scan/replay, event
 generation, fact metrics and drift now execute against real warehouses in the
 pipeline gate; an unset PostgreSQL `sslmode` resolves to `require` for remote
-hosts (caveat [13]); the BigQuery **edit** dialog shows BigQuery fields; and the
-ClickHouse null-leaf divergence is pinned by the conformance gate as a
+hosts (caveat [13]); the BigQuery **edit** dialog shows BigQuery fields; the
+single-metric fact collector treats a `NULL` warehouse aggregate as an absent
+point for both the top-line series and breakdown groups; ClickHouse named `Tuple` and
+`Map(String, scalar)` paths are discovered and extracted; and the ClickHouse
+null-leaf divergence is pinned by the conformance gate as a
 [documented intentional difference](#clickhouse-cannot-discover-a-key-whose-only-value-is-json-null)
 rather than silently accepted. Details in
 [What was broken and is now fixed](#what-was-broken-and-is-now-fixed).
@@ -851,7 +864,6 @@ rather than silently accepted. Details in
 [tripl-64n8.11]: https://github.com/vladenisov/tripl/issues?q=tripl-64n8.11
 [tripl-64n8.12]: https://github.com/vladenisov/tripl/issues?q=tripl-64n8.12
 [tripl-64n8.17]: https://github.com/vladenisov/tripl/issues?q=tripl-64n8.17
-[tripl-bc1u]: https://github.com/vladenisov/tripl/issues?q=tripl-bc1u
 [tripl-foo3]: https://github.com/vladenisov/tripl/issues?q=tripl-foo3
 [tripl-s2m7]: https://github.com/vladenisov/tripl/issues?q=tripl-s2m7
 [tripl-uxa2]: https://github.com/vladenisov/tripl/issues?q=tripl-uxa2

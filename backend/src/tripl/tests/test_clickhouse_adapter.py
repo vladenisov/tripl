@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from datetime import datetime
 
+import pytest
+
 from tripl.core.adapters.base import AggregateSpec
 from tripl.core.adapters.clickhouse import ClickHouseAdapter
 from tripl.models.domain_enums import MetricAggregation
@@ -33,7 +35,15 @@ def _adapter(json_path_discovery: str = "dynamic") -> tuple[ClickHouseAdapter, F
     client = FakeClient()
     adapter = object.__new__(ClickHouseAdapter)
     adapter._client = client
-    adapter._allowed_columns = {"time", "event_name", "props"}
+    adapter._allowed_columns = {"time", "event_name", "props", "tuple_props", "map_props"}
+    adapter._column_types = {
+        "time": "DateTime64(6, 'UTC')",
+        "event_name": "String",
+        "props": "JSON",
+        "tuple_props": "Tuple(user Tuple(id UInt64, address Tuple(city String)))",
+        "map_props": "Map(String, String)",
+    }
+    adapter._tuple_leaf_paths_cache = {}
     adapter._json_path_discovery = json_path_discovery
     return adapter, client
 
@@ -84,6 +94,86 @@ def test_json_path_discovery_all_uses_jsonallpaths() -> None:
     adapter.get_json_path_samples("SELECT props FROM events", ["props"])
     assert "JSONAllPaths(`props`)" in client.sql[0]
     assert "JSONDynamicPaths" not in client.sql[0]
+
+
+def test_named_tuple_paths_use_declared_leaf_names_and_tuple_element_access() -> None:
+    adapter, _client = _adapter()
+
+    assert adapter._nested_path_array_expression("tuple_props") == (  # noqa: SLF001
+        "arraySort(tupleNames(flattenTuple(`tuple_props`)))"
+    )
+    assert adapter._json_path_expression(  # noqa: SLF001
+        "tuple_props", "user.address.city"
+    ) == ("tupleElement(tupleElement(tupleElement(`tuple_props`, 'user'), 'address'), 'city')")
+
+
+def test_string_map_paths_discover_keys_and_preserve_missing_as_null() -> None:
+    adapter, _client = _adapter()
+
+    assert adapter._nested_path_array_expression("map_props") == (  # noqa: SLF001
+        "arraySort(arrayDistinct(arrayFilter(_path -> match(_path, "
+        "'^[a-zA-Z_][a-zA-Z0-9_]*$'), mapKeys(`map_props`))))"
+    )
+    assert adapter._json_path_expression("map_props", "campaign") == (  # noqa: SLF001
+        "if(mapContains(`map_props`, 'campaign'), `map_props`['campaign'], NULL)"
+    )
+
+
+def test_map_paths_reject_non_string_keys_and_nested_values() -> None:
+    adapter, _client = _adapter()
+    adapter._column_types = {  # noqa: SLF001
+        **adapter._column_types,  # noqa: SLF001
+        "map_props": "Map(UInt64, String)",
+    }
+
+    with pytest.raises(ValueError, match="String keys"):
+        adapter._nested_path_array_expression("map_props")  # noqa: SLF001
+
+    adapter._column_types = {  # noqa: SLF001
+        **adapter._column_types,  # noqa: SLF001
+        "map_props": "Map(String, Tuple(value String))",
+    }
+    with pytest.raises(ValueError, match="scalar values"):
+        adapter._json_path_expression("map_props", "campaign")  # noqa: SLF001
+
+
+def test_unnamed_tuple_paths_are_rejected() -> None:
+    adapter, _client = _adapter()
+    adapter._column_types = {  # noqa: SLF001
+        **adapter._column_types,  # noqa: SLF001
+        "tuple_props": "Tuple(String, UInt64)",
+    }
+
+    with pytest.raises(ValueError, match="named fields"):
+        adapter._nested_path_array_expression("tuple_props")  # noqa: SLF001
+
+
+def test_tuple_schema_is_cached_and_bounded() -> None:
+    adapter, _client = _adapter()
+
+    first = adapter._tuple_leaf_paths("tuple_props")  # noqa: SLF001
+    second = adapter._tuple_leaf_paths("tuple_props")  # noqa: SLF001
+    assert first is second
+
+    nested = "String"
+    for depth in range(21, 0, -1):
+        nested = f"Tuple(level_{depth} {nested})"
+    adapter._column_types = {  # noqa: SLF001
+        **adapter._column_types,  # noqa: SLF001
+        "tuple_props": nested,
+    }
+    adapter._tuple_leaf_paths_cache = {}  # noqa: SLF001
+    with pytest.raises(ValueError, match="nesting exceeds 20"):
+        adapter._tuple_leaf_paths("tuple_props")  # noqa: SLF001
+
+    fields = ", ".join(f"field_{index} String" for index in range(1001))
+    adapter._column_types = {  # noqa: SLF001
+        **adapter._column_types,  # noqa: SLF001
+        "tuple_props": f"Tuple({fields})",
+    }
+    adapter._tuple_leaf_paths_cache = {}  # noqa: SLF001
+    with pytest.raises(ValueError, match="more than 1000 leaf fields"):
+        adapter._tuple_leaf_paths("tuple_props")  # noqa: SLF001
 
 
 _FROM = datetime(2026, 4, 1, 0, 0)

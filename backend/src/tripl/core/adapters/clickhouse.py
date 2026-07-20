@@ -25,6 +25,7 @@ from tripl.core.adapters.measure_validator import (
 )
 from tripl.core.bucketing import format_utc_literal
 from tripl.core.intervals import IntervalUnit, get_interval
+from tripl.core.warehouse_types import ComplexKind, classify_complex
 from tripl.models.domain_enums import MetricAggregation
 
 # Hard cap on rows pulled from the catalog so a warehouse with thousands of
@@ -50,6 +51,8 @@ _IDENTIFIER_PART_RE = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*$")
 # paths. Scan-time value extraction always uses JSONAllPaths and is unaffected.
 _JSON_PATH_DISCOVERY_FUNCS = {"all": "JSONAllPaths", "dynamic": "JSONDynamicPaths"}
 _DEFAULT_JSON_PATH_DISCOVERY = "dynamic"
+_MAX_TUPLE_PATH_DEPTH = 20
+_MAX_TUPLE_LEAF_PATHS = 1000
 
 
 def _as_rows(rows: Sequence[Sequence[Any]]) -> list[tuple[object, ...]]:
@@ -77,6 +80,8 @@ class ClickHouseAdapter(BaseAdapter):
             **kwargs,
         )
         self._allowed_columns: set[str] = set()
+        self._column_types: dict[str, str] = {}
+        self._tuple_leaf_paths_cache: dict[str, frozenset[str]] = {}
         # Which path-enumeration function the JSON path discovery query uses.
         # Unknown/None falls back to the default ("dynamic").
         self._json_path_discovery = (
@@ -105,6 +110,8 @@ class ClickHouseAdapter(BaseAdapter):
             is_nullable = "Nullable" in type_name
             columns.append(ColumnInfo(name=name, type_name=type_name, is_nullable=is_nullable))
         self._allowed_columns = {c.name for c in columns}
+        self._column_types = {c.name: c.type_name for c in columns}
+        self._tuple_leaf_paths_cache = {}
         return columns
 
     def get_schema_tables(self) -> list[SchemaTable]:
@@ -190,13 +197,13 @@ class ClickHouseAdapter(BaseAdapter):
         sampled_source = (
             f"(SELECT * FROM ({base_query}) AS _src{where_clause} LIMIT {int(sample_row_limit)})"
         )
-        path_fn = _JSON_PATH_DISCOVERY_FUNCS[self._json_path_discovery]
         for column in json_columns:
             c = self._validate_column(column)
+            path_array = self._nested_path_array_expression(c, discovery=True)
             path_sql = (
                 "SELECT _path "
                 "FROM ("
-                f"SELECT arrayJoin({path_fn}(`{c}`)) AS _path "
+                f"SELECT arrayJoin({path_array}) AS _path "
                 f"FROM {sampled_source} AS _sample"
                 ") "
                 "WHERE _path != '' "
@@ -307,6 +314,157 @@ class ClickHouseAdapter(BaseAdapter):
             return f"toDateTime(toMonday({col}, 'UTC'), 'UTC')"
         return f"toStartOfInterval({col}, INTERVAL {spec.count} {spec.unit.value.upper()}, 'UTC')"
 
+    def _complex_kind(self, column: str) -> ComplexKind:
+        """Return the nested addressing mode for an introspected column.
+
+        Callers normally invoke :meth:`get_columns` before nested discovery. The
+        JSON fallback preserves the previous behavior for direct adapter calls
+        that have not introspected the source yet.
+        """
+        type_name = self._column_types.get(column)
+        if type_name is None:
+            return ComplexKind.json
+        kind = classify_complex(type_name)
+        if kind is None:
+            msg = (
+                f"ClickHouse: column {column!r} has scalar type {type_name} and holds no "
+                "nested paths. Only JSON, named Tuple and Map(String, scalar) columns "
+                "can be path-expanded."
+            )
+            raise ValueError(msg)
+        return kind
+
+    @staticmethod
+    def _type_arguments(type_name: str, constructor: str) -> list[str]:
+        """Split a ClickHouse ``Constructor(arg, ...)`` at top-level commas."""
+        stripped = type_name.strip()
+        while True:
+            wrapper = re.fullmatch(r"(?:Nullable|LowCardinality)\((.*)\)", stripped, re.DOTALL)
+            if wrapper is None:
+                break
+            stripped = wrapper.group(1).strip()
+        prefix = f"{constructor}("
+        if not stripped.startswith(prefix) or not stripped.endswith(")"):
+            return []
+
+        body = stripped[len(prefix) : -1]
+        arguments: list[str] = []
+        start = 0
+        depth = 0
+        quote: str | None = None
+        escaped = False
+        for index, character in enumerate(body):
+            if quote is not None:
+                if escaped:
+                    escaped = False
+                elif character == "\\":
+                    escaped = True
+                elif character == quote:
+                    quote = None
+                continue
+            if character in {"'", '"'}:
+                quote = character
+            elif character == "(":
+                depth += 1
+            elif character == ")":
+                depth -= 1
+            elif character == "," and depth == 0:
+                arguments.append(body[start:index].strip())
+                start = index + 1
+        arguments.append(body[start:].strip())
+        return arguments
+
+    def _tuple_leaf_paths(self, column: str) -> frozenset[str]:
+        """Declared dotted leaf paths for a named (possibly nested) Tuple."""
+        cached = self._tuple_leaf_paths_cache.get(column)
+        if cached is not None:
+            return cached
+        type_name = self._column_types.get(column, "")
+        paths: set[str] = set()
+
+        def visit(tuple_type: str, prefix: tuple[str, ...]) -> None:
+            if len(prefix) >= _MAX_TUPLE_PATH_DEPTH:
+                raise ValueError(
+                    f"ClickHouse: Tuple column {column!r} nesting exceeds "
+                    f"{_MAX_TUPLE_PATH_DEPTH} path segments."
+                )
+            arguments = self._type_arguments(tuple_type, "Tuple")
+            if not arguments:
+                raise ValueError(f"ClickHouse: Tuple column {column!r} must declare named fields.")
+            for argument in arguments:
+                match = re.fullmatch(
+                    r"(?:`([^`]+)`|([a-zA-Z_][a-zA-Z0-9_]*))\s+(.+)",
+                    argument,
+                    re.DOTALL,
+                )
+                if match is None:
+                    raise ValueError(
+                        f"ClickHouse: Tuple column {column!r} must declare named fields; "
+                        "positional Tuple indexes are not exposed as scan paths."
+                    )
+                quoted_name, plain_name, field_type = match.groups()
+                field_name = quoted_name or plain_name
+                if field_name is None or not _IDENTIFIER_PART_RE.fullmatch(field_name):
+                    raise ValueError(
+                        f"ClickHouse: Tuple field {field_name!r} in column {column!r} "
+                        "is not identifier-safe and cannot be exposed as a scan path."
+                    )
+                field_path = (*prefix, field_name)
+                if classify_complex(field_type) is ComplexKind.struct:
+                    visit(field_type, field_path)
+                else:
+                    paths.add(".".join(field_path))
+                    if len(paths) > _MAX_TUPLE_LEAF_PATHS:
+                        raise ValueError(
+                            f"ClickHouse: Tuple column {column!r} has more than "
+                            f"{_MAX_TUPLE_LEAF_PATHS} leaf fields."
+                        )
+
+        visit(type_name, ())
+        result = frozenset(paths)
+        self._tuple_leaf_paths_cache[column] = result
+        return result
+
+    def _map_types(self, column: str) -> tuple[str, str]:
+        type_name = self._column_types.get(column, "")
+        arguments = self._type_arguments(type_name, "Map")
+        if len(arguments) != 2:
+            raise ValueError(f"ClickHouse: invalid Map type for column {column!r}: {type_name}")
+        key_type, value_type = arguments
+        normalized_key = re.sub(r"\s+", "", key_type).lower()
+        if normalized_key not in {"string", "lowcardinality(string)"}:
+            raise ValueError(
+                f"ClickHouse: Map column {column!r} must use String keys, got {key_type}."
+            )
+        normalized_value = re.sub(r"\s+", "", value_type).lower()
+        if classify_complex(value_type) is not None or normalized_value.startswith(
+            ("array(", "nested(")
+        ):
+            raise ValueError(
+                f"ClickHouse: Map column {column!r} must contain scalar values, got {value_type}."
+            )
+        return key_type, value_type
+
+    def _nested_path_array_expression(self, column: str, *, discovery: bool = False) -> str:
+        """Per-row nested paths for JSON, named Tuple, or Map(String, scalar)."""
+        col = self._validate_column(column)
+        kind = self._complex_kind(col)
+        if kind is ComplexKind.json:
+            path_function = (
+                _JSON_PATH_DISCOVERY_FUNCS[self._json_path_discovery]
+                if discovery
+                else "JSONAllPaths"
+            )
+            return f"arraySort({path_function}(`{col}`))"
+        if kind is ComplexKind.struct:
+            self._tuple_leaf_paths(col)
+            return f"arraySort(tupleNames(flattenTuple(`{col}`)))"
+        self._map_types(col)
+        safe_keys = (
+            f"arrayFilter(_path -> match(_path, '{_IDENTIFIER_PART_RE.pattern}'), mapKeys(`{col}`))"
+        )
+        return f"arraySort(arrayDistinct({safe_keys}))"
+
     def _json_path_expression(self, column: str, path: str) -> str:
         parts = [part for part in path.split(".") if part]
         if not parts:
@@ -314,7 +472,28 @@ class ClickHouseAdapter(BaseAdapter):
         if any(not _IDENTIFIER_PART_RE.match(part) for part in parts):
             raise ValueError(f"Unsupported JSON path: {path}")
 
-        expression = f"`{self._validate_column(column)}`"
+        col = self._validate_column(column)
+        kind = self._complex_kind(col)
+        expression = f"`{col}`"
+        if kind is ComplexKind.map:
+            self._map_types(col)
+            if len(parts) != 1:
+                raise ValueError(
+                    f"ClickHouse: Map path {column}.{path} must select exactly one String key."
+                )
+            key = self._quote_string(parts[0])
+            return f"if(mapContains({expression}, {key}), {expression}[{key}], NULL)"
+        if kind is ComplexKind.struct:
+            declared_paths = self._tuple_leaf_paths(col)
+            if path not in declared_paths:
+                known = ", ".join(sorted(declared_paths)) or "<none>"
+                raise ValueError(
+                    f"ClickHouse: {path!r} is not a declared leaf of Tuple column "
+                    f"{column!r}. Known paths: {known}"
+                )
+            for part in parts:
+                expression = f"tupleElement({expression}, {self._quote_string(part)})"
+            return expression
         for part in parts:
             expression += f".`{part}`"
         return expression
@@ -599,7 +778,7 @@ class ClickHouseAdapter(BaseAdapter):
         for c in reg_cols:
             select_parts.append(f"`{c}`")
         for c in json_cols:
-            select_parts.append(f"arraySort(JSONAllPaths(`{c}`))")
+            select_parts.append(self._nested_path_array_expression(c))
         for c in json_cols:
             for path in json_value_paths.get(c, []):
                 full_path = f"{c}.{path}"
@@ -658,7 +837,7 @@ class ClickHouseAdapter(BaseAdapter):
             select_parts.append(f"`{c}`")
             col_names.append(c)
         for c in json_cols:
-            select_parts.append(f"arraySort(JSONAllPaths(`{c}`))")
+            select_parts.append(self._nested_path_array_expression(c))
             col_names.append(c)
         for c in json_cols:
             for path in json_value_paths.get(c, []):
@@ -727,7 +906,7 @@ class ClickHouseAdapter(BaseAdapter):
             select_parts.append(f"`{c}`")
             col_names.append(c)
         for c in json_cols:
-            select_parts.append(f"arraySort(JSONAllPaths(`{c}`))")
+            select_parts.append(self._nested_path_array_expression(c))
             col_names.append(c)
         for c in json_cols:
             for path in json_value_paths.get(c, []):
@@ -808,7 +987,7 @@ class ClickHouseAdapter(BaseAdapter):
             select_parts.append(f"`{c}`")
             col_names.append(c)
         for c in json_cols:
-            select_parts.append(f"arraySort(JSONAllPaths(`{c}`))")
+            select_parts.append(self._nested_path_array_expression(c))
             col_names.append(c)
         for c in json_cols:
             for path in json_value_paths.get(c, []):
@@ -1130,7 +1309,7 @@ class ClickHouseAdapter(BaseAdapter):
             prepared_parts.append(f"`{c}` AS `{c}`")
             col_names.append(c)
         for c in json_cols:
-            prepared_parts.append(f"arraySort(JSONAllPaths(`{c}`)) AS `{c}`")
+            prepared_parts.append(f"{self._nested_path_array_expression(c)} AS `{c}`")
             col_names.append(c)
         for c in json_cols:
             for path in json_value_paths.get(c, []):

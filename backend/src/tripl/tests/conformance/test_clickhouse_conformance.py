@@ -223,6 +223,56 @@ def test_json_paths_group_as_a_value_in_a_bucketed_scan(ch: ClickHouseAdapter) -
     assert sum(int(row[-1]) for row in rows) == len(IN_WINDOW_IDS)  # type: ignore[arg-type]
 
 
+def test_named_tuple_and_string_map_paths_are_discovered(ch: ClickHouseAdapter) -> None:
+    ch.get_columns(BASE)
+    samples = ch.get_json_path_samples(
+        BASE,
+        ["attrs", "labels"],
+        time_column="ts",
+        time_from=FROM_TIME,
+        time_to=TO_TIME,
+        sample_limit=10,
+    )
+
+    assert set(samples["attrs"]) == {"region", "device.os", "device.major"}
+    assert {str(value) for value in samples["attrs"]["device.os"]} == {
+        '"android"',
+        '"ios"',
+    }
+    assert set(samples["labels"]) == {"cohort", "source"}
+    assert {str(value) for value in samples["labels"]["source"]} == {
+        '"buy"',
+        '"click"',
+        '"view"',
+    }
+
+
+def test_tuple_and_map_paths_group_as_values_in_bucketed_scan(ch: ClickHouseAdapter) -> None:
+    ch.get_columns(BASE)
+    col_names, nested_value_names, rows = ch.get_time_bucketed_counts(
+        BASE,
+        "ts",
+        "1d",
+        [],
+        ["attrs", "labels"],
+        {"attrs": ["device.os"], "labels": ["cohort"]},
+        FROM_TIME,
+        TO_TIME,
+    )
+
+    assert col_names == ["attrs", "labels"]
+    assert nested_value_names == ["attrs.device.os", "labels.cohort"]
+    assert sum(int(row[-1]) for row in rows) == len(IN_WINDOW_IDS)  # type: ignore[arg-type]
+    assert all("bad-key" not in row[2] and "bad.key" not in row[2] for row in rows)
+    assert {str(row[3]) for row in rows} == {'"android"', '"ios"'}
+    assert {str(row[4]) for row in rows if row[4] is not None} == {
+        '"u1"',
+        '"u2"',
+        '"u4"',
+    }
+    assert any(row[4] is None for row in rows)
+
+
 # --- field contracts / drift --------------------------------------------------
 
 
