@@ -10,7 +10,11 @@ Use the existing FastAPI OpenAPI contract plus this guide as the primary agent i
 - Interactive contract browser: `GET /docs`
 - Base API prefix: `/api/v1`
 
-Do not build a separate MCP server yet. The current API already exposes the needed read, search, and update surfaces with project scoping, branch scoping, API-key auth, and RBAC. A thin MCP server would add another contract to maintain before there is a stable set of curated agent tools. Revisit MCP when agents repeatedly need higher-level operations such as `search_events`, `get_event_context`, `update_event_description`, or `list_tracking_plan_gaps` with custom safety policy, rate limits, and audit semantics that are hard to express through raw OpenAPI.
+tripl now ships a first-party MCP server (`tripl-mcp`) that wraps this API in a curated toolset for MCP-capable agent runtimes — see [MCP Server](./mcp-server.md) for setup. This guide remains the raw REST contract underneath it: every MCP tool calls the endpoints described here with the same API-key auth, project fencing, and branch rules. Use the MCP server when the agent runs in an MCP-capable runtime; use raw OpenAPI plus this guide for direct HTTP integrations, scripts, and anything the curated toolset does not cover.
+
+## MCP Server
+
+For agents running in MCP-capable runtimes (Claude Code, Claude Desktop, and other MCP clients), `tripl-mcp` packages a curated read/write toolset on top of this API: stdio and streamable-http transports, `readOnlyHint` annotations on read tools, `tk_w_` key requirements on write tools, a mandatory `branch_id` on plan-mutating tools, and a `TRIPL_MCP_ALLOW_MAIN` gate that keeps agents off the main branch by default. Installation, transport configuration, and the full tool list live in [MCP Server](./mcp-server.md). Everything below documents the underlying REST contract that the MCP tools share.
 
 ## Authentication
 
