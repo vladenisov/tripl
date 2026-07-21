@@ -108,8 +108,8 @@ Locally, all of the above (except the warehouses) run under Docker Compose:
     credentialed suite has executed a typed, table-less nine-row fixture on real
     BigQuery and compared bucket values, counts, aggregates, breakdowns, nested
     JSON/STRUCT values and field-contract counts with the shared reference. Its
-    trusted-main workflow reruns the suite once replacement credentials and the
-    explicit enable flag are configured. The full worker pipeline remains
+    trusted-release workflow reruns the suite for each `vX.Y.Z` release tag once
+    credentials and the explicit enable flag are configured. The full worker pipeline remains
     analysis-only for BigQuery; PostgreSQL and ClickHouse execute that end-to-end
     gate.
 

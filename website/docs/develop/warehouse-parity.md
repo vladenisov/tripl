@@ -31,15 +31,15 @@ The reference for everything below lives in code:
 
 PostgreSQL and ClickHouse execute every conformance layer. BigQuery is analyzed on
 every PR and has additionally passed a credentialed adapter-level value suite on
-real BigQuery. A trusted-main workflow reruns that suite once replacement
-credentials are configured. That distinction decides which guarantees below are
+real BigQuery. A trusted-release workflow reruns that suite for each `vX.Y.Z`
+release tag once credentials are configured. That distinction decides which guarantees below are
 end-to-end and which stop at the adapter boundary.
 
 | Warehouse | How CI verifies it | What that authorizes | What it does **not** authorize |
 | --- | --- | --- | --- |
 | **ClickHouse** | **EXECUTED.** A real `clickhouse-server:25.8` container runs the SQL the adapter generates and the results are compared against the reference implementation. | SQL validity **and** computed values: bucket timestamps, counts, aggregates, nested paths, contract counts. | — |
 | **PostgreSQL** | **EXECUTED.** A real `postgres:18` container runs the SQL the adapter generates and the results are compared against the reference implementation. | SQL validity **and** computed values, exactly as ClickHouse. | — |
-| **BigQuery** | **ANALYZED on every PR; adapter value suite executed on real BigQuery.** The emulator's real ZetaSQL analyzer checks every generated statement. A credentialed trusted-main job is wired and runs when explicitly enabled with replacement credentials. | SQL validity plus exact adapter-level bucket timestamps, membership, counts, aggregates, breakdowns, nested JSON/STRUCT values and field-contract counts. | The full scan → metrics → anomaly worker pipeline is still analysis-only for BigQuery. Continuous credentialed CI remains inactive until a safe replacement key is configured. |
+| **BigQuery** | **ANALYZED on every PR; adapter value suite executed on real BigQuery.** The emulator's real ZetaSQL analyzer checks every generated statement. A credentialed trusted-release job runs for `vX.Y.Z` tags when explicitly enabled with replacement credentials. | SQL validity plus exact adapter-level bucket timestamps, membership, counts, aggregates, breakdowns, nested JSON/STRUCT values and field-contract counts. | The full scan → metrics → anomaly worker pipeline is still analysis-only for BigQuery. Credentialed checks run only on release tags to bound quota usage. |
 | synthetic | In-memory fixture, not a warehouse. | Nothing about a real warehouse. | — |
 
 **Why emulator values are never used.** The emulator's *analyzer* is Google's;
@@ -67,7 +67,7 @@ exactly one thing: every generated statement analyzes.
   compared with the executing warehouse pipelines.
 
 The credentialed job is `bigquery-value-conformance.yml`. It runs only on trusted
-`main`, uses a table-less fixture requiring only `bigquery.jobUser`, caps each
+`vX.Y.Z` release tags, uses a table-less fixture requiring only `bigquery.jobUser`, caps each
 query, and fails if any selected test skips. `BQ_VALUE_CONFORMANCE_ENABLED=true`
 also makes missing project/credentials a hard configuration error instead of a
 green no-op.

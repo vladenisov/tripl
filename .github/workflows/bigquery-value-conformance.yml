@@ -3,9 +3,10 @@ name: BigQuery value conformance
 on:
   # Never expose cloud credentials to pull-request code. The emulator analysis
   # gate in ci.yml remains the required BigQuery check on every PR; real values
-  # execute only after trusted code reaches main.
+  # execute only for the version tags used by the release workflow, so regular
+  # commits do not consume BigQuery quota.
   push:
-    branches: [main]
+    tags: ['v*']
 
 permissions:
   contents: read
