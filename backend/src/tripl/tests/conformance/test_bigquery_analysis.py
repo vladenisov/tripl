@@ -2,9 +2,9 @@
 
 Why this file exists
 --------------------
-BigQuery is the one warehouse we cannot execute against in CI — it needs GCP
-credentials, and there are none. So BigQuery got fake-client tests that asserted
-generated SQL *strings*, and a fake client accepts any string. That is how
+BigQuery needs cloud credentials to execute values, so this always-on PR gate uses
+the credential-free emulator and asserts generated SQL *analysis*. Fake-client
+tests alone accept any string; that is how
 ``TIMESTAMP_BIN`` — a function GoogleSQL does not have — shipped in every bucket
 query with a green suite, and how a ``GROUP BY <ARRAY>`` — which GoogleSQL rejects
 outright — sat in every BigQuery JSON scan.
@@ -37,32 +37,24 @@ SQL, emulator's wrong value) or — far worse — a false PASS that certifies a 
 contract the emulator got wrong. Bucket *values* are proven on PostgreSQL and
 ClickHouse, which are executed for real; see the sibling modules.
 
-Getting true value-level BigQuery conformance (NOT wired — no credentials exist)
---------------------------------------------------------------------------------
-A maintainer with a GCP project can add it. It is deliberately left unwired because
-the project has no credentials to offer and a half-configured secret gate is worse
-than an honest gap. What it would take:
+True value-level BigQuery conformance (credentialed, trusted-main only)
+------------------------------------------------------------------------
+``test_bigquery_value_conformance.py`` now executes the canonical ``dataset.ROWS``
+against real BigQuery. It renders the nine rows as a typed, table-less
+``UNNEST([STRUCT(...)])`` relation, so the CI identity needs only
+``roles/bigquery.jobUser``: no dataset, production-data access, DDL, storage or
+cleanup is involved. The suite proves exact TIMESTAMP/DATETIME/DATE bucket values,
+Monday weeks, half-open membership, counts, aggregates, breakdowns, nested
+JSON/STRUCT values and field-contract counts.
 
-1. A service account with ``roles/bigquery.jobUser`` on a project, and
-   ``roles/bigquery.dataEditor`` on ONE dedicated, throwaway dataset (e.g.
-   ``tripl_conformance``). Nothing else — no access to production data.
-2. Repository secrets: ``BQ_SERVICE_ACCOUNT_JSON`` (the key file's contents),
-   ``BQ_PROJECT``, ``BQ_DATASET``.
-3. A separate CI job, gated on ``secrets.BQ_SERVICE_ACCOUNT_JSON != ''`` so forked
-   PRs (which never receive secrets) skip it rather than fail. It must NOT be a
-   required check on forks.
-4. The job seeds ``dataset.ROWS`` into a ``TIMESTAMP``/``DATETIME``/``DATE`` table
-   with a ``JSON`` and a ``STRUCT`` column, constructs a real ``BigQueryAdapter``
-   (host=project, password=the key JSON, database=dataset) and re-runs the SAME
-   assertions the PostgreSQL gate makes — ``expected_bucket_counts``,
-   ``expected_bucket_sums``, Monday-anchored weeks, half-open membership — because
-   ``dataset.py`` is deliberately warehouse-agnostic.
-5. Bound the cost: the fixture is nine rows, so every query is a full scan of a few
-   KB. Set ``maximum_bytes_billed`` on the job config anyway, and tear the table
-   down in an ``always()`` step.
-
-Until that exists, BigQuery bucket VALUES remain unproven by CI. That is a known,
-stated gap — not something this file quietly pretends to cover.
+The separate ``bigquery-value-conformance.yml`` workflow runs only after trusted
+code reaches ``main``, never on pull-request code. Once explicitly enabled, it maps
+``BQ_SERVICE_ACCOUNT_JSON`` and the non-secret ``BQ_PROJECT`` repository variable
+into a step-scoped environment, requires zero skips, caps each query with
+``maximum_bytes_billed`` and enforces a workflow timeout. The emulator gate in this
+module remains credential-free and mandatory on every PR because it covers the
+entire generated-SQL surface; the real suite adds computed-value proof. Missing
+credentials are an error whenever the repository enable flag is on.
 """
 
 from __future__ import annotations

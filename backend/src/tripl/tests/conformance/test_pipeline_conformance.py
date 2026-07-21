@@ -40,8 +40,10 @@ WEEK(MONDAY))`` returns ``2026-04-06T13:00:00`` there, keeping the time componen
 where real BigQuery returns ``2026-04-06T00:00:00``. A value assertion against the
 emulator would either fail on correct SQL or — far worse — certify a bucket contract
 that BigQuery does not honour. Values are proven on the two engines that execute.
-The credentialed path that would close this gap is documented in
-``test_bigquery_analysis.py``; it is deliberately not wired (no credentials exist).
+The credentialed adapter-value gate in ``test_bigquery_value_conformance.py`` now
+proves BigQuery buckets, aggregates and contract values on real GoogleSQL. It does
+not pretend to execute this full worker pipeline: the pipeline remains analysis-only
+for BigQuery until a trusted credentialed pipeline job is added.
 
 A note on the fixture's NULL measures
 -------------------------------------

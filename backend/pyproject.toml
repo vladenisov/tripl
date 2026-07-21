@@ -58,6 +58,9 @@ markers = [
     # them from a local run entirely. CI runs them with TRIPL_CONFORMANCE_REQUIRED=1,
     # which turns "warehouse unreachable" from a skip into a failure.
     "conformance: executes/analyzes generated SQL against a real warehouse",
+    # Real BigQuery values need a credentialed, trusted-main job. The ordinary
+    # conformance job excludes this marker and keeps using the emulator analyzer.
+    "bigquery_value: executes value assertions against real BigQuery",
 ]
 filterwarnings = [
     # Third-party deprecations we don't control — keep the run summary clean
