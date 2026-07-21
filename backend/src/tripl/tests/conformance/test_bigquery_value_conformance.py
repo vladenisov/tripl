@@ -8,12 +8,8 @@ resource can be left behind.
 
 from __future__ import annotations
 
-import json
-import os
 from collections.abc import Iterator
 from datetime import UTC, date, datetime
-from pathlib import Path
-from typing import NoReturn
 
 import pytest
 
@@ -21,6 +17,7 @@ from tripl.core.adapters.base import AggregateSpec
 from tripl.core.adapters.bigquery import BigQueryAdapter
 from tripl.core.bucketing import floor_to_bucket
 from tripl.models.domain_enums import MetricAggregation
+from tripl.tests.conformance.bigquery_live import new_adapter, unavailable
 from tripl.tests.conformance.bigquery_values import BASE
 from tripl.tests.conformance.dataset import (
     FROM_TIME,
@@ -44,61 +41,16 @@ _TIME_INTERVALS = {
 }
 
 
-def _unavailable(reason: str) -> NoReturn:
-    message = f"real BigQuery value conformance unavailable: {reason}"
-    if os.environ.get("TRIPL_BQ_VALUE_REQUIRED") == "1":
-        pytest.fail(message)
-    pytest.skip(message)
-
-
-def _credentials() -> tuple[str, str, str | None]:
-    project = os.environ.get("TRIPL_CONF_BQ_REAL_PROJECT", "").strip()
-    credentials_json = os.environ.get("TRIPL_CONF_BQ_CREDENTIALS_JSON", "").strip()
-    credentials_file = os.environ.get("TRIPL_CONF_BQ_CREDENTIALS_FILE", "").strip()
-    location = os.environ.get("TRIPL_CONF_BQ_REAL_LOCATION", "").strip() or None
-    if not credentials_json and credentials_file:
-        try:
-            credentials_json = Path(credentials_file).read_text()
-        except OSError as exc:
-            _unavailable(f"cannot read credentials file: {exc}")
-    missing = [
-        name
-        for name, value in (
-            ("TRIPL_CONF_BQ_REAL_PROJECT", project),
-            ("BigQuery credentials JSON or file", credentials_json),
-        )
-        if not value
-    ]
-    if missing:
-        _unavailable(f"missing {', '.join(missing)}")
-    try:
-        info = json.loads(credentials_json)
-    except json.JSONDecodeError as exc:
-        _unavailable(f"credentials JSON is invalid: {exc}")
-    if not isinstance(info, dict) or info.get("type") != "service_account":
-        _unavailable("credentials are not a service-account JSON object")
-    return project, credentials_json, location
-
-
 @pytest.fixture(scope="session")
 def bq_real() -> Iterator[BigQueryAdapter]:
-    project, credentials_json, location = _credentials()
     adapter: BigQueryAdapter | None = None
     try:
         try:
-            adapter = BigQueryAdapter(
-                host=project,
-                port=0,
-                database="",
-                password=credentials_json,
-                location=location,
-                timeout_seconds=30,
-                maximum_bytes_billed=10 * 1024 * 1024,
-            )
+            adapter = new_adapter(required_env="TRIPL_BQ_VALUE_REQUIRED")
             adapter.test_connection()
             adapter.get_columns(BASE)
         except Exception as exc:  # noqa: BLE001 - any cloud/auth failure is unavailable
-            _unavailable(str(exc))
+            unavailable(str(exc), required_env="TRIPL_BQ_VALUE_REQUIRED")
         yield adapter
     finally:
         if adapter is not None:

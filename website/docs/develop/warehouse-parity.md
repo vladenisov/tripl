@@ -31,15 +31,15 @@ The reference for everything below lives in code:
 
 PostgreSQL and ClickHouse execute every conformance layer. BigQuery is analyzed on
 every PR and has additionally passed a credentialed adapter-level value suite on
-real BigQuery. A trusted-release workflow reruns that suite for each `vX.Y.Z`
-release tag once credentials are configured. That distinction decides which guarantees below are
-end-to-end and which stop at the adapter boundary.
+real BigQuery. A trusted-release workflow reruns that suite and the full worker
+pipeline for each `vX.Y.Z` release tag once credentials are configured. Pull
+requests remain credential-free and stop at ZetaSQL analysis.
 
 | Warehouse | How CI verifies it | What that authorizes | What it does **not** authorize |
 | --- | --- | --- | --- |
 | **ClickHouse** | **EXECUTED.** A real `clickhouse-server:25.8` container runs the SQL the adapter generates and the results are compared against the reference implementation. | SQL validity **and** computed values: bucket timestamps, counts, aggregates, nested paths, contract counts. | — |
 | **PostgreSQL** | **EXECUTED.** A real `postgres:18` container runs the SQL the adapter generates and the results are compared against the reference implementation. | SQL validity **and** computed values, exactly as ClickHouse. | — |
-| **BigQuery** | **ANALYZED on every PR; adapter value suite executed on real BigQuery.** The emulator's real ZetaSQL analyzer checks every generated statement. A credentialed trusted-release job runs for `vX.Y.Z` tags when explicitly enabled with replacement credentials. | SQL validity plus exact adapter-level bucket timestamps, membership, counts, aggregates, breakdowns, nested JSON/STRUCT values and field-contract counts. | The full scan → metrics → anomaly worker pipeline is still analysis-only for BigQuery. Credentialed checks run only on release tags to bound quota usage. |
+| **BigQuery** | **ANALYZED on every PR; values executed on trusted releases.** The emulator's real ZetaSQL analyzer checks every generated statement. A credentialed job runs for `vX.Y.Z` tags when explicitly enabled. | SQL validity plus exact adapter values; the release gate also compares scan/replay event series, fact and composition metrics, batched collection, idempotency and anomalies against the shared reference while using real PostgreSQL for application state. | Credentialed checks run only on release tags to bound quota usage. |
 | synthetic | In-memory fixture, not a warehouse. | Nothing about a real warehouse. | — |
 
 **Why emulator values are never used.** The emulator's *analyzer* is Google's;
@@ -62,13 +62,14 @@ exactly one thing: every generated statement analyzes.
   Monday 00:00 weeks, half-open membership, counts, sums, breakdowns,
   multi-aggregates, nested JSON/STRUCT values and field-contract counts all match
   the same pure-Python reference used by PostgreSQL and ClickHouse.
-- **Still analysis-only:** the end-to-end worker pipeline. Its generated BigQuery
-  statements are analyzed, but its stored event/fact/anomaly series are not yet
-  compared with the executing warehouse pipelines.
+- **Release-gated on real BigQuery:** the end-to-end worker pipeline compares stored
+  event series, fact and composition metrics, batched collection, replay idempotency
+  and expected anomalies with the same reference used by PostgreSQL and ClickHouse.
 
 The credentialed job is `bigquery-value-conformance.yml`. It runs only on trusted
-`vX.Y.Z` release tags, uses a table-less fixture requiring only `bigquery.jobUser`, caps each
-query, and fails if any selected test skips. `BQ_VALUE_CONFORMANCE_ENABLED=true`
+`vX.Y.Z` release tags, uses table-less fixtures requiring only `bigquery.jobUser`,
+keeps worker state in an ephemeral PostgreSQL service, caps each query, and fails if
+any selected test skips. `BQ_VALUE_CONFORMANCE_ENABLED=true`
 also makes missing project/credentials a hard configuration error instead of a
 green no-op.
 
@@ -243,7 +244,8 @@ but reduced, see footnote · **none** = not implemented.
 
 Read every BigQuery cell through the [proven-versus-believed](#read-this-first-proven-versus-believed)
 table above: adapter capabilities covered by the credentialed suite have exact
-value proof; pipeline-derived capabilities remain analysis-only.
+value proof; pipeline-derived capabilities execute in the credentialed release
+gate while pull requests retain analysis-only coverage.
 
 The `synthetic` column is the in-memory demo warehouse (`DBType.synthetic`). It
 opens no socket, serves a bounded deterministic fixture (~40k rows), and raises
@@ -284,7 +286,7 @@ is a shipping warehouse.
 | In-flight query cancellation | adapter | **bounded [12]** | **bounded [12]** | **bounded [12]** | bounded [12] |
 | Cost / billed-bytes guard | `maximum_bytes_billed` | n/a | full [3] | n/a | n/a |
 | TLS enforcement | connection settings | full (HTTPS port) | full (Google TLS) | full [13] | n/a |
-| Executable SQL conformance | `tests/conformance/` | **executed** | **executed adapter values; analyzed pipeline** | **executed** | n/a |
+| Executable SQL conformance | `tests/conformance/` | **executed** | **release-gated execution; analyzed on PRs** | **executed** | n/a |
 
 ---
 
@@ -825,8 +827,9 @@ For the record, so the matrix above is not read as static. Every item below was 
   real scan → event generation → replay → event, fact, ratio and batched
   metrics → drift and anomaly recalculation on both executing warehouses,
   compares every series against the pure-Python reference, and requires
-  PostgreSQL and ClickHouse to agree with each other. BigQuery runs the same
-  pipeline analysis-only.
+  PostgreSQL and ClickHouse to agree with each other. BigQuery analyzes that same
+  pipeline on every PR and executes it against the pure-Python reference in the
+  credentialed release gate.
 - **The data-source *edit* dialog showed ClickHouse/PostgreSQL fields for a
   BigQuery source.** The create and edit dialogs now share one per-warehouse
   field set, so a BigQuery source is edited with its project ID, default dataset
@@ -837,7 +840,6 @@ For the record, so the matrix above is not read as static. Every item below was 
 
 | Gap | Issue |
 | --- | --- |
-| The full worker pipeline is analyzed but not value-executed on BigQuery; the credentialed adapter suite now covers buckets, aggregates, nested values and contracts. | [tripl-przk] |
 | ClickHouse `Tuple`/`Map` columns are classified but have **no nested extractor** (caveat [8]) | [tripl-bc1u] |
 | A fact-metric breakdown group whose aggregate is all-`NULL` crashes the collector with a `TypeError` instead of being recorded as absent | [tripl-s2m7] |
 

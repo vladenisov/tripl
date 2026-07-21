@@ -1,4 +1,4 @@
-name: BigQuery value conformance
+name: BigQuery release conformance
 
 on:
   # Never expose cloud credentials to pull-request code. The emulator analysis
@@ -42,7 +42,7 @@ jobs:
           fi
 
   values:
-    name: Real BigQuery values
+    name: Real BigQuery values and worker pipeline
     needs: credentials
     if: needs.credentials.outputs.enabled == 'true'
     runs-on: ubuntu-latest
@@ -50,6 +50,20 @@ jobs:
     defaults:
       run:
         working-directory: backend
+    services:
+      postgres:
+        image: postgres:18@sha256:22c89fe0d0f507606260237fd55e51f6137f58b2d5bcf6152242b96d9fe8f9a4
+        env:
+          POSTGRES_USER: tripl
+          POSTGRES_PASSWORD: tripl
+          POSTGRES_DB: tripl_conformance
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U tripl -d tripl_conformance"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 24
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
@@ -69,10 +83,18 @@ jobs:
           TRIPL_CONF_BQ_REAL_PROJECT: ${{ vars.BQ_PROJECT }}
           TRIPL_CONF_BQ_REAL_LOCATION: ${{ vars.BQ_LOCATION }}
           TRIPL_BQ_VALUE_REQUIRED: "1"
+          TRIPL_BQ_PIPELINE_REQUIRED: "1"
+          TRIPL_CONFORMANCE_REQUIRED: "1"
+          TRIPL_CONF_PG_HOST: localhost
+          TRIPL_CONF_PG_PORT: "5432"
+          TRIPL_CONF_PG_DB: tripl_conformance
+          TRIPL_CONF_PG_USER: tripl
+          TRIPL_CONF_PG_PASSWORD: tripl
         run: |
           uv run pytest -q \
             --junitxml=bigquery-value-conformance.xml \
-            src/tripl/tests/conformance/test_bigquery_value_conformance.py
+            src/tripl/tests/conformance/test_bigquery_value_conformance.py \
+            src/tripl/tests/conformance/test_bigquery_pipeline_value_conformance.py
 
       - name: Prove the credentialed gate ran without skips
         if: always()
@@ -82,18 +104,18 @@ jobs:
           try:
               root = ET.parse("bigquery-value-conformance.xml").getroot()
           except (OSError, ET.ParseError) as exc:
-              sys.exit(f"::error::no BigQuery value JUnit report: {exc}. The gate did not run.")
+              sys.exit(f"::error::no BigQuery JUnit report: {exc}. The gate did not run.")
           tests = errors = failures = skipped = 0
           for suite in root.iter("testsuite"):
               tests += int(suite.get("tests", 0))
               errors += int(suite.get("errors", 0))
               failures += int(suite.get("failures", 0))
               skipped += int(suite.get("skipped", 0))
-          print(f"BigQuery values: {tests} collected, {failures} failed, {errors} errored, {skipped} skipped")
+          print(f"BigQuery conformance: {tests} collected, {failures} failed, {errors} errored, {skipped} skipped")
           if tests == 0:
-              sys.exit("::error::0 BigQuery value tests ran.")
+              sys.exit("::error::0 BigQuery conformance tests ran.")
           if skipped:
-              sys.exit(f"::error::{skipped} BigQuery value test(s) skipped.")
+              sys.exit(f"::error::{skipped} BigQuery conformance test(s) skipped.")
           if failures or errors:
-              sys.exit(f"::error::{failures} failed / {errors} errored BigQuery value test(s).")
+              sys.exit(f"::error::{failures} failed / {errors} errored BigQuery conformance test(s).")
           PY

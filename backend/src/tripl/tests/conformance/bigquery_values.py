@@ -12,7 +12,7 @@ from __future__ import annotations
 import json
 from collections.abc import Iterable
 
-from tripl.tests.conformance.dataset import ROWS, FixtureRow
+from tripl.tests.conformance.dataset import PIPELINE_ROWS, ROWS, FixtureRow, PipelineRow
 
 
 def _string_literal(value: str) -> str:
@@ -77,3 +77,28 @@ def render_bigquery_rows(rows: Iterable[FixtureRow] = ROWS) -> str:
 
 
 BASE = render_bigquery_rows()
+
+
+def _pipeline_row_literal(row: PipelineRow) -> str:
+    timestamp = row.ts.strftime("%Y-%m-%d %H:%M:%S.%f+00:00")
+    amount = "CAST(NULL AS FLOAT64)" if row.amount is None else repr(row.amount)
+    return (
+        "STRUCT("
+        f"TIMESTAMP '{timestamp}' AS ts, "
+        f"{_string_literal(row.event_name)} AS event_name, "
+        f"{_string_literal(row.user_id)} AS user_id, "
+        f"{amount} AS amount, "
+        f"{_string_literal(row.platform)} AS platform"
+        ")"
+    )
+
+
+def render_bigquery_pipeline_rows(rows: Iterable[PipelineRow] = PIPELINE_ROWS) -> str:
+    """Return the worker-pipeline fixture as a typed, table-less GoogleSQL relation."""
+    rendered = ", ".join(_pipeline_row_literal(row) for row in rows)
+    if not rendered:
+        raise ValueError("BigQuery pipeline conformance rows must not be empty")
+    return f"SELECT * FROM UNNEST([{rendered}])"
+
+
+PIPELINE_BASE = render_bigquery_pipeline_rows()

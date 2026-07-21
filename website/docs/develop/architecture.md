@@ -109,9 +109,10 @@ Locally, all of the above (except the warehouses) run under Docker Compose:
     BigQuery and compared bucket values, counts, aggregates, breakdowns, nested
     JSON/STRUCT values and field-contract counts with the shared reference. Its
     trusted-release workflow reruns the suite for each `vX.Y.Z` release tag once
-    credentials and the explicit enable flag are configured. The full worker pipeline remains
-    analysis-only for BigQuery; PostgreSQL and ClickHouse execute that end-to-end
-    gate.
+    credentials and the explicit enable flag are configured. The same release gate
+    also drives scan, replay, catalog metrics, batched collection, and anomaly
+    recalculation against real BigQuery while keeping PostgreSQL as the application
+    database. Pull requests retain the credential-free analyzer gate.
 
   The gates live in `backend/src/tripl/tests/conformance/`. See the
   **[warehouse capability matrix](warehouse-parity.md)** for the per-capability

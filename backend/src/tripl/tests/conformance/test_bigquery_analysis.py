@@ -37,8 +37,8 @@ SQL, emulator's wrong value) or — far worse — a false PASS that certifies a 
 contract the emulator got wrong. Bucket *values* are proven on PostgreSQL and
 ClickHouse, which are executed for real; see the sibling modules.
 
-True value-level BigQuery conformance (credentialed, trusted-main only)
-------------------------------------------------------------------------
+True value-level BigQuery conformance (credentialed, trusted releases only)
+----------------------------------------------------------------------------
 ``test_bigquery_value_conformance.py`` now executes the canonical ``dataset.ROWS``
 against real BigQuery. It renders the nine rows as a typed, table-less
 ``UNNEST([STRUCT(...)])`` relation, so the CI identity needs only
@@ -47,13 +47,14 @@ cleanup is involved. The suite proves exact TIMESTAMP/DATETIME/DATE bucket value
 Monday weeks, half-open membership, counts, aggregates, breakdowns, nested
 JSON/STRUCT values and field-contract counts.
 
-The separate ``bigquery-value-conformance.yml`` workflow runs only after trusted
-code reaches ``main``, never on pull-request code. Once explicitly enabled, it maps
+The separate ``bigquery-value-conformance.yml`` workflow runs only for trusted
+``vX.Y.Z`` release tags, never on pull-request code. Once explicitly enabled, it maps
 ``BQ_SERVICE_ACCOUNT_JSON`` and the non-secret ``BQ_PROJECT`` repository variable
 into a step-scoped environment, requires zero skips, caps each query with
 ``maximum_bytes_billed`` and enforces a workflow timeout. The emulator gate in this
 module remains credential-free and mandatory on every PR because it covers the
-entire generated-SQL surface; the real suite adds computed-value proof. Missing
+entire generated-SQL surface; the real suite adds computed-value proof and drives
+the full worker pipeline with PostgreSQL as its application database. Missing
 credentials are an error whenever the repository enable flag is on.
 """
 
