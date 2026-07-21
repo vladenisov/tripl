@@ -30,7 +30,10 @@ jobs:
         name: Detect configured BigQuery identity
         shell: bash
         run: |
-          if [ "$BQ_VALUE_CONFORMANCE_ENABLED" != "true" ]; then
+          if [[ ! "$GITHUB_REF_NAME" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::BigQuery conformance runs only for stable vX.Y.Z tags; skipping $GITHUB_REF_NAME."
+          elif [ "$BQ_VALUE_CONFORMANCE_ENABLED" != "true" ]; then
             echo "enabled=false" >> "$GITHUB_OUTPUT"
             echo "::notice::BigQuery value conformance is intentionally disabled."
           elif [ -n "$BQ_SERVICE_ACCOUNT_JSON" ] && [ -n "$BQ_PROJECT" ]; then
