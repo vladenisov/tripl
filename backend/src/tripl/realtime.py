@@ -36,6 +36,14 @@ from typing import Any
 
 from tripl import cache
 
+try:
+    from redis.exceptions import RedisError
+except ImportError:  # pragma: no cover - redis is a hard dependency in practice
+
+    class RedisError(Exception):  # type: ignore[no-redef]
+        pass
+
+
 logger = logging.getLogger(__name__)
 
 # ── Event types (SSE ``event:`` names) ───────────────────────────────────
@@ -157,20 +165,40 @@ async def replay_buffered_events(slug: str, after_id: int | None) -> list[dict[s
     return events
 
 
-async def redis_message_iterator(slug: str) -> AsyncIterator[dict[str, Any]]:
-    """Yield live envelope dicts published to a project's channel.
+async def redis_message_iterator(
+    slug: str, *, poll_timeout: float = HEARTBEAT_SECONDS
+) -> AsyncIterator[dict[str, Any] | None]:
+    """Yield live envelope dicts for a project's channel, plus ``None`` heartbeats.
 
-    An empty async generator when Redis is off (the endpoint uses ``None`` /
-    heartbeat-only in that case, so this is only entered when a client exists).
+    Reads via the dedicated pub/sub client (no ``socket_timeout``) and bounds each
+    read with ``get_message(timeout=poll_timeout)``. An idle poll yields ``None``
+    (a heartbeat tick, so the caller keeps the stream open) and a published
+    message yields its envelope. A Redis error ends the iterator *cleanly* — the
+    endpoint closes the stream and the browser reconnects — rather than raising
+    and tearing the response down mid-flight (which the edge surfaces as
+    ``ERR_HTTP2_PROTOCOL_ERROR`` / ``ERR_QUIC_PROTOCOL_ERROR``). An empty async
+    generator when Redis is off.
     """
-    client = cache.get_async_client()
+    client = cache.get_async_pubsub_client()
     if client is None:
         return
     pubsub = client.pubsub()
-    await pubsub.subscribe(channel(slug))
     try:
-        async for message in pubsub.listen():
-            if message.get("type") != "message":
+        try:
+            await pubsub.subscribe(channel(slug))
+        except RedisError as exc:
+            logger.warning("realtime subscribe %s failed: %s", slug, exc)
+            return
+        while True:
+            try:
+                message = await pubsub.get_message(
+                    ignore_subscribe_messages=True, timeout=poll_timeout
+                )
+            except RedisError as exc:
+                logger.warning("realtime read %s failed: %s", slug, exc)
+                return
+            if message is None:
+                yield None  # idle poll — surfaces as a heartbeat, keeps stream open
                 continue
             data = message.get("data")
             try:
@@ -212,17 +240,20 @@ async def sse_response_stream(
     *,
     hello_payload: dict[str, Any],
     replay: Sequence[dict[str, Any]],
-    messages: AsyncIterator[dict[str, Any]] | None,
+    messages: AsyncIterator[dict[str, Any] | None] | None,
     heartbeat_seconds: float = HEARTBEAT_SECONDS,
     is_disconnected: Callable[[], Awaitable[bool]] | None = None,
     max_messages: int | None = None,
 ) -> AsyncIterator[str]:
     """Core SSE generator: hello → replay → live events interleaved with heartbeats.
 
-    ``messages`` is an async iterator of envelope dicts (Redis, or a fake in
-    tests); pass ``None`` for the Redis-off / degraded case (heartbeat only).
-    ``max_messages`` bounds the loop for tests. Never raises on a disconnected
-    client — it returns, letting ``StreamingResponse`` finish cleanly.
+    ``messages`` is an async iterator that yields envelope dicts *and* ``None``
+    heartbeat ticks (Redis, or a fake in tests); pass ``None`` for the Redis-off /
+    degraded case (heartbeat only). The iterator bounds its own reads, so we never
+    wrap ``__anext__`` in ``asyncio.wait_for`` — cancelling that on timeout would
+    finalize the async generator and kill the stream. ``max_messages`` bounds the
+    loop for tests. Never raises on a disconnected client — it returns, letting
+    ``StreamingResponse`` finish cleanly.
     """
     yield format_sse_event({"id": 0, "type": EVENT_HELLO, "data": hello_payload})
     for envelope in replay:
@@ -240,16 +271,13 @@ async def sse_response_stream(
             delivered += 1
         return
 
-    iterator = messages.__aiter__()
-    while max_messages is None or delivered < max_messages:
+    async for item in messages:
         if is_disconnected is not None and await is_disconnected():
             return
-        try:
-            envelope = await asyncio.wait_for(iterator.__anext__(), timeout=heartbeat_seconds)
-        except TimeoutError:
+        if item is None:
             yield format_sse_comment("heartbeat")
-            continue
-        except StopAsyncIteration:
-            return
-        yield format_sse_event(envelope)
+        else:
+            yield format_sse_event(item)
         delivered += 1
+        if max_messages is not None and delivered >= max_messages:
+            return

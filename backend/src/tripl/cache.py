@@ -35,6 +35,10 @@ logger = logging.getLogger(__name__)
 _client: redis_asyncio.Redis | None = None
 _client_failed: bool = False
 
+# Separate client for the realtime pub/sub bus (see ``get_async_pubsub_client``).
+_pubsub_client: redis_asyncio.Redis | None = None
+_pubsub_client_failed: bool = False
+
 
 def _get_client() -> redis_asyncio.Redis | None:
     global _client, _client_failed
@@ -54,6 +58,34 @@ def _get_client() -> redis_asyncio.Redis | None:
             _client_failed = True
             return None
     return _client
+
+
+def _get_pubsub_client() -> redis_asyncio.Redis | None:
+    """Async client dedicated to the realtime pub/sub bus.
+
+    Deliberately WITHOUT ``socket_timeout``. Pub/sub does long *blocking* reads
+    while waiting for the next published event; a ``socket_timeout`` (right for
+    short cache GET/SET on the shared client) would make an idle read raise
+    ``redis.TimeoutError`` every timeout window and tear the SSE stream down. The
+    subscriber bounds each read itself with an explicit ``get_message(timeout=…)``,
+    so only a connect timeout is needed here.
+    """
+    global _pubsub_client, _pubsub_client_failed
+    if _pubsub_client_failed or not settings.redis_url or redis_asyncio is None:
+        return None
+    if _pubsub_client is None:
+        try:
+            _pubsub_client = redis_asyncio.from_url(
+                settings.redis_url,
+                encoding="utf-8",
+                decode_responses=True,
+                socket_connect_timeout=1.0,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("redis pubsub client init failed, disabling realtime: %s", exc)
+            _pubsub_client_failed = True
+            return None
+    return _pubsub_client
 
 
 async def get_json(key: str) -> Any | None:
@@ -166,19 +198,29 @@ def get_async_client() -> redis_asyncio.Redis | None:
     return _get_client()
 
 
+def get_async_pubsub_client() -> redis_asyncio.Redis | None:
+    """Return the shared async pub/sub client (no ``socket_timeout``), or ``None``."""
+    return _get_pubsub_client()
+
+
 def get_sync_client() -> redis_sync.Redis | None:
     """Return the shared sync Redis client, or ``None`` when Redis is off."""
     return _get_sync_client()
 
 
 async def close() -> None:
-    """Close the shared client — call from FastAPI shutdown if needed."""
-    global _client
+    """Close the shared clients — call from FastAPI shutdown if needed."""
+    global _client, _pubsub_client
     if _client is not None:
         try:
             await _client.aclose()
         finally:
             _client = None
+    if _pubsub_client is not None:
+        try:
+            await _pubsub_client.aclose()
+        finally:
+            _pubsub_client = None
 
 
 # ── Key-schema conventions ───────────────────────────────────────────────

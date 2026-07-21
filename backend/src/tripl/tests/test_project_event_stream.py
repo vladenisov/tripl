@@ -40,9 +40,46 @@ def _bearer(token: str) -> dict[str, str]:
     return {"Authorization": f"Bearer {token}"}
 
 
-async def _fake_messages(items: list[dict]) -> AsyncIterator[dict]:
+async def _fake_messages(items: list[dict | None]) -> AsyncIterator[dict | None]:
     for item in items:
         yield item
+
+
+class _FakePubSub:
+    """Scripted stand-in for ``redis.asyncio.client.PubSub`` (no live Redis).
+
+    Each ``get_message`` pops the next scripted step: ``None`` = an idle poll,
+    a ``dict`` = a delivered message, an ``Exception`` instance = raised.
+    """
+
+    def __init__(self, script: list) -> None:
+        self._script = list(script)
+
+    async def subscribe(self, *_channels: str) -> None:
+        return None
+
+    async def get_message(
+        self, ignore_subscribe_messages: bool = False, timeout: float | None = None
+    ):
+        assert ignore_subscribe_messages is True
+        step = self._script.pop(0)
+        if isinstance(step, BaseException):
+            raise step
+        return step
+
+    async def unsubscribe(self, *_channels: str) -> None:
+        return None
+
+    async def aclose(self) -> None:
+        return None
+
+
+class _FakePubSubClient:
+    def __init__(self, pubsub: _FakePubSub) -> None:
+        self._pubsub = pubsub
+
+    def pubsub(self) -> _FakePubSub:
+        return self._pubsub
 
 
 # ── Endpoint auth + scope ────────────────────────────────────────────────
@@ -179,6 +216,61 @@ async def test_generator_degraded_mode_heartbeats_only() -> None:
     assert ": heartbeat" in body
     # No live events are fabricated in degraded mode.
     assert f"event: {realtime.EVENT_SCAN_JOB_UPDATED}" not in body
+
+
+@pytest.mark.asyncio
+async def test_generator_treats_none_as_heartbeat_and_keeps_streaming() -> None:
+    # Regression: an idle Redis poll surfaces as a ``None`` tick from the message
+    # iterator. It must become a heartbeat comment and the stream must keep going
+    # to deliver the next event — not raise (which tore down the SSE response and
+    # produced ERR_HTTP2_PROTOCOL_ERROR / ERR_QUIC_PROTOCOL_ERROR at the edge).
+    envelope = {
+        "id": 9,
+        "type": realtime.EVENT_ACTIVITY_CREATED,
+        "data": {"project_slug": "p"},
+    }
+    chunks = [
+        chunk
+        async for chunk in realtime.sse_response_stream(
+            hello_payload={"project_slug": "p", "backend": "redis"},
+            replay=[],
+            messages=_fake_messages([None, envelope]),
+            max_messages=2,
+        )
+    ]
+    body = "".join(chunks)
+    assert ": heartbeat" in body
+    assert f"event: {realtime.EVENT_ACTIVITY_CREATED}" in body
+    assert body.index(": heartbeat") < body.index(f"event: {realtime.EVENT_ACTIVITY_CREATED}")
+
+
+@pytest.mark.asyncio
+async def test_redis_iterator_survives_idle_and_swallows_read_timeout(monkeypatch) -> None:
+    # Regression: the pub/sub client must not carry a ``socket_timeout`` (it turns
+    # an idle blocking read into ``redis.TimeoutError``). An idle poll yields a
+    # ``None`` heartbeat tick; a later read timeout ends the iterator cleanly
+    # instead of propagating and killing the stream mid-response.
+    import json
+
+    import redis
+
+    raw = json.dumps(
+        {"id": 1, "type": realtime.EVENT_SIGNALS_UPDATED, "data": {"project_slug": "p"}}
+    )
+    pubsub = _FakePubSub(
+        [
+            None,  # idle poll -> heartbeat tick
+            {"type": "message", "data": raw},  # delivered event
+            redis.exceptions.TimeoutError("Timeout reading from redis:6379"),
+        ]
+    )
+    monkeypatch.setattr(
+        realtime.cache, "get_async_pubsub_client", lambda: _FakePubSubClient(pubsub)
+    )
+    items = [item async for item in realtime.redis_message_iterator("p")]
+    assert items[0] is None
+    assert any(isinstance(x, dict) and x.get("id") == 1 for x in items)
+    # The read timeout did not escape — the comprehension completed.
 
 
 def test_sse_formatting_helpers() -> None:
