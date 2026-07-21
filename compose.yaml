@@ -141,5 +141,30 @@ services:
       migrate:
         condition: service_completed_successfully
 
+  # OPTIONAL MCP server for agent runtimes — profile-gated, never starts by
+  # default. Streamable-HTTP transport with per-request Authorization
+  # pass-through (keys are never stored server-side); see
+  # website/docs/integrate/mcp-server.md. Enable with:
+  #   docker compose --profile mcp up -d
+  # Uses the published MCP image when available (TRIPL_MCP_IMAGE); from a source
+  # checkout, `docker compose --profile mcp build mcp` builds mcp-server/.
+  mcp:
+    image: "${TRIPL_MCP_IMAGE:-ghcr.io/vladenisov/tripl-mcp}:${TRIPL_VERSION:-latest}"
+    build: ./mcp-server
+    # The image ENTRYPOINT is already `tripl-mcp`, so command holds flags only.
+    # --host 0.0.0.0 is required for the published port to be reachable.
+    command: ["--transport", "streamable-http", "--host", "0.0.0.0", "--port", "8765"]
+    profiles: [mcp]
+    ports:
+      # Bound to the host loopback on purpose: this proxy forwards write-capable
+      # tk_w_ keys verbatim and has no auth of its own. Put it behind the same
+      # reverse proxy / trusted network as the app before widening this bind.
+      - "127.0.0.1:8765:8765"
+    environment:
+      TRIPL_BASE_URL: http://app:8000
+    depends_on:
+      app:
+        condition: service_started
+
 volumes:
   pgdata18:
