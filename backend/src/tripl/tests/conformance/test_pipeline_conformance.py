@@ -29,8 +29,8 @@ See the ``app_db`` fixture. Short version: SQLite hands back naive datetimes and
 takes the ``sqlite_insert`` UPSERT branch, so a SQLite-hosted pipeline test proves
 neither the bucket alignment nor the UPSERT that production runs.
 
-!!! BigQuery here is ANALYSIS-ONLY, and must stay that way !!!
---------------------------------------------------------------
+The emulator path in this module is ANALYSIS-ONLY
+--------------------------------------------------
 ``test_bigquery_pipeline_sql_analyzes`` drives the SAME worker code paths with a
 BigQuery data source and a client that CAPTURES the generated GoogleSQL, then asserts
 the emulator's real ZetaSQL analyzer accepts every statement. It asserts NOTHING about
@@ -40,8 +40,11 @@ WEEK(MONDAY))`` returns ``2026-04-06T13:00:00`` there, keeping the time componen
 where real BigQuery returns ``2026-04-06T00:00:00``. A value assertion against the
 emulator would either fail on correct SQL or — far worse — certify a bucket contract
 that BigQuery does not honour. Values are proven on the two engines that execute.
-The credentialed path that would close this gap is documented in
-``test_bigquery_analysis.py``; it is deliberately not wired (no credentials exist).
+The credentialed gates execute adapter values and this same full worker pipeline in
+``test_bigquery_value_conformance.py`` and
+``test_bigquery_pipeline_value_conformance.py``. They run only for trusted release
+tags; this always-on emulator path remains the credential-free PR guard for the full
+generated-SQL surface.
 
 A note on the fixture's NULL measures
 -------------------------------------
@@ -88,6 +91,7 @@ from tripl.models.project import Project
 from tripl.models.project_anomaly_settings import ProjectAnomalySettings
 from tripl.models.scan_config import ScanConfig
 from tripl.models.scan_job import ScanJob, ScanJobStatus
+from tripl.tests.conformance.bigquery_values import PIPELINE_BASE
 from tripl.tests.conformance.conftest import PipelineWarehouse
 from tripl.tests.conformance.dataset import (
     PIPELINE_EVENT_NAMES,
@@ -760,15 +764,7 @@ def test_a_flat_series_is_not_an_anomaly(run: PipelineRun) -> None:
 #: every generated column against, with no dataset, no seeding and no credentials. It
 #: carries the SAME five columns as the executing warehouses' pipeline table, so one
 #: schema serves both the scan query and the fact query.
-BQ_SOURCE = (
-    "SELECT * FROM UNNEST([STRUCT("
-    "TIMESTAMP '2026-04-02 00:00:00+00' AS ts, "
-    "'click' AS event_name, "
-    "'u1' AS user_id, "
-    "1.5 AS amount, "
-    "'ios' AS platform"
-    ")])"
-)
+BQ_SOURCE = PIPELINE_BASE
 
 #: The adapter's own connection probe, answered (not analyzed) by the capturing client.
 _CONNECTION_PROBE = "SELECT 1 AS ok"
