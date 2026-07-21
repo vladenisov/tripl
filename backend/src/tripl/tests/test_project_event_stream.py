@@ -65,9 +65,19 @@ async def test_session_user_can_subscribe(client: AsyncClient) -> None:
     await _create_project(client, "stream-owner")
     # ``max_events=0`` greets and closes so the (buffering) test transport can read
     # a finite body; production leaves it unset for an open-ended stream.
-    resp = await client.get("/api/v1/projects/stream-owner/events/stream?max_events=0")
+    resp = await client.get(
+        "/api/v1/projects/stream-owner/events/stream?max_events=0",
+        headers={"Accept-Encoding": "br"},
+    )
     assert resp.status_code == 200
     assert resp.headers["content-type"].startswith("text/event-stream")
+    assert resp.headers["cache-control"] == "no-cache"
+    assert resp.headers["x-accel-buffering"] == "no"
+    assert "content-encoding" not in resp.headers
+    # Connection-specific fields are forbidden in HTTP/2 and HTTP/3.  The edge
+    # translates the origin's HTTP/1.1 response, so the application must not
+    # emit one that can be forwarded as a malformed HTTP/3 response.
+    assert "connection" not in resp.headers
     # The endpoint greets with a `hello` event announcing whether the realtime
     # backend is live; with Redis off (tests) it reports "degraded".
     assert "event: hello" in resp.text
