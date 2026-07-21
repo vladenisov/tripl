@@ -70,6 +70,9 @@ def test_default_spa_csp_applied_when_serving_frontend(
     app = _spa_app(_make_dist(tmp_path))
     app.add_middleware(SecurityHeadersMiddleware)
     csp = TestClient(app).get("/").headers.get("content-security-policy")
-    assert csp is not None
-    assert "frame-ancestors 'none'" in csp
-    assert "default-src 'self'" in csp
+    assert csp == (
+        "default-src 'self'; script-src 'self'; "
+        "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "
+        "img-src 'self' data: blob:; font-src 'self' data: https://fonts.gstatic.com; "
+        "connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'"
+    )

@@ -17,8 +17,10 @@ from tripl.config import settings
 # React SPA (Radix/Tailwind/recharts/codemirror need inline styles; scripts are
 # bundled and same-origin).
 _DEFAULT_SPA_CSP = (
-    "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; "
-    "img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self'; "
+    "default-src 'self'; script-src 'self'; "
+    "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "
+    "img-src 'self' data: blob:; font-src 'self' data: https://fonts.gstatic.com; "
+    "connect-src 'self'; "
     "frame-ancestors 'none'; base-uri 'self'; form-action 'self'"
 )
 

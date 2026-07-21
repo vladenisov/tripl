@@ -117,8 +117,10 @@ Conditional:
 - **Content-Security-Policy** — emitted only if `CONTENT_SECURITY_POLICY` is set, *or* if `SERVE_FRONTEND=true` and no explicit policy is given (then a SPA-tuned default is applied):
 
   ```
-  default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline';
-  img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self';
+  default-src 'self'; script-src 'self';
+  style-src 'self' 'unsafe-inline' https://fonts.googleapis.com;
+  img-src 'self' data: blob:; font-src 'self' data: https://fonts.gstatic.com;
+  connect-src 'self';
   frame-ancestors 'none'; base-uri 'self'; form-action 'self'
   ```
 
@@ -127,7 +129,11 @@ Conditional:
 - **HSTS** — emitted only when `HSTS_ENABLED=true`, as `Strict-Transport-Security: max-age=<HSTS_MAX_AGE_SECONDS>; includeSubDomains` (default max-age 31536000, one year). HSTS is opt-in by design: enabling it without HTTPS in front would make the site unreachable over HTTP with no way back. Turn it on only once TLS and `SESSION_COOKIE_SECURE=true` are in place.
 
 :::tip
-The `'unsafe-inline'` in `style-src` is required by the bundled UI (Radix/Tailwind/recharts/CodeMirror inline styles). Scripts remain `'self'` only. If you tighten the CSP, test the SPA before shipping it.
+The `'unsafe-inline'` in `style-src` is required by the bundled UI
+(Radix/Tailwind/recharts/CodeMirror inline styles). The two Google origins are
+limited to the stylesheet and font files used by the bundled page; scripts
+remain `'self'` only, including the external pre-React theme initializer. If
+you tighten the CSP, test the SPA before shipping it.
 :::
 
 The middleware reads `CONTENT_SECURITY_POLICY`, `SERVE_FRONTEND`, `HSTS_ENABLED`, and `HSTS_MAX_AGE_SECONDS` **once at construction time**. Changing any of them requires an API restart to take effect.
