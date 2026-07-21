@@ -32,7 +32,6 @@ router = APIRouter(prefix="/projects/{slug}/events", tags=["events"])
 # immediately (nginx honours ``X-Accel-Buffering: no``).
 _SSE_HEADERS = {
     "Cache-Control": "no-cache",
-    "Connection": "keep-alive",
     "X-Accel-Buffering": "no",
 }
 

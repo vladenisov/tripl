@@ -110,7 +110,8 @@ setup_api_tracing(app)
 #   present even on error responses.
 # - CORS is innermost so preflight short-circuits don't need to traverse the
 #   above middleware on every options request.
-# - Brotli compresses the final response body (≥1KB).
+# - Brotli compresses the final response body (≥1KB), except the project SSE
+#   stream where compression adds buffering risk to latency-sensitive chunks.
 if settings.security_headers_enabled:
     app.add_middleware(SecurityHeadersMiddleware)
 app.add_middleware(RequestIDMiddleware)
@@ -118,6 +119,7 @@ app.add_middleware(
     BrotliMiddleware,
     quality=4,
     minimum_size=1024,
+    excluded_handlers=[r"^/api/v1/projects/[^/]+/events/stream$"],
 )
 
 _cors_origins = settings.cors_origins()

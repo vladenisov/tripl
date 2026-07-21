@@ -36,6 +36,28 @@ successfully (`Exited (0)` in `docker compose ps`).
 
 ---
 
+## The browser repeatedly logs a realtime stream protocol error
+
+**Symptom.** Project pages keep working, but Chrome repeatedly logs
+`ERR_QUIC_PROTOCOL_ERROR 200 (OK)` for
+`/api/v1/projects/{slug}/events/stream`.
+
+**Cause.** The request is a long-lived Server-Sent Events stream. A `200`
+means the response started successfully; the protocol error means an HTTP/3
+edge or proxy then rejected or reset that stream. Make sure no intermediary
+adds or forwards connection-specific headers such as `Connection` or
+`Keep-Alive` on HTTP/2 or HTTP/3 responses.
+
+**Fix.** Upgrade tripl to a version whose realtime endpoint does not emit
+connection-specific headers, and verify the edge preserves
+`Content-Type: text/event-stream`, disables response buffering, and allows a
+streaming response to remain open without applying response compression. The
+endpoint sends a heartbeat every 15 seconds, so an edge idle timeout comfortably
+above that value should not close healthy streams. While disconnected, the
+frontend falls back to polling and reconnects with exponential backoff.
+
+---
+
 ## No metrics appear after a scan
 
 **Symptom.** A scan finished and the catalog filled with events, but the
