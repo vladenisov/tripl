@@ -102,12 +102,17 @@ Locally, all of the above (except the warehouses) run under Docker Compose:
     up real `clickhouse-server` and `postgres` containers, runs the SQL the
     adapters generate, and compares the results against the reference
     implementation. Their bucket values, counts and contract counts are proven.
-  - **BigQuery is analyzed, not executed.** CI posts every generated statement to
-    an emulator embedding Google's real **ZetaSQL analyzer**, which is
-    authoritative on whether the SQL is *valid* GoogleSQL — but not on what it
-    *computes*. BigQuery bucket values and field-contract values remain believed
-    rather than proven; a credentialed value-conformance job is specified but
-    deliberately unwired.
+  - **BigQuery is analyzed on every PR and has a real value suite.** CI
+    posts every generated statement to an emulator embedding Google's real
+    **ZetaSQL analyzer**, which is authoritative on valid GoogleSQL. A separate
+    credentialed suite has executed a typed, table-less nine-row fixture on real
+    BigQuery and compared bucket values, counts, aggregates, breakdowns, nested
+    JSON/STRUCT values and field-contract counts with the shared reference. Its
+    trusted-release workflow reruns the suite for each `vX.Y.Z` release tag once
+    credentials and the explicit enable flag are configured. The same release gate
+    also drives scan, replay, catalog metrics, batched collection, and anomaly
+    recalculation against real BigQuery while keeping PostgreSQL as the application
+    database. Pull requests retain the credential-free analyzer gate.
 
   The gates live in `backend/src/tripl/tests/conformance/`. See the
   **[warehouse capability matrix](warehouse-parity.md)** for the per-capability

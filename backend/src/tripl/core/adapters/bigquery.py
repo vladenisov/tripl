@@ -601,8 +601,19 @@ class BigQueryAdapter(BaseAdapter):
         names: list[str],
         alias_by_name: dict[str, str],
     ) -> tuple[list[str], list[str]]:
-        """(select_parts, group_parts) reading pre-materialized nested columns by alias."""
-        select_parts = [f"`{alias_by_name[name]}` AS `{name}`" for name in names]
+        """Read pre-materialized nested columns without dotted result aliases.
+
+        Public nested value names deliberately use dotted paths (for example
+        ``doc.user.id``), but real BigQuery rejects dots in result-field names even
+        when the alias is backtick-quoted.  Callers consume rows positionally and get
+        the public names from ``json_value_names``, so an invalid dotted output name
+        stays under its safe ``__nv_*`` alias inside GoogleSQL.
+        """
+        select_parts = []
+        for name in names:
+            source_alias = alias_by_name[name]
+            output_alias = name if _IDENTIFIER_PART_RE.match(name) else source_alias
+            select_parts.append(f"`{source_alias}` AS `{output_alias}`")
         group_parts = [f"`{alias_by_name[name]}`" for name in names]
         return select_parts, group_parts
 
@@ -1720,6 +1731,7 @@ class BigQueryAdapter(BaseAdapter):
         prepared_parts: list[str] = [f"{bucket_expr} AS _bucket"]
         col_names: list[str] = []
         json_value_names: list[str] = []
+        json_value_aliases: list[str] = []
         for c in reg_cols:
             # The outer GROUPING SETS groups by the prepared *alias*, so the alias must
             # already carry a groupable scalar — a REPEATED column is rendered to its
@@ -1733,12 +1745,14 @@ class BigQueryAdapter(BaseAdapter):
         for c in json_cols:
             for path in json_value_paths.get(c, []):
                 full_path = f"{c}.{path}"
+                alias = f"__nv_{len(json_value_names)}"
                 prepared_parts.append(
-                    f"TO_JSON_STRING({self._json_path_expression(c, path)}) AS `{full_path}`"
+                    f"TO_JSON_STRING({self._json_path_expression(c, path)}) AS `{alias}`"
                 )
                 json_value_names.append(full_path)
+                json_value_aliases.append(alias)
 
-        grouping_columns = [f"`{name}`" for name in [*reg_cols, *json_cols, *json_value_names]]
+        grouping_columns = [f"`{name}`" for name in [*reg_cols, *json_cols, *json_value_aliases]]
         label_when: list[str] = []
         value_when: list[str] = []
         other_when: list[str] = []

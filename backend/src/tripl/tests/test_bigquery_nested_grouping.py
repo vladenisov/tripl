@@ -38,6 +38,7 @@ from tripl.core.adapters.base import AggregateSpec, ColumnInfo
 from tripl.core.adapters.bigquery import BigQueryAdapter, _decode_grouped_array
 from tripl.core.analyzers.cardinality import analyze_cardinality
 from tripl.models.domain_enums import MetricAggregation
+from tripl.tests.conformance.bigquery_values import _string_literal
 
 _FROM = datetime(2026, 4, 1)
 _TO = datetime(2026, 4, 2)
@@ -258,7 +259,17 @@ def test_nested_paths_are_still_grouped(method: str) -> None:
         assert alias in clause or f"`{name}`" in clause, (
             f"{method}: nested column {name!r} is not grouped at all: {clause}"
         )
-        assert f"AS `{name}`" in sql, f"{method}: nested column {name!r} is not selected"
+        # BigQuery result-field names cannot contain dots, even when quoted with
+        # backticks. Dotted public names are returned separately by the adapter, so
+        # path values stay positional under their safe internal alias in GoogleSQL.
+        output_alias = alias if "." in name else name
+        assert f"AS `{output_alias}`" in sql, (
+            f"{method}: nested column {name!r} is not selected under {output_alias!r}"
+        )
+        if "." in name:
+            assert f"AS `{name}`" not in sql, (
+                f"{method}: dotted result alias is rejected by real BigQuery: {sql}"
+            )
 
 
 # --- row contract: the JSON string must never escape the adapter ----------------
@@ -269,7 +280,7 @@ def test_full_breakdown_decodes_paths_back_into_lists() -> None:
     adapter, client = _bq()
     # Row layout: (event_name, tags, props, usr, props.a, _cnt)
     client.rows = [("click", '["x","y"]', '["a","user.name"]', '["id","name"]', "1", 3)]
-    _reg, _json, _values, rows = adapter.get_full_breakdown(
+    _reg, _json, values, rows = adapter.get_full_breakdown(
         _BASE,
         ["event_name", "tags"],
         ["props", "usr"],
@@ -278,10 +289,23 @@ def test_full_breakdown_decodes_paths_back_into_lists() -> None:
         time_from=_FROM,
         time_to=_TO,
     )
+    assert values == ["props.a"]
     assert rows == [("click", ["x", "y"], ["a", "user.name"], ["id", "name"], "1", 3)]
     # The kept JSON *value* stays a scalar string, exactly as ClickHouse's
     # toJSONString(...) returns it — only the path arrays are decoded.
     assert rows[0][4] == "1"
+
+
+def test_bigquery_value_fixture_escapes_control_characters() -> None:
+    rendered = _string_literal("line 1\nline 2\r\t\\'\0")
+    assert "\n" not in rendered
+    assert "\r" not in rendered
+    assert "\\n" in rendered
+    assert "\\r" in rendered
+    assert "\\t" in rendered
+    assert "\\\\" in rendered
+    assert "\\'" in rendered
+    assert "\\000" in rendered
 
 
 @pytest.mark.parametrize(
