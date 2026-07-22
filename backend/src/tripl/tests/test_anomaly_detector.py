@@ -444,9 +444,12 @@ def test_phase_baseline_catches_spike_at_peak() -> None:
 
 
 def test_hybrid_detects_sustained_level_shift_on_seasonal_series() -> None:
-    """A sustained +35% step on top of the seasonal pattern should surface,
-    via either the per-bucket phase baseline or the deseasonalized trend-shift
-    detector."""
+    """A sustained +35% step on top of the seasonal pattern should surface as the
+    shift begins, via either the per-bucket phase baseline or the deseasonalized
+    trend-shift detector. It is evaluated across the shift region (not just the
+    final bucket): once the phase baseline re-levels to the new level (tripl-w0ay)
+    the tail buckets stop flagging, which is the point — a level shift is ONE
+    incident, not one flag per bucket."""
     points = [
         SeriesPoint(bucket=_bucket(hour), count=_weekly_pattern_count(hour))
         for hour in range(24 * 28)
@@ -460,12 +463,56 @@ def test_hybrid_detects_sustained_level_shift_on_seasonal_series() -> None:
     anomalies = detect_anomalies(
         points,
         interval=timedelta(hours=1),
-        evaluation_start=_bucket(24 * 28 - 1),
+        evaluation_start=_bucket(shift_start),
         evaluation_end=_bucket(24 * 28),
         settings=SETTINGS,
     )
 
     assert any(anomaly.direction == "spike" for anomaly in anomalies)
+
+
+def test_phase_baseline_relevels_sustained_shift_instead_of_flagging_every_bucket() -> None:
+    """tripl-w0ay: a level that stepped up ~6x two cycles ago and has been stable
+    since must NOT flag every bucket. On prod (windyapp) such an event showed 166
+    of 167 hourly buckets flagged because the same-phase median stayed anchored to
+    the pre-shift level. Re-leveling the phase expectation to the current level
+    fixes it: a whole day of the stable-high plateau yields no per-bucket flags."""
+    points = []
+    for hour in range(24 * 28):
+        base = _weekly_pattern_count(hour)
+        # Weeks 3 and 4 (the last 14 days) run at ~6x the earlier level, stably.
+        multiplier = 6 if hour >= 24 * 14 else 1
+        points.append(SeriesPoint(bucket=_bucket(hour), count=base * multiplier))
+
+    anomalies = detect_anomalies(
+        points,
+        interval=timedelta(hours=1),
+        evaluation_start=_bucket(24 * 28 - 24),  # the whole last day
+        evaluation_end=_bucket(24 * 28),
+        settings=SETTINGS,
+    )
+
+    assert anomalies == []
+
+
+def test_phase_baseline_poisson_floor_ignores_low_count_wobble() -> None:
+    """tripl-w0ay: on a low-count seasonal series the phase path must not flag a
+    Poisson wobble. Baseline ~11/bucket; a +3 move (11 -> 14) is ~0.9 sigma under
+    sqrt(11) spread, not an anomaly. Before the phase Poisson floor this scored
+    z=3 against the 1.0 absolute floor and flagged every hour."""
+    points = [SeriesPoint(bucket=_bucket(hour), count=11) for hour in range(24 * 28)]
+    last = 24 * 28 - 1
+    points[last] = SeriesPoint(bucket=_bucket(last), count=14)
+
+    anomalies = detect_anomalies(
+        points,
+        interval=timedelta(hours=1),
+        evaluation_start=_bucket(last),
+        evaluation_end=_bucket(24 * 28),
+        settings=SETTINGS,
+    )
+
+    assert anomalies == []
 
 
 def test_covered_buckets_gap_is_not_flagged_as_drop() -> None:

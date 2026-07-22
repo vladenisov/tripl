@@ -323,6 +323,29 @@ def _rolling_anomaly_at(
     )
 
 
+def _seasonal_factors(counts: list[float], idx: int, period: int) -> tuple[list[float], float]:
+    """Level-normalized seasonal factors for ``idx``'s phase, and the current level.
+
+    Each prior same-phase count is divided by the mean level of its own trailing
+    cycle, yielding a factor that captures the seasonal SHAPE at this phase
+    independent of the overall level. ``current_level`` is the mean of the
+    trailing full cycle immediately before ``idx``. Multiplying the median factor
+    by ``current_level`` gives a seasonal expectation that tracks a sustained
+    level shift instead of lagging it for ~1.5 cycles (tripl-w0ay). Cycles whose
+    level is 0 (all-zero history) contribute no factor.
+    """
+    same_phase = [j for j in range(idx) if j % period == idx % period]
+    factors: list[float] = []
+    for j in same_phase:
+        cycle = counts[max(0, j - period + 1) : j + 1]
+        level = fmean(cycle) if cycle else 0.0
+        if level > 0:
+            factors.append(counts[j] / level)
+    current_cycle = counts[max(0, idx - period) : idx]
+    current_level = fmean(current_cycle) if current_cycle else 0.0
+    return factors, current_level
+
+
 def _phase_anomaly_at(
     counts: list[float],
     idx: int,
@@ -337,14 +360,31 @@ def _phase_anomaly_at(
     """Compare a bucket to the robust distribution of the same phase (e.g. same
     hour-of-week) over prior cycles. median + MAD are robust to past anomalies
     and to sharp seasonal shapes, so recurring troughs/peaks score ~0 instead of
-    tripping every cycle."""
-    same_phase = [counts[j] for j in range(idx) if j % period == idx % period]
+    tripping every cycle.
 
-    expected_count = median(same_phase)
+    The expectation is re-leveled to the CURRENT level (tripl-w0ay): the plain
+    same-phase median lags a sustained level shift because its history spans up
+    to ``_MIN_PHASE_CYCLES`` cycles, so a stepped-but-stable series would flag
+    every bucket for ~1.5 cycles. Normalizing each same-phase count by its own
+    cycle level and re-applying the median factor to the current level tracks the
+    shift, while a genuine one-bucket spike still stands out (the current level,
+    a trailing full cycle, barely moves). Degenerate all-zero history falls back
+    to the raw same-phase median, so brand-new series behave as before."""
+    same_phase = [counts[j] for j in range(idx) if j % period == idx % period]
+    if not same_phase:
+        return None
+
+    factors, current_level = _seasonal_factors(counts, idx, period)
+    if factors and current_level > 0:
+        expected_count = median(factors) * current_level
+        scale = _robust_scale(factors) * current_level
+    else:
+        expected_count = median(same_phase)
+        scale = _robust_scale(same_phase)
+
     if expected_count < settings.min_expected_count:
         return None
 
-    scale = _robust_scale(same_phase)
     effective_stddev = _effective_stddev(
         scale,
         expected_count,
@@ -549,15 +589,17 @@ def detect_anomalies(
     is_count_shaped = fill_gaps
     counts = [point.count for point in expanded]
     stddev_absolute_floor = 1.0 if is_count_shaped else _fractional_stddev_floor(counts)
-    # Poisson-aware floor (~sqrt(N)) applies to the count-shaped ROLLING path
-    # only (tripl-dmch.17): that path fits a flat/degenerate baseline whose
-    # stddev collapses to ~0, so a fixed 1.0 floor turns Poisson jitter (e.g.
-    # 10 -> 14) into a 4-sigma flag. The phase path already gets Poisson-scale
-    # spread empirically from its same-phase MAD, so forcing sqrt(N) there would
-    # only suppress genuine seasonal spikes. The averaged trend path keeps its
-    # own relative effect-size gate and is likewise not Poisson-floored.
-    # The fractional path keeps its magnitude floor and instead exempts
-    # sustained monotonic ramps below (tripl-dmch.17).
+    # Poisson-aware floor (~sqrt(N)) applies to BOTH count-shaped per-bucket
+    # paths (tripl-dmch.17, tripl-w0ay). A flat/degenerate baseline's stddev
+    # collapses to ~0, so a fixed 1.0 floor turns Poisson jitter (e.g. 10 -> 14)
+    # into a 4-sigma flag. The phase path's same-phase MAD was assumed to carry
+    # Poisson-scale spread empirically, but low-count seasonal series with few
+    # cycles produce a MAD far below sqrt(N) (real windyapp events flagged a +3
+    # count wobble every hour), so it now gets the sqrt(N) floor too. High-volume
+    # series are unaffected: sqrt(N) sits well below their real spread. The
+    # averaged trend path keeps its own relative effect-size gate and is not
+    # Poisson-floored. The fractional path keeps its magnitude floor and instead
+    # exempts sustained monotonic ramps below (tripl-dmch.17).
     per_bucket_kind = "phase" if is_count_shaped else "fractional"
     rolling_kind = "rolling" if is_count_shaped else "fractional"
     primary: list[DetectedAnomaly] = []
@@ -584,6 +626,7 @@ def detect_anomalies(
                 period,
                 settings,
                 stddev_absolute_floor=stddev_absolute_floor,
+                poisson=is_count_shaped,
                 kind=per_bucket_kind,
             )
         else:
