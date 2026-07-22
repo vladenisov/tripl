@@ -232,7 +232,12 @@ Distinct from per-event history and the workspace audit log.
 **Where:** Observe › Live activity (the project overview, route
 `/p/<slug>/overview`). Panels: a 14-day active-events KPI series and plan-coverage
 stat, project-total volume, top events over the last 48h, active anomaly signals,
-recent activity, and source health.
+recent activity, and source health. A new project also shows a **Get started**
+checklist (Plan → Observe → Govern) that ticks steps off automatically from real
+project state and hides itself once you are set up. It is role-aware: connecting a
+data source is owner-only, so for an editor that step is shown as **Owner only**
+with an ask-an-owner hint and is excluded from progress — a non-owner's checklist
+can still reach done without it.
 
 ### Monitors
 
@@ -461,7 +466,10 @@ out**.
 A toggleable live panel (header label "Now") of recent activity for the project,
 or workspace-wide when no project is in scope. It shows up to 20 items of type
 `anomaly`, `scan`, `alert`, or `event`, severity-colored, auto-refreshing roughly
-every 60 seconds, with a manual refresh.
+every 60 seconds, with a manual refresh. A completed `scan` item summarizes what
+the run produced — new events, metric points, signals, and rows scanned — and
+reads "no new events discovered" when a run on an established catalog finds
+nothing new (which is normal, not a failure) rather than a bare "0 events".
 
 ### AI-assisted features
 
