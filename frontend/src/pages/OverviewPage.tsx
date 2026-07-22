@@ -28,7 +28,7 @@ import { useTheme } from '@/components/theme-provider'
 import { formatPlanCoverage, planCoverageRatio } from '@/lib/coverage'
 import { coverageTone, dataSourceHealthLexeme, type StatusLexeme } from '@/lib/statusLexicon'
 import { formatDateTime, formatRelativeTime } from '@/lib/datetime'
-import { getMonitoringPath } from '@/lib/monitoring'
+import { formatSignalSeverity, getMonitoringPath } from '@/lib/monitoring'
 import { friendlyScanError } from '@/lib/scanError'
 import { useAdaptiveRefetchInterval } from '@/realtime/streamContext'
 import type {
@@ -545,7 +545,7 @@ function SignalRow({
         className="mono w-[52px] shrink-0 text-right text-[11px]"
         style={{ color: signal.direction === 'drop' ? 'var(--warning)' : 'var(--danger)' }}
       >
-        z={signal.z_score.toFixed(1)}
+        {formatSignalSeverity(signal)}
       </span>
     </Link>
   )

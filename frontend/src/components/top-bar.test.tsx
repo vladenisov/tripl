@@ -135,6 +135,24 @@ describe('TopBar notifications', () => {
     expect(screen.getByText('Spike alerts')).toBeInTheDocument()
   })
 
+  it('labels a drop-to-zero signal as "dropped to zero" instead of the clamped z-score', async () => {
+    mockNotificationsFetch(
+      [{ ...mockSignal(), direction: 'drop', actual_count: 0, expected_count: 80, z_score: -20 }],
+      [],
+    )
+
+    renderTopBar()
+
+    fireEvent.click(screen.getByRole('button', { name: /Notifications/ }))
+
+    await waitFor(() => {
+      expect(screen.getByText('Drop on event type type-123')).toBeInTheDocument()
+    })
+    // The zeroed drop reads "dropped to zero"; the repeated clamped z is hidden.
+    expect(screen.getByText(/dropped to zero/)).toBeInTheDocument()
+    expect(screen.queryByText(/z=-20/)).toBeNull()
+  })
+
   it('header "N active" equals the active signals list length, never signals + deliveries', async () => {
     // 1 active signal + 1 (failed) delivery. Old bug summed these to "2 active".
     mockNotificationsFetch([mockSignal()], [mockDelivery({ status: 'failed' })])
