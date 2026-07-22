@@ -395,22 +395,50 @@ def _deduplicate_into_incidents(
     return [signal for signal in signals if not is_incident_child(signal, parent_keys)]
 
 
+def _flag_incident_children(
+    signals: list[MetricSignalResponse],
+) -> list[MetricSignalResponse]:
+    """Tag (rather than drop) each incident's child scopes.
+
+    Same incident rule as ``_deduplicate_into_incidents`` — a child
+    ``event_type``/``event`` row sharing a ``project_total``'s
+    ``(scan_config_id, bucket, direction)`` — but the expanded AnomaliesPage
+    keeps the child rows and marks them ``incident_child=True`` so the UI can
+    render the full spike/drop breakdown while still signposting the rollup.
+    """
+    parent_keys = incident_parent_keys(signals)
+    if not parent_keys:
+        return signals
+    return [
+        signal.model_copy(update={"incident_child": True})
+        if is_incident_child(signal, parent_keys)
+        else signal
+        for signal in signals
+    ]
+
+
 async def get_active_signals(
     session: AsyncSession,
     slug: str,
     event_ids: list[uuid.UUID] | None = None,
+    *,
+    expanded: bool = False,
 ) -> list[MetricSignalResponse]:
-    # Cache only the unfiltered variant (covers the common "all signals for project"
-    # EventsPage fetch). Filtered variants have too many permutations — pass through.
+    # Cache only the unfiltered variants (the "all signals for project" fetches:
+    # collapsed for top-bar/overview/events, expanded for the AnomaliesPage).
+    # Filtered variants have too many permutations — pass through.
     cacheable = not event_ids
+    cache_key = cache.key_signals_all_expanded(slug) if expanded else cache.key_signals_all(slug)
     if cacheable:
-        cached = await cache.get_json(cache.key_signals_all(slug))
+        cached = await cache.get_json(cache_key)
         if cached is not None:
             return [MetricSignalResponse.model_validate(item) for item in cached]
 
     project = await _resolve_project(session, slug)
     scope_types = [SCOPE_PROJECT_TOTAL, SCOPE_EVENT_TYPE]
-    if event_ids:
+    # Expanded (AnomaliesPage) pulls every per-event scope even without an
+    # event-id filter; the collapsed callers stay on total + event_type only.
+    if event_ids or expanded:
         scope_types.append(SCOPE_EVENT)
 
     # Two round-trips (anomalies + metrics) for all scope types combined,
@@ -464,14 +492,16 @@ async def get_active_signals(
     # loaded separately from the event-scope multi-query above.
     signals.extend(await _get_active_metric_signals(session, project_id=project.id))
 
-    # One incident is one active signal: drop the child event_type/event rows
-    # that a project-total spike/drop simultaneously trips on the same bucket.
-    signals = _deduplicate_into_incidents(signals)
+    # One incident is one active signal. The collapsed list drops the child
+    # event_type/event rows a project-total spike/drop trips on the same bucket;
+    # the expanded list keeps them (tagged ``incident_child``) so the
+    # AnomaliesPage can show the full breakdown.
+    signals = _flag_incident_children(signals) if expanded else _deduplicate_into_incidents(signals)
 
     signals.sort(key=lambda signal: signal.bucket, reverse=True)
     if cacheable:
         await cache.set_json(
-            cache.key_signals_all(slug),
+            cache_key,
             [signal.model_dump(mode="json") for signal in signals],
             ttl_seconds=30,
         )

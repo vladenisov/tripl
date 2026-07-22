@@ -41,6 +41,7 @@ function signal(overrides: Partial<MonitoringSignal>): MonitoringSignal {
     stddev: 0,
     z_score: 0,
     direction: 'drop',
+    incident_child: false,
     ...overrides,
   }
 }

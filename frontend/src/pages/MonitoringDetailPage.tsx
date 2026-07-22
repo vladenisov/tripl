@@ -184,6 +184,8 @@ function metricSignalToMonitoringSignal(signal: MetricSignalResponse): Monitorin
     stddev: signal.stddev,
     z_score: signal.z_score,
     direction: signal.direction,
+    // Catalog metric-scope signals are never an incident rollup child.
+    incident_child: false,
   }
 }
 

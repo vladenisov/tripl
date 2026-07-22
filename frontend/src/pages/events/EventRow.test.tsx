@@ -80,6 +80,7 @@ function makeSignal(overrides: Partial<MonitoringSignal> = {}): MonitoringSignal
     stddev: 40,
     z_score: 9,
     direction: 'spike',
+    incident_child: false,
     ...overrides,
   }
 }
