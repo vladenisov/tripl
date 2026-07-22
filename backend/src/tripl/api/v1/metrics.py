@@ -185,11 +185,18 @@ async def get_active_signals(
     session: SessionDep,
     slug: str,
     event_ids: EventIds = None,
+    expanded: bool = False,
 ) -> list[MetricSignalResponse]:
     """Cacheable no-args variant. For filtering by a large event-id list
     (>>a few), prefer ``POST /anomalies/signals/query`` — GET's query-string
-    overflow is real once you cross ~50 ids (proxy/browser limits)."""
-    return await metrics_insights_service.get_active_signals(session, slug, event_ids=event_ids)
+    overflow is real once you cross ~50 ids (proxy/browser limits).
+
+    ``expanded=true`` (the AnomaliesPage view) also surfaces per-event scopes
+    and keeps each incident's child rows, tagged ``incident_child`` rather than
+    collapsed into the parent project_total signal."""
+    return await metrics_insights_service.get_active_signals(
+        session, slug, event_ids=event_ids, expanded=expanded
+    )
 
 
 @router.post(

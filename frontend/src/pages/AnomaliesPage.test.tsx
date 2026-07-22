@@ -29,6 +29,7 @@ function makeSignal(overrides: Partial<MonitoringSignal>): MonitoringSignal {
     stddev: 5,
     z_score: 8,
     direction: 'spike',
+    incident_child: false,
     ...overrides,
   }
 }
@@ -122,5 +123,24 @@ describe('AnomaliesPage — metric-scope signals (tripl-nxk2.4)', () => {
 
     expect(await screen.findByText('Spike on Project total')).toBeInTheDocument()
     expect(screen.getByText('Spike on Event type et-12345')).toBeInTheDocument()
+  })
+
+  it('tags incident children folded under a project_total spike, but not the parent', async () => {
+    vi.mocked(metricsApi.getActiveSignals).mockResolvedValue([
+      makeSignal({ scope_type: 'project_total', scope_ref: 'pt-1', incident_child: false }),
+      makeSignal({ scope_type: 'event_type', scope_ref: 'et-12345678', incident_child: true }),
+    ])
+
+    renderAnomalies()
+
+    // Both scopes are listed (no collapse), and only the child carries the tag.
+    const parentRow = (await screen.findByText('Spike on Project total')).closest(
+      '[role="row"]',
+    ) as HTMLElement
+    const childRow = screen
+      .getByText('Spike on Event type et-12345')
+      .closest('[role="row"]') as HTMLElement
+    expect(childRow).toHaveTextContent('part of total')
+    expect(parentRow).not.toHaveTextContent('part of total')
   })
 })

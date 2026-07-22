@@ -55,6 +55,11 @@ class MetricSignalResponse(BaseModel):
     stddev: float
     z_score: float
     direction: AnomalyDirection
+    # True when this row is a child scope (event_type/event) folded under a
+    # co-firing project_total incident on the same scan/bucket/direction. The
+    # expanded AnomaliesPage keeps children visible but tags them; the default
+    # (collapsed) list drops them entirely, so they never carry this flag there.
+    incident_child: bool = False
 
 
 class SeasonalityCell(BaseModel):

@@ -47,6 +47,10 @@ export interface MonitoringSignal {
   stddev: number
   z_score: number
   direction: 'spike' | 'drop'
+  // True when this row is a child scope (event_type/event) folded under a
+  // co-firing project_total incident. Only the expanded AnomaliesPage fetch
+  // sets it; collapsed callers drop children so it is always false there.
+  incident_child: boolean
 }
 
 export interface TopMoverItem {
